@@ -103,7 +103,7 @@ pub fn bwrap_argv(
     // The Tilo runtime: the loader, `LD_LIBRARY_PATH` and libraries, as for an app; the
     // tilolang bundle beside it, as an app's entrypoint runtime is.
     crate::sandbox::push_runtime_bundle(&mut argv, Some(app_runtime));
-    let _ = crate::sandbox::push_optional_runtime(&mut argv, runtime_root, version);
+    let _ = crate::sandbox::push_required_runtime(&mut argv, runtime_root, version);
     argv.extend([
         "--bind".to_owned(),
         storage.display().to_string(),
@@ -131,6 +131,62 @@ pub fn bwrap_argv(
         runtime_mount.join(BIN).display().to_string(),
     ]);
     argv
+}
+
+/// What the session hands a tilolang host for one instance of an installed tilolang app, read
+/// from the installation verified as a launch of it verifies it.
+#[derive(Debug)]
+pub struct VerifiedInstance {
+    /// The tilolang runtime its entrypoint names, `tilolang/<version>`.
+    pub runtime: String,
+    /// The Tilo runtime it names, `tilo-runtime/<version>`.
+    pub app_runtime: String,
+    /// The identity of the publisher whose key signed the package: the author whose host runs
+    /// it. A person's own build is signed with their own key.
+    pub publisher: [u8; 32],
+    /// Its module, from the verified payload.
+    pub module: runtime_portal::tilolang_host::Module,
+}
+
+/// The tilolang app `installed`, installed at `manifest_path` with its payload at
+/// `payload_root`, whose signed root hashes to `expected`: verified (its files, its signature,
+/// its publisher not revoked) and read for a tilolang host.
+///
+/// # Errors
+/// The installation changed or does not verify, its publisher is revoked, it is no tilolang
+/// app, or its module cannot be read.
+pub fn verified_instance(
+    installed: &package_store::InstalledPackage,
+    manifest_path: &Path,
+    payload_root: &Path,
+    expected: &str,
+) -> Result<VerifiedInstance, RunError> {
+    let (manifest, publisher) =
+        super::verified_launch_publisher(installed, manifest_path, payload_root, expected)?;
+    let not_tilolang =
+        || RunError::InvalidServiceLaunch(format!("{} is no tilolang app", manifest.package_id));
+    let runtime = manifest
+        .entrypoint
+        .runtime
+        .clone()
+        .filter(|runtime| is_tilolang(runtime))
+        .ok_or_else(not_tilolang)?;
+    let app_runtime = manifest.runtime.clone().ok_or_else(not_tilolang)?;
+    let module = runtime_portal::tilolang_host::Module::read(payload_root)?;
+    Ok(VerifiedInstance {
+        runtime,
+        app_runtime,
+        publisher,
+        module,
+    })
+}
+
+/// Whether `runtime` (`<name>/<version>`) is a tilolang runtime.
+#[must_use]
+pub fn is_tilolang(runtime: &str) -> bool {
+    runtime
+        .split_once('/')
+        .is_some_and(|(name, version)| name == "tilolang" && !version.is_empty())
 }
 
 /// Start the tilolang host `launch` on its door `door` and wait for it to end.

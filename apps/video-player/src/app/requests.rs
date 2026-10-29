@@ -1,11 +1,11 @@
 //! What the window asks the player for, one request per verb: status, focus, the library's rows, shared playlists and bookmarks, and the playhead presence publishes.
 
 use super::{
-    ActionDecl, Id, LibraryTab, PlayerApp, PlayerResource, Rect, VideoEffect, Widget,
+    ActionDecl, Id, LibraryTab, PlayerResource, PlayerState, Rect, VideoEffect,
     shared_accessibility_targets, verbs,
 };
 
-impl PlayerApp {
+impl PlayerState {
     /// Invoke `effect` through the framework's door, as the palette and
     /// agents do: its availability and permission are checked there.
     pub(super) fn request(&self, effect: &VideoEffect) {
@@ -21,7 +21,7 @@ impl PlayerApp {
     /// Where the empty state's action (Open a video, or the formats remedy)
     /// stands among the player's accessible children, while it shows.
     pub(super) fn status_access_index(&self) -> Option<usize> {
-        self.accessibility()?.children.iter().position(|node| {
+        self.accessibility().children.iter().position(|node| {
             matches!(
                 node.action_target.as_deref(),
                 Some("video-player.formats" | "video-player.open")
@@ -30,7 +30,7 @@ impl PlayerApp {
     }
 
     /// Give the keyboard to the library sheet's control at `path`, the
-    /// order [`Widget::accessibility`] lists them in: "Back to video" where
+    /// order [`Widget::accessibility`](ui::widget::Widget::accessibility) lists them in: "Back to video" where
     /// the library fills the window, the three tabs, then the shared tab's
     /// actions and rows or the local rows.
     pub(super) fn focus_player_control(&mut self, path: &[usize]) -> bool {

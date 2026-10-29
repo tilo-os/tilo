@@ -213,14 +213,35 @@ pub fn field_of_slot(
     })
 }
 
-/// The text search finds a field value by: a text as it is, a rich text's text (each
-/// reference read as its run, the referenced resource's title or the person's name).
+/// A text field's value as the store holds it, when it holds text: a text, or rich text. What
+/// it says depends on who reads it, as a rich text's references read for each reader
+/// ([`crate::reading::said`]).
 #[must_use]
-pub fn text_of(value: FieldValue) -> Option<String> {
+pub fn text_value(value: FieldValue) -> Option<FieldValue> {
     match value {
-        FieldValue::Text(text) => Some(text),
-        FieldValue::Rich(rich) => Some(rich.plain_text()),
+        FieldValue::Text(_) | FieldValue::Rich(_) => Some(value),
         _ => None,
+    }
+}
+
+/// Whether a text value ([`text_value`]) says nothing but spaces, whoever reads it: a reference
+/// reads as more than spaces to everyone.
+#[must_use]
+pub fn is_blank(value: &FieldValue) -> bool {
+    match value {
+        FieldValue::Text(text) => text.trim().is_empty(),
+        FieldValue::Rich(rich) => rich.written_text().trim().is_empty(),
+        _ => true,
+    }
+}
+
+/// Whether a text value ([`text_value`]) holds no character at all.
+#[must_use]
+pub fn is_empty(value: &FieldValue) -> bool {
+    match value {
+        FieldValue::Text(text) => text.is_empty(),
+        FieldValue::Rich(rich) => rich.blocks.iter().all(|b| b.text.is_empty()),
+        _ => true,
     }
 }
 

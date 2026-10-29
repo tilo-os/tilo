@@ -45,6 +45,14 @@ pub mod validate;
 /// The version both ends name. A newer end must still read this one's messages.
 pub const VERSION: u16 = 1;
 
+/// Whether a node of `kind` is a virtual list on the wire: a `ui.VirtualList`, whose rows the
+/// app sends apart from the tree ([`ToUi::Rows`]) as the list shows them. A `list` in a view's
+/// content is drawn whole (a card's is its preview), so its rows travel in the tree.
+#[must_use]
+pub fn is_virtual_list(kind: &str) -> bool {
+    kind == "ui.VirtualList"
+}
+
 /// One window's two views: the app's root, and the view of the resource `open(r)` (or a
 /// row) went to, shown after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -454,6 +462,8 @@ pub enum ToUi {
     },
     /// The Ask bar, or none.
     Ask(Option<Ask>),
+    /// Someone asked to see the window ("Show this window"): it comes forward.
+    Activate,
 }
 
 /// What the person did, as the window tells its app.
@@ -488,6 +498,13 @@ pub enum ToApp {
         lane: Lane,
         key: String,
         text: String,
+    },
+    /// The bound rich-text control `key` now holds `rich`: its paragraphs, marks and
+    /// references (the runtime brings the field to it by splices and marks).
+    EditRich {
+        lane: Lane,
+        key: String,
+        rich: rich::RichText,
     },
     /// The suggestion in the invocation card `key` was allowed or declined.
     Resolve {
@@ -710,5 +727,26 @@ mod tests {
         .collect();
         let bytes = encode_batch(&batch).expect("encodes");
         assert_eq!(decode_batch::<ToUi>(&bytes).expect("decodes"), batch);
+    }
+
+    #[test]
+    fn a_rich_inputs_edit_round_trips_empty_or_not() {
+        let plain = rich::RichText {
+            blocks: vec![rich::Block {
+                kind: "paragraph".into(),
+                text: "hi".into(),
+                ..rich::Block::default()
+            }],
+            embeds: Vec::new(),
+        };
+        for rich in [rich::RichText::default(), plain] {
+            let edit = vec![ToApp::EditRich {
+                lane: Lane::Root,
+                key: "draft".into(),
+                rich,
+            }];
+            let bytes = encode_batch(&edit).expect("encodes");
+            assert_eq!(decode_batch::<ToApp>(&bytes).expect("decodes"), edit);
+        }
     }
 }

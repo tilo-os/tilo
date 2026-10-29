@@ -17,7 +17,7 @@ use settings_store::dictation::DictationLanguage;
 use settings_store::magnifier;
 use tilo_accessibility_settings::{ColorFilter, ScreenReaderVoice};
 
-use crate::accessibility_settings::AccessibilitySettings;
+use crate::accessibility_settings::{AccessibilityDevicePrefs, AccessibilitySettings};
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus};
 use ui::tilo_resource::{self, ActionRef};
 use ui::widget::{AppModel, Dropdown, ModelPath, Picture, Widget};
@@ -232,6 +232,8 @@ pub struct AccessibilityPane {
     cx: PaneCx,
     appearance: Followed<AppearancePrefs>,
     access: Followed<AccessibilitySettings>,
+    /// This device's: whether the person's comforts reach its login screens.
+    device: Followed<AccessibilityDevicePrefs>,
     /// The speech engine the screen reader would speak through.
     speech: Option<&'static str>,
     composed: ui::widget::Composed,
@@ -274,6 +276,7 @@ impl AccessibilityPane {
         Self {
             appearance: cx.follow::<AppearancePrefs>(),
             access: cx.follow::<AccessibilitySettings>(),
+            device: cx.follow::<AccessibilityDevicePrefs>(),
             cx,
             speech: software.speech,
             composed: ui::widget::Composed::default(),
@@ -497,12 +500,15 @@ impl AccessibilityPane {
             &t("a11y-shared-title"),
             rows(vec![
                 note(&t("a11y-shared-caption")),
-                self.assist(
-                    "a11y-sign-in",
-                    "a11y.apply_to_sign_in",
-                    AccessibilitySettings::paths().apply_to_sign_in,
-                )
-                .toggle(),
+                self.cx
+                    .row(t("a11y-sign-in"))
+                    .described(t("a11y-sign-in-desc"))
+                    .id("a11y.apply_to_sign_in")
+                    .of(
+                        &self.device,
+                        AccessibilityDevicePrefs::paths().apply_to_sign_in,
+                    )
+                    .toggle(),
             ]),
         )
     }

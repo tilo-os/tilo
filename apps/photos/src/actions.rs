@@ -117,16 +117,16 @@ pub enum PhotosEffect {
     /// Import photograph into the library and show it.
     #[effect(job, cancellable)]
     Import {
-        #[param("Direct filesystem path; omit to use the system file picker")]
-        path: Option<String>,
+        #[param("Absolute filesystem path; omit to use the system file picker")]
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Import photo folder: recursively index a folder with bounded
     /// real-file reads. Paths never enter collaboration and EXIF GPS is never
     /// uploaded.
     #[effect(job, cancellable, tag = tilo_actions::REQUIRES_NATIVE_PATHS_TAG)]
     ImportDirectory {
-        #[param("Authorised local folder path; omit to use the system folder picker")]
-        path: Option<String>,
+        #[param("Absolute authorised folder path; omit to use the system folder picker")]
+        path: Option<ui::tilo_resource::AbsolutePath>,
         #[param("Retain GPS read from imported files; defaults to true")]
         retain_exif_location: Option<bool>,
     },
@@ -138,8 +138,8 @@ pub enum PhotosEffect {
     /// without overwriting deliberate organization.
     #[effect(job, cancellable, tag = tilo_actions::REQUIRES_NATIVE_PATHS_TAG)]
     ReindexDirectory {
-        #[param("Explicit authorised local folder path")]
-        path: String,
+        #[param("Absolute authorised local folder path")]
+        path: ui::tilo_resource::AbsolutePath,
         #[param("Retain GPS read from imported files; defaults to true")]
         retain_exif_location: Option<bool>,
     },
@@ -175,7 +175,7 @@ pub enum PhotosEffect {
     #[effect(job)]
     Save {
         #[param("Absolute filesystem path; omit to ask where with the Save chooser")]
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Recognize text locally and share only bounded text and provenance.
     #[effect(job, cancellable, sensitive)]

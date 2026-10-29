@@ -91,10 +91,13 @@ This does not prove every app's adapter redacts every sensitive field.
 
 - `crates/sdk/tilo-app/src/framework/root.rs`: `read_spec`, `read`, typed frozen
   historical reads and action publication/dispatch.
-- `crates/sdk/tilo-app/src/framework/history.rs`: history specs, full diff head
-  arrays, `HistoryEdit::RestoreReviewed` and resource-registered compensation.
-- `crates/sdk/tilo-app/src/framework/history/review.rs`: `RestoreReview`,
-  `answer`, `apply`, bounds and the two new action specs.
+- `crates/collab/collaboration/src/history_source/verbs.rs`: history specs, full
+  diff head arrays and `HistoryEdit::RestoreReviewed`, below the toolkit, so
+  native apps and tilolang hosts answer the same verbs.
+- `crates/collab/collaboration/src/history_source/verbs/review.rs`:
+  `RestoreReview`, `answer`, `apply`, bounds and the two new action specs.
+- `crates/sdk/tilo-app/src/framework/history.rs`: resource-registered
+  compensation and the thread's words.
 - `crates/sdk/ui-core/src/history_source/steps.rs`: `resolve`, `changed_items`,
   `restore_paths` and the existing forward patch/undo machinery.
 - `crates/sdk/tilo-app/src/framework/preview.rs`: existing History mode builds

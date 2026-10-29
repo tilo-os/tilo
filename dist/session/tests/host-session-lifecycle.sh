@@ -51,6 +51,10 @@ SH
 cat >"$work/shell" <<'SH'
 #!/bin/sh
 printf 'shell %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
+if [ -n "${TILO_SESSION_TEST_LOCK_SEEN:-}" ]; then
+    cat "${TILO_SESSION_LOGOUT_REQUEST%/*}/lock-state" >"$TILO_SESSION_TEST_LOCK_SEEN" 2>/dev/null \
+        || printf 'missing\n' >"$TILO_SESSION_TEST_LOCK_SEEN"
+fi
 printf 'frames=1 direct_frames=0 direct_dropped=0 flip_completions=1 unprofiled_frames=1 window_us=17 bridge_us=11 scanout_us=6 readback_bytes=0 output_bytes=0 DRM render phase summary\n' >&2
 if [ -n "${TILO_FRAME_TRACE:-}" ]; then
     printf 'seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,input_retirement_latency_us,backpressured,deadline_late_us\n' >"$TILO_FRAME_TRACE"
@@ -140,7 +144,8 @@ chmod 0644 "$XDG_STATE_HOME/tilo/session-logs/frame-trace.csv"
 
 set +e
 TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_STATUS=7 \
-    TILO_SESSION_TEST_SECRET='must-not-be-logged' "$work/tilo-session" "$work/shell"
+    TILO_SESSION_TEST_SECRET='must-not-be-logged' TILO_SESSION_TEST_LOCK_SEEN=$work/lock-seen \
+    "$work/tilo-session" "$work/shell"
 status=$?
 set -e
 [[ $status == 7 ]]
@@ -187,6 +192,20 @@ sort "$work/expected" >"$work/expected.sorted"
 sort "$log" >"$work/log.sorted"
 cmp "$work/expected.sorted" "$work/log.sorted"
 ! grep -Fq 'must-not-be-logged' "$log"
+
+# A display-manager login is authenticated, so the compositor starts unlocked,
+# even over a locked record a crashed earlier login left in the shared runtime
+# directory; the record goes with the session.
+test "$(cat "$work/lock-seen")" = unlocked
+mkdir -p -m 0700 "$XDG_RUNTIME_DIR/tilo-session"
+printf 'locked\n' >"$XDG_RUNTIME_DIR/tilo-session/lock-state"
+: >"$log"
+set +e
+TILO_SESSION_TEST_LOG=$log TILO_SESSION_TEST_LOCK_SEEN=$work/lock-seen \
+    TILO_SESSION_TEST_REQUEST_LOGOUT=1 "$work/tilo-session" "$work/shell"
+set -e
+test "$(cat "$work/lock-seen")" = unlocked
+test ! -e "$XDG_RUNTIME_DIR/tilo-session/lock-state"
 
 : >"$log"
 set +e

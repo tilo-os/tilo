@@ -601,7 +601,7 @@ fn rotated_channel() -> (
     let channel = collab_types::document_channel_id(APP, ROOM, "");
     let mut group = channel_crypto::ChannelGroup::create(
         channel,
-        channel_crypto::MemberKey::generate("steward").unwrap(),
+        channel_crypto::MemberKey::generate("governor").unwrap(),
     )
     .unwrap();
     let before = group.content_keys().unwrap();

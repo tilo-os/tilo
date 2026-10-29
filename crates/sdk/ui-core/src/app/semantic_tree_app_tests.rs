@@ -1002,7 +1002,7 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
 
         host.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .expect("confirmation palette is open")
             .set_query("CONFIRM");
         assert!(host.action_palette_handle_key(&action_palette_tests::synth_enter()));

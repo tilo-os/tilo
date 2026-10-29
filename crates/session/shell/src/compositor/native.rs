@@ -2367,6 +2367,9 @@ fn pump_floating_surface_service(
                 }
                 | ui::floating_surface::FloatingSurfaceClientMessage::OpenSearch {
                     ..
+                }
+                | ui::floating_surface::FloatingSurfaceClientMessage::OpenAppSearch {
+                    ..
                 }) => {
                     // The app id is the launcher's: an app only ever reaches
                     // the bar of a tab that shows it.
@@ -2478,6 +2481,21 @@ fn pump_floating_surface_service(
             connection,
             &ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection,
         );
+    }
+    // A development session's test control activates controls of the
+    // focused window by their test ids: each window of the focused app is
+    // asked, and the focused one acts.
+    if let Some((app, test_ids)) = frame_builder.host_mut().take_test_activations() {
+        for connection in appearance.connections_of(&app) {
+            for test_id in &test_ids {
+                service.send(
+                    connection,
+                    &ui::floating_surface::FloatingSurfaceHostMessage::ActivateTestId {
+                        test_id: test_id.clone(),
+                    },
+                );
+            }
+        }
     }
     // What the person did with apps' slots in their windows' bars.
     for (connection, event) in frame_builder.host_mut().take_toolbar_outbox() {
@@ -5286,6 +5304,9 @@ fn execute_planned_action(
                     *pressed,
                 )));
         }
+        PlannedAction::ActivateTestId { test_id } => {
+            fb.host_mut().queue_test_activation(test_id.clone());
+        }
         PlannedAction::MouseWheel { dx, dy } => {
             let event = WindowEvent::MouseWheel {
                 device_id: winit::event::DeviceId::dummy(),
@@ -5444,12 +5465,12 @@ fn execute_locked_action(
         // make the lock screen bypassable by a socket client that renders
         // nothing; answering `ok` for an action that never ran would leave a
         // caller who cannot see the screen believing it did.
-        PlannedAction::Snapshot { .. } | PlannedAction::InvokeAction { .. } => {
-            Some(InvokeFailure {
-                code: "session_locked".into(),
-                message: test_control::SESSION_LOCKED.into(),
-            })
-        }
+        PlannedAction::Snapshot { .. }
+        | PlannedAction::InvokeAction { .. }
+        | PlannedAction::ActivateTestId { .. } => Some(InvokeFailure {
+            code: "session_locked".into(),
+            message: test_control::SESSION_LOCKED.into(),
+        }),
         // Pointer and modifier input is swallowed while locked.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
@@ -12110,7 +12131,7 @@ pub fn run() {
             }
             if settings_change.desktop_controls() {
                 frame_builder.host_mut().set_desktop_controls_config(
-                    settings_store::hardware::DesktopControlsConfig::load(),
+                    settings_store::desktop_controls::DesktopControlsConfig::load(),
                 );
             }
             frame_builder.follow_settings_sections(
@@ -15425,7 +15446,7 @@ fn sync_quick_settings_from_osd(
 ) {
     match osd.kind {
         crate::shell::osd::OsdKind::Volume { muted } => {
-            quick_settings.status.volume = Some(os_actions::VolumeState {
+            quick_settings.status.volume = Some(media::audio::default_node::VolumeState {
                 level: osd.level,
                 muted,
             });

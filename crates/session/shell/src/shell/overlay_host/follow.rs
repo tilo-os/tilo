@@ -357,7 +357,7 @@ impl ShellOverlayHost {
         // The sheet's scrim covers the display it measures against.
         let outer = presence.viewport.replace(Some(self.overlay_area()));
         ui::widget::Widget::draw_overlay(
-            &mut self.peer_sync_overlay,
+            &mut *self.peer_sync_overlay,
             scene,
             transform,
             text_renderer,

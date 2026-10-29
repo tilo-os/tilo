@@ -141,8 +141,13 @@ pub(crate) struct ResourceRoot {
 }
 
 impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
+    /// Asked through the root's own door, or by the app's view: a view whose app runs
+    /// elsewhere (a tilolang host's instance) hears the request there.
     fn take_window_activation_intent(&self) -> bool {
-        self.native_presentation.take_window_activation_intent()
+        let own = self.native_presentation.take_window_activation_intent();
+        let view = app_view_in(self.content.as_ref())
+            .is_some_and(ui_core::component_lifecycle::take_window_activation_intent);
+        own || view
     }
 }
 
@@ -274,12 +279,10 @@ pub fn reserved_action_ids() -> Vec<String> {
 }
 
 /// The operation type of the framework's `read` view.
-pub(crate) const READ_TYPE: &str = "tilo.resource.read";
+pub(crate) const READ_TYPE: &str = tilo_resource::read::TYPE;
 
 /// `read`: what a [readable](Resource::READABLE) resource holds, as typed
-/// data. With no `item` it answers the resource itself; with an `item` id, the
-/// nested resource of that id. It is a view: it changes nothing, needs only
-/// read permission and is checked like every other action.
+/// data ([`tilo_resource::read::spec`]).
 fn read_spec() -> tilo_actions::ActionSpec {
     read_spec_for(None)
 }
@@ -298,52 +301,7 @@ fn offer_document_reads(resource: &mut ResourceSpec, eligible: &dyn Fn(&str) -> 
 }
 
 fn read_spec_for(item: Option<&str>) -> tilo_actions::ActionSpec {
-    let item = item.map(str::to_owned);
-    let mut spec = tilo_actions::ActionSpec::typed_operation(
-        "read",
-        "Read the content",
-        "Read the content",
-        tilo_actions::OperationKind::View,
-        READ_TYPE,
-        vec![
-            tilo_actions::ActionParam::optional(
-                "item",
-                tilo_actions::ParamType::Text,
-                "A nested resource's id, as the first read lists it (default: the whole resource)",
-            )
-            .nullable(),
-            tilo_actions::ActionParam::optional(
-                "version",
-                tilo_actions::ParamType::Text,
-                "A change id, exact causal frontier, or checkpoint name (default: current)",
-            )
-            .nullable(),
-        ]
-        .into_iter()
-        .filter(|param| item.is_none() || param.name != "item")
-        .collect(),
-        move |args| {
-            tilo_actions::EncodedAction::encode_operation(
-                READ_TYPE,
-                &serde_json::json!({ "item": item.as_deref().or_else(|| args.text("item")), "version": args.text("version") }),
-            )
-            .unwrap_or_else(|_| tilo_actions::EncodedAction {
-                type_id: READ_TYPE.into(),
-                payload: Vec::new(),
-            })
-        },
-    )
-    .of_kind(tilo_actions::ActionKind::Read)
-    .with_description(
-        "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource.",
-    )
-    // Typed data for a program to reason about; a person reads what the
-    // app shows.
-    .for_audience(tilo_actions::Audience::Agents);
-    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    spec.reads_document()
+    tilo_resource::read::spec(item)
 }
 
 /// Answer a `read` request against the committed document of the resource

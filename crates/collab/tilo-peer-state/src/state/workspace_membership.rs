@@ -68,6 +68,85 @@ impl StatePeer {
         }
     }
 
+    /// Make `change` to the room's members, signed by `key`, the caller's
+    /// own device: what it writes is admitted as far as the caller's grants
+    /// reach where they made it (`room::membership`), here as on every
+    /// device that receives it.
+    fn apply_member_change(
+        &mut self,
+        caller: &DeviceCert,
+        change: &Change,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let person = |person: &str| -> Result<[u8; 32], String> {
+            hex::decode(person)
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or_else(|| "a member is named by their user root key".to_owned())
+        };
+        let by = hex::encode(caller.user_public_key);
+        let room = self.core.room.clone();
+        match change {
+            Change::AddMember { person: who, role } | Change::SetRole { person: who, role } => {
+                let role = super::member_role_from_role(*role)
+                    .ok_or("the owner's role is not given through membership")?;
+                self.governance_mut()
+                    .set_member_role(person(who)?, role, key, now)
+            }
+            Change::RemoveMember { person: who } => {
+                self.governance_mut().remove_member(person(who)?, key, now)
+            }
+            Change::Ban { person: who } => {
+                self.governance_mut()
+                    .ban_member(person(who)?, &by, key, now)
+            }
+            Change::Unban { person: who } => {
+                self.governance_mut().unban_member(person(who)?, key, now)
+            }
+            Change::Restrict {
+                person: who,
+                until_ms,
+            } => {
+                person(who)?;
+                self.governance_mut().put_governed_grants(
+                    &[roles::restriction_grant(
+                        &room,
+                        who,
+                        *until_ms,
+                        Subject::Person(by),
+                    )],
+                    key,
+                    now,
+                )
+            }
+            Change::Unrestrict { person: who } => {
+                person(who)?;
+                self.governance_mut().remove_governed_grants(
+                    &[roles::restriction_grant_id(who)],
+                    key,
+                    now,
+                )
+            }
+            Change::Grant(grant) => self.apply_governance_grant_command(
+                caller,
+                &WorkspaceMembershipCommand::Grant {
+                    grant: grant.clone(),
+                },
+                key,
+                now,
+            ),
+            Change::Revoke(grant) => self.apply_governance_grant_command(
+                caller,
+                &WorkspaceMembershipCommand::Revoke {
+                    grant: grant.clone(),
+                },
+                key,
+                now,
+            ),
+        }
+    }
+
     /// Give or take back a grant in the room, as the caller: the room's
     /// policy decides, exactly as on a device that governs it here.
     fn apply_governance_grant_command(
@@ -161,6 +240,12 @@ impl PeerWorkspaceMut<'_> {
         if let Some(outcome) = self.peer.apply_app_command(caller, command, key, now) {
             return outcome;
         }
+        if key.verifying_key().to_bytes() != caller.device_public_key
+            && self.peer.require_governance_writer(key, now).is_err()
+        {
+            // Only the owner's devices write on another device's behalf.
+            return Err("a membership change is signed by its caller's own device".into());
+        }
         if matches!(
             command,
             WorkspaceMembershipCommand::Grant { .. } | WorkspaceMembershipCommand::Revoke { .. }
@@ -169,12 +254,15 @@ impl PeerWorkspaceMut<'_> {
                 .peer
                 .apply_governance_grant_command(caller, command, key, now);
         }
+        if let WorkspaceMembershipCommand::Member { change } = command {
+            return self.peer.apply_member_change(caller, change, key, now);
+        }
         self.peer
             .workspace()
             .check_workspace_administration(caller.device_public_key, now)?;
         let member = self.peer.permissions(caller.device_public_key, now)?;
-        self.peer.require_governance_writer(key, now)?;
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
+            self.peer.require_governance_writer(key, now)?;
             let grant =
                 roles::app_authorship(&self.peer.core.room, app, Subject::Person(member.person));
             return self
@@ -225,7 +313,8 @@ impl PeerWorkspaceMut<'_> {
             | WorkspaceMembershipCommand::RequestBot(_)
             | WorkspaceMembershipCommand::WithdrawBotRequest { .. }
             | WorkspaceMembershipCommand::InstallApp(_)
-            | WorkspaceMembershipCommand::UninstallApp { .. } => {
+            | WorkspaceMembershipCommand::UninstallApp { .. }
+            | WorkspaceMembershipCommand::Member { .. } => {
                 return Err("a command entered the agent membership branch".into());
             }
         };

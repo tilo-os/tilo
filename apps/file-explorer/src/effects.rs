@@ -13,7 +13,7 @@
 use ui::collaboration::{NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferHandle};
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource;
-use ui::tilo_resource::Effect;
+use ui::tilo_resource::{AbsolutePath, Effect};
 
 /// The contract tag of an effect that acts on the entries the person
 /// selected: an app's search lists it before the other actions.
@@ -130,7 +130,7 @@ pub enum FilesEffect {
     #[effect(icon = "navigation")]
     GoTo {
         #[param("Absolute path of the folder to show")]
-        path: String,
+        path: AbsolutePath,
     },
     /// Open Trash.
     ///
@@ -149,7 +149,7 @@ pub enum FilesEffect {
     #[effect(audience = "agents")]
     OpenFolder {
         #[param("Absolute path of the folder to show")]
-        path: String,
+        path: AbsolutePath,
     },
     /// Parent folder.
     #[effect(view)]
@@ -336,7 +336,7 @@ pub enum FilesEffect {
         #[param("The cloud entry's published row id")]
         entry: String,
         #[param("Absolute path of an existing local destination folder")]
-        folder: String,
+        folder: AbsolutePath,
     },
     /// Copy to folder…
     #[effect(row, job)]
@@ -345,7 +345,7 @@ pub enum FilesEffect {
         #[param("The entry's row id")]
         entry: String,
         #[param("Absolute path of an existing folder; the name is kept")]
-        folder: String,
+        folder: AbsolutePath,
     },
     /// Copy.
     #[effect(row, kind = "read", job)]

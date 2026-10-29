@@ -1175,3 +1175,59 @@ fn typed_secret_parameters_bind_redacted_variants_and_refuse_plaintext_arguments
     assert!(!optional.params()[0].required);
     assert!(ActionArgs::bind_json(optional.params(), &serde_json::Map::new()).is_ok());
 }
+
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "test.shelf.wipe")]
+pub enum WipeEffect {
+    /// Wipe a drive. Offered on each drive.
+    #[effect(row, destructive, phrase = "Self::drive")]
+    Wipe {
+        #[param("Device path of the drive")]
+        device: String,
+    },
+    /// Rescan drives.
+    Rescan,
+}
+
+impl WipeEffect {
+    fn drive(&self) -> String {
+        match self {
+            Self::Wipe { device } => device.trim_start_matches("/dev/").to_owned(),
+            Self::Rescan => String::new(),
+        }
+    }
+}
+
+#[test]
+fn a_bound_destructive_effect_asks_its_caller_to_type_what_it_erases() {
+    use tilo_resource::Effect as _;
+    let wipe = WipeEffect::Wipe {
+        device: "/dev/sdb".into(),
+    };
+    assert_eq!(wipe.confirmation_phrase().as_deref(), Some("sdb"));
+    assert_eq!(WipeEffect::Rescan.confirmation_phrase(), None);
+    let bound = wipe.bound();
+    assert_eq!(bound.contract.risk, tilo_actions::RiskLevel::Destructive);
+    assert_eq!(
+        bound.contract.confirmation,
+        tilo_actions::ConfirmationPolicy::Phrase {
+            phrase: "sdb".into()
+        }
+    );
+    assert!(
+        bound.contract.validate_declaration().is_empty(),
+        "{:?}",
+        bound.contract.validate_declaration()
+    );
+    let other = WipeEffect::Wipe {
+        device: "/dev/sdc".into(),
+    }
+    .bound();
+    assert_eq!(
+        other.contract.confirmation,
+        tilo_actions::ConfirmationPolicy::Phrase {
+            phrase: "sdc".into()
+        },
+        "each bound invocation names its own drive"
+    );
+}

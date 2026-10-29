@@ -169,7 +169,9 @@ impl<'a> Validator<'a> {
 
     fn message(&self, message: &ToUi) -> Result<(), Refused> {
         match message {
-            ToUi::Loading | ToUi::Close | ToUi::Front(_) | ToUi::Ask(None) => Ok(()),
+            ToUi::Loading | ToUi::Close | ToUi::Front(_) | ToUi::Ask(None) | ToUi::Activate => {
+                Ok(())
+            }
             ToUi::Open { target, tree, .. } => {
                 self.key(&target.id)?;
                 self.key(&target.ty)?;
@@ -551,6 +553,10 @@ impl<'a> Validator<'a> {
                 ToApp::Edit { key, text, .. } => {
                     self.key(key)?;
                     self.string(text)?;
+                }
+                ToApp::EditRich { key, rich, .. } => {
+                    self.key(key)?;
+                    self.value(&Value::Rich(rich.clone()), 0)?;
                 }
                 ToApp::Open { resource } => {
                     self.key(&resource.id)?;

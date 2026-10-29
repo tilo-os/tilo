@@ -5,7 +5,7 @@ use crate::{
 };
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt, symlink};
 fn fixture() -> tempfile::TempDir {
-    let root = tempfile::tempdir().unwrap();
+    let root = crate::test_support::qualified_tempdir();
     for path in [
         "original",
         "quarantine-parent",

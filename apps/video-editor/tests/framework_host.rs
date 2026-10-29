@@ -302,7 +302,12 @@ fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
     );
     // Reading or writing a file is an outside effect: it asks first, like
     // any other.
-    for action in ["export", "import", "open-project", "save", "save-as"] {
+    for action in [
+        "export",
+        "import",
+        "open-project-file",
+        "export-project-file",
+    ] {
         assert_eq!(agent_answer(&mut app, action), Answer::Ask, "{action}");
     }
     // Rendering into content reads.
@@ -310,7 +315,25 @@ fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
     // The window's door never runs an ask for someone acting for the
     // person; the broker pauses the agent's run to ask them.
     let asked = app.effect(&video_editor::actions::VideoEditorEffect::Export {
-        path: Some("/nonexistent/out.mp4".into()),
+        path: Some("/nonexistent/out.mp4".try_into().unwrap()),
     });
     assert!(asked.is_err(), "{asked:?}");
+}
+
+/// A relative path is refused for every effect taking a path, before the
+/// editor reads or writes anything.
+#[test]
+fn a_relative_path_is_refused_for_every_path_action() {
+    use ui::tilo_resource::Effect as _;
+    for id in [
+        "import",
+        "open-project-file",
+        "export-project-file",
+        "export",
+    ] {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("path".into(), "clip.mp4".into());
+        let error = video_editor::actions::VideoEditorEffect::decode(id, &arguments).expect_err(id);
+        assert!(error.contains("absolute"), "{id}: {error}");
+    }
 }

@@ -41,6 +41,8 @@ pub enum Command {
     ClickAt { x: f64, y: f64 },
     /// Resolve `name` against the widget registry, then `click_at` its centre. `unknown_target` if unresolved or zero-area (not yet laid out).
     ClickNamed { name: String },
+    /// Activate the control whose test id is `test_id` in the focused app window, as an assistive technology activates it: the app finds the control itself, so a test names what it presses, never where it is drawn. Answers `ok` once asked; the app logs a test id its focused window does not show.
+    ActivateTestId { test_id: String },
     /// Press at `(x_from, y_from)`, interpolate `steps` (default 8) `CursorMoved`s inclusive of both endpoints, release at `(x_to, y_to)`.
     Drag {
         x_from: f64,
@@ -910,6 +912,9 @@ pub enum PlannedAction {
     /// Queue a keyboard press or release for the compositor loop's input funnel, where a
     /// physical keyboard's events arrive ([`Command::SeatKey`]).
     SeatKey { key: KeyTag, pressed: bool },
+    /// Ask the focused app window to activate its control `test_id`
+    /// ([`Command::ActivateTestId`]).
+    ActivateTestId { test_id: String },
     /// Inject a discrete wheel scroll of `(dx, dy)` notches at the cursor. The transport synthesises a `WindowEvent::MouseWheel` carrying a `LineDelta`.
     MouseWheel { dx: f32, dy: f32 },
     /// Update the modifier mask carried by the executor. Modifiers are state, not events — mutated on `TestControlCtx::modifiers` directly rather than via `WindowEvent::ModifiersChanged`, since chord handlers read the snapshot inline.
@@ -1072,6 +1077,12 @@ pub fn dispatch_command<S: ControlState>(
             ],
         ),
         Command::ClickNamed { name } => click_named(state, name),
+        Command::ActivateTestId { test_id } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::ActivateTestId {
+                test_id: test_id.clone(),
+            }],
+        ),
         Command::Drag {
             x_from,
             y_from,

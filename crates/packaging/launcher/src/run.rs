@@ -26,9 +26,13 @@ use crate::services::{
     EXIT_REQUIRED_SERVICE_MISSING, ServiceError, ServiceLaunchContext, resolve_blob_bind,
     resolve_chooser_bind, resolve_service_binds_for_launch, to_service_binds,
 };
-use entrypoint_runtime::{preflight_entrypoint_runtime, resolve_launch_runtimes};
+use entrypoint_runtime::preflight_entrypoint_runtime;
 
 mod entrypoint_runtime;
+mod verified_installation;
+#[cfg(test)]
+pub(crate) use verified_installation::verified_launch_installation_against;
+pub(crate) use verified_installation::{verified_launch_installation, verified_launch_publisher};
 pub mod tilolang_host;
 
 struct SeccompFds {
@@ -166,12 +170,12 @@ pub enum RunError {
     #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
     #[error(
-        "`{package}` runs on the runtime `{runtime}`, which is not installed (looked in \
-         {searched}). Install it with `app install {package}`, which also fetches the runtime \
-         it needs.",
+        "`{package}` needs the runtime `{runtime}`, which is not installed (looked in \
+         {searched}). Installing or updating the app brings it; reinstall it with \
+         `app install {package}`.",
         searched = display_paths(.searched)
     )]
-    EntrypointRuntimeMissing {
+    RequiredRuntimeMissing {
         package: String,
         runtime: String,
         searched: Vec<PathBuf>,
@@ -380,6 +384,12 @@ pub struct RunOptions {
     pub open_uri: Option<String>,
     /// Shell instance id selecting the fixed private standard console namespace.
     pub headless_console: Option<u64>,
+    /// The app is a tilolang app whose instance a tilolang host runs: its process is its
+    /// window alone, presenting what the instance sends over the patch connection the session
+    /// hands it on its window door. It gets no collaboration connection, so it holds and
+    /// commits none of the app's data; its launch identity stays for its surface and
+    /// accessibility.
+    pub tilolang_hosted: bool,
 }
 
 impl Default for RunOptions {
@@ -414,6 +424,7 @@ impl Default for RunOptions {
             open_document: None,
             open_uri: None,
             headless_console: None,
+            tilolang_hosted: false,
         }
     }
 }
@@ -869,18 +880,18 @@ pub fn resolve_runtime_test_helper(
     resolve_runtime(manifest, opts)
 }
 
-/// The launch argv after `splice_optional_runtimes` ran on a bare `entry`
+/// The launch argv after `splice_required_runtimes` ran on a bare `entry`
 /// token, and the mounts it returned for Landlock.
 ///
 /// # Errors
 ///
-/// As `splice_optional_runtimes`.
-pub fn optional_runtimes_test_helper(
+/// As `splice_required_runtimes`.
+pub fn required_runtimes_test_helper(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Result<(Vec<String>, Vec<String>), RunError> {
     let mut argv = vec!["entry".to_string()];
-    let mounts = splice_optional_runtimes(&mut argv, manifest, opts)?;
+    let mounts = splice_required_runtimes(&mut argv, manifest, opts)?;
     Ok((argv, mounts))
 }
 
@@ -1138,7 +1149,7 @@ pub(crate) fn valid_runtime_version(version: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_'))
 }
 
-/// The minimal-libs stopgap and the manifest's optional runtimes, spliced
+/// The minimal-libs stopgap and the manifest's required runtimes, spliced
 /// before the entrypoint. Returns the sandbox paths Landlock must let the app
 /// read.
 fn splice_runtime_mounts(
@@ -1147,85 +1158,72 @@ fn splice_runtime_mounts(
     opts: &RunOptions,
     runtime: Option<(&Path, &str)>,
 ) -> Result<Vec<String>, RunError> {
-    let optional = resolve_launch_runtimes(manifest, opts)?;
-    preflight_entrypoint_runtime(manifest, opts, runtime, &optional)?;
-    splice_runtime_mounts_with(argv, opts, runtime.is_some(), &optional)
+    let required = resolve_required_runtimes(manifest, opts)?;
+    preflight_entrypoint_runtime(manifest, opts, runtime, &required)?;
+    splice_runtime_mounts_with(argv, opts, runtime.is_some(), &required)
 }
 
-/// [`splice_runtime_mounts`] for optional runtimes already resolved.
+/// [`splice_runtime_mounts`] for required runtimes already resolved.
 fn splice_runtime_mounts_with(
     argv: &mut Vec<String>,
     opts: &RunOptions,
     resolved_runtime_present: bool,
-    optional: &[(PathBuf, String)],
+    required: &[(PathBuf, String)],
 ) -> Result<Vec<String>, RunError> {
     let mut paths = splice_minimal_libs(argv, opts, resolved_runtime_present)?;
-    paths.extend(splice_resolved_optional_runtimes(argv, optional)?);
+    paths.extend(splice_resolved_required_runtimes(argv, required)?);
     Ok(paths)
 }
 
-/// Every installed, verified bundle the manifest lists in
-/// `[package].optional-runtimes`, with its version. A missing bundle is
-/// skipped and one that fails verification is refused, so the app sees either
-/// as not installed and offers to install it.
+/// Every bundle the manifest requires (`[package].optional-runtimes`),
+/// installed and verified, with its version. Installing or updating the app
+/// brought them, so a missing or refused one is a broken install and refuses
+/// the launch rather than starting an app that cannot work.
 ///
 /// Verifying a per-user bundle reads the whole payload, so the launch runs
 /// this beside the rest of host preparation rather than after it.
-fn resolve_optional_runtimes(
+fn resolve_required_runtimes(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
-) -> Vec<(PathBuf, String)> {
-    let mut found = Vec::new();
-    let entry = manifest.entrypoint.runtime.as_deref();
-    // The entrypoint's runtime is declared among the optional ones but is
-    // not optional: `resolve_launch_runtimes` resolves it and refuses the
-    // launch without it.
-    for raw in manifest
-        .optional_runtimes
+) -> Result<Vec<(PathBuf, String)>, RunError> {
+    manifest
+        .required_runtimes
         .iter()
-        .filter(|raw| Some(raw.as_str()) != entry)
-    {
-        match find_runtime_bundle(raw, opts) {
-            Ok((Some(bundle), _)) => found.push(bundle),
-            Ok((None, searched)) => tracing::info!(
-                runtime = %raw,
-                searched = ?searched,
-                "optional runtime is not installed"
-            ),
-            Err(error) => tracing::warn!(
-                runtime = %raw,
-                %error,
-                "optional runtime refused; launching without it"
-            ),
-        }
-    }
-    found
+        .map(|raw| match find_runtime_bundle(raw, opts)? {
+            (Some(bundle), _) => Ok(bundle),
+            (None, searched) => Err(RunError::RequiredRuntimeMissing {
+                package: manifest.package_id.clone(),
+                runtime: raw.clone(),
+                searched,
+            }),
+        })
+        .collect()
 }
 
-/// Mount each of `bundles` (from [`resolve_optional_runtimes`]) read-only at
+/// Mount each of `bundles` (from [`resolve_required_runtimes`]) read-only at
 /// its runtime mount, before the trailing entrypoint token. Returns the
 /// sandbox paths Landlock must let the app read.
-fn splice_resolved_optional_runtimes(
+fn splice_resolved_required_runtimes(
     argv: &mut Vec<String>,
     bundles: &[(PathBuf, String)],
 ) -> Result<Vec<String>, RunError> {
     let mut mounts = Vec::new();
     for (root, version) in bundles {
         let entry = pop_entry(argv)?;
-        let mount = crate::sandbox::push_optional_runtime(argv, root, version);
+        let mount = crate::sandbox::push_required_runtime(argv, root, version);
         argv.push(entry);
         mounts.push(mount.display().to_string());
     }
     Ok(mounts)
 }
 
-/// [`resolve_optional_runtimes`] then [`splice_resolved_optional_runtimes`].
-fn splice_optional_runtimes(
+/// [`resolve_required_runtimes`] then [`splice_resolved_required_runtimes`].
+fn splice_required_runtimes(
     argv: &mut Vec<String>,
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
 ) -> Result<Vec<String>, RunError> {
-    splice_resolved_optional_runtimes(argv, &resolve_launch_runtimes(manifest, opts)?)
+    splice_resolved_required_runtimes(argv, &resolve_required_runtimes(manifest, opts)?)
 }
 
 /// Verify the bundle at `path` against the signature policy. Unless
@@ -1789,68 +1787,6 @@ pub(crate) fn verified_original_manifest(
         .map_err(|_| refusal())?
         .ok_or_else(refusal)?;
     verified_launch_installation(&installed, manifest_path, payload_root, expected)
-}
-
-pub(crate) fn verified_launch_installation(
-    installed: &package_store::InstalledPackage,
-    manifest_path: &Path,
-    payload_root: &Path,
-    expected: &str,
-) -> Result<ManifestView, RunError> {
-    // Re-read on every launch, as `tilo-install run` does: a publisher
-    // revoked after install must not keep launching from the shell. An
-    // unreadable list refuses rather than reading as "nothing revoked".
-    use tilo_app_package::TrustFile as _;
-    let revoked = match tilo_app_package::default_revoked_keys_path() {
-        Some(path) => tilo_app_package::RevocationList::load(&path).map_err(|error| {
-            RunError::InvalidServiceLaunch(format!(
-                "the publisher revocation list is unreadable ({error})"
-            ))
-        })?,
-        None => tilo_app_package::RevocationList::default(),
-    };
-    verified_launch_installation_against(installed, manifest_path, payload_root, expected, &revoked)
-}
-
-pub(crate) fn verified_launch_installation_against(
-    installed: &package_store::InstalledPackage,
-    manifest_path: &Path,
-    payload_root: &Path,
-    expected: &str,
-    revoked: &tilo_app_package::RevocationList,
-) -> Result<ManifestView, RunError> {
-    let refusal =
-        || RunError::InvalidServiceLaunch("original signed package launch changed".into());
-    if installed.package_id_hex != expected
-        || installed.manifest_path != manifest_path
-        || installed.payload_root != payload_root
-    {
-        return Err(refusal());
-    }
-    let report =
-        package_store::integrity::verify(installed, payload_root).map_err(|_| refusal())?;
-    if !report.is_intact() {
-        return Err(refusal());
-    }
-    let record = package_store::integrity::read_record(
-        &package_store::integrity::record_dir(installed),
-        &installed.id,
-        expected,
-    )
-    .map_err(|_| refusal())?;
-    if let Some(entry) = revoked.find(&record.root.publisher_identity) {
-        return Err(RunError::InvalidServiceLaunch(format!(
-            "the package's publisher key is revoked ({})",
-            entry.reason
-        )));
-    }
-    let manifest: ManifestView =
-        toml::from_str(std::str::from_utf8(&record.manifest_bytes).map_err(|_| refusal())?)
-            .map_err(|_| refusal())?;
-    if manifest.package_id != installed.id {
-        return Err(refusal());
-    }
-    Ok(manifest)
 }
 
 /// Launch mode — which of the entrypoint binaries we're targeting
@@ -3700,18 +3636,18 @@ pub(crate) fn run_with_context(
     let (portals, graphical) = (&manifest.sandbox.portals, opts.wayland_socket.is_some());
     let media_player = dbus_proxy::media_player_for(manifest);
     let media_player = media_player.as_deref();
-    let ((dbus_plan, _dbus_guards), host, optional_runtimes) = std::thread::scope(|scope| {
+    let ((dbus_plan, _dbus_guards), host, required_runtimes) = std::thread::scope(|scope| {
         let dbus = spawn_beside(scope, "launch-dbus", move || {
             let bind = resolve_dbus_bind(portals, graphical, media_player);
             tilo_startup_metrics::handoff_mark("dbus-proxies-ready");
             bind
         })?;
-        // Verifying an optional runtime reads its whole payload (a browser
+        // Verifying a required runtime reads its whole payload (a browser
         // engine is hundreds of MB); nothing else here needs the answer
         // before the sandbox argv is built.
-        let optional = spawn_beside(scope, "launch-optional-runtimes", move || {
-            let bundles = resolve_launch_runtimes(manifest, opts);
-            tilo_startup_metrics::handoff_mark("optional-runtimes-verified");
+        let required = spawn_beside(scope, "launch-required-runtimes", move || {
+            let bundles = resolve_required_runtimes(manifest, opts);
+            tilo_startup_metrics::handoff_mark("required-runtimes-verified");
             bundles
         })?;
         let host = prepare_launch_host(
@@ -3721,7 +3657,7 @@ pub(crate) fn run_with_context(
             enrolled.as_ref().map(|(services, _)| &**services),
             native_owner,
         );
-        Ok::<_, RunError>((join_beside(dbus), host, join_beside(optional)))
+        Ok::<_, RunError>((join_beside(dbus), host, join_beside(required)))
     })?;
     tilo_startup_metrics::handoff_mark("dbus-joined");
     let LaunchHost {
@@ -3732,8 +3668,8 @@ pub(crate) fn run_with_context(
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
-    let optional_runtimes = optional_runtimes?;
-    preflight_entrypoint_runtime(manifest, opts, runtime_arg, &optional_runtimes)?;
+    let required_runtimes = required_runtimes?;
+    preflight_entrypoint_runtime(manifest, opts, runtime_arg, &required_runtimes)?;
 
     if let Some(owner) = native_owner
         && let Some(hosts) = owner.reviewed_network_hosts()?
@@ -3831,6 +3767,16 @@ pub(crate) fn run_with_context(
         }
         resolved
     };
+    // A window whose instance a tilolang host runs holds none of the app's data: it gets no
+    // collaboration connection (the host's instance has the app's own), and says so.
+    let resolved: Vec<_> = if opts.tilolang_hosted {
+        resolved
+            .into_iter()
+            .filter(|service| service.name != crate::services::COLLAB_SERVICE)
+            .collect()
+    } else {
+        resolved
+    };
     let binds = to_service_binds(&resolved);
     tilo_startup_metrics::handoff_mark("services-resolved");
     let mut headless_console = opts
@@ -3883,6 +3829,12 @@ pub(crate) fn run_with_context(
             Some((runtime_portal::process_binding::ENV.into(), "1".into())),
         )?;
     }
+    if opts.tilolang_hosted {
+        splice_cli_setenv(
+            &mut argv,
+            Some((runtime_portal::tilolang_host::HOSTED_ENV.into(), "1".into())),
+        )?;
+    }
     if let Some((services, _)) = enrolled.as_ref() {
         splice_cli_setenv(
             &mut argv,
@@ -3899,7 +3851,7 @@ pub(crate) fn run_with_context(
         &mut argv,
         opts,
         resolved_runtime.is_some(),
-        &optional_runtimes,
+        &required_runtimes,
     )?;
     // A development session's launch of a module payload follows its package's reinstalls.
     let live_module = if enrolled.is_none() && native_owner.is_none() {

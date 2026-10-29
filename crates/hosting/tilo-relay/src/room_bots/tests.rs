@@ -949,7 +949,7 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
     );
 }
 
-/// In a public room a node stewards, guests seal every chat post. A bot
+/// In a public room whose channels a node takes part in, guests seal every chat post. A bot
 /// (the Discord bridge, say) still answers in that chat: the room decides
 /// its post as the bot's own, it reaches the chat sealed, and a guest
 /// opens it.

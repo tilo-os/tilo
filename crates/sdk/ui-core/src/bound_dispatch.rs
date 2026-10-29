@@ -1923,6 +1923,19 @@ pub(crate) fn encode_resource_action(
     }
 }
 
+/// Resolve an invocation's arguments against `resources` and encode it.
+pub(crate) fn encode_resource_invocation(
+    resources: &[ResourceSpec],
+    address: &tilo_actions::ActionAddress,
+    argument: Option<&str>,
+    arguments: Option<&serde_json::Map<String, serde_json::Value>>,
+    confirmed: bool,
+) -> Result<tilo_actions::EncodedAction, tilo_actions::DoorError> {
+    let (arguments, _, _) =
+        resolve_resource_invocation(resources, address, argument, arguments, confirmed)?;
+    encode_resource_action(resources, address, arguments.as_ref(), None)
+}
+
 /// Ordinary confirmation guarantees declared meaning and arguments in the same
 /// owner. Hidden referent continuity is additional evidence, only when the
 /// provider supplied it at emission; this is deliberately not History custody.

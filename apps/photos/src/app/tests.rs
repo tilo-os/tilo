@@ -2687,3 +2687,16 @@ fn sync_never_frees_a_laid_out_child() {
 
 #[path = "tests/link_host.rs"]
 mod link_host;
+
+/// Every path an agent hands Photos must be absolute: a relative one would
+/// land wherever the process runs.
+#[test]
+fn path_actions_refuse_a_relative_path() {
+    use ui::tilo_resource::Effect as _;
+    for id in ["import", "import-directory", "reindex-directory", "save"] {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("path".into(), "photo.png".into());
+        let error = PhotosEffect::decode(id, &arguments).unwrap_err();
+        assert!(error.contains("absolute"), "{id}: {error}");
+    }
+}

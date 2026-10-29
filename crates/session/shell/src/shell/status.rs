@@ -22,7 +22,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use os_actions::{LinkKind, LinkStatus, VolumeState};
+use media::audio::default_node::VolumeState;
+use os_actions::{LinkKind, LinkStatus};
 use tilo_lock::MutexRecover as _;
 use tilo_nm::{NetworkState, NmState};
 use tilo_power_mgmt::BatterySnapshot;
@@ -71,7 +72,11 @@ impl Readers {
                     tilo_power_mgmt::sysfs_battery_time(),
                 )
             }),
-            volume: Box::new(os_actions::get_volume_state),
+            volume: Box::new(|| {
+                media::audio::default_node::volume_state(
+                    media::audio::default_node::DefaultNode::Sink,
+                )
+            }),
             media: Box::new(os_actions::active_media_uses),
         }
     }
@@ -391,7 +396,7 @@ fn spawn_audio_follower(wake: Sender<Read>) {
                 {
                     return;
                 }
-                wait_for_socket(crate::shell::session_audio_policy::pipewire_socket().as_deref());
+                wait_for_socket(media::audio_watch::pipewire_socket().as_deref());
             }
         });
     if let Err(error) = spawned {

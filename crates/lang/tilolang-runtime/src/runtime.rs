@@ -145,6 +145,11 @@ impl Runtime {
             .chain(meta.views.iter().map(|v| format!("v_{}", v.id)))
             .chain(meta.flows.iter().map(|f| format!("f_{}", f.id)))
             .chain(meta.fns.iter().map(|f| format!("n_{}", f.id)))
+            .chain(
+                meta.at_event
+                    .iter()
+                    .map(|f| tilolang::ir::at_event_export(&f.id)),
+            )
             .chain(meta.actions.iter().flat_map(|a| {
                 a.params
                     .iter()
@@ -526,6 +531,13 @@ impl Runtime {
     /// it is set, a phrase is its id.
     pub fn set_phrases(&self, phrases: impl Fn(&str, &[(String, String)]) -> String + 'static) {
         *self.core.phrases.borrow_mut() = Some(Box::new(phrases));
+    }
+
+    /// What a reference to a resource the person cannot read says, in their language: the
+    /// chip's wording (`tilo_reference::embed::UNSHARED`).
+    #[must_use]
+    pub fn unshared(&self) -> String {
+        self.core.unshared()
     }
 
     /// The lenses on the resource `resource` (its id) now, as presence reports them: who, and

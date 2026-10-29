@@ -556,14 +556,8 @@ pub fn save(
     let mut answer = match &save.path {
         None => serde_json::json!({"content": crate::resource::store(&bytes)?, "bytes": size}),
         Some(path) => {
-            let path = std::path::Path::new(path);
-            if !path.is_absolute()
-                || path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION)
-            {
-                return Err(format!(
-                    "path is an absolute path ending in .{EXTENSION}, not {}",
-                    path.display()
-                ));
+            if path.extension().and_then(|extension| extension.to_str()) != Some(EXTENSION) {
+                return Err(format!("path ends in .{EXTENSION}, not {path}"));
             }
             write(path, &bytes)?;
             serde_json::json!({"path": path.display().to_string(), "bytes": size})
@@ -578,29 +572,32 @@ pub fn save(
     Ok(answer)
 }
 
-/// Write an export's `bytes` to `path`, an absolute path ending in one of
+/// Write an export's `bytes` to `path`, a path ending in one of
 /// `extensions`; answers the path written.
 ///
 /// # Errors
 /// Says why the path is not one or cannot be written.
-pub fn export_to(path: &str, extensions: &[&str], bytes: &[u8]) -> Result<String, String> {
-    let file = std::path::Path::new(path);
-    let extension = file
+pub fn export_to(
+    path: &std::path::Path,
+    extensions: &[&str],
+    bytes: &[u8],
+) -> Result<String, String> {
+    let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase);
-    if !file.is_absolute()
-        || !extension
-            .as_deref()
-            .is_some_and(|extension| extensions.contains(&extension))
+    if !extension
+        .as_deref()
+        .is_some_and(|extension| extensions.contains(&extension))
     {
         return Err(format!(
-            "path is an absolute path ending in .{}, not {path}",
-            extensions.join(" or .")
+            "path ends in .{}, not {}",
+            extensions.join(" or ."),
+            path.display()
         ));
     }
-    write(file, bytes)?;
-    Ok(file.display().to_string())
+    write(path, bytes)?;
+    Ok(path.display().to_string())
 }
 
 /// Write `bytes` to the file at `path`, replacing it.

@@ -17,8 +17,8 @@ mod common;
 
 tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
-#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
-mod steward;
+#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+mod participant;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -95,7 +95,7 @@ async fn a_check_is_shown_the_facts_of_the_record_its_task_changed() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let agent_device = enrol(&root, "Agent: Ed", CertificationPolicy::agent().ceiling);
     let now = tilo_clock::unix_now_ns();
     let delegation = Delegation::sign(
@@ -271,13 +271,13 @@ impl Planner for Coordinated {
 /// fresh agent, and there is no second check. The item's agent itself is
 /// not checked.
 /// An agent, Ed, granted the video editor and planning with `planner`, in a
-/// room on a host of its own, admitted: the host, its steward, the host's
+/// room on a host of its own, admitted: the host, a laptop taking part, the host's
 /// state, the agent and its steering.
 async fn ed_planning_with(
     planner: Box<dyn Planner>,
 ) -> (
     support::TestHost,
-    steward::Steward,
+    participant::Participant,
     tempfile::TempDir,
     AgentParticipant,
     Arc<AgentControl>,
@@ -296,7 +296,7 @@ async fn ed_planning_with(
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let steward = steward::Steward::start(&host.relay, &root).await;
+    let laptop = participant::Participant::start(&host.relay, &root).await;
     let agent_device = enrol(&root, "Agent: Ed", CertificationPolicy::agent().ceiling);
     let now = tilo_clock::unix_now_ns();
     let delegation = Delegation::sign(
@@ -341,13 +341,13 @@ async fn ed_planning_with(
     })
     .await;
 
-    (host, steward, state, agent, control)
+    (host, laptop, state, agent, control)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_coordinator_s_check_sees_the_facts_and_adds_one_fix() {
     let asked: Asked = Arc::new(Mutex::new(Vec::new()));
-    let (host, _steward, _state, mut agent, control) =
+    let (host, _laptop, _state, mut agent, control) =
         Box::pin(ed_planning_with(Box::new(Coordinated {
             asked: Arc::clone(&asked),
             obligations: tilo_agent_participant::Obligations::default(),

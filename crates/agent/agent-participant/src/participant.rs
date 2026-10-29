@@ -124,12 +124,12 @@ const ROOM_SETTLE: Duration = Duration::from_millis(300);
 /// The longest a finished task waits for the host to acknowledge its
 /// changes before it is reported anyway. A record just made waits for its
 /// channel's keys first, which can take several seconds while the room's
-/// steward admits everyone who asked; reported earlier, the next task
+/// participants admit everyone who asked; reported earlier, the next task
 /// would not find it.
 const COMMIT_WAIT: Duration = Duration::from_secs(20);
 
-/// The longest a plan waits for the keys of a record it is about. Keys a
-/// steward never sends (a device it no longer admits) must not hold the
+/// The longest a plan waits for the keys of a record it is about. Keys no
+/// participant sends (to a device none admits any more) must not hold the
 /// agent forever: the task is planned with what the room shows.
 const KEYS_WAIT: Duration = Duration::from_secs(10);
 

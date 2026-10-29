@@ -206,7 +206,7 @@ mod tests {
     }
 
     fn new_note_in_window(app: &NotesApp) -> bool {
-        ui::widget::find_test_id(&app.shell, crate::app::NEW_NOTE_BUTTON_ID).is_some()
+        ui::widget::find_test_id(&*app.shell, crate::app::NEW_NOTE_BUTTON_ID).is_some()
     }
 
     #[test]

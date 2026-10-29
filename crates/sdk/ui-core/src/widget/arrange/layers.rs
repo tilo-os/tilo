@@ -8,6 +8,9 @@ use super::units::{Axis, Direction};
 
 pub struct LayersLayout {
     direction: Direction,
+    /// The layers that straddle their edge: centred on it, half over the cell and half
+    /// outside it (a row's hover toolbar on the row's top edge).
+    straddling: Vec<usize>,
 }
 
 impl Layout for LayersLayout {
@@ -43,6 +46,13 @@ impl Layout for LayersLayout {
         );
         style.justify_self = Some(inline);
         style.align_self = Some(block);
+        if self.straddling.contains(&_index) {
+            // A wrapper with no height on the edge, its child centred on that line: the child
+            // stands half over the cell and half outside it, whatever its own height.
+            style.size.height = length(0.0_f32);
+            style.min_size.height = length(0.0_f32);
+            style.justify_content = Some(taffy::JustifyContent::Center);
+        }
         style
     }
 }
@@ -55,6 +65,7 @@ impl Arranged<LayersLayout> {
     pub fn layers() -> Self {
         Self::with_layout(LayersLayout {
             direction: Direction::Ltr,
+            straddling: Vec::new(),
         })
     }
 
@@ -71,5 +82,15 @@ impl Arranged<LayersLayout> {
         slot.at = Some(at);
         self.slots.push(slot);
         self
+    }
+
+    /// Add a child at `at`, centred on that edge of the cell rather than inside it: half over
+    /// the cell, half outside (at a top position, on the top edge).
+    #[must_use]
+    pub fn push_straddling(self, child: crate::widget::Element, at: super::units::At) -> Self {
+        let index = self.slots.len();
+        let mut layers = self.push_at(child, at);
+        layers.layout.straddling.push(index);
+        layers
     }
 }

@@ -167,7 +167,13 @@ impl GitClientApp {
             PanelHit::WorktreeStart => self.set_focus(Some(Field::WorktreeStart)),
             PanelHit::WorktreeInfo(_) | PanelHit::WorktreeError => {}
             PanelHit::CreateWorktree => {
-                self.last_error = Some(t("git-worktree-host-required"));
+                // Bound to the effect unless the path typed is relative.
+                self.last_error = Some(
+                    match ui::tilo_resource::AbsolutePath::new(self.worktree_path_input.value()) {
+                        Err(error) => error.into(),
+                        Ok(_) => t("git-worktree-host-required"),
+                    },
+                );
             }
         }
     }

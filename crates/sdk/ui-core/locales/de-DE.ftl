@@ -1089,3 +1089,12 @@ action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokume
 # Spoken when Ctrl+Super+Enter (or both volume keys held) turns the screen reader on or off.
 screen-reader-turned-on = Bildschirmleser an
 screen-reader-turned-off = Bildschirmleser aus
+
+## Completion drawers
+completion-no-match = Keine Treffer für „{ $query }“
+completion-results = { $count ->
+    [one] 1 Treffer
+   *[other] { $count } Treffer
+}
+emoji-picker-add-reaction = Reaktion hinzufügen
+quote-dismiss = Nicht mehr antworten

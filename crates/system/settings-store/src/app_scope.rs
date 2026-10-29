@@ -13,14 +13,20 @@ use std::io::{Error, ErrorKind};
 
 use serde_json::{Map, Value};
 
-use crate::continuity::{APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION, MAX_PERSONAL_VALUE_BYTES};
+use crate::placement::{APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION, MAX_PERSONAL_VALUE_BYTES};
 use crate::{ChangeOrigin, SettingsSource};
 
 /// Sections every app reads and only their owners write: the person's
-/// region, spelling and accessibility preferences and the desktop's look,
-/// which the toolkit applies in every app.
-pub const APP_READABLE_SECTIONS: &[&str] =
-    &["locale", "text_assistance", "accessibility", "appearance"];
+/// region, spelling and accessibility preferences and the desktop's look
+/// with the defaults this device's image ships, which the toolkit applies in
+/// every app.
+pub const APP_READABLE_SECTIONS: &[&str] = &[
+    "locale",
+    "text_assistance",
+    "accessibility",
+    "appearance",
+    crate::appearance::DEVICE_SECTION,
+];
 
 /// Keys of a shared section that one app owns and writes through the same
 /// door, as `(app id, section, keys)`: Theme Studio chooses the desktop's

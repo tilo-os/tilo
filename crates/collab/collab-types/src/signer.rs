@@ -2,7 +2,7 @@
 //!
 //! A browser keeps its device key as a non-extractable `WebCrypto` key that
 //! signs through a promise, so code that signs with the device key (the relay
-//! handshake, certification, a steward's governance frames) asks a
+//! handshake, certification, a participant's governance frames) asks a
 //! [`DeviceSigner`] and awaits the signature. Native devices pass their
 //! `SigningKey`, which implements the trait and answers at once.
 

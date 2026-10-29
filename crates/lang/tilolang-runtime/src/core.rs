@@ -251,20 +251,20 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, ActThen, Actions, CollInsert, CollMove, CollMoveTo,
-            CollOrdered, CollRemove, CollWhere, CollWhereWith, EnumGetF, EnumGetH, EnumGetI,
-            EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventValue, Filters, FloatToStr,
-            IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses,
-            ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH,
-            ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MetaOf,
-            ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalName, PrincipalNamed,
-            Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit,
-            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
-            RichEmpty, RichNew, RichPart, RichTime, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF,
-            SpaceI, StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF,
-            TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind,
-            UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH,
-            UnwrapI, ValueEq, VersionEnd, Versions,
+            Abort, ActOpen, ActRef, ActSet, ActThen, Actions, ArgAt, CollInsert, CollMove,
+            CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, EnumGetF, EnumGetH,
+            EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventValue, Filters,
+            FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError,
+            IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF,
+            ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove,
+            MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalName,
+            PrincipalNamed, Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
+            RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
+            ResTextSet, RichEmpty, RichNew, RichPart, RichTime, SetAdd, SetRemove, SomeF, SomeH,
+            SomeI, SpaceF, SpaceI, StateAt, StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit,
+            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
+            UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -310,7 +310,7 @@ impl Core {
                 self.effect_import(imp, a)
             }
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
-            | SpaceF | UiBindState | StateGet | ActSet | ActThen | ActOpen => {
+            | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen => {
                 self.ui_import(imp, a)
             }
             EventValue | Actions | Lenses | MetaOf | Versions | VersionEnd | Phrase => {

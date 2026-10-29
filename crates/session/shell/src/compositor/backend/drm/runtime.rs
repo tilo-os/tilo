@@ -414,7 +414,7 @@ impl TabletRuntime {
     fn load() -> Self {
         Self {
             configs: settings_store::hardware::tablets_from_section(&settings_store::load_section(
-                input_config::SECTION,
+                settings_store::hardware::INPUT_DEVICE_SECTION,
             )),
             shortcuts: settings_store::hardware::ShortcutConfig::load(),
             pads: None,

@@ -300,6 +300,9 @@ pub(super) struct InputRuntime {
     /// thing they did: what they pressed is in the window there, which is the
     /// window that asked for whatever the press opens.
     pub(super) pressed_at: Option<vello::kurbo::Point>,
+    /// The window has the keyboard: the one a person (or a test control's
+    /// activation) addresses among the app's windows.
+    pub(super) window_focused: bool,
 }
 
 impl InputRuntime {
@@ -307,6 +310,7 @@ impl InputRuntime {
         Self {
             modifiers: winit::event::Modifiers::default(),
             keyboard_layout: None,
+            window_focused: false,
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
@@ -329,15 +333,24 @@ impl InputRuntime {
 /// capabilities.
 pub(super) struct ActionRuntime {
     pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
-    pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
+    pub(super) action_palette: Option<Box<crate::action_palette::ActionPalette>>,
     /// The window the palette was opened from, when the app hosts several
     /// (the desktop's tiles): the palette centres on it, not on the screen.
     pub(super) palette_window: Option<vello::kurbo::Rect>,
     /// Stable opener identity, never a node or pointer from the modal's old tree.
     pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
-    /// Why invocations the person made this pass did not run, said over the
-    /// window once the pass ends ([`super::App::refuse_visibly`]).
-    pub(super) refusals: Vec<String>,
+    /// Why invocations the person made this pass did not run, and the
+    /// control each came from when one is on screen: said at that control,
+    /// else in the window's bar, once the pass ends
+    /// ([`super::App::refuse_visibly`]).
+    pub(super) refusals: Vec<(String, Option<vello::kurbo::Rect>)>,
+    /// What stands at the control the person last used, until their next
+    /// press or key ([`crate::control_notice`]).
+    pub(super) control_notice: Option<crate::control_notice::ControlNotice>,
+    /// The window is a tile its host lays out in its own process (the
+    /// shell): searches go to the host's one search through the app's
+    /// component ([`super::App::hand_search_to_session`]).
+    pub(super) search_in_host: bool,
     /// The control an accessibility action focused while the same action
     /// replaced widgets: focused again once the next layout admits them.
     pub(super) focus_after_rebuild: Option<crate::widget::layout::CompositionFocus>,
@@ -456,6 +469,8 @@ impl ActionRuntime {
             palette_window: None,
             ordinary_palette_return_focus: None,
             refusals: Vec::new(),
+            control_notice: None,
+            search_in_host: false,
             focus_after_rebuild: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,

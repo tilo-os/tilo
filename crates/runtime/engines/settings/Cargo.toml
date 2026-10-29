@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The libraries only Settings uses (the model-provider administration panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility settings, the PC keyboard outlines, the time-zone globe) as an engine library beside the shared runtime: libtilo_settings_engine.so, shipped in the runtime bundle and loaded only by Settings."
+description = "The libraries only Settings uses (the settings sections as resource models, the model-provider administration panel, the NTFS mount protocol, the wallpaper catalogue, the accessibility settings, the PC keyboard outlines, the time-zone globe) as an engine library beside the shared runtime: libtilo_settings_engine.so, shipped in the runtime bundle and loaded only by Settings."
 
 # A runtime engine: code few apps need that no other app should map. It is a
 # Rust dylib chained on libruntime_dylib.so, built in the same Cargo graph as
@@ -38,6 +38,7 @@ thin = [
     "dep:tilo-accessibility-settings",
     "dep:tilo-pc-keyboard-geometry",
     "dep:tilo-zone-globe",
+    "dep:settings-sections",
     "tilo-accounts-engine/thin",
     "dep:workspace-hack",
 ]
@@ -54,6 +55,7 @@ tilo-wallpapers = { path = "../../../platform/tilo-wallpapers", optional = true 
 tilo-accessibility-settings = { path = "../../../platform/tilo-accessibility-settings", features = ["model"], optional = true }
 tilo-pc-keyboard-geometry = { path = "../../../platform/pc-keyboard-geometry", optional = true }
 tilo-zone-globe = { path = "../../../platform/zone-globe", optional = true }
+settings-sections = { path = "../../../system/settings-sections", optional = true }
 # Account custody and the IMAP client, which Settings uses, come from
 # their own engine library: one copy of each in the app's process.
 tilo-accounts-engine = { path = "../accounts", optional = true }

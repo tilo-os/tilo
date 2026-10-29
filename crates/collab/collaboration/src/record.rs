@@ -175,6 +175,18 @@ impl RecordId {
         (id.storage_key() == storage_key).then_some(id)
     }
 
+    /// `person`'s own record of `kind` in a workspace
+    /// ([`collab_types::member_record`]): only that person's devices read
+    /// or change it. `None` when `person` is not the hex of a user root key
+    /// or `kind` is not a label.
+    #[must_use]
+    pub fn of_member(person: &str, kind: &str) -> Option<Self> {
+        Self::parse(&collab_types::member_record_id(
+            &person.to_ascii_lowercase(),
+            kind,
+        ))
+    }
+
     /// Identity of the record that plays `role` for `of` — "the annotations
     /// of this document". Distinct from its target so the two can be
     /// shared separately: handing over the document doesn't hand the notes.
@@ -337,6 +349,9 @@ fn valid_record_id(s: &str, depth: usize) -> bool {
     }
     if let Some(uuid) = s.strip_prefix("uuid:") {
         return uuid::Uuid::parse_str(uuid).is_ok();
+    }
+    if s.starts_with("member:") {
+        return collab_types::member_record(s).is_some();
     }
     if let Some(tab) = s.strip_prefix("tab:") {
         return tab.len() == 16 && tab.bytes().all(|c| c.is_ascii_hexdigit());

@@ -105,6 +105,12 @@ enum Command {
         /// peer or a registry.
         #[arg(long)]
         thin: bool,
+        /// A build of a developer session, installed on its own machine and
+        /// never published: hold it to the local-build size ceiling, under
+        /// which a development store installs packages signed with the
+        /// session's own key, rather than the distribution limit.
+        #[arg(long)]
+        local_build: bool,
     },
     /// Pack the Linux, Windows or macOS build of an app: one self-contained
     /// executable with the toolkit linked in, shipped as `bin/<file name>`
@@ -392,7 +398,15 @@ fn main() -> Result<()> {
             output,
             identity,
             thin,
-        } => cmd_pack(&manifest, &payload, &output, identity.as_deref(), thin),
+            local_build,
+        } => cmd_pack(
+            &manifest,
+            &payload,
+            &output,
+            identity.as_deref(),
+            thin,
+            local_build,
+        ),
         Command::PackDesktop {
             manifest,
             executable,
@@ -511,6 +525,7 @@ fn cmd_pack(
     output: &Path,
     identity_path: Option<&Path>,
     thin: bool,
+    local_build: bool,
 ) -> Result<()> {
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("read manifest {}", manifest_path.display()))?;
@@ -533,7 +548,12 @@ fn cmd_pack(
     let packed =
         pack(payload_dir, &manifest, &identity).map_err(|e| anyhow!("pack failed: {e}"))?;
     let payload: Option<&dyn BlobSource> = if thin { None } else { Some(&packed) };
-    write_tapp(output, &packed.meta, payload)?;
+    let limit = if local_build {
+        tilo_app_package::local_build_size_limit(&packed.meta.manifest)
+    } else {
+        tilo_app_package::app_size_limit(&packed.meta.manifest)
+    };
+    write_tapp_within(output, &packed.meta, payload, limit)?;
     eprintln!(
         "packed {} ({} form, {} payload blobs)",
         packed.id(),
@@ -960,6 +980,22 @@ impl Drop for PendingTapp {
 /// Write `meta` (full when `payload` is given, thin otherwise) to `path`
 /// atomically, enforcing the application size ceiling on the result.
 fn write_tapp(path: &Path, meta: &PackageMeta, payload: Option<&dyn BlobSource>) -> Result<()> {
+    write_tapp_within(
+        path,
+        meta,
+        payload,
+        tilo_app_package::app_size_limit(&meta.manifest),
+    )
+}
+
+/// [`write_tapp`] against the size ceiling `limit` (none for a non-app
+/// bundle).
+fn write_tapp_within(
+    path: &Path,
+    meta: &PackageMeta,
+    payload: Option<&dyn BlobSource>,
+    limit: Option<u64>,
+) -> Result<()> {
     let temp = path.with_extension(format!("tapp.tmp.{}", std::process::id()));
     let file = File::options()
         .write(true)
@@ -974,7 +1010,7 @@ fn write_tapp(path: &Path, meta: &PackageMeta, payload: Option<&dyn BlobSource>)
     let archive_size = std::fs::metadata(&temp)
         .with_context(|| format!("stat temporary package {}", temp.display()))?
         .len();
-    if let Some(limit) = tilo_app_package::app_size_limit(&meta.manifest)
+    if let Some(limit) = limit
         && archive_size > limit
     {
         bail!("application tapp is {archive_size} bytes; limit is {limit} bytes");
@@ -1047,7 +1083,7 @@ fn reconcile_entry_history(
         registry_types::verify_snapshot(&catalogue, owner, now)
             .context("verify runtime catalogue against registry owner")?;
         let (tapp, _) = read_tapp(&args.file, false)?;
-        require_optional_runtime_offers(entry, &args.url, &tapp.meta.manifest, &catalogue.entries)?;
+        require_runtime_offers(entry, &args.url, &tapp.meta.manifest, &catalogue.entries)?;
         let dropped = registry_client::runtime_history::reconcile(
             entry,
             &catalogue.entries,
@@ -1074,7 +1110,7 @@ fn reconcile_entry_history(
 
 /// A newly published app must not become visible before its exact engine.
 /// The caller verifies the owner-signed snapshot and the app before this check.
-fn require_optional_runtime_offers(
+fn require_runtime_offers(
     entry: &registry_types::RegistryEntry,
     current_url: &str,
     manifest: &Manifest,
@@ -1092,7 +1128,7 @@ fn require_optional_runtime_offers(
     let target = current
         .target()
         .context("current package has no native target")?;
-    for runtime in tilo_app_package::desktop::optional_runtime_dependencies(manifest) {
+    for runtime in tilo_app_package::desktop::required_runtime_dependencies(manifest) {
         let offered = catalogue.iter().any(|provider| {
             registry_types::is_runtime_package_id(&provider.package_id)
                 && provider
@@ -1137,7 +1173,7 @@ fn record_missing_runtime(path: Option<&Path>, error: &anyhow::Error) -> Result<
 
 #[cfg(test)]
 mod runtime_readiness_tests {
-    use super::{record_missing_runtime, require_optional_runtime_offers};
+    use super::{record_missing_runtime, require_runtime_offers};
 
     #[test]
     fn publication_waits_for_the_exact_engine_and_native_architecture() {
@@ -1148,7 +1184,7 @@ mod runtime_readiness_tests {
         let manifest: super::Manifest =
             super::Manifest::from_toml_str(include_str!("../../../../apps/browser/tilo-app.toml"))
                 .unwrap();
-        let runtime = &manifest.package.optional_runtimes[0];
+        let runtime = &manifest.package.required_runtimes[0];
         let signer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
         let url = "https://apps.tilo.so/artifacts/browser.tapp";
         let mut app = RegistryEntry {
@@ -1184,7 +1220,7 @@ mod runtime_readiness_tests {
             signature_hex: String::new(),
         };
         registry_types::sign_entry(&mut app, &signer);
-        let missing = require_optional_runtime_offers(&app, url, &manifest, &[]).unwrap_err();
+        let missing = require_runtime_offers(&app, url, &manifest, &[]).unwrap_err();
         assert_eq!(
             missing
                 .downcast_ref::<registry_client::runtime_history::MissingRuntime>()
@@ -1206,7 +1242,7 @@ mod runtime_readiness_tests {
             artifact.target.architecture = architecture.into();
             registry_types::sign_entry(&mut provider, &signer);
             assert_eq!(
-                require_optional_runtime_offers(&app, url, &manifest, &[provider.clone()]).is_ok(),
+                require_runtime_offers(&app, url, &manifest, &[provider.clone()]).is_ok(),
                 accepted
             );
         }

@@ -272,7 +272,7 @@ pub async fn private(
     postcard::from_bytes(&bytes).map_err(|_| LinkError::Malformed("private reply".into()))
 }
 
-/// Take a record's channel content keys from the room's steward, as a
+/// Take a record's channel content keys from the room's node, as a
 /// public room's spectator, which is no channel member and asks nothing
 /// over the channel. The answer carries the keys in their encoded form.
 ///

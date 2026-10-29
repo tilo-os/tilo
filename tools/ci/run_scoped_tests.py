@@ -44,8 +44,9 @@ def command(entry: dict[str, str], golden: str) -> list[str]:
     expression = f"({entry['filter']})"
     if golden.strip():
         expression += f" and not ({golden.strip()})"
-    return ["bash", "tools/test-env.sh", "cargo", "nextest", "run", "--locked", "--profile", "ci",
-            "--no-tests=fail", "-p", entry["package"], "--test", entry["test"], "-E", expression]
+    # The ci profile sets up the test environment where the tests run (.config/nextest.toml).
+    return ["cargo", "nextest", "run", "--locked", "--profile", "ci", "--no-tests=fail",
+            "-p", entry["package"], "--test", entry["test"], "-E", expression]
 
 
 def merge(reports: list[Path], output: Path) -> None:

@@ -181,7 +181,9 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     let mut app = TestApp::<crate::SettingsShell>::open_data_dir(&profile).unwrap();
     // A private headless host intentionally does not take in the device's
     // file. Seed its actual personal record, then project that canonical state.
-    let person = app.person::<accounts::person::PersonAccounts>().unwrap();
+    let person = app
+        .shared_person::<accounts::person::PersonAccounts>()
+        .unwrap();
     person
         .invoke(&accounts::person::PersonAccounts::saving(&original))
         .unwrap();
@@ -197,7 +199,7 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     app.settle();
     let stored = root.store();
     assert_eq!(
-        app.person::<accounts::person::PersonAccounts>()
+        app.shared_person::<accounts::person::PersonAccounts>()
             .unwrap()
             .get()
             .store()
@@ -222,7 +224,7 @@ fn mounted_review_selection_navigation_cancel_and_pending_reopen() {
     crate::effects::show_pane(&mut reopened, crate::categories::Category::ExternalAccounts);
     assert_eq!(
         reopened
-            .person::<accounts::person::PersonAccounts>()
+            .shared_person::<accounts::person::PersonAccounts>()
             .unwrap()
             .get()
             .store()

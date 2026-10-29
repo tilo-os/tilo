@@ -523,13 +523,14 @@ impl std::fmt::Debug for Snapshot {
 }
 
 /// One resource as [`Snapshot::texted`] reads it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Texted {
     pub path: String,
     /// Its type, if the index holds one.
     pub ty: Option<String>,
-    /// The text values of its fields, by field id.
-    pub texts: std::collections::BTreeMap<String, String>,
+    /// The text values of its fields, by field id: texts and rich texts as stored
+    /// ([`crate::reads::text_value`]), read for a reader by whoever shows them.
+    pub texts: std::collections::BTreeMap<String, FieldValue>,
 }
 
 /// The last resource path that starts with `path/`: what a range over the resources inside
@@ -605,7 +606,7 @@ impl Snapshot {
                 if field == TYPE {
                     last.ty = Some(codec::get_text(value.value())?);
                 } else if !field.starts_with('$')
-                    && let Some(text) = crate::reads::text_of(codec::get_value(value.value())?)
+                    && let Some(text) = crate::reads::text_value(codec::get_value(value.value())?)
                 {
                     last.texts.insert(field.to_owned(), text);
                 }

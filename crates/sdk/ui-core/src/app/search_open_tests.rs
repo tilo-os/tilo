@@ -135,7 +135,7 @@ fn the_search_launcher_opens_this_windows_palette_narrowed_and_prefilled() {
     );
     assert_eq!(palette.query(), "invoice");
 
-    let palette = app.actions.action_palette.as_mut().unwrap();
+    let palette = app.actions.action_palette.as_deref_mut().unwrap();
     while palette.advance_search_page().pending {}
     let labels = palette.result_labels();
     assert!(
@@ -157,7 +157,7 @@ fn an_unscoped_palette_offers_each_scope_as_a_search_in_row() {
     let mut app = mail_app(SearchRequest::this_app());
     press_launcher(&mut app);
     assert!(app.dispatch_control_invocations() > 0);
-    let palette = app.actions.action_palette.as_mut().unwrap();
+    let palette = app.actions.action_palette.as_deref_mut().unwrap();
     assert!(palette.scope().is_none());
     palette.set_query("sent");
     let labels = palette.result_labels();

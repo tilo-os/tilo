@@ -941,7 +941,7 @@ impl Device {
 
     /// Let the notes app keep records in `room`, as opening the app there
     /// first does: the room's host lets it author, and the note's record is
-    /// its sealed channel, which this device asks the room's steward for.
+    /// its sealed channel, which this device asks the room's participants for.
     /// Every hosted room is sealed, wherever it is hosted. Whoever opens
     /// the app later finds the record.
     pub(crate) fn open_notes_first(&self, room: RoomId) {
@@ -1068,14 +1068,14 @@ impl Device {
         assert!(
             sealed,
             "{} holds {room} as a sealed room (its records committed instead: {committed}; \
-             its enrollment names a governor that stewards them: {}, the governor {governor}; \
+             its enrollment names a governor that takes part in them: {}, the governor {governor}; \
              its native owner is {standing} {failure})",
             self.label,
             self.net().native_room_seals_records(room)
         );
     }
 
-    /// The note's channel keys in `room`, once the room's steward admitted
+    /// The note's channel keys in `room`, once a participant admitted
     /// this device: what the identity service answers the notes app.
     fn note_keys(&self, room: RoomId) -> Option<channel_crypto::ChannelContentKeys> {
         let Some((channels, _)) = self.channels.as_ref() else {
@@ -1434,22 +1434,26 @@ impl Device {
     }
 
     /// Change `person`'s role in `room` from the workspace's people
-    /// settings: the room's `set-role` governance action, asked of the
-    /// room's host.
+    /// settings: written by this device into its replica of the room.
     pub(crate) fn set_role(&self, room: RoomId, person: &Person, role: &str) {
-        let net = self.net();
-        let target = net
-            .administered_room(room)
-            .unwrap_or_else(|| panic!("{} administers the room it owns", self.label));
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("person".into(), hex::encode(person.user()).into());
-        arguments.insert("role".into(), role.into());
-        net.govern(
-            &target,
-            tilo_action_policy::roles::governance::SET_ROLE,
-            arguments,
-        )
-        .unwrap_or_else(|error| panic!("the room's host changes the role: {error}"));
+        let role = match role {
+            "viewer" => tilo_action_policy::Role::Viewer,
+            "commenter" => tilo_action_policy::Role::Commenter,
+            "editor" => tilo_action_policy::Role::Editor,
+            "moderator" => tilo_action_policy::Role::Moderator,
+            other => panic!("no role {other}"),
+        };
+        self.net()
+            .write_membership(
+                room,
+                tilo_action_policy::Change::SetRole {
+                    person: hex::encode(person.user()),
+                    role,
+                },
+            )
+            .unwrap_or_else(|error| {
+                panic!("this device changes the role: {}", String::from(error))
+            });
     }
 
     /// Remove `person` from `room`, as its owner on this device.

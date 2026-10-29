@@ -20,18 +20,45 @@ pub struct DesktopControls {
     /// beside the arrow keys.
     #[serde(default)]
     pub vim_mode: bool,
+}
+
+impl ui::storage::SettingsSchema for DesktopControls {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(settings_store::desktop_controls::DESKTOP_CONTROLS_SECTION);
+}
+
+#[ui::tilo_resource::resource(
+    kind = "settings.desktop-controls",
+    label = "Desktop controls",
+    version = 2,
+    migrate = crate::leaves_moved_out
+)]
+impl DesktopControls {}
+
+/// The shell's desktop preferences this device holds: a small laptop panel
+/// and a large desk display want different answers.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
+)]
+#[model(defaults)]
+pub struct DesktopControlsDevice {
     /// Hide the top bar until the pointer reaches for it; shown in the
     /// Appearance pane.
     #[serde(default)]
     pub hide_top_bar: bool,
 }
 
-impl ui::storage::SettingsSchema for DesktopControls {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("desktop_controls");
+impl ui::storage::SettingsSchema for DesktopControlsDevice {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(
+        settings_store::desktop_controls::DESKTOP_CONTROLS_DEVICE_SECTION,
+    );
 }
 
-#[ui::tilo_resource::resource(kind = "settings.desktop-controls", label = "Desktop controls")]
-impl DesktopControls {}
+#[ui::tilo_resource::resource(
+    kind = "settings.desktop-controls-device",
+    label = "Desktop controls on this device"
+)]
+impl DesktopControlsDevice {}
 
 /// The person's default apps, as their settings hold them.
 #[derive(
@@ -89,7 +116,8 @@ pub struct SharedDisplayPrefs {
 }
 
 impl ui::storage::SettingsSchema for SharedDisplayPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(settings_store::person_displays::ARRANGEMENT_SECTION);
 }
 
 #[ui::tilo_resource::resource(kind = "settings.display-arrangement", label = "Display arrangement")]

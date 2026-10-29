@@ -402,6 +402,29 @@ impl ShellOverlayHost {
         Some((ActionSessionSource::new(broker), live))
     }
 
+    /// A development session's test control asks to activate the control
+    /// `test_id` in the focused window.
+    pub(crate) fn queue_test_activation(&mut self, test_id: String) {
+        self.test_activations.push(test_id);
+    }
+
+    /// The test ids queued to activate, with the focused app whose windows
+    /// are asked; nothing while no app window is focused.
+    pub(crate) fn take_test_activations(&mut self) -> Option<(String, Vec<String>)> {
+        if self.test_activations.is_empty() {
+            return None;
+        }
+        let activations = std::mem::take(&mut self.test_activations);
+        let Some(app) = self.focused_app_id() else {
+            tracing::warn!(
+                ?activations,
+                "a test control asked to activate controls while no app window is focused"
+            );
+            return None;
+        };
+        Some((app, activations))
+    }
+
     fn focused_app_id(&self) -> Option<String> {
         self.chrome
             .as_ref()?

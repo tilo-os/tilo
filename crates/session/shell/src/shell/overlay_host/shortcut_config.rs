@@ -125,7 +125,7 @@ impl ShellOverlayHost {
     /// them: it does not follow the settings file.
     pub fn set_desktop_controls_config(
         &mut self,
-        config: settings_store::hardware::DesktopControlsConfig,
+        config: settings_store::desktop_controls::DesktopControlsConfig,
     ) {
         if let DesktopControlsSource::Persisted(cached) = &mut self.desktop_controls {
             *cached = config;
@@ -490,12 +490,12 @@ pub(super) enum PrintScreenArbitration {
 /// refreshes it at its settings reload point, so key dispatch and paint
 /// never read the file.
 pub(super) enum DesktopControlsSource {
-    Persisted(settings_store::hardware::DesktopControlsConfig),
-    Explicit(settings_store::hardware::DesktopControlsConfig),
+    Persisted(settings_store::desktop_controls::DesktopControlsConfig),
+    Explicit(settings_store::desktop_controls::DesktopControlsConfig),
 }
 
 impl DesktopControlsSource {
-    pub(super) fn config(&self) -> settings_store::hardware::DesktopControlsConfig {
+    pub(super) fn config(&self) -> settings_store::desktop_controls::DesktopControlsConfig {
         match self {
             Self::Persisted(config) | Self::Explicit(config) => *config,
         }

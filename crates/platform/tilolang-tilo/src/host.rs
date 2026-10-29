@@ -555,6 +555,15 @@ impl Host {
         self.inner.runtime.set_clock(clock);
     }
 
+    /// What the platform's phrases say in the person's language (`phrase(...)`, and what a
+    /// reference to a resource they do not hold says wherever rich text is read for them).
+    pub fn set_phrases(&self, phrases: impl Fn(&str, &[(String, String)]) -> String + 'static) {
+        self.inner.runtime.set_phrases(phrases);
+        self.inner
+            .store
+            .set_unshared(&self.inner.runtime.unshared());
+    }
+
     /// The handle the door's closures hold.
     #[must_use]
     pub fn handle(&self) -> HostHandle {

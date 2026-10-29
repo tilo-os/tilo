@@ -145,6 +145,20 @@ files = [
   { from = "tilo-net-answers", to = "/usr/libexec/tilo-net-answers", mode = "0755" },
 ]
 
+# The session audio helper: persistent audio transforms (balance, mono,
+# echo cancellation) and the hotplug policy, started by the compositor with
+# the session so the compositor drives no audio graph itself.
+[[component]]
+name = "audio-service"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-audio-service"]
+bins = ["tilo-audio"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-audio", to = "/usr/libexec/tilo-audio", mode = "0755" },
+]
+
 # The control-socket CLI, the one way agents and scripts drive a running
 # desktop (AGENTS.md): the action model over the device admin's control socket
 # in every image, plus synthetic input over a dev session's test-control

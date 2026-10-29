@@ -4,7 +4,7 @@
 # shipped with it.
 #
 # An app's manifest names the runtime builds it runs on: `[package].runtime`
-# and the `[package].optional-runtimes` it mounts when present (the Browser's
+# and the further runtimes it requires, `[package].optional-runtimes` (the Browser's
 # Chromium engine). The launcher resolves each by exact version, so an image
 # whose store lists an app but whose /usr/lib/tilo-runtime lacks that build
 # boots into an app that says "not installed". This reads the manifests of the

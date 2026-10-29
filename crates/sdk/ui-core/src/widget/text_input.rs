@@ -35,9 +35,7 @@ use crate::widget::code_editor::{Highlighter, Span};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::control_size::ControlSize;
 use crate::widget::mention_picker::MentionCandidate;
-use crate::widget::text_completion::{
-    CompletionKey, CompletionKind, CompletionList, TextCompletion,
-};
+use crate::widget::text_completion::{CompletionKey, CompletionList, TextCompletion};
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -466,6 +464,12 @@ pub struct TextInput {
     /// People an app knows of that the room's presence does not, offered
     /// after the roster for `@` completion.
     mention_candidates: Vec<MentionCandidate>,
+    /// What picking "Create …" in a drawer runs.
+    on_completion_create: Option<Box<dyn FnMut(char, &str)>>,
+    /// What picking a command from a `/` drawer runs.
+    on_command: Option<Box<dyn FnMut(&crate::widget::completion::Candidate)>>,
+    /// What writing a candidate that names a reference runs.
+    on_reference_inserted: Option<Box<dyn FnMut(char, std::ops::Range<usize>, &str)>>,
     /// The roster the last draw saw, merged with `mention_candidates`: what
     /// a keystroke between draws completes from.
     mention_roster: Vec<MentionCandidate>,
@@ -818,6 +822,9 @@ impl TextInput {
             completion: CompletionList::default(),
             completion_setting: None,
             mention_candidates: Vec::new(),
+            on_completion_create: None,
+            on_command: None,
+            on_reference_inserted: None,
             mention_roster: Vec::new(),
             spellcheck: None,
             autocorrect: None,
@@ -3739,6 +3746,11 @@ impl TextInput {
         self
     }
 
+    /// See [`Self::with_accessible_name`].
+    pub fn set_accessible_name(&mut self, name: impl Into<String>) {
+        self.accessible_name = name.into();
+    }
+
     pub fn set_placeholder(&mut self, hint: &str) {
         self.placeholder = hint.to_string();
     }
@@ -5856,6 +5868,7 @@ impl Widget for TextInput {
                 self.draw_multiline_shaped(scene, transform, text_renderer, theme, &shape, visible);
             }
             self.draw_spelling(scene, transform, theme);
+            self.draw_pending_token(scene, transform, theme);
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
             self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
@@ -5962,6 +5975,7 @@ impl Widget for TextInput {
         self.draw_spelling(scene, transform, theme);
         #[cfg(test)]
         drop(spelling_probe);
+        self.draw_pending_token(scene, transform, theme);
         self.draw_autocorrection(scene, transform, theme);
         self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
         self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
@@ -6008,8 +6022,8 @@ impl Widget for TextInput {
             && self.is_focused
             && self.completion.contains(self.last_mouse_pos)
         {
-            if let Some(row) = self.completion.click_at(self.last_mouse_pos) {
-                self.accept_completion(&row);
+            if let Some(pick) = self.completion.click_at(self.last_mouse_pos) {
+                self.accept_completion(pick);
             }
             *ctx.handled = true;
             return;
@@ -6062,6 +6076,9 @@ impl Widget for TextInput {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(*position, ctx.scale_factor, ctx.handled);
+                if self.completion.hover_at(self.last_mouse_pos) {
+                    self.dirty = true;
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -6258,8 +6275,9 @@ impl Widget for TextInput {
     fn is_focused(&self) -> bool {
         self.is_focused
     }
+    /// An open completion drawer takes Tab to insert its selected row.
     fn wants_tab_input(&self) -> bool {
-        self.tab_spaces.is_some()
+        self.tab_spaces.is_some() || self.completion.is_open()
     }
     fn ime_cursor_rect(&self) -> Option<Rect> {
         if !self.is_focused || self.effectively_disabled() {
@@ -6384,6 +6402,9 @@ impl Widget for TextInput {
                     .with_action_target(ACCESSORY_TARGET),
             ]);
         }
+        if let Some(drawer) = self.completion.access() {
+            node.children.push(drawer);
+        }
         Some(node)
     }
 
@@ -6481,7 +6502,8 @@ impl Widget for TextInput {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.wheel_glide.is_active()
+        self.completion.is_animating()
+            || self.wheel_glide.is_active()
             || self
                 .wheel_glide
                 .give_needs_frame(crate::motion::frame_now())
@@ -7185,9 +7207,9 @@ impl TextInput {
                     *handled = true;
                     return;
                 }
-                CompletionKey::Accept(row) => {
+                CompletionKey::Accept(pick) => {
                     *handled = true;
-                    self.accept_completion(&row);
+                    self.accept_completion(pick);
                     return;
                 }
                 CompletionKey::Pass => {}
@@ -7309,142 +7331,6 @@ impl TextInput {
         crate::tokens::colors::PERMISSION_DENIED_SCRIM;
 }
 
-impl TextInput {
-    /// What this field offers inline: emoji from the toolkit's catalogue
-    /// and mentions from the room's roster, both by default for prose. A
-    /// secret or numeric field offers neither whatever its owner asks, so
-    /// nothing can be inserted into it and nothing echoes it.
-    #[must_use]
-    pub fn completion(&self) -> TextCompletion {
-        if self.holds_secret() || self.kind.refuses_completion() {
-            return TextCompletion::PLAIN;
-        }
-        self.completion_setting
-            .unwrap_or_else(|| self.kind.default_completion())
-    }
-
-    /// Set what the field offers inline. Mark a search field, a code field,
-    /// a URL or a terminal plain here: `:` and `@` are syntax there, so
-    /// completion is wrong rather than unavailable.
-    #[must_use]
-    pub fn with_completion(mut self, completion: TextCompletion) -> Self {
-        self.set_completion(completion);
-        self
-    }
-
-    /// [`Self::with_completion`] on a live field.
-    pub fn set_completion(&mut self, completion: TextCompletion) {
-        self.completion_setting = Some(completion);
-        self.refresh_completion();
-    }
-
-    /// People the app knows of that the room's presence does not (someone
-    /// who wrote in a channel and has since left): offered after the
-    /// roster for `@` completion.
-    #[must_use]
-    pub fn with_mention_candidates(mut self, candidates: Vec<MentionCandidate>) -> Self {
-        self.mention_candidates = candidates;
-        self
-    }
-
-    /// [`Self::with_mention_candidates`] on a live field.
-    pub fn set_mention_candidates(&mut self, candidates: Vec<MentionCandidate>) {
-        self.mention_candidates = candidates;
-        self.refresh_completion();
-    }
-
-    /// Whether a `:emoji:` or `@mention` candidate list is open beside the
-    /// caret.
-    #[must_use]
-    pub fn is_completion_open(&self) -> bool {
-        self.completion.is_open()
-    }
-
-    /// The roster completion ranks: what the last frame saw, plus the
-    /// app-supplied candidates, by name as the mention picker lists them.
-    fn completion_roster(&self) -> Vec<MentionCandidate> {
-        let mut roster = self.mention_roster.clone();
-        for extra in &self.mention_candidates {
-            if !roster.iter().any(|known| known.id == extra.id) {
-                roster.push(extra.clone());
-            }
-        }
-        roster.sort_by(|a, b| {
-            a.name
-                .to_lowercase()
-                .cmp(&b.name.to_lowercase())
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        roster
-    }
-
-    /// Open, narrow or close the candidate list from the caret, unless the
-    /// field is not focused, is masked, is composing with an input method,
-    /// or offers nothing.
-    fn refresh_completion(&mut self) {
-        if !self.is_focused
-            || self.effectively_disabled()
-            || self.read_only
-            || self.is_composing()
-            || self.completion().is_plain()
-        {
-            self.completion.close();
-            return;
-        }
-        let setting = self.completion();
-        let roster = self.completion_roster();
-        self.completion
-            .follow(&self.text, self.core.caret(), &roster, setting);
-    }
-
-    /// Put the accepted row in place of the token that offered it: the emoji
-    /// character, a workspace emoji written `:name:`, or the mention's name.
-    fn accept_completion(&mut self, row: &crate::widget::autocomplete::Suggestion) -> bool {
-        let Some(token) = self.completion.token().cloned() else {
-            return false;
-        };
-        let end = token.end.min(self.text.len());
-        let Some(expected) = self.text.get(token.start..end) else {
-            return false;
-        };
-        let expected = expected.to_owned();
-        let value = row.value.clone();
-        // The accepted form is no longer a token being typed: a mention's
-        // `@Name` must not offer itself again, nor an emoji's shortcode.
-        self.completion.dismiss();
-        if !self.replace_range(token.start..end, &expected, &value) {
-            return false;
-        }
-        self.set_cursor_pos(token.start.saturating_add(value.len()));
-        if token.kind == CompletionKind::Emoji {
-            crate::emoji_catalogue::record_recent(&value);
-        }
-        true
-    }
-
-    fn paint_completion(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        if !self.completion.is_open() {
-            return;
-        }
-        let caret = self.caret_rect(theme, self.core.caret());
-        self.completion.paint(
-            scene,
-            transform,
-            text,
-            theme,
-            caret,
-            presence.viewport.get(),
-        );
-    }
-}
-
 #[cfg(test)]
 #[path = "text_input_tests.rs"]
 mod tests;
@@ -7459,3 +7345,4 @@ mod touch_tests;
 
 mod component;
 pub use component::TextInputProps;
+mod completion;

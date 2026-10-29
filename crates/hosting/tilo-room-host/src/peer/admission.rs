@@ -9,8 +9,7 @@ use super::{
     PreparedRecipients, PublicationFrames, PublicationScope, ReplayCatchup, ReplayPendingTarget,
     ReplayPendingWork, SelectedPublication, SessionLease, SharedWorkspace, StateCommit,
     StateSource, Step, StoreError, WorkLimit, captured_live_current, live_budget,
-    retention_publication_kind, steward_audience, steward_only_delta, test_point,
-    trace_native_publication,
+    retention_publication_kind, test_point, trace_native_publication,
 };
 
 pub(super) async fn enqueue_state(
@@ -326,7 +325,7 @@ fn state_timing_steps(host: bool, delta: &[u8]) -> (&'static str, &'static str) 
 }
 
 /// [`state_timing_steps`] for a member's checkpoint: the governance it
-/// carries, when it is a channel request, acknowledgement or certificate.
+/// carries, when it is a channel request, commit or certificate.
 fn device_checkpoint_steps(delta: &[u8]) -> (&'static str, &'static str) {
     use neighbour_wire::NeighbourMsg;
     let plain = ("state.checkpoint.persist", "state.checkpoint.publish");
@@ -344,9 +343,9 @@ fn device_checkpoint_steps(delta: &[u8]) -> (&'static str, &'static str) {
             "state.checkpoint.routed_request.persist",
             "state.checkpoint.routed_request.publish",
         ),
-        Ok(NeighbourMsg::MlsGovernanceAck { .. }) => (
-            "state.checkpoint.ack.persist",
-            "state.checkpoint.ack.publish",
+        Ok(NeighbourMsg::MlsGovernance { .. }) => (
+            "state.checkpoint.commit.persist",
+            "state.checkpoint.commit.publish",
         ),
         Ok(NeighbourMsg::IdentityHello { .. }) => (
             "state.checkpoint.hello.persist",
@@ -382,9 +381,6 @@ pub(super) async fn enqueue_state_inner(
     let timed_bytes = delta_len as u64;
     trace_native_publication("admission_started", &envelope, None);
     let (payloads, store) = authorize_admission(workspace, &envelope, source.as_ref()).await?;
-    // What only a channel's steward reads goes to the room's governor alone
-    // when this relay governs the room (`steward_audience`).
-    let steward_only = steward_only_delta(&*payloads, delta);
     let owner = crate::persistence::handle(workspace).await;
     let continuity_evidence = source.as_ref().and_then(|source| {
         crate::store::continuity::Evidence::authenticated(&*payloads, &envelope, &source.peer)
@@ -401,14 +397,7 @@ pub(super) async fn enqueue_state_inner(
     let admission_trace = StateAdmissionTrace::new(&envelope);
     let mut wait_trace = AdmissionWaitTrace(admission_trace.clone());
     let durable = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let preparation = prepare_admission(
-        workspace.clone(),
-        source.clone(),
-        author,
-        role,
-        delta_len,
-        steward_only,
-    );
+    let preparation = prepare_admission(workspace.clone(), source.clone(), author, role, delta_len);
     let mut turn = StateTurn {
         envelope: Some(envelope),
         sync,
@@ -539,7 +528,6 @@ async fn prepare_admission(
     author: [u8; 32],
     role: crate::auth::PeerRole,
     delta_len: usize,
-    steward_only: bool,
 ) -> Result<AdmissionRecipients, crate::store::StoreError> {
     let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
     if source
@@ -568,9 +556,6 @@ async fn prepare_admission(
     }
     // Include admitted cross-user live members; explicit device membership is
     // not the only signed-room authority supported by subscriptions.
-    // A change only the steward reads reaches no other session, live
-    // or through a catch-up.
-    let steward = steward_audience(&runtime, steward_only);
     // A device's own change is not sent back to it. What the host commits
     // itself (the governor's decisions, a room bot's writes) no session
     // sent, so it reaches the host device's own session too: the room
@@ -583,9 +568,6 @@ async fn prepare_admission(
         .filter(|(key, sub)| {
             (**key != author || host_commit)
                 && !(role == crate::auth::PeerRole::PeerRelay && runtime.federated(key, sub))
-                && steward
-                    .as_ref()
-                    .is_none_or(|steward| steward.contains(*key))
         })
         .map(|(key, sub)| (*key, sub.tx.clone()))
         .collect::<Vec<_>>();

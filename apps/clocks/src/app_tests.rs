@@ -48,12 +48,15 @@ fn closed_alarm_activation_reopens_the_same_record_at_the_exact_alarm() {
     reopened
         .with_surface::<super::ClocksApp, _>(|surface| {
             assert_eq!(
-                surface.mode.get(),
+                surface.store.mode.get(),
                 super::ALARMS,
                 "a running timer must not redirect the alarm activation"
             );
             assert_eq!(
-                surface.state.with(|shown| shown.selected_alarm.clone()),
+                surface
+                    .store
+                    .state
+                    .with(|shown| shown.selected_alarm.clone()),
                 Some(id)
             );
         })
@@ -77,9 +80,12 @@ fn live_alarm_activation_returns_from_another_record_to_the_source_alarm() {
     app.harness().relayout();
     assert_eq!(app.record(), &source);
     app.with_surface::<super::ClocksApp, _>(|surface| {
-        assert_eq!(surface.mode.get(), super::ALARMS);
+        assert_eq!(surface.store.mode.get(), super::ALARMS);
         assert_eq!(
-            surface.state.with(|shown| shown.selected_alarm.clone()),
+            surface
+                .store
+                .state
+                .with(|shown| shown.selected_alarm.clone()),
             Some(alarm)
         );
     })
@@ -104,7 +110,10 @@ fn semantic_alarm_open_rejects_missing_targets_without_changing_selection() {
     );
     app.with_surface::<super::ClocksApp, _>(|surface| {
         assert_eq!(
-            surface.state.with(|shown| shown.selected_alarm.clone()),
+            surface
+                .store
+                .state
+                .with(|shown| shown.selected_alarm.clone()),
             Some(id)
         );
     })
@@ -459,7 +468,7 @@ fn every_section_has_its_own_icon() {
 #[test]
 fn the_repeat_days_are_one_strip_that_sets_the_new_alarms_days() {
     let mut app = TestApp::<ClocksShell>::capture_at(None, (1280, 1400)).unwrap();
-    app.with_surface::<super::ClocksApp, _>(|surface| surface.set_mode(super::ALARMS))
+    app.with_surface::<super::ClocksApp, _>(|surface| surface.store.set_mode(super::ALARMS))
         .unwrap();
     app.settle();
     let targets = app.harness().targets();
@@ -492,7 +501,7 @@ fn the_repeat_days_are_one_strip_that_sets_the_new_alarms_days() {
 #[test]
 fn clicking_a_suggested_city_adds_its_clock() {
     let mut app = TestApp::<ClocksShell>::new().unwrap();
-    app.with_surface::<super::ClocksApp, _>(|surface| surface.set_mode(super::WORLD))
+    app.with_surface::<super::ClocksApp, _>(|surface| surface.store.set_mode(super::WORLD))
         .unwrap();
     app.settle();
     assert!(app.state().world_clocks.is_empty());
@@ -517,7 +526,6 @@ fn clicking_a_suggested_city_adds_its_clock() {
 
 #[test]
 fn staged_navigation_selection_changes_before_the_next_widget_sync() {
-    use ui::framework::ResourceSurface;
     let mut app = TestApp::<ClocksShell>::new().unwrap();
     app.with_surface::<super::ClocksApp, _>(|surface| {
         for (scenario, mode) in [
@@ -526,10 +534,10 @@ fn staged_navigation_selection_changes_before_the_next_widget_sync() {
             ("alarms", super::ALARMS),
             ("stopwatch", super::STOPWATCH),
         ] {
-            surface.stage(Some(scenario));
-            assert_eq!(surface.mode.get(), mode);
+            surface.store.stage(Some(scenario));
+            assert_eq!(surface.store.mode.get(), mode);
             assert_eq!(
-                surface.selection.get(),
+                surface.store.selection.get(),
                 Some(mode.to_string()),
                 "{scenario} must publish one selection immediately"
             );
@@ -581,7 +589,7 @@ fn native_alarm_handoff_does_not_emit_a_second_shell_notice() {
             native_scheduled: true,
         });
         assert!(
-            surface.notice.get().is_some(),
+            surface.store.notice.get().is_some(),
             "the app still explains the due alarm"
         );
         assert!(
@@ -597,7 +605,7 @@ fn native_alarm_handoff_does_not_emit_a_second_shell_notice() {
         .unwrap();
     app.with_surface::<super::ClocksApp, _>(|surface| {
         assert!(
-            surface.notice.get().is_none(),
+            surface.store.notice.get().is_none(),
             "semantic dismissal clears the device's notice"
         );
     })
@@ -609,7 +617,7 @@ fn native_alarm_handoff_does_not_emit_a_second_shell_notice() {
 #[test]
 fn a_running_stopwatch_counts_up_with_no_input() {
     let mut app = TestApp::<ClocksShell>::new().unwrap();
-    app.with_surface::<super::ClocksApp, _>(|surface| surface.set_mode(super::STOPWATCH))
+    app.with_surface::<super::ClocksApp, _>(|surface| surface.store.set_mode(super::STOPWATCH))
         .unwrap();
     let started = ui::time::wall();
     let shows = |app: &mut TestApp<ClocksShell>, text: &str| {

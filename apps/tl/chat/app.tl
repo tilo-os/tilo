@@ -66,9 +66,10 @@ action send(c: Conversation, text: Text) (icon: .send, label: "Send") {
     if text != "" { post(c, text, "") }
 }
 
-/// The chat's window: its conversations, each opening in a window of its own.
+/// The chat's window: its conversations, the latest active first, each opening in a window of
+/// its own. A post is a change of its conversation; an edit of a message, or a draft, is not.
 view chats(all: Conversations) {
-    std.list(all, all, empty: "No conversations yet")
+    std.list(all, all.sort_by(c -> updated(c), desc), empty: "No conversations yet")
 }
 
 /// What a message says in a line: its text, or that it holds a block.
@@ -138,57 +139,59 @@ scenario "a busy workspace" -> Conversation {
     as ada at 2026-06-30T07:52Z {
         post(plans, "Platform four, by the coffee stand.", "")
     }
-    let release = conversations.insert(Conversation(title: "Release checklist"))
+    // Each conversation is started when its first message is posted, so the list's order,
+    // the latest activity first, is that of their last messages.
     as leo at 2026-06-30T06:40Z {
+        let release = conversations.insert(Conversation(title: "Release checklist"))
         post(release, "Docs still need the new screenshots.", "")
+        as ada at 2026-06-30T07:15Z {
+            post(release, "I'll take the screenshots after lunch.", "")
+        }
     }
-    as ada at 2026-06-30T07:15Z {
-        post(release, "I'll take the screenshots after lunch.", "")
-    }
-    let flat = conversations.insert(Conversation(title: "Flat hunting"))
     as invoker at 2026-06-29T15:10Z {
+        let flat = conversations.insert(Conversation(title: "Flat hunting"))
         post(flat, "The one on Elm Street has a balcony.", "")
+        as mia at 2026-06-29T16:45Z {
+            post(flat, "Viewing is Saturday at eleven, bring the deposit papers.", "")
+        }
     }
-    as mia at 2026-06-29T16:45Z {
-        post(flat, "Viewing is Saturday at eleven, bring the deposit papers.", "")
-    }
-    let books = conversations.insert(Conversation(title: "Book club: Piranesi"))
     as ada at 2026-06-28T19:30Z {
+        let books = conversations.insert(Conversation(title: "Book club: Piranesi"))
         post(books, "Halfway through. The statues are wonderful.", "")
     }
-    let design = conversations.insert(Conversation(title: "Design review"))
     as leo at 2026-06-27T10:05Z {
+        let design = conversations.insert(Conversation(title: "Design review"))
         post(design, "The sidebar collapses too early at large text.", "")
+        as invoker at 2026-06-27T10:12Z {
+            post(design, "Agreed, I'll look at the thresholds.", "")
+        }
     }
-    as invoker at 2026-06-27T10:12Z {
-        post(design, "Agreed, I'll look at the thresholds.", "")
-    }
-    let birthday = conversations.insert(Conversation(title: "Sam's birthday"))
     as mia at 2026-06-26T18:00Z {
+        let birthday = conversations.insert(Conversation(title: "Sam's birthday"))
         post(birthday, "Concert tickets or a kitchen knife?", "")
     }
-    let garden = conversations.insert(Conversation(title: "Garden allotment"))
     as leo at 2026-06-25T08:30Z {
+        let garden = conversations.insert(Conversation(title: "Garden allotment"))
         post(garden, "The tomatoes need water by Thursday.", "")
     }
-    let running = conversations.insert(Conversation(title: "Running group"))
     as ada at 2026-06-24T06:15Z {
+        let running = conversations.insert(Conversation(title: "Running group"))
         post(running, "Long run on Sunday, fifteen kilometres.", "")
     }
-    let importer = conversations.insert(Conversation(title: "Importer bugs"))
     as leo at 2026-06-22T13:40Z {
+        let importer = conversations.insert(Conversation(title: "Importer bugs"))
         post(importer, "The importer drops tables with merged cells.", "")
     }
-    let recipes = conversations.insert(Conversation(title: "Recipes"))
     as mia at 2026-06-20T17:55Z {
+        let recipes = conversations.insert(Conversation(title: "Recipes"))
         post(recipes, "The lentil soup needs more lemon than you think.", "")
     }
-    let interviews = conversations.insert(Conversation(title: "Interview loop"))
     as invoker at 2026-06-18T09:00Z {
+        let interviews = conversations.insert(Conversation(title: "Interview loop"))
         post(interviews, "Ask about the last project they were proud of.", "")
-    }
-    as ada at 2026-06-18T09:20Z {
-        post(interviews, "I'll take the system design round.", "")
+        as ada at 2026-06-18T09:20Z {
+            post(interviews, "I'll take the system design round.", "")
+        }
     }
     conversations.insert(Conversation(title: "Holiday in August"))
     plans

@@ -110,16 +110,16 @@ pub enum Scope {
     /// Follows the person to every device they sign in on: the device fabric
     /// carries the app's whole personal section between the person's own
     /// devices, the most recent write winning. Keep it small (at most
-    /// [`settings_store::continuity::MAX_PERSONAL_VALUE_BYTES`] serialized):
+    /// [`settings_store::placement::MAX_PERSONAL_VALUE_BYTES`] serialized):
     /// a confirmation preference, a refresh interval, a default sort.
     Personal,
     /// Kept on this device and never sent anywhere: a hardware choice, a
     /// path, a window placement.
     DeviceLocal,
     /// A per-user section shared across apps that another owner declares
-    /// (`locale`, `text_assistance`). How each of its keys travels is that
-    /// section's, reviewed in `settings_store::continuity`. Only its owner
-    /// writes it: a sandboxed app reads it and nothing more.
+    /// (`locale`, `text_assistance`). Whether it follows the person or
+    /// stays on the device is that section's ([`settings_store::placement`]).
+    /// Only its owner writes it: a sandboxed app reads it and nothing more.
     Shared(&'static str),
 }
 
@@ -128,8 +128,8 @@ impl Scope {
     #[must_use]
     pub const fn section(self) -> &'static str {
         match self {
-            Self::Personal => settings_store::continuity::APP_PERSONAL_SECTION,
-            Self::DeviceLocal => settings_store::continuity::APP_DEVICE_LOCAL_SECTION,
+            Self::Personal => settings_store::placement::APP_PERSONAL_SECTION,
+            Self::DeviceLocal => settings_store::placement::APP_DEVICE_LOCAL_SECTION,
             Self::Shared(name) => name,
         }
     }
@@ -604,7 +604,7 @@ fn store_in(
                 let size = serde_json::to_vec(&object)
                     .map_err(std::io::Error::other)?
                     .len();
-                if size > settings_store::continuity::MAX_PERSONAL_VALUE_BYTES {
+                if size > settings_store::placement::MAX_PERSONAL_VALUE_BYTES {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         format!(
@@ -915,15 +915,14 @@ mod tests {
                 "app_device_local": {"so.tilo.example": {"x": 40}}
             })
         );
-        // The device fabric carries the personal sections and nothing else.
+        // The device fabric carries the person's section and not the device's.
         assert_eq!(
-            settings_store::continuity::personal_values(&document)
-                .keys()
-                .collect::<Vec<_>>(),
-            [
-                "tilo.app_personal.so.tilo.example",
-                "tilo.app_personal.so.tilo.other"
-            ]
+            settings_store::placement::holder("app_personal"),
+            settings_store::placement::Holder::Person
+        );
+        assert_eq!(
+            settings_store::placement::holder("app_device_local"),
+            settings_store::placement::Holder::Device
         );
         assert_eq!(
             storage.settings::<Prefs>().get(),

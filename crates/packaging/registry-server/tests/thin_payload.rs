@@ -457,11 +457,24 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
             &format!("http://{host}/pkg"),
         );
         let storage = Storage::open(tmp.path().join("data")).unwrap();
+        // Even beside a developer session whose publisher list names this
+        // key (package_store::size_limit), under which a development store
+        // installs the session's own builds above the limit: the registry
+        // holds every application to it.
+        let list = tmp.path().join("developer-publishers.txt");
+        std::fs::write(
+            &list,
+            format!("{}\n", hex::encode(identity.public_key_bytes())),
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &list);
         let (entry, review_storage) = (published.entry.clone(), storage.clone());
         let error = tokio::task::spawn_blocking(move || review(&review_storage, &entry))
             .await
             .unwrap()
             .unwrap_err();
+        drop(env);
         assert!(
             matches!(error, BundleReviewError::TooLarge { limit, .. } if limit == tilo_app_package::MAX_APP_TAPP_BYTES),
             "{error}"

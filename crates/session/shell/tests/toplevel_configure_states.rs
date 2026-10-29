@@ -536,15 +536,21 @@ fn a_page_fullscreen_request_takes_the_output_and_exit_gives_it_back() {
     store.note_placement(id, Rect::new(0.0, 0.0, 320.0, 820.0));
     shell::shell::foreign::flush_configures(&mut h.state);
     h.pump();
-    assert_eq!(h.state.fullscreen_group, None);
+    assert_eq!(h.state.client_fullscreen_group(), None);
 
     toplevel.set_fullscreen(None);
     h.pump();
-    let entered = (h.state.fullscreen_group, h.last_states("org.tilo.Browser"));
+    let entered = (
+        h.state.client_fullscreen_group(),
+        h.last_states("org.tilo.Browser"),
+    );
 
     toplevel.unset_fullscreen();
     h.pump();
-    let left = (h.state.fullscreen_group, h.last_states("org.tilo.Browser"));
+    let left = (
+        h.state.client_fullscreen_group(),
+        h.last_states("org.tilo.Browser"),
+    );
     drop(h);
     store.forget(id);
 
@@ -583,13 +589,13 @@ fn opening_a_window_ends_a_full_screen_and_a_provisional_one_does_not() {
     h.focus(id);
     toplevel.set_fullscreen(None);
     h.pump();
-    let entered = h.state.fullscreen_group;
+    let entered = h.state.client_fullscreen_group();
 
     // Another client's toplevel arrives with no frame yet: provisional.
     let (_dialog_surface, _dialog_xdg, dialog) =
         h.open(&compositor, &wm_base, "org.example.Opening");
     let after_provisional = h.state.leave_fullscreen_when_focus_moved(None);
-    let kept = h.state.fullscreen_group;
+    let kept = h.state.client_fullscreen_group();
 
     // The person opens an app from search: it lands beside the page, focused.
     {
@@ -611,7 +617,10 @@ fn opening_a_window_ends_a_full_screen_and_a_provisional_one_does_not() {
     }
     let user_left = h.state.leave_fullscreen_when_focus_moved(None);
     h.pump();
-    let left = (h.state.fullscreen_group, h.last_states("org.tilo.Browser"));
+    let left = (
+        h.state.client_fullscreen_group(),
+        h.last_states("org.tilo.Browser"),
+    );
     drop(h);
     store.forget(id);
     store.forget(dialog);
@@ -745,7 +754,7 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
     h.focus(id);
     toplevel.set_fullscreen(None);
     h.pump();
-    let entered_beside = h.state.fullscreen_group;
+    let entered_beside = h.state.client_fullscreen_group();
     {
         let mut tree = h.state.workspace_tree.write();
         shell::shell::tab_binding::place_tab(
@@ -757,7 +766,7 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
     let super_f_left_beside = h.state.leave_fullscreen_when_focus_moved(Some(video_group));
     h.pump();
     let here = (
-        h.state.fullscreen_group,
+        h.state.client_fullscreen_group(),
         h.last_states("org.tilo.Video"),
         focused_tab(&h.state),
     );
@@ -787,7 +796,7 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
     h.focus(id);
     toplevel.set_fullscreen(None);
     h.pump();
-    let entered_elsewhere = h.state.fullscreen_group;
+    let entered_elsewhere = h.state.client_fullscreen_group();
     {
         let mut tree = h.state.workspace_tree.write();
         shell::shell::tab_binding::place_tab(
@@ -799,7 +808,7 @@ fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
     let super_f_left_elsewhere = h.state.leave_fullscreen_when_focus_moved(Some(video_group));
     h.pump();
     let there = (
-        h.state.fullscreen_group,
+        h.state.client_fullscreen_group(),
         h.last_states("org.tilo.Video"),
         focused_tab(&h.state),
         {
@@ -966,8 +975,9 @@ impl Harness {
     fn full_screen_tick(&mut self, surface: u64, output: Rect) -> FullScreenTick {
         let group = self.wl.state.client_fullscreen_group();
         self.fb.set_client_fullscreen_group(group);
+        let held = self.wl.state.client_fullscreen_surface();
         self.fb.set_client_fullscreen_surface(
-            group.map(|_| (surface, "Fullscreen".to_owned(), output)),
+            held.map(|held| (held, "Fullscreen".to_owned(), output)),
         );
         let mut scanout = None;
         for _ in 0..2 {
@@ -1148,4 +1158,284 @@ fn search_over_a_full_screen_window(super_f: bool) {
     assert_eq!(after.keyboard, Some(id), "the keyboard is back: {after:?}");
     assert!(after.still_full_screen, "{after:?}");
     assert!(states_after.contains(&FULLSCREEN), "{states_after:?}");
+}
+
+/// Every configure `app_id` received: size and states.
+fn configures_of(h: &Harness, app_id: &str) -> Vec<(i32, i32, Vec<u32>)> {
+    h.client
+        .configures
+        .lock()
+        .expect("configures")
+        .get(app_id)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// A laptop panel at 1920x1080 and scale 1.25 (1536x864 logical) with a
+/// 4K monitor at scale 1.5 to its right, as a downloaded app meets them.
+fn panel_beside_monitor(h: &mut Harness) -> Rect {
+    use shell::compositor::backend::{Output, OutputId};
+    let panel = Output::new(OutputId(0), (1920, 1080), 1.25);
+    let mut monitor = Output::new(OutputId(1), (3840, 2160), 1.5);
+    monitor.position = (1920, 0);
+    monitor.logical_position = (1536, 0);
+    h.state.set_output_layout(&[panel.clone(), monitor]);
+    h.state.output_size = (1536 + 2560, 1440);
+    panel.logical_rect()
+}
+
+/// Open a third-party toplevel (any foreign Wayland client: winit, GTK,
+/// Electron) tiled at `column`, with a frame drawn, and keep its toplevel.
+fn open_foreign(
+    h: &mut Harness,
+    compositor: &wl_compositor::WlCompositor,
+    wm_base: &xdg_wm_base::XdgWmBase,
+    app_id: &'static str,
+    column: Rect,
+) -> (xdg_toplevel::XdgToplevel, u64) {
+    let qh = h.queue.handle();
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, app_id);
+    toplevel.set_app_id(app_id.into());
+    surface.commit();
+    h.pump();
+    std::mem::forget(xdg);
+    std::mem::forget(surface);
+    let id = h.foreign_id(app_id);
+    let store = shell::shell::foreign::store();
+    store.note_placement(id, column);
+    shell::shell::foreign::flush_configures(&mut h.state);
+    h.pump();
+    store.publish_rgba(id, &[10, 20, 30, 255].repeat(64 * 64), 64, 64);
+    (toplevel, id)
+}
+
+/// A downloaded app asks for its own full screen (`set_fullscreen` with no
+/// output, as winit, GTK and Electron do) on a scaled laptop panel beside
+/// a monitor. It is told the panel's exact logical size (not the combined
+/// desktop's), drawn over the whole panel above the top bar and its tab's
+/// header and frame, and the tile still laid out beneath it never sizes it
+/// back. Unsetting it hands back exactly the tile it left.
+#[test]
+fn a_foreign_client_full_screen_covers_its_output_and_unsetting_restores_its_tile() {
+    const FULLSCREEN: u32 = 2;
+    const APP: &str = "rocks.example.Player";
+    let mut h = Harness::with_viewport(VIEWPORT);
+    let panel = panel_beside_monitor(&mut h);
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+    let column = Rect::new(40.0, 60.0, 760.0, 840.0);
+    let (toplevel, id) = open_foreign(&mut h, &compositor, &wm_base, APP, column);
+    h.focus(id);
+    let tiled = h.full_screen_tick(id, panel);
+
+    toplevel.set_fullscreen(None);
+    h.pump();
+    let entered = h.client.configures.lock().expect("configures")[APP]
+        .last()
+        .cloned()
+        .expect("configured");
+    let held = (
+        h.state.client_fullscreen_surface(),
+        h.state.client_fullscreen_group(),
+    );
+    // The extent `reconcile_fullscreen_overlay` gives the full-screen client.
+    let store = shell::shell::foreign::store();
+    store.note_fullscreen_extent(id, (1536, 864));
+    let full = h.full_screen_tick(id, panel);
+    // The tile beneath reports its rect every frame, as layout does.
+    store.note_placement(id, column);
+    shell::shell::foreign::flush_configures(&mut h.state);
+    h.pump();
+    let kept = h.client.configures.lock().expect("configures")[APP]
+        .last()
+        .cloned()
+        .expect("configured");
+
+    toplevel.unset_fullscreen();
+    h.pump();
+    let released = h.state.client_fullscreen_surface();
+    store.note_placement(id, column);
+    shell::shell::foreign::flush_configures(&mut h.state);
+    h.pump();
+    let restored = h.client.configures.lock().expect("configures")[APP]
+        .last()
+        .cloned()
+        .expect("configured");
+    let after = h.full_screen_tick(id, panel);
+    drop(h);
+    store.forget(id);
+
+    assert_eq!(tiled.overlay, None, "{tiled:?}");
+    assert!(entered.2.contains(&FULLSCREEN), "states: {:?}", entered.2);
+    assert_eq!(
+        (entered.0, entered.1),
+        (1536, 864),
+        "the panel's logical size, not the combined desktop's"
+    );
+    assert_eq!(held.0, Some(id), "the client holds the full screen");
+    assert!(held.1.is_some(), "its tab's group is the full-screen one");
+    assert_eq!(
+        full.overlay,
+        Some((id, panel)),
+        "drawn over the whole panel, above the shell: {full:?}"
+    );
+    assert_eq!(full.keyboard, Some(id), "{full:?}");
+    assert_eq!(
+        (kept.0, kept.1),
+        (1536, 864),
+        "the tile must not resize a full-screen client to its column"
+    );
+    assert!(kept.2.contains(&FULLSCREEN), "states: {:?}", kept.2);
+
+    assert_eq!(released, None, "unset_fullscreen ends it");
+    assert!(
+        !restored.2.contains(&FULLSCREEN),
+        "states: {:?}",
+        restored.2
+    );
+    assert_eq!(
+        (restored.0, restored.1),
+        (720, 780),
+        "leaving full screen gives the client its column back"
+    );
+    assert_eq!(after.overlay, None, "{after:?}");
+    assert!(!after.still_full_screen, "{after:?}");
+    assert_eq!(
+        after.tile, tiled.tile,
+        "the tiling it left is the tiling it returns to"
+    );
+}
+
+/// Being told `Fullscreen` and being shown full screen are one state. A
+/// client whose window has no tab in the strips is still promoted when it
+/// asks; while it is, no configure of the tile underneath carries
+/// `Fullscreen` at a tile's size; and its unset ends it.
+#[test]
+fn a_client_told_it_is_full_screen_is_always_shown_full_screen() {
+    const FULLSCREEN: u32 = 2;
+    const APP: &str = "rocks.example.Untabbed";
+    let mut h = Harness::with_viewport(VIEWPORT);
+    let panel = panel_beside_monitor(&mut h);
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+    let column = Rect::new(40.0, 60.0, 760.0, 840.0);
+    let (toplevel, id) = open_foreign(&mut h, &compositor, &wm_base, APP, column);
+    // Its tab is gone from every strip.
+    {
+        let mut tree = h.state.workspace_tree.write();
+        for strip in tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .flat_map(|workspace| workspace.strips.iter_mut())
+        {
+            for group in &mut strip.window_groups {
+                group.tabs.retain(|tab| {
+                    !matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == id)
+                });
+            }
+            strip.window_groups.retain(|group| !group.tabs.is_empty());
+        }
+    }
+
+    toplevel.set_fullscreen(None);
+    h.pump();
+    let held = h.state.client_fullscreen_surface();
+    let store = shell::shell::foreign::store();
+    store.note_fullscreen_extent(id, (1536, 864));
+    let full = h.full_screen_tick(id, panel);
+    store.note_placement(id, column);
+    shell::shell::foreign::flush_configures(&mut h.state);
+    h.pump();
+    let while_full = configures_of(&h, APP);
+
+    toplevel.unset_fullscreen();
+    h.pump();
+    let released = h.state.client_fullscreen_surface();
+    let left = configures_of(&h, APP).last().cloned().expect("configured");
+    drop(h);
+    store.forget(id);
+
+    assert_eq!(held, Some(id), "a window without a tab is promoted too");
+    assert_eq!(full.overlay, Some((id, panel)), "{full:?}");
+    for (width, height, states) in &while_full {
+        assert!(
+            !states.contains(&FULLSCREEN) || (*width, *height) == (1536, 864),
+            "told Fullscreen at {width}x{height}, which is not its output: {while_full:?}"
+        );
+    }
+    assert_eq!(released, None, "its unset ends it");
+    assert!(!left.2.contains(&FULLSCREEN), "states: {:?}", left.2);
+}
+
+/// A full-screen window whose tab is moved into another window group (a
+/// tab dragged out) still leaves full screen when the client unsets it:
+/// the full screen belongs to the surface, not to the group it started in.
+#[test]
+fn a_full_screen_tab_moved_to_another_group_still_leaves_on_unset() {
+    const APP: &str = "rocks.example.Moved";
+    let mut h = Harness::with_viewport(VIEWPORT);
+    let panel = panel_beside_monitor(&mut h);
+    let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
+    let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
+    h.pump();
+    let column = Rect::new(40.0, 60.0, 760.0, 840.0);
+    let (toplevel, id) = open_foreign(&mut h, &compositor, &wm_base, APP, column);
+    toplevel.set_fullscreen(None);
+    h.pump();
+    let before = h.state.client_fullscreen_group();
+    // Move its tab into a group of its own.
+    {
+        let mut tree = h.state.workspace_tree.write();
+        let strip = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .flat_map(|workspace| workspace.strips.iter_mut())
+            .find(|strip| {
+                strip.window_groups.iter().any(|group| {
+                    group.tabs.iter().any(|tab| {
+                        matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == id)
+                    })
+                })
+            })
+            .expect("the window has a tab");
+        let mut moved = None;
+        for group in &mut strip.window_groups {
+            if let Some(index) = group.tabs.iter().position(|tab| {
+                matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == id)
+            }) {
+                let tab = group.tabs.remove(index);
+                let mut fresh = group.clone();
+                fresh.id = group.id.wrapping_add(0x5eed);
+                fresh.active_tab = tab.id;
+                fresh.tabs = vec![tab];
+                fresh.focus_history.clear();
+                moved = Some(fresh);
+            }
+        }
+        strip.window_groups.retain(|group| !group.tabs.is_empty());
+        strip.window_groups.push(moved.expect("moved"));
+        drop(tree);
+    }
+    let after_move = h.state.client_fullscreen_group();
+    let tick = h.full_screen_tick(id, panel);
+
+    toplevel.unset_fullscreen();
+    h.pump();
+    let released = h.state.client_fullscreen_surface();
+    drop(h);
+    shell::shell::foreign::store().forget(id);
+
+    assert!(before.is_some(), "fixture: it went full screen in its tab");
+    assert!(
+        after_move.is_some() && after_move != before,
+        "the full screen follows the tab to its new group: {before:?} -> {after_move:?}"
+    );
+    assert!(tick.still_full_screen, "{tick:?}");
+    assert_eq!(released, None, "the client's unset ends it");
 }

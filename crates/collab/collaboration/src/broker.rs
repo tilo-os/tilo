@@ -10383,7 +10383,7 @@ mod tests {
     }
 
     /// A route the channel service answered as waiting, or as unavailable
-    /// (no steward known yet), is told when that changes: it is not asked
+    /// (its room's governance unknown yet), is told when that changes: it is not asked
     /// about on a timer while the broker pushes, and a pushed change asks.
     #[test]
     #[cfg(unix)]

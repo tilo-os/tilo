@@ -157,7 +157,7 @@ mod tests {
         );
     }
 
-    // The workspace's policy, re-checked on the steward's own (simulated)
+    // The workspace's policy, re-checked on the owner's own (simulated)
     // interval: the process-wide announcements and expiry timers run on
     // the real clock, which the pumps below outrun, so they are not what
     // decides when the grant ends here.
@@ -166,11 +166,11 @@ mod tests {
         fn governs(&self, room: crate::shell::state::RoomId) -> bool {
             self.0.governs(room)
         }
-        fn steward_of(
+        fn governor_of(
             &self,
             room: crate::shell::state::RoomId,
         ) -> Option<collab_types::Ed25519PublicKey> {
-            self.0.steward_of(room)
+            self.0.governor_of(room)
         }
         fn allowed_devices(
             &self,
@@ -185,7 +185,7 @@ mod tests {
 
     /// A cloud agent run is granted temporary membership, joins, reads the
     /// channel's history and new content, then its grant expires: the
-    /// steward removes it, the keys rotate, and what is written afterwards
+    /// owner removes it, the keys rotate, and what is written afterwards
     /// is closed to it.
     #[allow(
         clippy::too_many_lines,
@@ -206,7 +206,7 @@ mod tests {
 
         const OWNER: u8 = 40;
         const SERVICE: u8 = 41;
-        let owner = hex::encode(public(OWNER).as_bytes());
+        let owner_id = hex::encode(public(OWNER).as_bytes());
         let mut tree = WorkspaceTree::default();
         let workspace = tree.create_hosted_workspace("Brief").0;
         let room = tree.room_of(workspace).unwrap();
@@ -215,15 +215,14 @@ mod tests {
             .iter_mut()
             .find(|ws| ws.id == workspace)
             .unwrap()
-            .set_owner(owner.clone());
+            .set_owner(owner_id.clone());
         let tree = tree.shared();
         let channel =
             collab_types::document_channel_id("so.tilo.writer", &room.to_string(), "brief");
         let artifact = collab_types::ArtifactId::new();
 
         let transport = Arc::new(Room::default());
-        let (steward_dir, service_dir) =
-            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (owner_dir, service_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let open =
             |seed: u8,
              dir: &std::path::Path,
@@ -239,12 +238,12 @@ mod tests {
                 )
                 .unwrap()
             };
-        let mut steward = open(
+        let mut owner = open(
             OWNER,
-            steward_dir.path(),
+            owner_dir.path(),
             Box::new(Polled(
                 WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
-                    .with_stewards(Box::new(|_| {
+                    .with_governors(Box::new(|_| {
                         Some((*public(OWNER).as_bytes(), *public(OWNER).as_bytes()))
                     })),
             )),
@@ -254,30 +253,30 @@ mod tests {
             service_dir.path(),
             Box::new(Directory {
                 governs: false,
-                steward: public(OWNER),
+                governor: public(OWNER),
                 policy: Policy::default(),
             }),
         );
-        let (steward_end, service_end) = (
+        let (owner_end, service_end) = (
             Endpoint::join(&transport, room, 0),
             Endpoint::join(&transport, room, 1),
         );
         // One simulated clock drives every call, so how long the host takes
         // to create groups and seal content cannot outrun the pumps.
         let mut now = Instant::now();
-        let run = |steward: &mut ChannelEncryption,
+        let run = |owner: &mut ChannelEncryption,
                    service: &mut ChannelEncryption,
                    now: &mut Instant,
                    wall: u64,
                    seconds: u64| {
             for _ in 0..seconds.saturating_mul(4) {
                 *now = now.checked_add(Duration::from_millis(250)).unwrap();
-                steward.pump(&steward_end, *now, wall);
+                owner.pump(&owner_end, *now, wall);
                 service.pump(&service_end, *now, wall);
             }
         };
-        let ChannelAccess::Ready(keys) = steward.access(room, channel, now) else {
-            panic!("the steward's device opens its own channel");
+        let ChannelAccess::Ready(keys) = owner.access(room, channel, now) else {
+            panic!("the owner's device opens its own channel");
         };
         let before = keys
             .seal_content(
@@ -292,7 +291,7 @@ mod tests {
             service.access(room, channel, now),
             ChannelAccess::Waiting
         ));
-        run(&mut steward, &mut service, &mut now, 1_000, 5);
+        run(&mut owner, &mut service, &mut now, 1_000, 5);
         assert!(matches!(
             service.access(room, channel, now),
             ChannelAccess::Waiting
@@ -303,16 +302,16 @@ mod tests {
             grant_service_member(
                 &mut tree,
                 workspace,
-                &owner,
+                &owner_id,
                 &public(SERVICE),
                 "Cloud agent: summarise the brief",
                 KindSet::READ_UNDOABLE,
                 Some(2_000),
             )
             .unwrap();
-            tree.govern_requests_here_for_test(&owner);
+            tree.govern_requests_here_for_test(&owner_id);
         }
-        run(&mut steward, &mut service, &mut now, 1_000, 5);
+        run(&mut owner, &mut service, &mut now, 1_000, 5);
         let ChannelAccess::Ready(service_keys) = service.access(room, channel, now) else {
             panic!("a granted service member is admitted");
         };
@@ -322,8 +321,8 @@ mod tests {
                 .is_ok(),
             "it reads the channel's history, like any joiner"
         );
-        let ChannelAccess::Ready(keys) = steward.access(room, channel, now) else {
-            panic!("steward keys");
+        let ChannelAccess::Ready(keys) = owner.access(room, channel, now) else {
+            panic!("owner keys");
         };
         let during = keys
             .seal_content(
@@ -338,14 +337,14 @@ mod tests {
                 .is_ok()
         );
 
-        // The grant's deadline passes: the steward removes the service.
-        run(&mut steward, &mut service, &mut now, 2_000, 5);
+        // The grant's deadline passes: the owner removes the service.
+        run(&mut owner, &mut service, &mut now, 2_000, 5);
         assert!(matches!(
             service.access(room, channel, now),
             ChannelAccess::Removed
         ));
-        let ChannelAccess::Ready(keys) = steward.access(room, channel, now) else {
-            panic!("steward keys");
+        let ChannelAccess::Ready(keys) = owner.access(room, channel, now) else {
+            panic!("owner keys");
         };
         assert!(
             keys.epoch() > service_keys.epoch(),

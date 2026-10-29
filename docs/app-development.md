@@ -217,11 +217,32 @@ resource does not publish fails `TestApp` and `tilo-app check`. A control
 built outside the view (a row a table creates on demand) binds through
 `cx.actions()`: `actions.bind(control, Notes::OPEN.map(..))`.
 
+A control can never hand an action arguments it would refuse for their
+shape. A parameter that must say something takes `NonBlank`, not `String`;
+the only ways to make one are `NonBlank::parse` and reading JSON, so an agent,
+a peer and the view are checked by the same type. A row that creates an item
+from a typed draft binds through `try_map`, which parses the draft:
+
+```rust
+let create = Tracker::CREATE.try_map(move |title: String| {
+    Some(Create { title: NonBlank::parse(&title)?, parent: None })
+});
+let field = cx.actions().submit_draft(TextInput::from_state(&draft), &draft, create.clone());
+let button = cx.actions().bind_draft(Button::new("create", "New issue"), &draft, create);
+```
+
+The button is disabled while the draft does not parse, Enter on a blank field
+does nothing, and a submission clears the draft.
+
 The control emits only an inert typed intent. The app host re-resolves its
 stable address against the fresh resource tree, applies current permissions
 and confirmation policy, and enters the ordinary action door. It never
-auto-confirms a destructive or phrase-confirmed operation; it opens the same
-confirmation flow used by the command palette. Document actions use the shared
+auto-confirms a destructive or phrase-confirmed operation: it asks at the
+control pressed, in a popover beside it with the action's verb and Cancel. A
+press the door refuses (a permission, a state that changed, a remote that
+failed) says why at that control, announced and gone with the next press or
+key; one with no control on screen is said in the window's bar. A click never
+opens search. Document actions use the shared
 collaboration and undo-history executor. Effects and background jobs use the
 same admitted/progress/terminal lifecycle as remote callers. Do not duplicate
 the operation in `on_click`, a private command enum, or a second mutation path.

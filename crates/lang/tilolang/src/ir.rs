@@ -144,6 +144,30 @@ pub struct Module {
     /// The view state templates declare where they expand (`std.list`'s query), by the id of
     /// the view they expand in.
     pub states: Vec<(String, crate::resolve::StateInfo)>,
+    /// The arguments of actions views apply that compute from view state, after the row views
+    /// in `funcs`: the runtime runs each when the control's event fires.
+    pub at_event: Vec<AtEventFn>,
+}
+
+/// An argument of an action a view applies that computes from view state (`set(open, not
+/// open)`, `send(c, "{draft}!")`), as a function of its own: it takes the view state and the
+/// values it reads, and the runtime runs it when the event fires, on the view state as it is
+/// then. Exported as `e_<id>` ([`at_event_export`]).
+#[derive(Clone, Debug)]
+pub struct AtEventFn {
+    /// Index of its function in [`Module::funcs`].
+    pub func: usize,
+    pub id: String,
+    pub name: String,
+    /// The view state it reads and the values from around it, in the order the view passes
+    /// them.
+    pub params: Vec<crate::resolve::ParamInfo>,
+    pub result: Ty,
+}
+
+/// The export of the argument function with id `id` ([`AtEventFn`]).
+pub fn at_event_export(id: &str) -> String {
+    format!("e_{id}")
 }
 
 /// A view the checker made of the body of a UI `for`: one boundary per item, keyed by it, which

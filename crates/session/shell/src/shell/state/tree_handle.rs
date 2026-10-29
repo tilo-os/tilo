@@ -141,14 +141,14 @@ impl RoomReadiness {
 /// The parts of the tree an authorization decision reads: each
 /// workspace's room, owner, roster, grants, permission profiles, tasks,
 /// saved shortcuts (what a person may start, and as whom) and pending
-/// ownership transfer, and the session's person and stewarded rooms. Strips, records,
+/// ownership transfer, and the session's person and sealed rooms. Strips, records,
 /// presence and effect receipts are written on every frame or by the broker
 /// itself and decide nothing.
 #[derive(Default, PartialEq)]
 struct PolicySnapshot {
     workspaces: Vec<WorkspacePolicy>,
     local_person: Option<[u8; 32]>,
-    stewarded_rooms: std::collections::BTreeSet<tilo_desktop_model::RoomId>,
+    sealed_rooms: std::collections::BTreeSet<tilo_desktop_model::RoomId>,
     committed_record_rooms: std::collections::BTreeSet<tilo_desktop_model::RoomId>,
 }
 
@@ -183,7 +183,7 @@ impl PolicySnapshot {
                 })
                 .collect(),
             local_person: tree.local_person,
-            stewarded_rooms: tree.stewarded_rooms.clone(),
+            sealed_rooms: tree.sealed_rooms.clone(),
             committed_record_rooms: tree.committed_record_rooms.clone(),
         }
     }
@@ -207,7 +207,7 @@ impl PolicySnapshot {
                         && seen.pending_ownership_transfer == workspace.pending_ownership_transfer
                 })
             && self.local_person == tree.local_person
-            && self.stewarded_rooms == tree.stewarded_rooms
+            && self.sealed_rooms == tree.sealed_rooms
             && self.committed_record_rooms == tree.committed_record_rooms
     }
 }
@@ -799,11 +799,11 @@ mod tests {
         tilo_test_env::recv("the new owner to wake the armed watch", &wakes);
         assert_ne!(tilo_identity_host::policy_change::epoch(), before);
 
-        // A room this device now stewards: announced.
+        // A room this device now seals: announced.
         let _ = watch.arm();
         let room = handle.read().room_of(workspace).unwrap();
-        handle.write().stewarded_rooms.insert(room);
-        tilo_test_env::recv("stewarding a room to wake the armed watch", &wakes);
+        handle.write().sealed_rooms.insert(room);
+        tilo_test_env::recv("sealing a room to wake the armed watch", &wakes);
     }
 
     /// A launch started while its own thread holds the tree for writing (a

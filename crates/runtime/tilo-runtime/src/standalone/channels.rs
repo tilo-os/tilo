@@ -1,11 +1,13 @@
 //! This device's side of every encrypted channel the profile takes part in.
 //!
-//! The runtime stewards the channels of its own room: it governs that room
-//! and is its only reader, so its apps get their route keys without any
-//! network. In a joined room the room's governing device stewards; this
-//! device asks it for access over the room's relay session. While that
-//! device is offline, channels this device already reads keep their keys
-//! and a new request waits, redelivered until the steward answers; no host
+//! The runtime governs its own room and is its only reader, so it creates
+//! that room's channels and its apps get their route keys without any
+//! network. In a joined room it is one participant among the room's member
+//! devices: it asks them for access over the room's relay session, follows
+//! and checks their commits against the room's governance, and commits
+//! itself when the group falls behind the membership. While nobody who can
+//! admit it is online, channels this device already reads keep their keys
+//! and a new request waits, sent again until a participant answers; no host
 //! ever holds a channel key.
 use super::joined::Joined;
 use channel_crypto::VaultKey;
@@ -35,9 +37,8 @@ use tilo_lock::MutexRecover as _;
 /// it (owner-only).
 const CHANNEL_STATE: &str = "channels";
 const CHANNEL_STATE_KEY: &str = "channel-state.key";
-/// How often governance is pumped while a channel is live: steward
-/// reconciliation and redelivery run on deadlines, as on the desktop's
-/// drainer. With no channel the pump parks until woken.
+/// How often governance is pumped while a channel is live: reconciliation
+/// and requests run on deadlines, as on the desktop's drainer. With no channel the pump parks until woken.
 const LIVE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The running channel service; stops when dropped.
@@ -162,24 +163,27 @@ impl ChannelDirectory for Directory {
         room == self.own_room
     }
 
-    fn steward_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
-        self.joined.steward_of(room)
+    fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
+        if room == self.own_room {
+            return Some(self.device);
+        }
+        self.joined.governor_of(room)
     }
 
-    /// Only the steward asks; this device stewards only its own room, which
-    /// it alone reads, every record of it: no other person is in it to be
-    /// denied one.
+    /// This device alone reads its own room, every record of it: no other
+    /// person is in it to be denied one. A joined room's channel is read by
+    /// the member devices its governance lets read the channel's record.
     fn allowed_devices(
         &self,
         room: RoomId,
-        _channel: collab_types::ChannelId,
-        _route: Option<&collab_types::ChannelRoute>,
-        _now: u64,
+        channel: collab_types::ChannelId,
+        route: Option<&collab_types::ChannelRoute>,
+        now: u64,
     ) -> BTreeSet<Ed25519PublicKey> {
         if room == self.own_room {
             BTreeSet::from([self.device])
         } else {
-            BTreeSet::new()
+            self.joined.channel_readers(room, channel, route, now)
         }
     }
 }

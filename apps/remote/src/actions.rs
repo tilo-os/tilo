@@ -13,7 +13,7 @@
 
 use tilo_actions::ActionSpec;
 use ui::framework::LiveRow;
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource::{self, AbsolutePath, Effect};
 
 use crate::model::{Connection, ConnectionId, ConnectionKind};
 
@@ -61,8 +61,8 @@ pub enum RemoteEffect {
     PutFile {
         #[param("The saved connection whose SSH session receives it")]
         connection: ConnectionId,
-        #[param("The file on this device to send")]
-        local_path: String,
+        #[param("Absolute path of the file on this device to send")]
+        local_path: AbsolutePath,
         #[param("Where to write it on the remote machine")]
         remote_path: String,
     },
@@ -74,8 +74,8 @@ pub enum RemoteEffect {
         connection: ConnectionId,
         #[param("The file on the remote machine to read")]
         remote_path: String,
-        #[param("Where to write it on this device")]
-        local_path: String,
+        #[param("Absolute path to write it to on this device")]
+        local_path: AbsolutePath,
     },
     /// Trust SSH host key.
     #[effect(row, job, privileged)]
@@ -152,11 +152,15 @@ pub fn session_row(
         RemoteEffect::Disconnect { connection: id }.bound(),
         &["network", "session"],
     ));
-    let row = if connection.kind == ConnectionKind::Ssh {
+    // The local path is asked of the caller; the root stands in until then.
+    let asked = AbsolutePath::new("/");
+    let row = if connection.kind == ConnectionKind::Ssh
+        && let Ok(asked) = asked
+    {
         row.operation(tagged(
             RemoteEffect::PutFile {
                 connection: id,
-                local_path: String::new(),
+                local_path: asked.clone(),
                 remote_path: String::new(),
             }
             .bound_asking(&["local_path", "remote_path"])
@@ -169,7 +173,7 @@ pub fn session_row(
             RemoteEffect::FetchFile {
                 connection: id,
                 remote_path: String::new(),
-                local_path: String::new(),
+                local_path: asked,
             }
             .bound_asking(&["remote_path", "local_path"])
             .with_description(
@@ -328,6 +332,14 @@ mod tests {
                 );
             }
         }
+        // A relative local path is refused: it would land wherever Remote runs.
+        let arguments = serde_json::Map::from_iter([
+            ("connection".to_owned(), serde_json::json!(Uuid::new_v4())),
+            ("remote_path".to_owned(), serde_json::json!("/srv/log.txt")),
+            ("local_path".to_owned(), serde_json::json!("log.txt")),
+        ]);
+        let refused = RemoteEffect::decode("fetch-file", &arguments).unwrap_err();
+        assert!(refused.contains("absolute"), "{refused}");
         let mut desktop = sample(Uuid::new_v4(), "Desktop");
         desktop.kind = ConnectionKind::Vnc;
         let (_, actions) = session_actions(&desktop, None);

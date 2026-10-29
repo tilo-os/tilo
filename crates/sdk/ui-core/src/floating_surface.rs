@@ -187,7 +187,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 17;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 18;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 /// What a model may know about one change it is asked to describe: the
@@ -440,6 +440,14 @@ pub enum FloatingSurfaceClientMessage {
         #[serde(default)]
         opening: crate::window_toolbar::SearchOpening,
     },
+    /// Open the session's search on this app, the way the app asked
+    /// ([`crate::search::SearchRequest`]): Ctrl+K, a search button, or one
+    /// of its actions whose arguments the search asks for. Inside a session
+    /// there is one search, the shell's; the app opens none of its own.
+    OpenAppSearch {
+        instance: Option<u64>,
+        request: crate::search::SearchRequest,
+    },
     /// Describe these changes of the resource whose History is open: the
     /// shell asks the model on this device and answers with
     /// [`FloatingSurfaceHostMessage::HistoryDescriptions`]. The app holds no
@@ -611,6 +619,14 @@ pub enum FloatingSurfaceHostMessage {
     Pick {
         request: u64,
         query: crate::pick_wire::PickQuery,
+    },
+    /// A development session's test control activates the control whose
+    /// test id is `test_id` in this app's focused window, as an assistive
+    /// technology activates a control: by what it is, never by where it is
+    /// drawn. Sent to every window of the focused app; only the focused one
+    /// acts. Never sent outside a development session's test control.
+    ActivateTestId {
+        test_id: String,
     },
     /// The person used this app's slots in its window's bar
     /// ([`FloatingSurfaceClientMessage::Toolbar`]), or the bar's search or

@@ -281,6 +281,7 @@ mod tests {
         os::unix::{ffi::OsStrExt, fs::PermissionsExt},
         time::{Duration, Instant},
     };
+    use ui::tilo_resource::AbsolutePath;
 
     fn wait(transfer: &mut Transfer) {
         let deadline = tilo_test_env::hang_deadline();
@@ -312,15 +313,15 @@ mod tests {
 
         let effects = [
             InstallerPreviewEffect::ReviewUserTransfer {
-                source: source.to_str().unwrap().into(),
-                destination: target.to_str().unwrap().into(),
-                journals: journals.to_str().unwrap().into(),
+                source: AbsolutePath::new(&source).unwrap(),
+                destination: AbsolutePath::new(&target).unwrap(),
+                journals: AbsolutePath::new(&journals).unwrap(),
             },
             InstallerPreviewEffect::ReviewInstalledTransfer {
-                private_plans: plans.to_str().unwrap().into(),
+                private_plans: AbsolutePath::new(&plans).unwrap(),
                 operation: "requested-account-custody".into(),
-                destination: target.to_str().unwrap().into(),
-                journals: journals.to_str().unwrap().into(),
+                destination: AbsolutePath::new(&target).unwrap(),
+                journals: AbsolutePath::new(&journals).unwrap(),
                 flatpak_inventory: None,
             },
         ];

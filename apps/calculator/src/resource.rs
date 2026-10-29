@@ -1,19 +1,14 @@
 //! Calculator as a resource: the evaluated history and the saved graphs
 //! are the [`Calculator`] model; mode, expression and cameras stay local
-//! presentation on the surface.
+//! presentation in the window.
 
-use std::rc::Rc;
-
-use ui::framework::{
-    Fixture, LiveRow, ResourceApp, ResourceSelection, ResourceSurface, SurfaceCx, ViewCx,
-};
+use ui::framework::{Fixture, LiveRow, ResourceApp, ResourceSelection, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{self, ActionCx, Collection, Id, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
 use crate::actions::{CalculatorEffect, GraphKind, HISTORY_CAP};
-use crate::app::CalculatorApp;
 use crate::model::{CalcModel, HistoryEntry, PlotFn};
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
@@ -177,7 +172,7 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
-/// Framework app: the calculator widget is the surface over [`Calculator`].
+/// Framework app: the calculator window is the view of [`Calculator`].
 pub struct CalculatorShell;
 
 /// The screenshot scenarios. A plain `--shots` is the lived-in 2D graph;
@@ -215,7 +210,7 @@ impl ResourceApp for CalculatorShell {
     }
 
     fn view(cx: &mut ViewCx<Calculator>) -> Element {
-        cx.surface(CalculatorApp::new())
+        crate::app::window(cx)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -295,34 +290,6 @@ fn scenario_edits(model: &CalcModel) -> Vec<Invoke<Calculator>> {
         })
     });
     history.chain(graphs).filter_map(Result::ok).collect()
-}
-
-impl ResourceSurface<Calculator, CalculatorEffect> for CalculatorApp {
-    fn effect(
-        &mut self,
-        effect: CalculatorEffect,
-        _cx: &mut ui::framework::EffectCx<Calculator, Self>,
-    ) -> ui::framework::EffectAnswer {
-        self.queue_effect(effect)?;
-        Ok(ui::framework::Effected::done())
-    }
-
-    fn present(&mut self, state: &Rc<Calculator>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Calculator>) {
-        self.attach_framework(cx.dispatcher());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    /// Each history entry's recall, merged into its item.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.history_rows()
-    }
 }
 
 #[cfg(test)]

@@ -459,7 +459,7 @@ fn validate_service_manifest(
     if retained
         && (manifest.package_id != RETAINED_IO_PACKAGE_ID
             || manifest.kind != "service"
-            || !manifest.optional_runtimes.is_empty()
+            || !manifest.required_runtimes.is_empty()
             || !manifest.sandbox.portals.is_empty()
             || !manifest.sandbox.services.is_empty()
             || !manifest.sandbox.fs.read.is_empty()

@@ -1,5 +1,6 @@
 use super::*;
 use ui::tilo_resource::Effect as _;
+use ui::widget::{Collaborative as _, SidebarPlacement};
 
 #[test]
 fn shared_menu_layout_matches_the_former_taffy_pass() {
@@ -122,14 +123,17 @@ mod open_with_tests {
             Ok(())
         });
 
-        let mut w = FileExplorerWidget::new();
-        w.entries = ["report.odt", "photo.png", "slides.pdf", "main.rs"]
+        let w = FileExplorerWidget::new();
+        w.state().entries = ["report.odt", "photo.png", "slides.pdf", "main.rs"]
             .iter()
             .map(|f| file_entry(f))
             .collect();
         let mut runner = RecRunner::default();
         for i in 0..4 {
-            assert!(w.open_entry(i, &mut runner).unwrap(), "entry {i} opens");
+            assert!(
+                w.state().open_entry(i, &mut runner).unwrap(),
+                "entry {i} opens"
+            );
         }
 
         assert_eq!(
@@ -146,7 +150,7 @@ mod open_with_tests {
             runner.opened.is_empty(),
             "and does not go behind the host's back to xdg-open"
         );
-        assert_eq!(w.status, None, "a successful open reports nothing");
+        assert_eq!(w.state().status, None, "a successful open reports nothing");
         clear_document_opener();
     }
 
@@ -154,11 +158,14 @@ mod open_with_tests {
     /// it. Activation is never silent.
     fn a_refused_open_is_shown_to_the_user() {
         set_document_opener(|_| Err("no installed app opens .zzz files (thing.zzz)".into()));
-        let mut w = FileExplorerWidget::new();
-        w.entries = vec![file_entry("thing.zzz")];
+        let w = FileExplorerWidget::new();
+        w.state().entries = vec![file_entry("thing.zzz")];
         let mut runner = RecRunner::default();
-        assert!(w.open_entry(0, &mut runner).unwrap());
-        let told = w.notice_line().expect("the refusal is said in a notice");
+        assert!(w.state().open_entry(0, &mut runner).unwrap());
+        let told = w
+            .state()
+            .notice_line()
+            .expect("the refusal is said in a notice");
         assert!(told.contains("thing.zzz"), "must name the file: {told}");
         assert!(told.contains("no installed app"), "and say why: {told}");
         assert!(runner.opened.is_empty(), "a refusal is not a fallback");
@@ -178,28 +185,32 @@ mod open_with_tests {
             "main.rs",
             "report.odt",
         ] {
-            let mut w = FileExplorerWidget::new();
-            w.entries = vec![file_entry(f)];
+            let w = FileExplorerWidget::new();
+            w.state().entries = vec![file_entry(f)];
             let mut runner = RecRunner::default();
-            assert!(w.open_entry(0, &mut runner).unwrap(), "{f} should open");
+            assert!(
+                w.state().open_entry(0, &mut runner).unwrap(),
+                "{f} should open"
+            );
             assert_eq!(runner.opened, vec![PathBuf::from("/docs").join(f)], "{f}");
             assert_eq!(
-                w.status, None,
+                w.state().status,
+                None,
                 "{f}: an open the desktop took reports nothing"
             );
         }
 
         // A desktop that refuses (the shell has no app for it, or the file
         // was never granted) is shown, not swallowed.
-        let mut w = FileExplorerWidget::new();
-        w.entries = vec![file_entry("thing.zzz")];
+        let w = FileExplorerWidget::new();
+        w.state().entries = vec![file_entry("thing.zzz")];
         let mut runner = RecRunner {
             refusal: Some("No installed app opens .zzz files".into()),
             ..RecRunner::default()
         };
-        assert!(w.open_entry(0, &mut runner).unwrap());
+        assert!(w.state().open_entry(0, &mut runner).unwrap());
         assert_eq!(
-            w.notice_line().as_deref(),
+            w.state().notice_line().as_deref(),
             Some(
                 format!(
                     "{}. No installed app opens .zzz files",
@@ -212,11 +223,12 @@ mod open_with_tests {
 
     pub(super) fn context_menu_opens_with_selection_aware_items() {
         let mut w = FileExplorerWidget::new();
-        w.entries = vec![file_entry("a.txt"), file_entry("b.txt")];
-        w.selection.select_only(0);
-        w.open_context_menu(Point::new(40.0, 40.0));
-        assert!(w.context_menu.is_open());
+        w.state().entries = vec![file_entry("a.txt"), file_entry("b.txt")];
+        w.state().selection.select_only(0);
+        w.state().open_context_menu(Point::new(40.0, 40.0));
+        assert!(w.chrome().context_menu.is_open());
         let labels: Vec<String> = w
+            .chrome()
             .context_menu
             .items()
             .iter()
@@ -251,14 +263,15 @@ mod open_with_tests {
     /// two items.
     pub(super) fn menus_never_separate_a_lone_item() {
         let mut w = FileExplorerWidget::new();
-        w.entries = vec![file_entry("a.txt"), file_entry("b.txt")];
+        w.state().entries = vec![file_entry("a.txt"), file_entry("b.txt")];
         for selected in [false, true] {
-            w.selection.clear();
+            w.state().selection.clear();
             if selected {
-                w.selection.select_only(0);
+                w.state().selection.select_only(0);
             }
-            w.open_context_menu(Point::new(10.0, 10.0));
+            w.state().open_context_menu(Point::new(10.0, 10.0));
             let separators: Vec<bool> = w
+                .chrome()
                 .context_menu
                 .items()
                 .iter()
@@ -287,9 +300,10 @@ mod open_with_tests {
     /// how the folder is shown (sorting with a check on the active key).
     pub(super) fn the_folder_menu_holds_the_folder_actions() {
         let mut w = FileExplorerWidget::new();
-        w.entries = vec![file_entry("a.txt")];
-        w.open_context_menu(Point::new(10.0, 10.0));
+        w.state().entries = vec![file_entry("a.txt")];
+        w.state().open_context_menu(Point::new(10.0, 10.0));
         let labels: Vec<String> = w
+            .chrome()
             .context_menu
             .items()
             .iter()
@@ -314,10 +328,11 @@ mod open_with_tests {
 
     pub(super) fn empty_selection_menu_omits_item_actions() {
         let mut w = FileExplorerWidget::new();
-        w.entries = vec![file_entry("a.txt")];
+        w.state().entries = vec![file_entry("a.txt")];
         // No selection.
-        w.open_context_menu(Point::new(10.0, 10.0));
+        w.state().open_context_menu(Point::new(10.0, 10.0));
         let labels: Vec<String> = w
+            .chrome()
             .context_menu
             .items()
             .iter()
@@ -330,14 +345,15 @@ mod open_with_tests {
 
     pub(super) fn copy_then_paste_menu_includes_paste() {
         let mut w = FileExplorerWidget::new();
-        w.entries = vec![file_entry("a.txt")];
-        w.selection.select_only(0);
+        w.state().entries = vec![file_entry("a.txt")];
+        w.state().selection.select_only(0);
         // Simulate a copy populating the clipboard.
-        w.apply_command(crate::command::FileCommand::Copy);
-        assert_eq!(w.clipboard.len(), 1);
-        w.open_context_menu(Point::new(10.0, 10.0));
+        w.state().apply_command(crate::command::FileCommand::Copy);
+        assert_eq!(w.state().clipboard.len(), 1);
+        w.state().open_context_menu(Point::new(10.0, 10.0));
         assert!(
-            w.context_menu
+            w.chrome()
+                .context_menu
                 .items()
                 .iter()
                 .filter_map(|i| i.label().map(std::string::ToString::to_string))
@@ -420,10 +436,10 @@ mod open_with_tests {
     }
 
     fn pdf_widget() -> FileExplorerWidget {
-        let mut w = FileExplorerWidget::new();
-        w.current_path = PathBuf::from("/docs");
-        w.entries = vec![file_entry("slides.pdf"), file_entry("notes.txt")];
-        w.selection.select_only(0);
+        let w = FileExplorerWidget::new();
+        w.state().current_path = PathBuf::from("/docs");
+        w.state().entries = vec![file_entry("slides.pdf"), file_entry("notes.txt")];
+        w.state().selection.select_only(0);
         w
     }
 
@@ -434,15 +450,15 @@ mod open_with_tests {
         // standalone desktop handler.
         set_document_opener(|path| panic!("activation opener used for {}", path.display()));
         let mut w = pdf_widget();
-        w.open_context_menu(Point::new(40.0, 40.0));
-        assert!(menu_labels(&w.context_menu).contains(&"Open with".to_string()));
+        w.state().open_context_menu(Point::new(40.0, 40.0));
+        assert!(menu_labels(&w.chrome().context_menu).contains(&"Open with".to_string()));
 
-        w.open_open_with_submenu(Point::new(200.0, 40.0));
+        w.state().open_open_with_submenu(Point::new(200.0, 40.0));
         assert_eq!(
-            menu_labels(&w.submenu),
+            menu_labels(&w.chrome().submenu),
             vec!["Evince (default)", "PDF Viewer", "Other application…"]
         );
-        let viewer = w.submenu_commands[1].clone().expect("an app row");
+        let viewer = w.chrome().submenu_commands[1].clone().expect("an app row");
         assert_eq!(
             viewer,
             FileCommand::OpenWith {
@@ -451,19 +467,19 @@ mod open_with_tests {
                 always: false,
             }
         );
-        w.apply_command(viewer);
+        w.state().apply_command(viewer);
         assert_eq!(
             route.actions(),
             vec!["open /docs/slides.pdf so.tilo.pdf-viewer"]
         );
-        assert_eq!(w.status, None, "a successful open reports nothing");
+        assert_eq!(w.state().status, None, "a successful open reports nothing");
     }
 
     #[test]
     fn always_use_makes_the_app_the_default_before_opening() {
         let (route, _clear) = pdf_route();
-        let mut w = pdf_widget();
-        w.apply_command(FileCommand::OpenWith {
+        let w = pdf_widget();
+        w.state().apply_command(FileCommand::OpenWith {
             path: PathBuf::from("/docs/slides.pdf"),
             app_id: "so.tilo.pdf-viewer".into(),
             always: true,
@@ -475,43 +491,47 @@ mod open_with_tests {
                 "open /docs/slides.pdf so.tilo.pdf-viewer",
             ]
         );
-        assert_eq!(w.status.as_deref(), Some("PDF Viewer now opens .pdf files"));
+        assert_eq!(
+            w.state().status.as_deref(),
+            Some("PDF Viewer now opens .pdf files")
+        );
     }
 
     #[test]
     fn open_with_is_offered_only_for_one_regular_file() {
         let (_route, _clear) = pdf_route();
-        let mut w = pdf_widget();
-        w.entries.push(Entry {
+        let w = pdf_widget();
+        w.state().entries.push(Entry {
             is_dir: true,
             ..file_entry("Folder")
         });
-        w.selection.select_only(2);
-        assert_eq!(w.open_with_subject(), None, "folders open in Files");
-        w.selection.select_only(0);
-        w.selection.toggle(1);
-        assert_eq!(w.open_with_subject(), None, "one file at a time");
+        w.state().selection.select_only(2);
+        assert_eq!(w.state().open_with_subject(), None, "folders open in Files");
+        w.state().selection.select_only(0);
+        w.state().selection.toggle(1);
+        assert_eq!(w.state().open_with_subject(), None, "one file at a time");
     }
 
     #[test]
     fn without_a_route_open_with_says_so_and_launches_nothing() {
         crate::open_with::clear_open_with_route();
         let mut w = pdf_widget();
-        w.apply_command(FileCommand::OpenWith {
+        w.state().apply_command(FileCommand::OpenWith {
             path: PathBuf::from("/docs/slides.pdf"),
             app_id: "so.tilo.pdf-viewer".into(),
             always: false,
         });
         assert!(
-            w.status
+            w.state()
+                .status
                 .as_deref()
                 .is_some_and(|status| status.contains("slides.pdf")),
             "{:?}",
-            w.status
+            w.state().status
         );
-        w.open_open_with_submenu(Point::new(10.0, 10.0));
+        w.state().open_open_with_submenu(Point::new(10.0, 10.0));
         assert_eq!(
-            menu_labels(&w.submenu),
+            menu_labels(&w.chrome().submenu),
             vec!["No application opens this file"]
         );
     }
@@ -576,10 +596,11 @@ mod open_with_tests {
     fn other_application_searches_every_app_to_open_once_or_always() {
         let (route, _clear) = pdf_route();
         let mut w = pdf_widget();
-        w.apply_command(FileCommand::OpenWithOther);
-        assert!(w.app_chooser_open(), "the shared palette opens");
+        w.state().apply_command(FileCommand::OpenWithOther);
+        assert!(w.state().app_chooser_open(), "the shared palette opens");
         assert!(Widget::traps_focus(&w), "and owns the keyboard");
         let rows: Vec<(String, Option<String>)> = w
+            .state()
             .app_chooser
             .visible_entries()
             .into_iter()
@@ -628,7 +649,7 @@ mod open_with_tests {
                 "open /docs/slides.pdf org.gnome.Evince.desktop",
             ]
         );
-        assert!(!w.app_chooser_open(), "a pick closes the chooser");
+        assert!(!w.state().app_chooser_open(), "a pick closes the chooser");
     }
 
     #[test]
@@ -648,7 +669,8 @@ mod open_with_tests {
     }
 
     fn displayed_names(w: &FileExplorerWidget) -> Vec<String> {
-        w.displayed_entries()
+        w.state()
+            .displayed_entries()
             .iter()
             .map(|entry| entry.name.clone())
             .collect()
@@ -663,8 +685,8 @@ mod open_with_tests {
         }
         set_document_opener(|_| Ok(()));
         let _clear = ClearRoute;
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
-        w.navigate(folder.path().to_path_buf());
+        let w = FileExplorerWidget::with_persistence(Some(config.path()), None);
+        w.state().navigate(folder.path().to_path_buf());
         assert_eq!(displayed_names(&w), vec!["a.txt", "b.txt", "c.txt"]);
         let mut runner = RecRunner::default();
         for name in ["b.txt", "a.txt", "c.txt", "a.txt"] {
@@ -672,19 +694,20 @@ mod open_with_tests {
                 .iter()
                 .position(|candidate| candidate == name)
                 .unwrap();
-            assert!(w.open_entry(index, &mut runner).unwrap());
+            assert!(w.state().open_entry(index, &mut runner).unwrap());
         }
         assert!(runner.opened.is_empty(), "the host opened every file");
 
-        w.apply_command(FileCommand::Navigate(crate::recent::location()));
-        assert!(w.error.is_none(), "{:?}", w.error);
+        w.state()
+            .apply_command(FileCommand::Navigate(crate::recent::location()));
+        assert!(w.state().error.is_none(), "{:?}", w.state().error);
         assert_eq!(
             displayed_names(&w),
             vec!["a.txt", "c.txt", "b.txt"],
             "recency order, not the folder's name sort"
         );
         assert_eq!(
-            crate::breadcrumbs::breadcrumb_components(&w.current_path, None, &[])
+            crate::breadcrumbs::breadcrumb_components(&w.state().current_path, None, &[])
                 .into_iter()
                 .map(|(label, _)| label)
                 .collect::<Vec<_>>(),
@@ -706,7 +729,9 @@ mod open_with_tests {
         .unwrap();
         app.with_surface(|files: &mut FileExplorerWidget| {
             for name in ["b.txt", "a.txt"] {
-                files.note_recent(&folder.path().join(name), crate::recent::RecentUse::Opened);
+                files
+                    .state()
+                    .note_recent(&folder.path().join(name), crate::recent::RecentUse::Opened);
             }
         })
         .unwrap();
@@ -723,6 +748,7 @@ mod open_with_tests {
         let names = app
             .with_surface(|files: &mut FileExplorerWidget| {
                 files
+                    .state()
                     .recent_entries()
                     .iter()
                     .map(|entry| entry.name.clone())
@@ -741,15 +767,16 @@ mod open_with_tests {
         }
         let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
         for name in ["keep.txt", "gone.txt", "drop.txt"] {
-            w.note_recent(&folder.path().join(name), crate::recent::RecentUse::Changed);
+            w.state()
+                .note_recent(&folder.path().join(name), crate::recent::RecentUse::Changed);
         }
         std::fs::remove_file(folder.path().join("gone.txt")).unwrap();
-        w.navigate(crate::recent::location());
+        w.state().navigate(crate::recent::location());
         assert_eq!(displayed_names(&w), vec!["drop.txt", "keep.txt"]);
 
-        w.selection.select_only(0);
-        w.open_context_menu(Point::new(20.0, 20.0));
-        let labels = menu_labels(&w.context_menu);
+        w.state().selection.select_only(0);
+        w.state().open_context_menu(Point::new(20.0, 20.0));
+        let labels = menu_labels(&w.chrome().context_menu);
         assert!(
             labels.contains(&"Open containing folder".to_string()),
             "{labels:?}"
@@ -758,21 +785,23 @@ mod open_with_tests {
         assert!(!labels.contains(&"New folder".to_string()), "{labels:?}");
         assert!(!labels.contains(&"Paste".to_string()));
 
-        w.apply_command(FileCommand::ForgetRecent(folder.path().join("drop.txt")));
+        w.state()
+            .apply_command(FileCommand::ForgetRecent(folder.path().join("drop.txt")));
         assert_eq!(displayed_names(&w), vec!["keep.txt"]);
         assert!(folder.path().join("drop.txt").exists(), "the file stays");
 
-        w.apply_command(FileCommand::NewFolder);
+        w.state().apply_command(FileCommand::NewFolder);
         assert_eq!(
-            w.status.as_deref(),
+            w.state().status.as_deref(),
             Some("Recent is not a folder; open one to add files")
         );
 
-        w.selection.select_only(0);
-        w.apply_command(FileCommand::RevealInFolder(folder.path().join("keep.txt")));
-        assert_eq!(w.current_path, folder.path());
-        let selected = w.selection.primary().unwrap();
-        assert_eq!(w.displayed_entries()[selected].name, "keep.txt");
+        w.state().selection.select_only(0);
+        w.state()
+            .apply_command(FileCommand::RevealInFolder(folder.path().join("keep.txt")));
+        assert_eq!(w.state().current_path, folder.path());
+        let selected = w.state().selection.primary().unwrap();
+        assert_eq!(w.state().displayed_entries()[selected].name, "keep.txt");
     }
 
     #[test]
@@ -780,18 +809,19 @@ mod open_with_tests {
         let config = tempfile::tempdir().unwrap();
         let folder = tempfile::tempdir().unwrap();
         std::fs::write(folder.path().join("draft.txt"), "x").unwrap();
-        let mut w = FileExplorerWidget::with_persistence(Some(config.path()), None);
-        w.navigate(folder.path().to_path_buf());
-        w.note_recent(
+        let w = FileExplorerWidget::with_persistence(Some(config.path()), None);
+        w.state().navigate(folder.path().to_path_buf());
+        w.state().note_recent(
             &folder.path().join("draft.txt"),
             crate::recent::RecentUse::Opened,
         );
-        w.selection.select_only(0);
-        w.begin_rename();
-        w.set_rename_buffer("final.txt".into());
-        assert!(w.commit_rename());
+        w.state().selection.select_only(0);
+        w.state().begin_rename();
+        w.state().set_rename_buffer("final.txt".into());
+        assert!(w.state().commit_rename());
         assert_eq!(
-            w.recent_entries()
+            w.state()
+                .recent_entries()
                 .iter()
                 .map(|entry| entry.name.clone())
                 .collect::<Vec<_>>(),
@@ -804,25 +834,32 @@ mod open_with_tests {
 
         fn discovered_files() -> FileExplorerWidget {
             crate::open_with::clear_open_with_route();
-            let mut files = FileExplorerWidget::new();
-            files.current_path = PathBuf::from("/run/tilo/retained-home/Documents");
+            let files = FileExplorerWidget::new();
+            files.state().current_path = PathBuf::from("/run/tilo/retained-home/Documents");
             let mut entry = file_entry("report.md");
-            entry.path = files.current_path.join("report.md");
-            files.entries = vec![entry];
-            files.dispatcher = Some(ui::framework::testing::dispatcher::<
+            entry.path = files.state().current_path.join("report.md");
+            files.state().entries = vec![entry];
+            files.state().dispatcher = Some(ui::framework::testing::dispatcher::<
                 crate::resource::FileExplorer,
             >("so.tilo.file-explorer"));
             assert!(
-                files
-                    .open_with_candidates(&files.entries[0].path)
-                    .apps
-                    .is_empty()
+                {
+                    let state = files.state();
+                    state.open_with_candidates(&state.entries[0].path)
+                }
+                .apps
+                .is_empty()
             );
             let CollabRequest::SelectedDiscovery {
                 request_id,
                 command,
                 on_behalf_of,
-            } = files.selected_open.discovery.take_request().unwrap()
+            } = files
+                .state()
+                .selected_open
+                .discovery
+                .take_request()
+                .unwrap()
             else {
                 panic!("the actual Files discovery request is required");
             };
@@ -841,23 +878,20 @@ mod open_with_tests {
                     access: open_selected::v2::SelectedAccess::EditInParent,
                 }],
             };
-            assert!(
-                files
-                    .selected_open
-                    .discovery
-                    .event(&CollabEvent::SelectedDiscoveryResult {
-                        request_id,
-                        result: Ok(reply)
-                    })
-            );
+            assert!(files.state().selected_open.discovery.event(
+                &CollabEvent::SelectedDiscoveryResult {
+                    request_id,
+                    result: Ok(reply)
+                }
+            ));
             files
         }
 
         #[test]
         fn retained_open_with_publishes_explicit_edit_and_defaults_to_read() {
-            let mut files = discovered_files();
+            let files = discovered_files();
             let doc = automerge::AutoCommit::new();
-            let resource = FileExplorerWidget::entry_resource_id(&files.entries[0]);
+            let resource = FilesState::entry_resource_id(&files.state().entries[0]);
             let resources = crate::files_app::published::tree(&files, &doc);
             let spec = ui::tilo_actions::door::spec_of(&resources, &resource, "open-with").unwrap();
             let access = spec
@@ -889,14 +923,22 @@ mod open_with_tests {
             );
             let invocation = ui::tilo_actions::InvocationId(uuid::Uuid::new_v4());
             assert!(matches!(
-                files.run_effect_for(effect, Some(invocation)).unwrap(),
+                files
+                    .state()
+                    .run_effect_for(effect, Some(invocation))
+                    .unwrap(),
                 Ran::Pending
             ));
             let CollabRequest::SelectedDiscovery {
                 command,
                 on_behalf_of,
                 ..
-            } = files.selected_open.discovery.take_request().unwrap()
+            } = files
+                .state()
+                .selected_open
+                .discovery
+                .take_request()
+                .unwrap()
             else {
                 panic!("Edit must renew the original action's discovery scope");
             };
@@ -909,16 +951,17 @@ mod open_with_tests {
                 open_selected::v2::SelectedAccess::EditInParent
             );
             assert!(
-                files.selected_open.take_request().is_none(),
+                files.state().selected_open.take_request().is_none(),
                 "presentation never grants file descriptors or launches an editor"
             );
         }
 
         #[test]
         fn retained_edit_without_original_invocation_never_falls_back_to_path_launch() {
-            let mut files = discovered_files();
-            let resource = FileExplorerWidget::entry_resource_id(&files.entries[0]);
+            let files = discovered_files();
+            let resource = FilesState::entry_resource_id(&files.state().entries[0]);
             let error = files
+                .state()
                 .run_effect_for(
                     crate::effects::FilesEffect::OpenWith {
                         entry: resource,
@@ -931,9 +974,16 @@ mod open_with_tests {
                 .err()
                 .expect("an original semantic action is mandatory");
             assert_eq!(error, t("files-open-with-action-unavailable"));
-            assert!(files.selected_open.take_request().is_none());
-            assert!(files.selected_open.discovery.take_request().is_none());
-            assert!(!files.selected_open.is_pending());
+            assert!(files.state().selected_open.take_request().is_none());
+            assert!(
+                files
+                    .state()
+                    .selected_open
+                    .discovery
+                    .take_request()
+                    .is_none()
+            );
+            assert!(!files.state().selected_open.is_pending());
         }
     }
 }
@@ -977,7 +1027,7 @@ mod command_path_tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
         let mut widget = FileExplorerWidget::new();
-        widget.load(dir.path().to_path_buf());
+        widget.state().load(dir.path().to_path_buf());
         let mut state = ui::State::new();
         let mut tr = ui::text_render::TextRenderer::new();
         let theme = Theme::dark();
@@ -1014,11 +1064,11 @@ mod command_path_tests {
         ui::widget::Widget::mark_drawn(&mut widget);
         let _ = widget.take_structure_dirty();
 
-        widget.next_metadata_refresh = Some(ui::time::now());
-        let _ = widget.refresh_metadata_if_due(ui::time::now());
-        widget.next_metadata_refresh = Some(ui::time::now());
+        widget.state().next_metadata_refresh = Some(ui::time::now());
+        let _ = widget.state().refresh_metadata_if_due(ui::time::now());
+        widget.state().next_metadata_refresh = Some(ui::time::now());
         assert!(
-            !widget.refresh_metadata_if_due(ui::time::now()),
+            !widget.state().refresh_metadata_if_due(ui::time::now()),
             "an idle Files poll must not keep requesting frames"
         );
 
@@ -1063,7 +1113,7 @@ mod command_path_tests {
             },
         );
         assert_idle_turn_is_clean(&mut widget, &state, "idle Nearby snapshot");
-        assert_watched_idle_window_needs_no_wake(&mut widget);
+        assert_watched_idle_window_needs_no_wake(&widget);
     }
 
     /// The host's turn on a due deadline (update, then sync) found nothing to
@@ -1083,12 +1133,12 @@ mod command_path_tests {
     /// Once the forced polls are done, a window whose directory and identity
     /// projection are watched asks the host for no wake at all.
     #[cfg(unix)]
-    fn assert_watched_idle_window_needs_no_wake(widget: &mut FileExplorerWidget) {
-        widget.next_metadata_refresh = None;
-        let _ = widget.refresh_metadata_if_due(ui::time::now());
+    fn assert_watched_idle_window_needs_no_wake(widget: &FileExplorerWidget) {
+        widget.state().next_metadata_refresh = None;
+        let _ = widget.state().refresh_metadata_if_due(ui::time::now());
         assert_eq!(
             widget.next_wake_deadline(),
-            widget.next_metadata_refresh,
+            widget.state().next_metadata_refresh,
             "nothing but a metadata poll may schedule an idle window"
         );
         #[cfg(target_os = "linux")]
@@ -1136,20 +1186,21 @@ mod command_path_tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         let identities = absent_identity_projection(&mut env);
         let dir = tempfile::tempdir().unwrap();
-        let mut widget = FileExplorerWidget::new();
-        widget.load(dir.path().to_path_buf());
+        let widget = FileExplorerWidget::new();
+        widget.state().load(dir.path().to_path_buf());
         let now = ui::time::now();
-        let _ = widget.refresh_metadata_if_due(now);
-        assert!(widget.trusted_humans.humans().is_empty());
-        assert!(!widget.identity_watch.watches_target());
+        let _ = widget.state().refresh_metadata_if_due(now);
+        assert!(widget.state().trusted_humans.humans().is_empty());
+        assert!(!widget.state().identity_watch.watches_target());
         assert_ne!(
-            widget.identity_watch.coverage(),
+            widget.state().identity_watch.coverage(),
             crate::directory_watch::Coverage::None,
             "the projection's creation is watched for"
         );
         #[cfg(target_os = "linux")]
         assert_eq!(
-            widget.next_metadata_refresh, None,
+            widget.state().next_metadata_refresh,
+            None,
             "a missing projection on a local filesystem is never polled"
         );
 
@@ -1173,12 +1224,15 @@ mod command_path_tests {
         // The same `now` every turn: no poll can fall due, so only the
         // watch can bring the projection in.
         tilo_test_env::wait_until("the new identity projection is read", || {
-            let _ = widget.refresh_metadata_if_due(now);
-            !widget.trusted_humans.humans().is_empty()
+            let _ = widget.state().refresh_metadata_if_due(now);
+            !widget.state().trusted_humans.humans().is_empty()
         });
-        assert_eq!(widget.trusted_humans.humans()[0].display_name, "Ada");
+        assert_eq!(
+            widget.state().trusted_humans.humans()[0].display_name,
+            "Ada"
+        );
         assert!(
-            widget.identity_watch.watches_target(),
+            widget.state().identity_watch.watches_target(),
             "the watch moved onto the projection's directory"
         );
     }
@@ -1194,22 +1248,23 @@ mod command_path_tests {
         let _identities = quiet_refresh_sources(&mut env);
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
-        let mut widget = FileExplorerWidget::new();
-        widget.load(dir.path().to_path_buf());
+        let widget = FileExplorerWidget::new();
+        widget.state().load(dir.path().to_path_buf());
         let now = ui::time::now();
-        let _ = widget.refresh_metadata_if_due(now);
-        assert!(!widget.directory_changed, "nothing changed");
+        let _ = widget.state().refresh_metadata_if_due(now);
+        assert!(!widget.state().directory_changed, "nothing changed");
         assert_ne!(
-            widget.directory_watch.coverage(),
+            widget.state().directory_watch.coverage(),
             crate::directory_watch::Coverage::None,
             "the open directory is watched"
         );
         #[cfg(target_os = "linux")]
         assert_eq!(
-            widget.next_metadata_refresh, None,
+            widget.state().next_metadata_refresh,
+            None,
             "a fully watched directory is never polled"
         );
-        if let Some(due) = widget.next_metadata_refresh {
+        if let Some(due) = widget.state().next_metadata_refresh {
             assert!(
                 due >= now + metadata_refresh::LIVE_INTERVAL,
                 "only a partially watched directory keeps its poll"
@@ -1230,21 +1285,25 @@ mod command_path_tests {
         let folder = root.path().join("folder");
         std::fs::create_dir(&folder).unwrap();
         env.set("TILO_WORKSPACE_ROOTS", root.path());
-        let mut widget = FileExplorerWidget::new();
+        let widget = FileExplorerWidget::new();
         assert!(
-            widget.collaborative_record_pager.borrow().has_roots(),
+            widget
+                .state()
+                .collaborative_record_pager
+                .borrow()
+                .has_roots(),
             "the root holds a record catalogue"
         );
         // The open folder is not the root, so only the catalogue's watch
         // can report a change to the root.
-        widget.load(folder);
-        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        widget.state().load(folder);
+        let _ = widget.state().refresh_metadata_if_due(ui::time::now());
         assert_ne!(
-            widget.catalog_watch.coverage(),
+            widget.state().catalog_watch.coverage(),
             crate::directory_watch::Coverage::None,
             "the catalogue's root is watched"
         );
-        assert_watched_idle_window_needs_no_wake(&mut widget);
+        assert_watched_idle_window_needs_no_wake(&widget);
 
         std::fs::write(root.path().join("new.txt"), b"new").unwrap();
         tilo_test_env::wait_until(
@@ -1253,11 +1312,15 @@ mod command_path_tests {
                 // Where the watch sees every change nothing is polled, so only
                 // the watch can make this check.
                 #[cfg(target_os = "linux")]
-                assert_eq!(widget.next_metadata_refresh, None, "nothing is polled");
-                widget.refresh_metadata_if_due(ui::time::now())
+                assert_eq!(
+                    widget.state().next_metadata_refresh,
+                    None,
+                    "nothing is polled"
+                );
+                widget.state().refresh_metadata_if_due(ui::time::now())
             },
         );
-        assert_watched_idle_window_needs_no_wake(&mut widget);
+        assert_watched_idle_window_needs_no_wake(&widget);
     }
 
     /// A file another program creates in the open directory shows, read
@@ -1269,26 +1332,36 @@ mod command_path_tests {
         let _identities = quiet_refresh_sources(&mut env);
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"ok").unwrap();
-        let mut widget = FileExplorerWidget::new();
-        widget.load(dir.path().to_path_buf());
-        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        let widget = FileExplorerWidget::new();
+        widget.state().load(dir.path().to_path_buf());
+        let _ = widget.state().refresh_metadata_if_due(ui::time::now());
         std::fs::write(dir.path().join("b.txt"), b"new").unwrap();
-        let shown =
-            |widget: &FileExplorerWidget| widget.entries.iter().any(|entry| entry.name == "b.txt");
+        let shown = |widget: &FileExplorerWidget| {
+            widget
+                .state()
+                .entries
+                .iter()
+                .any(|entry| entry.name == "b.txt")
+        };
         // How soon is `change_read_gap`'s (under a second); wall time here
         // would only measure the test machine's load.
         tilo_test_env::wait_until("the new file to be listed", || {
             // The earliest moment a reported change may be read, which is
             // before any poll is due: only the watch can make this read.
-            let readable = widget.last_directory_read
-                + metadata_refresh::change_read_gap(widget.entries.len());
-            if let Some(due) = widget.next_metadata_refresh {
+            let readable = {
+                let state = widget.state();
+                state.last_directory_read + metadata_refresh::change_read_gap(state.entries.len())
+            };
+            if let Some(due) = widget.state().next_metadata_refresh {
                 assert!(readable < due, "the change is read before the poll");
             }
-            let _ = widget.refresh_metadata_if_due(readable);
+            let _ = widget.state().refresh_metadata_if_due(readable);
             shown(&widget)
         });
-        assert!(!widget.directory_changed, "the reported change was read");
+        assert!(
+            !widget.state().directory_changed,
+            "the reported change was read"
+        );
     }
 
     /// "a file put in a folder appears in Files without reopening the
@@ -1314,10 +1387,10 @@ mod command_path_tests {
                 std::fs::write(work.join(format!("notes-{i:03}.txt")), b"n").unwrap();
             }
         }
-        let mut widget = FileExplorerWidget::new();
-        widget.navigate(work.clone());
-        assert_eq!(widget.entries.len(), 110);
-        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        let widget = FileExplorerWidget::new();
+        widget.state().navigate(work.clone());
+        assert_eq!(widget.state().entries.len(), 110);
+        let _ = widget.state().refresh_metadata_if_due(ui::time::now());
 
         let name = "factorio-space-age_linux-arm64_2.1.23.tar.xz";
         let status = std::process::Command::new("/bin/sh")
@@ -1334,15 +1407,18 @@ mod command_path_tests {
 
         let shown = |widget: &FileExplorerWidget| {
             widget
+                .state()
                 .entries
                 .iter()
                 .find(|entry| entry.name == name)
                 .map(|entry| (entry.size, entry.is_dir))
         };
         let listed = tilo_test_env::wait_for("the moved-in archive to be listed", || {
-            let readable = widget.last_directory_read
-                + metadata_refresh::change_read_gap(widget.entries.len());
-            let _ = widget.refresh_metadata_if_due(readable);
+            let readable = {
+                let state = widget.state();
+                state.last_directory_read + metadata_refresh::change_read_gap(state.entries.len())
+            };
+            let _ = widget.state().refresh_metadata_if_due(readable);
             shown(&widget)
         });
         assert_eq!(
@@ -1350,8 +1426,12 @@ mod command_path_tests {
             (SIZE, false),
             "the moved-in archive is listed as a file, at its size"
         );
-        assert_eq!(widget.entries.len(), 111);
-        assert_eq!(widget.current_path, work, "the folder was never reopened");
+        assert_eq!(widget.state().entries.len(), 111);
+        assert_eq!(
+            widget.state().current_path,
+            work,
+            "the folder was never reopened"
+        );
     }
 
     fn opaque_hold_deadline_reaches_files_root_before_metadata_refresh() {
@@ -1363,8 +1443,8 @@ mod command_path_tests {
             .next_wake_deadline()
             .expect("opaque hold schedules fade start");
         let mut widget = FileExplorerWidget::new();
-        widget.nav.set_content(Box::new(scroll));
-        widget.next_metadata_refresh = Some(deadline + std::time::Duration::from_secs(60));
+        widget.chrome().nav.set_content(Box::new(scroll));
+        widget.state().next_metadata_refresh = Some(deadline + std::time::Duration::from_secs(60));
         assert!(
             widget
                 .next_wake_deadline()
@@ -1374,7 +1454,7 @@ mod command_path_tests {
         let refresh = deadline
             .checked_sub(std::time::Duration::from_millis(1))
             .expect("deadline lies in the future");
-        widget.next_metadata_refresh = Some(refresh);
+        widget.state().next_metadata_refresh = Some(refresh);
         assert!(
             widget
                 .next_wake_deadline()
@@ -1416,24 +1496,24 @@ mod command_path_tests {
     }
 
     fn set_sort_command_selects_the_key_including_type() {
-        let mut w = FileExplorerWidget::new();
-        w.entries = vec![
+        let w = FileExplorerWidget::new();
+        w.state().entries = vec![
             ent("b.png", false, "image/png"),
             ent("a.txt", false, "text/plain"),
         ];
         // SortBy::Type is ONLY reachable via this command (no column/button),
         // so exercising it proves the previously-unreachable key now works.
-        assert!(w.apply_command(FileCommand::SetSort(SortBy::Type)));
-        assert_eq!(w.sort_by(), SortBy::Type);
+        assert!(w.state().apply_command(FileCommand::SetSort(SortBy::Type)));
+        assert_eq!(w.state().sort_by(), SortBy::Type);
         assert_eq!(
-            w.entries_snapshot()[0].name,
+            w.state().entries_snapshot()[0].name,
             "b.png",
             "image/png < text/plain"
         );
 
-        assert!(w.apply_command(FileCommand::SetSort(SortBy::Name)));
-        assert_eq!(w.sort_by(), SortBy::Name);
-        assert_eq!(w.entries_snapshot()[0].name, "a.txt");
+        assert!(w.state().apply_command(FileCommand::SetSort(SortBy::Name)));
+        assert_eq!(w.state().sort_by(), SortBy::Name);
+        assert_eq!(w.state().entries_snapshot()[0].name, "a.txt");
     }
 
     fn command_l_opens_the_editable_location_bar_without_a_pointer() {
@@ -1446,12 +1526,13 @@ mod command_path_tests {
             winit::event::ElementState::Pressed,
         );
 
-        assert!(widget.handle_app_key(
+        assert!(widget.with_state(|state, chrome| state.handle_app_key(
+            chrome,
             &event,
             winit::event::Modifiers::from(ModifiersState::CONTROL),
-        ));
+        )));
         assert!(
-            widget.toolbar.is_path_editing(),
+            widget.state().toolbar.is_path_editing(),
             "the documented location shortcut must expose the real editable path control"
         );
     }
@@ -1465,11 +1546,17 @@ mod command_path_tests {
             None,
             winit::event::ElementState::Pressed,
         );
-        assert!(widget.handle_app_key(&event, winit::event::Modifiers::default()));
+        assert!(widget.with_state(|state, chrome| state.handle_app_key(
+            chrome,
+            &event,
+            winit::event::Modifiers::default()
+        )));
         let panel = widget
+            .state()
             .collab_panel
             .as_ref()
-            .expect("shortcut reference opens");
+            .expect("shortcut reference opens")
+            .clone();
         assert_eq!(panel.title, "Keyboard shortcuts");
         // Real chords with the platform's key names, never narration
         // about modifiers.
@@ -1501,11 +1588,12 @@ mod command_path_tests {
         };
         let mut w = FileExplorerWidget::new();
         // Pretend we are viewing the Trash (without touching the real trash).
-        w.current_path = trash;
-        w.entries = vec![ent("deleted.txt", false, "text/plain")];
-        w.selection.select_only(0);
-        w.open_context_menu(Point::new(5.0, 5.0));
+        w.state().current_path = trash;
+        w.state().entries = vec![ent("deleted.txt", false, "text/plain")];
+        w.state().selection.select_only(0);
+        w.state().open_context_menu(Point::new(5.0, 5.0));
         let labels: Vec<String> = w
+            .chrome()
             .context_menu
             .items()
             .iter()
@@ -1555,8 +1643,8 @@ mod command_path_tests {
             Some(state_dir.path()),
             Some(home_dir.path().to_path_buf()),
         );
-        w.navigate(folder);
-        let initial_zoom = w.zoom_level();
+        w.state().navigate(folder);
+        let initial_zoom = w.state().zoom_level();
         let mut doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(&w, &doc);
         let folder_resource = &resources[0];
@@ -1595,20 +1683,23 @@ mod command_path_tests {
                 "{command} is routed through the canonical door"
             );
         }
-        assert_eq!(w.view_mode(), ViewMode::Grid);
-        assert_eq!(w.sort_by(), SortBy::Size);
-        assert!(w.zoom_level() > initial_zoom);
+        assert_eq!(w.state().view_mode(), ViewMode::Grid);
+        assert_eq!(w.state().sort_by(), SortBy::Size);
+        assert!(w.state().zoom_level() > initial_zoom);
         assert_eq!(
-            w.collab_panel.as_ref().map(|panel| panel.title.as_str()),
+            w.state()
+                .collab_panel
+                .as_ref()
+                .map(|panel| panel.title.as_str()),
             Some("Keyboard shortcuts"),
             "the resource action opens the same reference as the menu and keyboard"
         );
     }
 
     fn large_text_view_menu_clamps_inside_the_live_window() {
-        let mut w = FileExplorerWidget::new();
-        w.rect = vello::kurbo::Rect::new(0.0, 0.0, 1440.0, 900.0);
-        let mut menu = w.new_overlay_menu();
+        let w = FileExplorerWidget::new();
+        w.state().rect = vello::kurbo::Rect::new(0.0, 0.0, 1440.0, 900.0);
+        let mut menu = w.state().new_overlay_menu();
         menu.push(MenuItem::action(t("files-menu-remove-favourite"), || {}));
         // Model a top-right toolbar trigger before the menu paints at 200%
         // text. The overlay must use the window as its viewport, not the
@@ -1616,8 +1707,9 @@ mod command_path_tests {
         menu.open_at([1428.0, 52.0]);
         menu.set_text_scale(2.0);
         let menu = menu.get_rect();
-        assert!(menu.x0 >= w.rect.x0 && menu.x1 <= w.rect.x1, "{menu:?}");
-        assert!(menu.y0 >= w.rect.y0 && menu.y1 <= w.rect.y1, "{menu:?}");
+        let window = w.state().rect;
+        assert!(menu.x0 >= window.x0 && menu.x1 <= window.x1, "{menu:?}");
+        assert!(menu.y0 >= window.y0 && menu.y1 <= window.y1, "{menu:?}");
         assert!(
             menu.width() >= 400.0,
             "the scaled menu keeps enough width for its label: {menu:?}"
@@ -1658,14 +1750,15 @@ mod command_path_tests {
                 .unwrap();
         let row = app
             .with_surface(|files: &mut FileExplorerWidget| {
-                files.home_path = Some(home.path().to_path_buf());
-                files.user_dirs = favorites::UserDirs {
+                files.state().home_path = Some(home.path().to_path_buf());
+                files.state().user_dirs = favorites::UserDirs {
                     downloads: Some(destination.clone()),
                     ..Default::default()
                 };
-                files.startup_accounts = Some(vec![account]);
-                files.navigate(mount.clone());
+                files.state().startup_accounts = Some(vec![account]);
+                files.state().navigate(mount.clone());
                 files
+                    .state()
                     .published_rows()
                     .into_iter()
                     .find(|row| row.label == "Folder")
@@ -1705,13 +1798,15 @@ mod command_path_tests {
         );
         app.with_surface(|files: &mut FileExplorerWidget| {
             let index = files
+                .state()
                 .displayed_entries()
                 .iter()
                 .position(|entry| entry.name == "Folder")
                 .unwrap();
-            files.select(Some(index));
+            files.state().select(Some(index));
             assert!(
                 files
+                    .state()
                     .context_menu_spec(&[])
                     .iter()
                     .all(|(label, _)| !label.contains("Downloads")),
@@ -1754,13 +1849,14 @@ mod command_path_tests {
         // Execution below still goes through the receiving host's checked door.
         let row = app
             .with_surface(|files: &mut FileExplorerWidget| {
-                files.home_path = Some(home.path().to_path_buf());
-                files.startup_accounts = Some(vec![account]);
-                files.navigate(mount.clone());
-                files.dispatcher = Some(ui::framework::testing::dispatcher::<
+                files.state().home_path = Some(home.path().to_path_buf());
+                files.state().startup_accounts = Some(vec![account]);
+                files.state().navigate(mount.clone());
+                files.state().dispatcher = Some(ui::framework::testing::dispatcher::<
                     crate::resource::FileExplorer,
                 >("files"));
                 files
+                    .state()
                     .published_rows()
                     .into_iter()
                     .find(|row| row.label == "document.txt")
@@ -1776,8 +1872,8 @@ mod command_path_tests {
         assert!(!destination.join("document.txt").exists());
         let op = app
             .with_surface(|files: &mut FileExplorerWidget| {
-                assert_eq!(files.awaiting_ops.len(), 1);
-                files.awaiting_ops[0].0.clone()
+                assert_eq!(files.state().awaiting_ops.len(), 1);
+                files.state().awaiting_ops[0].0.clone()
             })
             .unwrap();
         std::fs::remove_file(&alias).unwrap();
@@ -1884,9 +1980,10 @@ mod command_path_tests {
             crate::remote_accounts::RemoteAccountHealth::NeedsAuthentication,
             None,
         );
-        let mut w = FileExplorerWidget::new();
-        w.debug_show_remote_account(&account, true);
+        let w = FileExplorerWidget::new();
+        w.state().debug_show_remote_account(&account, true);
         let ids: Vec<String> = w
+            .state()
             .current_places()
             .sections()
             .iter()
@@ -1896,24 +1993,32 @@ mod command_path_tests {
             ids.iter().any(|id| id == "account:cloud"),
             "the account has a row even though nothing is mounted: {ids:?}"
         );
-        let panel = w.collab_panel.as_ref().expect("the sheet is open");
+        let panel = w
+            .state()
+            .collab_panel
+            .as_ref()
+            .expect("the sheet is open")
+            .clone();
         assert_eq!(panel.title, "Sign in to Cloud");
         assert!(panel.summary.is_empty(), "no subtitle under the heading");
         let text = panel.lines.join(" ");
         assert!(!text.to_lowercase().contains("vault"), "{text}");
         assert!(!text.contains("Remote account details"), "{text}");
         assert_eq!(
-            w.collab_panel_action_label().as_deref(),
+            w.state().collab_panel_action_label().as_deref(),
             Some("Check again")
         );
         assert_eq!(
-            w.collab_panel_action_command(),
+            w.state().collab_panel_action_command(),
             Some(FileCommand::RecheckRemoteAccount("cloud".into()))
         );
         // Choosing the row opens the same sheet.
-        w.close_collab_panel();
-        assert!(w.apply_command(FileCommand::ShowRemoteAccount("cloud".into())));
-        assert!(w.collab_panel.is_some());
+        w.state().close_collab_panel();
+        assert!(
+            w.state()
+                .apply_command(FileCommand::ShowRemoteAccount("cloud".into()))
+        );
+        assert!(w.state().collab_panel.is_some());
     }
 
     fn template_resource_ids_are_stable_bounded_and_do_not_disclose_paths() {
@@ -1963,8 +2068,8 @@ mod command_path_tests {
             freshness: fs_protocol::ProjectedFreshness::default(),
         });
         let mut w = FileExplorerWidget::new();
-        w.current_path = d.path().to_path_buf();
-        w.entries = vec![entry];
+        w.state().current_path = d.path().to_path_buf();
+        w.state().entries = vec![entry];
         let mut doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(&w, &doc);
         let resource = resources[0]
@@ -1995,7 +2100,10 @@ mod command_path_tests {
             .unwrap(),
             Some(ui::framework::Effected::Done(_))
         ));
-        assert!(w.collab_panel.is_some(), "availability route opens details");
+        assert!(
+            w.state().collab_panel.is_some(),
+            "availability route opens details"
+        );
     }
 
     #[test]
@@ -2008,21 +2116,26 @@ mod command_path_tests {
         let Some(trash) = crate::fileops::trash_dir() else {
             return;
         };
-        let mut w = FileExplorerWidget::new();
+        let w = FileExplorerWidget::new();
         // Keep this entirely in-memory: the assertion is the interaction
         // boundary, before Files ever calls the OS trash implementation.
-        w.current_path = trash;
-        w.entries = vec![ent("deleted.txt", false, "text/plain")];
-        w.selection.select_only(0);
+        w.state().current_path = trash;
+        w.state().entries = vec![ent("deleted.txt", false, "text/plain")];
+        w.state().selection.select_only(0);
 
-        assert!(w.apply_command(FileCommand::Delete));
-        let panel = w.collab_panel.as_ref().expect("permanent delete warning");
+        assert!(w.state().apply_command(FileCommand::Delete));
+        let panel = w
+            .state()
+            .collab_panel
+            .as_ref()
+            .expect("permanent delete warning")
+            .clone();
         assert!(matches!(
             panel.action.as_ref(),
             Some(CollabPanelAction::PermanentDelete(_))
         ));
         assert_eq!(
-            w.collab_panel_action_command(),
+            w.state().collab_panel_action_command(),
             Some(FileCommand::ConfirmPermanentDelete {
                 paths: vec![PathBuf::from("deleted.txt")],
             }),
@@ -2035,16 +2148,17 @@ mod command_path_tests {
             Some("Delete permanently")
         );
 
-        w.close_collab_panel();
-        assert!(w.apply_command(FileCommand::EmptyTrash));
+        w.state().close_collab_panel();
+        assert!(w.state().apply_command(FileCommand::EmptyTrash));
         assert!(matches!(
-            w.collab_panel
+            w.state()
+                .collab_panel
                 .as_ref()
                 .and_then(|panel| panel.action.as_ref()),
             Some(CollabPanelAction::EmptyTrash)
         ));
         assert_eq!(
-            w.collab_panel_action_command(),
+            w.state().collab_panel_action_command(),
             Some(FileCommand::ConfirmEmptyTrash),
             "emptying Trash must use a separate explicit action"
         );
@@ -2069,9 +2183,10 @@ mod command_path_tests {
 
     fn context_menu_exposes_the_sort_section_including_type() {
         let mut w = FileExplorerWidget::new();
-        w.entries = vec![ent("a.txt", false, "text/plain")];
-        w.open_context_menu(Point::new(5.0, 5.0));
+        w.state().entries = vec![ent("a.txt", false, "text/plain")];
+        w.state().open_context_menu(Point::new(5.0, 5.0));
         let labels: Vec<String> = w
+            .chrome()
             .context_menu
             .items()
             .iter()
@@ -2103,15 +2218,15 @@ mod command_path_tests {
     }
 
     fn state_surface_copy_names_the_folder_and_offers_what_can_help() {
-        let mut w = FileExplorerWidget::new();
-        w.current_path = PathBuf::from("/workspace/projects/secret");
+        let w = FileExplorerWidget::new();
+        w.state().current_path = PathBuf::from("/workspace/projects/secret");
         let denied = std::io::Error::from_raw_os_error(13).to_string();
-        w.error = Some(t_args(
+        w.state().error = Some(t_args(
             "files-directory-read-failed",
             &[arg("error", denied)],
         ));
 
-        let (title, detail, has_action) = w.state_surface_copy().expect("error state copy");
+        let (title, detail, has_action) = w.state().state_surface_copy().expect("error state copy");
         assert_eq!(
             title,
             t_args("files-load-error-title", &[arg("name", "secret")])
@@ -2119,23 +2234,23 @@ mod command_path_tests {
         assert_eq!(detail, t("files-folder-error-permission"));
         assert!(has_action);
         assert_eq!(
-            w.folder_recovery_command(),
+            w.state().folder_recovery_command(),
             FileCommand::Up,
             "trying again can't fix a permission; going up can"
         );
         assert_eq!(recovery_label(&w), t("files-open-enclosing"));
 
         let odd = std::io::Error::from_raw_os_error(5).to_string();
-        w.error = Some(t_args("files-directory-read-failed", &[arg("error", odd)]));
-        let (_, detail, _) = w.state_surface_copy().expect("error state copy");
+        w.state().error = Some(t_args("files-directory-read-failed", &[arg("error", odd)]));
+        let (_, detail, _) = w.state().state_surface_copy().expect("error state copy");
         assert!(!detail.contains("os error"), "{detail}");
-        assert_eq!(w.folder_recovery_command(), FileCommand::Refresh);
+        assert_eq!(w.state().folder_recovery_command(), FileCommand::Refresh);
         assert_eq!(recovery_label(&w), t("files-try-again"));
     }
 
     /// What the failed listing's button says, as the pane shows it.
     fn recovery_label(w: &FileExplorerWidget) -> String {
-        let pane = w.build_content_pane(&ui::theme::Theme::dark());
+        let pane = w.state().build_content_pane(&ui::theme::Theme::dark());
         let state = pane.accessibility().expect("the failure is a state");
         let [action] = state.children.as_slice() else {
             panic!("a failure offers one way on: {state:?}");
@@ -2146,17 +2261,20 @@ mod command_path_tests {
     fn retry_refresh_recovers_from_error_once_the_dir_exists() {
         let d = tempfile::tempdir().unwrap();
         let target = d.path().join("appears-later");
-        let mut w = FileExplorerWidget::new();
-        w.navigate(target.clone());
-        assert!(w.error_message().is_some(), "missing dir sets an error");
+        let w = FileExplorerWidget::new();
+        w.state().navigate(target.clone());
+        assert!(
+            w.state().error_message().is_some(),
+            "missing dir sets an error"
+        );
         // The "Try again" button pushes Refresh — still errors while missing.
-        assert!(w.apply_command(FileCommand::Refresh));
-        assert!(w.error_message().is_some());
+        assert!(w.state().apply_command(FileCommand::Refresh));
+        assert!(w.state().error_message().is_some());
         // Once the directory exists, the same retry clears the error.
         std::fs::create_dir(&target).unwrap();
-        assert!(w.apply_command(FileCommand::Refresh));
+        assert!(w.state().apply_command(FileCommand::Refresh));
         assert!(
-            w.error_message().is_none(),
+            w.state().error_message().is_none(),
             "retry succeeds once the dir exists"
         );
     }
@@ -2180,9 +2298,9 @@ mod command_path_tests {
         std::os::unix::fs::symlink(&file, d.path().join("linked-file.txt")).unwrap();
         std::os::unix::fs::symlink("missing-target", d.path().join("dangling")).unwrap();
 
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        let shown = w.displayed_entries();
+        let w = FileExplorerWidget::new();
+        w.state().navigate(d.path().to_path_buf());
+        let shown = w.state().displayed_entries();
         let names: Vec<&str> = shown.iter().map(|entry| entry.name.as_str()).collect();
         assert_eq!(
             names,
@@ -2214,7 +2332,7 @@ mod command_path_tests {
             linked_folder.observed,
             host_fs::ObservedObject::from_metadata(&link_meta)
         );
-        let answer = w.folder_answer().to_string();
+        let answer = w.state().folder_answer().to_string();
         assert!(
             answer.contains("\"z-linked-folder/\""),
             "an agent reads the linked folder as a folder: {answer}"
@@ -2238,24 +2356,25 @@ mod command_path_tests {
     fn rename_flow_renames_the_selected_file_on_disk() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("old.txt"), b"x").unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
+        let w = FileExplorerWidget::new();
+        w.state().navigate(d.path().to_path_buf());
         let idx = w
+            .state()
             .displayed_entries()
             .iter()
             .position(|e| e.name == "old.txt")
             .unwrap();
-        w.select(Some(idx));
+        w.state().select(Some(idx));
 
         // Begin the rename via the real command; the bar seeds the name.
-        assert!(w.apply_command(FileCommand::Rename));
-        assert!(w.is_renaming());
-        assert_eq!(w.rename_buffer(), "old.txt");
+        assert!(w.state().apply_command(FileCommand::Rename));
+        assert!(w.state().is_renaming());
+        assert_eq!(w.state().rename_buffer(), "old.txt");
 
         // Type a new name + commit through the command path.
-        w.set_rename_buffer("new.txt".into());
-        assert!(w.apply_command(FileCommand::RenameCommit));
-        assert!(!w.is_renaming(), "commit closes the rename bar");
+        w.state().set_rename_buffer("new.txt".into());
+        assert!(w.state().apply_command(FileCommand::RenameCommit));
+        assert!(!w.state().is_renaming(), "commit closes the rename bar");
         assert!(d.path().join("new.txt").exists(), "file renamed on disk");
         assert!(!d.path().join("old.txt").exists());
     }
@@ -2269,20 +2388,20 @@ mod command_path_tests {
             std::fs::write(d.path().join(format!("report-{i:03}.txt")), b"x").unwrap();
         }
         let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
+        w.state().navigate(d.path().to_path_buf());
 
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let baseline = doc.save();
-        w.set_rename_buffer("report-000.txt".into());
+        w.state().set_rename_buffer("report-000.txt".into());
         w.sync(&doc, &root);
 
         for i in 1..40 {
-            w.set_rename_buffer(format!("report-{i:03}.txt"));
+            w.state().set_rename_buffer(format!("report-{i:03}.txt"));
             w.sync(&doc, &root);
         }
         assert_eq!(
-            w.rename_buffer(),
+            w.state().rename_buffer(),
             "report-039.txt",
             "the local editor holds the last seeded name"
         );
@@ -2296,58 +2415,63 @@ mod command_path_tests {
     fn rename_commit_is_a_noop_for_blank_or_unchanged_names() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("keep.txt"), b"x").unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
+        let w = FileExplorerWidget::new();
+        w.state().navigate(d.path().to_path_buf());
         let idx = w
+            .state()
             .displayed_entries()
             .iter()
             .position(|e| e.name == "keep.txt")
             .unwrap();
 
-        w.select(Some(idx));
-        w.begin_rename();
-        w.set_rename_buffer("   ".into());
-        assert!(!w.commit_rename(), "blank name does not rename");
-        assert!(!w.is_renaming());
+        w.state().select(Some(idx));
+        w.state().begin_rename();
+        w.state().set_rename_buffer("   ".into());
+        assert!(!w.state().commit_rename(), "blank name does not rename");
+        assert!(!w.state().is_renaming());
         assert!(d.path().join("keep.txt").exists());
 
-        w.select(Some(idx));
-        w.begin_rename();
-        w.set_rename_buffer("keep.txt".into());
-        assert!(!w.commit_rename(), "unchanged name does not rename");
+        w.state().select(Some(idx));
+        w.state().begin_rename();
+        w.state().set_rename_buffer("keep.txt".into());
+        assert!(!w.state().commit_rename(), "unchanged name does not rename");
         assert!(d.path().join("keep.txt").exists());
     }
 
     fn rename_cancel_leaves_the_file_untouched() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("stay.txt"), b"x").unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
+        let w = FileExplorerWidget::new();
+        w.state().navigate(d.path().to_path_buf());
         let idx = w
+            .state()
             .displayed_entries()
             .iter()
             .position(|e| e.name == "stay.txt")
             .unwrap();
-        w.select(Some(idx));
-        w.apply_command(FileCommand::Rename);
-        w.set_rename_buffer("other.txt".into());
-        assert!(w.apply_command(FileCommand::RenameCancel));
-        assert!(!w.is_renaming());
+        w.state().select(Some(idx));
+        w.state().apply_command(FileCommand::Rename);
+        w.state().set_rename_buffer("other.txt".into());
+        assert!(w.state().apply_command(FileCommand::RenameCancel));
+        assert!(!w.state().is_renaming());
         assert!(d.path().join("stay.txt").exists());
         assert!(!d.path().join("other.txt").exists());
     }
 
     fn new_folder_creates_the_folder_and_opens_inline_rename() {
         let d = tempfile::tempdir().unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        assert!(w.apply_command(FileCommand::NewFolder));
+        let w = FileExplorerWidget::new();
+        w.state().navigate(d.path().to_path_buf());
+        assert!(w.state().apply_command(FileCommand::NewFolder));
         assert!(
             d.path().join("New folder").is_dir(),
             "folder actually created"
         );
-        assert!(w.is_renaming(), "new folder drops straight into rename");
-        assert_eq!(w.rename_buffer(), "New folder");
+        assert!(
+            w.state().is_renaming(),
+            "new folder drops straight into rename"
+        );
+        assert_eq!(w.state().rename_buffer(), "New folder");
     }
 
     fn resource_open_refuses_a_deleted_or_replayed_entry_target() {
@@ -2355,7 +2479,7 @@ mod command_path_tests {
         let file = d.path().join("transient.txt");
         std::fs::write(&file, b"x").unwrap();
         let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
+        w.state().navigate(d.path().to_path_buf());
         let mut doc = automerge::AutoCommit::new();
         let open = crate::effects::FilesEffect::OpenItem {
             item: crate::search_provider::entry_resource_id(&file),
@@ -2365,7 +2489,7 @@ mod command_path_tests {
         .unwrap();
 
         std::fs::remove_file(&file).unwrap();
-        w.refresh();
+        w.state().refresh();
         let error = crate::files_app::published::start(
             &mut w,
             OperationKind::View,
@@ -2382,8 +2506,8 @@ mod command_path_tests {
         let d = tempfile::tempdir().unwrap();
         let file = d.path().join("private-plan.txt");
         std::fs::write(&file, b"x").unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
+        let w = FileExplorerWidget::new();
+        w.state().navigate(d.path().to_path_buf());
         let resources = crate::files_app::published::tree(&w, &automerge::AutoCommit::new());
         let entry = resources[0]
             .children
@@ -2406,9 +2530,9 @@ mod command_path_tests {
 
     fn resource_catalogue_is_bounded_but_an_exact_visible_entry_resolves_lazily() {
         let d = tempfile::tempdir().unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.current_path = d.path().to_path_buf();
-        w.entries = (0..=MAX_EAGER_ENTRY_RESOURCES)
+        let w = FileExplorerWidget::new();
+        w.state().current_path = d.path().to_path_buf();
+        w.state().entries = (0..=MAX_EAGER_ENTRY_RESOURCES)
             .map(|index| {
                 let name = format!("item-{index:03}.txt");
                 let mut entry = ent(&name, false, "text/plain");
@@ -2425,9 +2549,15 @@ mod command_path_tests {
             .count();
         assert_eq!(eager_entries, MAX_EAGER_ENTRY_RESOURCES);
 
-        let last = w.entries.last().expect("fixture has a final entry");
-        let id = FileExplorerWidget::entry_resource_id(last);
+        let last = w
+            .state()
+            .entries
+            .last()
+            .expect("fixture has a final entry")
+            .clone();
+        let id = FilesState::entry_resource_id(&last);
         let resolved = w
+            .state()
             .published_row(&id)
             .expect("an exact current-folder entry resolves on demand");
         assert_eq!(resolved.id.as_str(), id);
@@ -2440,8 +2570,8 @@ mod command_path_tests {
         // surface, and a directory search then finds none of its actions.
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("notes.txt"), b"txt").unwrap();
-        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
-        files.navigate(root.path().to_path_buf());
+        let files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.state().navigate(root.path().to_path_buf());
         let resources = crate::files_app::published::tree(&files, &automerge::AutoCommit::new());
         let registry = ui::tilo_actions::ActionRegistry::with(
             <crate::resource::FileExplorer as ui::tilo_resource::Resource>::register,
@@ -2504,7 +2634,7 @@ mod command_path_tests {
             "go-to",
         );
         invoke(&mut files, &mut doc, start, ("path", &downloads)).unwrap();
-        assert_eq!(files.current_path, downloads);
+        assert_eq!(files.state().current_path, downloads);
         let folder =
             <crate::resource::FileExplorer as ui::tilo_resource::Resource>::KIND.to_owned();
         let relative = invoke(
@@ -2534,10 +2664,17 @@ mod command_path_tests {
         let missing = invoke(
             &mut files,
             &mut doc,
-            (notes, "copy-to"),
+            (notes.clone(), "copy-to"),
             ("folder", &nowhere),
         );
         assert!(missing.unwrap_err().contains("is not an existing folder"));
+        let relative = invoke(
+            &mut files,
+            &mut doc,
+            (notes, "copy-to"),
+            ("folder", Path::new("documents")),
+        );
+        assert!(relative.unwrap_err().contains("absolute"));
     }
 
     /// `go-to` and `open` with a path show the folder and answer with its
@@ -2552,7 +2689,7 @@ mod command_path_tests {
             std::fs::write(downloads.join(format!("f{index:02}.txt")), "x").unwrap();
         }
         let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
-        files.navigate(root.path().into());
+        files.state().navigate(root.path().into());
         let mut doc = automerge::AutoCommit::new();
         let mut show = |action: &str, path: &Path| {
             let resources = crate::files_app::published::tree(&files, &doc);
@@ -2606,25 +2743,26 @@ mod command_path_tests {
         std::fs::write(&original, b"source content").unwrap();
         let occupied = directory.path().join("occupied.txt");
         std::fs::write(&occupied, b"keep occupied content").unwrap();
-        let mut files = FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
-        files.navigate(directory.path().into());
+        let files = FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
+        files.state().navigate(directory.path().into());
         // The rename editor's commit queues the same operation an agent's
         // `rename` does; a window no framework hosts carries it out at once,
         // keeping the editor open when it fails.
-        let mut invoke_rename = |source: &Path, name: &str| -> Result<bool, String> {
-            files.refresh();
+        let invoke_rename = |source: &Path, name: &str| -> Result<bool, String> {
+            files.state().refresh();
             let index = files
+                .state()
                 .displayed_entries()
                 .iter()
                 .position(|entry| entry.path == source)
                 .ok_or_else(|| "not listed".to_string())?;
-            files.selection.select_only(index);
-            files.begin_rename();
-            files.set_rename_buffer(name.into());
-            files.commit_rename();
-            if files.is_renaming() {
-                files.cancel_rename();
-                return Err(files.status.clone().unwrap_or_default());
+            files.state().selection.select_only(index);
+            files.state().begin_rename();
+            files.state().set_rename_buffer(name.into());
+            files.state().commit_rename();
+            if files.state().is_renaming() {
+                files.state().cancel_rename();
+                return Err(files.state().status.clone().unwrap_or_default());
             }
             Ok(true)
         };
@@ -2674,13 +2812,13 @@ mod command_path_tests {
         });
         std::fs::write(&old, b"x").unwrap();
         let record_id = uuid::Uuid::from_u128(0xfeed);
-        let mut w = FileExplorerWidget::new();
-        w.workspace_roots = vec![d.path().to_path_buf()];
-        w.current_path = d.path().to_path_buf();
+        let w = FileExplorerWidget::new();
+        w.state().workspace_roots = vec![d.path().to_path_buf()];
+        w.state().current_path = d.path().to_path_buf();
         let mut entry = ent("old\u{1f}.txt", false, "text/plain");
         entry.path = old.clone();
         entry.record_id = Some(*record_id.as_bytes());
-        w.entries = vec![entry];
+        w.state().entries = vec![entry];
         let mut doc = automerge::AutoCommit::new();
         let resources = crate::files_app::published::tree(&w, &doc);
         let entry = resources[0]
@@ -2700,19 +2838,19 @@ mod command_path_tests {
         );
         assert!(door::resolve(&resources, &address).is_some());
         // Renamed in place, the file keeps its record identity.
-        w.selection.select_only(0);
-        w.begin_rename();
-        w.set_rename_buffer("new.txt".into());
-        w.commit_rename();
+        w.state().selection.select_only(0);
+        w.state().begin_rename();
+        w.state().set_rename_buffer("new.txt".into());
+        w.state().commit_rename();
         let _ = &mut doc;
         assert!(!old.exists());
         let renamed = d.path().join("new.txt");
         assert!(renamed.exists());
         // A mount refresh presents a new path but the same daemon-provided
         // record identity, so the old action address resolves against it.
-        w.entries[0].path = renamed;
-        w.entries[0].name = "new.txt".into();
-        w.entries[0].record_id = Some(*record_id.as_bytes());
+        w.state().entries[0].path = renamed;
+        w.state().entries[0].name = "new.txt".into();
+        w.state().entries[0].record_id = Some(*record_id.as_bytes());
         let refreshed = crate::files_app::published::tree(&w, &doc);
         assert!(
             door::resolve(&refreshed, &address).is_some(),
@@ -2723,8 +2861,8 @@ mod command_path_tests {
     fn exported_background_operations_have_valid_job_contracts() {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join("shared.txt"), b"x").unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
+        let w = FileExplorerWidget::new();
+        w.state().navigate(d.path().to_path_buf());
         let resources = crate::files_app::published::tree(&w, &automerge::AutoCommit::new());
         for action in resources.iter().flat_map(|resource| {
             resource.actions.iter().chain(
@@ -2778,17 +2916,18 @@ mod command_path_tests {
         let dest = d.path().join("dest");
         std::fs::create_dir(&dest).unwrap();
 
-        let mut w = FileExplorerWidget::new();
-        w.navigate(src.clone());
+        let w = FileExplorerWidget::new();
+        w.state().navigate(src.clone());
         let idx = w
+            .state()
             .displayed_entries()
             .iter()
             .position(|e| e.name == "a.txt")
             .unwrap();
-        w.select(Some(idx));
-        assert!(w.apply_command(FileCommand::Copy));
-        w.navigate(dest.clone());
-        assert!(w.apply_command(FileCommand::Paste));
+        w.state().select(Some(idx));
+        assert!(w.state().apply_command(FileCommand::Copy));
+        w.state().navigate(dest.clone());
+        assert!(w.state().apply_command(FileCommand::Paste));
         assert!(dest.join("a.txt").exists(), "copied into dest");
         assert!(src.join("a.txt").exists(), "original kept (copy, not move)");
     }
@@ -2801,17 +2940,18 @@ mod command_path_tests {
         let dest = d.path().join("dest");
         std::fs::create_dir(&dest).unwrap();
 
-        let mut w = FileExplorerWidget::new();
-        w.navigate(src.clone());
+        let w = FileExplorerWidget::new();
+        w.state().navigate(src.clone());
         let idx = w
+            .state()
             .displayed_entries()
             .iter()
             .position(|e| e.name == "m.txt")
             .unwrap();
-        w.select(Some(idx));
-        assert!(w.apply_command(FileCommand::Cut));
-        w.navigate(dest.clone());
-        assert!(w.apply_command(FileCommand::Paste));
+        w.state().select(Some(idx));
+        assert!(w.state().apply_command(FileCommand::Cut));
+        w.state().navigate(dest.clone());
+        assert!(w.state().apply_command(FileCommand::Paste));
         assert!(dest.join("m.txt").exists(), "moved into dest");
         assert!(!src.join("m.txt").exists(), "original removed (move)");
     }
@@ -2827,22 +2967,29 @@ mod command_path_tests {
         let dest = d.path().join("dest");
         std::fs::create_dir(&dest).unwrap();
 
-        let mut w = FileExplorerWidget::new();
-        w.navigate(src);
-        w.selection.select_all(w.displayed_entries().len());
-        assert!(w.apply_command(FileCommand::Cut));
+        let w = FileExplorerWidget::new();
+        w.state().navigate(src);
+        {
+            let mut state = w.state();
+            let count = state.displayed_entries().len();
+            state.selection.select_all(count);
+        }
+        assert!(w.state().apply_command(FileCommand::Cut));
         std::fs::remove_file(&vanished).unwrap();
 
-        w.navigate(dest.clone());
-        assert!(w.apply_command(FileCommand::Paste));
+        w.state().navigate(dest.clone());
+        assert!(w.state().apply_command(FileCommand::Paste));
 
         assert!(dest.join("moved.txt").exists(), "the available item moved");
         assert_eq!(
-            w.clipboard,
+            w.state().clipboard,
             vec![vanished],
             "retry must contain only the item whose move actually failed"
         );
-        assert!(w.clipboard_cut, "the remaining item keeps cut semantics");
+        assert!(
+            w.state().clipboard_cut,
+            "the remaining item keeps cut semantics"
+        );
     }
 
     fn invoke_transfer_action(
@@ -2887,12 +3034,12 @@ mod command_path_tests {
             std::os::unix::fs::symlink(&outside, &numbered).unwrap();
             let mut files =
                 FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
-            files.navigate(directory.path().into());
+            files.state().navigate(directory.path().into());
             assert!(
                 invoke_transfer_action(&mut files, Some(&source), if cut { "cut" } else { "copy" })
                     .unwrap()
             );
-            files.navigate(destination.clone());
+            files.state().navigate(destination.clone());
             assert!(invoke_transfer_action(&mut files, None, "paste").unwrap());
 
             assert_eq!(std::fs::read_link(&occupied).unwrap(), outside);
@@ -2910,9 +3057,10 @@ mod command_path_tests {
             if !cut {
                 assert_eq!(std::fs::read(&source).unwrap(), b"selected bytes");
             }
-            assert_eq!(files.clipboard.is_empty(), cut);
+            assert_eq!(files.state().clipboard.is_empty(), cut);
             assert!(
                 files
+                    .state()
                     .displayed_entries()
                     .iter()
                     .any(|entry| entry.name == "report 3.txt")
@@ -2927,9 +3075,9 @@ mod command_path_tests {
         std::fs::write(&source, b"selected bytes").unwrap();
         std::fs::create_dir(&destination).unwrap();
         let mut files = FileExplorerWidget::with_persistence(None, Some(directory.path().into()));
-        files.navigate(directory.path().into());
+        files.state().navigate(directory.path().into());
         assert!(invoke_transfer_action(&mut files, Some(&source), "cut").unwrap());
-        files.navigate(destination.clone());
+        files.state().navigate(destination.clone());
         // The folder disappears after selection. A file now occupies that
         // entry: failure must preserve both objects and keep Cut retryable.
         std::fs::remove_dir(&destination).unwrap();
@@ -2937,8 +3085,8 @@ mod command_path_tests {
         assert!(invoke_transfer_action(&mut files, None, "paste").is_err());
         assert_eq!(std::fs::read(&source).unwrap(), b"selected bytes");
         assert_eq!(std::fs::read(&destination).unwrap(), b"replacement bytes");
-        assert_eq!(files.clipboard, vec![source.clone()]);
-        assert!(files.clipboard_cut);
+        assert_eq!(files.state().clipboard, vec![source.clone()]);
+        assert!(files.state().clipboard_cut);
 
         // Restore only this owned fixture directory and use the same public
         // Paste action again, without rebuilding the selection or clipboard.
@@ -2950,7 +3098,7 @@ mod command_path_tests {
             b"selected bytes"
         );
         assert!(!source.exists());
-        assert!(files.clipboard.is_empty());
+        assert!(files.state().clipboard.is_empty());
         assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 1);
     }
 
@@ -2961,17 +3109,21 @@ mod command_path_tests {
         let b = d.path().join("b");
         std::fs::create_dir(&b).unwrap();
 
-        let mut w = FileExplorerWidget::new();
-        w.navigate(d.path().to_path_buf());
-        w.navigate(a.clone());
-        w.navigate(b.clone());
-        assert_eq!(w.current_path(), b);
-        w.history_back();
-        assert_eq!(w.current_path(), a, "back to the previously-visited dir");
-        w.history_back();
-        assert_eq!(w.current_path(), d.path());
-        w.history_forward();
-        assert_eq!(w.current_path(), a, "forward re-visits");
+        let w = FileExplorerWidget::new();
+        w.state().navigate(d.path().to_path_buf());
+        w.state().navigate(a.clone());
+        w.state().navigate(b.clone());
+        assert_eq!(w.state().current_path(), b);
+        w.state().history_back();
+        assert_eq!(
+            w.state().current_path(),
+            a,
+            "back to the previously-visited dir"
+        );
+        w.state().history_back();
+        assert_eq!(w.state().current_path(), d.path());
+        w.state().history_forward();
+        assert_eq!(w.state().current_path(), a, "forward re-visits");
     }
 
     /// A hermetic widget whose recent files and previews live in a throwaway
@@ -2994,15 +3146,17 @@ mod command_path_tests {
         let (mut widget, config) = hermetic();
         let source = config.path().join("report.txt");
         std::fs::write(&source, b"approved source").unwrap();
-        widget.navigate(config.path().to_path_buf());
+        widget.state().navigate(config.path().to_path_buf());
         let mut document = automerge::AutoCommit::new();
         let entry = crate::search_provider::entry_resource_id(&source);
         let resources = crate::files_app::published::tree(&widget, &document);
         assert!(ui::tilo_actions::door::spec_of(&resources, &entry, "send-airdrop").is_none());
         widget
+            .state()
             .nearby_send
             .handle_event(&CollabEvent::NearbyTransferChanged);
         let request_id = widget
+            .state()
             .nearby_send
             .take_requests()
             .iter()
@@ -3016,6 +3170,7 @@ mod command_path_tests {
             })
             .unwrap();
         widget
+            .state()
             .nearby_send
             .handle_event(&CollabEvent::NearbyTransferCommandResult {
                 request_id,
@@ -3045,7 +3200,7 @@ mod command_path_tests {
             &automerge::ROOT,
         )
         .unwrap();
-        let requests = widget.nearby_send.take_requests();
+        let requests = widget.state().nearby_send.take_requests();
         assert!(
             matches!(requests.as_slice(), [CollabRequest::NearbyTransferCommand {
             command: NearbyTransferCommand::SendAirDrop { source_path, address, port: 443 }, ..
@@ -3053,7 +3208,7 @@ mod command_path_tests {
         );
         // Retaining an encoded action does not retain its source capability.
         std::fs::remove_file(&source).unwrap();
-        widget.refresh();
+        widget.state().refresh();
         assert!(
             crate::files_app::published::start(
                 &mut widget,
@@ -3065,7 +3220,7 @@ mod command_path_tests {
             )
             .is_err()
         );
-        assert!(widget.nearby_send.take_requests().is_empty());
+        assert!(widget.state().nearby_send.take_requests().is_empty());
     }
 
     #[test]
@@ -3095,6 +3250,7 @@ mod command_path_tests {
                 total_bytes: 16,
             };
             widget
+                .state()
                 .nearby_send
                 .install_snapshot_for_test(NearbyTransferSnapshot {
                     transfers: vec![expected.clone()],
@@ -3132,10 +3288,11 @@ mod command_path_tests {
                 Some(serde_json::json!({"transfer": expected}))
             );
             assert!(
-                widget.nearby_send.take_requests().is_empty(),
+                widget.state().nearby_send.take_requests().is_empty(),
                 "inspection grants no authority or network work"
             );
             widget
+                .state()
                 .nearby_send
                 .install_snapshot_for_test(NearbyTransferSnapshot::default());
             assert!(
@@ -3150,7 +3307,7 @@ mod command_path_tests {
                 .expect_err("an expired row cannot inspect another transfer")
                 .contains("no longer available")
             );
-            assert!(widget.nearby_send.take_requests().is_empty());
+            assert!(widget.state().nearby_send.take_requests().is_empty());
         }
     }
 
@@ -3164,6 +3321,7 @@ mod command_path_tests {
         let transfer = NearbyTransferHandle::from_issued_bytes([0x61; 16]);
         let (mut widget, _config) = hermetic();
         widget
+            .state()
             .nearby_send
             .install_snapshot_for_test(NearbyTransferSnapshot {
                 transfers: vec![NearbyTransferStatus {
@@ -3202,13 +3360,15 @@ mod command_path_tests {
             &automerge::ROOT,
         )
         .expect("execute recovered receive decline");
-        assert!(matches!(widget.nearby_send.take_requests().as_slice(), [
+        assert!(
+            matches!(widget.state().nearby_send.take_requests().as_slice(), [
             CollabRequest::NearbyTransferCommand {
                 command: NearbyTransferCommand::Decide {
                     handle, accept: false, destination: None, remember_for_session: false,
                 }, ..
             }
-        ] if *handle == transfer));
+        ] if *handle == transfer)
+        );
     }
 
     fn nearby_receiver_actions_are_opaque_confirmed_and_current() {
@@ -3239,6 +3399,7 @@ mod command_path_tests {
         };
         let (mut widget, _config) = hermetic();
         widget
+            .state()
             .nearby_send
             .install_snapshot_for_test(snapshot.clone());
         let rows = crate::files_app::published::tree(&widget, &automerge::AutoCommit::new());
@@ -3260,7 +3421,10 @@ mod command_path_tests {
         };
 
         snapshot.transfers.clear();
-        widget.nearby_send.install_snapshot_for_test(snapshot);
+        widget
+            .state()
+            .nearby_send
+            .install_snapshot_for_test(snapshot);
         let mut document = automerge::AutoCommit::new();
         assert!(
             crate::files_app::published::start(
@@ -3274,7 +3438,7 @@ mod command_path_tests {
             .expect_err("stale receiver decision must fail closed")
             .contains("no longer available")
         );
-        assert!(widget.nearby_send.take_requests().is_empty());
+        assert!(widget.state().nearby_send.take_requests().is_empty());
     }
 
     fn double_click_click_command_navigates_into_a_directory() {
@@ -3282,48 +3446,53 @@ mod command_path_tests {
         // the double-click window → the app opens (navigates into) the folder.
         let d = tempfile::tempdir().unwrap();
         std::fs::create_dir(d.path().join("sub")).unwrap();
-        let (mut w, _cfg) = hermetic();
-        w.navigate(d.path().to_path_buf());
+        let (w, _cfg) = hermetic();
+        w.state().navigate(d.path().to_path_buf());
         let idx = w
+            .state()
             .displayed_entries()
             .iter()
             .position(|e| e.name == "sub")
             .unwrap();
 
-        w.apply_command(FileCommand::Click {
-            index: idx,
-            ctrl: false,
-            shift: false,
-        });
-        assert_eq!(w.current_path(), d.path(), "first click only selects");
-        assert_eq!(w.selected_index(), Some(idx));
-
-        w.apply_command(FileCommand::Click {
+        w.state().apply_command(FileCommand::Click {
             index: idx,
             ctrl: false,
             shift: false,
         });
         assert_eq!(
-            w.current_path(),
+            w.state().current_path(),
+            d.path(),
+            "first click only selects"
+        );
+        assert_eq!(w.state().selected_index(), Some(idx));
+
+        w.state().apply_command(FileCommand::Click {
+            index: idx,
+            ctrl: false,
+            shift: false,
+        });
+        assert_eq!(
+            w.state().current_path(),
             d.path().join("sub"),
             "double-click opens the directory"
         );
     }
 
     fn zoom_commands_step_the_item_size_and_clamp() {
-        let (mut w, _cfg) = hermetic();
-        let base = w.zoom_level();
-        w.apply_command(FileCommand::ZoomIn);
-        assert_eq!(w.zoom_level(), base + 1, "zoom in raises the step");
-        w.apply_command(FileCommand::ZoomOut);
-        w.apply_command(FileCommand::ZoomOut);
-        assert_eq!(w.zoom_level(), base - 1, "zoom out lowers the step");
+        let (w, _cfg) = hermetic();
+        let base = w.state().zoom_level();
+        w.state().apply_command(FileCommand::ZoomIn);
+        assert_eq!(w.state().zoom_level(), base + 1, "zoom in raises the step");
+        w.state().apply_command(FileCommand::ZoomOut);
+        w.state().apply_command(FileCommand::ZoomOut);
+        assert_eq!(w.state().zoom_level(), base - 1, "zoom out lowers the step");
         // Clamps at the extremes.
         for _ in 0..50 {
-            w.apply_command(FileCommand::ZoomOut);
+            w.state().apply_command(FileCommand::ZoomOut);
         }
         assert_eq!(
-            w.zoom_level(),
+            w.state().zoom_level(),
             config::ZOOM_MIN,
             "zoom clamps at the minimum"
         );
@@ -3340,23 +3509,34 @@ mod command_path_tests {
 
     fn favorite_commands_add_reorder_and_remove() {
         let cfg = tempfile::tempdir().unwrap();
-        let mut w = FileExplorerWidget::with_persistence(
+        let w = FileExplorerWidget::with_persistence(
             Some(cfg.path()),
             Some(PathBuf::from("/home/tester")),
         );
         let sub = PathBuf::from("/home/tester/Projects/tilo");
-        let before = w.favorites().len();
-        w.apply_command(FileCommand::AddFavorite(sub.clone()));
-        assert_eq!(w.favorites().len(), before + 1, "added one favourite");
-        assert_eq!(w.favorites().last().unwrap().path, sub);
+        let before = w.state().favorites().len();
+        w.state()
+            .apply_command(FileCommand::AddFavorite(sub.clone()));
+        assert_eq!(
+            w.state().favorites().len(),
+            before + 1,
+            "added one favourite"
+        );
+        assert_eq!(w.state().favorites().last().unwrap().path, sub);
 
         // Reorder: drag the new favourite (last) up to index 1.
-        let last = w.favorites().len() - 1;
-        w.apply_command(FileCommand::ReorderFavorite { from: last, to: 1 });
-        assert_eq!(w.favorites()[1].path, sub, "reorder moved it to slot 1");
+        let last = w.state().favorites().len() - 1;
+        w.state()
+            .apply_command(FileCommand::ReorderFavorite { from: last, to: 1 });
+        assert_eq!(
+            w.state().favorites()[1].path,
+            sub,
+            "reorder moved it to slot 1"
+        );
 
-        w.apply_command(FileCommand::RemoveFavorite(sub.clone()));
-        assert!(!w.favorites().iter().any(|f| f.path == sub));
+        w.state()
+            .apply_command(FileCommand::RemoveFavorite(sub.clone()));
+        assert!(!w.state().favorites().iter().any(|f| f.path == sub));
     }
 
     fn favourites_follow_localized_xdg_user_dirs() {
@@ -3375,7 +3555,12 @@ mod command_path_tests {
         };
         let w =
             FileExplorerWidget::with_persistence_dirs(Some(cfg.path()), Some(home.clone()), dirs);
-        let labels: Vec<String> = w.favorites().iter().map(|f| f.label.clone()).collect();
+        let labels: Vec<String> = w
+            .state()
+            .favorites()
+            .iter()
+            .map(|f| f.label.clone())
+            .collect();
         // The sidebar shows the user's real localized names, not hard-coded
         // English ones.
         assert!(
@@ -3392,6 +3577,7 @@ mod command_path_tests {
         // clicking it opens ~/Dokumente, where the files really are) and keeps
         // its evocative glyph despite the localized label.
         let docs = w
+            .state()
             .favorites()
             .into_iter()
             .find(|f| f.kind == FavKind::Documents)
@@ -3407,13 +3593,13 @@ mod command_path_tests {
         let work = d.path().join("work");
         std::fs::create_dir(&work).unwrap();
 
-        let (mut w, _cfg) = hermetic();
-        w.templates = crate::templates::Catalog::new(
+        let (w, _cfg) = hermetic();
+        w.state().templates = crate::templates::Catalog::new(
             Some(d.path().to_path_buf()),
             ui::WakeHandle::detached(),
         );
-        w.navigate(work.clone());
-        w.apply_command(FileCommand::NewFromTemplate(tmpl));
+        w.state().navigate(work.clone());
+        w.state().apply_command(FileCommand::NewFromTemplate(tmpl));
         assert!(
             work.join("Doc.md").exists(),
             "template copied into the current dir"
@@ -3423,7 +3609,7 @@ mod command_path_tests {
             b"template body"
         );
         assert!(
-            w.is_renaming(),
+            w.state().is_renaming(),
             "new file drops straight into inline-rename"
         );
     }
@@ -3432,21 +3618,30 @@ mod command_path_tests {
         let d = tempfile::tempdir().unwrap();
         std::fs::write(d.path().join(".secret"), b"x").unwrap();
         std::fs::write(d.path().join("visible.txt"), b"x").unwrap();
-        let (mut w, _cfg) = hermetic();
-        w.navigate(d.path().to_path_buf());
+        let (w, _cfg) = hermetic();
+        w.state().navigate(d.path().to_path_buf());
         assert!(
-            !w.entries_snapshot().iter().any(|e| e.name == ".secret"),
+            !w.state()
+                .entries_snapshot()
+                .iter()
+                .any(|e| e.name == ".secret"),
             "dotfiles hidden by default"
         );
-        w.apply_command(FileCommand::ToggleHidden);
-        assert!(w.show_hidden());
+        w.state().apply_command(FileCommand::ToggleHidden);
+        assert!(w.state().show_hidden());
         assert!(
-            w.entries_snapshot().iter().any(|e| e.name == ".secret"),
+            w.state()
+                .entries_snapshot()
+                .iter()
+                .any(|e| e.name == ".secret"),
             "dotfiles shown after toggle"
         );
-        w.apply_command(FileCommand::ToggleHidden);
+        w.state().apply_command(FileCommand::ToggleHidden);
         assert!(
-            !w.entries_snapshot().iter().any(|e| e.name == ".secret"),
+            !w.state()
+                .entries_snapshot()
+                .iter()
+                .any(|e| e.name == ".secret"),
             "toggled back off"
         );
     }
@@ -3478,16 +3673,17 @@ mod command_path_tests {
             std::fs::write(d.path().join(n), b"x").unwrap();
         }
 
-        let (mut w, _cfg) = hermetic();
-        w.navigate(d.path().to_path_buf());
+        let (w, _cfg) = hermetic();
+        w.state().navigate(d.path().to_path_buf());
 
         assert_eq!(
-            w.error_message(),
+            w.state().error_message(),
             None,
             "a directory that reads cleanly reports no error",
         );
 
         let mut listed: Vec<String> = w
+            .state()
             .entries_snapshot()
             .iter()
             .map(|e| e.name.clone())
@@ -3500,7 +3696,7 @@ mod command_path_tests {
             "every file in the directory is listed, and nothing else is",
         );
 
-        let (count, _path) = w.footer_text();
+        let (count, _path) = w.state().footer_text();
         assert_eq!(
             count,
             names.len(),
@@ -3524,32 +3720,32 @@ mod command_path_tests {
         let b = d.path().join("b");
         std::fs::create_dir(&b).unwrap();
 
-        let (mut w, _cfg) = hermetic();
-        w.navigate(a);
+        let (w, _cfg) = hermetic();
+        w.state().navigate(a);
         // Simulate the list having been scrolled down 240px.
-        w.scroll_offset.set((0.0, 240.0));
+        w.state().scroll_offset.set((0.0, 240.0));
 
         // Selecting a row is a structural rebuild — scroll must hold.
-        w.apply_command(FileCommand::Click {
+        w.state().apply_command(FileCommand::Click {
             index: 0,
             ctrl: false,
             shift: false,
         });
         assert!(
-            (w.scroll_offset.get().1 - 240.0).abs() <= f32::EPSILON,
+            (w.state().scroll_offset.get().1 - 240.0).abs() <= f32::EPSILON,
             "selecting a row keeps the scroll"
         );
         // Re-sorting is a structural rebuild — scroll must hold.
-        w.apply_command(FileCommand::SetSort(SortBy::Size));
+        w.state().apply_command(FileCommand::SetSort(SortBy::Size));
         assert!(
-            (w.scroll_offset.get().1 - 240.0).abs() <= f32::EPSILON,
+            (w.state().scroll_offset.get().1 - 240.0).abs() <= f32::EPSILON,
             "re-sorting keeps the scroll"
         );
 
         // Navigating to a different directory starts at the top.
-        w.navigate(b);
+        w.state().navigate(b);
         assert_eq!(
-            w.scroll_offset.get(),
+            w.state().scroll_offset.get(),
             (0.0, 0.0),
             "a new directory scrolls to the top"
         );
@@ -3559,28 +3755,28 @@ mod command_path_tests {
         // Guards the dangerous bug: a right-click's menu must act on the row it
         // landed on, not whatever happened to be selected. `ContextSelect` is
         // the command the content pane pushes on a right-press.
-        let (mut w, _cfg) = hermetic();
-        w.entries = vec![
+        let (w, _cfg) = hermetic();
+        w.state().entries = vec![
             ent("a.txt", false, "text/plain"),
             ent("b.txt", false, "text/plain"),
             ent("c.txt", false, "text/plain"),
         ];
         // Stale selection on row 0.
-        w.selection.select_only(0);
+        w.state().selection.select_only(0);
         // Right-press on row 2 moves the selection there.
-        assert!(w.apply_command(FileCommand::ContextSelect(Some(2))));
+        assert!(w.state().apply_command(FileCommand::ContextSelect(Some(2))));
         assert_eq!(
-            w.selected_indices(),
+            w.state().selected_indices(),
             vec![2],
             "context select targets the clicked row"
         );
 
         // A right-press inside an existing multi-selection preserves all of it
         // (so a menu action applies to every highlighted item).
-        w.selection.select_only(1);
-        w.selection.toggle(2);
-        w.apply_command(FileCommand::ContextSelect(Some(1)));
-        let mut got = w.selected_indices();
+        w.state().selection.select_only(1);
+        w.state().selection.toggle(2);
+        w.state().apply_command(FileCommand::ContextSelect(Some(1)));
+        let mut got = w.state().selected_indices();
         got.sort_unstable();
         assert_eq!(
             got,
@@ -3589,9 +3785,9 @@ mod command_path_tests {
         );
 
         // A right-press on empty space clears the selection.
-        w.apply_command(FileCommand::ContextSelect(None));
+        w.state().apply_command(FileCommand::ContextSelect(None));
         assert!(
-            w.selected_indices().is_empty(),
+            w.state().selected_indices().is_empty(),
             "empty-space right-click clears selection"
         );
     }
@@ -3609,12 +3805,14 @@ mod command_path_tests {
         };
 
         // Empty Templates dir → no "New File", but "New folder" stays.
-        let none = w.context_menu_spec(&[]);
+        let none = w.state().context_menu_spec(&[]);
         assert!(!has_new_file(&none), "no templates → submenu hidden");
         assert!(has_new_folder(&none), "New Folder is always offered");
 
         // Two templates → the "New File ▸" entry appears.
-        let two = w.context_menu_spec(&[PathBuf::from("Doc.md"), PathBuf::from("Sheet.csv")]);
+        let two = w
+            .state()
+            .context_menu_spec(&[PathBuf::from("Doc.md"), PathBuf::from("Sheet.csv")]);
         assert!(
             has_new_file(&two),
             "templates present → New File entry shown"
@@ -3626,9 +3824,9 @@ mod command_path_tests {
         let (mut w, _cfg) = hermetic();
         // A catalogue can be emptied after the parent menu opens. The flyout
         // must close instead of painting an empty, focusable surface.
-        w.open_templates_submenu(Point::new(80.0, 80.0));
-        assert!(!w.submenu.is_open());
-        assert!(w.submenu_commands.is_empty());
+        w.state().open_templates_submenu(Point::new(80.0, 80.0));
+        assert!(!w.chrome().submenu.is_open());
+        assert!(w.chrome().submenu_commands.is_empty());
     }
 
     /// Keep-offline, free-space, policy and retry/details affordances, each phase
@@ -3666,18 +3864,18 @@ mod command_path_tests {
         .unwrap();
         xattr::set(&file, fs_protocol::AVAILABILITY_XATTR, &availability).unwrap();
 
-        let mut w = FileExplorerWidget::new();
-        w.current_path = dir.path().to_path_buf();
+        let w = FileExplorerWidget::new();
+        w.state().current_path = dir.path().to_path_buf();
         let mut entry = ent("shared.txt", false, "text/plain");
         entry.path = file.clone();
         entry.availability = crate::model::read_availability(&file);
-        w.entries = vec![entry];
-        w.selection.select_only(0);
-        let spec = w.context_menu_spec(&[]);
+        w.state().entries = vec![entry];
+        w.state().selection.select_only(0);
+        let spec = w.state().context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
             label == "Keep offline" && *command == Some(FileCommand::KeepOffline)
         }));
-        assert!(w.apply_command(FileCommand::KeepOffline));
+        assert!(w.state().apply_command(FileCommand::KeepOffline));
         assert_eq!(
             xattr::get(&file, fs_protocol::PIN_XATTR)
                 .unwrap()
@@ -3722,9 +3920,9 @@ mod command_path_tests {
         )
         .unwrap();
 
-        let mut widget = FileExplorerWidget::new();
-        widget.current_path = dir.path().to_path_buf();
-        widget.entries = [("local.txt", &local), ("remote.txt", &remote)]
+        let widget = FileExplorerWidget::new();
+        widget.state().current_path = dir.path().to_path_buf();
+        widget.state().entries = [("local.txt", &local), ("remote.txt", &remote)]
             .into_iter()
             .map(|(name, path)| {
                 let mut entry = ent(name, false, "text/plain");
@@ -3733,17 +3931,18 @@ mod command_path_tests {
                 entry
             })
             .collect();
-        widget.selection.select_all(2);
+        widget.state().selection.select_all(2);
 
         assert!(
             widget
+                .state()
                 .context_menu_spec(&[])
                 .iter()
                 .any(|(label, command)| {
                     label == "Free local space" && *command == Some(FileCommand::FreeLocalSpace)
                 })
         );
-        assert!(widget.apply_command(FileCommand::FreeLocalSpace));
+        assert!(widget.state().apply_command(FileCommand::FreeLocalSpace));
         assert_eq!(
             xattr::get(&local, fs_protocol::AVAILABILITY_CONTROL_XATTR)
                 .unwrap()
@@ -3771,26 +3970,26 @@ mod command_path_tests {
         xattr::set(&before, fs_protocol::RECORD_ID_XATTR, record.as_bytes()).unwrap();
         xattr::set(&before, fs_protocol::SYNC_XATTR, b"projected").unwrap();
 
-        let mut widget = FileExplorerWidget::new();
-        widget.load(dir.path().to_path_buf());
+        let widget = FileExplorerWidget::new();
+        widget.state().load(dir.path().to_path_buf());
         // A workspace mount is FUSE: its watch reports local edits only, and
         // remote ones (renames, sync state) are found by the poll.
-        widget.directory_watch.assume_partial_coverage();
-        widget.selection.select_only(0);
-        widget.scroll_offset.set((0.0, 137.0));
+        widget.state().directory_watch.assume_partial_coverage();
+        widget.state().selection.select_only(0);
+        widget.state().scroll_offset.set((0.0, 137.0));
         std::fs::rename(&before, &after).unwrap();
         xattr::set(&after, fs_protocol::SYNC_XATTR, b"local").unwrap();
-        widget.next_metadata_refresh = Some(ui::time::now());
+        widget.state().next_metadata_refresh = Some(ui::time::now());
 
-        assert!(widget.refresh_metadata_if_due(ui::time::now()));
-        assert_eq!(widget.entries[0].path, after);
+        assert!(widget.state().refresh_metadata_if_due(ui::time::now()));
+        assert_eq!(widget.state().entries[0].path, after);
         assert_eq!(
-            widget.entries[0].sync_state,
+            widget.state().entries[0].sync_state,
             Some(fs_protocol::SyncState::Local)
         );
-        assert_eq!(widget.selection.selected(), vec![0]);
-        assert_eq!(widget.selection.primary(), Some(0));
-        assert_eq!(widget.scroll_offset.get(), (0.0, 137.0));
+        assert_eq!(widget.state().selection.selected(), vec![0]);
+        assert_eq!(widget.state().selection.primary(), Some(0));
+        assert_eq!(widget.state().scroll_offset.get(), (0.0, 137.0));
     }
 
     #[cfg(unix)]
@@ -3831,9 +4030,9 @@ mod command_path_tests {
         )
         .unwrap();
 
-        let mut w = FileExplorerWidget::new();
-        w.current_path = dir.path().to_path_buf();
-        w.entries = [
+        let w = FileExplorerWidget::new();
+        w.state().current_path = dir.path().to_path_buf();
+        w.state().entries = [
             ("automatic.txt", &automatic),
             ("pinned.txt", &pinned),
             ("ordinary.txt", &ordinary),
@@ -3846,9 +4045,9 @@ mod command_path_tests {
             entry
         })
         .collect();
-        w.selection.select_all(3);
+        w.state().selection.select_all(3);
 
-        let spec = w.context_menu_spec(&[]);
+        let spec = w.state().context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
             label == "Keep offline" && *command == Some(FileCommand::KeepOffline)
         }));
@@ -3856,7 +4055,7 @@ mod command_path_tests {
             label == "Use automatic storage" && *command == Some(FileCommand::RemoveOfflinePin)
         }));
 
-        w.apply_command(FileCommand::KeepOffline);
+        w.state().apply_command(FileCommand::KeepOffline);
         assert_eq!(
             xattr::get(&automatic, fs_protocol::PIN_XATTR)
                 .unwrap()
@@ -3869,11 +4068,15 @@ mod command_path_tests {
         // `refresh` deliberately treats this temp directory as an ordinary
         // non-workspace path. Restore the directly-read projections so the
         // second half can exercise the opposite command independently.
-        for entry in &mut w.entries {
+        for entry in &mut w.state().entries {
             entry.availability = crate::model::read_availability(&entry.path);
         }
-        w.selection.select_all(w.entries.len());
-        w.apply_command(FileCommand::RemoveOfflinePin);
+        {
+            let mut state = w.state();
+            let count = state.entries.len();
+            state.selection.select_all(count);
+        }
+        w.state().apply_command(FileCommand::RemoveOfflinePin);
         assert_eq!(
             xattr::get(&pinned, fs_protocol::PIN_XATTR)
                 .unwrap()
@@ -3911,15 +4114,15 @@ mod command_path_tests {
         .unwrap();
         xattr::set(&file, fs_protocol::AVAILABILITY_XATTR, &availability).unwrap();
 
-        let mut w = FileExplorerWidget::new();
-        w.current_path = dir.path().to_path_buf();
+        let w = FileExplorerWidget::new();
+        w.state().current_path = dir.path().to_path_buf();
         let mut entry = ent("inherited.txt", false, "text/plain");
         entry.path = file.clone();
         entry.availability = crate::model::read_availability(&file);
-        w.entries = vec![entry];
-        w.selection.select_only(0);
+        w.state().entries = vec![entry];
+        w.state().selection.select_only(0);
 
-        let spec = w.context_menu_spec(&[]);
+        let spec = w.state().context_menu_spec(&[]);
         assert!(
             spec.iter().any(|(label, command)| {
                 label == "Pinned by parent folder" && command.is_none()
@@ -3930,7 +4133,7 @@ mod command_path_tests {
                 .iter()
                 .any(|(_, command)| { *command == Some(FileCommand::RemoveOfflinePin) })
         );
-        w.apply_command(FileCommand::RemoveOfflinePin);
+        w.state().apply_command(FileCommand::RemoveOfflinePin);
         assert_eq!(xattr::get(&file, fs_protocol::PIN_XATTR).unwrap(), None);
     }
 
@@ -3953,11 +4156,11 @@ mod command_path_tests {
             .unwrap(),
         )
         .ok();
-        let mut w = FileExplorerWidget::new();
-        w.entries = vec![entry];
-        w.selection.select_only(0);
+        let w = FileExplorerWidget::new();
+        w.state().entries = vec![entry];
+        w.state().selection.select_only(0);
 
-        let spec = w.context_menu_spec(&[]);
+        let spec = w.state().context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
             label == "Retry download" && *command == Some(FileCommand::RetryTransfer)
         }));
@@ -3966,7 +4169,10 @@ mod command_path_tests {
         }));
 
         // The row says it is unavailable to an agent before anyone opens it.
-        let resource = w.entry_resource(&w.entries[0]);
+        let resource = {
+            let state = w.state();
+            state.entry_resource(&state.entries[0])
+        };
         let presentation = resource.presentation.as_ref().expect("unavailable badge");
         assert_eq!(presentation.badge.as_deref(), Some("Unavailable"));
         assert!(presentation.is_valid());
@@ -3980,8 +4186,13 @@ mod command_path_tests {
             Some("Unavailable until a device that keeps it is online")
         );
 
-        w.apply_command(FileCommand::ShowAvailability);
-        let panel = w.collab_panel.as_ref().expect("availability panel");
+        w.state().apply_command(FileCommand::ShowAvailability);
+        let panel = w
+            .state()
+            .collab_panel
+            .as_ref()
+            .expect("availability panel")
+            .clone();
         assert!(panel.summary.contains("Not stored"));
         assert!(panel.lines.iter().any(|line| line.contains("other device")));
         assert!(
@@ -4079,10 +4290,10 @@ mod command_path_tests {
             .unwrap(),
         )
         .ok();
-        let mut w = FileExplorerWidget::new();
-        w.entries = vec![entry];
-        w.selection.select_only(0);
-        let spec = w.context_menu_spec(&[]);
+        let w = FileExplorerWidget::new();
+        w.state().entries = vec![entry];
+        w.state().selection.select_only(0);
+        let spec = w.state().context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
             label == "Sharing and access…" && *command == Some(FileCommand::ShowSharing)
         }));
@@ -4092,8 +4303,8 @@ mod command_path_tests {
         assert!(spec.iter().any(|(label, command)| {
             label == "Properties…" && *command == Some(FileCommand::ShowProperties)
         }));
-        w.apply_command(FileCommand::ShowProperties);
-        let panel = w.collab_panel.as_ref().unwrap();
+        w.state().apply_command(FileCommand::ShowProperties);
+        let panel = w.state().collab_panel.as_ref().unwrap().clone();
         assert!(panel.title.contains("Properties"));
         let internal = |line: &String| line.contains("Collaborative record");
         assert!(!panel.lines.iter().any(internal), "{:?}", panel.lines);
@@ -4107,14 +4318,14 @@ mod command_path_tests {
         assert!(panel.lines.iter().any(|line| line.contains("1920 × 1080")));
         assert!(panel.lines.iter().any(|line| line.contains("1:05")));
         assert!(panel.lines.iter().any(|line| line.contains("Pages: 4")));
-        w.apply_command(FileCommand::ShowSharing);
-        let panel = w.collab_panel.as_ref().unwrap();
+        w.state().apply_command(FileCommand::ShowSharing);
+        let panel = w.state().collab_panel.as_ref().unwrap().clone();
         assert!(panel.title.starts_with("Share "));
         assert!(panel.lines[0].contains("Anyone with the link"));
-        w.apply_command(FileCommand::ShowHistory);
-        assert!(w.collab_panel.is_none());
-        w.apply_command(FileCommand::CloseCollabPanel);
-        assert!(w.collab_panel.is_none());
+        w.state().apply_command(FileCommand::ShowHistory);
+        assert!(w.state().collab_panel.is_none());
+        w.state().apply_command(FileCommand::CloseCollabPanel);
+        assert!(w.state().collab_panel.is_none());
     }
 
     /// A version an agent's own device signed reaches Workspace Activity as
@@ -4150,35 +4361,37 @@ mod command_path_tests {
             }))
             .unwrap(),
         ).ok();
-        let mut w = FileExplorerWidget::new();
-        w.trusted_humans = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
-            tilo_user_identity::TrustedIdentityProjectionV2 {
-                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
-                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
-                    root_public_key: person,
-                    display_name: "Ada Lovelace".to_string(),
-                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
-                        certificate,
-                        agent: Some(tilo_user_identity::GovernedAgentIdentityV2 {
-                            agent_id: "scribe".into(),
-                            label: "Scribe".into(),
-                            color: [10, 20, 30],
-                        }),
+        let w = FileExplorerWidget::new();
+        w.state().trusted_humans =
+            crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
+                tilo_user_identity::TrustedIdentityProjectionV2 {
+                    schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                    humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
+                        root_public_key: person,
+                        display_name: "Ada Lovelace".to_string(),
+                        devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                            certificate,
+                            agent: Some(tilo_user_identity::GovernedAgentIdentityV2 {
+                                agent_id: "scribe".into(),
+                                label: "Scribe".into(),
+                                color: [10, 20, 30],
+                            }),
+                        }],
                     }],
-                }],
-            },
-        )
-        .unwrap();
-        w.entries = vec![entry];
-        w.selection.select_only(0);
+                },
+            )
+            .unwrap();
+        w.state().entries = vec![entry];
+        w.state().selection.select_only(0);
         let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(version).unwrap());
-        w.apply_command(FileCommand::ShowInWorkspaceActivity {
-            record_id: record.into(),
-            version_id: selected,
-        });
+        w.state()
+            .apply_command(FileCommand::ShowInWorkspaceActivity {
+                record_id: record.into(),
+                version_id: selected,
+            });
         let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
             entry: Some(entry), ..
-        }) = w.take_host_intent()
+        }) = w.state().take_host_intent()
         else {
             panic!("Files hands the selected version to Workspace Activity");
         };
@@ -4214,21 +4427,22 @@ mod command_path_tests {
             }))
             .unwrap(),
         ).ok();
-        let mut w = FileExplorerWidget::new();
-        w.entries = vec![entry];
-        w.selection.select_only(0);
-        w.apply_command(FileCommand::ShowHistory);
+        let w = FileExplorerWidget::new();
+        w.state().entries = vec![entry];
+        w.state().selection.select_only(0);
+        w.state().apply_command(FileCommand::ShowHistory);
         let selected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(older).unwrap());
-        w.apply_command(FileCommand::ShowInWorkspaceActivity {
-            record_id: record.into(),
-            version_id: selected,
-        });
-        assert!(w.collab_panel.is_none());
+        w.state()
+            .apply_command(FileCommand::ShowInWorkspaceActivity {
+                record_id: record.into(),
+                version_id: selected,
+            });
+        assert!(w.state().collab_panel.is_none());
         let Some(ui::widget::AppHostIntent::ShowWorkspaceActivity {
             resource_id,
             version_id,
             entry,
-        }) = w.take_host_intent()
+        }) = w.state().take_host_intent()
         else {
             panic!("Files hands the selected immutable version to Workspace Activity");
         };
@@ -4272,29 +4486,30 @@ mod command_path_tests {
             signature: [0; 64],
         };
         tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
-        let mut w = FileExplorerWidget::new();
-        w.workspace_roots = vec![dir.path().to_path_buf()];
-        w.trusted_humans = crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
-            tilo_user_identity::TrustedIdentityProjectionV2 {
-                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
-                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
-                    root_public_key: person_bytes,
-                    display_name: "Ada Lovelace".to_string(),
-                    devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
-                        certificate,
-                        agent: None,
+        let w = FileExplorerWidget::new();
+        w.state().workspace_roots = vec![dir.path().to_path_buf()];
+        w.state().trusted_humans =
+            crate::identity_directory::TrustedHumanDirectory::from_projection_v2(
+                tilo_user_identity::TrustedIdentityProjectionV2 {
+                    schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                    humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
+                        root_public_key: person_bytes,
+                        display_name: "Ada Lovelace".to_string(),
+                        devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                            certificate,
+                            agent: None,
+                        }],
                     }],
-                }],
-            },
-        )
-        .unwrap();
+                },
+            )
+            .unwrap();
         let mut entry = ent("report.txt", false, "text/plain");
         entry.path = file;
         entry.record_id = Some(*uuid::Uuid::from_u128(82).as_bytes());
-        w.entries = vec![entry];
-        w.selection.select_only(0);
+        w.state().entries = vec![entry];
+        w.state().selection.select_only(0);
 
-        let spec = w.context_menu_spec(&[]);
+        let spec = w.state().context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
             label == "Share with Ada Lovelace"
                 && *command == Some(FileCommand::ShareWithPerson { person })
@@ -4331,7 +4546,7 @@ mod command_path_tests {
                     ))
         }));
 
-        w.entries[0].share = Some(fs_protocol::ShareProjectionV1 {
+        w.state().entries[0].share = Some(fs_protocol::ShareProjectionV1 {
             schema_version: 1,
             record_id: fs_protocol::FileRecordId(uuid::Uuid::from_u128(82)),
             observed_at_ms: 1,
@@ -4349,8 +4564,8 @@ mod command_path_tests {
                 max_redemptions: None,
             }],
         });
-        w.apply_command(FileCommand::ShowSharing);
-        let lines = &w.collab_panel.as_ref().unwrap().lines;
+        w.state().apply_command(FileCommand::ShowSharing);
+        let lines = w.state().collab_panel.as_ref().unwrap().lines.clone();
         assert!(lines.iter().any(|line| line.contains("Ada's laptop")));
         assert!(lines.iter().any(|line| line.contains("manages workspaces")));
         assert!(
@@ -4399,16 +4614,22 @@ mod command_path_tests {
         let path = dir.path().join("trusted-identities.json");
         let root = ed25519_dalek::SigningKey::from_bytes(&[93; 32]);
         let person = fs_protocol::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes());
-        let mut widget = FileExplorerWidget::new();
+        let widget = FileExplorerWidget::new();
 
         std::fs::write(
             &path,
             serde_json::to_vec(&projection(&root, "Ada", &[(94, "Laptop", None)])).unwrap(),
         )
         .unwrap();
-        assert!(widget.refresh_trusted_identities(Some(&path)));
+        assert!(widget.state().refresh_trusted_identities(Some(&path)));
         assert_eq!(
-            widget.trusted_humans.human(&person).unwrap().devices.len(),
+            widget
+                .state()
+                .trusted_humans
+                .human(&person)
+                .unwrap()
+                .devices
+                .len(),
             1
         );
 
@@ -4422,8 +4643,13 @@ mod command_path_tests {
             .unwrap(),
         )
         .unwrap();
-        assert!(widget.refresh_trusted_identities(Some(&path)));
-        let human = widget.trusted_humans.human(&person).unwrap();
+        assert!(widget.state().refresh_trusted_identities(Some(&path)));
+        let human = widget
+            .state()
+            .trusted_humans
+            .human(&person)
+            .unwrap()
+            .clone();
         assert_eq!(human.display_name, "Ada Renamed");
         assert_eq!(human.devices.len(), 2);
 
@@ -4433,9 +4659,10 @@ mod command_path_tests {
                 .unwrap(),
         )
         .unwrap();
-        assert!(widget.refresh_trusted_identities(Some(&path)));
+        assert!(widget.state().refresh_trusted_identities(Some(&path)));
         assert!(
             widget
+                .state()
                 .trusted_humans
                 .human(&person)
                 .unwrap()
@@ -4449,8 +4676,8 @@ mod command_path_tests {
             serde_json::to_vec(&tilo_user_identity::TrustedIdentityProjectionV2::empty()).unwrap(),
         )
         .unwrap();
-        assert!(widget.refresh_trusted_identities(Some(&path)));
-        assert!(widget.trusted_humans.humans().is_empty());
+        assert!(widget.state().refresh_trusted_identities(Some(&path)));
+        assert!(widget.state().trusted_humans.humans().is_empty());
     }
 
     #[cfg(unix)]
@@ -4470,19 +4697,22 @@ mod command_path_tests {
                 "is_dir": false
             })],
         );
-        let mut widget = FileExplorerWidget::new();
-        widget.current_path = dir.path().to_path_buf();
-        widget.entries.clear();
-        widget.workspace_roots = vec![dir.path().to_path_buf()];
-        widget.collaborative_record_pager = RefCell::new(
-            crate::model::WorkspaceRecordIndexPager::new(&widget.workspace_roots),
-        );
+        let widget = FileExplorerWidget::new();
+        widget.state().current_path = dir.path().to_path_buf();
+        widget.state().entries.clear();
+        widget.state().workspace_roots = vec![dir.path().to_path_buf()];
+        {
+            let mut state = widget.state();
+            state.collaborative_record_pager = RefCell::new(
+                crate::model::WorkspaceRecordIndexPager::new(&state.workspace_roots),
+            );
+        }
         // Workspace roots are an explicit external-source revision boundary;
         // refresh once, then Ctrl+K itself performs no mount traversal.
-        widget.refresh_external_search_catalogs();
+        widget.state().refresh_external_search_catalogs();
 
         let source = ui::framework::testing::search_source::<crate::resource::FileExplorer>(
-            widget.search_entries_shown(),
+            widget.state().search_entries_shown(),
         );
         // Find the collaborative hit by its stable record anchor rather than
         // by position or a developer's local account settings.
@@ -4493,6 +4723,7 @@ mod command_path_tests {
             })
             .expect("collaborative record is searchable");
         let row = widget
+            .state()
             .published_row(&hit.anchor())
             .expect("late record materializes exactly for this anchor");
         assert!(
@@ -4502,11 +4733,12 @@ mod command_path_tests {
             "the anchored row reveals the record"
         );
         widget
+            .state()
             .open_anchor(&hit.anchor())
             .expect("opening the anchor reveals the record");
-        assert_eq!(widget.current_path, nested);
-        assert_eq!(widget.selection.primary(), Some(0));
-        assert_eq!(widget.entries[0].path, file);
+        assert_eq!(widget.state().current_path, nested);
+        assert_eq!(widget.state().selection.primary(), Some(0));
+        assert_eq!(widget.state().entries[0].path, file);
     }
 
     #[cfg(unix)]
@@ -4559,13 +4791,13 @@ mod command_path_tests {
             .unwrap();
         let _entry = scope.enter();
         let mut widget = FileExplorerWidget::new();
-        widget.workspace_roots = vec![dir.path().to_path_buf()];
+        widget.state().workspace_roots = vec![dir.path().to_path_buf()];
         let mut entry = ent("report.txt", false, "text/plain");
         entry.path = file;
         entry.record_id = Some(*uuid::Uuid::from_u128(0xdef).as_bytes());
-        widget.entries = vec![entry];
-        widget.selection.select_only(0);
-        assert!(widget.apply_command(FileCommand::CreateShare(
+        widget.state().entries = vec![entry];
+        widget.state().selection.select_only(0);
+        assert!(widget.state().apply_command(FileCommand::CreateShare(
             crate::sharing::ShareComposerRequest {
                 subject: crate::sharing::ShareSubjectChoice::Link,
                 permission: fs_protocol::FilePermission::Edit,
@@ -4577,15 +4809,15 @@ mod command_path_tests {
         // The daemon has the request but deliberately cannot reply yet. Reaching
         // this receive proves the UI command returned independently of I/O.
         seen_rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        assert!(widget.share_pending_path.is_some());
+        assert!(widget.state().share_pending_path.is_some());
         release_tx.send(()).unwrap();
         server.join().unwrap();
         wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         let doc = automerge::AutoCommit::new();
         assert!(widget.update(&doc, &automerge::ROOT));
-        assert!(widget.share_pending_path.is_none());
+        assert!(widget.state().share_pending_path.is_none());
         assert_eq!(
-            widget.status.as_deref(),
+            widget.state().status.as_deref(),
             Some(t("files-link-copied").as_str())
         );
     }
@@ -4640,12 +4872,13 @@ mod command_path_tests {
             .unwrap(),
         )
         .ok();
-        let mut widget = FileExplorerWidget::new();
-        widget.entries = vec![entry];
-        widget.selection.select_only(0);
+        let widget = FileExplorerWidget::new();
+        widget.state().entries = vec![entry];
+        widget.state().selection.select_only(0);
         let expected = fs_protocol::FileVersionId(uuid::Uuid::parse_str(previous).unwrap());
         assert!(
             widget
+                .state()
                 .context_menu_spec(&[])
                 .iter()
                 .any(|(label, command)| {
@@ -4709,10 +4942,10 @@ mod command_path_tests {
             .unwrap(),
         )
         .ok();
-        let mut widget = FileExplorerWidget::new();
-        widget.entries = vec![entry];
-        widget.selection.select_only(0);
-        let menu = widget.context_menu_spec(&[]);
+        let widget = FileExplorerWidget::new();
+        widget.state().entries = vec![entry];
+        widget.state().selection.select_only(0);
+        let menu = widget.state().context_menu_spec(&[]);
         let current_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(current).unwrap());
         let other_id = fs_protocol::FileVersionId(uuid::Uuid::parse_str(other).unwrap());
         assert!(menu.iter().any(|(_, command)| {
@@ -4752,14 +4985,14 @@ mod command_path_tests {
     fn merge_review_only_enables_apply_after_a_safe_daemon_preflight() {
         let conflict_id = uuid::Uuid::from_u128(42);
         let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(43));
-        let mut widget = FileExplorerWidget::new();
-        widget.show_collab_panel(CollabPanel {
+        let widget = FileExplorerWidget::new();
+        widget.state().show_collab_panel(CollabPanel {
             title: "Review merge".into(),
             summary: "Checking".into(),
             lines: Vec::new(),
             action: None,
         });
-        *widget.merge_preflight_result.lock_recover() = Some((
+        *widget.state().merge_preflight_result.lock_recover() = Some((
             conflict_id,
             version_id,
             Ok(fs_protocol::MergePreflightProjectionV1 {
@@ -4770,17 +5003,17 @@ mod command_path_tests {
                 diff_summary: "Both revisions are included.".into(),
             }),
         ));
-        widget.merge_preflight_pending = Some((conflict_id, version_id));
-        assert!(widget.poll_merge_preflight());
+        widget.state().merge_preflight_pending = Some((conflict_id, version_id));
+        assert!(widget.state().poll_merge_preflight());
         assert!(matches!(
-            widget.collab_panel.as_ref().and_then(|panel| panel.action.as_ref()),
+            widget.state().collab_panel.as_ref().and_then(|panel| panel.action.as_ref()),
             Some(CollabPanelAction::ApplySafeMerge {
                 conflict_id: actual_conflict,
                 version_id: actual_version,
             }) if *actual_conflict == conflict_id && *actual_version == version_id
         ));
 
-        *widget.merge_preflight_result.lock_recover() = Some((
+        *widget.state().merge_preflight_result.lock_recover() = Some((
             conflict_id,
             version_id,
             Ok(fs_protocol::MergePreflightProjectionV1 {
@@ -4791,9 +5024,9 @@ mod command_path_tests {
                 diff_summary: "No proposed content was produced.".into(),
             }),
         ));
-        widget.merge_preflight_pending = Some((conflict_id, version_id));
-        assert!(widget.poll_merge_preflight());
-        let panel = widget.collab_panel.as_ref().unwrap();
+        widget.state().merge_preflight_pending = Some((conflict_id, version_id));
+        assert!(widget.state().poll_merge_preflight());
+        let panel = widget.state().collab_panel.as_ref().unwrap().clone();
         assert!(
             panel.action.is_none(),
             "conflicting edits must not expose Apply safe merge"
@@ -4805,15 +5038,15 @@ mod command_path_tests {
         let stale_conflict = uuid::Uuid::from_u128(50);
         let current_conflict = uuid::Uuid::from_u128(51);
         let version_id = fs_protocol::FileVersionId(uuid::Uuid::from_u128(52));
-        let mut widget = FileExplorerWidget::new();
-        widget.show_collab_panel(CollabPanel {
+        let widget = FileExplorerWidget::new();
+        widget.state().show_collab_panel(CollabPanel {
             title: "Delete permanently?".into(),
             summary: "This cannot be undone".into(),
             lines: Vec::new(),
             action: Some(CollabPanelAction::EmptyTrash),
         });
-        widget.merge_preflight_pending = Some((current_conflict, version_id));
-        *widget.merge_preflight_result.lock_recover() = Some((
+        widget.state().merge_preflight_pending = Some((current_conflict, version_id));
+        *widget.state().merge_preflight_result.lock_recover() = Some((
             stale_conflict,
             version_id,
             Ok(fs_protocol::MergePreflightProjectionV1 {
@@ -4825,8 +5058,8 @@ mod command_path_tests {
             }),
         ));
 
-        assert!(!widget.poll_merge_preflight());
-        let panel = widget.collab_panel.as_ref().unwrap();
+        assert!(!widget.state().poll_merge_preflight());
+        let panel = widget.state().collab_panel.as_ref().unwrap().clone();
         assert_eq!(panel.title, "Delete permanently?");
         assert!(matches!(panel.action, Some(CollabPanelAction::EmptyTrash)));
     }
@@ -4868,11 +5101,11 @@ mod command_path_tests {
             .unwrap(),
         )
         .ok();
-        let mut w = FileExplorerWidget::new();
-        w.workspace_roots = vec![root.path().to_path_buf()];
-        w.entries = vec![entry];
-        w.selection.select_only(0);
-        let spec = w.context_menu_spec(&[]);
+        let w = FileExplorerWidget::new();
+        w.state().workspace_roots = vec![root.path().to_path_buf()];
+        w.state().entries = vec![entry];
+        w.state().selection.select_only(0);
+        let spec = w.state().context_menu_spec(&[]);
         assert!(spec.iter().any(|(label, command)| {
             label == "Revoke shared link"
                 && *command == Some(FileCommand::RevokeShare { grant_id: grant })
@@ -4896,42 +5129,47 @@ mod command_path_tests {
         .unwrap();
 
         let mut files = FileExplorerWidget::with_persistence(None, Some(temp.path().into()));
-        files.navigate(archive);
-        files.wait_for_archive();
-        assert_eq!(files.entries_snapshot().len(), 2);
+        files.state().navigate(archive);
+        files.state().wait_for_archive();
+        assert_eq!(files.state().entries_snapshot().len(), 2);
         assert!(
             files
+                .state()
                 .entries_snapshot()
                 .iter()
                 .any(|entry| entry.name == "Photos" && entry.is_dir)
         );
         assert!(
             files
+                .state()
                 .entries_snapshot()
                 .iter()
                 .any(|entry| entry.name == "readme.txt" && !entry.is_dir)
         );
 
         let photos = files
+            .state()
             .entries_snapshot()
             .iter()
             .position(|entry| entry.name == "Photos")
             .unwrap();
-        files.open_entry(photos, &mut SystemRunner).unwrap();
-        assert_eq!(files.entries_snapshot().len(), 1);
-        assert_eq!(files.entries_snapshot()[0].name, "one.jpg");
+        files.state().open_entry(photos, &mut SystemRunner).unwrap();
+        assert_eq!(files.state().entries_snapshot().len(), 1);
+        assert_eq!(files.state().entries_snapshot()[0].name, "one.jpg");
         // A file inside opens as a copy read off the window's thread.
-        files.open_queue.clear();
-        assert!(files.open_entry(0, &mut SystemRunner).unwrap());
-        files.wait_for_archive_members();
+        files.state().open_queue.clear();
+        assert!(files.state().open_entry(0, &mut SystemRunner).unwrap());
+        files.state().wait_for_archive_members();
         let copy = files
+            .state()
             .open_queue
             .pop_front()
             .expect("the member's copy is opened");
         assert_eq!(std::fs::read(&copy).unwrap(), b"one");
 
-        files.open_view_menu();
+        files.state().open_view_menu();
         let menu_labels: Vec<_> = files
+            .chrome()
             .context_menu
             .items()
             .iter()
@@ -4943,6 +5181,7 @@ mod command_path_tests {
         assert!(!menu_labels.contains(&"New folder"));
         assert!(!menu_labels.contains(&"Open terminal here"));
         let list_choice = files
+            .chrome()
             .context_menu
             .items()
             .iter()
@@ -4950,13 +5189,17 @@ mod command_path_tests {
             .unwrap();
         assert_eq!(list_choice.checked(), Some(true));
 
-        files.selection.select_only(0);
-        assert!(files.apply_command(FileCommand::Delete));
+        files.state().selection.select_only(0);
+        assert!(files.state().apply_command(FileCommand::Delete));
         assert!(source.join("Photos/one.jpg").exists());
         let read_only = t("files-archive-read-only");
-        assert_eq!(files.status_line(), Some(read_only.as_str()));
+        assert_eq!(files.state().status_line(), Some(read_only.as_str()));
 
-        assert!(files.apply_command(FileCommand::ExtractCurrentArchive));
+        assert!(
+            files
+                .state()
+                .apply_command(FileCommand::ExtractCurrentArchive)
+        );
         assert_eq!(
             std::fs::read(temp.path().join("Holiday/Photos/one.jpg")).unwrap(),
             b"one"
@@ -4994,10 +5237,10 @@ mod responsive_body_tests {
 
     impl H {
         fn new(dir: Option<&std::path::Path>, width: f32, height: f32) -> Self {
-            let mut w = FileExplorerWidget::with_persistence(None, None);
+            let w = FileExplorerWidget::with_persistence(None, None);
             if let Some(d) = dir {
-                w.navigate(d.to_path_buf());
-                w.wait_for_archive();
+                w.state().navigate(d.to_path_buf());
+                w.state().wait_for_archive();
             }
             Self::from_widget(w, width, height)
         }
@@ -5088,11 +5331,12 @@ mod responsive_body_tests {
         }
 
         /// The labels of the currently-open context/favourite menu, if any.
-        fn open_menu_labels(&self) -> Vec<String> {
-            if !self.w.context_menu.is_open() {
+        fn open_menu_labels(&mut self) -> Vec<String> {
+            let chrome = self.w.chrome();
+            if !chrome.context_menu.is_open() {
                 return Vec::new();
             }
-            self.w
+            chrome
                 .context_menu
                 .items()
                 .iter()
@@ -5210,11 +5454,11 @@ mod responsive_body_tests {
         }
         let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
         h.draw_overlay();
-        h.w.status = None;
-        h.w.select(Some(1));
+        h.w.state().status = None;
+        h.w.state().select(Some(1));
         h.draw_overlay();
         assert!(
-            !h.w.status_notice.is_shown(),
+            !h.w.state().status_notice.is_shown(),
             "selecting a file is not news"
         );
 
@@ -5229,14 +5473,14 @@ mod responsive_body_tests {
             ..ui::UndoStatus::default()
         });
         let gone = dir.path().join("a.txt").display().to_string();
-        h.w.settle_op(
+        h.w.state().settle_op(
             OpFollowUp::Trash { count: 1 },
             &ui::tilo_resource::Settled::Done(vec![Change::Trashed {
                 from: gone,
                 entry: Some("/trash/files/a.txt".into()),
             }]),
         );
-        let told = h.w.notice_line().expect("a move to Trash is said");
+        let told = h.w.state().notice_line().expect("a move to Trash is said");
         assert_eq!(
             told,
             t_args("files-moved-to-trash", &[arg("count", 1)]),
@@ -5250,7 +5494,9 @@ mod responsive_body_tests {
             .expect("the move waits in Needs you");
         assert_eq!(waiting.title(), told);
         assert_eq!(waiting.action().label, t("files-notice-undo"));
-        h.w.needs.pressed(ui::attention::Press::Act(waiting.id()));
+        h.w.state()
+            .needs
+            .pressed(ui::attention::Press::Act(waiting.id()));
         h.lay_out(1000.0, 720.0);
         assert_eq!(
             ui::undo::UndoControl::take_undo_request(&mut h.w),
@@ -5258,30 +5504,30 @@ mod responsive_body_tests {
             "Undo asks the host, the same door as Ctrl+Z"
         );
         assert!(
-            h.w.notice_line().is_none(),
+            h.w.state().notice_line().is_none(),
             "acting on the notice takes it down"
         );
 
         // A rename or a new folder shows in the listing and says nothing.
-        h.w.settle_op(
+        h.w.state().settle_op(
             OpFollowUp::Rename,
             &ui::tilo_resource::Settled::Done(vec![Change::Moved {
                 from: dir.path().join("b.txt").display().to_string(),
                 to: dir.path().join("d.txt").display().to_string(),
             }]),
         );
-        assert!(h.w.notice_line().is_none());
-        assert!(h.w.status_line().is_none());
+        assert!(h.w.state().notice_line().is_none());
+        assert!(h.w.state().status_line().is_none());
 
         // A failure says what and why, in words.
-        h.w.settle_op(
+        h.w.state().settle_op(
             OpFollowUp::Rename,
             &ui::tilo_resource::Settled::Failed {
                 reason: std::io::Error::from_raw_os_error(13).to_string(),
                 partial: vec![],
             },
         );
-        let told = h.w.notice_line().expect("a failed rename is said");
+        let told = h.w.state().notice_line().expect("a failed rename is said");
         assert!(told.contains(&t("files-error-permission")), "{told}");
         assert!(!told.contains("os error"), "{told}");
     }
@@ -5295,9 +5541,9 @@ mod responsive_body_tests {
         ui::attention::clear();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
-        let mut files = FileExplorerWidget::with_persistence(None, None);
-        files.navigate(dir.path().to_path_buf());
-        files.wait_for_archive();
+        let files = FileExplorerWidget::with_persistence(None, None);
+        files.state().navigate(dir.path().to_path_buf());
+        files.state().wait_for_archive();
         let mut harness = ui::headless::FrameHarness::for_app(
             ui::State::new(),
             files,
@@ -5311,7 +5557,7 @@ mod responsive_body_tests {
             can_undo: true,
             ..ui::UndoStatus::default()
         });
-        w.settle_op(
+        w.state().settle_op(
             OpFollowUp::Trash { count: 1 },
             &ui::tilo_resource::Settled::Done(vec![Change::Trashed {
                 from: gone,
@@ -5344,16 +5590,18 @@ mod responsive_body_tests {
         }
         let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
         let selected = |h: &H| {
-            h.w.selection
+            let state = h.w.state();
+            state
+                .selection
                 .primary()
-                .and_then(|i| h.w.displayed_entries().get(i).map(|e| e.name.clone()))
+                .and_then(|i| state.displayed_entries().get(i).map(|e| e.name.clone()))
         };
         h.type_char("b");
         assert_eq!(selected(&h).as_deref(), Some("beta.txt"));
         h.type_char("r");
         assert_eq!(selected(&h).as_deref(), Some("bravo.txt"));
 
-        h.w.navigate(dir.path().join("alpha"));
+        h.w.state().navigate(dir.path().join("alpha"));
         h.lay_out(1000.0, 720.0);
         let alt = |h: &mut H, key| {
             let ev = ui::synthetic_input::key_event(
@@ -5370,11 +5618,11 @@ mod responsive_body_tests {
                 .handled
         };
         assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowLeft));
-        assert_eq!(h.w.current_path(), dir.path());
+        assert_eq!(h.w.state().current_path(), dir.path());
         assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowRight));
-        assert_eq!(h.w.current_path(), dir.path().join("alpha"));
+        assert_eq!(h.w.state().current_path(), dir.path().join("alpha"));
         assert!(alt(&mut h, winit::keyboard::NamedKey::ArrowUp));
-        assert_eq!(h.w.current_path(), dir.path());
+        assert_eq!(h.w.state().current_path(), dir.path());
     }
 
     /// A drag resting on a folder opens it, so a drop reaches deeper; a
@@ -5385,17 +5633,20 @@ mod responsive_body_tests {
         let inner = dir.path().join("inner");
         std::fs::create_dir(&inner).unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
-        let mut w = FileExplorerWidget::with_persistence(None, None);
-        w.navigate(dir.path().to_path_buf());
+        let w = FileExplorerWidget::with_persistence(None, None);
+        w.state().navigate(dir.path().to_path_buf());
         let now = ui::time::now();
-        w.spring = Some((inner.clone(), now));
-        assert!(!w.spring_open_if_due(now), "no drag, nothing opens");
-        w.pin_drag = Some(dir.path().join("a.txt"));
-        assert!(!w.spring_open_if_due(now), "not rested long enough yet");
-        assert!(w.spring_open_if_due(now + SPRING_OPEN));
-        assert_eq!(w.current_path(), inner);
+        w.state().spring = Some((inner.clone(), now));
+        assert!(!w.state().spring_open_if_due(now), "no drag, nothing opens");
+        w.state().pin_drag = Some(dir.path().join("a.txt"));
         assert!(
-            w.pin_drag.is_some(),
+            !w.state().spring_open_if_due(now),
+            "not rested long enough yet"
+        );
+        assert!(w.state().spring_open_if_due(now + SPRING_OPEN));
+        assert_eq!(w.state().current_path(), inner);
+        assert!(
+            w.state().pin_drag.is_some(),
             "the drag goes on in the opened folder"
         );
     }
@@ -5453,12 +5704,12 @@ mod responsive_body_tests {
     fn toolbar_reprioritizes_before_desktop_controls_can_overlap_on_phone_width() {
         let mut h = H::new(None, 390.0, 760.0);
         assert!(
-            h.w.toolbar.is_compact(),
+            h.w.state().toolbar.is_compact(),
             "the first narrow frame keeps the path and navigation clear"
         );
-        h.w.forward.push(PathBuf::from("/later"));
+        h.w.state().forward.push(PathBuf::from("/later"));
         h.lay_out(390.0, 760.0);
-        h.w.open_view_menu();
+        h.w.state().open_view_menu();
         assert!(
             h.open_menu_labels().iter().any(|label| label == "Forward"),
             "compact overflow retains history navigation rather than removing it"
@@ -5470,12 +5721,12 @@ mod responsive_body_tests {
         h.lay_out(900.0, 760.0);
         h.lay_out(900.0, 760.0);
         assert!(
-            !h.w.toolbar.is_compact(),
+            !h.w.state().toolbar.is_compact(),
             "a 560 px content column still fits the direct controls; only a phone width moves them into the overflow"
         );
         h.lay_out(390.0, 760.0);
         h.lay_out(390.0, 760.0);
-        assert!(h.w.toolbar.is_compact(), "back to phone width");
+        assert!(h.w.state().toolbar.is_compact(), "back to phone width");
 
         // The width is discovered during layout; one follow-up composition is
         // how the live app promotes wide controls after a real resize.
@@ -5486,25 +5737,26 @@ mod responsive_body_tests {
         );
         h.lay_out(1200.0, 720.0);
         assert!(
-            !h.w.toolbar.is_compact(),
+            !h.w.state().toolbar.is_compact(),
             "wide windows restore direct view and sort controls"
         );
     }
 
     fn toolbar_more_menu_tracks_its_trigger_and_flips_inside_the_viewport() {
         let mut h = H::new(None, 900.0, 720.0);
-        h.w.open_view_menu();
+        h.w.state().open_view_menu();
         let trigger =
-            h.w.toolbar
+            h.w.state()
+                .toolbar
                 .view_menu_rect()
                 .expect("More trigger is laid out");
-        let menu = h.w.context_menu.get_rect();
+        let menu = h.w.chrome().context_menu.get_rect();
         assert!(
             (menu.x1 - trigger.x1).abs() <= 1.0 && menu.y0 >= trigger.y1,
             "toolbar menu must sit directly below and right-aligned to More: trigger={trigger:?} menu={menu:?}"
         );
 
-        h.w.open_menu_right_aligned(
+        h.w.state().open_menu_right_aligned(
             vec![
                 ("One".into(), None, None),
                 ("Two".into(), None, None),
@@ -5514,11 +5766,12 @@ mod responsive_body_tests {
             Point::new(890.0, 710.0),
             680.0,
         );
-        let flipped = h.w.context_menu.get_rect();
+        let flipped = h.w.chrome().context_menu.get_rect();
+        let window = h.w.state().rect;
         assert!(
-            flipped.x0 >= h.w.rect.x0
-                && flipped.x1 <= h.w.rect.x1
-                && flipped.y0 >= h.w.rect.y0
+            flipped.x0 >= window.x0
+                && flipped.x1 <= window.x1
+                && flipped.y0 >= window.y0
                 && flipped.y1 <= 681.0,
             "a constrained menu must flip above its trigger and remain on-screen: {flipped:?}"
         );
@@ -5535,7 +5788,7 @@ mod responsive_body_tests {
 
     fn narrow_error_retry_uses_the_shared_button_and_recovers() {
         let mut h = H::new(None, 390.0, 780.0);
-        h.w.debug_show_error_state();
+        h.w.state().debug_show_error_state();
         h.lay_out(390.0, 780.0);
         h.draw();
 
@@ -5566,7 +5819,7 @@ mod responsive_body_tests {
             "the retry row refreshes the folder"
         );
         assert!(
-            h.w.error().is_none(),
+            h.w.state().error().is_none(),
             "the shared button dispatches the normal refresh command"
         );
     }
@@ -5588,11 +5841,12 @@ mod responsive_body_tests {
         // The button queued its command; the frame after applies it.
         h.lay_out(1200.0, 720.0);
         assert!(
-            h.w.context_menu.is_open(),
+            h.w.chrome().context_menu.is_open(),
             "resource/AT-SPI activation opens the real View options menu"
         );
         assert!(
-            h.w.menu_commands
+            h.w.chrome()
+                .menu_commands
                 .iter()
                 .any(|command| { matches!(command, Some(FileCommand::NewFolder)) }),
             "the real menu owns the New folder follow-up; this is not a hidden state toggle"
@@ -5666,15 +5920,15 @@ mod responsive_body_tests {
 
         let mut h = H::new(Some(&archive), 390.0, 760.0);
         let extract = t("files-archive-extract");
-        let has_extract = |w: &FileExplorerWidget| names(&w.nav, extract.as_str());
+        let has_extract = |w: &FileExplorerWidget| names(&w.chrome.nav, extract.as_str());
         assert!(has_extract(&h.w), "phone toolbar exposes Extract");
         assert!(
-            h.w.toolbar.view_menu_rect().is_none(),
+            h.w.state().toolbar.view_menu_rect().is_none(),
             "archive toolbar must not expose a one-item duplicate menu"
         );
-        assert_eq!(h.w.footer_label(), t("files-archive-read-only"));
+        assert_eq!(h.w.state().footer_label(), t("files-archive-read-only"));
         assert!(
-            h.w.status_notice.get().cloned() == Some(t("files-archive-read-only"))
+            h.w.state().status_notice.get().cloned() == Some(t("files-archive-read-only"))
                 || ui::attention::entries()
                     .iter()
                     .any(|entry| entry.what() == t("files-archive-read-only")),
@@ -5686,7 +5940,7 @@ mod responsive_body_tests {
             h.lay_out(1200.0, 760.0);
         }
         assert!(has_extract(&h.w), "desktop toolbar exposes Extract");
-        assert!(h.w.toolbar.view_menu_rect().is_none());
+        assert!(h.w.state().toolbar.view_menu_rect().is_none());
     }
 
     /// The regression: at ~600 px the window showed the breadcrumb and the
@@ -5735,7 +5989,7 @@ mod responsive_body_tests {
         // open the same selection-aware surface as right-click.
         h.press_named(winit::keyboard::NamedKey::ArrowDown);
         h.press_named(winit::keyboard::NamedKey::ContextMenu);
-        assert!(h.w.context_menu.is_open());
+        assert!(h.w.chrome().context_menu.is_open());
         let labels = h.open_menu_labels();
         assert!(labels.iter().any(|label| label == "Open"));
         assert!(labels.iter().any(|label| label == "Rename"));
@@ -5753,8 +6007,11 @@ mod responsive_body_tests {
             h.press_named(winit::keyboard::NamedKey::ArrowDown);
         }
         h.press_named(winit::keyboard::NamedKey::Enter);
-        assert!(!h.w.context_menu.is_open());
-        assert!(h.w.renaming.is_some(), "keyboard menu executes Rename");
+        assert!(!h.w.chrome().context_menu.is_open());
+        assert!(
+            h.w.state().renaming.is_some(),
+            "keyboard menu executes Rename"
+        );
     }
 
     /// Narrow, the places are a screen of their own: the whole window, reached
@@ -5768,8 +6025,8 @@ mod responsive_body_tests {
             "a narrow window opens on the folder, so the files are what you see"
         );
         assert!(h.rect_of("FileView").is_some());
-        assert!(h.w.nav.back(), "Back goes to the places");
-        h.w.nav.snap();
+        assert!(h.w.chrome().nav.back(), "Back goes to the places");
+        h.w.chrome().nav.snap();
         h.lay_out(480.0, 720.0);
         assert!(h.w.debug_places_open(), "the places screen is in front");
         assert_eq!(h.w.debug_sidebar_rect().width(), 480.0);
@@ -5778,8 +6035,8 @@ mod responsive_body_tests {
             "one column at a time: the files are not under the places"
         );
         // Choosing a destination on the places screen returns to the files.
-        h.w.nav.show(ui::widget::NavPane::Content);
-        h.w.nav.snap();
+        h.w.chrome().nav.show(ui::widget::NavPane::Content);
+        h.w.chrome().nav.snap();
         h.lay_out(480.0, 720.0);
         assert!(!h.w.debug_places_open());
         assert!(h.rect_of("FileView").is_some());
@@ -5795,10 +6052,10 @@ mod responsive_body_tests {
         h.cursor(places.center().x, places.y0 + 300.0);
         h.right_press();
         assert!(
-            !h.w.context_menu.is_open() && h.w.selected_indices().is_empty(),
+            !h.w.chrome().context_menu.is_open() && h.w.state().selected_indices().is_empty(),
             "a press on the places screen cannot select or open a menu for a file"
         );
-        let semantic_children = h.w.nav.children();
+        let semantic_children = h.w.chrome().nav.children();
         assert!(
             semantic_children
                 .iter()
@@ -5821,10 +6078,13 @@ mod responsive_body_tests {
         // A place-navigation (what tapping a place in the list emits). Inject
         // the command the places list pushes, then pump an event so
         // `handle_event` drains it and moves on.
-        crate::command::push(&h.w.cmds, FileCommand::Navigate(dir.path().join("sub")));
+        crate::command::push(
+            &h.w.state().cmds,
+            FileCommand::Navigate(dir.path().join("sub")),
+        );
         h.cursor(10.0, 10.0);
         assert_eq!(
-            h.w.current_path(),
+            h.w.state().current_path(),
             dir.path().join("sub"),
             "the navigation applied"
         );
@@ -5832,7 +6092,7 @@ mod responsive_body_tests {
             !h.w.debug_places_open(),
             "navigating leaves the places for the files",
         );
-        h.w.nav.snap();
+        h.w.chrome().nav.snap();
         h.lay_out(480.0, 720.0);
         assert!(
             (h.w.debug_content_rect().width() - 480.0).abs() <= f64::EPSILON,
@@ -5848,13 +6108,14 @@ mod responsive_body_tests {
         std::fs::write(dir.path().join("old.txt"), b"x").unwrap();
         let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
         let idx =
-            h.w.displayed_entries()
+            h.w.state()
+                .displayed_entries()
                 .iter()
                 .position(|e| e.name == "old.txt")
                 .unwrap();
-        h.w.select(Some(idx));
-        assert!(h.w.apply_command(FileCommand::Rename));
-        assert!(h.w.is_renaming());
+        h.w.state().select(Some(idx));
+        assert!(h.w.state().apply_command(FileCommand::Rename));
+        assert!(h.w.state().is_renaming());
 
         // Rebuild with the rename active, then paint so the file view publishes
         // the editor's on-screen rect.
@@ -5862,7 +6123,8 @@ mod responsive_body_tests {
         h.draw();
 
         let field =
-            h.w.rename_rect
+            h.w.state()
+                .rename_rect
                 .get()
                 .expect("the in-place editor is placed over the row");
         let files = h.rect_of("FileView").expect("the file view is present");
@@ -5877,11 +6139,11 @@ mod responsive_body_tests {
         );
 
         // Cancelling clears the published rect (nothing left drawn).
-        h.w.cancel_rename();
+        h.w.state().cancel_rename();
         h.lay_out(1000.0, 720.0);
         h.draw();
         assert!(
-            h.w.rename_rect.get().is_none(),
+            h.w.state().rename_rect.get().is_none(),
             "cancel removes the in-place editor"
         );
     }
@@ -5894,15 +6156,16 @@ mod responsive_body_tests {
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
         let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
         let idx =
-            h.w.displayed_entries()
+            h.w.state()
+                .displayed_entries()
                 .iter()
                 .position(|e| e.name == "a.txt")
                 .unwrap();
-        h.w.select(Some(idx));
+        h.w.state().select(Some(idx));
 
         // F2 begins the rename; rebuild + paint places + seeds the editor.
         h.press_named(winit::keyboard::NamedKey::F2);
-        assert!(h.w.is_renaming(), "F2 starts an inline rename");
+        assert!(h.w.state().is_renaming(), "F2 starts an inline rename");
         h.lay_out(1000.0, 720.0);
         h.draw();
 
@@ -5911,7 +6174,10 @@ mod responsive_body_tests {
         h.type_char("b");
         h.press_named(winit::keyboard::NamedKey::Enter);
 
-        assert!(!h.w.is_renaming(), "Enter commits and closes the editor");
+        assert!(
+            !h.w.state().is_renaming(),
+            "Enter commits and closes the editor"
+        );
         assert!(
             dir.path().join("b.txt").exists(),
             "the typed name renamed the file on disk"
@@ -5937,24 +6203,28 @@ mod responsive_body_tests {
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
         assert_eq!(h.w.debug_body_mode(), SidebarPlacement::Docked);
-        let before = h.w.favorites().len();
+        let before = h.w.state().favorites().len();
         let folder = PathBuf::from("/home/tester/Projects/tilo");
 
         // Begin the drag (what the file view emits once a folder press travels).
-        assert!(h.w.apply_command(FileCommand::BeginDrag {
+        assert!(h.w.state().apply_command(FileCommand::BeginDrag {
             path: folder.clone(),
             is_dir: true
         }));
-        assert!(h.w.debug_pin_dragging(), "the drag is in flight");
+        assert!(h.w.state().debug_pin_dragging(), "the drag is in flight");
 
         // Move over the sidebar, then release → pin.
         let sb = h.w.debug_sidebar_rect();
         h.cursor(sb.center().x, sb.center().y);
         h.left_release();
-        assert!(!h.w.debug_pin_dragging(), "the drop ends the drag");
-        assert_eq!(h.w.favorites().len(), before + 1, "the folder was pinned");
+        assert!(!h.w.state().debug_pin_dragging(), "the drop ends the drag");
+        assert_eq!(
+            h.w.state().favorites().len(),
+            before + 1,
+            "the folder was pinned"
+        );
         assert!(
-            h.w.favorites().iter().any(|f| f.path == folder),
+            h.w.state().favorites().iter().any(|f| f.path == folder),
             "and it is the dropped folder"
         );
     }
@@ -5966,8 +6236,8 @@ mod responsive_body_tests {
             Some(PathBuf::from("/home/tester")),
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
-        let before = h.w.favorites().len();
-        h.w.apply_command(FileCommand::BeginDrag {
+        let before = h.w.state().favorites().len();
+        h.w.state().apply_command(FileCommand::BeginDrag {
             path: PathBuf::from("/home/tester/Downloads/tmp"),
             is_dir: true,
         });
@@ -5975,9 +6245,9 @@ mod responsive_body_tests {
         let content = h.w.debug_content_rect();
         h.cursor(content.center().x, content.center().y);
         h.left_release();
-        assert!(!h.w.debug_pin_dragging());
+        assert!(!h.w.state().debug_pin_dragging());
         assert_eq!(
-            h.w.favorites().len(),
+            h.w.state().favorites().len(),
             before,
             "a drop off the sidebar pins nothing"
         );
@@ -5997,12 +6267,15 @@ mod responsive_body_tests {
         let row = (view.x0 + 60.0, view.y0 + 30.0 + 17.0);
         h.cursor(row.0, row.1);
         h.left_press();
-        assert!(!h.w.debug_pin_dragging(), "a press alone is not a drag");
+        assert!(
+            !h.w.state().debug_pin_dragging(),
+            "a press alone is not a drag"
+        );
         // The frame after the click rebuilds the content pane.
         h.lay_out(1200.0, 720.0);
         h.cursor(row.0 + 40.0, row.1 + 20.0);
         assert!(
-            h.w.debug_pin_dragging(),
+            h.w.state().debug_pin_dragging(),
             "the armed press must start the drag after the rebuild"
         );
         assert_eq!(
@@ -6011,7 +6284,7 @@ mod responsive_body_tests {
             "the host is told what is being carried"
         );
         h.left_release();
-        assert!(!h.w.debug_pin_dragging());
+        assert!(!h.w.state().debug_pin_dragging());
         assert_eq!(crate::external_drag::unclaimed(), None);
     }
 
@@ -6049,7 +6322,7 @@ mod responsive_body_tests {
             "wide docks the sidebar"
         );
 
-        let favorites = h.w.favorites_store().borrow().favorites.clone();
+        let favorites = h.w.state().favorites_store().borrow().favorites.clone();
         let removable = row(&h.w, &favorites[1].label).expect("the removable favorite is laid out");
         let home_row = row(&h.w, &favorites[0].label).expect("the Home favorite is laid out");
         let (x, y) = (removable.x, removable.y);
@@ -6100,7 +6373,10 @@ mod responsive_body_tests {
             "and starts after the docked places list: {content:?}",
         );
 
-        crate::command::push(&h.w.cmds, FileCommand::Navigate(dir.path().join("sub")));
+        crate::command::push(
+            &h.w.state().cmds,
+            FileCommand::Navigate(dir.path().join("sub")),
+        );
         h.cursor(10.0, 10.0);
         assert!(
             h.w.debug_places_open(),
@@ -6114,18 +6390,19 @@ mod responsive_body_tests {
     #[test]
     fn the_toolbar_starts_after_the_shells_toggle_when_the_places_list_is_away() {
         let mut h = H::new(None, 1200.0, 720.0);
-        h.w.nav.close_sidebar();
+        h.w.chrome().nav.close_sidebar();
         for _ in 0..2 {
             // The inset is discovered by a layout and applied by the rebuild
             // it asks for, as the live frame loop does.
-            h.w.nav.snap();
+            h.w.chrome().nav.snap();
             h.w.take_structure_dirty();
             h.lay_out(1200.0, 720.0);
         }
-        let toggle = h.w.nav.geometry().toggle;
+        let toggle = h.w.chrome().nav.geometry().toggle;
         assert!(toggle.width() > 0.0, "the shell shows its toggle");
         let up =
-            h.w.toolbar
+            h.w.state()
+                .toolbar
                 .up_button_rect()
                 .expect("the toolbar is laid out");
         assert!(
@@ -6135,12 +6412,12 @@ mod responsive_body_tests {
 
         // Beside the files the toggle belongs to the sidebar's own header, so
         // the toolbar needs no room for it.
-        h.w.nav.open_sidebar();
-        h.w.nav.snap();
+        h.w.chrome().nav.open_sidebar();
+        h.w.chrome().nav.snap();
         h.lay_out(1200.0, 720.0);
         h.w.take_structure_dirty();
         h.lay_out(1200.0, 720.0);
-        let docked = h.w.nav.geometry();
+        let docked = h.w.chrome().nav.geometry();
         assert!(docked.toggle.x1 <= docked.content_column.x0 + 1.0);
     }
 
@@ -6148,26 +6425,31 @@ mod responsive_body_tests {
     /// whether hidden files are shown; no other row is a state.
     #[test]
     fn menu_rows_show_the_sort_and_hidden_state_as_checks() {
-        let mut w = FileExplorerWidget::with_persistence(None, None);
+        let w = FileExplorerWidget::with_persistence(None, None);
         assert_eq!(
-            w.command_checked(Some(&FileCommand::SetSort(SortBy::Name))),
+            w.state()
+                .command_checked(Some(&FileCommand::SetSort(SortBy::Name))),
             Some(true)
         );
         assert_eq!(
-            w.command_checked(Some(&FileCommand::SetSort(SortBy::Size))),
+            w.state()
+                .command_checked(Some(&FileCommand::SetSort(SortBy::Size))),
             Some(false)
         );
         assert_eq!(
-            w.command_checked(Some(&FileCommand::ToggleHidden)),
+            w.state().command_checked(Some(&FileCommand::ToggleHidden)),
             Some(false)
         );
-        w.show_hidden = true;
+        w.state().show_hidden = true;
         assert_eq!(
-            w.command_checked(Some(&FileCommand::ToggleHidden)),
+            w.state().command_checked(Some(&FileCommand::ToggleHidden)),
             Some(true)
         );
-        assert_eq!(w.command_checked(Some(&FileCommand::NewFolder)), None);
-        assert_eq!(w.command_checked(None), None);
+        assert_eq!(
+            w.state().command_checked(Some(&FileCommand::NewFolder)),
+            None
+        );
+        assert_eq!(w.state().command_checked(None), None);
     }
 
     /// A folder that did not open, or is still opening, has no item count to
@@ -6176,13 +6458,19 @@ mod responsive_body_tests {
     fn the_item_count_is_withheld_while_a_folder_is_loading_or_failed() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
-        let mut w = FileExplorerWidget::with_persistence(None, None);
-        w.navigate(dir.path().to_path_buf());
-        assert!(!w.footer_label().is_empty());
-        w.debug_show_error_state();
-        assert!(w.footer_label().is_empty(), "no count over an error");
-        w.debug_show_loading_state();
-        assert!(w.footer_label().is_empty(), "no count while opening");
+        let w = FileExplorerWidget::with_persistence(None, None);
+        w.state().navigate(dir.path().to_path_buf());
+        assert!(!w.state().footer_label().is_empty());
+        w.state().debug_show_error_state();
+        assert!(
+            w.state().footer_label().is_empty(),
+            "no count over an error"
+        );
+        w.state().debug_show_loading_state();
+        assert!(
+            w.state().footer_label().is_empty(),
+            "no count while opening"
+        );
     }
 }
 
@@ -6193,11 +6481,10 @@ mod accessibility_tests {
 
     fn empty_widget() -> (tempfile::TempDir, FileExplorerWidget) {
         let home = tempfile::tempdir().unwrap();
-        let mut widget =
-            FileExplorerWidget::with_persistence(None, Some(home.path().to_path_buf()));
-        widget.entries.clear();
-        widget.error = None;
-        widget.is_loading = false;
+        let widget = FileExplorerWidget::with_persistence(None, Some(home.path().to_path_buf()));
+        widget.state().entries.clear();
+        widget.state().error = None;
+        widget.state().is_loading = false;
         (home, widget)
     }
 
@@ -6212,7 +6499,7 @@ mod accessibility_tests {
     }
 
     fn custom_empty_loading_and_error_states_are_live_semantics() {
-        let (_home, mut widget) = empty_widget();
+        let (_home, widget) = empty_widget();
         let empty = Widget::accessibility(&widget).expect("Files has a live root");
         assert_eq!(empty.role, Role::Group);
         assert_eq!(empty.name.as_deref(), Some("Files activity"));
@@ -6220,12 +6507,12 @@ mod accessibility_tests {
         assert_eq!(empty.value.as_deref(), Some("This folder is empty"));
         assert!(!empty.state.busy);
 
-        widget.is_loading = true;
+        widget.state().is_loading = true;
         let loading = Widget::accessibility(&widget).unwrap();
         assert!(loading.state.busy);
         assert!(loading.value.as_deref().unwrap().starts_with("Loading "));
         let theme = ui::theme::Theme::dark();
-        let pane = widget.build_content_pane(&theme);
+        let pane = widget.state().build_content_pane(&theme);
         let state = pane
             .accessibility()
             .expect("the pane says the folder is opening");
@@ -6233,8 +6520,8 @@ mod accessibility_tests {
         assert_eq!(state.live, Some(Politeness::Polite));
         assert!(state.state.busy);
 
-        widget.is_loading = false;
-        widget.error = Some("permission denied".into());
+        widget.state().is_loading = false;
+        widget.state().error = Some("permission denied".into());
         let error = Widget::accessibility(&widget).unwrap();
         assert_eq!(error.live, Some(Politeness::Assertive));
         assert!(
@@ -6244,9 +6531,10 @@ mod accessibility_tests {
                 .unwrap()
                 .contains("permission denied")
         );
-        let pane = widget.build_content_pane(&theme);
+        let pane = widget.state().build_content_pane(&theme);
         let state = pane.accessibility().expect("error state semantic group");
         let name = widget
+            .state()
             .current_path()
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -6262,25 +6550,26 @@ mod accessibility_tests {
     }
 
     fn deterministic_shot_seams_cover_loading_and_actionable_error_states() {
-        let (_home, mut widget) = empty_widget();
-        widget.debug_show_loading_state();
-        assert!(widget.is_loading());
-        assert!(widget.error().is_none());
-        assert!(widget.entries().is_empty());
+        let (_home, widget) = empty_widget();
+        widget.state().debug_show_loading_state();
+        assert!(widget.state().is_loading());
+        assert!(widget.state().error().is_none());
+        assert!(widget.state().entries().is_empty());
 
-        widget.debug_show_error_state();
-        assert!(!widget.is_loading());
+        widget.state().debug_show_error_state();
+        assert!(!widget.state().is_loading());
         assert!(
             widget
+                .state()
                 .error()
                 .is_some_and(|error| error.contains("Permission denied"))
         );
-        assert!(widget.entries().is_empty());
+        assert!(widget.state().entries().is_empty());
     }
 
     fn collaboration_sheet_is_a_focused_modal_semantic_subtree() {
-        let (_home, mut widget) = empty_widget();
-        widget.show_collab_panel(CollabPanel {
+        let (_home, widget) = empty_widget();
+        widget.state().show_collab_panel(CollabPanel {
             title: "Share report.pdf".into(),
             summary: "Shared with 2 people".into(),
             lines: vec!["Alice can view".into(), "Bob can edit".into()],
@@ -6300,7 +6589,7 @@ mod accessibility_tests {
             "background toolbar/sidebar/list leave the semantic tree while modal"
         );
 
-        widget.close_collab_panel();
+        widget.state().close_collab_panel();
         assert!(!Widget::traps_focus(&widget));
         assert!(!Widget::children(&widget).is_empty());
         assert_eq!(Widget::accessibility(&widget).unwrap().role, Role::Group);
@@ -6311,8 +6600,8 @@ mod accessibility_tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("only-copy.txt");
         std::fs::write(&file, b"only local copy").unwrap();
-        let (_home, mut widget) = empty_widget();
-        widget.show_collab_panel(CollabPanel {
+        let (_home, widget) = empty_widget();
+        widget.state().show_collab_panel(CollabPanel {
             title: t("files-destructive-eviction-title"),
             summary: t_args("files-destructive-eviction-summary", &[arg("count", 1_i64)]),
             lines: vec![t("files-destructive-eviction-loss")],
@@ -6333,10 +6622,11 @@ mod accessibility_tests {
         );
 
         let command = widget
+            .state()
             .collab_panel_action_command()
             .expect("the explicit action is keyboard/click routable");
-        widget.close_collab_panel();
-        assert!(widget.apply_command(command));
+        widget.state().close_collab_panel();
+        assert!(widget.state().apply_command(command));
         assert_eq!(
             xattr::get(&file, fs_protocol::AVAILABILITY_CONTROL_XATTR)
                 .unwrap()
@@ -6374,6 +6664,7 @@ mod breadcrumb_home_tests {
 
         let resolved = crate::model::user_home();
         let widget_home = FileExplorerWidget::new()
+            .state()
             .home_path()
             .map(std::path::Path::to_path_buf);
 
@@ -6577,7 +6868,8 @@ mod injected_startup_tests {
             Some(ui::framework::Effected::Done(_))
         ));
         assert_eq!(
-            widget.current_path, mount,
+            widget.state().current_path,
+            mount,
             "opening navigates into the folder"
         );
     }
@@ -6610,21 +6902,23 @@ mod injected_startup_tests {
         inputs.remote_accounts.push(account.clone());
         let mut widget =
             FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
-        assert_eq!(widget.current_path, child);
-        assert_eq!(widget.displayed_entries().len(), 1);
-        assert_eq!(widget.displayed_entries()[0].name, "Welcome.txt");
+        assert_eq!(widget.state().current_path, child);
+        assert_eq!(widget.state().displayed_entries().len(), 1);
+        assert_eq!(widget.state().displayed_entries()[0].name, "Welcome.txt");
         ui::widget::Widget::set_focus(&mut widget, true);
         let document = automerge::AutoCommit::new();
         ui::widget::Widget::sync(&mut widget, &document, &automerge::ROOT);
-        widget.refresh_external_search_catalogs();
-        assert!(!widget.refresh_trusted_identities(None));
-        widget.refresh_metadata_if_due(ui::time::now() + metadata_refresh::LIVE_INTERVAL);
-        widget.refresh();
-        assert_eq!(widget.current_path, child);
-        assert!(widget.workspace_roots.is_empty());
-        assert_eq!(widget.remote_account_snapshot(), vec![account]);
+        widget.state().refresh_external_search_catalogs();
+        assert!(!widget.state().refresh_trusted_identities(None));
+        widget
+            .state()
+            .refresh_metadata_if_due(ui::time::now() + metadata_refresh::LIVE_INTERVAL);
+        widget.state().refresh();
+        assert_eq!(widget.state().current_path, child);
+        assert!(widget.state().workspace_roots.is_empty());
+        assert_eq!(widget.state().remote_account_snapshot(), vec![account]);
         assert_eq!(
-            widget.trusted_humans,
+            widget.state().trusted_humans,
             crate::identity_directory::TrustedHumanDirectory::default()
         );
         assert_eq!(guard.attempts(), 0);
@@ -6650,14 +6944,14 @@ mod injected_startup_tests {
             }
         });
         let _clear = ClearOpener;
-        let mut widget = FileExplorerWidget::with_startup_inputs_and_services(
+        let widget = FileExplorerWidget::with_startup_inputs_and_services(
             startup(&child),
             absent_services(),
         );
-        assert!(widget.thumbs.is_none());
-        crate::command::push(&widget.cmds, FileCommand::Activate(0));
-        assert!(widget.drain_commands());
-        let told = widget.notice_line().expect("a failed open is said");
+        assert!(widget.state().thumbs.is_none());
+        crate::command::push(&widget.state().cmds, FileCommand::Activate(0));
+        assert!(widget.state().drain_commands());
+        let told = widget.state().notice_line().expect("a failed open is said");
         assert!(told.contains(&t("files-open-unavailable")), "{told}");
         assert_eq!(calls.get(), 0);
         assert_eq!(guard.attempts(), 0);
@@ -6679,13 +6973,14 @@ mod injected_startup_tests {
             "the completed-reply branch, rather than Nearby Send, must supply the immediate wake"
         );
         widget
+            .state()
             .request_deferred_document_open(
                 child.join("Welcome.txt"),
                 ui::widget::DocumentOpenCapability::issue(),
             )
             .unwrap();
         let Some(ui::widget::AppHostIntent::OpenDocument { token, reply, .. }) =
-            widget.take_host_intent()
+            widget.state().take_host_intent()
         else {
             panic!("deferred route must hand the path to its shell host");
         };
@@ -6706,13 +7001,16 @@ mod injected_startup_tests {
         );
         let document = automerge::AutoCommit::new();
         Widget::sync(&mut widget, &document, &automerge::ROOT);
-        let told = widget.notice_line().expect("the shell's refusal is said");
+        let told = widget
+            .state()
+            .notice_line()
+            .expect("the shell's refusal is said");
         assert!(
             told.starts_with(&t_args("files-open-failed", &[arg("name", "Welcome.txt")])),
             "{told}"
         );
         assert!(told.contains("document storage unavailable"), "{told}");
-        assert!(widget.pending_document_open.is_none());
+        assert!(widget.state().pending_document_open.is_none());
     }
 
     #[test]
@@ -6720,18 +7018,19 @@ mod injected_startup_tests {
         let parent = tempfile::tempdir().unwrap();
         let child = owned_child(parent.path());
         let reply = {
-            let mut widget = FileExplorerWidget::with_startup_inputs_and_services(
+            let widget = FileExplorerWidget::with_startup_inputs_and_services(
                 startup(&child),
                 deferred_services(),
             );
             widget
+                .state()
                 .request_deferred_document_open(
                     child.join("Welcome.txt"),
                     ui::widget::DocumentOpenCapability::issue(),
                 )
                 .unwrap();
             let Some(ui::widget::AppHostIntent::OpenDocument { reply, .. }) =
-                widget.take_host_intent()
+                widget.state().take_host_intent()
             else {
                 panic!("deferred route must have an owner-bound reply");
             };
@@ -6749,14 +7048,14 @@ mod injected_startup_tests {
         inputs
             .workspace_roots
             .push(parent.path().join("unrelated-workspace"));
-        let mut widget =
+        let widget =
             FileExplorerWidget::with_startup_inputs_and_services(inputs, absent_services());
         std::fs::write(child.join("Reload.txt"), b"reload").unwrap();
-        assert!(widget.apply_command(FileCommand::Refresh));
-        assert_eq!(widget.displayed_entries().len(), 2);
+        assert!(widget.state().apply_command(FileCommand::Refresh));
+        assert_eq!(widget.state().displayed_entries().len(), 2);
         std::fs::write(child.join("Metadata.txt"), b"metadata").unwrap();
-        assert!(widget.refresh_metadata_preserving_view());
-        assert_eq!(widget.displayed_entries().len(), 3);
+        assert!(widget.state().refresh_metadata_preserving_view());
+        assert_eq!(widget.state().displayed_entries().len(), 3);
         assert_eq!(
             listings.observations(),
             vec![
@@ -6811,8 +7110,8 @@ fn headless_f2_renames_fixture_without_opening_a_file() {
     let directory = tempfile::tempdir().unwrap();
     let original = directory.path().join("report.txt");
     std::fs::write(&original, b"preserved bytes").unwrap();
-    let mut widget = FileExplorerWidget::with_persistence(None, None);
-    widget.navigate(directory.path().to_path_buf());
+    let widget = FileExplorerWidget::with_persistence(None, None);
+    widget.state().navigate(directory.path().to_path_buf());
     let mut driver =
         ui::headless::FrameHarness::new(ui::State::new(), Box::new(widget), (1280, 800));
     let mut previous = original;
@@ -6854,16 +7153,18 @@ mod sort_selection_tests {
         std::fs::write(root.path().join("a.txt"), b"aaa").unwrap();
         std::fs::write(root.path().join("b.txt"), b"b").unwrap();
         let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
-        files.navigate(root.path().into());
-        files.set_sort_by(SortBy::Name);
-        files.apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
-        files.apply_command(FileCommand::Click {
+        files.state().navigate(root.path().into());
+        files.state().set_sort_by(SortBy::Name);
+        files
+            .state()
+            .apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
+        files.state().apply_command(FileCommand::Click {
             index: 0,
             ctrl: false,
             shift: false,
         });
-        files.apply_command(FileCommand::Rename);
-        files.set_rename_buffer("chosen.txt".into());
+        files.state().apply_command(FileCommand::Rename);
+        files.state().set_rename_buffer("chosen.txt".into());
         let mut doc = automerge::AutoCommit::new();
         let folder = published::tree(&files, &doc)[0].id.clone();
         published::invoke(
@@ -6874,10 +7175,10 @@ mod sort_selection_tests {
             &serde_json::json!({}),
         )
         .unwrap();
-        assert!(files.is_renaming());
-        assert!(files.rename_input.is_focused());
-        assert_eq!(files.rename_buffer, "chosen.txt");
-        assert!(files.commit_rename());
+        assert!(files.state().is_renaming());
+        assert!(files.state().rename_input.is_focused());
+        assert_eq!(files.state().rename_buffer, "chosen.txt");
+        assert!(files.state().commit_rename());
         assert_eq!(
             std::fs::read(root.path().join("chosen.txt")).unwrap(),
             b"aaa"
@@ -6894,22 +7195,23 @@ mod sort_selection_tests {
             let mut app = TestApp::<FileExplorerShell>::capture(Some(scenario)).unwrap();
             app.with_surface(|files: &mut FileExplorerWidget| {
                 let mut names: Vec<_> = files
+                    .state()
                     .selected_paths()
                     .iter()
                     .map(|path| path.file_name().unwrap().to_owned())
                     .collect();
                 names.sort();
                 assert_eq!(names, vec!["Notes.txt", "Recipes.md"]);
-                assert_eq!(files.view_mode(), ViewMode::List);
+                assert_eq!(files.state().view_mode(), ViewMode::List);
                 assert_eq!(
-                    files.sort_by(),
+                    files.state().sort_by(),
                     if scenario == "selection-sort" {
                         SortBy::Name
                     } else {
                         SortBy::Size
                     }
                 );
-                assert!(files.status.is_none());
+                assert!(files.state().status.is_none());
             })
             .unwrap();
         }
@@ -6922,14 +7224,15 @@ mod sort_selection_tests {
             std::fs::write(root.path().join(name), bytes).unwrap();
         }
         let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
-        files.navigate(root.path().into());
+        files.state().navigate(root.path().into());
         let selected_path = root.path().join("a.txt");
         let index = files
+            .state()
             .entries
             .iter()
             .position(|entry| entry.path == selected_path)
             .unwrap();
-        files.apply_command(FileCommand::Click {
+        files.state().apply_command(FileCommand::Click {
             index,
             ctrl: true,
             shift: false,
@@ -6953,24 +7256,25 @@ mod sort_selection_tests {
             )
             .unwrap();
             assert_eq!(
-                files.selected_paths(),
+                files.state().selected_paths(),
                 vec![selected_path.clone()],
                 "{action}"
             );
+            let state = files.state();
             assert_eq!(
-                files.entries[files.selection.primary().unwrap()].path,
+                state.entries[state.selection.primary().unwrap()].path,
                 selected_path
             );
             assert_eq!(
-                files.entries[files.selection.anchor().unwrap()].path,
+                state.entries[state.selection.anchor().unwrap()].path,
                 selected_path
             );
         }
-        files.selection.clear();
-        files.toggle_sort_order();
-        assert!(files.selection.is_empty());
-        assert_eq!(files.selection.primary(), None);
-        assert_eq!(files.selection.anchor(), None);
+        files.state().selection.clear();
+        files.state().toggle_sort_order();
+        assert!(files.state().selection.is_empty());
+        assert_eq!(files.state().selection.primary(), None);
+        assert_eq!(files.state().selection.anchor(), None);
     }
 
     #[test]
@@ -6979,45 +7283,47 @@ mod sort_selection_tests {
         for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
             std::fs::write(root.path().join(name), name).unwrap();
         }
-        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
-        files.navigate(root.path().into());
-        files.set_sort_by(SortBy::Name);
-        files.apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
-        files.apply_command(FileCommand::Click {
+        let files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.state().navigate(root.path().into());
+        files.state().set_sort_by(SortBy::Name);
+        files
+            .state()
+            .apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
+        files.state().apply_command(FileCommand::Click {
             index: 0,
             ctrl: true,
             shift: false,
         });
-        files.apply_command(FileCommand::Click {
+        files.state().apply_command(FileCommand::Click {
             index: 2,
             ctrl: false,
             shift: true,
         });
-        files.toggle_sort_order();
-        assert_eq!(files.selection.anchor(), Some(3));
-        assert_eq!(files.selection.primary(), Some(1));
-        files.apply_command(FileCommand::Click {
+        files.state().toggle_sort_order();
+        assert_eq!(files.state().selection.anchor(), Some(3));
+        assert_eq!(files.state().selection.primary(), Some(1));
+        files.state().apply_command(FileCommand::Click {
             index: 2,
             ctrl: false,
             shift: true,
         });
-        assert_eq!(files.selection.selected(), vec![2, 3]);
-        files.apply_command(FileCommand::Click {
+        assert_eq!(files.state().selection.selected(), vec![2, 3]);
+        files.state().apply_command(FileCommand::Click {
             index: 2,
             ctrl: true,
             shift: false,
         });
-        assert!(!files.selection.is_selected(2));
-        files.toggle_sort_order();
-        assert_eq!(files.selection.selected(), vec![0]);
-        assert_eq!(files.selection.anchor(), Some(1));
-        assert_eq!(files.selection.primary(), Some(1));
-        files.apply_command(FileCommand::Click {
+        assert!(!files.state().selection.is_selected(2));
+        files.state().toggle_sort_order();
+        assert_eq!(files.state().selection.selected(), vec![0]);
+        assert_eq!(files.state().selection.anchor(), Some(1));
+        assert_eq!(files.state().selection.primary(), Some(1));
+        files.state().apply_command(FileCommand::Click {
             index: 3,
             ctrl: false,
             shift: true,
         });
-        assert_eq!(files.selection.selected(), vec![1, 2, 3]);
+        assert_eq!(files.state().selection.selected(), vec![1, 2, 3]);
     }
 
     #[test]
@@ -7026,23 +7332,25 @@ mod sort_selection_tests {
         for name in ["a", "b"] {
             std::fs::create_dir(root.path().join(name)).unwrap();
         }
-        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
-        files.navigate(root.path().into());
-        files.set_sort_by(SortBy::Name);
-        files.apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
-        files.apply_command(FileCommand::Click {
+        let files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.state().navigate(root.path().into());
+        files.state().set_sort_by(SortBy::Name);
+        files
+            .state()
+            .apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
+        files.state().apply_command(FileCommand::Click {
             index: 0,
             ctrl: false,
             shift: false,
         });
-        files.toggle_sort_order();
-        files.apply_command(FileCommand::Click {
+        files.state().toggle_sort_order();
+        files.state().apply_command(FileCommand::Click {
             index: 0,
             ctrl: false,
             shift: false,
         });
-        assert_eq!(files.current_path, root.path());
-        assert_eq!(files.selected_paths(), vec![root.path().join("b")]);
+        assert_eq!(files.state().current_path, root.path());
+        assert_eq!(files.state().selected_paths(), vec![root.path().join("b")]);
     }
 
     #[test]
@@ -7057,11 +7365,13 @@ mod sort_selection_tests {
         }
         let mut files =
             FileExplorerWidget::with_persistence(Some(root.path()), Some(root.path().into()));
-        files.navigate(source.clone());
-        files.set_sort_by(SortBy::Name);
-        files.apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
+        files.state().navigate(source.clone());
+        files.state().set_sort_by(SortBy::Name);
+        files
+            .state()
+            .apply_command(FileCommand::SetSortOrder(SortOrder::Ascending));
         for index in [0, 2] {
-            files.apply_command(FileCommand::Click {
+            files.state().apply_command(FileCommand::Click {
                 index,
                 ctrl: true,
                 shift: false,
@@ -7077,12 +7387,12 @@ mod sort_selection_tests {
             &serde_json::json!({}),
         )
         .unwrap();
-        let mut paths = files.selected_paths();
+        let mut paths = files.state().selected_paths();
         paths.sort();
         assert_eq!(paths, vec![source.join("a.txt"), source.join("c.txt")]);
-        assert!(files.apply_command(FileCommand::Copy));
-        files.navigate(destination.clone());
-        assert!(files.apply_command(FileCommand::Paste));
+        assert!(files.state().apply_command(FileCommand::Copy));
+        files.state().navigate(destination.clone());
+        assert!(files.state().apply_command(FileCommand::Paste));
         assert_eq!(std::fs::read(destination.join("a.txt")).unwrap(), b"aaa");
         assert_eq!(std::fs::read(destination.join("c.txt")).unwrap(), b"cc");
         assert!(!destination.join("b.txt").exists());
@@ -7090,224 +7400,15 @@ mod sort_selection_tests {
     }
 }
 
-mod recent_resource_tests {
-    use super::*;
-    use crate::effects::FilesEffect;
-    use crate::resource::FileExplorerShell;
-    use ui::prelude::TestApp;
-
-    #[test]
-    fn recent_capture_stages_actual_rows_and_effect_outcomes() {
-        for scenario in [
-            "recent",
-            "recent-menu",
-            "recent-revealed",
-            "recent-forgotten",
-        ] {
-            let mut app = TestApp::<FileExplorerShell>::capture(Some(scenario)).unwrap();
-            app.with_surface(|files: &mut FileExplorerWidget| {
-                assert!(
-                    files.status.is_none(),
-                    "a capture must not hide a failed effect"
-                );
-                match scenario {
-                    "recent-revealed" => {
-                        assert!(!files.is_recent_view());
-                        let selected = files.selected_index().unwrap();
-                        assert_eq!(files.entries()[selected].name, "Quarterly report.pdf");
-                        assert!(files.entries()[selected].path.exists());
-                    }
-                    "recent-forgotten" => {
-                        assert!(files.is_recent_view());
-                        assert_eq!(files.entries().len(), 1);
-                        assert_eq!(files.entries()[0].name, "Notes.txt");
-                        assert!(
-                            files.entries()[0]
-                                .path
-                                .parent()
-                                .unwrap()
-                                .join("Quarterly report.pdf")
-                                .exists()
-                        );
-                    }
-                    _ => {
-                        assert!(files.is_recent_view());
-                        assert_eq!(files.entries().len(), 2);
-                        if scenario == "recent-menu" {
-                            assert!(
-                                files
-                                    .context_menu
-                                    .items()
-                                    .iter()
-                                    .any(|item| item.label() == Some("Open containing folder"))
-                            );
-                        }
-                    }
-                }
-            })
-            .unwrap();
-        }
-    }
-
-    fn invoke(app: &mut TestApp<FileExplorerShell>, row: &str, action: &str) {
-        app.harness()
-            .call_on(row, action, serde_json::json!({}))
-            .unwrap();
-        app.settle();
-    }
-    #[test]
-    fn recent_resource_reveals_and_forgets_without_changing_files() {
-        let root = tempfile::tempdir().unwrap();
-        let reports = root.path().join("Reports");
-        std::fs::create_dir(&reports).unwrap();
-        let target = reports.join("budget.txt");
-        let sibling = reports.join("notes.txt");
-        std::fs::write(&target, b"budget").unwrap();
-        std::fs::write(&sibling, b"notes").unwrap();
-        let mut app =
-            TestApp::<FileExplorerShell>::launched(&[root.path().to_str().unwrap()]).unwrap();
-        let shared_before = app.state();
-        app.with_surface(|files: &mut FileExplorerWidget| {
-            files.note_recent(&sibling, crate::recent::RecentUse::Opened);
-            files.note_recent(&target, crate::recent::RecentUse::Opened);
-        })
-        .unwrap();
-        app.effect(&FilesEffect::Recent).unwrap();
-        let row = crate::search_provider::entry_resource_id(&target);
-        let published = app
-            .with_surface(|files: &mut FileExplorerWidget| files.published_row(&row).unwrap())
-            .unwrap();
-        for expected in ["reveal", "forget-recent"] {
-            assert!(
-                published.actions.iter().any(|action| action.id == expected),
-                "Recent's {expected} must be available through the resource door"
-            );
-            assert_eq!(
-                published
-                    .actions
-                    .iter()
-                    .find(|action| action.id == expected)
-                    .unwrap()
-                    .kind,
-                ui::tilo_actions::OperationKind::View,
-                "Recent navigation and device history do not mutate shared files"
-            );
-        }
-        app.leave_room();
-        for action in ["reveal", "forget-recent"] {
-            assert!(app.call_on(&row, action, serde_json::json!({})).is_err());
-        }
-        app.with_surface(|files: &mut FileExplorerWidget| {
-            assert!(files.is_recent_view());
-            assert_eq!(files.entries().len(), 2);
-        })
-        .unwrap();
-        app.set_role(ui::permissions::Role::Viewer);
-        invoke(&mut app, &row, "reveal");
-        app.with_surface(|files: &mut FileExplorerWidget| {
-            assert_eq!(files.current_path(), reports);
-            let selected = files.selected_index().unwrap();
-            assert_eq!(files.entries()[selected].path, target);
-        })
-        .unwrap();
-        app.effect(&FilesEffect::Back).unwrap();
-        invoke(&mut app, &row, "forget-recent");
-        app.with_surface(|files: &mut FileExplorerWidget| {
-            assert!(files.published_row(&row).is_none());
-            assert_eq!(files.entries().len(), 1);
-            assert_eq!(files.entries()[0].path, sibling);
-        })
-        .unwrap();
-        assert_eq!(std::fs::read(&target).unwrap(), b"budget");
-        assert_eq!(std::fs::read(&sibling).unwrap(), b"notes");
-        assert_eq!(
-            app.state(),
-            shared_before,
-            "shared bookmarks and file operations stay unchanged"
-        );
-        assert_eq!(
-            app.settings::<crate::recent::RecentFiles>()
-                .get()
-                .items()
-                .len(),
-            1
-        );
-        assert!(
-            app.call_on(&row, "forget-recent", serde_json::json!({}))
-                .is_err()
-        );
-        let mut reopened = app.reopen().unwrap();
-        reopened.effect(&FilesEffect::Recent).unwrap();
-        reopened
-            .with_surface(|files: &mut FileExplorerWidget| {
-                assert_eq!(files.entries().len(), 1);
-                assert_eq!(files.entries()[0].path, sibling);
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn retained_recent_actions_refuse_other_views_and_deleted_rows() {
-        let root = tempfile::tempdir().unwrap();
-        let target = root.path().join("report.txt");
-        std::fs::write(&target, b"report").unwrap();
-        let mut app =
-            TestApp::<FileExplorerShell>::launched(&[root.path().to_str().unwrap()]).unwrap();
-        app.with_surface(|files: &mut FileExplorerWidget| {
-            files.note_recent(&target, crate::recent::RecentUse::Opened);
-        })
-        .unwrap();
-        let row = crate::search_provider::entry_resource_id(&target);
-        for effect in [
-            FilesEffect::RevealRecent { entry: row.clone() },
-            FilesEffect::ForgetRecent { entry: row.clone() },
-        ] {
-            assert!(
-                app.effect(&effect).is_err(),
-                "a folder row is not a Recent target"
-            );
-        }
-        assert_eq!(
-            app.settings::<crate::recent::RecentFiles>()
-                .get()
-                .items()
-                .len(),
-            1
-        );
-        app.effect(&FilesEffect::Recent).unwrap();
-        for action in ["reveal", "forget-recent"] {
-            assert!(
-                app.call_on(
-                    &row,
-                    action,
-                    serde_json::json!({"entry": root.path().display().to_string()})
-                )
-                .is_err(),
-                "bound targets cannot be replaced by caller paths"
-            );
-        }
-        std::fs::remove_file(&target).unwrap();
-        for action in ["reveal", "forget-recent"] {
-            assert!(
-                app.call_on(&row, action, serde_json::json!({})).is_err(),
-                "an unrefreshed but deleted row is stale"
-            );
-        }
-        app.with_surface(|files: &mut FileExplorerWidget| {
-            assert!(files.is_recent_view());
-            files.refresh();
-            assert!(files.published_row(&row).is_none());
-        })
-        .unwrap();
-    }
-}
+#[path = "recent_resource_tests.rs"]
+mod recent_resource_tests;
 
 #[test]
 fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
     let home = tempfile::tempdir().unwrap();
-    let mut widget = FileExplorerWidget::with_persistence(None, Some(home.path().to_owned()));
-    widget.navigate(home.path().to_owned());
-    widget.follow_ops(&ui::tilo_resource::Outbox::new());
+    let widget = FileExplorerWidget::with_persistence(None, Some(home.path().to_owned()));
+    widget.state().navigate(home.path().to_owned());
+    widget.state().follow_ops(&ui::tilo_resource::Outbox::new());
     let operation = "e44ac38c-627f-48a9-ad92-4a6cdf249216".to_owned();
     let mut ops = ui::tilo_resource::Outbox::new();
     let id = ops.push(
@@ -7325,202 +7426,16 @@ fn completed_clipboard_undo_feedback_survives_the_actual_listing_refresh() {
             operation,
         }]),
     );
-    widget.follow_ops(&ops);
+    widget.state().follow_ops(&ops);
     assert_eq!(
-        widget.status.as_deref(),
+        widget.state().status.as_deref(),
         Some(t("files-clipboard-undone").as_str())
     );
-    assert!(widget.entries.is_empty());
+    assert!(widget.state().entries.is_empty());
 }
 
-mod oauth_cloud_location_tests {
-    use super::*;
-    use crate::remote_accounts::{self, RemoteAccountHealth};
-
-    const PROVIDERS: [(&str, &str); 4] = [
-        ("a-google", remote_accounts::GOOGLE_DRIVE_TYPE),
-        ("b-onedrive", remote_accounts::ONEDRIVE_TYPE),
-        ("c-dropbox", remote_accounts::DROPBOX_TYPE),
-        ("d-icloud", remote_accounts::ICLOUD_DRIVE_TYPE),
-    ];
-
-    fn fixture_store(root: &Path) -> accounts::AccountStore {
-        let mut store = accounts::AccountStore::new();
-        for (id, provider) in PROVIDERS {
-            let mut account = accounts::Account::new(id, provider);
-            account.display_name = "Cloud".into();
-            // Projection must select only public provider facts, not forward
-            // arbitrary stored configuration or imply authenticated access.
-            account.config = serde_json::json!({"unsupported_private_field":"secret-sentinel"});
-            store.upsert(account);
-        }
-        store.save_in(root).unwrap();
-        accounts::AccountSyncReporter::in_root(accounts::AccountId::from("a-google"), root)
-            .offline()
-            .unwrap();
-        store
-    }
-
-    #[test]
-    fn canonical_oauth_accounts_publish_sidebar_resources_and_open_exact_cloud_mounts() {
-        with_owner_callback(canonical_oauth_accounts);
-    }
-
-    fn canonical_oauth_accounts() {
-        let config = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
-        let _store = fixture_store(config.path());
-        let mut widget = FileExplorerWidget::with_persistence_dirs(
-            None,
-            Some(home.path().to_owned()),
-            favorites::UserDirs::default(),
-        );
-        widget.accounts_root = Some(config.path().to_owned());
-        widget.refresh_external_search_catalogs();
-        let mut document = automerge::AutoCommit::new();
-        let accounts = widget.remote_account_snapshot();
-        assert_eq!(accounts.len(), PROVIDERS.len());
-        let first = accounts
-            .iter()
-            .find(|account| account.id.as_str() == "a-google")
-            .unwrap();
-        assert_eq!(first.health, RemoteAccountHealth::Offline);
-        assert!(
-            accounts
-                .iter()
-                .filter(|account| account.id.as_str() != "a-google")
-                .all(|account| account.health == RemoteAccountHealth::NeverChecked)
-        );
-        for (index, (id, provider)) in PROVIDERS.iter().enumerate() {
-            let account = accounts
-                .iter()
-                .find(|account| account.id.as_str() == *id)
-                .unwrap();
-            assert_eq!(remote_accounts::type_id(account.kind).as_str(), *provider);
-            let name = if index == 0 {
-                "Cloud".into()
-            } else {
-                format!("Cloud ({})", index.checked_add(1).unwrap())
-            };
-            let mount = home.path().join("Remote").join(name);
-            assert_eq!(account.mount.as_ref(), Some(&mount));
-            std::fs::create_dir_all(&mount).unwrap();
-            std::fs::write(mount.join("Selected-provider.txt"), id.as_bytes()).unwrap();
-            let places = widget.current_places().sections();
-            assert!(places.iter().flat_map(|section| &section.items).any(|row| {
-                row.id == format!("loc:{}", mount.display()) && row.label == "Cloud"
-            }));
-            let resource_id = remote_accounts::resource_id(&account.id);
-            let resources = crate::files_app::published::tree(&widget, &document);
-            let resource = resources
-                .iter()
-                .flat_map(|root| &root.children)
-                .find(|resource| resource.id.as_str() == resource_id)
-                .unwrap();
-            assert_eq!(resource.kind, "files.remote-account");
-            let open = resource
-                .actions
-                .iter()
-                .find(|action| action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION)
-                .unwrap();
-            assert_eq!(open.contract.availability, Availability::Available);
-            assert!(
-                !serde_json::to_string(&resource.presentation)
-                    .unwrap()
-                    .contains("secret-sentinel")
-            );
-            assert!(matches!(
-                crate::files_app::published::invoke(
-                    &mut widget,
-                    &mut document,
-                    &resource_id,
-                    crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
-                    &serde_json::json!({})
-                )
-                .unwrap(),
-                Some(ui::framework::Effected::Done(_))
-            ));
-            assert_eq!(widget.current_path, mount);
-            assert_eq!(
-                std::fs::read(widget.current_path.join("Selected-provider.txt")).unwrap(),
-                id.as_bytes()
-            );
-        }
-        assert!(
-            !accounts::vault_dir_in(config.path()).exists(),
-            "projection and open must not create credential custody"
-        );
-    }
-
-    #[test]
-    fn disabled_and_removed_oauth_accounts_update_existing_places_and_semantic_actions() {
-        with_owner_callback(disabled_and_removed_oauth_accounts);
-    }
-
-    fn disabled_and_removed_oauth_accounts() {
-        let config = tempfile::tempdir().unwrap();
-        let home = tempfile::tempdir().unwrap();
-        let mut store = fixture_store(config.path());
-        let mut disabled = store
-            .get(&accounts::AccountId::from("c-dropbox"))
-            .unwrap()
-            .clone();
-        disabled.enabled = false;
-        store.upsert(disabled);
-        store.save_in(config.path()).unwrap();
-        let mut widget = FileExplorerWidget::with_persistence_dirs(
-            None,
-            Some(home.path().to_owned()),
-            favorites::UserDirs::default(),
-        );
-        widget.accounts_root = Some(config.path().to_owned());
-        widget.refresh_external_search_catalogs();
-        let mut document = automerge::AutoCommit::new();
-        let places = widget.current_places().sections();
-        assert!(places.iter().flat_map(|section| &section.items).any(|row| {
-            row.id == "account:c-dropbox" && row.secondary.as_deref() == Some("Disabled")
-        }));
-        let id = remote_accounts::resource_id(&accounts::AccountId::from("c-dropbox"));
-        let resources = crate::files_app::published::tree(&widget, &document);
-        let resource = resources
-            .iter()
-            .flat_map(|root| &root.children)
-            .find(|resource| resource.id.as_str() == id)
-            .unwrap();
-        assert!(resource.actions.iter().any(|action| {
-            action.id == crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION
-                && matches!(&action.contract.availability, Availability::Unavailable { code, .. } if code == "account_disabled")
-        }));
-        store.remove(&accounts::AccountId::from("c-dropbox"));
-        store.save_in(config.path()).unwrap();
-        widget.refresh_external_search_catalogs();
-        assert!(
-            !widget
-                .current_places()
-                .sections()
-                .iter()
-                .flat_map(|section| &section.items)
-                .any(|row| row.id == "account:c-dropbox")
-        );
-        let resources = crate::files_app::published::tree(&widget, &document);
-        assert!(
-            !resources
-                .iter()
-                .flat_map(|root| &root.children)
-                .any(|resource| resource.id.as_str() == id)
-        );
-        assert!(
-            crate::files_app::published::invoke(
-                &mut widget,
-                &mut document,
-                &id,
-                crate::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
-                &serde_json::json!({})
-            )
-            .is_err()
-        );
-    }
-}
+#[path = "oauth_cloud_location_tests.rs"]
+mod oauth_cloud_location_tests;
 
 /// Selected files are shared with an agent as their rows' published
 /// resources, each a whole item, in the order shown.
@@ -7530,22 +7445,22 @@ fn selected_files_are_shared_as_the_items_an_agent_acts_on() {
     for name in ["a.txt", "b.txt", "c.txt"] {
         std::fs::write(folder.path().join(name), name).unwrap();
     }
-    let mut files = FileExplorerWidget::new();
-    files.navigate(folder.path().to_path_buf());
+    let files = FileExplorerWidget::new();
+    files.state().navigate(folder.path().to_path_buf());
     assert!(ui::shared_selection::selection_of(&files).is_none());
-    let displayed = files.displayed_entries();
+    let displayed = files.state().displayed_entries();
     let index = |name: &str| {
         displayed
             .iter()
             .position(|entry| entry.name == name)
             .unwrap()
     };
-    files.selection.select_only(index("a.txt"));
-    files.selection.toggle(index("c.txt"));
+    files.state().selection.select_only(index("a.txt"));
+    files.state().selection.toggle(index("c.txt"));
     let selection = ui::shared_selection::selection_of(&files).expect("two files selected");
     let ids: Vec<String> = ["a.txt", "c.txt"]
         .iter()
-        .map(|name| FileExplorerWidget::entry_resource_id(&displayed[index(name)]))
+        .map(|name| FilesState::entry_resource_id(&displayed[index(name)]))
         .collect();
     assert_eq!(
         selection
@@ -7587,10 +7502,11 @@ fn a_name_clash_asks_once_and_each_answer_does_what_it_says() {
         std::fs::write(src.join("a.txt"), b"new").unwrap();
         std::fs::write(src.join("b.txt"), b"new").unwrap();
         std::fs::write(dest.join("a.txt"), b"old").unwrap();
-        let mut w = FileExplorerWidget::with_persistence(None, None);
-        w.navigate(src.clone());
-        w.drop_paths_into(&[src.join("a.txt"), src.join("b.txt")], &dest, false);
-        assert!(w.clash.is_some(), "a taken name asks first");
+        let w = FileExplorerWidget::with_persistence(None, None);
+        w.state().navigate(src.clone());
+        w.state()
+            .drop_paths_into(&[src.join("a.txt"), src.join("b.txt")], &dest, false);
+        assert!(w.state().clash.is_some(), "a taken name asks first");
         assert!(
             src.join("a.txt").exists(),
             "nothing moved before the answer"
@@ -7606,25 +7522,25 @@ fn a_name_clash_asks_once_and_each_answer_does_what_it_says() {
         names
     };
 
-    let (_dir, mut w, src, dest) = setup();
-    w.settle_clash(Some(ClashChoice::Skip));
+    let (_dir, w, src, dest) = setup();
+    w.state().settle_clash(Some(ClashChoice::Skip));
     assert_eq!(names(&dest), ["a.txt", "b.txt"]);
     assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"old");
     assert!(src.join("a.txt").exists(), "the skipped item stays");
 
-    let (_dir, mut w, _src, dest) = setup();
-    w.settle_clash(Some(ClashChoice::KeepBoth));
+    let (_dir, w, _src, dest) = setup();
+    w.state().settle_clash(Some(ClashChoice::KeepBoth));
     assert_eq!(names(&dest).len(), 3, "{:?}", names(&dest));
 
-    let (_dir, mut w, _src, dest) = setup();
-    w.settle_clash(Some(ClashChoice::Replace));
+    let (_dir, w, _src, dest) = setup();
+    w.state().settle_clash(Some(ClashChoice::Replace));
     assert_eq!(names(&dest), ["a.txt", "b.txt"]);
     assert_eq!(std::fs::read(dest.join("a.txt")).unwrap(), b"new");
 
-    let (_dir, mut w, src, _dest) = setup();
-    w.settle_clash(None);
+    let (_dir, w, src, _dest) = setup();
+    w.state().settle_clash(None);
     assert!(
-        w.clash.is_none() && src.join("a.txt").exists(),
+        w.state().clash.is_none() && src.join("a.txt").exists(),
         "Escape changes nothing"
     );
 }
@@ -7676,27 +7592,38 @@ fn space_previews_the_selection_and_closes_again() {
     std::fs::write(dir.path().join("a.txt"), b"first line\nsecond").unwrap();
     std::fs::write(dir.path().join("b.txt"), b"other").unwrap();
     let mut w = FileExplorerWidget::with_persistence(None, None);
-    w.navigate(dir.path().to_path_buf());
-    w.select(Some(0));
+    w.state().navigate(dir.path().to_path_buf());
+    w.state().select(Some(0));
     let space = ui::synthetic_input::key_event(
         Key::Named(NamedKey::Space),
         None,
         winit::event::ElementState::Pressed,
     );
-    assert!(w.handle_app_key(&space, winit::event::Modifiers::default()));
-    assert_eq!(w.preview.as_ref().map(Preview::title), Some("a.txt"));
+    assert!(w.with_state(|state, chrome| state.handle_app_key(
+        chrome,
+        &space,
+        winit::event::Modifiers::default()
+    )));
+    assert_eq!(
+        w.state().preview.as_ref().map(Preview::title),
+        Some("a.txt")
+    );
     let down = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
         Key::Named(NamedKey::ArrowDown),
         None,
         winit::event::ElementState::Pressed,
     ));
-    w.route_preview_event(&down, winit::event::Modifiers::default());
-    assert_eq!(w.preview.as_ref().map(Preview::title), Some("b.txt"));
-    w.route_preview_event(
+    w.state()
+        .route_preview_event(&down, winit::event::Modifiers::default());
+    assert_eq!(
+        w.state().preview.as_ref().map(Preview::title),
+        Some("b.txt")
+    );
+    w.state().route_preview_event(
         &ui::synthetic_input::keyboard_input(space),
         winit::event::Modifiers::default(),
     );
-    assert!(w.preview.is_none(), "Space closes it again");
+    assert!(w.state().preview.is_none(), "Space closes it again");
 }
 
 /// Files dropped in from another app are copied into the folder shown.
@@ -7708,15 +7635,14 @@ fn files_dropped_from_another_app_are_copied_here() {
         std::fs::write(src.path().join(name), name.as_bytes()).unwrap();
     }
     let mut w = FileExplorerWidget::with_persistence(None, None);
-    w.navigate(dest.path().to_path_buf());
+    w.state().navigate(dest.path().to_path_buf());
     for name in ["one.txt", "two.txt"] {
-        assert!(
-            w.route_incoming_drop(&winit::event::WindowEvent::DroppedFile(
-                src.path().join(name)
-            ))
-        );
+        assert!(w.with_state(|state, chrome| state.route_incoming_drop(
+            chrome,
+            &winit::event::WindowEvent::DroppedFile(src.path().join(name))
+        )));
     }
-    w.take_incoming_drop();
+    w.state().take_incoming_drop();
     assert_eq!(
         std::fs::read(dest.path().join("one.txt")).unwrap(),
         b"one.txt"
@@ -7763,11 +7689,12 @@ fn a_listed_entry_is_found_by_its_row_id_as_the_listing_changes() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("a.txt"), b"a").unwrap();
     std::fs::write(directory.path().join("b.txt"), b"b").unwrap();
-    let mut files = FileExplorerWidget::new();
-    files.navigate(directory.path().to_path_buf());
+    let files = FileExplorerWidget::new();
+    files.state().navigate(directory.path().to_path_buf());
     let id = |name: &str| crate::search_provider::entry_resource_id(&directory.path().join(name));
     let found = |files: &FileExplorerWidget, name: &str| {
         files
+            .state()
             .entry_by_resource_id(&id(name))
             .map(|entry| entry.name.clone())
     };
@@ -7775,7 +7702,7 @@ fn a_listed_entry_is_found_by_its_row_id_as_the_listing_changes() {
     assert_eq!(found(&files, "c.txt"), None);
     std::fs::write(directory.path().join("c.txt"), b"c").unwrap();
     std::fs::remove_file(directory.path().join("b.txt")).unwrap();
-    files.refresh();
+    files.state().refresh();
     assert_eq!(found(&files, "c.txt").as_deref(), Some("c.txt"));
     assert_eq!(found(&files, "b.txt"), None);
     assert_eq!(found(&files, "a.txt").as_deref(), Some("a.txt"));
@@ -7789,11 +7716,12 @@ fn an_unchanged_entry_publishes_the_row_it_published() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("a.txt"), b"a").unwrap();
     std::fs::write(directory.path().join("b.txt"), b"b").unwrap();
-    let mut files = FileExplorerWidget::new();
-    files.navigate(directory.path().to_path_buf());
+    let files = FileExplorerWidget::new();
+    files.state().navigate(directory.path().to_path_buf());
     let row = |files: &FileExplorerWidget, name: &str| {
         let id = crate::search_provider::entry_resource_id(&directory.path().join(name));
         files
+            .state()
             .live_entry_rows()
             .into_iter()
             .find(|row| row.id() == id)
@@ -7803,7 +7731,12 @@ fn an_unchanged_entry_publishes_the_row_it_published() {
     assert!(row(&files, "a.txt").same_row(&a), "the same row again");
     // The entry changed: its row is made again, the other kept.
     let b = row(&files, "b.txt");
-    if let Some(entry) = files.entries.iter_mut().find(|entry| entry.name == "a.txt") {
+    if let Some(entry) = files
+        .state()
+        .entries
+        .iter_mut()
+        .find(|entry| entry.name == "a.txt")
+    {
         entry.size = entry.size.saturating_add(1);
     }
     assert!(
@@ -7824,24 +7757,30 @@ fn a_listing_read_that_finds_nothing_asks_for_no_sync() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join("a.txt"), b"a").unwrap();
     let mut files = FileExplorerWidget::new();
-    files.navigate(directory.path().to_path_buf());
+    files.state().navigate(directory.path().to_path_buf());
     files.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
     let now = Instant::now();
     let long_ago = now.checked_sub(Duration::from_secs(60)).unwrap_or(now);
-    files.directory_changed = true;
-    files.last_directory_read = long_ago;
+    files.state().directory_changed = true;
+    files.state().last_directory_read = long_ago;
     assert!(
         !files.serve_deadline(now),
         "the folder is as it was: no sync"
     );
     std::fs::write(directory.path().join("b.txt"), b"b").unwrap();
-    files.directory_changed = true;
-    files.last_directory_read = long_ago;
+    files.state().directory_changed = true;
+    files.state().last_directory_read = long_ago;
     assert!(
         files.serve_deadline(now),
         "a new file asks for the sync that shows it"
     );
-    assert!(files.entries.iter().any(|entry| entry.name == "b.txt"));
+    assert!(
+        files
+            .state()
+            .entries
+            .iter()
+            .any(|entry| entry.name == "b.txt")
+    );
 }
 
 /// Run `test` on a thread that is a frame loop's, where a window reads its
@@ -7878,8 +7817,10 @@ fn hosted_window(home: &Path) -> FileExplorerWidget {
 }
 
 /// Apply the worker's read once it is done.
-fn settle_folder_read(files: &mut FileExplorerWidget) {
-    tilo_test_env::wait_until("the folder read to finish", || files.take_folder_read());
+fn settle_folder_read(files: &FileExplorerWidget) {
+    tilo_test_env::wait_until("the folder read to finish", || {
+        files.state().take_folder_read()
+    });
 }
 
 #[test]
@@ -7891,27 +7832,35 @@ fn on_a_frame_loop_a_folder_shows_the_loading_state_until_its_worker_has_read_it
     on_a_frame_loop(|| {
         // Building the window lists nothing on this thread: a listing here
         // would panic.
-        let mut files = hosted_window(home.path());
-        settle_folder_read(&mut files);
-        files.navigate(folder.clone());
-        assert!(files.is_loading(), "the folder is being read");
+        let files = hosted_window(home.path());
+        settle_folder_read(&files);
+        files.state().navigate(folder.clone());
+        assert!(files.state().is_loading(), "the folder is being read");
         assert!(
-            files.entries().is_empty(),
+            files.state().entries().is_empty(),
             "no rows of the folder left behind"
         );
-        assert_eq!(files.current_path(), folder);
-        assert_eq!(files.current_place(), None, "not known to be a folder yet");
-        settle_folder_read(&mut files);
-        assert!(!files.is_loading());
+        assert_eq!(files.state().current_path(), folder);
+        assert_eq!(
+            files.state().current_place(),
+            None,
+            "not known to be a folder yet"
+        );
+        settle_folder_read(&files);
+        assert!(!files.state().is_loading());
         assert_eq!(
             files
+                .state()
                 .entries()
                 .iter()
                 .map(|e| e.name.as_str())
                 .collect::<Vec<_>>(),
             ["a.txt"]
         );
-        assert!(files.current_place().is_some(), "a folder read is a place");
+        assert!(
+            files.state().current_place().is_some(),
+            "a folder read is a place"
+        );
     });
 }
 
@@ -7925,14 +7874,15 @@ fn on_a_frame_loop_a_read_replaced_by_a_newer_navigation_is_never_shown() {
     std::fs::write(first.join("old.txt"), b"").unwrap();
     std::fs::write(second.join("new.txt"), b"").unwrap();
     on_a_frame_loop(|| {
-        let mut files = hosted_window(home.path());
-        settle_folder_read(&mut files);
-        files.navigate(first.clone());
-        files.navigate(second.clone());
-        settle_folder_read(&mut files);
-        assert_eq!(files.current_path(), second);
+        let files = hosted_window(home.path());
+        settle_folder_read(&files);
+        files.state().navigate(first.clone());
+        files.state().navigate(second.clone());
+        settle_folder_read(&files);
+        assert_eq!(files.state().current_path(), second);
         assert_eq!(
             files
+                .state()
                 .entries()
                 .iter()
                 .map(|e| e.name.as_str())
@@ -7940,7 +7890,7 @@ fn on_a_frame_loop_a_read_replaced_by_a_newer_navigation_is_never_shown() {
             ["new.txt"]
         );
         assert!(
-            !files.folder_reads.is_pending(),
+            !files.state().folder_reads.is_pending(),
             "the first read is dropped"
         );
     });
@@ -7951,15 +7901,22 @@ fn on_a_frame_loop_the_shown_folder_keeps_its_rows_while_it_is_read_again() {
     let home = tempfile::tempdir().unwrap();
     std::fs::write(home.path().join("a.txt"), b"").unwrap();
     on_a_frame_loop(|| {
-        let mut files = hosted_window(home.path());
-        settle_folder_read(&mut files);
-        let shown = files.entries().len();
+        let files = hosted_window(home.path());
+        settle_folder_read(&files);
+        let shown = files.state().entries().len();
         std::fs::write(home.path().join("b.txt"), b"").unwrap();
-        files.refresh();
-        assert!(!files.is_loading(), "a refresh does not blank the folder");
-        assert_eq!(files.entries().len(), shown, "its rows stay until replaced");
-        settle_folder_read(&mut files);
-        assert_eq!(files.entries().len(), shown + 1);
+        files.state().refresh();
+        assert!(
+            !files.state().is_loading(),
+            "a refresh does not blank the folder"
+        );
+        assert_eq!(
+            files.state().entries().len(),
+            shown,
+            "its rows stay until replaced"
+        );
+        settle_folder_read(&files);
+        assert_eq!(files.state().entries().len(), shown + 1);
     });
 }
 
@@ -7972,13 +7929,16 @@ fn on_a_frame_loop_reveal_in_folder_selects_the_item_once_its_folder_is_read() {
         std::fs::write(folder.join(name), b"").unwrap();
     }
     on_a_frame_loop(|| {
-        let mut files = hosted_window(home.path());
-        settle_folder_read(&mut files);
-        assert!(files.apply_reveal_in_folder(&folder.join("b.txt")));
-        settle_folder_read(&mut files);
-        let selected = files
-            .selected_index()
-            .map(|i| files.displayed_entries()[i].name.clone());
+        let files = hosted_window(home.path());
+        settle_folder_read(&files);
+        assert!(files.state().apply_reveal_in_folder(&folder.join("b.txt")));
+        settle_folder_read(&files);
+        let selected = {
+            let state = files.state();
+            state
+                .selected_index()
+                .map(|i| state.displayed_entries()[i].name.clone())
+        };
         assert_eq!(selected.as_deref(), Some("b.txt"));
     });
 }

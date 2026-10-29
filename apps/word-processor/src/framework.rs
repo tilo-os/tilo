@@ -317,7 +317,7 @@ mod tests {
         let before = app.peer_document().get_heads();
         let converted = app
             .effect(&WordProcessorEffect::ConvertFile {
-                file: notes.display().to_string(),
+                file: ui::tilo_resource::AbsolutePath::new(notes).unwrap(),
                 to: "odt".into(),
             })
             .unwrap()
@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(converted["file"], odt.display().to_string());
         let read = app
             .effect(&WordProcessorEffect::ReadFile {
-                file: odt.display().to_string(),
+                file: ui::tilo_resource::AbsolutePath::new(odt).unwrap(),
                 from: None,
             })
             .unwrap()
@@ -339,6 +339,27 @@ mod tests {
         );
         app.settle();
         assert_eq!(app.peer_document().get_heads(), before);
+    }
+
+    /// A relative path is refused before it reaches the app: it would name
+    /// a file wherever the process runs.
+    #[test]
+    fn file_effects_refuse_a_relative_path() {
+        use super::WordProcessorEffect;
+        use ui::tilo_resource::Effect as _;
+        for (id, param) in [
+            ("open-document", "path"),
+            ("save", "path"),
+            ("save-as", "path"),
+            ("read-file", "file"),
+            ("convert-file", "file"),
+        ] {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(param.into(), "notes.md".into());
+            arguments.insert("to".into(), "odt".into());
+            let error = WordProcessorEffect::decode(id, &arguments).unwrap_err();
+            assert!(error.contains("absolute"), "{id}: {error}");
+        }
     }
 
     #[test]

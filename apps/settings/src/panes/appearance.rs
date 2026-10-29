@@ -33,8 +33,8 @@ use vello::kurbo::Rect;
 
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::panes::keyboard_shortcuts::DesktopControls;
 use crate::prefs::AppearancePrefs;
+use crate::prefs::{AppearanceDevicePrefs, DesktopControlsDevice};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{Item, SettingsSection, block, note, rows, section, value_row};
@@ -334,9 +334,10 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>)
 pub struct AppearancePane {
     cx: PaneCx,
     prefs: Followed<AppearancePrefs>,
-    /// The desktop's chrome preferences (the top bar), kept beside the
-    /// shell's other desktop controls.
-    desktop: Followed<DesktopControls>,
+    /// This device's chrome preferences (the top bar).
+    desktop: Followed<DesktopControlsDevice>,
+    /// The appearance this device's OS image ships.
+    device: Followed<AppearanceDevicePrefs>,
     /// The desk widgets' choices, edited on this pane too.
     desk: Followed<crate::prefs::DeskWidgetsPrefs>,
     /// Where the last wallpaper request stands, written by its effect.
@@ -391,8 +392,9 @@ impl AppearancePane {
     /// `wallpaper_status`.
     pub fn new(cx: PaneCx, wallpaper_status: LocalState<Option<String>>) -> Self {
         let prefs = cx.follow::<AppearancePrefs>();
-        let desktop = cx.follow::<DesktopControls>();
+        let desktop = cx.follow::<DesktopControlsDevice>();
         let desk = cx.follow::<crate::prefs::DeskWidgetsPrefs>();
+        let device = cx.follow::<AppearanceDevicePrefs>();
         // The picker shows the person's own picture until the shipped
         // ones are decoded; their landing wakes the window to show them.
         if THUMBNAILS.get().is_none() {
@@ -402,6 +404,7 @@ impl AppearancePane {
             cx,
             prefs,
             desktop,
+            device,
             desk,
             wallpaper_status,
             shape: Shape {
@@ -600,11 +603,11 @@ impl AppearancePane {
 
 pub(crate) mod values;
 
-pub(crate) fn hide_top_bar(cx: &PaneCx, desktop: &Followed<DesktopControls>) -> Item {
+pub(crate) fn hide_top_bar(cx: &PaneCx, desktop: &Followed<DesktopControlsDevice>) -> Item {
     cx.row(t("settings-appearance-hide-top-bar"))
         .described(t("settings-appearance-hide-top-bar-desc"))
         .id("appearance.hide_top_bar")
-        .of(desktop, DesktopControls::paths().hide_top_bar)
+        .of(desktop, DesktopControlsDevice::paths().hide_top_bar)
         .toggle()
 }
 
@@ -614,6 +617,7 @@ impl Widget for AppearancePane {
         // what it shows otherwise changes.
         self.prefs.refresh();
         self.desktop.refresh();
+        self.device.refresh();
         self.desk.refresh();
         let shape = self.shape();
         if shape != self.shape {
@@ -645,7 +649,7 @@ impl Widget for AppearancePane {
     fn appearance_intent(&self) -> Option<ui::theme::AppearanceIntent> {
         let prefs = self.prefs.get();
         Some(ui::theme::AppearanceIntent {
-            base_theme: prefs.base_theme(),
+            base_theme: prefs.base_theme(self.device.get()),
             high_contrast: prefs.high_contrast,
             reduce_motion: prefs.reduce_motion,
             text_scale: prefs.text_scale as f32,
@@ -719,7 +723,7 @@ mod tests {
         assert_eq!(prefs.text_scale, 1.15);
         assert!(prefs.high_contrast);
         assert_eq!(prefs.wallpaper_scope, "all");
-        let resolved = prefs.resolve_theme();
+        let resolved = prefs.resolve_theme(&crate::prefs::AppearanceDevicePrefs::default());
         assert_eq!(resolved.ui_scale, 1.50);
 
         let section = settings.document().section("appearance");
@@ -793,26 +797,34 @@ mod tests {
         assert!(intent.reduce_motion);
     }
 
-    /// "Hide the top bar" is a desktop control: the toggle writes the
-    /// `desktop_controls` section the shell reloads live, leaves the section's
-    /// other keys alone, and the pane follows a change made elsewhere.
+    /// "Hide the top bar" is this device's desktop control: the toggle
+    /// writes the `desktop_controls_device` section the shell reloads live,
+    /// leaves the person's controls alone, and the pane follows a change made
+    /// elsewhere.
     #[test]
     fn the_top_bar_toggle_writes_the_desktop_controls_and_follows_them() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         edit_field(&mut app, "settings.desktop-controls", "vim_mode", true).unwrap();
-        edit_field(&mut app, "settings.desktop-controls", "hide_top_bar", true).unwrap();
-        let controls = app.settings::<DesktopControls>().get();
-        assert!(controls.hide_top_bar);
-        assert!(controls.vim_mode, "the other desktop control is kept");
-        let section = app
-            .settings::<DesktopControls>()
-            .document()
-            .section("desktop_controls");
-        let stored: settings_store::hardware::DesktopControlsConfig =
-            serde_json::from_value(serde_json::Value::Object(section)).unwrap();
+        edit_field(
+            &mut app,
+            "settings.desktop-controls-device",
+            "hide_top_bar",
+            true,
+        )
+        .unwrap();
+        assert!(app.settings::<DesktopControlsDevice>().get().hide_top_bar);
         assert!(
-            stored.hide_top_bar,
-            "the shell's schema reads the same leaf"
+            app.settings::<crate::prefs::DesktopControls>()
+                .get()
+                .vim_mode,
+            "the person's desktop control is kept"
+        );
+        let stored = settings_store::desktop_controls::DesktopControlsConfig::from_document(
+            &app.settings::<DesktopControlsDevice>().document().load(),
+        );
+        assert!(
+            stored.hide_top_bar && stored.vim_mode,
+            "the shell's schema reads the same leaves"
         );
 
         let profile = tempfile::tempdir().unwrap();
@@ -820,9 +832,9 @@ mod tests {
         let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
         let hidden = pane
             .desktop
-            .shown(&DesktopControls::paths().hide_top_bar, bool::clone);
+            .shown(&DesktopControlsDevice::paths().hide_top_bar, bool::clone);
         assert!(!hidden.get(), "visible by default");
-        cx.settings::<DesktopControls>()
+        cx.settings::<DesktopControlsDevice>()
             .update(|controls| controls.hide_top_bar = true)
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();
@@ -878,12 +890,15 @@ mod tests {
                 assert_eq!(app.harness().inspection().keyboard_focus_owner, owner);
                 let now = app.harness().focused_access_node().expect("still focused");
                 assert_eq!(now.semantic_key, focused.semantic_key);
-                let wanted = !app.settings::<DesktopControls>().get().hide_top_bar;
+                let wanted = !app.settings::<DesktopControlsDevice>().get().hide_top_bar;
                 app.harness()
                     .perform_semantic_named(control, None, &ui::a11y::Action::Activate)
                     .unwrap();
                 settle(&mut app);
-                assert_eq!(app.settings::<DesktopControls>().get().hide_top_bar, wanted);
+                assert_eq!(
+                    app.settings::<DesktopControlsDevice>().get().hide_top_bar,
+                    wanted
+                );
             }
         }
     }

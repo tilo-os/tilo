@@ -666,7 +666,9 @@ impl SettingsRecords {
                 app_id,
                 document: SettingsDocument::Session,
                 person: Some((
-                    Rc::new(super::person::PersonState::new(records, app_id, app_title)),
+                    Rc::new(super::person::PersonState::new(
+                        records, None, app_id, app_title,
+                    )),
                     device,
                 )),
                 doors: Vec::new(),

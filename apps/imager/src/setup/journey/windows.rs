@@ -2,7 +2,6 @@
 //! Identity enrollment and account authorization happen later in the live OS.
 use super::*;
 use imager_backend::windows_inventory::{Decision, RootRole, SelectedRoot};
-use std::path::Path;
 
 enum Discovery {
     Suggestions(Vec<imager_backend::windows_inventory::RootSuggestion>),
@@ -318,7 +317,7 @@ impl InstallerPreview {
                         &inventory,
                         &hints,
                         password.as_bytes(),
-                        Path::new(&destination),
+                        &destination,
                     ));
                 });
             }
@@ -417,17 +416,19 @@ impl InstallerPreview {
                     self.error = Some("installer-windows-source-failed");
                 }
                 if let ui::PortalOutcome::Opened(path) = answer {
-                    let effect = if let Some(role) = role {
-                        SelectWindowsRoot {
-                            source: path.to_string_lossy().into_owned(),
-                            role: role_id(role).into(),
-                        }
-                    } else {
-                        ExportWindowsPreparation {
-                            destination: path.to_string_lossy().into_owned(),
-                        }
-                    };
-                    if let Err(error) = self.apply_windows(effect) {
+                    let result = AbsolutePath::new(path)
+                        .map_err(|_| "installer-windows-source-failed")
+                        .and_then(|path| {
+                            self.apply_windows(if let Some(role) = role {
+                                SelectWindowsRoot {
+                                    source: path,
+                                    role: role_id(role).into(),
+                                }
+                            } else {
+                                ExportWindowsPreparation { destination: path }
+                            })
+                        });
+                    if let Err(error) = result {
                         self.error = Some(error);
                     }
                 }
@@ -500,9 +501,12 @@ impl InstallerPreview {
                 InstallerPreviewEffect::FindWindowsRoots,
             )));
         for (index, suggestion) in self.windows.suggestions.iter().enumerate() {
+            let Ok(source) = AbsolutePath::new(&suggestion.path) else {
+                continue;
+            };
             let commands = self.commands.clone();
             let effect = InstallerPreviewEffect::SelectWindowsRoot {
-                source: suggestion.path.to_string_lossy().into_owned(),
+                source,
                 role: role_id(suggestion.role).into(),
             };
             content = content.push(Box::new(
@@ -599,14 +603,16 @@ impl InstallerPreview {
                     }
                 }
                 for (suggestion_index, path) in root.additional_grants.iter().enumerate() {
+                    let Ok(source) = AbsolutePath::new(path) else {
+                        continue;
+                    };
                     let commands = self.commands.clone();
-                    let source = path.to_string_lossy().into_owned();
                     content = content.push(Box::new(
                         Button::new(
                             &format!("windows.library.{index}.{suggestion_index}"),
                             &t_args(
                                 "installer-windows-grant-library",
-                                &[("path", source.clone().into())],
+                                &[("path", source.to_string_lossy().into())],
                             ),
                         )
                         .on_effect(move || {
@@ -840,12 +846,14 @@ fn role_id(role: RootRole) -> &'static str {
 
 use InstallerPreviewEffect::{ExportWindowsPreparation, SelectWindowsRoot};
 use imager_backend::windows_preparation::export;
+use ui::tilo_resource::AbsolutePath;
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use InstallerPreviewEffect::*;
     use imager_backend::windows_inventory::Inventory;
+    use std::path::Path;
 
     thread_local! {
         static OPENED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -1078,7 +1086,7 @@ mod tests {
         preview.media = Some(ui::LocalState::new(false));
         preview
             .apply(SelectWindowsRoot {
-                source: root.to_str().unwrap().into(),
+                source: AbsolutePath::new(&root).unwrap(),
                 role: "outlook".into(),
             })
             .unwrap();
@@ -1141,7 +1149,7 @@ mod tests {
         assert!(
             preview
                 .apply(ExportWindowsPreparation {
-                    destination: backup.to_str().unwrap().into()
+                    destination: AbsolutePath::new(&backup).unwrap()
                 })
                 .is_err()
         );
@@ -1152,7 +1160,7 @@ mod tests {
             .unwrap();
         preview
             .apply(ExportWindowsPreparation {
-                destination: backup.to_str().unwrap().into(),
+                destination: AbsolutePath::new(&backup).unwrap(),
             })
             .unwrap();
         let deadline = tilo_test_env::hang_deadline();

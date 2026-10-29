@@ -6,7 +6,9 @@
 //!
 //! The tile reports what the person did as a [`QuickTileOutcome`]
 //! ([`QuickTile::take_outcome`]); the host switches the control or opens
-//! its section and hands the new state back.
+//! its section and hands the new state back. In an app each target is bound
+//! to an action instead ([`QuickTile::on_switch`], [`QuickTile::on_details`]),
+//! the same one the palette, scripts and agents invoke.
 //!
 //! ```ignore
 //! let mut tile = QuickTile::new("quick_settings_network", Icon::Wifi, "Wi-Fi")
@@ -119,6 +121,10 @@ pub struct QuickTile {
     pressed: Option<QuickTilePart>,
     focused: Option<QuickTilePart>,
     outcome: Option<QuickTileOutcome>,
+    /// What a press on the tile invokes, when bound to an action.
+    switch_action: Option<crate::widget::ActionEmitter<()>>,
+    /// What a press on the chevron invokes, when bound to an action.
+    details_action: Option<crate::widget::ActionEmitter<()>>,
     metrics: Option<TileMetrics>,
     dirty: bool,
 }
@@ -141,6 +147,8 @@ impl QuickTile {
             pressed: None,
             focused: None,
             outcome: None,
+            switch_action: None,
+            details_action: None,
             metrics: None,
             dirty: true,
         }
@@ -178,6 +186,30 @@ impl QuickTile {
 
     /// Show `icon`, `label` and `detail`, for a host that keeps one tile
     /// per control across frames.
+    /// Invoke `binding` when the tile is pressed, instead of reporting a
+    /// [`QuickTileOutcome::Switch`].
+    #[must_use]
+    pub fn on_switch(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+        self.switch_action = Some(crate::widget::ActionEmitter::new(binding));
+        self
+    }
+
+    /// Invoke `binding` when the chevron is pressed, instead of reporting a
+    /// [`QuickTileOutcome::Details`]. The tile has a chevron only once it is
+    /// named ([`Self::with_details`]).
+    #[must_use]
+    pub fn on_details(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+        self.details_action = Some(crate::widget::ActionEmitter::new(binding));
+        self
+    }
+
+    /// How far the chevron has turned towards an open section, 0 to 1.
+    #[must_use]
+    pub fn details_open(mut self, open: f64) -> Self {
+        self.set_details_open(open);
+        self
+    }
+
     pub fn set_content(&mut self, icon: Icon, label: &str, detail: &str) {
         if self.icon != icon || self.label != label || self.detail != detail {
             self.icon = icon;
@@ -308,11 +340,23 @@ impl QuickTile {
         if !self.enabled {
             return false;
         }
-        self.outcome = Some(match part {
+        let outcome = match part {
             QuickTilePart::Switch => QuickTileOutcome::Switch,
             QuickTilePart::Details if self.details.is_some() => QuickTileOutcome::Details,
             QuickTilePart::Details => return false,
-        });
+        };
+        let bound = match outcome {
+            QuickTileOutcome::Switch => self.switch_action.as_mut(),
+            QuickTileOutcome::Details => self.details_action.as_mut(),
+        };
+        match bound {
+            Some(emitter) => {
+                if let Err(error) = emitter.emit(()) {
+                    tracing::warn!(%error, tile = %self.id, "action-bound tile refused its arguments");
+                }
+            }
+            None => self.outcome = Some(outcome),
+        }
         true
     }
 
@@ -458,7 +502,56 @@ impl QuickTile {
     }
 }
 
+impl crate::widget::controls::ActionControls for QuickTile {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        for emitter in [&mut self.switch_action, &mut self.details_action]
+            .into_iter()
+            .flatten()
+        {
+            let _ = emitter.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        [&mut self.switch_action, &mut self.details_action]
+            .into_iter()
+            .flatten()
+            .find_map(crate::widget::ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        if let Some(emitter) = &self.switch_action {
+            bindings.push(emitter.metadata(self.id.clone()));
+        }
+        if let Some(emitter) = &self.details_action {
+            bindings.push(emitter.metadata(format!("{}_details", self.id)));
+        }
+        bindings
+    }
+    fn has_action_control_bindings(&self) -> bool {
+        self.switch_action.is_some() || self.details_action.is_some()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for emitter in [&mut self.switch_action, &mut self.details_action]
+            .into_iter()
+            .flatten()
+        {
+            let before = emitter.is_available();
+            emitter.refresh_availability(allowed);
+            self.dirty |= before != emitter.is_available();
+        }
+    }
+}
+
 impl Widget for QuickTile {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     #[allow(
         clippy::cast_possible_truncation,
         reason = "a tile's height is a small pixel count; taffy's Style takes f32"

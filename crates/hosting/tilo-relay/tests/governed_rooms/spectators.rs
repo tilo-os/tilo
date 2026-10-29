@@ -286,7 +286,7 @@ async fn spectators_read_a_public_room_write_nothing_and_fill_only_its_seats() {
     .await;
 
     // Every way a device writes into the room is refused to it. Its change
-    // could be a channel access request: it reaches no steward either.
+    // could be a channel access request: no participant takes it either.
     let change = tilo_relay::CoeditPayload::RetainedDelta {
         channel: [9; 32],
         body: b"a spectator's change".to_vec(),

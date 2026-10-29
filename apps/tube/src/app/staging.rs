@@ -13,10 +13,12 @@ use vello::kurbo::Rect;
 use crate::action::{self, Action};
 use crate::model::{Route, TubeModel};
 
-use super::TubeApp;
+#[cfg(feature = "samples")]
+use super::ShellAsk;
 use super::playback::pump_player;
+use super::{Tube, TubeApp};
 
-impl TubeApp {
+impl Tube {
     #[cfg(feature = "samples")]
     fn play_demo(&mut self) {
         // The sample video that carries captions, so the still shows the whole
@@ -67,15 +69,12 @@ impl TubeApp {
             #[cfg(feature = "grayjay-sync")]
             "device-sync" => self.show_device_sync_sample(),
             "play-demo" => self.play_demo(),
-            "narrow" => {
-                self.shell.open_sidebar();
-                self.shell.snap();
-            }
+            "narrow" => self.shell_asks.push(ShellAsk::OpenSidebar),
             // The sidebar as a person who dragged its edge out left it: a
             // list, each icon beside its label.
-            "sidebar-list" => self
-                .shell
-                .stage_sidebar_width(f64::from(ui::tokens::Metrics::BASE.sidebar_width)),
+            "sidebar-list" => self.shell_asks.push(ShellAsk::SidebarWidth(f64::from(
+                ui::tokens::Metrics::BASE.sidebar_width,
+            ))),
             "trending" => self.show_route(Route::Trending),
             "subscriptions" => self.show_route(Route::Subscriptions),
             "queue" => self.show_route(Route::Queue),
@@ -86,24 +85,13 @@ impl TubeApp {
             _ => {}
         }
         self.structure_dirty = true;
-        self.shell_stale = true;
     }
 
     /// Test/shots hook: attach an image store so an offscreen `--shots` render
     /// can paint fetched thumbnails, avatars, and banners. The live app gets
     /// its store via [`Self::online`].
-    #[must_use]
-    pub fn with_image_store(mut self, store: ui::ImageStore) -> Self {
+    fn set_image_store(&mut self, store: ui::ImageStore) {
         self.images = Some(store);
-        self
-    }
-
-    /// Test/shots hook: replace the model wholesale (e.g. a channel page built
-    /// from real `YouTube` data) so an offscreen render shows real content.
-    #[must_use]
-    pub fn with_model_for_test(mut self, model: TubeModel) -> Self {
-        self.stage_model_for_test(model);
-        self
     }
 
     /// Supply a deterministic catalogue in a hosted test without changing its
@@ -113,12 +101,12 @@ impl TubeApp {
     /// Retire it with the live catalogue: its startup notes, its status and
     /// the feed it fetched would otherwise land whenever the network answers,
     /// rebuild the staged page and drop a click made in between.
-    pub fn stage_model_for_test(&mut self, model: TubeModel) {
+    fn stage_model_for_test(&mut self, model: TubeModel) {
         self.search_query.set(model.search_query.clone());
         self.model = model;
         self.online = false;
         self.worker = None;
-        self.shell_stale = true;
+        self.structure_dirty = true;
     }
 
     /// Wake this window through `wake` when the fetch worker posts a result.
@@ -128,8 +116,7 @@ impl TubeApp {
 
     /// Test hook: fetch nothing, and fold the results the returned sender
     /// sends as the network's, whenever the test lands one.
-    #[doc(hidden)]
-    pub fn script_worker_for_test(&mut self) -> crate::api::Updates {
+    fn script_worker_for_test(&mut self) -> crate::api::Updates {
         let (worker, results) = crate::api::Worker::scripted(self.wake.clone());
         self.worker = Some(worker);
         results
@@ -139,21 +126,17 @@ impl TubeApp {
     /// and pressing Enter does: a launch from desktop search (`Search
     /// YouTube for cats`). The search runs on the first frame, once the
     /// window can be woken by its results.
-    #[must_use]
-    pub fn searching(self, query: &str) -> Self {
+    fn search_on_launch(&self, query: &str) {
         self.search_query.set(query.to_owned());
         action::push(&self.bus, Action::SubmitSearch);
-        self
     }
 
-    #[must_use]
-    pub fn with_search_for_test(mut self, query: &str, video_ids: Vec<String>) -> Self {
+    fn stage_search(&mut self, query: &str, video_ids: Vec<String>) {
         self.model.search_query = query.to_string();
         self.model.search_hits_query = query.to_string();
         self.model.search_hits = video_ids;
         self.model.route = Route::Search(query.to_string());
         self.nav.push(Route::Search(query.to_string()));
-        self
     }
 
     #[cfg(feature = "samples")]
@@ -168,24 +151,6 @@ impl TubeApp {
         self.model = TubeModel::default();
         self.model.data_source.label = "offline: network unavailable".into();
         self.model.route = Route::Home;
-    }
-
-    /// `--shots` builder: record the render viewport up front so the first
-    /// frame sizes the width-driven watch player from the true width. The
-    /// live app learns its width from `apply_layout` each frame.
-    #[must_use]
-    pub fn with_viewport(mut self, w: f64, h: f64) -> Self {
-        self.rect = Rect::new(0.0, 0.0, w.max(0.0), h.max(0.0));
-        self
-    }
-
-    /// `--shots` builder: start on a specific [`Route`] so each screen can be
-    /// captured for self-inspection. Pure presentation override — the live app
-    /// starts from the sample/persisted route instead.
-    #[must_use]
-    pub fn with_route_shot(mut self, route: Route) -> Self {
-        self.show_route(route);
-        self
     }
 
     fn show_route(&mut self, route: Route) {
@@ -229,8 +194,7 @@ impl TubeApp {
     /// same `VideoPlayer` + `media::MediaEngine` the live app streams through.
     /// Needs the `media` decode backend to produce a real frame; if none arrives
     /// within the budget the surface stays as-is (the poster/backdrop shows).
-    #[must_use]
-    pub fn with_live_frame_for_shot(mut self, video_id: &str, url: String) -> Self {
+    fn stage_live_frame(&mut self, video_id: &str, url: String) {
         use ui::time::Duration;
         self.model.route = Route::Watch(video_id.to_string());
         {
@@ -273,7 +237,6 @@ impl TubeApp {
             }
         }
         self.player_video = Some(video_id.to_string());
-        self
     }
 
     /// Bench hook: put the app on a watch page with a **synthesized, paused-but-
@@ -281,8 +244,7 @@ impl TubeApp {
     /// paused. This reproduces the scroll-perf scenario (`--bench-scroll --watch
     /// --loaded`): the scroll loop re-syncs each frame, pumping the engine, so the
     /// bench measures the true per-frame cost of a loaded-but-paused watch page.
-    #[must_use]
-    pub fn with_bench_loaded_watch(mut self, video_id: &str) -> Self {
+    fn stage_bench_loaded_watch(&mut self, video_id: &str) {
         self.model.route = Route::Watch(video_id.to_string());
         self.player = Rc::new(RefCell::new(
             VideoPlayer::new().with_engine(media::MediaEngine::new_synthesized()),
@@ -299,13 +261,11 @@ impl TubeApp {
             p.pause();
         }
         self.player_video = Some(video_id.to_string());
-        self
     }
 
     /// Test hook: the watch page's player plays a synthesized source (no
     /// decode backend), so a test can count the work each video frame does.
-    #[doc(hidden)]
-    pub fn play_synthesized_for_test(&mut self) {
+    fn play_synthesized_for_test(&mut self) {
         let Route::Watch(id) = self.model.route.clone() else {
             return;
         };
@@ -320,28 +280,117 @@ impl TubeApp {
         }
         self.player_video = Some(id);
     }
+}
+
+/// The window's side of what a still, a bench run or a test stages.
+impl TubeApp {
+    /// Test/shots hook: attach an image store so an offscreen `--shots` render
+    /// can paint fetched thumbnails, avatars, and banners. The live app gets
+    /// its store via [`Self::online`].
+    #[must_use]
+    pub fn with_image_store(self, store: ui::ImageStore) -> Self {
+        self.tube().set_image_store(store);
+        self
+    }
+
+    /// Test/shots hook: replace the model wholesale (e.g. a channel page built
+    /// from real `YouTube` data) so an offscreen render shows real content.
+    #[must_use]
+    pub fn with_model_for_test(self, model: TubeModel) -> Self {
+        self.stage_model_for_test(model);
+        self
+    }
+
+    /// Supply a deterministic catalogue in a hosted test without changing its
+    /// dispatcher, effect admission, or shared library: see
+    /// [`Tube::stage_model_for_test`].
+    pub fn stage_model_for_test(&self, model: TubeModel) {
+        self.tube().stage_model_for_test(model);
+    }
+
+    /// Test hook: fetch nothing, and fold the results the returned sender
+    /// sends as the network's, whenever the test lands one.
+    #[doc(hidden)]
+    pub fn script_worker_for_test(&mut self) -> crate::api::Updates {
+        self.tube().script_worker_for_test()
+    }
+
+    /// Open on the results for `query`, as typing it into the search field
+    /// and pressing Enter does: a launch from desktop search (`Search
+    /// YouTube for cats`). The search runs on the first frame, once the
+    /// window can be woken by its results.
+    #[must_use]
+    pub fn searching(self, query: &str) -> Self {
+        self.tube().search_on_launch(query);
+        self
+    }
+
+    #[must_use]
+    pub fn with_search_for_test(self, query: &str, video_ids: Vec<String>) -> Self {
+        self.tube().stage_search(query, video_ids);
+        self
+    }
+
+    /// `--shots` builder: record the render viewport up front so the first
+    /// frame sizes the width-driven watch player from the true width. The
+    /// live app learns its width from `apply_layout` each frame.
+    #[must_use]
+    pub fn with_viewport(mut self, w: f64, h: f64) -> Self {
+        self.rect = Rect::new(0.0, 0.0, w.max(0.0), h.max(0.0));
+        self
+    }
+
+    /// `--shots` builder: start on a specific [`Route`] so each screen can be
+    /// captured for self-inspection. Pure presentation override — the live app
+    /// starts from the sample/persisted route instead.
+    #[must_use]
+    pub fn with_route_shot(self, route: Route) -> Self {
+        self.tube().show_route(route);
+        self
+    }
+
+    /// `--live-shots` hook: see [`Tube::stage_live_frame`].
+    #[must_use]
+    pub fn with_live_frame_for_shot(self, video_id: &str, url: String) -> Self {
+        self.tube().stage_live_frame(video_id, url);
+        self
+    }
+
+    /// Bench hook: see [`Tube::stage_bench_loaded_watch`].
+    #[must_use]
+    pub fn with_bench_loaded_watch(self, video_id: &str) -> Self {
+        self.tube().stage_bench_loaded_watch(video_id);
+        self
+    }
+
+    /// Test hook: the watch page's player plays a synthesized source (no
+    /// decode backend), so a test can count the work each video frame does.
+    #[doc(hidden)]
+    pub fn play_synthesized_for_test(&mut self) {
+        self.tube().play_synthesized_for_test();
+    }
 
     /// Whether the shared player has built its media engine yet.
     #[doc(hidden)]
     pub fn media_engine_started_for_test(&self) -> bool {
-        self.player.borrow().engine().is_some()
+        self.tube.borrow().player.borrow().engine().is_some()
     }
 
     /// Test accessor: the current route (read-only).
-    pub fn route_for_test(&self) -> &Route {
-        &self.model.route
+    pub fn route_for_test(&self) -> Route {
+        self.tube.borrow().model.route.clone()
     }
 
     /// Test accessor: whether the navigation stack has somewhere to go back to.
     pub fn can_go_back_for_test(&self) -> bool {
-        self.nav.can_go_back()
+        self.tube.borrow().nav.can_go_back()
     }
 
     /// Test accessor: read-only view of the model, so integration tests can
     /// assert on real state (likes, notices, settings, playhead) after driving
     /// the widget tree.
-    pub fn model_for_test(&self) -> &TubeModel {
-        &self.model
+    pub fn model_for_test(&self) -> std::cell::Ref<'_, TubeModel> {
+        std::cell::Ref::map(self.tube.borrow(), |tube| &tube.model)
     }
 
     /// Test accessor: whether the navigation rail is currently shown (resolves

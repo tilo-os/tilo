@@ -14,8 +14,8 @@ path = "src/lib.rs"
 # The fixtures the host's tests and its embedders' tests build on: a
 # certified test host and the devices around it, plus the store's test hooks.
 test-support = ["tilo-relay-store/test-support"]
-# Agents on the host: rooms keep apps' confined replicas and steward their
-# records' channel keys for pages.
+# Agents on the host: rooms keep apps' confined replicas and hand their
+# records' channel keys to pages.
 agents = ["web", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:ui", "dep:chat"]
 # Pages reach the host: the live plane's voice relay.
 web = ["tilo-relay-shell/web", "dep:tilo-moq"]

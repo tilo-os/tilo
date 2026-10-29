@@ -2890,6 +2890,7 @@ impl ChromeState {
                 return false;
             }
             tree.desktop.active_strip.insert(ws_id, sid);
+            tree.desktop.keep_focus_on_display(sid);
             tree.queue_save();
             drop(tree);
             (true, name)

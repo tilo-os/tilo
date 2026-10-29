@@ -226,6 +226,93 @@ fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app
         .unwrap();
 }
 
+/// An app opened in a workspace this device holds before the room's
+/// replica is projected here, so before the broker publishes the room's
+/// membership actions, waits for them on its own thread and is let author
+/// the room once the projection publishes them: never refused for coming
+/// first.
+#[test]
+fn an_app_opened_before_its_room_is_projected_opens_once_the_membership_surface_is_published() {
+    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    // Held, not projected yet: as a room is between the commit that installs
+    // it in the owner and its projection onto the tree.
+    let NativeFixture {
+        governor,
+        home,
+        owner,
+        broker,
+        certificate,
+        ..
+    } = fixture_with(|tree| {
+        let mut tree = tree.write();
+        tree.sealed_rooms.remove(&room);
+        tree.committed_record_rooms.remove(&room);
+    });
+    let actions = broker.app_action_broker().unwrap();
+    let opening = crate::shell::launcher::NativeAppOpening::default();
+    opening.attach(actions.downgrade());
+    let (opened, open) = std::sync::mpsc::channel();
+    let launch = std::thread::spawn({
+        let (owner, certificate) = (owner.clone(), certificate.clone());
+        move || {
+            let _ = opened.send(crate::shell::launcher::admit_native_app(
+                &owner,
+                room,
+                &certificate,
+                "so.tilo.chat",
+                &opening,
+            ));
+        }
+    });
+    // Each answered ask is a refresh of the broker's membership surfaces
+    // that ran while the opening waited: none of them publishes the room.
+    for _ in 0..3 {
+        let unknown = uuid::Uuid::new_v4().to_string();
+        let told = actions
+            .await_membership_surface(&unknown)
+            .unwrap()
+            .recv_timeout(tilo_test_env::hang_bound());
+        assert_eq!(told, Ok(false), "a room nobody holds is refused");
+    }
+    assert!(
+        matches!(open.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+        "the opening waits for the room's membership actions"
+    );
+    {
+        let tree = native_workspace_owner::test_tree_of(&owner);
+        let mut tree = tree.write();
+        tree.committed_record_rooms.insert(room);
+    }
+    let access = open.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+    assert!(
+        matches!(
+            access,
+            Ok(crate::shell::launcher::NativeAppOpenAccess::Delegate)
+        ),
+        "the app opens once the room's membership actions are published: {:?}",
+        access.err()
+    );
+    launch.join().unwrap();
+    owner
+        .with_current(room, |view| {
+            let now = std::time::SystemTime::now();
+            let member = view
+                .peer()
+                .permissions(certificate.device_public_key, now)?;
+            assert!(
+                member
+                    .policy
+                    .app_authors("so.tilo.chat", &tilo_action_policy::Context::at_time(now))
+            );
+            Ok(())
+        })
+        .unwrap();
+    drop(actions);
+    drop(broker);
+    crate::shell::persist::wait_for_saves();
+    drop((owner, governor, home));
+}
+
 fn wait_for_membership_surface(
     actions: &tilo_action_broker::collab_broker::AppActionBroker,
     room: crate::shell::state::RoomId,
@@ -561,6 +648,14 @@ fn native_facade_admits_workspace_actions_under_certified_ownership() {
 }
 
 fn fixture() -> NativeFixture {
+    fixture_with(|_| {})
+}
+
+/// [`fixture`], with `before_broker` run on the session's tree once the
+/// room is enrolled and before the session's broker starts.
+fn fixture_with(
+    before_broker: impl FnOnce(&crate::shell::state::WorkspaceTreeHandle),
+) -> NativeFixture {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let system = home.config().join("test-system");
     home.env()
@@ -609,6 +704,7 @@ fn fixture() -> NativeFixture {
             &certificate,
         )
         .unwrap();
+    before_broker(&tree);
     let broker =
         collab_broker::spawn_native(home.runtime().join("collab.sock"), &None, tree).unwrap();
     NativeFixture {

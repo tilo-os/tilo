@@ -48,7 +48,7 @@ optional = ["files.open", "files.save", "files.paths", "app-files", "open-uri", 
 query = true
 invoke = true
 [resources]
-kinds = ["settings.accessibility", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.default-apps", "settings.desk_widgets", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale", "settings.clock", "settings.shortcuts"]
+kinds = ["settings.accessibility", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.device-vpn", "settings.default-apps", "settings.desk_widgets", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale", "settings.clock", "settings.shortcuts", "settings.accessibility-device", "settings.appearance-device", "settings.audio-device", "settings.desktop-controls-device", "settings.hosted-agent-providers", "settings.input-device", "settings.night-light"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -86,7 +86,7 @@ system = "required@1"
 collab = "optional@11"
 tilo-fs = "optional@11"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
-shell-ui = "optional@17"
+shell-ui = "optional@18"
 tools = "optional@11"
 # Settings remains usable when the device has no local-model stack.  The
 # Agent Models pane already reports unavailable lifecycle/credential services;
@@ -96,7 +96,7 @@ models = "optional@11"
 model-gateway = "optional@11"
 # The person's languages: which language packs the repositories offer, and
 # installing the one chosen. The host answers Settings that and nothing else.
-app-host = "optional@3"
+app-host = "optional@4"
 
 [entrypoint]
 bin             = "bin/settings"

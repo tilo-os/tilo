@@ -174,11 +174,17 @@ impl App {
             WindowEvent::KeyboardLayoutChanged(layout) => {
                 self.input.keyboard_layout.clone_from(layout)
             }
-            WindowEvent::Focused(false) => self.input.keyboard_layout = None,
+            WindowEvent::Focused(false) => {
+                self.input.keyboard_layout = None;
+                self.input.window_focused = false;
+            }
             // A window that takes the keyboard hands it to the app's entry
             // when nothing in it holds it: what is typed after it opens, or
             // is brought forward, reaches the app.
-            WindowEvent::Focused(true) => self.hand_keyboard_to_app(),
+            WindowEvent::Focused(true) => {
+                self.input.window_focused = true;
+                self.hand_keyboard_to_app();
+            }
             _ => {}
         }
         self.restore_physical_configuration();
@@ -448,12 +454,14 @@ impl App {
                     is_undo_redo = true;
                     handled = true;
                 }
-                // A second press closes the palette.
+                // Search of this app: the session's one search inside a
+                // session, the window's own outside one, where a second
+                // press closes it.
                 Some(crate::platform::HostShortcut::Search) => {
                     if app.actions.action_palette.is_some() {
                         app.close_action_palette();
                     } else {
-                        app.open_action_palette();
+                        app.open_search(crate::search::SearchRequest::this_app());
                     }
                     handled = true;
                 }
@@ -747,14 +755,14 @@ impl App {
         app.drain_local_input_capture();
 
         if let Some(address) = app.root_widget.take_action_palette_request()
-            && app.open_action_palette_at(&address)
+            && app.open_search_at_action(&address)
         {
             app.layout.layout_dirty = true;
             window.request_redraw();
         }
 
         if app.root_widget.take_search_request() && app.actions.action_palette.is_none() {
-            app.open_action_palette();
+            app.open_search(crate::search::SearchRequest::this_app());
             app.layout.layout_dirty = true;
             window.request_redraw();
         }
@@ -1114,7 +1122,7 @@ impl App {
         let search_pending = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .is_some_and(|palette| palette.advance_search_page().pending);
         // What a window of its own repaints whole: a rebuilt tree, moved
         // geometry, another record, and what paints over the widgets.
@@ -1353,7 +1361,7 @@ impl App {
             || self
                 .actions
                 .action_palette
-                .as_ref()
+                .as_deref()
                 .is_some_and(crate::action_palette::ActionPalette::is_moving)
             // History's panel moves outside the app's root (it slides in).
             || self
@@ -2296,7 +2304,7 @@ mod tests {
             assert!(
                 app.actions
                     .action_palette
-                    .as_ref()
+                    .as_deref()
                     .is_some_and(crate::action_palette::ActionPalette::is_moving),
                 "a palette a click opened arrives"
             );

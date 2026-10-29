@@ -293,13 +293,13 @@ mod tests {
             TOUCHPAD_ENABLED.get_in(&doc),
             "nothing stored reads as the default"
         );
-        doc.update_section("input", object(json!({"touchpad_enabled": "false"})))
+        doc.update_section("input_device", object(json!({"touchpad_enabled": "false"})))
             .unwrap();
         assert!(
             TOUCHPAD_ENABLED.get_in(&doc),
             "a string where a bool belongs reads as the default, not as false"
         );
-        doc.update_section("input", object(json!({"touchpad_enabled": false})))
+        doc.update_section("input_device", object(json!({"touchpad_enabled": false})))
             .unwrap();
         assert!(!TOUCHPAD_ENABLED.get_in(&doc), "a stored value wins");
     }
@@ -309,7 +309,7 @@ mod tests {
         let dir = crate::test_dir();
         let store = crate::profile(dir.path());
         store
-            .update_section("input", object(json!({"tap_to_click": true})))
+            .update_section("input_device", object(json!({"tablets": {}})))
             .unwrap();
         store
             .update_section("display", object(json!({"night_light": true})))
@@ -318,12 +318,12 @@ mod tests {
         assert_eq!(
             Value::Object(store.load()),
             json!({
-                "input": {"tap_to_click": true, "touchpad_enabled": false},
+                "input_device": {"tablets": {}, "touchpad_enabled": false},
                 "display": {"night_light": true},
             })
         );
         assert_eq!(
-            crate::bool_at(&store.load(), "input", "touchpad_enabled"),
+            crate::bool_at(&store.load(), "input_device", "touchpad_enabled"),
             Some(false),
             "the untyped reader the compositor uses sees the typed write"
         );
@@ -350,7 +350,7 @@ mod tests {
         // was built on a value another flip was replacing.
         assert!(TOUCHPAD_ENABLED.get_in(&*store));
         assert_eq!(
-            store.load()["input"]["touchpad_enabled"],
+            store.load()["input_device"]["touchpad_enabled"],
             json!(true),
             "the leaf is stored, not merely defaulted"
         );

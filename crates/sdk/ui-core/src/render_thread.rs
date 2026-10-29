@@ -50,7 +50,7 @@ use std::thread::JoinHandle;
 #[path = "render_timing.rs"]
 pub(crate) mod timing;
 
-use crate::damage::{Region, coalesce_regions};
+use crate::damage::{coalesce_regions, pixel_rect};
 use crate::gpu::RenderContext;
 #[cfg(test)]
 use crate::retained_raster::{DamageCache, rasterize_damage};
@@ -1275,11 +1275,6 @@ fn render_one_frame(
     FrameOutcome::Presented
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "finite framebuffer bounds are rounded outward and clamped to their u32 extent before narrowing"
-)]
 fn bounded_present_damage(
     width: u32,
     height: u32,
@@ -1293,18 +1288,7 @@ fn bounded_present_damage(
         if !rect.is_finite() || rect.x1 < rect.x0 || rect.y1 < rect.y0 {
             return None;
         }
-        let x = rect.x0.floor().clamp(0.0, f64::from(width)) as u32;
-        let y = rect.y0.floor().clamp(0.0, f64::from(height)) as u32;
-        let x1 = rect.x1.ceil().clamp(0.0, f64::from(width)) as u32;
-        let y1 = rect.y1.ceil().clamp(0.0, f64::from(height)) as u32;
-        if x1 > x && y1 > y {
-            regions.push(Region {
-                x,
-                y,
-                width: x1.saturating_sub(x),
-                height: y1.saturating_sub(y),
-            });
-        }
+        regions.extend(pixel_rect(*rect, width, height));
     }
     if regions.is_empty() {
         return None;

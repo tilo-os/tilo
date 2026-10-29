@@ -2368,7 +2368,8 @@ const PLACEMENT_SETTLE_FRAMES: u32 = 8;
 /// landed. A typo therefore shows up as a visibly empty tray in the
 /// capture rather than as a silently wrong one.
 fn status_preset(name: &str) -> tilo_quick_settings::SystemStatus {
-    use os_actions::{LinkKind, LinkStatus, VolumeState};
+    use media::audio::default_node::VolumeState;
+    use os_actions::{LinkKind, LinkStatus};
     use tilo_power_mgmt::{BatterySnapshot, BatteryState};
     use tilo_quick_settings::SystemStatus;
 
@@ -4276,10 +4277,14 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "display_identify",
-            description: "Settings' Identify: every display shows a large card \
-             with its number in the accent and its name, as its canvas tile in \
-             Settings does. Run with `--outputs docked-laptop`.",
+            description: "Settings' Identify: every display shows a small card \
+             in a corner with its number in the accent and its short name, as \
+             its canvas tile in Settings does, in the corner the focused \
+             window covers least. Run with `--outputs docked-laptop`.",
             actions: vec![
+                // The window the person asked from holds the focus, as
+                // Settings does when its Identify is pressed.
+                Action::ClickAt(Point::new(900.0, 500.0)),
                 Action::Wait(2),
                 Action::IdentifyDisplays,
                 Action::Wait(12),

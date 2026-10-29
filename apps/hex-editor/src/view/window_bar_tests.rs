@@ -2,9 +2,6 @@
 //! edit mode, the inspector's toggle, History, and find and replace in the
 //! bytes.
 
-use std::rc::Rc;
-
-use ui::framework::ResourceSurface;
 use ui::framework::testing::TestApp;
 use ui::widget::toast::ToastKind;
 use ui::widget::{FindMode, FindOptions, InPlace, SearchDriver};
@@ -12,6 +9,7 @@ use ui::window_toolbar::{SearchOpening, ToolbarEvent};
 
 use super::{INSERT, OVERWRITE};
 use crate::model::EditMode;
+use crate::view::Editor;
 use crate::{HexEditor, HexEditorShell, HexView};
 
 const HEX: FindOptions = FindOptions {
@@ -20,13 +18,13 @@ const HEX: FindOptions = FindOptions {
     whole_word: false,
 };
 
-fn sample() -> HexView {
-    let mut view = HexView::empty();
-    view.present(&Rc::new(HexEditor {
+fn sample() -> Editor {
+    let mut view = Editor::empty();
+    view.present(&HexEditor {
         name: Some(ui::tilo_resource::Atom("sample.png".into())),
         bytes: crate::buffer::ByteBuffer::of(&crate::sample::png_image()),
         opened: 1,
-    }));
+    });
     view
 }
 
@@ -35,7 +33,7 @@ fn action(id: &str) -> ToolbarEvent {
 }
 
 /// The bar's inspector toggle.
-fn inspector(view: &HexView) -> ui::window_toolbar::ToolbarAction {
+fn inspector(view: &Editor) -> ui::window_toolbar::ToolbarAction {
     view.window_toolbar()
         .actions
         .into_iter()
@@ -94,7 +92,7 @@ fn the_bar_names_the_file_and_shows_the_edit_mode_and_the_inspector() {
     assert_eq!(inspector(&view).on, view.drawer.is_open());
 
     assert_eq!(
-        HexView::empty().window_toolbar(),
+        Editor::empty().window_toolbar(),
         ui::window_toolbar::WindowToolbar::default(),
         "with no file open the bar has nothing of the editor's"
     );
@@ -225,9 +223,11 @@ fn paste_reads_the_clipboard_in_the_column_the_person_is_in() {
         .expect("the grid takes the keyboard");
     // Insert mode, so a paste may be another length than the selection, and
     // the ASCII column, which reads text and writes its UTF-8 bytes.
-    let view = app.surface_mut::<HexView>();
-    view.model_mut().toggle_mode();
-    view.model_mut().toggle_column();
+    {
+        let mut view = app.surface_mut::<HexView>().state();
+        view.model_mut().toggle_mode();
+        view.model_mut().toggle_column();
+    }
     app.harness().relayout();
     ui::clipboard_copy("!?");
     chord(&mut app, "a");
@@ -235,8 +235,10 @@ fn paste_reads_the_clipboard_in_the_column_the_person_is_in() {
     assert_eq!(app.state().bytes, b"!?");
 
     // The hex column reads hexadecimal bytes.
-    let view = app.surface_mut::<HexView>();
-    view.model_mut().toggle_column();
+    app.surface_mut::<HexView>()
+        .state()
+        .model_mut()
+        .toggle_column();
     app.harness().relayout();
     ui::clipboard_copy("de ad");
     chord(&mut app, "a");
@@ -253,6 +255,7 @@ fn paste_reads_the_clipboard_in_the_column_the_person_is_in() {
 fn insert_mode_replaces_text_with_utf8_bytes_of_another_length_as_one_undo_step() {
     let (_directory, mut app) = launched(b"cat, cat; cat");
     app.surface_mut::<HexView>()
+        .state()
         .run_window_bar_event(&action(INSERT));
     assert!(replace(
         &mut app,
@@ -283,6 +286,7 @@ fn overwrite_mode_refuses_a_replacement_that_changes_the_length() {
     );
     let told = app
         .surface_mut::<HexView>()
+        .state()
         .said
         .get()
         .map(|(text, kind)| (text.clone(), *kind));

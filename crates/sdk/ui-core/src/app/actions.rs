@@ -2411,115 +2411,7 @@ impl App {
                 Err(error) => history.pending_control_refused(id, error.to_string()),
             }
         }
-        for pending in embedded {
-            let (token, confirmation) = match pending.command {
-                crate::history_mode::pending_controls::ContinuationCommand::Review(token) => {
-                    (token, None)
-                }
-                crate::history_mode::pending_controls::ContinuationCommand::Confirm(
-                    token,
-                    value,
-                ) => (token, Some(value)),
-                crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
-                    crate::history_mode::embedded::cancel_pending_command(
-                        self.root_widget.as_mut(),
-                        pending.surface,
-                        &token,
-                    );
-                    continue;
-                }
-            };
-            let prepared = match confirmation.as_deref() {
-                Some(value) => crate::history_mode::embedded::prepare_pending_command_typed(
-                    self.root_widget.as_mut(),
-                    pending.surface,
-                    &token,
-                    value,
-                ),
-                None => crate::history_mode::embedded::prepare_pending_command(
-                    self.root_widget.as_mut(),
-                    pending.surface,
-                    &token,
-                    false,
-                ),
-            };
-            let Some(prepared) = prepared else {
-                continue;
-            };
-            let confirmed = confirmation.is_some();
-            let id = prepared.id;
-            let result = self.dispatch_prepared_history_control(prepared);
-            let outcome = match result {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                    crate::history_mode::embedded::PendingCommandOutcome::NeedsConfirmation
-                }
-                Ok(_) => crate::history_mode::embedded::PendingCommandOutcome::Consumed,
-                Err(error) => {
-                    crate::history_mode::embedded::PendingCommandOutcome::Refused(error.to_string())
-                }
-            };
-            crate::history_mode::embedded::finish_pending_command(
-                self.root_widget.as_mut(),
-                pending.surface,
-                id,
-                &outcome,
-            );
-        }
-    }
-
-    fn dispatch_prepared_history_control(
-        &mut self,
-        prepared: crate::history_mode::pending_controls::PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        use crate::bound_dispatch::legacy_document::LocalResourceTarget;
-        let captured =
-            prepared
-                .witness
-                .as_ref()
-                .map_err(|reason| tilo_actions::DoorError::Unavailable {
-                    code: "stale_pending_control".into(),
-                    reason: reason.clone(),
-                })?;
-        let current = crate::bound_dispatch::control_witness(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            &prepared.target,
-            &prepared.invocation,
-        )?;
-        if &current != captured {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "stale_pending_control".into(),
-                reason: "The action meaning or confirmation policy changed while History was open"
-                    .into(),
-            });
-        }
-        let argument = format!(
-            "{}{}",
-            tilo_actions::ARGUMENTS_JSON_PREFIX,
-            serde_json::Value::Object(prepared.invocation.arguments.clone())
-        );
-        let actor = self.collaboration.local_author.0.clone();
-        match prepared.target {
-            LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(
-                &target,
-                &ResourceInvocation::new(&target.address.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
-                None,
-            ),
-            LocalResourceTarget::Legacy(target) => self.invoke_legacy_resource_action(
-                &target,
-                &ResourceInvocation::new(&target.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
-            ),
-            LocalResourceTarget::Outer => self.invoke_unbound_resource_action(
-                &ResourceInvocation::new(&prepared.invocation.address, &actor)
-                    .argument(Some(&argument))
-                    .confirmed(prepared.confirmed),
-                None,
-            ),
-        }
+        self.service_embedded_history_commands(embedded);
     }
 
     /// Drives the production local idle body without creating a window or input.
@@ -2892,7 +2784,7 @@ impl App {
             Ok(_) => None,
         };
         if let Some(reason) = refused {
-            self.refuse_visibly(&tilo_actions::DoorError::Failed(reason));
+            self.refuse_in_window(&tilo_actions::DoorError::Failed(reason));
         }
         true
     }
@@ -3226,7 +3118,7 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        self.actions.action_palette = Some(palette);
+        self.actions.action_palette = Some(Box::new(palette));
         self.rebuild_action_palette_admission();
     }
 
@@ -3251,6 +3143,9 @@ impl App {
     /// the query already typed. A standalone window shows its own palette;
     /// inside the Tilo shell the component hands the request to the shell.
     pub fn open_search(&mut self, request: crate::search::SearchRequest) {
+        if self.hand_search_to_session(&request) {
+            return;
+        }
         // On one of the app's actions: the palette asks for its arguments.
         if let Some(address) = request.asked()
             && self.open_action_palette_at(&address)
@@ -3258,7 +3153,7 @@ impl App {
             return;
         }
         self.open_action_palette();
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             palette.set_scope(request.resource_scope().cloned());
             if let Some(query) = &request.query {
                 palette.set_query(query);
@@ -3269,6 +3164,36 @@ impl App {
                 palette.select_resource(&anchor.resource);
             }
         }
+    }
+
+    /// Inside a Tilo session there is one search, the shell's: hand it
+    /// `request` and open nothing here. A window the shell hosts in its own
+    /// process asks through its component's host intent; one running as a
+    /// process of its own asks over the session's surface service. Whether
+    /// the request went to the session.
+    pub(super) fn hand_search_to_session(
+        &mut self,
+        request: &crate::search::SearchRequest,
+    ) -> bool {
+        if self.floating.client.is_some() {
+            self.floating.search_requests.push(request.clone());
+            return true;
+        }
+        if !self.actions.search_in_host || self.presents_search() {
+            return false;
+        }
+        let Some(bound) = self
+            .root_widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<crate::widget::BoundAppWidget>())
+        else {
+            return false;
+        };
+        bound
+            .component
+            .callback_binding()
+            .request_search(request.clone());
+        true
     }
 
     /// `/` pressed with nothing focused that types it: open search of this
@@ -3484,17 +3409,21 @@ impl App {
                     crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
                 });
         }
+        // Read before the tree it is found in is discarded.
+        let anchor = self.acting_control_rect();
         self.open_action_palette();
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
+            // The question stands at the control the person used.
+            palette.anchor_confirmation(anchor);
             palette.activate_ordinary(request);
         }
         if self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(crate::action_palette::ActionPalette::went_ahead)
         {
             return self.finish_action_palette_input(true);
@@ -3503,42 +3432,96 @@ impl App {
         true
     }
 
-    /// Say over the window that an invocation the person made did not run,
-    /// and why, through the window's palette: a click is never dropped with
-    /// only a log line.
+    /// Say that an invocation the person made did not run, and why, at the
+    /// control they used: a click is never dropped with only a log line, and
+    /// never opens search.
     pub(super) fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
+        let anchor = self.acting_control_rect();
+        self.refuse_at(error, anchor);
+    }
+
+    /// [`Self::refuse_visibly`] for a refusal that arrives with no control
+    /// on screen (a host's or a remote's answer, later): said in the
+    /// window's bar.
+    fn refuse_in_window(&mut self, error: &tilo_actions::DoorError) {
+        self.refuse_at(error, None);
+    }
+
+    fn refuse_at(&mut self, error: &tilo_actions::DoorError, anchor: Option<vello::kurbo::Rect>) {
         // Said once the pass ends ([`Self::say_refusals`]): the window's own
         // nodes stay mapped until then, so what the pass still records of
         // them (an edit's history) is kept.
         self.actions
             .refusals
-            .push(crate::bound_dispatch::refusal_reason(error));
+            .push((crate::bound_dispatch::refusal_reason(error), anchor));
         self.layout.layout_dirty = true;
     }
 
-    /// Say over the window why this pass's refused invocations did not run.
+    /// The control the person acted on last, in window coordinates: under
+    /// their last press, else the one holding the keyboard.
+    fn acting_control_rect(&self) -> Option<vello::kurbo::Rect> {
+        crate::control_notice::acting_control(
+            &self.layout.taffy,
+            self.layout.root_node,
+            self.input.pressed_at,
+            self.focused_node,
+            |node| {
+                self.inspect_node(node, |widget| {
+                    Some((widget.get_rect(), widget.is_focusable()))
+                })
+                .ok()
+                .flatten()
+            },
+        )
+    }
+
+    /// Say why this pass's refused invocations did not run: the last one,
+    /// at its control or in the window's bar.
     fn say_refusals(&mut self) {
-        let Some(reason) = self.actions.refusals.pop() else {
+        let Some((reason, anchor)) = self.actions.refusals.pop() else {
             return;
         };
         self.actions.refusals.clear();
-        if self.actions.action_palette.is_none() {
-            self.actions.ordinary_palette_return_focus =
-                self.capture_focus_identity().or_else(|| {
-                    crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
+        match anchor {
+            Some(anchor) => {
+                if let Some(reader) = self.accessibility.screen_reader.as_mut() {
+                    reader.announce(reason.clone(), tts::Priority::Notification, true);
+                }
+                self.actions.control_notice = Some(crate::control_notice::ControlNotice {
+                    text: reason,
+                    anchor,
                 });
+                self.request_redraw_for_notice();
+            }
+            None => crate::control_notice::say_in_window(&reason),
         }
-        self.open_action_palette();
-        if let Some(palette) = self.actions.action_palette.as_mut() {
-            palette.show_refusal("", &reason);
+    }
+
+    /// What stands at the control the person last used: why what they did
+    /// did not run, until their next press or key.
+    #[must_use]
+    pub fn control_notice(&self) -> Option<&crate::control_notice::ControlNotice> {
+        self.actions.control_notice.as_ref()
+    }
+
+    /// The person pressed or typed again: what stood at their last control
+    /// is done with.
+    #[cfg(feature = "native")]
+    pub(super) fn dismiss_control_notice(&mut self) {
+        if self.actions.control_notice.take().is_some() {
+            self.request_redraw_for_notice();
         }
+    }
+
+    fn request_redraw_for_notice(&mut self) {
+        self.layout.layout_dirty = true;
     }
 
     fn capture_ordinary_palette_request(&mut self) {
         let Some(pending) = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .and_then(|p| p.ordinary_capture_request())
         else {
             return;
@@ -3566,7 +3549,7 @@ impl App {
                 arguments,
             )
         })();
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             match result {
                 Ok(request) => palette.retain_ordinary(request),
                 Err(_) => palette.close(),
@@ -3574,31 +3557,28 @@ impl App {
         }
     }
 
-    /// Open the palette an app asked for ([`crate::host_palette`]): searching
-    /// for its query, or on one of its actions. Whether one was opened.
+    /// Open search on the app's action `address`, asking for its
+    /// arguments: the session's search inside a session, the window's own
+    /// outside one. Whether it opened.
     #[cfg(feature = "native")]
-    pub(crate) fn open_requested_palette(&mut self) -> bool {
-        match crate::host_palette::take() {
-            Some(crate::host_palette::PaletteRequest::Search(query)) => {
-                self.open_action_palette();
-                if let Some(palette) = self.actions.action_palette.as_mut() {
-                    palette.set_query(&query);
-                }
-                true
-            }
-            Some(crate::host_palette::PaletteRequest::Action(address)) => {
-                self.open_action_palette_at(&address)
-            }
-            None => false,
+    pub(super) fn open_search_at_action(&mut self, address: &tilo_actions::ActionAddress) -> bool {
+        let asked = crate::search::SearchRequest::asking(
+            crate::search::ScopeDecl::new(address.resource.clone(), String::new()),
+            address.action.clone(),
+        );
+        if self.hand_search_to_session(&asked) {
+            return true;
         }
+        self.open_action_palette_at(address)
     }
 
     fn open_action_palette_at(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         self.open_action_palette();
-        let activated =
-            self.actions.action_palette.as_mut().is_some_and(|palette| {
-                palette.activate_address(&address.resource, &address.action)
-            });
+        let activated = self
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .is_some_and(|palette| palette.activate_address(&address.resource, &address.action));
         if activated {
             self.capture_ordinary_palette_request();
         } else {
@@ -3667,7 +3647,7 @@ impl App {
     }
 
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
-        self.actions.action_palette.as_ref()
+        self.actions.action_palette.as_deref()
     }
 
     /// The action the host's confirmation is asking about, and the
@@ -3676,7 +3656,7 @@ impl App {
     pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
         self.actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .and_then(crate::action_palette::ActionPalette::asking)
             .map(|(address, expected)| (address.clone(), expected.to_owned()))
     }
@@ -3690,7 +3670,7 @@ impl App {
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         let (address, _question) = self.asking()?;
         self.refresh_action_palette_resources();
-        let palette = self.actions.action_palette.as_mut()?;
+        let palette = self.actions.action_palette.as_deref_mut()?;
         let target = palette.confirming_target()?;
         self.bindings.clear();
         self.layout.node_map.clear();
@@ -3736,7 +3716,7 @@ impl App {
         let lazy_resource_ids = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .map(crate::action_palette::ActionPalette::referenced_action_resource_ids)
             .unwrap_or_default();
         for id in lazy_resource_ids {
@@ -3760,7 +3740,7 @@ impl App {
         let targets = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .map(crate::action_palette::ActionPalette::referenced_bound_targets)
             .unwrap_or_default();
         for target in targets {
@@ -3780,7 +3760,7 @@ impl App {
                 snapshot.extend([resource]);
             }
         }
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             palette.refresh_open_resources(&resources);
             palette.load_bound_resources(bound);
         }
@@ -3794,7 +3774,7 @@ impl App {
         if !self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|palette| palette.is_presented())
         {
             return false;
@@ -3803,15 +3783,19 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        let consumed = self.actions.action_palette.as_mut().is_some_and(|palette| {
-            palette.route_event(
-                event,
-                scale,
-                self.input.modifiers,
-                &mut crate::widget::Edits::lend(&mut self.state.doc),
-                &self.state.root,
-            )
-        });
+        let consumed = self
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .is_some_and(|palette| {
+                palette.route_event(
+                    event,
+                    scale,
+                    self.input.modifiers,
+                    &mut crate::widget::Edits::lend(&mut self.state.doc),
+                    &self.state.root,
+                )
+            });
         self.finish_action_palette_input(consumed)
     }
 
@@ -3821,7 +3805,7 @@ impl App {
             return false;
         }
         self.refresh_action_palette_resources();
-        let Some(palette) = self.actions.action_palette.as_mut() else {
+        let Some(palette) = self.actions.action_palette.as_deref_mut() else {
             return false;
         };
         self.bindings.clear();
@@ -3847,7 +3831,7 @@ impl App {
         let exact_capture = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .and_then(crate::action_palette::ActionPalette::history_exact_capture_request);
         if let Some((target, invocation, original_arguments)) = exact_capture {
             let witness = crate::bound_dispatch::control_witness_with_arguments(
@@ -3858,7 +3842,7 @@ impl App {
                 &original_arguments,
             )
             .map_err(|error| error.to_string());
-            if let Some(palette) = self.actions.action_palette.as_mut() {
+            if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                 palette.retain_history_exact_witness(witness);
             }
         }
@@ -3867,7 +3851,7 @@ impl App {
         let pending = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .and_then(crate::action_palette::ActionPalette::take_operation);
         if let Some(pending) = pending {
             // Projected View actions resolve their retained widget through the
@@ -4036,7 +4020,7 @@ impl App {
             if let Err(error) = result {
                 tracing::warn!(%error, "resource operation failed");
                 if pending.history_target.is_some() {
-                    if let Some(palette) = self.actions.action_palette.as_mut() {
+                    if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                         palette.retain_history_refusal(pending, error.to_string());
                     }
                 } else {
@@ -4051,7 +4035,7 @@ impl App {
         let navigation = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .and_then(super::action_palette::ActionPalette::take_scoped_navigation);
         if let Some((action_id, binding)) = navigation {
             if let Some(binding) = binding {
@@ -4080,7 +4064,7 @@ impl App {
         if self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|p| !p.is_open())
         {
             self.close_action_palette();
@@ -4202,5 +4186,97 @@ impl crate::session_door::SessionDoor for BrokerDoor<'_> {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
         });
         Ok(crate::widget::ResourceOperationStart::Accepted)
+    }
+}
+
+impl crate::host_core::HostCore for App {
+    fn tree(&self) -> crate::host_core::HostTree<'_> {
+        crate::host_core::HostTree {
+            state: &self.state,
+            root: self.root_widget.as_ref(),
+            history: self.history.as_deref(),
+            bindings: &self.bindings,
+            node_map: &self.layout.node_map,
+            taffy: &self.layout.taffy,
+            records: self.persistence.records.as_ref(),
+            permissions: &self.permission_ctx,
+            focused: self.focused_node,
+            history_layout: self.history_layout,
+        }
+    }
+
+    fn document_history_with_tree(
+        &mut self,
+    ) -> (
+        &mut crate::standalone_history_host::StandaloneHistoryHost,
+        crate::host_core::HostTree<'_>,
+    ) {
+        (
+            &mut self.document_history,
+            crate::host_core::HostTree {
+                state: &self.state,
+                root: self.root_widget.as_ref(),
+                history: self.history.as_deref(),
+                bindings: &self.bindings,
+                node_map: &self.layout.node_map,
+                taffy: &self.layout.taffy,
+                records: self.persistence.records.as_ref(),
+                permissions: &self.permission_ctx,
+                focused: self.focused_node,
+                history_layout: self.history_layout,
+            },
+        )
+    }
+
+    fn document(&mut self) -> crate::host_core::HostDocument<'_> {
+        crate::host_core::HostDocument {
+            state: &mut self.state,
+            bindings: &self.bindings,
+            node_map: &self.layout.node_map,
+            permissions: &self.permission_ctx,
+            author: &self.collaboration.local_author,
+        }
+    }
+
+    fn widget_reached(&mut self) {
+        self.mark_semantic_tree_stale();
+    }
+
+    fn host_root_mut(&mut self) -> &mut dyn Widget {
+        self.root_widget.as_mut()
+    }
+
+    fn dispatch_current_history_control(
+        &mut self,
+        prepared: crate::history_mode::pending_controls::PreparedContinuation,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        use crate::bound_dispatch::legacy_document::LocalResourceTarget;
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(prepared.invocation.arguments.clone())
+        );
+        let actor = self.collaboration.local_author.0.clone();
+        match prepared.target {
+            LocalResourceTarget::Component(target) => self.invoke_bound_target_with_broker(
+                &target,
+                &ResourceInvocation::new(&target.address.address, &actor)
+                    .argument(Some(&argument))
+                    .confirmed(prepared.confirmed),
+                None,
+            ),
+            LocalResourceTarget::Legacy(target) => self.invoke_legacy_resource_action(
+                &target,
+                &ResourceInvocation::new(&target.address, &actor)
+                    .argument(Some(&argument))
+                    .confirmed(prepared.confirmed),
+            ),
+            LocalResourceTarget::Outer => self.invoke_unbound_resource_action(
+                &ResourceInvocation::new(&prepared.invocation.address, &actor)
+                    .argument(Some(&argument))
+                    .confirmed(prepared.confirmed),
+                None,
+            ),
+        }
     }
 }

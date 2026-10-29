@@ -435,7 +435,7 @@ enum Error {
          package with `tilo-install install <runtime.tapp>`.\n  Or install anyway: add \
          --ignore-missing-runtime"
     )]
-    OptionalRuntimeMissing { package: String, runtime: String },
+    RequiredRuntimeMissing { package: String, runtime: String },
     #[error(
         "{package} {version} needs system interfaces this Tilo does not provide: {unmet}.\n  \
          It was built for another version of Tilo. Update the system first, or keep the \
@@ -782,7 +782,9 @@ fn check(candidate: &Candidate, trust: &TrustFlags) -> Result<Checked, Error> {
     let len = candidate.len()?;
     tilo_app_package::desktop::validate_native_host(&manifest)
         .map_err(|e| Error::Policy(e.to_string()))?;
-    if let Some(limit) = tilo_app_package::app_size_limit(&manifest)
+    // The store's limit for this package on this machine: a developer
+    // session's own builds install under the local-build ceiling.
+    if let Some(limit) = package_store::size_limit::app_size_limit(&meta)
         && len > limit
     {
         return Err(Error::Policy(format!(
@@ -839,10 +841,10 @@ fn bundle_status(raw: &str) -> Result<(String, bool), Error> {
     Ok((version.to_string(), present))
 }
 
-/// The optional runtimes `checked` pins that are not installed.
-fn missing_optional_runtimes(checked: &Checked) -> Result<Vec<String>, Error> {
+/// The required runtimes `checked` pins that are not installed.
+fn missing_required_runtimes(checked: &Checked) -> Result<Vec<String>, Error> {
     let mut missing = Vec::new();
-    for raw in tilo_app_package::desktop::optional_runtime_dependencies(&checked.manifest) {
+    for raw in tilo_app_package::desktop::required_runtime_dependencies(&checked.manifest) {
         if !bundle_status(raw)?.1 {
             missing.push(raw.clone());
         }
@@ -905,13 +907,13 @@ fn fits_os(checked: &Checked) -> Result<(), Error> {
 /// bundle here (with a fix command) beats discovering
 /// `RuntimeBundleMissing` at first launch.
 fn satisfy_runtime(checked: &Checked, flags: &RuntimeFlags) -> Result<(), Error> {
-    // The runtimes an app pins by exact version travel with it, whichever
-    // path installs it: an app replaced while its engine is absent would
-    // open to "not installed" until someone fetched the engine by hand.
+    // The further runtimes an app requires travel with it, whichever path
+    // installs it: an app replaced while its engine is absent would not
+    // start.
     if !flags.ignore_missing_runtime
-        && let Some(runtime) = missing_optional_runtimes(checked)?.into_iter().next()
+        && let Some(runtime) = missing_required_runtimes(checked)?.into_iter().next()
     {
-        return Err(Error::OptionalRuntimeMissing {
+        return Err(Error::RequiredRuntimeMissing {
             package: checked.id().to_string(),
             runtime,
         });

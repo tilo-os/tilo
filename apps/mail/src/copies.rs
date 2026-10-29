@@ -1,9 +1,9 @@
 //! The mail the person's devices hold for one another.
 //!
 //! A message a device fetched from its server is kept, as the server sent
-//! it, as content of the person's own copies record ([`MailCopies`]): a
-//! record of their own room, which follows them to their other devices and
-//! never reaches a collaborator, whatever room Mail is open in. The record
+//! it, as content of the copies record ([`MailCopies`]): the person's own
+//! record of Mail's in the workspace it is open in, which syncs to their
+//! devices and no other member's. The record
 //! names each message and where its server holds it; the bytes travel on
 //! the record's own route, from whichever of the person's devices keeps
 //! them, verified against the address the record names.

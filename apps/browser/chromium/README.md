@@ -29,8 +29,9 @@ run the browser against it with `TILO_CHROMIUM_HOST` set to that path. On Tilo
 OS the engine is the signed runtime bundle `tilo-runtime/2026.10.23-chromium`
 (`ui::webview::chromium::runtime`): the image build runs
 `build-host.py --sdk-archive … --runtime …` and signs the resulting tree, the
-browser's manifest lists it under `optional-runtimes`, and the launcher mounts
-it read-only into the browser's sandbox.
+browser's manifest requires it (`optional-runtimes`), so it installs and
+updates with the browser, and the launcher mounts it read-only into the
+browser's sandbox and refuses to start the browser without it.
 Linux requires Chromium sandbox support (user namespaces or the distribution's
 correctly installed setuid sandbox). The host never disables the sandbox. The
 primary process skips Chromium first-run UI because Tilo owns onboarding; this

@@ -5,10 +5,11 @@
 //! came from stays on this device.
 
 use tilo_contact_directory::{ContactDirectory, EmailHint};
-use ui::framework::LiveRow;
+use ui::framework::{LiveRow, PersonRecord};
 use ui::tilo_resource::{ActionDecl, SearchEntry};
 
 use super::CalendarApp;
+use super::store::{Ask, Store};
 use crate::model::{Calendar, Id};
 use crate::resource::{CalendarEffect, t, t_args};
 
@@ -57,21 +58,21 @@ impl Choice {
     }
 }
 
-impl CalendarApp {
-    pub(crate) fn follow_contacts(
-        &mut self,
-        record: Option<ui::framework::PersonRecord<ContactDirectory>>,
-    ) {
+impl Store {
+    pub(crate) fn follow_contacts(&mut self, record: Option<PersonRecord<ContactDirectory>>) {
         self.contact_directory = record;
     }
 
     /// Every contact address not yet among the attendees of the event the
     /// picker is open for.
     fn contact_choices(&self) -> Vec<Choice> {
-        let (Some(event), Some(record)) = (
-            self.contact_event.and_then(|id| self.model.event(id)),
-            &self.contact_directory,
-        ) else {
+        let (Some(id), Some(record), Some(live)) =
+            (self.contact_event, &self.contact_directory, &self.live)
+        else {
+            return Vec::new();
+        };
+        let calendar = live.get();
+        let Some(event) = calendar.event(id) else {
             return Vec::new();
         };
         record.with(|directory| {
@@ -149,18 +150,30 @@ impl CalendarApp {
             .collect()
     }
 
-    /// Show the picker of contacts to invite to `event`.
-    pub(crate) fn open_contact_attendees(&mut self, event: &str) -> Result<(), String> {
+    /// Offer the contacts to invite to `event` of `calendar`: the window
+    /// opens the picker on them next.
+    pub(crate) fn open_contact_attendees(
+        &mut self,
+        calendar: &Calendar,
+        event: &str,
+    ) -> Result<(), String> {
         let event = event
             .parse::<Id>()
             .ok()
-            .filter(|id| self.model.event(*id).is_some())
+            .filter(|id| calendar.event(*id).is_some())
             .ok_or_else(|| "that event is gone".to_string())?;
         self.contact_event = Some(event);
+        self.asks.push(Ask::SearchContacts);
+        Ok(())
+    }
+}
+
+impl CalendarApp {
+    /// Open the platform search on the contacts offered for an event.
+    pub(super) fn search_contacts(&mut self) {
         self.search_opener.open(ui::search::SearchRequest::within(
             ui::search::ScopeDecl::new(SCOPE, t("calendar-contact-attendees")),
         ));
-        Ok(())
     }
 
     /// The Guests field's Contacts button asked for the picker: open it for
@@ -232,6 +245,7 @@ mod tests {
             .unwrap();
         calendar
             .surface_mut::<CalendarApp>()
+            .state()
             .follow_contacts(Some(directory));
         calendar.settle();
         (owner, calendar, id)
@@ -243,7 +257,10 @@ mod tests {
                 event_id: event.to_string(),
             })
             .unwrap();
-        calendar.surface_mut::<CalendarApp>().contact_choices()
+        calendar
+            .surface_mut::<CalendarApp>()
+            .state()
+            .contact_choices()
     }
 
     #[test]
@@ -252,6 +269,7 @@ mod tests {
         assert!(
             calendar
                 .surface_mut::<CalendarApp>()
+                .state()
                 .contact_choices()
                 .is_empty(),
             "nothing is offered before the picker opens for an event"

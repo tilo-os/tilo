@@ -20,6 +20,7 @@ pub mod app_tabs;
 pub(crate) mod app_versions;
 pub mod attention;
 pub(crate) mod audio_output;
+pub mod audio_service;
 pub(crate) mod audio_writer;
 pub mod automation_folders;
 pub mod automation_host;
@@ -183,7 +184,6 @@ pub mod screenshot_send;
 pub mod search;
 pub(crate) mod selection_agent;
 pub mod service_members;
-pub mod session_audio_policy;
 pub mod session_policy;
 pub mod settings_failures;
 pub(crate) mod settings_records;
@@ -194,7 +194,6 @@ pub mod sign_in_comforts;
 pub mod spatial_calibration;
 pub mod speaker_calibration;
 pub mod speaker_group;
-pub mod speaker_group_audio;
 pub mod speaker_group_runtime;
 pub mod speaker_settings;
 pub mod state;
@@ -950,6 +949,26 @@ pub fn mount_in_process(
         ShellKind::Other(name) if name.eq_ignore_ascii_case(tilo_desktop::feedback::KIND) => {
             mount_private_feedback(&mut apps.borrow_mut(), &room, tab)
         }
+        // Messages and Passwords borrow what only the session holds: the
+        // person's messaging accounts and their credential owner. They are
+        // drawn here in every session until those are served to the apps'
+        // own processes.
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Messages") => apps.borrow_mut().mount(
+            messages::definition(),
+            &room,
+            tab,
+            ui::record::RecordId::room_default(),
+            |_| {},
+        ),
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Passwords") => {
+            apps.borrow_mut().mount(
+                passwords::definition(),
+                &room,
+                tab,
+                ui::record::RecordId::room_default(),
+                |_| {},
+            )
+        }
         _ => mount_app(apps, kind, &room, tab, inputs)?,
     };
     Some(match mounted {
@@ -1011,22 +1030,6 @@ fn mount_app(
             ui::record::RecordId::room_default(),
             |_| {},
         ),
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Messages") => apps.borrow_mut().mount(
-            messages::definition(),
-            &room,
-            tab,
-            ui::record::RecordId::room_default(),
-            |_| {},
-        ),
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Passwords") => {
-            apps.borrow_mut().mount(
-                passwords::definition(),
-                &room,
-                tab,
-                ui::record::RecordId::room_default(),
-                |_| {},
-            )
-        }
         // Every Notes tab is a notebook of its own, on the tab's record.
         ShellKind::Other(name) if name.eq_ignore_ascii_case("Notes") => apps.borrow_mut().mount(
             notes::definition(),

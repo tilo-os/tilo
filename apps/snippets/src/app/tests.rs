@@ -19,8 +19,8 @@ fn presented(snippets: impl IntoIterator<Item = Snippet>) -> Rc<Snippets> {
 
 /// The bare window showing the starter library as the framework presents
 /// it, with a specimen open.
-fn demo() -> SnippetsApp {
-    let mut app = SnippetsApp::new();
+fn demo() -> SnippetsWindow {
+    let mut app = SnippetsWindow::bare();
     app.show_library(&presented(crate::seed::starter_library()));
     {
         let mut core = app.core.borrow_mut();
@@ -143,7 +143,7 @@ fn titles(app: &TestApp<SnippetsShell>) -> Vec<String> {
 /// The window shows what it is presented: empty until the library arrives.
 #[test]
 fn presented_library_fills_the_list() {
-    let empty = SnippetsApp::new();
+    let empty = SnippetsWindow::bare();
     assert_eq!(empty.visible_count_for_test(), 0);
     assert!(
         empty.open_id_for_test().is_none(),
@@ -183,7 +183,7 @@ fn sidebar_places_narrow_the_list() {
     drop(core);
 
     // An empty library has no folder or tag sections.
-    let empty = SnippetsApp::new();
+    let empty = SnippetsWindow::bare();
     let sections = empty.core.borrow().nav_sections();
     assert_eq!(sections.len(), 1);
 }
@@ -210,7 +210,7 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
     assert_eq!(app.state().snippets.len(), 3);
     let (made, _) = by_title(&app, "Untitled snippet");
     assert_eq!(
-        app.surface_mut::<SnippetsApp>().open_id_for_test(),
+        app.surface_mut::<SnippetsWindow>().open_id_for_test(),
         Some(made.clone()),
         "the new snippet opens"
     );
@@ -252,7 +252,7 @@ fn the_snippet_menus_set_the_language_and_duplicate() {
     assert_eq!(copy.body, "kubectl apply");
     assert_eq!(app.state().snippets.len(), 2);
     assert_eq!(
-        app.surface_mut::<SnippetsApp>().open_id_for_test(),
+        app.surface_mut::<SnippetsWindow>().open_id_for_test(),
         Some(copy_id),
         "the copy opens"
     );
@@ -267,7 +267,7 @@ fn duplicating_from_most_used_opens_the_copy_for_editing() {
     let mut app = launched(&[original]);
     activate(&mut app, "Most used");
     assert_eq!(
-        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        app.surface_mut::<SnippetsWindow>().core.borrow().selection,
         Selection::Smart(SmartFolder::MostUsed)
     );
     open_row(&mut app, "Deploy");
@@ -275,7 +275,7 @@ fn duplicating_from_most_used_opens_the_copy_for_editing() {
     let (copy_id, copy) = by_title(&app, "Deploy (copy)");
     assert_eq!(copy.uses.get(), 0);
     assert_eq!(
-        app.surface_mut::<SnippetsApp>().open_id_for_test(),
+        app.surface_mut::<SnippetsWindow>().open_id_for_test(),
         Some(copy_id),
         "the unused copy opens even though Most used excluded it"
     );
@@ -313,12 +313,12 @@ fn the_folder_and_tag_chips_reveal_their_places() {
     open_row(&mut app, "Deploy");
     activate(&mut app, "Tag: k8s");
     assert_eq!(
-        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        app.surface_mut::<SnippetsWindow>().core.borrow().selection,
         Selection::Tag("k8s".into())
     );
     activate(&mut app, "Folder: Ops");
     assert_eq!(
-        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        app.surface_mut::<SnippetsWindow>().core.borrow().selection,
         Selection::Folder("Ops".into())
     );
 }
@@ -392,7 +392,7 @@ fn exported_list_rows_activate_and_refuse_removed_handles() {
 /// Copying a templated snippet fills its variables first.
 #[test]
 fn copying_a_templated_snippet_opens_the_variables_dialog() {
-    let mut app = SnippetsApp::new();
+    let mut app = SnippetsWindow::bare();
     app.show_library(&presented([snippet("Greet", "Hello ${name}")]));
     app.core.borrow_mut().copy(&Id::from_raw("s0"));
     assert!(app.expand_open_for_test());
@@ -473,7 +473,7 @@ fn body_edits_are_text_actions_and_the_editor_follows_the_document() {
 /// while it is open.
 #[test]
 fn variable_dialog_is_semantic_and_local() {
-    let mut app = SnippetsApp::new();
+    let mut app = SnippetsWindow::bare();
     app.show_library(&presented([snippet("Greet", "Hello ${name}")]));
     let mut doc = AutoCommit::new();
     let heads = doc.get_heads();
@@ -532,7 +532,7 @@ fn showing_the_bars_new_snippet_authors_nothing_and_pressing_it_does() {
     );
 }
 
-fn framed(app: SnippetsApp, width: u32) -> Framed<SnippetsApp> {
+fn framed(app: SnippetsWindow, width: u32) -> Framed<SnippetsWindow> {
     Framed::new(ui::State::new(), app, (width, 800), Theme::dark())
 }
 
@@ -591,7 +591,7 @@ fn the_shell_docks_wide_draws_narrow_and_pushes_very_narrow() {
 #[test]
 fn the_content_column_lays_out_its_controls() {
     let mut app = framed(demo(), 1280);
-    let sizes = |app: &Framed<SnippetsApp>| {
+    let sizes = |app: &Framed<SnippetsWindow>| {
         let id = app.open_id_for_test().unwrap();
         let targets = Framed::harness(app).targets();
         let rect = |name: String| targets.get(&name).copied().unwrap_or(Rect::ZERO);
@@ -652,7 +652,7 @@ fn captures_stage_the_starter_library_and_a_new_window_is_empty() {
     detail.settle();
     assert!(
         detail
-            .surface_mut::<SnippetsApp>()
+            .surface_mut::<SnippetsWindow>()
             .window_toolbar()
             .leading
             .is_empty(),
@@ -739,7 +739,7 @@ fn an_agent_edits_and_opens_snippets_one_call_each() {
     );
     app.settle();
     assert_eq!(
-        app.surface_mut::<SnippetsApp>().open_id_for_test(),
+        app.surface_mut::<SnippetsWindow>().open_id_for_test(),
         Some(deploy),
         "opening shows the snippet"
     );
@@ -751,7 +751,7 @@ fn an_agent_edits_and_opens_snippets_one_call_each() {
     .unwrap();
     app.settle();
     assert_eq!(
-        app.surface_mut::<SnippetsApp>().core.borrow().selection,
+        app.surface_mut::<SnippetsWindow>().core.borrow().selection,
         Selection::Tag("k8s".into()),
         "a tag reveals its snippets"
     );
@@ -989,7 +989,7 @@ fn the_window_bars_sidebar_toggle_collapses_and_expands_the_sidebar() {
         }
     };
     let width = |app: &mut TestApp<SnippetsShell>| {
-        app.with_widget(|shell: &mut SnippetsApp| shell.sidebar_width_for_test())
+        app.with_widget(|shell: &mut SnippetsWindow| shell.sidebar_width_for_test())
             .unwrap()
     };
     // The sidebar toggle is the window bar's.
@@ -1058,7 +1058,7 @@ fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
     let mut app = launched(&[snippet("Deploy", "kubectl apply")]);
     let (id, _) = by_title(&app, "Deploy");
 
-    let view = app.surface_mut::<SnippetsApp>();
+    let view = app.surface_mut::<SnippetsWindow>();
     view.request_for_test(Action::SetFolder(id.clone(), "  Releases  ".into()));
     view.request_for_test(Action::SetDescription(
         id.clone(),
@@ -1082,7 +1082,7 @@ fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
     );
 
     // The sidebar lists the folder and the tag the snippet was given.
-    let sections = app.surface_mut::<SnippetsApp>().nav_sections_for_test();
+    let sections = app.surface_mut::<SnippetsWindow>().nav_sections_for_test();
     let labels: Vec<String> = sections
         .into_iter()
         .flat_map(|section| section.items)
@@ -1093,7 +1093,7 @@ fn a_snippet_is_filed_tagged_and_described_after_it_is_made() {
 
     // Taking the tag off leaves the snippet without it.
     let id = by_title(&app, "Deploy").0;
-    app.surface_mut::<SnippetsApp>()
+    app.surface_mut::<SnippetsWindow>()
         .request_for_test(Action::RemoveTag(id, "k8s".into()));
     app.settle();
     assert!(by_title(&app, "Deploy").1.tags.is_empty());

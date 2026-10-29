@@ -2,6 +2,7 @@ use super::*;
 use accounts::SecretVault;
 use imager_backend::account_transfer::Connector;
 use std::sync::Mutex;
+use ui::tilo_resource::AbsolutePath;
 
 #[test]
 fn detected_foreign_profiles_do_not_offer_or_prepare_a_replacement_login() {
@@ -285,7 +286,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
         installer
             .apply(
                 super::super::InstallerPreviewEffect::ExportPreparedAccounts {
-                    destination: source_artifact.to_string_lossy().into_owned(),
+                    destination: AbsolutePath::new(&source_artifact).unwrap(),
                     setup_binding: "installation-1".into(),
                 },
             )
@@ -307,7 +308,8 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
             installer
                 .apply(
                     super::super::InstallerPreviewEffect::CreatePreparedIdentity {
-                        private_custody: artifacts.join("media-identity").to_str().unwrap().into(),
+                        private_custody: AbsolutePath::new(artifacts.join("media-identity"))
+                            .unwrap(),
                         avatar_color: "143c64".into(),
                     },
                 )
@@ -351,7 +353,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
         installer
             .apply(
                 super::super::InstallerPreviewEffect::ExportPreparedAccounts {
-                    destination: artifact.to_string_lossy().into_owned(),
+                    destination: AbsolutePath::new(&artifact).unwrap(),
                     setup_binding: "installation-1".into(),
                 },
             )

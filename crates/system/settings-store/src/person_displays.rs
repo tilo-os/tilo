@@ -2,7 +2,7 @@
 //!
 //! Every device publishes the outputs it drives through the personal device
 //! fabric ([`DeviceOutput`]). The person's [`Arrangement`] is one roaming
-//! setting (`tilo.display.arrangement`): for each display, whether it takes
+//! setting (`tilo.display_person.arrangement`): for each display, whether it takes
 //! part in the shared layout, its order, and its position in one coordinate
 //! space. Each display's entry carries its own revision, and devices merge
 //! the arrangement entry by entry ([`Arrangement::merge`]), so edits made
@@ -28,11 +28,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Settings section holding the arrangement leaf.
-pub const ARRANGEMENT_SECTION: &str = "display";
+pub const ARRANGEMENT_SECTION: &str = crate::hardware::DISPLAY_PERSON_SECTION;
 /// Leaf name of the arrangement within [`ARRANGEMENT_SECTION`].
 pub const ARRANGEMENT_LEAF: &str = "arrangement";
-/// The roaming key, as the continuity registry names it.
-pub const ARRANGEMENT_KEY: &str = "tilo.display.arrangement";
+/// The roaming key, as the device fabric names it.
+pub const ARRANGEMENT_KEY: &str = "tilo.display_person.arrangement";
 /// Bound on displays in one person's arrangement.
 pub const MAX_ARRANGED_DISPLAYS: usize = 128;
 /// Bound on outputs one device may publish.
@@ -1218,8 +1218,8 @@ mod tests {
         assert!(Arrangement::from_value(&unknown).is_none());
         let mut document = Map::new();
         document.insert(
-            "display".into(),
-            serde_json::json!({"arrangement": value, "scale": 1.0}),
+            ARRANGEMENT_SECTION.into(),
+            serde_json::json!({"arrangement": value}),
         );
         assert_eq!(Arrangement::from_document(&document).displays.len(), 1);
     }

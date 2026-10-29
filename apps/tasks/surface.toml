@@ -105,7 +105,7 @@ id = "create"
 kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
-  { name = "title", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "parent", required = false, schema = { type = ["string", "null"] } },
   { name = "body", required = false, schema = { type = ["string", "null"] } },
   { name = "status", required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "backlog" }, { type = "string", const = "todo" }, { type = "string", const = "in-progress" }, { type = "string", const = "in-review" }, { type = "string", const = "done" }, { type = "string", const = "cancelled" }] }] } },
@@ -117,7 +117,7 @@ id = "create-area"
 kind = "undoable"
 writes = ["record", "areas.*"]
 params = [
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "project" }, { type = "string", const = "area" }] }] } },
 ]
 
@@ -127,7 +127,7 @@ kind = "undoable"
 writes = ["record", "areas.*"]
 params = [
   { name = "area", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -145,7 +145,7 @@ kind = "undoable"
 writes = ["record", "areas.*"]
 params = [
   { name = "area", required = true, schema = { type = "string" } },
-  { name = "name", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "role", required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -205,7 +205,7 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "label", required = true, schema = { type = "string" } },
+  { name = "label", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -225,7 +225,7 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "text", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -281,7 +281,7 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "reason", required = true, schema = { type = "string" } },
+  { name = "reason", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -339,7 +339,7 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "text", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -349,7 +349,7 @@ writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
   { name = "phase", required = true, schema = { oneOf = [{ type = "string", const = "approved" }, { type = "string", const = "accepted" }, { type = "string", const = "planning" }, { type = "string", const = "executing" }, { type = "string", const = "waiting" }, { type = "string", const = "done" }, { type = "string", const = "failed" }, { type = "string", const = "stopped" }] } },
-  { name = "text", required = false, schema = { type = ["string", "null"] } },
+  { name = "text", required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -397,7 +397,7 @@ writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
   { name = "outcome", required = true, schema = { oneOf = [{ type = "string", const = "done" }, { type = "string", const = "failed" }, { type = "string", const = "stopped" }] } },
-  { name = "summary", required = false, schema = { type = ["string", "null"] } },
+  { name = "summary", required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -406,7 +406,7 @@ kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
   { name = "issue", required = true, schema = { type = "string" } },
-  { name = "device", required = true, schema = { type = "string" } },
+  { name = "device", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]

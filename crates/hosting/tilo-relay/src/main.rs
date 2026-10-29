@@ -17,7 +17,7 @@
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
 //! - `reseal --scratch <dir>` (feature `agents`) — copy the state to
-//!   `<dir>`, seal there what the rooms this relay stewards keep in the
+//!   `<dir>`, seal there what the rooms whose channels this relay takes part in keep in the
 //!   clear, and check every record, leaving the state as it is.
 //!   `reseal --apply`, with the relay stopped, keeps a verbatim copy of the
 //!   state beside it, records the decision to seal in the state, and seals
@@ -89,7 +89,7 @@ enum Cmd {
     Room(Box<web_cli::RoomArgs>),
     /// Print current metrics + hosted workspace list.
     Status,
-    /// Seal what the rooms this relay stewards hold in the clear, and check
+    /// Seal what the rooms whose channels this relay takes part in hold in the clear, and check
     /// every record of them: nothing left in the clear, no change lost.
     /// Fails when a record is not sealed whole.
     #[cfg(feature = "agents")]

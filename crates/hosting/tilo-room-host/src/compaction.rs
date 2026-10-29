@@ -185,13 +185,13 @@ struct Inner {
     forced: Mutex<HashSet<ChannelKey>>,
     /// Entry bodies per channel whose signature verified in this process.
     signatures: Mutex<HashMap<ChannelKey, Signatures>>,
-    /// The record channels this host stewards, whose sealed history it
+    /// The record channels this host takes part in, whose sealed history it
     /// folds itself.
-    steward: std::sync::OnceLock<Arc<dyn StewardedKeys>>,
-    /// The route of each channel found stewarded: only ever folded sealed
+    participant: std::sync::OnceLock<Arc<dyn ParticipantKeys>>,
+    /// The route of each channel found keyed here: only ever folded sealed
     /// once `resealing`.
-    stewarded: Mutex<HashMap<ChannelKey, Route>>,
-    /// Whether what stewarded channels retain in the clear is sealed: only
+    keyed: Mutex<HashMap<ChannelKey, Route>>,
+    /// Whether what keyed channels retain in the clear is sealed: only
     /// once the host's operator decided it (the relay's `reseal`).
     resealing: std::sync::atomic::AtomicBool,
 }
@@ -199,11 +199,11 @@ struct Inner {
 /// Opens a sealed document frame, or refuses it.
 pub(crate) type Opener<'a> = dyn Fn(&collab_types::SignedOp) -> Option<Vec<u8>> + 'a;
 
-/// The content keys of the record channels a host stewards (the rooms it
-/// governs as a node that may own workspaces). It is a member of each
+/// The content keys of the record channels a host takes part in (the rooms
+/// it governs as a node that may own workspaces). It is a member of each
 /// channel's group, so it reads and seals a sealed record like any member.
-pub(crate) trait StewardedKeys: Send + Sync {
-    /// The keys of `route`'s channel, when this host stewards it.
+pub(crate) trait ParticipantKeys: Send + Sync {
+    /// The keys of `route`'s channel, when this host takes part in it.
     fn keys<'a>(
         &'a self,
         route: &'a Route,
@@ -270,20 +270,20 @@ impl Compactor {
             hold: Mutex::new(Duration::ZERO),
             forced: Mutex::default(),
             signatures: Mutex::default(),
-            steward: std::sync::OnceLock::new(),
-            stewarded: Mutex::default(),
+            participant: std::sync::OnceLock::new(),
+            keyed: Mutex::default(),
             resealing: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 
-    /// Fold the sealed history of the channels `keys` names, as their
-    /// steward, instead of asking a member to.
+    /// Fold the sealed history of the channels `keys` names, as one of their
+    /// participants, instead of asking a member to.
     #[cfg(any(feature = "agents", feature = "web"))]
-    pub(crate) fn steward_with(&self, keys: Arc<dyn StewardedKeys>) {
-        let _ = self.0.steward.set(keys);
+    pub(crate) fn with_participant_keys(&self, keys: Arc<dyn ParticipantKeys>) {
+        let _ = self.0.participant.set(keys);
     }
 
-    /// Seal what the channels this host stewards retain in the clear, from
+    /// Seal what the channels this host takes part in retain in the clear, from
     /// now on: the operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]
     pub fn reseal_existing(&self) {
@@ -423,16 +423,12 @@ impl Compactor {
             return Ok(());
         }
         let resealing = self.resealing();
-        let stewarded = resealing
-            .then(|| {
-                lock(&self.0.stewarded)
-                    .get(&(workspace_id, channel))
-                    .cloned()
-            })
+        let keyed = resealing
+            .then(|| lock(&self.0.keyed).get(&(workspace_id, channel)).cloned())
             .flatten();
-        if let Some(route) = stewarded
+        if let Some(route) = keyed
             && self
-                .fold_as_steward(workspace, workspace_id, channel, &route, min_tail)
+                .fold_with_keys(workspace, workspace_id, channel, &route, min_tail)
                 .await?
         {
             return Ok(());
@@ -467,7 +463,7 @@ impl Compactor {
         .map_err(|error| error.to_string())?;
         lock(&self.0.signatures).insert((workspace_id, channel), signatures);
         let (sealed, plan) = planned.map_err(|error| error.to_string())?;
-        // Once resealing, a channel this host stewards is folded sealed,
+        // Once resealing, a channel this host takes part in is folded sealed,
         // never into a snapshot in the clear.
         let route = plan
             .as_ref()
@@ -476,7 +472,7 @@ impl Compactor {
             .filter(|_| resealing);
         if let Some(route) = route
             && self
-                .fold_as_steward(workspace, workspace_id, channel, route, min_tail)
+                .fold_with_keys(workspace, workspace_id, channel, route, min_tail)
                 .await?
         {
             return Ok(());
@@ -495,7 +491,7 @@ impl Compactor {
         if let Some(route) = sealed {
             if !resealing
                 && self
-                    .fold_as_steward(workspace, workspace_id, channel, &route, min_tail)
+                    .fold_with_keys(workspace, workspace_id, channel, &route, min_tail)
                     .await?
             {
                 return Ok(());
@@ -506,13 +502,14 @@ impl Compactor {
         Ok(())
     }
 
-    /// Fold `channel`'s sealed history as the steward of `route`'s channel,
-    /// when this host is: open every sealed entry with the channel's keys,
+    /// Fold `channel`'s sealed history as a participant of `route`'s channel,
+    /// when this host is one: open every sealed entry with the channel's keys,
     /// fold them as a cleartext channel is folded, and retain the snapshot
     /// sealed under the channel's current key, signed as this host. A
     /// newcomer then replays one snapshot and the writes since, not every
-    /// write ever made. False when this host does not steward the channel.
-    async fn fold_as_steward(
+    /// write ever made. False when this host does not take part in the
+    /// channel.
+    async fn fold_with_keys(
         &self,
         workspace: &SharedWorkspace,
         workspace_id: u64,
@@ -520,13 +517,13 @@ impl Compactor {
         route: &Route,
         min_tail: usize,
     ) -> Result<bool, String> {
-        let Some(steward) = self.0.steward.get() else {
+        let Some(participant) = self.0.participant.get() else {
             return Ok(false);
         };
-        let Some(keys) = steward.keys(route).await else {
+        let Some(keys) = participant.keys(route).await else {
             return Ok(false);
         };
-        lock(&self.0.stewarded).insert((workspace_id, channel), route.clone());
+        lock(&self.0.keyed).insert((workspace_id, channel), route.clone());
         let store = workspace.lock().await.store.clone();
         let mut signatures = lock(&self.0.signatures)
             .remove(&(workspace_id, channel))
@@ -615,7 +612,7 @@ impl Compactor {
     }
 
     /// Seal what `channel` of `workspace_id`, the channel of `route` this
-    /// host stewards, retains in the clear: writes made before its channel
+    /// host takes part in, retains in the clear: writes made before its channel
     /// was opened. Their history goes into the sealed snapshot whole, every
     /// change with its author, and they are removed only once it is durable.
     #[cfg(feature = "agents")]
@@ -632,7 +629,7 @@ impl Compactor {
         if workspace.lock().await.store.shell_binding().is_some() {
             return Ok(());
         }
-        self.fold_as_steward(
+        self.fold_with_keys(
             workspace,
             workspace_id,
             channel,
@@ -915,8 +912,8 @@ fn plan(
     plan_opening(entries, signatures, known, min_tail, (None, false), sign)
 }
 
-/// [`plan`], reading sealed entries `open` opens (the host stewards their
-/// channel) like cleartext ones; `reseal` seals what it retains in the
+/// [`plan`], reading sealed entries `open` opens (the host takes part in
+/// their channel) like cleartext ones; `reseal` seals what it retains in the
 /// clear.
 fn plan_opening(
     entries: &[ChannelEntry],
@@ -932,7 +929,7 @@ fn plan_opening(
         .collect();
     signatures.end_round();
     let sealed = sealed_tail(&checked, known);
-    // A channel its steward reads holds nothing in the clear: what was
+    // A channel a participant folds holds nothing in the clear: what was
     // written before its channel was opened is sealed into its snapshot,
     // history and authors whole, however short.
     let reseal = reseal && open.is_some() && checked.iter().any(Checked::is_cleartext);
@@ -947,7 +944,7 @@ fn plan_opening(
     if reseal && folded.is_none() {
         tracing::warn!(
             route = ?readable.route,
-            "a stewarded channel keeps writes made in the clear: they do not fold"
+            "a keyed channel keeps writes made in the clear: they do not fold"
         );
     }
     (sealed, folded)
@@ -1301,7 +1298,7 @@ pub(crate) fn document_frames(
     frames_of(payloads, (key, None), workspace_id, route, snapshot)
 }
 
-/// [`document_frames`] for a sealed channel this host stewards: each frame
+/// [`document_frames`] for a sealed channel this host takes part in: each frame
 /// sealed under the channel's current key with `keys`, as a member seals
 /// the snapshot it compacts, so the folded history stays as sealed as the
 /// writes it replaces.

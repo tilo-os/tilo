@@ -4337,13 +4337,13 @@ fn palette_activate(app: &mut App, action: &str, value: &str) {
     assert!(
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .activate_address("palette-owner", action)
     );
     app.actions
         .action_palette
-        .as_mut()
+        .as_deref_mut()
         .unwrap()
         .set_query(value);
 }
@@ -4428,14 +4428,14 @@ fn managed_palette_draft_identity_preserves_text_and_json_editor_and_refuses_cha
         }
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query(complete);
         palette_enter(&mut app);
         assert_eq!(editor_snapshot(&app).2, "confirmation");
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query(PALETTE_CONFIRMATION);
         palette_confirm(&mut app);
@@ -4456,7 +4456,7 @@ fn managed_palette_draft_identity_preserves_text_and_json_editor_and_refuses_cha
             assert!(
                 app.actions
                     .action_palette
-                    .as_mut()
+                    .as_deref_mut()
                     .unwrap()
                     .take_search_announcement()
                     .is_some_and(
@@ -4493,7 +4493,7 @@ fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_f
         assert_eq!(editor_snapshot(&app).2, "confirmation");
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query(PALETTE_CONFIRMATION);
 
@@ -4527,7 +4527,7 @@ fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_f
         }
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query(PALETTE_CONFIRMATION);
         palette_confirm(&mut app);
@@ -5665,7 +5665,7 @@ fn palette_two_round_trips_preserve_original_exact_witness() {
         assert_eq!(retained.wire_argument(), original.wire_argument());
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query(PALETTE_CONFIRMATION);
         palette_confirm(&mut app);
@@ -5691,7 +5691,7 @@ fn palette_named_text_parameter_survives_history_and_confirmation() {
     palette_history_round_trip(&mut app);
     app.actions
         .action_palette
-        .as_mut()
+        .as_deref_mut()
         .unwrap()
         .set_query(PALETTE_CONFIRMATION);
     palette_confirm(&mut app);
@@ -5734,7 +5734,7 @@ fn palette_missing_or_unavailable_draft_preserves_editor_and_reason() {
             assert!(
                 app.actions
                     .action_palette
-                    .as_mut()
+                    .as_deref_mut()
                     .unwrap()
                     .take_search_announcement()
                     .is_some_and(
@@ -5765,13 +5765,13 @@ fn activate_component_palette(
     assert!(
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .activate_bound(&target)
     );
     app.actions
         .action_palette
-        .as_mut()
+        .as_deref_mut()
         .unwrap()
         .set_query(value);
 }
@@ -5832,7 +5832,7 @@ fn palette_reentry_cannot_replace_exact_component_owner() {
     palette_history_round_trip(&mut app);
     app.actions
         .action_palette
-        .as_mut()
+        .as_deref_mut()
         .unwrap()
         .set_query(PALETTE_CONFIRMATION);
     palette_confirm(&mut app);
@@ -7175,7 +7175,7 @@ fn control_custody_core_first_emission_after_return_keeps_live_semantics() {
     confirming
         .actions
         .action_palette
-        .as_mut()
+        .as_deref_mut()
         .unwrap()
         .set_query("CONFIRM");
     palette_enter(&mut confirming);

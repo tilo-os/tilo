@@ -186,14 +186,14 @@
 //!   one document item (a profile's password) is
 //!   `secrets().item(purpose, id)`, so the document names the item and the
 //!   secret stays on the device.
-//! * **The person's own data** — what they watched, the words they taught
-//!   the keyboard, where they stopped reading: data that grows, has history
-//!   and is undone, but belongs to the person rather than the room — is a
-//!   resource kept in the person's own room ([`RecordEnv::person`]). The [`PersonRecord`] is one record per kind on
-//!   all of the person's devices, edited with the resource's actions,
-//!   attributed, in its history and undone per step, and synced to the
-//!   person's devices only — never to a collaborator, whatever room the app
-//!   is open in. A preference is still a setting.
+//! * **One record of a kind beside the one shown** — what was watched, the
+//!   words taught to the keyboard, where reading stopped: data that grows,
+//!   has history and is undone — is a resource the app keeps with its other
+//!   records in the workspace it is open in ([`RecordEnv::person`]). The
+//!   [`PersonRecord`] is one record per kind and workspace, the same on
+//!   every device, edited with the resource's actions, attributed, in its
+//!   history and undone per step, and synced with the workspace. A
+//!   preference is still a setting.
 //! * **What grows without end** — a chat's messages, a log — is a chain of
 //!   part records of another resource type kept beside the app's own in its
 //!   room ([`Chain`], [`Chained`]): declared in [`ResourceApp::records`],
@@ -249,8 +249,8 @@
 //! * **Files of the mounted filesystem** an app shows (a file manager's
 //!   selected file) have a history of their own, kept by the filesystem's
 //!   projection rather than the app's document. The app declares it
-//!   ([`ResourceApp::FILE_HISTORY`]) and its surface names the file
-//!   ([`SurfaceCx::file_history`]); History offers it beside the resource's.
+//!   ([`ResourceApp::FILE_HISTORY`]) and its view names the file
+//!   ([`RecordEnv::file_history`]); History offers it beside the resource's.
 //! * **Run mode.** A view is built for a window someone uses, a past version
 //!   in History, or a screenshot ([`RunMode`], from [`RecordEnv::mode`]). Only a live view starts work that reaches outside
 //!   the process (a mail engine, a socket, a journal reader, a hardware

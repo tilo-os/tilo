@@ -51,6 +51,7 @@ mod agent_runs;
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
+mod room_delta;
 mod workspace_effects;
 mod workspace_membership;
 mod workspace_shortcuts;
@@ -192,10 +193,10 @@ pub struct GovernedAccess {
 /// [`PeerGovernance::withheld_record_readers`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordReaders {
-    /// Each channel whose record the steward can name, and the member
+    /// Each channel whose record the caller can name, and the member
     /// devices that may not read that record (possibly none).
     pub withheld: std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>,
-    /// The member devices kept out of every channel whose record the steward
+    /// The member devices kept out of every channel whose record the caller
     /// cannot name: those a Deny over a pattern of records could keep out.
     pub unrouted: BTreeSet<[u8; 32]>,
 }
@@ -781,7 +782,8 @@ impl StatePeer {
 
     /// Whether `device` is a known, unrevoked device of the owner's, at no
     /// particular time: for evidence a device of theirs signed earlier.
-    fn signed_by_owner(&self, device: &[u8; 32]) -> bool {
+    #[must_use]
+    pub fn signed_by_owner(&self, device: &[u8; 32]) -> bool {
         self.core
             .certificates
             .get(device)
@@ -930,13 +932,6 @@ impl StatePeer {
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
     pub fn admitted_room(&self) -> Option<&AutoCommit> {
         self.core.room_doc.as_deref()
-    }
-
-    /// The heads of the committed room document, `None` without one. Equal
-    /// heads at two moments mean nothing was committed to the room between
-    /// them.
-    pub fn room_heads(&self) -> Option<Vec<automerge::ChangeHash>> {
-        Some(self.core.room_doc.as_deref()?.committed_heads())
     }
 
     /// Start the room's document over from a base ([`room::base`]), as its

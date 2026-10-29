@@ -1,5 +1,6 @@
 //! An environment's file actions: `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`,
-//! `truncate`, `touch` and `append` as the record's own verbs.
+//! `truncate`, `touch` and `append`, and `write` (what a shell's `>` does),
+//! as the record's own verbs.
 //!
 //! A command typed in a guest, and an agent calling `move` with paths, are the
 //! same thing: one invocation of one of the environment's published actions.
@@ -11,7 +12,9 @@
 //! those entries back. So History, undo and the permission check are the
 //! record's, like every other action of the record's.
 //!
-//! What is here is the data and the check; carrying a task out touches the
+//! What is here is the data, the check, and reading a command line into an
+//! action ([`cli`]), none of which needs a filesystem or a process, so a shell
+//! anywhere reads `cp a b` the same way. Carrying a task out touches the
 //! filesystem and lives with the runtime (`ush::file_actions`).
 
 use std::path::{Component, Path, PathBuf};
@@ -22,6 +25,8 @@ use tilo_resource::Model;
 
 use crate::RUNTIME_APP_ID;
 
+pub mod cli;
+
 /// The most paths one invocation names: a command line with more is
 /// refused whole, never carried out in part.
 pub const MAX_OPERANDS: usize = 256;
@@ -31,8 +36,25 @@ pub const MAX_OPERANDS: usize = 256;
 /// recoverable store, listed and restored by its id.
 pub const KEPT_TASKS: usize = 64;
 
-/// The most text one `append` carries in the record.
-pub const MAX_APPEND_BYTES: usize = 64 * 1024;
+/// The most text one `append` or `write` carries inside the record. More
+/// than this travels by reference to the environment's content store
+/// ([`WriteOp::content`], [`AppendFileOp::content`]), which has no bound of
+/// its own: a write of any size is one action.
+pub const MAX_TEXT_BYTES: usize = 64 * 1024;
+
+/// How an action names content kept in the environment's content store:
+/// `tilo.content:<hash>`, the reference every action takes content by.
+#[must_use]
+pub fn content_reference(hash: &str) -> String {
+    format!("tilo.content:{hash}")
+}
+
+/// The hash a `tilo.content:<hash>` reference names, when `reference` is
+/// one.
+#[must_use]
+pub fn content_hash(reference: &str) -> Option<&str> {
+    tilo_resource::content::reference_hash(reference)
+}
 
 /// What a command asked for, before anything is written.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +72,9 @@ pub enum FileAction {
     Touch(AppendFileOp),
     /// Add `text` to the end of each of `files`.
     Append(AppendFileOp),
+    /// Make each of `files` hold exactly the given contents: what a shell's
+    /// `>` does.
+    Write(WriteOp),
     /// Take back the task `entry` of the record's outbox: what undoing an
     /// action queues.
     Revert(RevertOp),
@@ -81,6 +106,7 @@ impl FileAction {
             Self::Truncate(_) => "truncate",
             Self::Touch(_) => "touch",
             Self::Append(_) => "append",
+            Self::Write(_) => "write",
             Self::Revert(_) => "revert",
             Self::Restore(_) => "restore",
         }
@@ -117,6 +143,7 @@ impl FileAction {
             Self::Link(op) => vec![op.path.clone(), op.target.clone()],
             Self::Truncate(op) => op.files.clone(),
             Self::Touch(op) | Self::Append(op) => op.files.clone(),
+            Self::Write(op) => op.files.clone(),
             Self::Revert(_) | Self::Restore(_) => Vec::new(),
         }
     }
@@ -146,12 +173,31 @@ impl FileAction {
                 self.verb()
             ));
         }
-        if let Self::Append(op) = self
-            && op.text.len() > MAX_APPEND_BYTES
-        {
+        let (text, content) = match self {
+            Self::Append(op) => (op.text.len(), op.content.as_deref()),
+            Self::Write(op) => (op.text.len(), op.content.as_deref()),
+            _ => (0, None),
+        };
+        if text > MAX_TEXT_BYTES {
             return Err(format!(
-                "append carries at most {MAX_APPEND_BYTES} bytes of text"
+                "{} carries at most {MAX_TEXT_BYTES} bytes of text; more goes by reference to \
+                 the environment's content store",
+                self.verb()
             ));
+        }
+        if let Some(hash) = content {
+            if content_hash(&content_reference(hash)) != Some(hash) {
+                return Err(format!("{}: {hash:?} names no content", self.verb()));
+            }
+            if text > 0 {
+                return Err(format!(
+                    "{} names its contents as text or by reference, not both",
+                    self.verb()
+                ));
+            }
+        }
+        if let Self::Write(op) = self {
+            op.contents()?;
         }
         for path in self.paths() {
             if !path.is_absolute() {
@@ -232,6 +278,72 @@ pub fn normalize(path: &Path) -> PathBuf {
     }
 }
 
+/// `action` with every path it names made absolute against `cwd`, the
+/// directory the command was typed in. A symbolic link's target stays as it
+/// was written: it is read from where the link is, not from `cwd`.
+#[must_use]
+pub fn anchored(action: FileAction, cwd: &Path) -> FileAction {
+    let at = |path: PathBuf| {
+        if path.is_absolute() {
+            path
+        } else {
+            // `join` keeps a trailing separator, which says "a directory".
+            cwd.join(path)
+        }
+    };
+    let all = |paths: Vec<PathBuf>| paths.into_iter().map(at).collect();
+    match action {
+        FileAction::Copy(op) => FileAction::Copy(CopyOp {
+            sources: all(op.sources),
+            destination: at(op.destination),
+            ..op
+        }),
+        FileAction::Move(op) => FileAction::Move(MoveOp {
+            sources: all(op.sources),
+            destination: at(op.destination),
+            ..op
+        }),
+        FileAction::Remove(op) => FileAction::Remove(RemoveOp {
+            paths: all(op.paths),
+            ..op
+        }),
+        FileAction::MakeDir(op) => FileAction::MakeDir(MakeDirOp {
+            dirs: all(op.dirs),
+            ..op
+        }),
+        FileAction::RemoveDir(op) => FileAction::RemoveDir(RemoveDirOp {
+            dirs: all(op.dirs),
+            ..op
+        }),
+        FileAction::Link(op) => FileAction::Link(LinkOp {
+            target: if op.symbolic {
+                op.target
+            } else {
+                at(op.target)
+            },
+            path: at(op.path),
+            ..op
+        }),
+        FileAction::Truncate(op) => FileAction::Truncate(TruncateOp {
+            files: all(op.files),
+            ..op
+        }),
+        FileAction::Touch(op) => FileAction::Touch(AppendFileOp {
+            files: all(op.files),
+            ..op
+        }),
+        FileAction::Append(op) => FileAction::Append(AppendFileOp {
+            files: all(op.files),
+            ..op
+        }),
+        FileAction::Write(op) => FileAction::Write(WriteOp {
+            files: all(op.files),
+            ..op
+        }),
+        other @ (FileAction::Revert(_) | FileAction::Restore(_)) => other,
+    }
+}
+
 /// `cp` as it was asked for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CopyOp {
@@ -305,13 +417,91 @@ pub struct TruncateOp {
     pub create: bool,
 }
 
-/// `touch` and `append` as they were asked for: the same files, and the text
-/// `append` adds (empty for `touch`).
+/// `touch` and `append` as they were asked for: the same files, and what
+/// `append` adds (nothing for `touch`): `text`, or the content `content`
+/// names.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppendFileOp {
     pub files: Vec<PathBuf>,
     #[serde(default)]
     pub text: String,
+    /// What is added, by its hash in the environment's content store, in
+    /// place of `text`: bytes of any length, text or not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+}
+
+/// `write` as it was asked for: the contents every one of `files` holds
+/// afterwards. Contents that are not text travel as base64 of the bytes, and
+/// contents of any size by reference to the environment's content store.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteOp {
+    pub files: Vec<PathBuf>,
+    #[serde(default)]
+    pub text: String,
+    /// `text` is base64 of the contents.
+    #[serde(default)]
+    pub base64: bool,
+    /// The contents, by their hash in the environment's content store, in
+    /// place of `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Only a file that is not there yet (a shell's `>` under `set -C`).
+    #[serde(default)]
+    pub no_clobber: bool,
+}
+
+impl WriteOp {
+    /// A write of `contents`: as text when they are text, else as base64.
+    #[must_use]
+    pub fn of(files: Vec<PathBuf>, contents: Vec<u8>, no_clobber: bool) -> Self {
+        use base64::Engine as _;
+        match String::from_utf8(contents) {
+            Ok(text) => Self {
+                files,
+                text,
+                base64: false,
+                content: None,
+                no_clobber,
+            },
+            Err(error) => Self {
+                files,
+                text: base64::engine::general_purpose::STANDARD.encode(error.as_bytes()),
+                base64: true,
+                content: None,
+                no_clobber,
+            },
+        }
+    }
+
+    /// A write of the content kept under `hash` in the environment's
+    /// content store.
+    #[must_use]
+    pub fn of_content(files: Vec<PathBuf>, hash: String, no_clobber: bool) -> Self {
+        Self {
+            files,
+            content: Some(hash),
+            no_clobber,
+            ..Self::default()
+        }
+    }
+
+    /// The bytes every file holds afterwards, when they travel inside the
+    /// action ([`Self::content`] is `None`).
+    ///
+    /// # Errors
+    ///
+    /// `text` is meant as base64 and is not.
+    pub fn contents(&self) -> Result<Vec<u8>, String> {
+        use base64::Engine as _;
+        if self.base64 {
+            base64::engine::general_purpose::STANDARD
+                .decode(self.text.as_bytes())
+                .map_err(|e| format!("write: the contents are not base64: {e}"))
+        } else {
+            Ok(self.text.clone().into_bytes())
+        }
+    }
 }
 
 /// Take back the outbox entry `entry`.

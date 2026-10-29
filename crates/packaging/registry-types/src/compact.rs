@@ -270,7 +270,9 @@ pub fn verify_compact_snapshot(
     now_unix: u64,
 ) -> Result<(), SnapshotError> {
     if snapshot.protocol != PACKAGE_FORMAT_VERSION {
-        return Err(SnapshotError::Protocol);
+        return Err(SnapshotError::Protocol {
+            served: snapshot.protocol,
+        });
     }
     let header = SignedHeader {
         sequence: snapshot.sequence,

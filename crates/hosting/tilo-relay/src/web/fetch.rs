@@ -149,8 +149,11 @@ async fn caller(
         .sessions
         .get(&token)
         .map_err(|_| "the session ended; sign in again")?;
-    let rooms = member_of(web, session.peer.user_public_key).await;
-    if rooms.is_empty() {
+    let user = session.peer.user_public_key;
+    let rooms = member_of(web, user).await;
+    // The person this host runs for may use it before any of their rooms is
+    // bound here: their fetches count against their device's budget alone.
+    if rooms.is_empty() && user != web.sessions.context().relay.identity.user_public_key {
         return Err("the fetch proxy is for members of a workspace on this host");
     }
     Ok((Caller(session.peer.device_public_key), rooms))
@@ -183,15 +186,6 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
         if workspace.admits_person(&user, &own_user) {
             rooms.push(Room(id));
         }
-    }
-    // The person this host runs for is its own before any room is bound
-    // here: what they fetch counts against their own room.
-    if rooms.is_empty()
-        && user == own_user
-        && let Ok(id) =
-            tilo_relay_protocol::room_workspace_id(&tilo_relay_protocol::own_room(&user))
-    {
-        rooms.push(Room(id));
     }
     rooms
 }

@@ -109,7 +109,7 @@ fn a_failed_export_is_readable_closed_and_in_its_details() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = hosting(&unreadable());
     let _ = app.effect(&VideoEditorEffect::Export {
-        path: Some(dir.path().join("never.mp4").display().to_string()),
+        path: Some(ui::tilo_resource::AbsolutePath::new(dir.path().join("never.mp4")).unwrap()),
     });
     app.settle();
     let reason = said(&mut app, "Export failed");

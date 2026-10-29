@@ -59,7 +59,7 @@ impl CodeApp {
             CodeEditorEffect::OpenFile { path: Some(path) } => {
                 self.ensure_no_file_effect()?;
                 self.notice = None;
-                if self.open_disk_file(Path::new(&path)).transpose()?.is_none() {
+                if self.open_disk_file(&path).transpose()?.is_none() {
                     self.file_reply = Some(cx.reply());
                     return Ok(Effected::Pending);
                 }
@@ -67,11 +67,7 @@ impl CodeApp {
             CodeEditorEffect::OpenFolder { path: Some(path) } => {
                 self.ensure_no_file_effect()?;
                 self.notice = None;
-                if self
-                    .open_project_dir(Path::new(&path))
-                    .transpose()?
-                    .is_none()
-                {
+                if self.open_project_dir(&path).transpose()?.is_none() {
                     self.file_reply = Some(cx.reply());
                     return Ok(Effected::Pending);
                 }
@@ -92,7 +88,10 @@ impl CodeApp {
                         .buffer_of(node)
                         .is_some_and(|buffer| buffer.path.is_some());
                 if has_destination {
-                    self.pending_save = Some((node, path.map(PathBuf::from)));
+                    self.pending_save = Some((
+                        node,
+                        path.map(ui::tilo_resource::AbsolutePath::into_path_buf),
+                    ));
                 } else {
                     self.request_save_as(node);
                 }
@@ -156,7 +155,7 @@ impl CodeApp {
         self.ensure_no_file_effect()?;
         let answered = std::rc::Rc::new(std::cell::Cell::new(None));
         let noted = std::rc::Rc::clone(&answered);
-        self.reveal_on_disk(PathBuf::from(path), move |app, target| {
+        self.reveal_on_disk(path.into_path_buf(), move |app, target| {
             let answer = target
                 .map(|target| reveal(app, target))
                 .ok_or_else(|| "Code location no longer exists".to_string());
@@ -233,7 +232,7 @@ impl CodeApp {
                 cx,
             ),
             Command::GoToLine => {
-                Self::ask_for_line();
+                self.ask_for_line();
                 Ok(Effected::done())
             }
             command => {
@@ -522,7 +521,10 @@ fn result_row(result: &actions::SearchResultRef) -> LiveRow {
     )
     .effect(&CodeEditorEffect::Reveal {
         file: result.file_id.clone(),
-        path: result.disk_path.clone(),
+        path: result
+            .disk_path
+            .as_deref()
+            .and_then(|path| ui::tilo_resource::AbsolutePath::new(path).ok()),
         line: result.line,
         column: result.col,
         results: true,

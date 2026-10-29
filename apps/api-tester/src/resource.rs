@@ -10,16 +10,12 @@
 //! ([`crate::actions::ApiTesterEffect`]) whose completion records the history
 //! entry through [`Workspace::RECORD_SENT`].
 
-use std::rc::Rc;
-
-use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{self, ActionCx, Atom, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::widget::Element;
 
-use crate::actions::ApiTesterEffect;
-use crate::app::ApiTesterApp;
 use crate::model::HttpMethod;
 use crate::record::{Environment, HISTORY_LIMIT, RequestRecord, SavedCollection, Sent, Variable};
 
@@ -424,7 +420,7 @@ impl ResourceApp for ApiTesterShell {
     }
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
-        cx.surface(ApiTesterApp::new_with_actions(&cx.actions()))
+        crate::app::window(cx)
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -441,32 +437,6 @@ impl ResourceApp for ApiTesterShell {
             return Vec::new();
         }
         crate::seed::workspace()
-    }
-}
-
-impl ResourceSurface<Workspace, ApiTesterEffect> for ApiTesterApp {
-    fn present(&mut self, state: &Rc<Workspace>) {
-        self.present_workspace(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Workspace>) {
-        self.attach_surface(&cx);
-    }
-
-    fn read_only_changed(&mut self, read_only: bool) {
-        self.set_read_only(read_only);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: ApiTesterEffect,
-        cx: &mut EffectCx<Workspace, Self>,
-    ) -> EffectAnswer {
-        self.answer_effect(effect, cx)
     }
 }
 

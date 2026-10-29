@@ -59,6 +59,7 @@ pub use authors::{
 pub use collaboration::history_source::steps;
 /// One person's typing in one field, as History lists it, below the toolkit.
 pub use collaboration::history_source::typing;
+pub use collaboration::history_source::verbs;
 /// What a history verb speaks in, below the toolkit.
 pub use collaboration::history_source::words::{self, HistoryWords};
 pub use collaboration::history_source::{entry_id_from_hash, is_history_metadata};

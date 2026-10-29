@@ -51,7 +51,7 @@ fn record_history_fixture() -> (ActionFixture, Vec<automerge::ChangeHash>) {
 
 fn history_session(app: &mut App) -> uuid::Uuid {
     let resources = app
-        .with_history_host(crate::standalone_history_host::StandaloneHistoryHost::local_resources)
+        .with_history(crate::standalone_history_host::StandaloneHistoryHost::local_resources)
         .unwrap();
     let id = resources
         .iter()
@@ -96,7 +96,7 @@ fn confirm_record_restore(app: &mut App) -> Result<(), String> {
 }
 
 fn can_restore(app: &mut App) -> bool {
-    app.with_history_host(|host, context| {
+    app.with_history(|host, context| {
         host.session(context)
             .unwrap()
             .is_some_and(|session| session.can_restore(context))

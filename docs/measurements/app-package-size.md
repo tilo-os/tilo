@@ -67,6 +67,14 @@ A build whose binaries are
 not the release profile the budgets measure (`TILO_RUST_LTO=off`) reports the
 app instead of refusing it (`TAPP_BUDGET=report`).
 
+A developer session (`dist/dev/nested-session.sh`, `tilolang dev`) installs the apps it
+built itself, signed with its own development key, and never publishes them; the `thin-dev`
+profile builds them for build speed rather than size. Its store, a build with
+`dev-overrides`, installs a package whose signature verifies under a key on the session's
+publisher list (`TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE`) under the 64 MiB desktop-build
+ceiling instead of the 8 MB one (`package_store::size_limit`). A shipped store reads no such
+list, and the registry holds every application to the 8 MB ceiling.
+
 The population is the default collection's apps. The runtime package is the
 runtime's own KPI. The runtime and provider stubs are not apps, and apps the
 registry still lists but this repository no longer builds are not counted. The

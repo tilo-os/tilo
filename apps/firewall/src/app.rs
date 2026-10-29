@@ -1,20 +1,20 @@
 //! Root of the firewall manager.
 //!
-//! [`FirewallApp`] is a [`NavShell`] window: the zones are the sidebar and the
-//! selected zone is the content (see `crate::view`). This module owns what
-//! the shell cannot: the configuration and where it came from, the zone and
-//! rule the person is looking at, the add-rule draft, the delete
-//! confirmation, the last result, and the effects that push the
-//! configuration to firewalld.
+//! [`FirewallWindow`] is a [`NavShell`] window: the zones are the sidebar and
+//! the selected zone is the content (see `crate::view`). The [`Store`] it
+//! shares with the view's effect handler owns what the shell cannot: the
+//! configuration and where it came from, the zone and rule the person is
+//! looking at, the add-rule draft, the delete confirmation, the last result,
+//! and the work that pushes the configuration to firewalld.
 //!
-//! The configuration lives in the shared Automerge document (`doc.rs`): every
-//! edit is a field edit or verb submitted through the framework dispatcher,
-//! and the framework presents the stored configuration back (see
-//! [`crate::resource`]), so two instances on one record edit the same
-//! ruleset. Which zone is open, the tab and the draft are this window's
-//! presentation and never enter the document.
+//! The configuration lives in the shared Automerge document: every edit is a
+//! field edit or verb submitted through the framework dispatcher, and the
+//! window follows the stored configuration (see [`crate::resource`]), so two
+//! instances on one record edit the same ruleset. Which zone is open, the
+//! tab and the draft are this window's presentation and never enter the
+//! document.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -29,10 +29,12 @@ use ui::capability_door::{Capability, Door};
 use ui::theme::Theme;
 use ui::widget::data_table::TableSort;
 use ui::widget::toast::ToastKind;
-use ui::widget::{AppModel, ModelPath, NavShell, Widget};
+use ui::widget::{AppModel, Element, ModelPath, NavShell, Widget};
 use ui::window_toolbar::{ToolbarEvent, ToolbarLocation};
 
-use ui::framework::{Dispatcher, Setting};
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, Live, RunMode, Setting, ViewCx,
+};
 
 use crate::blocked::BlockedReport;
 use crate::model::{
@@ -40,7 +42,7 @@ use crate::model::{
     validate_source,
 };
 use crate::model::{StoredRule, StoredZonePaths};
-use crate::resource::{AppliedConfig, ApplyOutcome, Firewall, FirewallEffect};
+use crate::resource::{AppliedConfig, Firewall, FirewallEffect};
 use crate::view::{
     self, Draft, Intent, Intents, PageModel, PendingSwitch, SwitchKey, Switches, Tab,
 };
@@ -104,14 +106,13 @@ struct ViewKey {
     unavailable_detail: Option<String>,
 }
 
+/// The configuration a window shows and the work running on it, shared by
+/// the window and the view's effect handler.
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent flags: availability, the shell's build, the add-rule dialog, and a pending sync"
+    reason = "independent flags: availability, host writes, the add-rule dialog, the drawer and a pending sync"
 )]
-pub struct FirewallApp {
-    shell: NavShell,
-    /// What the window's bar names: the open zone, or Firewall.
-    title: String,
+pub(crate) struct Store {
     intents: Intents,
     switches: Switches,
     enabled_switch: LocalState<bool>,
@@ -127,10 +128,8 @@ pub struct FirewallApp {
     tab: Tab,
     draft: Draft,
     notice: Option<Notice>,
-    /// The content column is wide enough for the services' descriptions:
-    /// at least `wide_from`, the width of a compact window.
-    wide: bool,
-    wide_from: f64,
+    /// What the window says in a toast next.
+    toasts: Vec<Notice>,
 
     /// Whether there is a configuration to show. `false` means no device
     /// could read firewalld into the record yet, and we show an honest
@@ -156,7 +155,7 @@ pub struct FirewallApp {
 
     /// Where every on-screen affordance submits its field edit or verb: one
     /// undo step each, replayed byte-identically on peers — the same door
-    /// Ctrl+K takes. `None` only for a widget no resource hosts.
+    /// Ctrl+K takes. `None` only for a window no resource hosts.
     dispatcher: Option<Dispatcher<Firewall>>,
     /// What this device last applied to its firewalld.
     applied: Option<Setting<AppliedConfig>>,
@@ -164,57 +163,58 @@ pub struct FirewallApp {
     jobs: Option<ui::framework::Jobs<Firewall>>,
     /// The configuration being applied now, as its canonical text.
     applying: Option<String>,
-    /// A failed apply of the stored configuration on this device, until the
-    /// window reports it.
-    outcome: ApplyOutcome,
 
-    built: Option<ViewKey>,
-    /// The zone list's (config revision, selected zone) when it was built.
-    listed: Option<(u64, ZoneKind)>,
     /// The page's scroll offset, kept across rebuilds.
     scroll: Rc<Cell<(f32, f32)>>,
+    /// A capture opens the zones as a drawer.
+    open_drawer: bool,
     /// A control changed what the window shows; `update` asks for a sync.
     changed: bool,
 }
 
-impl Default for FirewallApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// The [`Store`] as the window and the effect handler share it.
+pub(crate) type Shared = Rc<RefCell<Store>>;
 
 /// The window: the zones beside the open zone. Its controls are the window
-/// bar's slots ([`FirewallApp::run_window_toolbar`]).
-fn shell() -> NavShell {
-    NavShell::new()
-        .content_kind(ui::widget::ContentKind::List)
-        .with_id("firewall-shell")
-        .with_window_toolbar()
+/// bar's slots ([`FirewallWindow::run_window_toolbar`]).
+pub struct FirewallWindow {
+    store: Shared,
+    /// The configuration as the document holds it, shown as it changes;
+    /// `None` for a window outside the framework.
+    live: Option<Live<Firewall>>,
+    presented: Option<(u64, u64)>,
+    shell: NavShell,
+    /// What the window's bar names: the open zone, or Firewall.
+    title: String,
+    /// The content column is wide enough for the services' descriptions:
+    /// at least `wide_from`, the width of a compact window.
+    wide: bool,
+    wide_from: f64,
+    built: Option<ViewKey>,
+    /// The zone list's (config revision, selected zone) when it was built.
+    listed: Option<(u64, ZoneKind)>,
 }
 
-impl FirewallApp {
-    /// The surface before the resource presents its configuration: an
-    /// honest unavailable state, never a fabricated ruleset.
-    pub fn new() -> Self {
+impl Store {
+    /// The store before the document's configuration is shown: an honest
+    /// unavailable state, never a fabricated ruleset.
+    fn new() -> Self {
         Self::from_parts(FirewallConfig::empty(), false)
     }
 
-    /// The bare widget showing the sample ruleset, for tests of its layout
-    /// and input.
+    /// The store showing the sample ruleset outside the framework, for
+    /// tests of the window's layout and input.
     #[cfg(test)]
-    pub(crate) fn new_demo() -> Self {
+    fn demo() -> Self {
         Self::from_parts(crate::sample::sample_config(), true)
     }
 
     fn from_parts(config: FirewallConfig, available: bool) -> Self {
-        let intents = Intents::default();
         let enabled_switch = LocalState::new(config.enabled);
         let panic_switch = LocalState::new(config.panic_mode);
-        let capability = capability_for(config.zones.is_empty());
+        let capability = capability_for(!config.zones.is_empty());
         Self {
-            shell: shell(),
-            title: String::new(),
-            intents,
+            intents: Intents::default(),
             switches: Switches::default(),
             enabled_switch,
             panic_switch,
@@ -226,8 +226,7 @@ impl FirewallApp {
             tab: Tab::Rules,
             draft: Draft::new(),
             notice: None,
-            wide: true,
-            wide_from: 0.0,
+            toasts: Vec::new(),
             available,
             host_writes: false,
             pending_delete: None,
@@ -242,18 +241,30 @@ impl FirewallApp {
             applied: None,
             jobs: None,
             applying: None,
-            outcome: ApplyOutcome::default(),
-            built: None,
-            listed: None,
             scroll: Rc::new(Cell::new((0.0, 0.0))),
+            open_drawer: false,
             changed: true,
+        }
+    }
+
+    /// Take part in the resource: edits and effects go through its
+    /// dispatcher and `applied` remembers what this device's firewalld
+    /// holds. A live window applies the stored configuration to this device
+    /// after every change; a capture stages a sample and neither queues nor
+    /// runs that job.
+    fn attach(&mut self, cx: &ViewCx<Firewall>) {
+        self.dispatcher = Some(cx.dispatcher());
+        self.applied = Some(cx.settings::<AppliedConfig>());
+        self.host_writes = cx.mode() == RunMode::Live || cfg!(test);
+        if self.host_writes {
+            self.jobs = Some(cx.jobs());
         }
     }
 
     /// Presentation-only screenshot states, staged once the scenario's
     /// configuration is shown: empty, invalid, confirmation and changed
     /// states for visual review.
-    pub(crate) fn pose_fixture(&mut self, name: &str) {
+    fn pose_fixture(&mut self, name: &str) {
         match name {
             "empty" => self.selected_zone = ZoneKind::Drop,
             "add-rule" => self.adding = true,
@@ -280,7 +291,7 @@ impl FirewallApp {
                     Tone::Error,
                 );
                 // The empty state carries the reason; no toast repeats it.
-                self.shell.dismiss_toast();
+                self.toasts.clear();
             }
             "services" => self.tab = Tab::Services,
             "blocked" => {
@@ -296,7 +307,7 @@ impl FirewallApp {
                     .and_then(|zone| zone.rules.get(1))
                     .map(|rule| rule.id);
             }
-            "drawer" => self.shell.open_sidebar(),
+            "drawer" => self.open_drawer = true,
             _ => {}
         }
         self.sync_switches();
@@ -336,14 +347,14 @@ impl FirewallApp {
             text: text.into(),
             tone,
         };
-        self.shell.toast(notice.text.clone(), notice.tone.kind());
+        self.toasts.push(notice.clone());
         self.notice = Some(notice);
         self.changed = true;
     }
 
     /// Submit one field edit or verb of the stored configuration. The
-    /// framework applies it after the event and presents the stored
-    /// configuration back, which the next frame shows.
+    /// framework applies it after the event and the window follows the
+    /// stored configuration, which the next frame shows.
     ///
     /// This is *only* the document edit. Pushing the ruleset to the kernel
     /// (`firewall-cmd`/`nft`) follows from the stored configuration on each
@@ -369,7 +380,7 @@ impl FirewallApp {
 
     /// Show the stored configuration. An invalid one is not shown, so no
     /// control acts on it.
-    pub(crate) fn show_config(&mut self, state: &FirewallConfig) {
+    fn show_config(&mut self, state: &FirewallConfig) {
         if state.zones.is_empty() {
             self.set_config(state.clone());
             self.capability = capability_for(false);
@@ -404,37 +415,12 @@ impl FirewallApp {
         }
     }
 
-    /// Take part in the resource: edits go through `dispatcher`, and
-    /// `applied` remembers what this device's firewalld holds.
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: Dispatcher<Firewall>,
-        applied: Setting<AppliedConfig>,
-    ) {
-        self.dispatcher = Some(dispatcher);
-        self.applied = Some(applied);
-    }
-
-    /// Apply the stored configuration to this device with `jobs`, after
-    /// every change of it.
-    pub(crate) fn follow_jobs(&mut self, jobs: ui::framework::Jobs<Firewall>) {
-        self.jobs = Some(jobs);
-    }
-
-    /// A live window may change this device; a capture may not.
-    pub(crate) fn set_host_writes(&mut self, allowed: bool) {
-        self.host_writes = allowed;
-    }
-
-    pub(crate) fn host_writes(&self) -> bool {
-        self.host_writes
-    }
-
     /// Apply `config` to this device's firewalld unless it holds it already
     /// or is being given it: a job of the window, the latest configuration
     /// replacing one still being applied. A failure is reported and tried
-    /// again after the next change.
-    pub(crate) fn apply_to_device(&mut self, config: &FirewallConfig) {
+    /// again after the next change; a success stays quiet, so the person
+    /// keeps the confirmation of what they did.
+    fn apply_to_device(&mut self, me: &Shared, config: &FirewallConfig) {
         let (Some(jobs), Some(applied)) = (&self.jobs, &self.applied) else {
             return;
         };
@@ -451,27 +437,27 @@ impl FirewallApp {
             return;
         }
         let app_writes = self.host_writes;
-        jobs.start::<Self>(APPLY_JOB, move |cx| {
+        let me = Rc::clone(me);
+        jobs.start::<()>(APPLY_JOB, move |cx| {
             Ok(cx.thread(
                 move |_| {
                     let result = crate::resource::apply_on_device(&config, &door, app_writes);
                     (config, result)
                 },
-                |app: &mut Self,
-                 (config, result): (FirewallConfig, crate::resource::Applied),
-                 _| {
-                    app.applying = None;
+                move |(), (config, result): (FirewallConfig, crate::resource::Applied), _| {
+                    let mut store = me.borrow_mut();
+                    store.applying = None;
+                    store.changed = true;
                     if result.is_err() {
                         let status = crate::resource::applied_status(&result);
                         let message = status.text.clone();
-                        *app.outcome.borrow_mut() = Some(status);
-                        app.changed = true;
+                        store.report(status.text, status.tone);
                         return Err(message);
                     }
-                    if let Some(applied) = &app.applied {
+                    if let Some(applied) = &store.applied {
                         crate::resource::remember_applied(applied, &config);
                     }
-                    Ok(ui::framework::Effected::done())
+                    Ok(Effected::done())
                 },
             ))
         });
@@ -481,23 +467,13 @@ impl FirewallApp {
         self.applying = jobs.is_running(APPLY_JOB).then_some(canonical);
     }
 
-    /// Whether there is a configuration to edit and apply.
-    pub(crate) fn is_available(&self) -> bool {
-        self.available
-    }
-
-    /// The capability this window's privileged verbs run under.
-    pub(crate) fn capability(&self) -> &Door {
-        &self.capability
-    }
-
-    pub(crate) fn mark_blocked_loading(&mut self) {
+    fn mark_blocked_loading(&mut self) {
         self.blocked_loading = true;
         self.blocked_error = None;
         self.changed = true;
     }
 
-    pub(crate) fn finish_blocked(&mut self, read: Result<BlockedReport, String>) {
+    fn finish_blocked(&mut self, read: Result<BlockedReport, String>) {
         self.blocked_loading = false;
         match read {
             Ok(report) => {
@@ -514,28 +490,70 @@ impl FirewallApp {
         self.changed = true;
     }
 
-    fn view_key(&self) -> ViewKey {
-        ViewKey {
-            rev: self.rev,
-            available: self.available,
-            zone: self.selected_zone,
-            rule: self.selected_rule,
-            tab: self.tab,
-            wide: self.wide,
-            service: self.draft.service,
-            proto: self.draft.proto,
-            action: self.draft.action,
-            port_error: self.draft.port_error.clone(),
-            source_error: self.draft.source_error.clone(),
-            pending_delete: self.pending_delete,
-            pending_switch: self.pending_switch,
-            adding: self.adding,
-            applying: self.applying.is_some(),
-            grantable: self.capability.is_grantable(),
-            blocked_rev: self.blocked_rev,
-            blocked_loading: self.blocked_loading,
-            blocked_error: self.blocked_error.clone(),
-            unavailable_detail: self.unavailable_detail().map(str::to_owned),
+    /// Answer one of the firewall's effects: apply the stored configuration
+    /// now, read dropped traffic, or read firewalld again.
+    fn answer_effect(
+        &mut self,
+        effect: &FirewallEffect,
+        me: &Shared,
+        cx: &mut EffectCx<Firewall>,
+    ) -> EffectAnswer {
+        let me = Rc::clone(me);
+        match effect {
+            FirewallEffect::ApplyConfig => {
+                let config = cx.live().get().config();
+                if config.zones.is_empty() {
+                    return Err("Firewall service is unavailable".into());
+                }
+                let door = self.capability.clone();
+                let writes = self.host_writes;
+                Ok(cx.thread(
+                    move |_| {
+                        let result = crate::resource::apply_on_device(&config, &door, writes);
+                        (config, result)
+                    },
+                    move |(), (config, result): (FirewallConfig, crate::resource::Applied), _| {
+                        me.borrow_mut().finish_apply(&config, &result);
+                        result.map(|_| Effected::done())
+                    },
+                ))
+            }
+            FirewallEffect::ReadBlocked => {
+                self.mark_blocked_loading();
+                Ok(cx.thread(
+                    |_| crate::blocked::read(ui::time::Duration::from_secs(60 * 60)),
+                    move |(), read: Result<BlockedReport, String>, _| {
+                        me.borrow_mut().finish_blocked(read);
+                        Ok(Effected::done())
+                    },
+                ))
+            }
+            FirewallEffect::Retry => Ok(cx.thread(
+                |_| crate::resource::read_device(),
+                move |(), read: Result<FirewallConfig, String>, cx| {
+                    let config = me.borrow_mut().finish_retry(read)?;
+                    cx.submit(Firewall::import_of(&config));
+                    Ok(Effected::done())
+                },
+            )),
+        }
+    }
+
+    /// Which effects cannot run now: a retry once a configuration is
+    /// loaded, an apply while there is none.
+    fn effect_statuses(&self) -> Vec<EffectStatus> {
+        if self.available {
+            vec![EffectStatus::unavailable(
+                FirewallEffect::RETRY,
+                "connected",
+                "The firewall configuration is already loaded",
+            )]
+        } else {
+            vec![EffectStatus::unavailable(
+                FirewallEffect::APPLY_CONFIG,
+                "unavailable",
+                "Firewall service is unavailable",
+            )]
         }
     }
 
@@ -548,61 +566,6 @@ impl FirewallApp {
             .as_ref()
             .filter(|notice| notice.tone == Tone::Error)
             .map(|notice| notice.text.as_str())
-    }
-
-    /// Rebuild the sidebar and the content when what they show changed.
-    fn refresh_view(&mut self) {
-        let key = self.view_key();
-        if self.built.as_ref() == Some(&key) {
-            return;
-        }
-        self.built = Some(key);
-        self.switches.clear();
-        let Some(zone) = self
-            .config
-            .zone(self.selected_zone)
-            .filter(|_| self.available)
-        else {
-            self.shell.set_sidebar(None);
-            self.listed = None;
-            "Firewall".clone_into(&mut self.title);
-            self.shell
-                .set_content(view::unavailable(self.unavailable_detail(), &self.intents));
-            return;
-        };
-        let listed = (self.rev, self.selected_zone);
-        if self.listed != Some(listed) {
-            self.listed = Some(listed);
-            self.shell.set_sidebar(Some(Box::new(view::zone_list(
-                &self.config,
-                self.selected_zone,
-                &self.intents,
-            ))));
-        }
-        let pending_delete = self
-            .pending_delete
-            .and_then(|id| zone.rules.iter().find(|rule| rule.id == id));
-        let model = PageModel {
-            config: &self.config,
-            zone,
-            tab: self.tab,
-            selected_rule: self.selected_rule,
-            rule_sort: &self.rule_sort,
-            pending_delete,
-            pending_switch: self.pending_switch,
-            draft: &self.draft,
-            adding: self.adding,
-            applying: self.applying.is_some(),
-            blocked: view::BlockedRead::of(
-                self.blocked_loading,
-                self.blocked_error.as_deref(),
-                self.blocked.as_ref(),
-            ),
-            wide: self.wide,
-        };
-        let page = view::zone_page(&model, &self.intents, &self.switches, &self.scroll);
-        zone.kind.title().clone_into(&mut self.title);
-        self.shell.set_content(page);
     }
 
     /// Apply what the window's controls asked for.
@@ -623,7 +586,7 @@ impl FirewallApp {
         }
         // A header switch the person turned asks for the edit once; the
         // switch follows the stored configuration again when it is
-        // presented back, so a refused edit is not asked for every frame.
+        // shown back, so a refused edit is not asked for every frame.
         // The two that can cut this session ask before they act.
         self.sync_switches();
     }
@@ -685,7 +648,7 @@ impl FirewallApp {
     /// Show how reading firewalld ended, answering with the configuration to
     /// import. Every retry route shares this fail-closed behaviour; a failed
     /// read never changes the configuration.
-    pub(crate) fn finish_retry(
+    fn finish_retry(
         &mut self,
         read: Result<FirewallConfig, String>,
     ) -> Result<FirewallConfig, String> {
@@ -869,11 +832,7 @@ impl FirewallApp {
 
     /// Show how an apply of `config` ended, and remember a successful one
     /// as what this device's firewalld holds.
-    pub(crate) fn finish_apply(
-        &mut self,
-        config: &FirewallConfig,
-        result: &crate::resource::Applied,
-    ) {
+    fn finish_apply(&mut self, config: &FirewallConfig, result: &crate::resource::Applied) {
         let notice = crate::resource::applied_status(result);
         self.report(notice.text, notice.tone);
         if result.is_ok()
@@ -882,13 +841,160 @@ impl FirewallApp {
             crate::resource::remember_applied(applied, config);
         }
     }
+}
+
+impl FirewallWindow {
+    /// A window over `store`, following `live` when the framework hosts it.
+    fn new(store: Store, live: Option<Live<Firewall>>) -> Self {
+        let mut window = Self {
+            store: Rc::new(RefCell::new(store)),
+            live,
+            presented: None,
+            shell: NavShell::new()
+                .content_kind(ui::widget::ContentKind::List)
+                .with_id("firewall-shell")
+                .with_window_toolbar(),
+            title: String::new(),
+            wide: true,
+            wide_from: 0.0,
+            built: None,
+            listed: None,
+        };
+        window.follow_document();
+        window
+    }
+
+    /// A window outside the framework over `store`, which changes nothing.
+    #[cfg(test)]
+    fn bare(store: Store) -> Self {
+        Self::new(store, None)
+    }
+
+    /// Show the configuration the document holds when it changed, and apply
+    /// it to this device.
+    fn follow_document(&mut self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(shown) = live.changed_since(&mut self.presented) else {
+            return;
+        };
+        let config = Firewall::config(&shown);
+        let mut store = self.store.borrow_mut();
+        store.show_config(&config);
+        store.apply_to_device(&self.store, &config);
+    }
+
+    /// Bring the window in step with the store: what it asked to say and
+    /// the drawer a capture opens.
+    fn show_store(&mut self) {
+        let (toasts, open_drawer) = {
+            let mut store = self.store.borrow_mut();
+            (
+                std::mem::take(&mut store.toasts),
+                std::mem::take(&mut store.open_drawer),
+            )
+        };
+        for notice in toasts {
+            self.shell.toast(notice.text, notice.tone.kind());
+        }
+        if open_drawer {
+            self.shell.open_sidebar();
+        }
+    }
+
+    fn view_key(&self, store: &Store) -> ViewKey {
+        ViewKey {
+            rev: store.rev,
+            available: store.available,
+            zone: store.selected_zone,
+            rule: store.selected_rule,
+            tab: store.tab,
+            wide: self.wide,
+            service: store.draft.service,
+            proto: store.draft.proto,
+            action: store.draft.action,
+            port_error: store.draft.port_error.clone(),
+            source_error: store.draft.source_error.clone(),
+            pending_delete: store.pending_delete,
+            pending_switch: store.pending_switch,
+            adding: store.adding,
+            applying: store.applying.is_some(),
+            grantable: store.capability.is_grantable(),
+            blocked_rev: store.blocked_rev,
+            blocked_loading: store.blocked_loading,
+            blocked_error: store.blocked_error.clone(),
+            unavailable_detail: store.unavailable_detail().map(str::to_owned),
+        }
+    }
+
+    /// Rebuild the sidebar and the content when what they show changed.
+    fn refresh_view(&mut self) {
+        let shared = Rc::clone(&self.store);
+        let store = shared.borrow();
+        let key = self.view_key(&store);
+        if self.built.as_ref() == Some(&key) {
+            return;
+        }
+        self.built = Some(key);
+        store.switches.clear();
+        let Some(zone) = store
+            .config
+            .zone(store.selected_zone)
+            .filter(|_| store.available)
+        else {
+            self.shell.set_sidebar(None);
+            self.listed = None;
+            "Firewall".clone_into(&mut self.title);
+            self.shell.set_content(view::unavailable(
+                store.unavailable_detail(),
+                &store.intents,
+            ));
+            return;
+        };
+        let listed = (store.rev, store.selected_zone);
+        if self.listed != Some(listed) {
+            self.listed = Some(listed);
+            self.shell.set_sidebar(Some(Box::new(view::zone_list(
+                &store.config,
+                store.selected_zone,
+                &store.intents,
+            ))));
+        }
+        let pending_delete = store
+            .pending_delete
+            .and_then(|id| zone.rules.iter().find(|rule| rule.id == id));
+        let model = PageModel {
+            config: &store.config,
+            zone,
+            tab: store.tab,
+            selected_rule: store.selected_rule,
+            rule_sort: &store.rule_sort,
+            pending_delete,
+            pending_switch: store.pending_switch,
+            draft: &store.draft,
+            adding: store.adding,
+            applying: store.applying.is_some(),
+            blocked: view::BlockedRead::of(
+                store.blocked_loading,
+                store.blocked_error.as_deref(),
+                store.blocked.as_ref(),
+            ),
+            wide: self.wide,
+        };
+        let page = view::zone_page(&model, &store.intents, &store.switches, &store.scroll);
+        zone.kind.title().clone_into(&mut self.title);
+        self.shell.set_content(page);
+    }
 
     /// Run what the person did in the window's bar: the shell's own slots,
     /// the firewall's switches, Apply, Add rule and the views.
-    fn take_window_toolbar_events(&mut self) {
+    fn run_window_toolbar(&mut self) {
+        let shared = Rc::clone(&self.store);
+        let mut store = shared.borrow_mut();
         for event in ui::window_toolbar::take_events() {
             if self.shell.window_toolbar_event(&event) {
-                self.changed = true;
+                store.changed = true;
                 continue;
             }
             let ToolbarEvent::Action { id } = event else {
@@ -896,8 +1002,8 @@ impl FirewallApp {
             };
             match id.as_str() {
                 view::FIREWALL_ON => {
-                    if self.capability.is_granted() {
-                        self.dispatch(if self.config.enabled {
+                    if store.capability.is_granted() {
+                        store.dispatch(if store.config.enabled {
                             Firewall::STOP.invoke()
                         } else {
                             Firewall::START.invoke()
@@ -905,23 +1011,23 @@ impl FirewallApp {
                     }
                 }
                 view::PANIC_MODE => {
-                    if self.capability.is_granted() {
-                        self.dispatch(if self.config.panic_mode {
+                    if store.capability.is_granted() {
+                        store.dispatch(if store.config.panic_mode {
                             Firewall::EXIT_PANIC_MODE.invoke()
                         } else {
                             Firewall::ENTER_PANIC_MODE.invoke()
                         });
                     }
                 }
-                view::APPLY => self.intents.push(Intent::Apply),
-                view::ADD_RULE => self.intents.push(Intent::OpenAddRule),
+                view::APPLY => store.intents.push(Intent::Apply),
+                view::ADD_RULE => store.intents.push(Intent::OpenAddRule),
                 id => {
                     if let Some(tab) = Tab::ALL.into_iter().find(|tab| tab.view_id() == id) {
-                        self.intents.push(Intent::SetTab(tab));
+                        store.intents.push(Intent::SetTab(tab));
                     }
                 }
             }
-            self.changed = true;
+            store.changed = true;
         }
     }
 
@@ -929,36 +1035,48 @@ impl FirewallApp {
     /// the location, the firewall's switches and Apply, Add rule on the
     /// rules, and the zone's two views.
     fn declare_window_toolbar(&self) {
+        let store = self.store.borrow();
         let mut toolbar = self.shell.window_toolbar();
         toolbar.location = Some(ToolbarLocation {
             label: self.title.clone(),
             ..ToolbarLocation::default()
         });
-        if self.available {
-            let enabled = self.enabled_switch.with(|on| *on);
-            let panic = self.panic_switch.with(|on| *on);
+        if store.available {
+            let enabled = store.enabled_switch.with(|on| *on);
+            let panic = store.panic_switch.with(|on| *on);
             // Every privileged control comes through the door: an
             // unavailable capability draws no switch, Apply or panic item.
-            if let Some(actions) = self
-                .capability
-                .control(|| view::window_actions(enabled, panic, self.tab, self.applying.is_some()))
-            {
+            if let Some(actions) = store.capability.control(|| {
+                view::window_actions(enabled, panic, store.tab, store.applying.is_some())
+            }) {
                 NavShell::push_window_actions(&mut toolbar, actions);
-                toolbar.views = Some(view::window_views(self.tab));
+                toolbar.views = Some(view::window_views(store.tab));
             }
         }
         ui::window_toolbar::declare(Some(toolbar));
     }
+}
 
-    /// Report a failed apply of the projection on this device. It runs
-    /// after every change, so a success stays quiet and the person keeps
-    /// the confirmation of what they did.
-    fn take_outcome(&mut self) {
-        let failure = self.outcome.borrow_mut().take();
-        if let Some(notice) = failure {
-            self.report(notice.text, notice.tone);
-        }
+/// The Firewall window over the document's configuration, answering the
+/// firewall's effects and staging the captures' view state.
+pub(crate) fn window(cx: &ViewCx<Firewall>) -> Element {
+    let mut store = Store::new();
+    store.attach(cx);
+    let window = FirewallWindow::new(store, Some(cx.live().clone()));
+    let store = Rc::clone(&window.store);
+    {
+        let (answer, status) = (Rc::clone(&store), Rc::clone(&store));
+        cx.effects(move |effect: FirewallEffect, cx| {
+            answer.borrow_mut().answer_effect(&effect, &answer, cx)
+        })
+        .status(move || status.borrow().effect_statuses());
     }
+    cx.on_stage(move |scenario| {
+        if let Some(name) = scenario {
+            store.borrow_mut().pose_fixture(name);
+        }
+    });
+    Box::new(window)
 }
 
 /// What this app may do on this device. The packaged app is granted the
@@ -979,7 +1097,7 @@ fn capability_for(readable: bool) -> Door {
     }
 }
 
-impl ui::widget::Decorator for FirewallApp {
+impl ui::widget::Decorator for FirewallWindow {
     type Inner = NavShell;
 
     fn inner(&self) -> &NavShell {
@@ -991,20 +1109,22 @@ impl ui::widget::Decorator for FirewallApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.take_outcome();
-        self.take_window_toolbar_events();
-        self.drain();
-        self.changed = false;
+        self.follow_document();
+        self.run_window_toolbar();
+        self.store.borrow_mut().drain();
+        self.show_store();
+        self.store.borrow_mut().changed = false;
         self.refresh_view();
         self.declare_window_toolbar();
         self.shell.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.take_window_toolbar_events();
-        self.drain();
+        self.follow_document();
+        self.run_window_toolbar();
+        self.store.borrow_mut().drain();
         let shell = self.shell.update(state, path);
-        shell || self.changed || self.outcome.borrow().is_some()
+        shell || self.store.borrow().changed
     }
 
     fn build_layout(
@@ -1022,13 +1142,14 @@ impl ui::widget::Decorator for FirewallApp {
         let wide = self.shell.geometry().content_column.width() >= self.wide_from;
         if wide != self.wide {
             self.wide = wide;
-            self.changed = true;
+            self.store.borrow_mut().changed = true;
         }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.shell.handle_event(event, ctx);
-        self.drain();
+        let mut store = self.store.borrow_mut();
+        store.drain();
         if !*ctx.handled
             && let WindowEvent::KeyboardInput {
                 event:
@@ -1039,10 +1160,10 @@ impl ui::widget::Decorator for FirewallApp {
                     },
                 ..
             } = event
-            && let Some(id) = self.selected_rule
+            && let Some(id) = store.selected_rule
         {
-            self.pending_delete = Some(id);
-            self.changed = true;
+            store.pending_delete = Some(id);
+            store.changed = true;
             *ctx.handled = true;
         }
     }
@@ -1054,14 +1175,14 @@ impl ui::widget::Decorator for FirewallApp {
     }
 
     fn name(&self) -> &'static str {
-        "FirewallApp"
+        "FirewallWindow"
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
         let mut root = AccessNode::new(Role::Window)
             .with_name("Firewall")
             .with_bounds(self.shell.get_rect());
-        if let Some(notice) = &self.notice {
+        if let Some(notice) = &self.store.borrow().notice {
             root.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(notice.text.clone())

@@ -434,6 +434,147 @@ fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
     );
 }
 
+/// The environment of a Tilo-side session's test: one granted folder, and
+/// the actions asked of it.
+struct Granted {
+    grants: Vec<ush_tilo::CapOverride>,
+    acted: std::sync::Mutex<Vec<(tilo_environment::files::FileAction, Option<String>)>>,
+}
+impl ush_tilo::Environment for Granted {
+    fn grants(&self) -> Vec<ush_tilo::CapOverride> {
+        self.grants.clone()
+    }
+    fn act(
+        &self,
+        action: tilo_environment::files::FileAction,
+        run: Option<&ush_shell::Run>,
+    ) -> Result<ush_tilo::Acted, String> {
+        action.admit(&self.grants, None)?;
+        self.acted
+            .lock()
+            .unwrap()
+            .push((action, run.map(|run| run.label.clone())));
+        Ok(ush_tilo::Acted {
+            entry: Some("entry".into()),
+            operations: 1,
+        })
+    }
+    fn keep(&self) -> std::io::Result<Box<dyn ush_tilo::Keeping>> {
+        // This session writes only what travels inside its actions.
+        Err(std::io::Error::other("this test keeps no content"))
+    }
+}
+
+/// A session whose shell runs on the Tilo side: its host reads only what
+/// the environment grants and writes only through the environment's
+/// actions, and Terminal records its runs from the marks as for any shell.
+#[test]
+fn a_tilo_side_session_records_its_runs() {
+    use std::sync::{Arc, Mutex};
+    use ush_shell::{Input, Output, Session, Shell, Stdio};
+    use ush_tilo::{NativeFiles, NoPrograms, Nowhere, TiloHost};
+
+    let dir = tempfile::tempdir().unwrap();
+    let granted = dir.path().canonicalize().unwrap().join("demo");
+    std::fs::create_dir_all(&granted).unwrap();
+    std::fs::write(granted.join("notes.md"), "one\ntwo\n").unwrap();
+    let environment = Arc::new(Granted {
+        grants: vec![tilo_environment::dir_grant(&granted, true).unwrap()],
+        acted: Mutex::new(Vec::new()),
+    });
+
+    let mut app = App::new().expect("terminal");
+    let (print, printed) = channel();
+    let (typed_tx, typed) = channel();
+    let shell_environment = Arc::clone(&environment);
+    let cwd = granted.clone();
+    std::thread::spawn(move || {
+        let stderr = Output::new(Crlf(print.clone()));
+        let host = TiloHost::new(
+            shell_environment,
+            Arc::new(NativeFiles),
+            Arc::new(NoPrograms),
+            Arc::new(Nowhere),
+            stderr.clone(),
+        );
+        let io = Stdio {
+            stdin: Input::new(Cooked {
+                typed,
+                echo: print.clone(),
+                line: Vec::new(),
+                ready: std::collections::VecDeque::new(),
+            }),
+            stdout: Output::new(Crlf(print)),
+            stderr,
+        };
+        let env = [("PS1".to_string(), "$ ".to_string())];
+        let mut shell = Shell::new(Arc::new(host), env, cwd, io);
+        shell.interactive(&Session {
+            runs_key: Some(KEY.into()),
+        });
+    });
+    let mut parts = Some((printed, typed_tx));
+    let sessions = Sessions::scripted(RecentTarget::none(), move |_, _, _| {
+        let (printed, typed) = parts.take().expect("one process");
+        let mut backend = crate::inner::TerminalBackend::for_test();
+        backend.reader = Box::new(Printed(printed, Vec::new()));
+        backend.writer = Box::new(Typed(typed));
+        backend.runs = Some(KEY.into());
+        Ok(backend)
+    });
+    app.with_surface(|terminal: &mut crate::TerminalView| terminal.set_sessions(sessions))
+        .expect("the terminal surface is hosted");
+    settle_until(&mut app, |state| !state.pane_id().is_empty());
+
+    app.call(
+        "run",
+        serde_json::json!({ "command": "cat notes.md | wc -l" }),
+    )
+    .expect("runs");
+    settle_until(&mut app, |state| {
+        state.runs.len() == 1 && state.requests.pending().next().is_none()
+    });
+    app.call("run", serde_json::json!({ "command": "echo hi > out.txt" }))
+        .expect("runs");
+    settle_until(&mut app, |state| {
+        state.runs.len() == 2 && state.requests.pending().next().is_none()
+    });
+
+    let state = app.state();
+    let read = state
+        .runs
+        .iter()
+        .map(|(_, run)| run)
+        .find(|run| run.command.0 == "cat notes.md | wc -l")
+        .expect("the read is a run");
+    assert_eq!(read.cwd.0.clone(), granted.display().to_string());
+    assert_eq!(read.exit, 0);
+    assert!(
+        matches!(read.output, Bytes::Blob { len, .. } if len == "2\r\n".len() as u64),
+        "{:?}",
+        read.output
+    );
+    let wrote = state
+        .runs
+        .iter()
+        .map(|(_, run)| run)
+        .find(|run| run.command.0 == "echo hi > out.txt")
+        .expect("the write is a run");
+    assert_eq!(wrote.exit, 0);
+    assert!(
+        !granted.join("out.txt").exists(),
+        "the shell wrote nothing itself"
+    );
+    let acted = environment.acted.lock().unwrap().clone();
+    assert_eq!(acted.len(), 1, "{acted:?}");
+    assert_eq!(acted[0].0.verb(), "write");
+    assert_eq!(
+        acted[0].1.as_deref(),
+        Some("echo hi > out.txt"),
+        "the redirect is an action of that command line's run"
+    );
+}
+
 /// What a pty's line discipline does between Terminal and the shell, for a
 /// shell that runs on a thread here: typed bytes reach it a line at a time
 /// (`\r` ends a line, Ctrl-U clears it) and are echoed; what it prints gets

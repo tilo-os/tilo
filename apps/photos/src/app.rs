@@ -1470,17 +1470,13 @@ impl PhotosApp {
         ok
     }
 
-    /// Write what is shown to `path` as a PNG. `path` must be absolute: a
-    /// relative one would land wherever this process happens to run.
-    pub fn save_to(&mut self, path: &str) -> bool {
-        let saved = std::path::Path::new(path).is_absolute()
-            && self.edited_png().is_some_and(|bytes| {
-                tilo_files::file_at(std::path::Path::new(path))
-                    .and_then(|(dir, name)| {
-                        tilo_files::blocking::save_document(&dir, &name, &bytes)
-                    })
-                    .is_ok()
-            });
+    /// Write what is shown to `path` as a PNG.
+    pub fn save_to(&mut self, path: &ui::tilo_resource::AbsolutePath) -> bool {
+        let saved = self.edited_png().is_some_and(|bytes| {
+            tilo_files::file_at(path)
+                .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes))
+                .is_ok()
+        });
         self.notice = Some(if saved {
             format!("{} {path}", tr("photos-saved"))
         } else {

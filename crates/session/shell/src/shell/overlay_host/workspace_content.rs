@@ -153,6 +153,12 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Where the last frame painted each identify card, in desktop
+    /// coordinates.
+    pub fn display_identify_cards(&self) -> Vec<Rect> {
+        self.display_identify.cards()
+    }
+
     /// The identify cards on screen right now, one per display.
     pub fn display_identify_labels(&self) -> Vec<crate::shell::display_identify::IdentifyLabel> {
         self.display_identify.labels(Instant::now()).to_vec()
@@ -501,7 +507,8 @@ impl ShellOverlayHost {
     /// Focus the strip the deck went to on its own (a tab or content drag
     /// resting at its edge), as the person choosing it would.
     pub(super) fn harvest_strip_deck_request(&mut self) {
-        let Some(index) = self
+        // The drag rests on the display the pointer, and so focus, is on.
+        let Some((_, index)) = self
             .desktop_surface_mut()
             .and_then(tilo_desktop::composition::DesktopSurface::strip_deck_mut)
             .and_then(ui::widget::StripDeck::take_requested_strip)

@@ -76,30 +76,28 @@ hands it to the app (`TILO_SVC_SYSTEM-STATS_FD`) before the sandbox starts.
 The settings are two Automerge documents per profile, the person's and the
 device's (`settings_store::Store`, under `<config root>/records/`). The
 session holds them; every other process reads the same documents and sends
-its writes to the session. Every leaf has an explicit entry in
-`settings_store::continuity`, which decides the document it lives in. The registry is the boundary, not a section-name
-convention. A new leaf that has not been reviewed is readable by its owner but
-is excluded from personal-device continuity.
+its writes to the session. A section is the person's or the device's, never
+some of each: `settings_store::placement` declares each section once, and
+decides the document it lives in. A section it does not declare stays on the
+device. Where a setting has a part that follows the person and a part that
+belongs to the device, they are two sections (`input` and `input_device`,
+`display_person` and `display`).
 
-The scopes are deliberately distinct:
+The person's sections converge only between devices certified to the same
+identity. The device's remain on the machine whose hardware or local
+environment gives them meaning. Workspace policy lives in the workspace
+record plane and follows its collaborators and permissions, never the
+person's settings. Secrets (API keys, local credentials, Wi-Fi passwords)
+use a purpose-built sealed transport or local credential vault, never
+settings.
 
-| Scope | Owner and transport |
-| --- | --- |
-| Personal | Converges only between devices certified to the same identity. |
-| Workspace | Lives in the workspace record plane and follows its collaborators and permissions, never the person's settings. |
-| Device-local | Remains on the machine whose hardware or local environment gives it meaning. |
-| Secret | Uses a purpose-built sealed transport or local credential vault; never ordinary settings sync. |
-| Derived | Recomputed/runtime history and never treated as durable personal intent. |
-
-Examples matter more than the section name. Theme, locale, accessibility,
-shortcuts, text assistance, and Quick Settings arrangement are personal.
+Theme, locale, accessibility, shortcuts, text assistance, the night light,
+the displays' arrangement and Quick Settings arrangement are the person's.
 Connector layout/scale, audio node selections, tablet mapping, calibration,
 power policy, update channel, portal-granted paths, loopback model endpoints,
-and Continuity privacy toggles are device-local. Workspace roles, default-app
-policy, and permissions remain workspace state. API keys, local credentials,
-Wi-Fi passwords, and NetworkManager secrets are secret.
+and Continuity privacy toggles are the device's.
 
-The device fabric projects settings through the typed registry and resolves a
+The device fabric carries the leaves of the person's sections and resolves a
 key by `(counter, device identity)`, giving the same winner regardless of
 arrival order. The shell writes a bounded mode-`0600`
 `continuity-provenance.json` projection for Settings. It contains canonical

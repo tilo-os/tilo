@@ -87,6 +87,9 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
         }
         Some("ush" | "run") => host(rest),
         Some("sh") => Ok(ush::shell_host::main(rest)),
+        // The guest's first process when it serves a Tilo-side shell's
+        // programs (`ush::guest_exec`).
+        Some("exec-serve") => Ok(ush::guest_exec::serve_main(rest)),
         Some("pkg") => guest::pkg(rest),
         Some("perm") => guest::perm(rest),
         Some("scan") => guest::scan(rest),
@@ -217,6 +220,10 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
         let builder = Arc::new(SharedBuilds::new(builder(), Arc::clone(&images)));
         let mut session = Session::new(store, opts, images, builder);
         if let Some(script) = script {
+            // ush's own shell runs the script here, on the Tilo side.
+            if session.opts.shell.is_ush() {
+                return session.run_tilo_side(Some(&script));
+            }
             let resolved = session.resolve()?;
             let trees: Vec<PathBuf> = resolved.images.into_iter().map(|(_, p)| p).collect();
             session.opts.command = vec![

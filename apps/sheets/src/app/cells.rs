@@ -32,16 +32,7 @@ impl SheetsApp {
         let no_sheet = Id::default();
         let (snap, charts, comments) = match &current {
             Some((sheet, layout)) => (
-                {
-                    // Formulas reading other sheets evaluate with the workbook.
-                    let snap = sheet.snapshot_in(layout);
-                    match self.active_sheet_id() {
-                        Some(id) if crate::calc::Book::needed(&snap.raw) => {
-                            state.snapshot_of(&id).unwrap_or(snap)
-                        }
-                        _ => snap,
-                    }
-                },
+                sheet.snapshot_in(layout),
                 sheet.chart_snapshots(layout),
                 crate::workbook::Sheet::comment_snapshots(
                     self.sheet_ids.get(self.active_sheet).unwrap_or(&no_sheet),
@@ -56,21 +47,17 @@ impl SheetsApp {
         // The dock takes its height from the annotations, so the sheet
         // re-lays out whenever they change.
         self.relayout();
-        let values = self.calc.snapshot_values(&snap);
-
+        // Every sheet is evaluated in one workbook, kept between reloads:
+        // showing another sheet reads what is computed already.
+        let id = self.active_sheet_id();
+        self.calc
+            .update(&state, id.as_ref().map(|id| (id, &snap.raw)));
         // Effective per-cell formats: an explicit cell format wins; a
         // formula cell with no explicit format inherits from its operands.
-        let mut fmt = snap.fmt.clone();
-        for (addr, raw) in &snap.raw {
-            if snap.fmt.contains_key(addr) {
-                continue; // user set it explicitly
-            }
-            if let Some(body) = raw.strip_prefix('=')
-                && let Some(inferred) = crate::calc::infer_result_format(body, &snap.fmt)
-            {
-                fmt.insert(*addr, inferred);
-            }
-        }
+        let (values, fmt) = match id {
+            Some(id) => (self.calc.values(&id), self.calc.formats(&id, &snap)),
+            None => Default::default(),
+        };
 
         self.cache = Some(ReloadCache {
             revision: self.revision,

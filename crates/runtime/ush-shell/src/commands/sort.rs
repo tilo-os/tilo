@@ -211,7 +211,7 @@ pub fn sort(ctx: &Ctx<'_>, args: &[String]) -> i32 {
     if let Some(file) = output {
         let written = ctx
             .host
-            .open_write(&ctx.resolve(&file), WriteMode::Truncate)
+            .open_write(&ctx.resolve(&file), WriteMode::Truncate, ctx.run)
             .and_then(|mut w| w.write_all(&out).and_then(|()| w.flush()));
         return match written {
             Ok(()) => 0,
@@ -660,7 +660,7 @@ pub fn uniq(ctx: &Ctx<'_>, args: &[String]) -> i32 {
     if let Some(file) = operands.get(1) {
         let written = ctx
             .host
-            .open_write(&ctx.resolve(file), WriteMode::Truncate)
+            .open_write(&ctx.resolve(file), WriteMode::Truncate, ctx.run)
             .and_then(|mut w| w.write_all(&out).and_then(|()| w.flush()));
         return match written {
             Ok(()) => 0,

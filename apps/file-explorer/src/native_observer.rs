@@ -30,10 +30,11 @@ fn file_geometry(widget: &dyn Widget, viewport: Option<Rect>) -> Option<(Rect, R
     found
 }
 
-pub(super) fn snapshot(widget: &FileExplorerWidget) -> serde_json::Value {
+pub(super) fn snapshot(window: &FileExplorerWidget) -> serde_json::Value {
+    let widget = window.state.borrow();
     let list = widget.view_mode == crate::model::ViewMode::List;
     let scroll = f64::from(widget.list_slot.scroll_y());
-    let geometry = file_geometry(widget, None).map(|(content, viewport)| {
+    let geometry = file_geometry(window, None).map(|(content, viewport)| {
         if list {
             // The list's viewport is its table, which ends above the status
             // lane; its content is the view as if unscrolled, so (as for the
@@ -53,7 +54,7 @@ pub(super) fn snapshot(widget: &FileExplorerWidget) -> serde_json::Value {
             (content, viewport)
         }
     });
-    let root = widget.get_rect();
+    let root = window.get_rect();
     let valid = |rect: Rect| rect.is_finite() && rect.width() > 0.0 && rect.height() > 0.0;
     let ready = !widget.is_loading
         && widget.error.is_none()

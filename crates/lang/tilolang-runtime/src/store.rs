@@ -87,7 +87,8 @@ pub fn lit_of(id: &str, value: FieldValue, absent: &Lit) -> Result<Lit, StoreErr
         FieldValue::Scalar(Scalar::Int(i)) | FieldValue::Counter(i) => Ok(Lit::Int(i)),
         FieldValue::Scalar(Scalar::Float(f)) => Ok(Lit::Float(tilolang::pred::Float(f))),
         FieldValue::Scalar(Scalar::Text(t)) | FieldValue::Text(t) => Ok(Lit::Text(t)),
-        FieldValue::Rich(r) => Ok(Lit::Text(r.plain_text())),
+        // What rich text says depends on who reads it (its references): a filter compares none.
+        FieldValue::Rich(_) => Err(invalid(&"rich text")),
         FieldValue::Scalar(Scalar::Json(j)) => Lit::of_json(&j).ok_or_else(|| invalid(&j)),
         FieldValue::Keys(keys) => Ok(Lit::Set(keys.into_iter().map(Lit::Text).collect())),
         FieldValue::Items(items) => Ok(Lit::Int(i64::try_from(items.len()).unwrap_or(i64::MAX))),
@@ -409,6 +410,14 @@ pub trait PagedItems: std::fmt::Debug {
 
     /// The item at `index`, `None` past the end.
     fn get(&self, index: usize) -> Option<Rc<str>>;
+
+    /// Where the item `id` is, found by what orders it (a page or two), not by reading the
+    /// items one by one: `Some(None)` when it is not in the listing, `None` when this listing
+    /// cannot say so.
+    fn position(&self, id: &str) -> Option<Option<usize>> {
+        let _ = id;
+        None
+    }
 }
 
 impl PartialEq for Listing {
@@ -465,6 +474,16 @@ impl Listing {
         self.len().checked_sub(1).and_then(|last| self.get(last))
     }
 
+    /// Where the item `id` is: `Some(None)` when it is not in the listing. A listing read page by
+    /// page finds it by what orders it, reading a page or two; one that cannot gives `None`
+    /// rather than read its pages one by one.
+    pub fn position(&self, id: &str) -> Option<Option<usize>> {
+        match &self.paged {
+            Some(paged) => paged.position(id),
+            None => Some(self.held.iter().position(|held| &**held == id)),
+        }
+    }
+
     /// The items in order, each read as it is reached.
     pub fn iter(&self) -> impl Iterator<Item = Rc<str>> + '_ {
         (0..self.len()).map_while(|index| self.get(index))
@@ -506,6 +525,56 @@ pub enum Splice {
         at: usize,
         item: ItemId,
     },
+}
+
+impl Splice {
+    /// The item the step puts in or takes out.
+    #[must_use]
+    pub fn item(&self) -> &str {
+        match self {
+            Self::Insert { item, .. } | Self::Remove { item, .. } => item,
+        }
+    }
+}
+
+/// The steps from `before` to `after`, two listings of one query (a filtered or sorted view of a
+/// collection), when only the items `moved` came, went or moved between them and the others
+/// kept their order: each is found where it was and where it is ([`Listing::position`]), so the
+/// steps cost the items that changed, not the listing's length. The removals come first, from
+/// the last, then the insertions in order; an item in the same place in both takes no step.
+/// `None` when a listing cannot say where an item is.
+#[must_use]
+pub fn moved_steps<'a>(
+    before: &Listing,
+    after: &Listing,
+    moved: impl IntoIterator<Item = &'a str>,
+) -> Option<Vec<Splice>> {
+    let mut gone: Vec<(usize, &str)> = Vec::new();
+    let mut come: Vec<(usize, &str)> = Vec::new();
+    let mut same = true;
+    for id in moved {
+        let was = before.position(id)?;
+        let now = after.position(id)?;
+        same &= was == now;
+        gone.extend(was.map(|at| (at, id)));
+        come.extend(now.map(|at| (at, id)));
+    }
+    // Each where it was, and the others in their order around them: nothing moved.
+    if same {
+        return Some(Vec::new());
+    }
+    gone.sort_unstable_by(|a, b| b.cmp(a));
+    come.sort_unstable();
+    let mut out = Vec::with_capacity(gone.len().saturating_add(come.len()));
+    out.extend(gone.into_iter().map(|(at, id)| Splice::Remove {
+        at,
+        item: id.to_owned(),
+    }));
+    out.extend(come.into_iter().map(|(at, id)| Splice::Insert {
+        at,
+        item: id.to_owned(),
+    }));
+    Some(out)
 }
 
 /// How a collection's listing changed: the steps, in order, from the listing as the store held
@@ -596,6 +665,18 @@ pub trait Store {
     ///
     /// `NotFound` when the document or item does not exist.
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError>;
+
+    /// How a reference in rich text reads for the person this store holds resources for: a
+    /// resource they hold by what it is called now, one they cannot read as only being there.
+    /// A store that cannot tell what its reader holds reads every resource as not shared: a
+    /// reference never grants a read.
+    fn reading(&self, reference: &crate::rich::Reference) -> crate::rich::Reading {
+        if reference.as_person().is_some() {
+            crate::rich::Reading::AsWritten
+        } else {
+            crate::rich::Reading::Unshared
+        }
+    }
 
     /// Open a transaction. Documents join it when first mutated.
     ///

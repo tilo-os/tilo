@@ -760,7 +760,9 @@ pub fn run_guest(config: &Path) -> Result<i32, String> {
         host_root: "/".into(),
         session_dir: session.clone(),
         var_dir: session.join("var"),
+        home: crate::guest::GuestUser::current().home(),
         guest_home: session.join("home"),
+        home_by_grants: false,
         user: crate::guest::GuestUser::current(),
         environment: "Approved check".into(),
         masked: vec![],
@@ -781,6 +783,7 @@ pub fn run_guest(config: &Path) -> Result<i32, String> {
         resolver: Some(String::new()),
         editor: None,
         terminal: None,
+        control: None,
     };
     plan.prepare().map_err(|e| e.to_string())?;
     crate::seccomp::write_guest_filter(&session).map_err(|e| e.to_string())?;

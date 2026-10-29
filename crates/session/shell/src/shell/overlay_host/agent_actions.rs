@@ -1753,7 +1753,7 @@ mod tests {
             "Looking up the tilo homepage: https://tilo.so"
         );
         // A stale epoch's text is not this run's.
-        *tracker.1.lock().unwrap() = Some((issue.clone(), 0, "Old words".into()));
+        *tracker.1.lock().unwrap() = Some((issue, 0, "Old words".into()));
         settle(&mut actions, &mut composer, &tracker);
         assert_eq!(composer.shown_answer(), "");
     }

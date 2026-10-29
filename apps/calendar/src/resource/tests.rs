@@ -10,7 +10,7 @@ fn read_only_upload_refusal_keeps_the_event_and_queued_outbox_in_the_source_reco
     let person = "cb".repeat(32);
     let mut settings = TestApp::<person_accounts::AccountsOwner>::for_person(&person).unwrap();
     let mut app = TestApp::<CalendarShell>::for_person(&person).expect("test app");
-    let kept = settings.person::<PersonAccounts>().unwrap();
+    let kept = settings.shared_person::<PersonAccounts>().unwrap();
     let mut account = crate::AccountStore::sample().accounts.remove(0);
     account.config.server_url = server.url();
     account.calendars.truncate(1);
@@ -860,7 +860,7 @@ mod person_accounts {
     fn the_persons_caldav_accounts_reach_the_calendar_from_their_record() {
         let mut settings = TestApp::<AccountsOwner>::for_person(&person()).unwrap();
         let mut calendar = TestApp::<CalendarShell>::for_person(&person()).unwrap();
-        let kept = settings.person::<PersonAccounts>().unwrap();
+        let kept = settings.shared_person::<PersonAccounts>().unwrap();
         let mut account = crate::account::CalendarAccount::new(crate::account::CalDavConfig {
             display_name: "Work calendars".into(),
             username: "work-dav".into(),

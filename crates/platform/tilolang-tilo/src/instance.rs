@@ -40,7 +40,6 @@ use crate::bundle::Bundle;
 use crate::host::{Host, Opening, Package};
 use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
-use crate::runtime::view::is_virtual;
 use crate::runtime::{
     ActionRef, BindTarget, Binding, EditOutcome, InvokeOutcome, NameHost, OutsideSink, Patch,
     Principal, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewEvent, ViewInstance,
@@ -364,6 +363,11 @@ impl Instance {
         &self.app
     }
 
+    /// Ask the window to come forward ("Show this window"), with the next frame it is sent.
+    pub fn activate_window(&mut self) {
+        self.out.push(ToUi::Activate);
+    }
+
     /// The anchors search hits and agents asked the window to show, until it shows them.
     #[must_use]
     pub fn open_requests(&self) -> Rc<RefCell<Vec<String>>> {
@@ -538,8 +542,7 @@ impl Instance {
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
         let platform = Rc::clone(&self.platform);
-        host.runtime()
-            .set_phrases(move |id, args| platform.phrase(id, args));
+        host.set_phrases(move |id, args| platform.phrase(id, args));
         if let Some(sink) = self.sink.take() {
             host.runtime().set_sink(BoxedSink(sink));
         }
@@ -959,6 +962,22 @@ impl Instance {
         self.out.extend(sent);
     }
 
+    /// The window shows what was typed into its bound control `key` of `lane` (the edit it
+    /// sent just applied): take it as what the window holds, so a later change from elsewhere
+    /// (the draft cleared once it was sent) differs from it and is sent.
+    fn shown_by_window(&mut self, lane: Lane, key: &str) {
+        let Some(value) = self
+            .view(lane)
+            .and_then(|view| view.borrow().bound_value(key))
+        else {
+            return;
+        };
+        let shown = plain(&NoNames).value(&value);
+        if let Some(view) = self.lane_mut(lane) {
+            view.bound.insert(key.to_owned(), shown);
+        }
+    }
+
     /// Bring the lenses the views read up to date with presence: who else is at each resource
     /// (`peers`, by resource id), and the person themselves at the detail view's resource.
     pub fn set_peers(&mut self, peers: HashMap<String, String>) {
@@ -1274,8 +1293,27 @@ impl Instance {
                 at,
                 delete,
                 insert,
-            } => self.splice(lane, &key, seq, (at, delete), &insert),
-            ToApp::Edit { lane, key, text } => self.edit(lane, &key, Value::Text(text)),
+            } => {
+                let edited = self.splice(lane, &key, seq, (at, delete), &insert);
+                if edited.is_ok() {
+                    self.shown_by_window(lane, &key);
+                }
+                edited
+            }
+            ToApp::Edit { lane, key, text } => {
+                let edited = self.edit(lane, &key, Value::Text(text));
+                if edited.is_ok() {
+                    self.shown_by_window(lane, &key);
+                }
+                edited
+            }
+            ToApp::EditRich { lane, key, rich } => {
+                let edited = self.edit(lane, &key, Value::Rich(wire::runtime_rich(&rich)));
+                if edited.is_ok() {
+                    self.shown_by_window(lane, &key);
+                }
+                edited
+            }
             ToApp::Resolve { lane, key, approve } => self.resolve(lane, &key, approve),
             ToApp::Open { resource } => {
                 if let Some(target) = wire::runtime_resource(&resource) {
@@ -1784,7 +1822,7 @@ fn bound_values(node: &UiNode, view: &ViewInstance, out: &mut Vec<(String, ui::V
         out.push((node.key.clone(), plain(&names).value(&value)));
     }
     for child in &node.children {
-        if !is_virtual(&node.kind) || child.kind == wire::SLOT {
+        if !ui::is_virtual_list(&node.kind) || child.kind == wire::SLOT {
             bound_values(child, view, out);
         }
     }
@@ -1859,7 +1897,7 @@ fn virtual_lists(tree: &UiNode) -> Vec<String> {
 fn virtual_list_paths(tree: &UiNode) -> Vec<(String, Vec<String>)> {
     fn walk(node: &UiNode, path: &mut Vec<String>, out: &mut Vec<(String, Vec<String>)>) {
         path.push(node.key.clone());
-        if is_virtual(&node.kind) {
+        if ui::is_virtual_list(&node.kind) {
             out.push((node.key.clone(), path.clone()));
         }
         for child in &node.children {

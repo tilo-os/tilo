@@ -18,8 +18,8 @@ use ui::framework::{
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Doc, Effect, Fields, Id, JsonSchema, Model,
-    ModelError, Outbox, Refusal, Resource, resource,
+    self, AbsolutePath, ActionCx, Atom, Bytes, Collection, Doc, Effect, Fields, Id, JsonSchema,
+    Model, ModelError, Outbox, Refusal, Resource, resource,
 };
 use ui::widget::Element;
 
@@ -580,7 +580,7 @@ pub enum TerminalEffect {
         #[param("The environment's record")]
         record: String,
         #[param("An absolute folder path; it appears at the same path in the environment")]
-        path: String,
+        path: AbsolutePath,
     },
     /// Rename environment
     #[effect(destructive)]
@@ -770,8 +770,10 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
         if cx.mode().is_live()
-            && let (Some(history), Some(record)) =
-                (cx.person::<crate::history::CommandHistory>(), cx.record())
+            && let (Some(history), Some(record)) = (
+                cx.person::<crate::history::CommandHistory>(),
+                cx.record_id(),
+            )
         {
             self.remember_in(
                 history,
@@ -852,8 +854,10 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
         if cx.mode().is_live()
-            && let (Some(history), Some(record)) =
-                (cx.person::<crate::history::CommandHistory>(), cx.record())
+            && let (Some(history), Some(record)) = (
+                cx.person::<crate::history::CommandHistory>(),
+                cx.record_id(),
+            )
         {
             self.remember_in(
                 history,

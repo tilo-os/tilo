@@ -40,6 +40,7 @@ use crate::accesskit_bridge::{
     build_presentation_tree_bound, build_presentation_with_resources_bound,
     build_tree_update_bound, resolve_node_id_bound,
 };
+use crate::host_core::HostCore as _;
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
@@ -337,7 +338,7 @@ pub struct FrameHarness {
     bound_publication: crate::bound_dispatch::BoundPublication,
     /// Pen samples on their way to the pointer events they describe.
     pen: crate::pen::PenInput,
-    caller_palette: caller_palette::CallerPalette,
+    caller_palette: Box<caller_palette::CallerPalette>,
     component_wake: Option<ComponentRunnerWakeState>,
     root_wake: root_wake::RootWake,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
@@ -354,13 +355,19 @@ pub struct FrameHarness {
     /// remounts their children in the retained tree, unless it rebuilds.
     remount: bool,
     layout_requested: bool,
-    state: State,
+    state: Box<State>,
     root: Box<dyn Widget>,
     history: Option<crate::history_mode::host::HistoryChrome>,
     /// A History registered before its code was in, installed once it is.
     pending_history: Option<crate::history_mode::HistoryRegistration>,
     action_palette: Option<crate::action_palette::ActionPaletteBox>,
-    palette_waiting: lazy_palette::Waiting,
+    palette_waiting: Box<lazy_palette::Waiting>,
+    /// Why the person's last invocation did not run, at the control they
+    /// used, until their next press or key ([`crate::control_notice`]).
+    control_notice: Option<crate::control_notice::ControlNotice>,
+    /// The last refusal said in the window's bar, for one with no control
+    /// on screen.
+    window_refusal: Option<String>,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     /// The window the open palette was asked for from, when the root lays
     /// several out (the desktop's strip of app tiles): the palette stands
@@ -395,7 +402,7 @@ pub struct FrameHarness {
     window_bar: bool,
     /// The window bar's search over the app's widgets, painted in the bar
     /// ([`Self::search_in_window`]).
-    window_search: crate::widget::WindowSearch,
+    window_search: Box<crate::widget::WindowSearch>,
     /// The app's window-bar slots in a row of the frame's own, as a window
     /// of its own hosts them ([`Self::host_window_slots`]).
     slot_row: Option<Box<slot_row::HostedSlots>>,
@@ -1310,77 +1317,6 @@ impl FrameHarness {
         std::mem::take(&mut self.component_close_reports)
     }
 
-    fn inspect_node<R>(
-        &self,
-        node: NodeId,
-        callback: impl FnOnce(&dyn Widget) -> R,
-    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
-        unsafe {
-            crate::bound_dispatch::inspect_bound_node(
-                &self.bindings,
-                &self.node_map,
-                node,
-                callback,
-            )
-        }
-    }
-    fn mutate_node<R>(
-        &mut self,
-        node: NodeId,
-        callback: impl FnOnce(&mut dyn Widget) -> R,
-    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        // Whatever reaches a widget through the map may change what the
-        // next frame reads, wherever it is called from.
-        self.invalidate_local();
-        // SAFETY: exclusive FrameHarness access prevents overlapping target references.
-        unsafe {
-            crate::bound_dispatch::mutate_bound_node(&self.bindings, &self.node_map, node, callback)
-        }
-    }
-    fn dispatch_semantic_node<R>(
-        &mut self,
-        node: NodeId,
-        action: &crate::a11y::Action,
-        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
-    ) -> Result<R, String> {
-        self.invalidate_local();
-        let author = self.author.clone();
-        // SAFETY: the runner exclusively owns the unchanged admitted tree.
-        unsafe {
-            crate::bound_dispatch::invoke_bound_semantic_node(
-                &self.bindings,
-                &self.node_map,
-                node,
-                action,
-                &mut self.state,
-                crate::bound_dispatch::SemanticCaller {
-                    authority: &self.permissions,
-                    author: &author,
-                },
-                callback,
-            )
-        }
-    }
-    fn dispatch_node<R>(
-        &mut self,
-        node: NodeId,
-        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
-    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        self.invalidate_local();
-        // SAFETY: exclusive FrameHarness owns both maps and the stable live tree.
-        unsafe {
-            crate::bound_dispatch::invoke_bound_node(
-                &self.bindings,
-                &self.node_map,
-                node,
-                &mut self.state.doc,
-                &self.state.root,
-                callback,
-            )
-        }
-    }
-
     /// Mirror the live host's focused-control fallback for Enter and Space.
     /// Widgets that consume the press keep ownership; releases never activate.
     fn handle_unconsumed_activation_key(&mut self, event: &WindowEvent, handled: &mut bool) {
@@ -1739,7 +1675,7 @@ impl FrameHarness {
             composition_replaced: false,
             remount: false,
             layout_requested: false,
-            state,
+            state: Box::new(state),
             root,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
@@ -1748,7 +1684,9 @@ impl FrameHarness {
             history: None,
             pending_history: None,
             action_palette: None,
-            palette_waiting: lazy_palette::Waiting::default(),
+            palette_waiting: Box::default(),
+            control_notice: None,
+            window_refusal: None,
             ordinary_palette_return_focus: None,
             palette_window: None,
             pointer_at: None,
@@ -1763,7 +1701,7 @@ impl FrameHarness {
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
             window_bar: false,
-            window_search: crate::widget::WindowSearch::new(),
+            window_search: Box::new(crate::widget::WindowSearch::new()),
             slot_row: None,
             window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
@@ -4210,12 +4148,11 @@ impl FrameHarness {
                 });
         }
         if self.history_chrome_enabled {
-            let context = crate::standalone_history::HistoryReadContext {
-                document: &self.state.doc,
-                active_record: self.records.as_ref().and_then(|records| records.active()),
-                document_identity: self.state.document_identity(),
-                permissions: &self.permissions,
-            };
+            let context = crate::standalone_history::HistoryReadContext::of(
+                &self.state,
+                self.records.as_ref(),
+                &self.permissions,
+            );
             let drawn = self
                 .document_history
                 .draw(
@@ -4334,6 +4271,21 @@ impl FrameHarness {
                 viewport,
                 "retained-primary",
                 interaction_now,
+            );
+        }
+        if let Some(notice) = &self.control_notice {
+            let viewport = Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.viewport.0),
+                f64::from(self.viewport.1),
+            );
+            notice.draw(
+                &mut self.scene,
+                transform,
+                &mut self.text,
+                &self.theme,
+                viewport,
             );
         }
         self.draw_tooltip(transform);
@@ -4665,16 +4617,7 @@ impl FrameHarness {
         {
             return order;
         }
-        let scopes: Vec<NodeId> = self
-            .node_map
-            .keys()
-            .copied()
-            .filter(|&node| {
-                self.inspect_node(node, |widget| widget.scopes_keyboard_focus())
-                    .unwrap_or(false)
-            })
-            .collect();
-        crate::focus_navigation::within_keyboard_scope(order, &scopes, &self.taffy)
+        self.tree().within_keyboard_scope(order)
     }
 
     /// Whether embedded History and a History holding saved focus leave a
@@ -5133,15 +5076,6 @@ impl FrameHarness {
     pub fn focused(&self) -> Option<NodeId> {
         self.drain_component_wakes();
         self.focused
-    }
-
-    /// Mirrors [`crate::app::App`]: an explicitly opted-in focused widget
-    /// receives Tab before the host considers focus traversal.
-    fn focused_widget_wants_tab_input(&self) -> bool {
-        self.focused.is_some_and(|node| {
-            self.inspect_node(node, |widget| widget.wants_tab_input())
-                .unwrap_or(false)
-        })
     }
 
     /// Move keyboard focus to the widget at `node`, toggling `set_focus` on
@@ -7880,11 +7814,17 @@ impl FrameHarness {
                 self.pointer_at = Some(logical(position.x, position.y));
             }
             WindowEvent::CursorLeft { .. } => self.pointer_at = None,
+            // The person acts again: what stood at their last control is
+            // done with.
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
                 ..
-            } => self.pressed_at = self.pointer_at,
+            } => {
+                self.control_notice = None;
+                self.pressed_at = self.pointer_at;
+            }
             WindowEvent::Touch(touch) if touch.phase == winit::event::TouchPhase::Started => {
+                self.control_notice = None;
                 let at = logical(touch.location.x, touch.location.y);
                 self.pointer_at = Some(at);
                 self.pressed_at = Some(at);
@@ -7892,6 +7832,7 @@ impl FrameHarness {
             WindowEvent::KeyboardInput { event: key, .. }
                 if key.state == winit::event::ElementState::Pressed =>
             {
+                self.control_notice = None;
                 self.pressed_at = None;
             }
             _ => {}
@@ -7957,21 +7898,74 @@ impl FrameHarness {
         self.present_ordinary(request);
     }
 
-    /// Keep why an invocation the person made did not run, and say it over
-    /// the window, as the host's palette does: a click is never dropped
-    /// unseen.
+    /// Keep why an invocation the person made did not run, and say it at
+    /// the control they used, as the window's host does: a click is never
+    /// dropped unseen, and never opens search. With no control to stand at,
+    /// it is said in the window's bar.
     fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
         self.control_failures.push(error.to_string());
-        self.present_refusal(crate::bound_dispatch::refusal_reason(error));
+        let reason = crate::bound_dispatch::refusal_reason(error);
+        if let Some(anchor) = self.acting_control_rect() {
+            self.control_notice = Some(crate::control_notice::ControlNotice {
+                text: reason,
+                anchor,
+            });
+        } else {
+            crate::control_notice::say_in_window(&reason);
+            self.window_refusal = Some(reason);
+        }
+        self.invalidate_local();
     }
 
-    /// The refusal the window is saying over itself, if any: an invocation
-    /// the person made that did not run, and why.
-    pub fn refusal_shown(&self) -> Option<&str> {
+    /// The control the person acted on last: under their last press, else
+    /// the one holding the keyboard.
+    fn acting_control_rect(&self) -> Option<Rect> {
+        crate::control_notice::acting_control(
+            &self.taffy,
+            self.layout_built.then_some(self.root_node),
+            self.pressed_at,
+            self.focused,
+            |node| {
+                self.inspect_node(node, |widget| {
+                    Some((widget.get_rect(), widget.is_focusable()))
+                })
+                .ok()
+                .flatten()
+            },
+        )
+    }
+
+    /// What stands at the control the person last used: why what they did
+    /// did not run, until their next press or key.
+    pub fn control_notice(&self) -> Option<&crate::control_notice::ControlNotice> {
+        self.control_notice.as_ref()
+    }
+
+    /// Why an invocation the person made did not run, wherever it is said:
+    /// at their control, else in the window's bar.
+    pub fn refusal_said(&self) -> Option<&str> {
+        self.control_notice
+            .as_ref()
+            .map(|notice| notice.text.as_str())
+            .or(self.window_refusal.as_deref())
+    }
+
+    /// Whether the window's own search is showing. A confirmation standing
+    /// at a control is not search ([`Self::asking_at`]).
+    pub fn palette_shown(&self) -> bool {
         self.action_palette
             .as_deref()
-            .and_then(|palette| palette.refusal())
+            .is_some_and(|palette| palette.is_presented() && palette.asking().is_none())
     }
+
+    /// The control the open confirmation stands beside, as a popover,
+    /// while it asks about what the person pressed there.
+    pub fn asking_at(&self) -> Option<Rect> {
+        self.action_palette
+            .as_deref()
+            .and_then(|palette| palette.confirmation_anchor())
+    }
+
     fn finish_action_palette_input(&mut self) {
         let pending = self
             .action_palette
@@ -8423,100 +8417,8 @@ impl FrameHarness {
         }
         let embedded = crate::history_mode::embedded::drain_pending_commands(self.root.as_mut());
         serviced |= !embedded.is_empty();
-        for pending in embedded {
-            let (token, confirmation) = match pending.command {
-                crate::history_mode::pending_controls::ContinuationCommand::Review(token) => {
-                    (token, None)
-                }
-                crate::history_mode::pending_controls::ContinuationCommand::Confirm(
-                    token,
-                    value,
-                ) => (token, Some(value)),
-                crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
-                    crate::history_mode::embedded::cancel_pending_command(
-                        self.root.as_mut(),
-                        pending.surface,
-                        &token,
-                    );
-                    continue;
-                }
-            };
-            let prepared = match confirmation.as_deref() {
-                Some(value) => crate::history_mode::embedded::prepare_pending_command_typed(
-                    self.root.as_mut(),
-                    pending.surface,
-                    &token,
-                    value,
-                ),
-                None => crate::history_mode::embedded::prepare_pending_command(
-                    self.root.as_mut(),
-                    pending.surface,
-                    &token,
-                    false,
-                ),
-            };
-            let Some(prepared) = prepared else {
-                continue;
-            };
-            let confirmed = confirmation.is_some();
-            let id = prepared.id;
-            let result = self.dispatch_prepared_history_control(prepared);
-            let outcome = match result {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                    crate::history_mode::embedded::PendingCommandOutcome::NeedsConfirmation
-                }
-                Ok(_) => crate::history_mode::embedded::PendingCommandOutcome::Consumed,
-                Err(error) => {
-                    crate::history_mode::embedded::PendingCommandOutcome::Refused(error.to_string())
-                }
-            };
-            crate::history_mode::embedded::finish_pending_command(
-                self.root.as_mut(),
-                pending.surface,
-                id,
-                &outcome,
-            );
-        }
+        self.service_embedded_history_commands(embedded);
         serviced
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exact continuation door keeps component, legacy and outer lifecycle bookkeeping together"
-    )]
-    fn dispatch_prepared_history_control(
-        &mut self,
-        prepared: crate::history_mode::pending_controls::PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let captured =
-            prepared
-                .witness
-                .as_ref()
-                .map_err(|reason| tilo_actions::DoorError::Unavailable {
-                    code: "stale_pending_control".into(),
-                    reason: reason.clone(),
-                })?;
-        let current = crate::bound_dispatch::control_witness(
-            self.root.as_ref(),
-            &self.state.doc,
-            &prepared.target,
-            &prepared.invocation,
-        )?;
-        if &current != captured {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "stale_pending_control".into(),
-                reason: "The action meaning or confirmation policy changed while History was open"
-                    .into(),
-            });
-        }
-        self.dispatch_local_control(
-            prepared.target,
-            &prepared.invocation.address,
-            &crate::bound_dispatch::ControlContinuationArguments::Json(
-                prepared.invocation.arguments,
-            ),
-            prepared.confirmed,
-        )
     }
 
     fn dispatch_local_control(
@@ -9095,42 +8997,6 @@ impl FrameHarness {
             self.send(&pointer_event.window_event(device_id));
         }
         self.dispatching_touch_pointer = nested;
-    }
-
-    /// Whether a laid-out widget claims raw per-finger touch at `point`
-    /// (logical coords); see [`Widget::claims_raw_touch`].
-    fn claims_raw_touch_at(&self, point: Point) -> bool {
-        self.node_map.keys().any(|&node| {
-            self.inspect_node(node, |widget| {
-                widget.get_rect().contains(point) && widget.claims_raw_touch(point)
-            })
-            .unwrap_or(false)
-        })
-    }
-
-    /// What a contact beginning at `point` (logical coords) means: raw for a
-    /// widget that reads fingers itself, else what the widget under it
-    /// claims ([`crate::widget::Widget::touch_claim`]), else ordinary pointer
-    /// emulation.
-    fn touch_claim_at(&self, point: Point) -> crate::interaction::TouchClaim {
-        use crate::interaction::TouchClaim;
-        if self.claims_raw_touch_at(point) {
-            return TouchClaim::Raw;
-        }
-        self.node_map
-            .keys()
-            .find_map(|&node| {
-                self.inspect_node(node, |widget| {
-                    if widget.get_rect().contains(point) {
-                        widget.touch_claim(point)
-                    } else {
-                        TouchClaim::Pointer
-                    }
-                })
-                .ok()
-                .filter(|claim| *claim != TouchClaim::Pointer)
-            })
-            .unwrap_or(TouchClaim::Pointer)
     }
 
     /// Fire a touch long-press whose hold deadline passed at `now`.
@@ -10182,6 +10048,78 @@ fn session_door(
 ) -> Option<&mut dyn crate::session_door::SessionDoor> {
     door.as_mut()
         .map(|door| door as &mut dyn crate::session_door::SessionDoor)
+}
+
+impl crate::host_core::HostCore for FrameHarness {
+    fn tree(&self) -> crate::host_core::HostTree<'_> {
+        crate::host_core::HostTree {
+            state: &self.state,
+            root: self.root.as_ref(),
+            history: self.history.as_deref(),
+            bindings: &self.bindings,
+            node_map: &self.node_map,
+            taffy: &self.taffy,
+            records: self.records.as_ref(),
+            permissions: &self.permissions,
+            focused: self.focused,
+            history_layout: self.history_layout,
+        }
+    }
+
+    fn document_history_with_tree(
+        &mut self,
+    ) -> (
+        &mut crate::standalone_history_host::StandaloneHistoryHost,
+        crate::host_core::HostTree<'_>,
+    ) {
+        (
+            &mut self.document_history,
+            crate::host_core::HostTree {
+                state: &self.state,
+                root: self.root.as_ref(),
+                history: self.history.as_deref(),
+                bindings: &self.bindings,
+                node_map: &self.node_map,
+                taffy: &self.taffy,
+                records: self.records.as_ref(),
+                permissions: &self.permissions,
+                focused: self.focused,
+                history_layout: self.history_layout,
+            },
+        )
+    }
+
+    fn document(&mut self) -> crate::host_core::HostDocument<'_> {
+        crate::host_core::HostDocument {
+            state: &mut self.state,
+            bindings: &self.bindings,
+            node_map: &self.node_map,
+            permissions: &self.permissions,
+            author: &self.author,
+        }
+    }
+
+    fn widget_reached(&mut self) {
+        self.invalidate_local();
+    }
+
+    fn host_root_mut(&mut self) -> &mut dyn Widget {
+        self.root.as_mut()
+    }
+
+    fn dispatch_current_history_control(
+        &mut self,
+        prepared: crate::history_mode::pending_controls::PreparedContinuation,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.dispatch_local_control(
+            prepared.target,
+            &prepared.invocation.address,
+            &crate::bound_dispatch::ControlContinuationArguments::Json(
+                prepared.invocation.arguments,
+            ),
+            prepared.confirmed,
+        )
+    }
 }
 
 #[cfg(test)]

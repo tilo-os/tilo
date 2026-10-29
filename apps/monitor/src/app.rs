@@ -1,5 +1,7 @@
-//! The Monitor root widget: a two-tab activity monitor (Processes /
-//! Resources) built from the window shell and toolkit widgets.
+//! The Monitor window: a two-tab activity monitor (Processes / Resources)
+//! built from the window shell and toolkit widgets. The [`MonitorState`]
+//! the view shares with its effect handler holds the machine's readings and
+//! what the window shows of them; the [`MonitorApp`] widget lays it out.
 //!
 //! The window is one [`NavShell`]. The window bar holds the tabs as its
 //! views, Refresh, the sampling cadence and the list's view options, and its
@@ -23,7 +25,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::framework::{Dispatcher, LiveRow, Setting};
+use ui::framework::{Dispatcher, Effected, Live, LiveRow, Publishes, Setting, ViewCx};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -231,9 +233,9 @@ fn tab_content(shared: &Shared, shown_tab: &Rc<std::cell::Cell<Tab>>) -> Switch<
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent flags: sampling gate, publishing, layout and a capture's reveal"
+    reason = "independent flags: sampling gate, publishing and a capture's reveal"
 )]
-pub struct MonitorApp {
+pub(crate) struct MonitorState {
     model: MonitorModel,
     sampler: Sampler,
     /// Retained global-search/directory index. Its entries carry the same
@@ -258,29 +260,58 @@ pub struct MonitorApp {
     /// feeding the inspector's sparkline.
     proc_cpu_hist: HashMap<(u32, u64), RollingSeries>,
 
-    /// The row menu, mounted in the window's top layer by this widget.
-    context: ContextMenu,
-    context_pid: Option<u32>,
-    context_choices: Vec<Option<MenuChoice>>,
-
     last_refresh: Instant,
     /// Never sample the live machine — the seeded snapshot is the whole model.
     sample_only: bool,
 
-    rect: Rect,
-    shell: NavShell,
-    /// The window bar's entries, each carrying what it asks for.
-    bar: ui::framework::BarCommands<window_bar::BarCommand>,
     shared: Shared,
     shown_tab: Rc<std::cell::Cell<Tab>>,
     /// Model or view state changed since the panes were last told.
     stale: bool,
+    /// The panes were told since the window last looked: its inspector and
+    /// layout follow.
+    told: bool,
     metrics_revision: u64,
     published_metrics: Option<u64>,
     published_rows: Option<u64>,
-    inspected: Inspected,
     /// Open the inspector drawer once laid out (`detail` captures).
     reveal_detail: bool,
+    /// Open the inspector where it is a put-away sheet: a process was chosen.
+    reveal: bool,
+    /// The row menu to open, for the process and where it was asked.
+    menu: Option<(u32, Point, Rect)>,
+    /// What the window says in a toast next.
+    toasts: Vec<String>,
+    /// The door edits and effects go through once the framework hosts the
+    /// window: the table layout as Monitor's actions, and every control
+    /// that reaches a process as a [`MonitorEffect`], so the host checks its
+    /// permission and confirmation as it does for the palette and agents.
+    dispatcher: Option<Dispatcher<Monitor>>,
+    /// The effects the controls asked for, as a test reads them.
+    #[cfg(test)]
+    requested: Vec<MonitorEffect>,
+}
+
+/// The [`MonitorState`] as the window and the view's effect handler share it.
+pub(crate) type State = Rc<RefCell<MonitorState>>;
+
+/// The window: the shared [`MonitorState`] in a [`NavShell`], with the row
+/// menu over it while it is open.
+pub struct MonitorApp {
+    state: State,
+    /// The table layout as the document holds it, shown as it changes;
+    /// `None` for a window outside the framework.
+    live: Option<Live<Monitor>>,
+    presented: Option<(u64, u64)>,
+    /// The row menu, mounted in the window's top layer by this widget.
+    context: ContextMenu,
+    context_pid: Option<u32>,
+    context_choices: Vec<Option<MenuChoice>>,
+    rect: Rect,
+    shell: NavShell,
+    /// The window bar's entries, each carrying what it asks for.
+    bar: ui::framework::BarCommands<window_bar::BarCommand>,
+    inspected: Inspected,
     /// How many layouts the window has had, so a capture's drawer opens
     /// over content that has settled at its width.
     layouts: u32,
@@ -289,14 +320,6 @@ pub struct MonitorApp {
     /// window's structure ([`Widget::take_structure_dirty`]), which takes it
     /// once: the layout it asks for clears `layout_dirty` on its own.
     retold: bool,
-    /// The door edits and effects go through once the framework hosts the
-    /// surface: the table layout as Monitor's actions, and every control
-    /// that reaches a process as a [`MonitorEffect`], so the host checks its
-    /// permission and confirmation as it does for the palette and agents.
-    dispatcher: Option<Dispatcher<Monitor>>,
-    /// The effects the controls asked for, as a test reads them.
-    #[cfg(test)]
-    requested: Vec<MonitorEffect>,
 }
 
 impl Default for MonitorApp {
@@ -306,6 +329,35 @@ impl Default for MonitorApp {
 }
 
 impl MonitorApp {
+    /// The window over `state`.
+    fn over(state: MonitorState) -> Self {
+        let shell = NavShell::new()
+            .content_kind(ui::widget::ContentKind::List)
+            .with_id("monitor.shell")
+            .with_window_toolbar()
+            .content(Box::new(tab_content(&state.shared, &state.shown_tab)));
+        Self {
+            state: Rc::new(RefCell::new(state)),
+            live: None,
+            presented: None,
+            context: ContextMenu::new(),
+            context_pid: None,
+            context_choices: Vec::new(),
+            rect: Rect::ZERO,
+            shell,
+            bar: ui::framework::BarCommands::new(),
+            inspected: Inspected::Stale,
+            layouts: 0,
+            layout_dirty: true,
+            retold: true,
+        }
+    }
+
+    /// What the window shows, shared with the view's effect handler.
+    pub(crate) fn state(&self) -> std::cell::RefMut<'_, MonitorState> {
+        self.state.borrow_mut()
+    }
+
     /// Construct with the deterministic, fully-populated sample snapshot. This
     /// is what `--shots` and the tests render: a capture never ticks the
     /// sampler, so the seeded sample is what appears — hermetic and
@@ -317,25 +369,24 @@ impl MonitorApp {
     /// Construct over `model`, a deterministic snapshot that is never
     /// sampled again: what a screenshot shows.
     pub fn sample(model: MonitorModel) -> Self {
-        let mut app = Self::build(model, ui::time::now(), Sampler::inert());
-        app.sample_only = true;
+        let mut state = MonitorState::build(model, ui::time::now(), Sampler::inert());
+        state.sample_only = true;
         // Select a row from the default (collapsed) tree rather than the
         // globally busiest process, which may be a hidden descendant: the
         // inspector's actions must never refer to a process the person
         // cannot see in the table.
-        app.selected_pid = app.busiest_visible_pid();
-        app.seed_selected_spark();
-        app.publish();
-        app
+        state.selected_pid = state.busiest_visible_pid();
+        state.seed_selected_spark();
+        Self::over(state).published()
     }
 
     /// Construct for a past version of the table layout: no processes, and
     /// nothing that reads this machine.
     pub fn past() -> Self {
-        let mut app = Self::build(MonitorModel::empty(), ui::time::now(), Sampler::inert());
-        app.sample_only = true;
-        app.publish();
-        app
+        let mut state =
+            MonitorState::build(MonitorModel::empty(), ui::time::now(), Sampler::inert());
+        state.sample_only = true;
+        Self::over(state).published()
     }
 
     /// Construct for the live window: start from an empty model and sample
@@ -345,20 +396,35 @@ impl MonitorApp {
         let stale = ui::time::now()
             .checked_sub(Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
-        let mut app = Self::build(MonitorModel::empty(), stale, Sampler::new());
-        app.publish();
-        app
+        Self::over(MonitorState::build(
+            MonitorModel::empty(),
+            stale,
+            Sampler::new(),
+        ))
+        .published()
     }
 
+    /// The window with what it shows told to its panes.
+    fn published(mut self) -> Self {
+        self.publish();
+        self
+    }
+
+    /// The live window over `sampler`'s readings.
+    #[cfg(test)]
+    pub(crate) fn live_over(sampler: Sampler) -> Self {
+        let stale = ui::time::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap_or_else(Instant::now);
+        Self::over(MonitorState::build(MonitorModel::empty(), stale, sampler)).published()
+    }
+}
+
+impl MonitorState {
     fn build(model: MonitorModel, last_refresh: Instant, sampler: Sampler) -> Self {
         let shared: Shared = Rc::new(RefCell::new(Bridge::default()));
         let shown_tab = Rc::new(std::cell::Cell::new(Tab::Processes));
         let prefs = Prefs::default();
-        let shell = NavShell::new()
-            .content_kind(ui::widget::ContentKind::List)
-            .with_id("monitor.shell")
-            .with_window_toolbar()
-            .content(Box::new(tab_content(&shared, &shown_tab)));
         Self {
             model,
             sampler,
@@ -373,25 +439,19 @@ impl MonitorApp {
             filter: String::new(),
             selected_pid: None,
             proc_cpu_hist: HashMap::new(),
-            context: ContextMenu::new(),
-            context_pid: None,
-            context_choices: Vec::new(),
             last_refresh,
             sample_only: false,
-            rect: Rect::ZERO,
-            shell,
-            bar: ui::framework::BarCommands::new(),
             shared,
             shown_tab,
             stale: true,
             metrics_revision: 0,
             published_metrics: None,
             published_rows: None,
-            inspected: Inspected::Stale,
+            told: false,
             reveal_detail: false,
-            layouts: 0,
-            layout_dirty: true,
-            retold: true,
+            reveal: false,
+            menu: None,
+            toasts: Vec::new(),
             dispatcher: None,
             #[cfg(test)]
             requested: Vec::new(),
@@ -455,17 +515,6 @@ impl MonitorApp {
         if !self.sample_only {
             self.sampler.set_waker(waker);
         }
-    }
-
-    /// The live window over `sampler`'s readings.
-    #[cfg(test)]
-    pub(crate) fn live_over(sampler: Sampler) -> Self {
-        let stale = ui::time::now()
-            .checked_sub(Duration::from_secs(3600))
-            .unwrap_or_else(Instant::now);
-        let mut app = Self::build(MonitorModel::empty(), stale, sampler);
-        app.publish();
-        app
     }
 
     fn metrics_changed(&mut self) {
@@ -939,7 +988,7 @@ impl MonitorApp {
                 let process = self.current_process(&process)?;
                 self.commit_selected(Some(process.pid));
                 self.commit_tab(Tab::Processes);
-                self.reveal_inspector();
+                self.reveal = true;
                 Ok(())
             }
             MonitorEffect::CopyPid { process } => {
@@ -1025,84 +1074,9 @@ impl MonitorApp {
     /// the current process resource and its availability contract.
     fn copy_pid(&mut self, pid: u32) {
         ui::clipboard_copy(&pid.to_string());
-        self.shell
-            .toast(format!("Copied PID {pid}"), ToastKind::Success);
+        self.toasts.push(format!("Copied PID {pid}"));
         self.selected_pid = Some(pid);
         self.stale = true;
-    }
-
-    /// Open the row menu for `pid` at `at`, marking its row.
-    fn open_context_menu(&mut self, pid: u32, at: Point, row: Rect) {
-        let mut menu = ContextMenu::new();
-        let mut choices = Vec::new();
-        let mut push = |item: MenuItem, choice: Option<MenuChoice>| {
-            menu.push(item);
-            choices.push(choice);
-        };
-        // "Show details" only earns a place where the inspector is a put-away
-        // sheet; beside the table the right-click already showed them.
-        if self.shell.geometry().inspector == InspectorPlacement::Sheet
-            && !self.shell.is_inspector_open()
-        {
-            push(
-                MenuItem::selection("Show details"),
-                Some(MenuChoice::ShowDetails),
-            );
-        }
-        if self.tree_mode && self.row_has_children(pid) {
-            let open = !self.expanded.contains(&pid);
-            let label = if open { "Expand" } else { "Collapse" };
-            push(MenuItem::selection(label), Some(MenuChoice::Expand(open)));
-        }
-        push(MenuItem::selection("Copy PID"), Some(MenuChoice::Copy));
-        push(MenuItem::separator(), None);
-        push(MenuItem::selection("End process"), Some(MenuChoice::End));
-        push(
-            MenuItem::destructive_selection("Kill process"),
-            Some(MenuChoice::Kill),
-        );
-        if self
-            .model
-            .processes
-            .iter()
-            .any(|process| process.pid == pid && process.app.is_some())
-        {
-            push(
-                MenuItem::destructive_selection("End app"),
-                Some(MenuChoice::EndApp),
-            );
-        }
-        menu.open_anchored(Rect::from_origin_size(at, (0.0, 0.0)), self.rect);
-        menu.anchor_row(row);
-        self.context = menu;
-        self.context_choices = choices;
-        self.context_pid = Some(pid);
-    }
-
-    fn apply_menu_choice(&mut self, index: usize) {
-        let (Some(pid), Some(Some(choice))) =
-            (self.context_pid, self.context_choices.get(index).copied())
-        else {
-            return;
-        };
-        match choice {
-            MenuChoice::ShowDetails => {
-                self.commit_selected(Some(pid));
-                self.reveal_inspector();
-            }
-            MenuChoice::Expand(open) => self.set_expanded(pid, open),
-            MenuChoice::Copy => {
-                self.request_process_control(pid, |process| MonitorEffect::CopyPid { process });
-            }
-            MenuChoice::End => {
-                self.request_process_control(pid, |process| MonitorEffect::EndProcess { process });
-            }
-            MenuChoice::Kill => {
-                self.request_process_control(pid, |process| MonitorEffect::Kill { process });
-            }
-            MenuChoice::EndApp => self.request_end_app(pid),
-        }
-        self.context_pid = None;
     }
 
     fn rows_fingerprint(rows: &[ProcessRow]) -> u64 {
@@ -1190,93 +1164,7 @@ impl MonitorApp {
             }
         }
         self.shown_tab.set(self.tab);
-        self.show_inspector();
-        self.layout_dirty = true;
-        self.retold = true;
-    }
-
-    /// The inspector follows the selection on the Processes tab; it is gone
-    /// on the Resources tab and when there is nothing to list.
-    fn show_inspector(&mut self) {
-        let wanted = self.tab == Tab::Processes
-            && self.model.process_status == ProcessDataStatus::Ready
-            && !self.shared.borrow().rows.is_empty();
-        if !wanted {
-            if self.inspected != Inspected::Hidden {
-                self.inspected = Inspected::Hidden;
-                self.shell.set_inspector(None);
-            }
-            return;
-        }
-        let Some(process) = self.selected_process().cloned() else {
-            if self.inspected != Inspected::Nothing {
-                self.inspected = Inspected::Nothing;
-                self.shell
-                    .set_inspector(Some(crate::view::process_detail(None)));
-                self.shell.set_inspector_title("");
-            }
-            return;
-        };
-        let history: Vec<f32> = self
-            .proc_cpu_hist
-            .get(&(process.pid, process.started_at))
-            .map(|ring| ring.as_slice().to_vec())
-            .unwrap_or_default();
-        let parent = process.ppid.and_then(|ppid| {
-            self.model
-                .processes
-                .iter()
-                .find(|p| p.pid == ppid)
-                .map(|p| p.name.clone())
-        });
-        // A summed row reads more than the process alone; the inspector names
-        // both, so the row and the detail never seem to disagree.
-        let with_children = if self.tree_mode && self.sum_mode == SumMode::SumSubtree {
-            self.shared
-                .borrow()
-                .rows
-                .iter()
-                .find(|row| row.pid == process.pid && row.has_children)
-                .map(|row| (row.cpu, row.mem_bytes))
-        } else {
-            None
-        };
-        let fingerprint = {
-            let mut hasher = DefaultHasher::new();
-            format!("{process:?}").hash(&mut hasher);
-            parent.hash(&mut hasher);
-            with_children
-                .map(|(cpu, memory)| (cpu.to_bits(), memory))
-                .hash(&mut hasher);
-            for sample in &history {
-                sample.to_bits().hash(&mut hasher);
-            }
-            hasher.finish()
-        };
-        if self.inspected == Inspected::Process(fingerprint) {
-            return;
-        }
-        self.inspected = Inspected::Process(fingerprint);
-        let detail = ProcessDetail {
-            process: &process,
-            parent,
-            cpu_history: history,
-            with_children,
-            requests: Rc::clone(&self.shared),
-        };
-        self.shell
-            .set_inspector(Some(crate::view::process_detail(Some(&detail))));
-        self.shell.set_inspector_title(process.name.clone());
-    }
-
-    /// Open the inspector where it is a put-away sheet, so choosing a process
-    /// on a narrow window shows it.
-    fn reveal_inspector(&mut self) {
-        if self.shell.geometry().inspector == InspectorPlacement::Sheet
-            && !self.shell.is_inspector_open()
-        {
-            self.shell.toggle_inspector();
-        }
+        self.told = true;
     }
 
     /// Turn the views' requests into view changes, layout edits and effects.
@@ -1292,7 +1180,7 @@ impl MonitorApp {
                 Request::Filter(query) => self.commit_filter(query),
                 Request::Select(pid) => {
                     self.commit_selected(Some(pid));
-                    self.reveal_inspector();
+                    self.reveal = true;
                 }
                 Request::Open(process) => {
                     if let Err(error) = self.answer(MonitorEffect::Inspect { process }) {
@@ -1304,7 +1192,7 @@ impl MonitorApp {
                         self.toggle_expand(pid);
                     } else {
                         self.commit_selected(Some(pid));
-                        self.reveal_inspector();
+                        self.reveal = true;
                     }
                 }
                 Request::SetExpanded(pid, open) => self.set_expanded(pid, open),
@@ -1328,7 +1216,7 @@ impl MonitorApp {
                 }
                 Request::ContextMenu { pid, at, row } => {
                     self.commit_selected(Some(pid));
-                    self.open_context_menu(pid, at, row);
+                    self.menu = Some((pid, at, row));
                 }
                 Request::Refresh => self.request(MonitorEffect::Refresh),
                 Request::End(pid) => {
@@ -1388,6 +1276,279 @@ impl MonitorApp {
 }
 
 impl MonitorApp {
+    /// Tell the panes what changed, and follow with the inspector and the
+    /// layout when they were told.
+    fn publish(&mut self) {
+        let told = {
+            let mut state = self.state.borrow_mut();
+            state.publish();
+            std::mem::take(&mut state.told)
+        };
+        if told {
+            self.show_inspector();
+            self.layout_dirty = true;
+            self.retold = true;
+        }
+    }
+
+    /// Show the table layout the document holds now, when it changed since.
+    fn follow_document(&mut self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(shown) = live.changed_since(&mut self.presented) else {
+            return;
+        };
+        self.state.borrow_mut().adopt_resource_state(&shown);
+    }
+
+    /// Do what the state asked of the window: say its toasts, open the row
+    /// menu and the inspector sheet.
+    fn answer_state(&mut self) {
+        let (toasts, menu, reveal) = {
+            let mut state = self.state.borrow_mut();
+            (
+                std::mem::take(&mut state.toasts),
+                state.menu.take(),
+                std::mem::take(&mut state.reveal),
+            )
+        };
+        for toast in toasts {
+            self.shell.toast(toast, ToastKind::Success);
+        }
+        if let Some((pid, at, row)) = menu {
+            self.open_context_menu(pid, at, row);
+        }
+        if reveal {
+            self.reveal_inspector();
+        }
+    }
+
+    /// Run what the state asked for since: the views' requests, then what
+    /// they ask of the window.
+    fn apply_requests(&mut self) {
+        self.state.borrow_mut().apply_requests();
+        self.answer_state();
+    }
+
+    /// Open the row menu for `pid` at `at`, marking its row.
+    fn open_context_menu(&mut self, pid: u32, at: Point, row: Rect) {
+        let state = self.state.borrow();
+        let shell = &self.shell;
+        let mut menu = ContextMenu::new();
+        let mut choices = Vec::new();
+        let mut push = |item: MenuItem, choice: Option<MenuChoice>| {
+            menu.push(item);
+            choices.push(choice);
+        };
+        // "Show details" only earns a place where the inspector is a put-away
+        // sheet; beside the table the right-click already showed them.
+        if shell.geometry().inspector == InspectorPlacement::Sheet && !shell.is_inspector_open() {
+            push(
+                MenuItem::selection("Show details"),
+                Some(MenuChoice::ShowDetails),
+            );
+        }
+        if state.tree_mode && state.row_has_children(pid) {
+            let open = !state.expanded.contains(&pid);
+            let label = if open { "Expand" } else { "Collapse" };
+            push(MenuItem::selection(label), Some(MenuChoice::Expand(open)));
+        }
+        push(MenuItem::selection("Copy PID"), Some(MenuChoice::Copy));
+        push(MenuItem::separator(), None);
+        push(MenuItem::selection("End process"), Some(MenuChoice::End));
+        push(
+            MenuItem::destructive_selection("Kill process"),
+            Some(MenuChoice::Kill),
+        );
+        if state
+            .model
+            .processes
+            .iter()
+            .any(|process| process.pid == pid && process.app.is_some())
+        {
+            push(
+                MenuItem::destructive_selection("End app"),
+                Some(MenuChoice::EndApp),
+            );
+        }
+        drop(state);
+        menu.open_anchored(Rect::from_origin_size(at, (0.0, 0.0)), self.rect);
+        menu.anchor_row(row);
+        self.context = menu;
+        self.context_choices = choices;
+        self.context_pid = Some(pid);
+    }
+
+    fn apply_menu_choice(&mut self, index: usize) {
+        let (Some(pid), Some(Some(choice))) =
+            (self.context_pid, self.context_choices.get(index).copied())
+        else {
+            return;
+        };
+        let mut state = self.state.borrow_mut();
+        match choice {
+            MenuChoice::ShowDetails => {
+                state.commit_selected(Some(pid));
+                state.reveal = true;
+            }
+            MenuChoice::Expand(open) => state.set_expanded(pid, open),
+            MenuChoice::Copy => {
+                state.request_process_control(pid, |process| MonitorEffect::CopyPid { process });
+            }
+            MenuChoice::End => {
+                state.request_process_control(pid, |process| MonitorEffect::EndProcess { process });
+            }
+            MenuChoice::Kill => {
+                state.request_process_control(pid, |process| MonitorEffect::Kill { process });
+            }
+            MenuChoice::EndApp => state.request_end_app(pid),
+        }
+        drop(state);
+        self.context_pid = None;
+    }
+
+    /// The inspector follows the selection on the Processes tab; it is gone
+    /// on the Resources tab and when there is nothing to list.
+    fn show_inspector(&mut self) {
+        let state = Rc::clone(&self.state);
+        let state = state.borrow();
+        let wanted = state.tab == Tab::Processes
+            && state.model.process_status == ProcessDataStatus::Ready
+            && !state.shared.borrow().rows.is_empty();
+        if !wanted {
+            if self.inspected != Inspected::Hidden {
+                self.inspected = Inspected::Hidden;
+                self.shell.set_inspector(None);
+            }
+            return;
+        }
+        let Some(process) = state.selected_process().cloned() else {
+            if self.inspected != Inspected::Nothing {
+                self.inspected = Inspected::Nothing;
+                self.shell
+                    .set_inspector(Some(crate::view::process_detail(None)));
+                self.shell.set_inspector_title("");
+            }
+            return;
+        };
+        let history: Vec<f32> = state
+            .proc_cpu_hist
+            .get(&(process.pid, process.started_at))
+            .map(|ring| ring.as_slice().to_vec())
+            .unwrap_or_default();
+        let parent = process.ppid.and_then(|ppid| {
+            state
+                .model
+                .processes
+                .iter()
+                .find(|p| p.pid == ppid)
+                .map(|p| p.name.clone())
+        });
+        // A summed row reads more than the process alone; the inspector names
+        // both, so the row and the detail never seem to disagree.
+        let with_children = if state.tree_mode && state.sum_mode == SumMode::SumSubtree {
+            state
+                .shared
+                .borrow()
+                .rows
+                .iter()
+                .find(|row| row.pid == process.pid && row.has_children)
+                .map(|row| (row.cpu, row.mem_bytes))
+        } else {
+            None
+        };
+        let fingerprint = {
+            let mut hasher = DefaultHasher::new();
+            format!("{process:?}").hash(&mut hasher);
+            parent.hash(&mut hasher);
+            with_children
+                .map(|(cpu, memory)| (cpu.to_bits(), memory))
+                .hash(&mut hasher);
+            for sample in &history {
+                sample.to_bits().hash(&mut hasher);
+            }
+            hasher.finish()
+        };
+        if self.inspected == Inspected::Process(fingerprint) {
+            return;
+        }
+        self.inspected = Inspected::Process(fingerprint);
+        let detail = ProcessDetail {
+            process: &process,
+            parent,
+            cpu_history: history,
+            with_children,
+            requests: Rc::clone(&state.shared),
+        };
+        self.shell
+            .set_inspector(Some(crate::view::process_detail(Some(&detail))));
+        self.shell.set_inspector_title(process.name.clone());
+    }
+
+    /// Open the inspector where it is a put-away sheet, so choosing a process
+    /// on a narrow window shows it.
+    fn reveal_inspector(&mut self) {
+        if self.shell.geometry().inspector == InspectorPlacement::Sheet
+            && !self.shell.is_inspector_open()
+        {
+            self.shell.toggle_inspector();
+        }
+    }
+}
+
+/// The view of the table layout: `window` takes part in the resource, and
+/// its [`MonitorState`] answers the effects and publishes this machine's
+/// processes.
+pub(crate) fn window(cx: &ViewCx<Monitor>, mut window: MonitorApp) -> Element {
+    window.live = Some(cx.live().clone());
+    let state = Rc::clone(&window.state);
+    {
+        let mut state = state.borrow_mut();
+        state.wake_with(cx.waker());
+        state.follow_preferences(cx.settings());
+        state.attach_framework(cx.dispatcher());
+        state.attach_actions(cx.actions());
+    }
+    // A search hit, or an agent's `open`, shows the process it names.
+    cx.on_open(state.borrow().opener());
+    {
+        let answer = Rc::clone(&state);
+        cx.effects(move |effect: MonitorEffect, _| {
+            answer
+                .borrow_mut()
+                .answer(effect)
+                .map(|()| Effected::done())
+        });
+    }
+    {
+        let state = Rc::clone(&state);
+        cx.on_stage(move |scenario| {
+            if let Some(scenario) = scenario {
+                state.borrow_mut().stage_scenario(scenario);
+            }
+        });
+    }
+    let (rows, row, entries) = (Rc::clone(&state), Rc::clone(&state), state);
+    cx.publishing(
+        Publishes::new()
+            // The processes on this machine, beneath the processes door:
+            // inspect, copy the PID, stop or kill one. Not document state.
+            .live_rows(move || rows.borrow().live_process_rows())
+            .live_row(move |id| row.borrow().live_process_row(id))
+            // Every process running here, each found by its name, user or
+            // PID and opening its exact generation, the tail beyond the
+            // published rows too.
+            .search_entries(move || entries.borrow().process_search_entries())
+            // Processes are the machine's state of the moment: a closed
+            // Monitor leaves none in the system's search index to open into
+            // one that has ended.
+            .search_entries_while_running(),
+        Box::new(window),
+    )
+}
+
+impl MonitorState {
     /// Keyboard commands of the window: Ctrl+R refreshes, Ctrl+1 and Ctrl+2
     /// switch tabs, Delete kills the selected process (through its confirmed
     /// action). Returns whether the key was consumed.
@@ -1424,10 +1585,14 @@ impl MonitorApp {
 
 impl Widget for MonitorApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        // The preferences follow the person's settings, never the shared
-        // document.
-        self.sync_preferences();
-        self.maybe_refresh();
+        self.follow_document();
+        {
+            // The preferences follow the person's settings, never the
+            // shared document.
+            let mut monitor = self.state.borrow_mut();
+            monitor.sync_preferences();
+            monitor.maybe_refresh();
+        }
         self.take_window_toolbar_events();
         self.apply_requests();
         self.publish();
@@ -1442,7 +1607,7 @@ impl Widget for MonitorApp {
         if asked {
             self.apply_requests();
         }
-        let changed = self.stale;
+        let changed = self.state.borrow().stale;
         self.publish();
         self.declare_window_toolbar();
         self.shell.update(state, path) || asked || changed
@@ -1474,11 +1639,11 @@ impl Widget for MonitorApp {
         self.layouts = self.layouts.saturating_add(1);
         // Open the drawer once the content behind it has settled at its
         // width, so the window under the drawer is the one the person sees.
-        if self.reveal_detail
+        if self.state.borrow().reveal_detail
             && self.shell.geometry().inspector != InspectorPlacement::None
             && self.layouts > 2
         {
-            self.reveal_detail = false;
+            self.state().reveal_detail = false;
             self.reveal_inspector();
             self.shell.snap();
             self.layout_dirty = true;
@@ -1530,7 +1695,7 @@ impl Widget for MonitorApp {
                 .handle_event(event, &mut ctx.reborrow(ctx.path, shell));
         }
         if !*ctx.handled {
-            self.handle_shortcut(event, ctx);
+            self.state().handle_shortcut(event, ctx);
         }
         self.apply_requests();
     }
@@ -1556,9 +1721,10 @@ impl Widget for MonitorApp {
     }
 
     fn is_layout_dirty(&self) -> bool {
+        let state = self.state.borrow();
         self.layout_dirty
-            || self.stale
-            || self.preferences_changed()
+            || state.stale
+            || state.preferences_changed()
             || self.shell.is_layout_dirty()
     }
 
@@ -1572,7 +1738,8 @@ impl Widget for MonitorApp {
         // A sync that rebuilt the inspector (`retold`, taken here)
         // and preferences another window or device changed count too.
         let retold = std::mem::take(&mut self.retold);
-        let pending = self.stale || retold || self.preferences_changed();
+        let state = self.state.borrow();
+        let pending = state.stale || retold || state.preferences_changed();
         self.shell.take_structure_dirty() || pending
     }
 
@@ -1582,19 +1749,29 @@ impl Widget for MonitorApp {
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         let mut next = self.shell.next_wake_deadline();
+        let state = self.state.borrow();
         let mut consider = |deadline: Instant| {
             next = Some(next.map_or(deadline, |current: Instant| current.min(deadline)));
         };
         // Pushed readings wake the window themselves; only a machine read
         // on the window's own cadence needs a deadline.
-        if !self.sample_only && self.prefs.auto_refresh && !self.sampler.is_pushed() {
+        if !state.sample_only && state.prefs.auto_refresh && !state.sampler.is_pushed() {
             consider(
-                self.last_refresh
-                    .checked_add(Duration::from_millis(self.prefs.interval_ms))
+                state
+                    .last_refresh
+                    .checked_add(Duration::from_millis(state.prefs.interval_ms))
                     .unwrap_or_else(Instant::now),
             );
         }
         next
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn name(&self) -> &'static str {
@@ -1624,12 +1801,13 @@ mod tests {
     }
 
     /// The effect the app's controls last asked the host for.
-    fn taken(a: &mut MonitorApp) -> Option<MonitorEffect> {
-        a.requested.pop()
+    fn taken(a: &MonitorApp) -> Option<MonitorEffect> {
+        a.state().requested.pop()
     }
 
     fn pid_named(a: &MonitorApp, name: &str) -> u32 {
-        a.model
+        a.state()
+            .model
             .processes
             .iter()
             .find(|p| p.name == name)
@@ -1638,7 +1816,8 @@ mod tests {
     }
 
     fn resource_id_for(a: &MonitorApp, pid: u32) -> String {
-        let process = a
+        let state = a.state();
+        let process = state
             .model
             .processes
             .iter()
@@ -1722,7 +1901,7 @@ mod tests {
     fn process_list_sorts_filters_and_folds_the_tree() {
         {
             let a = app();
-            let rows = a.visible_rows();
+            let rows = a.state().visible_rows();
             assert!(rows.iter().all(|row| row.depth == 0), "collapsed tree");
             assert_eq!(rows[0].name, "shell", "the session sums the most CPU");
             assert!(
@@ -1736,15 +1915,16 @@ mod tests {
         }
 
         {
-            let mut a = app();
+            let a = app();
             let shell = pid_named(&a, "shell");
-            let summed = a.visible_rows()[0].cpu;
-            a.toggle_expand(shell);
-            let rows = a.visible_rows();
+            let summed = a.state().visible_rows()[0].cpu;
+            a.state().toggle_expand(shell);
+            let rows = a.state().visible_rows();
             assert!(rows[0].expanded);
             assert!(rows[1].depth == 1, "the shell's children follow it");
-            a.sum_mode = SumMode::PerProcess;
+            a.state().sum_mode = SumMode::PerProcess;
             let own = a
+                .state()
                 .visible_rows()
                 .into_iter()
                 .find(|row| row.pid == shell)
@@ -1754,25 +1934,25 @@ mod tests {
         }
 
         {
-            let mut a = app();
-            a.filter = "rustc".into();
-            let rows = a.visible_rows();
+            let a = app();
+            a.state().filter = "rustc".into();
+            let rows = a.state().visible_rows();
             assert_eq!(names(&rows), ["shell", "code", "cargo", "rustc"]);
         }
 
         {
-            let mut a = app();
-            a.commit_tree_mode(false);
-            a.set_sort(SortKey::Name);
-            let rows = a.visible_rows();
-            assert!(!a.sort_desc, "text sorts ascending first");
+            let a = app();
+            a.state().commit_tree_mode(false);
+            a.state().set_sort(SortKey::Name);
+            let rows = a.state().visible_rows();
+            assert!(!a.state().sort_desc, "text sorts ascending first");
             assert!(
                 rows.windows(2)
                     .all(|pair| { pair[0].name.to_lowercase() <= pair[1].name.to_lowercase() })
             );
-            a.prefs.show_kernel_threads = true;
+            a.state().prefs.show_kernel_threads = true;
             assert!(
-                names(&a.visible_rows())
+                names(&a.state().visible_rows())
                     .iter()
                     .any(|name| name.starts_with("kworker"))
             );
@@ -1784,28 +1964,39 @@ mod tests {
     #[test]
     fn selection_follows_the_listed_process_lifetime() {
         let mut a = app();
-        let selected = a.selected_pid.expect("the sample selects a process");
-        assert!(a.visible_rows().iter().any(|row| row.pid == selected));
+        let selected = a
+            .state()
+            .selected_pid
+            .expect("the sample selects a process");
+        assert!(
+            a.state()
+                .visible_rows()
+                .iter()
+                .any(|row| row.pid == selected)
+        );
 
-        a.commit_filter("printer queue".into());
-        assert!(a.selected_pid.is_none(), "filtered away");
+        a.state().commit_filter("printer queue".into());
+        assert!(a.state().selected_pid.is_none(), "filtered away");
         a.publish();
-        assert_eq!(a.shared.borrow().placeholder, Some(Placeholder::NoMatches));
+        assert_eq!(
+            a.state().shared.borrow().placeholder,
+            Some(Placeholder::NoMatches)
+        );
         assert_eq!(
             a.inspected,
             Inspected::Hidden,
             "nothing listed, nothing inspected"
         );
 
-        let mut a = app();
-        let pid = a.selected_pid.unwrap();
-        let before = a.selected_identity();
-        if let Some(process) = a.model.processes.iter_mut().find(|p| p.pid == pid) {
+        let a = app();
+        let pid = a.state().selected_pid.unwrap();
+        let before = a.state().selected_identity();
+        if let Some(process) = a.state().model.processes.iter_mut().find(|p| p.pid == pid) {
             process.started_at += 1;
         }
-        a.clear_recycled_selection(before);
+        a.state().clear_recycled_selection(before);
         assert!(
-            a.selected_pid.is_none(),
+            a.state().selected_pid.is_none(),
             "a recycled PID is not the selection"
         );
     }
@@ -1815,28 +2006,28 @@ mod tests {
     fn requests_from_the_panes_change_the_view() {
         let mut a = app();
         let shell = pid_named(&a, "shell");
-        let push = |a: &MonitorApp, request: Request| a.shared.borrow_mut().push(request);
+        let push = |a: &MonitorApp, request: Request| a.state().shared.borrow_mut().push(request);
 
         push(&a, Request::Sort(SortKey::Mem));
         push(&a, Request::SetExpanded(shell, true));
         push(&a, Request::KernelThreads(true));
         a.apply_requests();
-        assert_eq!(a.sort_key, SortKey::Mem);
-        assert!(a.sort_desc);
-        assert!(a.expanded.contains(&shell));
-        assert!(a.prefs.show_kernel_threads);
+        assert_eq!(a.state().sort_key, SortKey::Mem);
+        assert!(a.state().sort_desc);
+        assert!(a.state().expanded.contains(&shell));
+        assert!(a.state().prefs.show_kernel_threads);
 
         push(&a, Request::SumChildren(false));
         push(&a, Request::TreeMode(false));
         a.apply_requests();
-        assert_eq!(a.sum_mode, SumMode::PerProcess);
-        assert!(!a.tree_mode);
+        assert_eq!(a.state().sum_mode, SumMode::PerProcess);
+        assert!(!a.state().tree_mode);
 
         push(&a, Request::ShowStat(Stat::Network));
         a.apply_requests();
         a.publish();
-        assert_eq!(a.tab, Tab::Resources);
-        assert_eq!(a.shared.borrow().reveal, Some(Stat::Network));
+        assert_eq!(a.state().tab, Tab::Resources);
+        assert_eq!(a.state().shared.borrow().reveal, Some(Stat::Network));
         assert!(
             a.inspected == Inspected::Hidden,
             "no inspector on Resources"
@@ -1846,25 +2037,25 @@ mod tests {
         push(&a, Request::Filter("pipe".into()));
         a.apply_requests();
         a.publish();
-        assert_eq!(a.tab, Tab::Processes);
-        assert_eq!(a.filter, "pipe");
-        assert_eq!(a.shared.borrow().filter, "pipe");
+        assert_eq!(a.state().tab, Tab::Processes);
+        assert_eq!(a.state().filter, "pipe");
+        assert_eq!(a.state().shared.borrow().filter, "pipe");
 
-        a.set_cadence(Cadence::Paused);
-        assert!(!a.prefs.auto_refresh);
-        a.set_cadence(Cadence::Every(3000));
-        assert!(a.prefs.auto_refresh);
-        assert_eq!(a.prefs.interval_ms, 3000);
+        a.state().set_cadence(Cadence::Paused);
+        assert!(!a.state().prefs.auto_refresh);
+        a.state().set_cadence(Cadence::Every(3000));
+        assert!(a.state().prefs.auto_refresh);
+        assert_eq!(a.state().prefs.interval_ms, 3000);
 
         push(&a, Request::Refresh);
         a.apply_requests();
-        assert_eq!(taken(&mut a), Some(MonitorEffect::Refresh));
+        assert_eq!(taken(&a), Some(MonitorEffect::Refresh));
 
-        let busiest = a.busiest_visible_pid().expect("a listed process");
+        let busiest = a.state().busiest_visible_pid().expect("a listed process");
         push(&a, Request::End(busiest));
         a.apply_requests();
         assert_eq!(
-            taken(&mut a),
+            taken(&a),
             Some(MonitorEffect::EndProcess {
                 process: resource_id_for(&a, busiest)
             }),
@@ -1900,15 +2091,15 @@ mod tests {
             .iter()
             .position(|choice| *choice == Some(MenuChoice::Kill))
             .unwrap();
-        let before = a.model.processes.len();
+        let before = a.state().model.processes.len();
         a.apply_menu_choice(kill);
         assert_eq!(
-            a.model.processes.len(),
+            a.state().model.processes.len(),
             before,
             "no signal without the host's confirmation"
         );
         assert_eq!(
-            taken(&mut a),
+            taken(&a),
             Some(MonitorEffect::Kill {
                 process: resource_id_for(&a, shell)
             })
@@ -1923,10 +2114,12 @@ mod tests {
     )]
     fn process_rows_are_bounded_generation_exact_and_local() {
         {
-            let mut a = app();
-            let pid = a.selected_pid.expect("sample selects a process");
+            let a = app();
+            let pid = a.state().selected_pid.expect("sample selects a process");
+            let id = resource_id_for(&a, pid);
             let process = a
-                .live_process_row(&resource_id_for(&a, pid))
+                .state()
+                .live_process_row(&id)
                 .expect("selected process is a stable row")
                 .into_resource();
             let kill = process
@@ -1938,26 +2131,31 @@ mod tests {
                 kill.contract.confirmation,
                 ui::tilo_actions::ConfirmationPolicy::Confirm
             );
-            a.answer(MonitorEffect::Kill {
-                process: resource_id_for(&a, pid),
-            })
-            .expect("the confirmed kill executes");
-            assert!(a.model.processes.iter().all(|process| process.pid != pid));
-            assert!(a.selected_pid.is_none());
+            a.state()
+                .answer(MonitorEffect::Kill { process: id })
+                .expect("the confirmed kill executes");
+            assert!(
+                a.state()
+                    .model
+                    .processes
+                    .iter()
+                    .all(|process| process.pid != pid)
+            );
+            assert!(a.state().selected_pid.is_none());
         }
 
         {
-            let mut a = app();
-            let template = a.model.processes[0].clone();
+            let a = app();
+            let template = a.state().model.processes[0].clone();
             for offset in 0..=MAX_CONTEXT_PROCESS_RESOURCES {
                 let mut process = template.clone();
                 process.pid = 90_000 + u32::try_from(offset).unwrap();
                 process.started_at = 7_000 + u64::try_from(offset).unwrap();
                 process.name = format!("worker-{offset}");
-                a.model.processes.push(process);
+                a.state().model.processes.push(process);
             }
-            let target = a.model.processes.last().unwrap().clone();
-            let rows = a.live_process_rows();
+            let target = a.state().model.processes.last().unwrap().clone();
+            let rows = a.state().live_process_rows();
             assert_eq!(rows.len(), MAX_CONTEXT_PROCESS_RESOURCES);
             let target_id = process_resource_id(target.pid, target.started_at);
             assert!(
@@ -1965,6 +2163,7 @@ mod tests {
                 "a tail process is left off the eager page"
             );
             let resolved = a
+                .state()
                 .live_process_row(&target_id)
                 .expect("an omitted exact PID generation stays resolvable")
                 .into_resource();
@@ -1972,15 +2171,15 @@ mod tests {
         }
 
         {
-            let mut a = app();
-            let mut tail = a.model.processes[0].clone();
+            let a = app();
+            let mut tail = a.state().model.processes[0].clone();
             tail.pid = 99_991;
             tail.started_at = 88_881;
             tail.name = "searchable-tail-worker".into();
-            a.model.processes.push(tail.clone());
+            a.state().model.processes.push(tail.clone());
 
             let provider = ui::framework::testing::search_source::<crate::resource::Monitor>(
-                a.process_search_entries(),
+                a.state().process_search_entries(),
             );
             let hit = ui::search::SearchProvider::search_limited(&provider, "tail-worker", 1)
                 .pop()
@@ -1991,13 +2190,13 @@ mod tests {
                 "a hit is anchored at the process row"
             );
             assert!(
-                a.live_process_row(&hit.action_id).is_some(),
+                a.state().live_process_row(&hit.action_id).is_some(),
                 "the search address materializes the exact resource, not a PID-only fallback"
             );
         }
 
         {
-            let mut process = app().model.processes[0].clone();
+            let mut process = app().state().model.processes[0].clone();
             process.name = format!(
                 "line\nbreak\t{}",
                 "x".repeat(MAX_PROCESS_RESOURCE_LABEL_CHARS + 8)
@@ -2008,42 +2207,53 @@ mod tests {
         }
 
         {
-            let mut a = app();
-            let process = a.model.processes[0].clone();
-            let result = a.answer(MonitorEffect::Kill {
+            let a = app();
+            let process = a.state().model.processes[0].clone();
+            let result = a.state().answer(MonitorEffect::Kill {
                 process: process_resource_id(process.pid, process.started_at + 1),
             });
             assert!(result.is_err());
-            assert!(a.model.processes.iter().any(|p| p.pid == process.pid));
+            assert!(
+                a.state()
+                    .model
+                    .processes
+                    .iter()
+                    .any(|p| p.pid == process.pid)
+            );
         }
 
         {
             let mut a = app();
-            let process = a.model.processes[3].clone();
-            a.answer(MonitorEffect::CopyPid {
-                process: process_resource_id(process.pid, process.started_at),
-            })
-            .unwrap();
-            assert_eq!(a.selected_pid, Some(process.pid));
+            let process = a.state().model.processes[3].clone();
+            a.state()
+                .answer(MonitorEffect::CopyPid {
+                    process: process_resource_id(process.pid, process.started_at),
+                })
+                .unwrap();
+            assert_eq!(a.state().selected_pid, Some(process.pid));
+            // The window says it on its next frame.
+            a.answer_state();
             let copied = format!("Copied PID {}", process.pid);
             assert_eq!(a.shell.toast_text(), Some(copied.as_str()));
         }
 
         {
-            let mut a = app();
-            a.commit_tab(Tab::Resources);
-            let process = a.model.processes[3].clone();
-            a.answer(MonitorEffect::Inspect {
-                process: process_resource_id(process.pid, process.started_at),
-            })
-            .unwrap();
-            assert_eq!(a.selected_pid, Some(process.pid));
-            assert_eq!(a.tab, Tab::Processes);
-            assert!(
-                a.answer(MonitorEffect::ShowTab {
-                    tab: "graphs".into()
+            let a = app();
+            a.state().commit_tab(Tab::Resources);
+            let process = a.state().model.processes[3].clone();
+            a.state()
+                .answer(MonitorEffect::Inspect {
+                    process: process_resource_id(process.pid, process.started_at),
                 })
-                .is_err()
+                .unwrap();
+            assert_eq!(a.state().selected_pid, Some(process.pid));
+            assert_eq!(a.state().tab, Tab::Processes);
+            assert!(
+                a.state()
+                    .answer(MonitorEffect::ShowTab {
+                        tab: "graphs".into()
+                    })
+                    .is_err()
             );
         }
 
@@ -2052,13 +2262,13 @@ mod tests {
             let mut second = app();
             let mut doc = AutoCommit::new();
             let heads = doc.get_heads();
-            first.set_cadence(Cadence::Paused);
-            first.prefs.show_kernel_threads = true;
-            first.commit_filter("shell".into());
-            first.set_sort(SortKey::Name);
+            first.state().set_cadence(Cadence::Paused);
+            first.state().prefs.show_kernel_threads = true;
+            first.state().commit_filter("shell".into());
+            first.state().set_sort(SortKey::Name);
             first.sync(&doc, &automerge::ROOT);
             second.sync(&doc, &automerge::ROOT);
-            assert_eq!(second.prefs, Prefs::default());
+            assert_eq!(second.state().prefs, Prefs::default());
             assert_eq!(
                 doc.get_heads(),
                 heads,
@@ -2124,7 +2334,7 @@ mod tests {
         assert_eq!(views.chosen, Tab::Processes.view_id());
 
         press(&mut harness, Tab::Resources.view_id());
-        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
+        assert_eq!(harness.root::<MonitorApp>().state().tab, Tab::Resources);
         assert_eq!(bar().views.unwrap().chosen, Tab::Resources.view_id());
         assert!(
             bar()
@@ -2134,7 +2344,7 @@ mod tests {
             "the list's options leave with the list"
         );
         press(&mut harness, Tab::Processes.view_id());
-        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
+        assert_eq!(harness.root::<MonitorApp>().state().tab, Tab::Processes);
 
         let cadence = bar()
             .actions
@@ -2143,17 +2353,23 @@ mod tests {
             .expect("the update frequency is a menu button");
         assert_eq!(cadence.items.len(), Cadence::all().len());
         press_named(&mut harness, "Paused");
-        assert!(!harness.root::<MonitorApp>().prefs.auto_refresh);
+        assert!(!harness.root::<MonitorApp>().state().prefs.auto_refresh);
 
-        let tree = harness.root::<MonitorApp>().tree_mode;
+        let tree = harness.root::<MonitorApp>().state().tree_mode;
         press_named(&mut harness, "Tree view");
-        assert_eq!(harness.root::<MonitorApp>().tree_mode, !tree);
+        assert_eq!(harness.root::<MonitorApp>().state().tree_mode, !tree);
         press_named(&mut harness, "Kernel threads");
-        assert!(harness.root::<MonitorApp>().prefs.show_kernel_threads);
+        assert!(
+            harness
+                .root::<MonitorApp>()
+                .state()
+                .prefs
+                .show_kernel_threads
+        );
 
         ui::widget::apply_filter(&mut *harness.root_mut::<MonitorApp>(), "cargo");
         harness.relayout();
-        assert_eq!(harness.root::<MonitorApp>().filter, "cargo");
+        assert_eq!(harness.root::<MonitorApp>().state().filter, "cargo");
         assert!(
             center_of(&harness, "cargo").is_some(),
             "the match is listed"
@@ -2168,13 +2384,13 @@ mod tests {
         let mut harness = window(app(), (1280, 800));
 
         press(&mut harness, Tab::Resources.view_id());
-        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
+        assert_eq!(harness.root::<MonitorApp>().state().tab, Tab::Resources);
         assert!(harness.inspection_json().unwrap().contains("Host name"));
         press(&mut harness, Tab::Processes.view_id());
-        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Processes);
+        assert_eq!(harness.root::<MonitorApp>().state().tab, Tab::Processes);
 
         press_named(&mut harness, "Paused");
-        assert!(!harness.root::<MonitorApp>().prefs.auto_refresh);
+        assert!(!harness.root::<MonitorApp>().state().prefs.auto_refresh);
 
         let (x, y) = center_of(&harness, "tilo-fs").expect("tilo-fs row");
         harness.send(&ui::synthetic_input::cursor_moved(x, y));
@@ -2184,7 +2400,10 @@ mod tests {
         ));
         harness.relayout();
         let tilo_fs = pid_named(harness.root::<MonitorApp>(), "tilo-fs");
-        assert_eq!(harness.root::<MonitorApp>().selected_pid, Some(tilo_fs));
+        assert_eq!(
+            harness.root::<MonitorApp>().state().selected_pid,
+            Some(tilo_fs)
+        );
         assert!(harness.root::<MonitorApp>().context.is_open());
         let copy = {
             let monitor = harness.root::<MonitorApp>();
@@ -2201,7 +2420,7 @@ mod tests {
             process: resource_id_for(harness.root::<MonitorApp>(), tilo_fs),
         };
         assert_eq!(
-            harness.root::<MonitorApp>().requested.last(),
+            harness.root::<MonitorApp>().state().requested.last(),
             Some(&copy_pid),
             "the window asks for the copy through the process's effect"
         );
@@ -2212,13 +2431,25 @@ mod tests {
         harness.relayout();
         harness.key("ArrowRight");
         harness.relayout();
-        assert!(harness.root::<MonitorApp>().expanded.contains(&tilo_fs));
+        assert!(
+            harness
+                .root::<MonitorApp>()
+                .state()
+                .expanded
+                .contains(&tilo_fs)
+        );
         harness.key("ArrowLeft");
         harness.relayout();
-        assert!(!harness.root::<MonitorApp>().expanded.contains(&tilo_fs));
+        assert!(
+            !harness
+                .root::<MonitorApp>()
+                .state()
+                .expanded
+                .contains(&tilo_fs)
+        );
 
         click(&mut harness, "Memory in use");
-        assert_eq!(harness.root::<MonitorApp>().tab, Tab::Resources);
+        assert_eq!(harness.root::<MonitorApp>().state().tab, Tab::Resources);
     }
 
     /// A machine as the session's service would describe it.
@@ -2336,11 +2567,18 @@ mod tests {
         );
         {
             let monitor = harness.root::<MonitorApp>();
-            assert_eq!(monitor.model.process_status, ProcessDataStatus::Ready);
-            assert_eq!(monitor.model.metrics.host, "ada-laptop");
-            assert_eq!(monitor.model.metrics.cores, vec![70.0, 50.0, 30.0, 10.0]);
-            assert_eq!(monitor.model.metrics.mem_used, 12 << 30);
-            let notes = monitor
+            assert_eq!(
+                monitor.state().model.process_status,
+                ProcessDataStatus::Ready
+            );
+            assert_eq!(monitor.state().model.metrics.host, "ada-laptop");
+            assert_eq!(
+                monitor.state().model.metrics.cores,
+                vec![70.0, 50.0, 30.0, 10.0]
+            );
+            assert_eq!(monitor.state().model.metrics.mem_used, 12 << 30);
+            let state = monitor.state();
+            let notes = state
                 .model
                 .processes
                 .iter()
@@ -2359,6 +2597,7 @@ mod tests {
 
         harness
             .root_mut::<MonitorApp>()
+            .state()
             .answer(MonitorEffect::EndApp {
                 app: "so.tilo.notes".into(),
             })
@@ -2369,6 +2608,7 @@ mod tests {
         assert!(
             harness
                 .root_mut::<MonitorApp>()
+                .state()
                 .answer(MonitorEffect::EndApp {
                     app: "so.tilo.notes".into(),
                 })

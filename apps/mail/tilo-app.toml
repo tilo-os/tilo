@@ -15,8 +15,10 @@ version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
 # HTML bodies render in the Chromium engine runtime, in a sandboxed view with
-# scripts and remote content blocked (reader.rs, html_mail.rs). Without the
-# runtime the reader shows the message as styled text.
+# scripts and remote content blocked (reader.rs, html_mail.rs). Mail requires
+# it (`optional-runtimes` is the key of the runtimes an app requires): it
+# installs and updates with Mail, and the launcher refuses to start Mail
+# without it.
 optional-runtimes = ["tilo-runtime/2026.10.23-chromium"]
 platforms = ["linux", "macos"]
 platform-reason = "Speaks IMAP and SMTP over raw sockets until a host-side proxy exists."

@@ -1829,6 +1829,7 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
                 | crate::floating_surface::FloatingSurfaceHostMessage::ShareSelection
                 | crate::floating_surface::FloatingSurfaceHostMessage::PointAt { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::ActivateTestId { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Pick { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions {
@@ -2347,14 +2348,14 @@ impl AppHandler {
         // Continue one bounded provider page per frame. Re-querying resets the
         // palette generation/cursors, so stale work cannot leak into a newer
         // query. A follow-up redraw is requested only while more pages exist.
-        let (search_pending, search_announcement) =
-            app.actions
-                .action_palette
-                .as_mut()
-                .map_or((false, None), |palette| {
-                    let progress = palette.advance_search_page();
-                    (progress.pending, palette.take_search_announcement())
-                });
+        let (search_pending, search_announcement) = app
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .map_or((false, None), |palette| {
+                let progress = palette.advance_search_page();
+                (progress.pending, palette.take_search_announcement())
+            });
         needs_followup_redraw |= search_pending;
         if let (Some(reader), Some(announcement)) = (
             app.accessibility.screen_reader.as_mut(),
@@ -3434,7 +3435,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 if self
                     .app
                     .invoke_host_shortcut(crate::platform::HostShortcut::Search)
-                    && let Some(palette) = self.app.actions.action_palette.as_mut()
+                    && let Some(palette) = self.app.actions.action_palette.as_deref_mut()
                 {
                     palette.set_query(&query);
                 }
@@ -3856,9 +3857,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
-        if self.app.open_requested_palette() {
-            request_primary_redraw();
-        }
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
             self.app.layout.layout_dirty = true;
@@ -4287,7 +4285,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             if scheduled_due {
                 askers.push(format!(
                     "deadline:{}",
-                    animation_schedule::waking_leaves(self.app.root_widget.as_ref()).join("+")
+                    animation_schedule::waking_leaves(
+                        self.app.root_widget.as_ref(),
+                        crate::time::now()
+                    )
+                    .join("+")
                 ));
             }
             if retry_due || auxiliary_retry_due {

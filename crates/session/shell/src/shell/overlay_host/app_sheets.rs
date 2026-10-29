@@ -40,12 +40,12 @@ impl AppSheet {
 impl ShellOverlayHost {
     /// Whether "Uninstall \<name\>?" is up.
     pub fn uninstall_sheet_open(&self) -> bool {
-        matches!(self.app_sheet, Some(AppSheet::Uninstall(_)))
+        matches!(self.app_sheet.as_deref(), Some(AppSheet::Uninstall(_)))
     }
 
     /// The uninstall sheet on screen, for tests and captures.
     pub fn uninstall_sheet(&self) -> Option<&Asking> {
-        match &self.app_sheet {
+        match self.app_sheet.as_deref() {
             Some(AppSheet::Uninstall(asking)) => Some(asking),
             _ => None,
         }
@@ -53,7 +53,7 @@ impl ShellOverlayHost {
 
     /// The "Add \<name\> to apps?" sheet on screen, for tests and captures.
     pub fn add_app_sheet(&self) -> Option<&add_app_sheet::Asking> {
-        match &self.app_sheet {
+        match self.app_sheet.as_deref() {
             Some(AppSheet::Add(asking)) => Some(asking),
             _ => None,
         }
@@ -74,7 +74,7 @@ impl ShellOverlayHost {
     }
 
     fn show_app_sheet(&mut self, sheet: AppSheet) {
-        self.app_sheet = Some(sheet);
+        self.app_sheet = Some(Box::new(sheet));
         self.app_sheet_nodes = None;
         self.app_sheet_changed = true;
     }
@@ -92,7 +92,7 @@ impl ShellOverlayHost {
     }
 
     fn pump_app_sheet(&mut self) -> bool {
-        if let Some(Some(answer)) = match &self.app_sheet {
+        if let Some(Some(answer)) = match self.app_sheet.as_deref() {
             Some(AppSheet::Add(asking)) => Some(asking.answer()),
             _ => None,
         } {
@@ -100,7 +100,7 @@ impl ShellOverlayHost {
             downloaded_apps::answer(&answer);
             return true;
         }
-        let uninstall_answer = match &self.app_sheet {
+        let uninstall_answer = match self.app_sheet.as_deref() {
             Some(AppSheet::Uninstall(asking)) => asking.answer(),
             _ => None,
         };

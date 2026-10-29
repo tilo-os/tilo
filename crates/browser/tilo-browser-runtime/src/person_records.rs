@@ -1,6 +1,6 @@
-//! The person's own records ([`ui::record::person`]) as a page hands them
-//! to the windows it mounts: a chat message they had not sent yet, the
-//! contacts and accounts other apps read, the words the keyboard learned.
+//! The person's shared records ([`ui::record::person`]) as a page hands them
+//! to the windows it mounts: the contacts and accounts other apps read, and
+//! the settings sections.
 //!
 //! Every mount of the page keeps them in the store of the profile it shows,
 //! and one writer holds each app's records for all of them: the person's

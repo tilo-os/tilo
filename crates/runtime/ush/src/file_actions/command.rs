@@ -120,9 +120,17 @@ fn act(
                     .map(|()| 1)
                     .map_err(|error| error.to_string())
             }),
-        action => perform(action, &policy, &store, None)
-            .map(|done| done.len())
-            .map_err(|(error, _)| error.to_string()),
+        // The host's own shell names no content by reference: its verbs
+        // carry what they write.
+        action => perform(
+            action,
+            &policy,
+            &store,
+            &tilo_content::ContentStore::memory(),
+            None,
+        )
+        .map(|done| done.len())
+        .map_err(|(error, _)| error.to_string()),
     };
     match result {
         Ok(operations) => done(io, json, verb, None, operations),
@@ -130,39 +138,10 @@ fn act(
     }
 }
 
-/// Say what a file command did; `entry` names it in the environment's
-/// History when it was the record's action.
 fn done(io: &mut Io<'_>, json: bool, verb: &str, entry: Option<&str>, operations: usize) -> i32 {
-    if json {
-        let line = serde_json::json!({"action": verb, "entry": entry, "operations": operations});
-        let _ = writeln!(io.out, "{line}");
-        return 0;
-    }
-    let word = if operations == 1 {
-        "operation"
-    } else {
-        "operations"
-    };
-    let _ = if entry.is_some() {
-        writeln!(
-            io.out,
-            "done ({operations} {word}); undo it from the environment's History"
-        )
-    } else {
-        writeln!(
-            io.out,
-            "done ({operations} {word}); `history` lists what it kept aside"
-        )
-    };
-    0
+    cli::answer_done(io.out, json, verb, entry, operations)
 }
 
 fn refused(io: &mut Io<'_>, json: bool, name: &str, reason: &str) -> i32 {
-    if json {
-        let line = serde_json::json!({"action": name, "error": reason});
-        let _ = writeln!(io.out, "{line}");
-    } else {
-        let _ = writeln!(io.err, "{name}: {reason}");
-    }
-    1
+    cli::answer_refused(io.out, io.err, json, name, reason)
 }

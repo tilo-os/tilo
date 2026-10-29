@@ -486,7 +486,12 @@ impl Sessions {
     }
 
     /// Grant the environment `record` a folder, read-write or read-only.
-    pub fn grant_folder(&mut self, record: &str, path: &str, writable: bool) -> Result<(), String> {
+    pub fn grant_folder(
+        &mut self,
+        record: &str,
+        path: &ui::tilo_resource::AbsolutePath,
+        writable: bool,
+    ) -> Result<(), String> {
         if !tilo_environment::is_record_key(record) {
             return Err("not an environment record".into());
         }

@@ -351,6 +351,19 @@ impl ShellOverlayHost {
         Some((output, display.rect()))
     }
 
+    /// Each display moves between strips on its own: the strip deck takes
+    /// one slide per display lane.
+    fn place_deck_on_displays(&mut self, lanes: &[StripLane]) {
+        let displays: Vec<(u32, Rect)> =
+            lanes.iter().map(|lane| (lane.output, lane.area)).collect();
+        if let Some(deck) = self
+            .desktop_surface_mut()
+            .and_then(tilo_desktop::composition::DesktopSurface::strip_deck_mut)
+        {
+            deck.set_displays(&displays);
+        }
+    }
+
     /// Push the partition to every row and place the top bars: the full
     /// one on the primary display, a compact one on each other display.
     /// Cheap when nothing changed, so it runs every layout pass.
@@ -392,6 +405,7 @@ impl ShellOverlayHost {
                 Some((*id, unsafe { (&*ptr).get_rect() }))
             })
             .collect();
+        self.place_deck_on_displays(&lanes);
         let deck = self
             .desktop_surface_mut()
             .and_then(|surface| surface.strip_deck().map(ui::widget::Widget::get_rect));
@@ -514,14 +528,21 @@ impl ShellOverlayHost {
             drop(state);
             active
         };
-        if active == self.last_noted_focus {
-            return;
+        if active != self.last_noted_focus {
+            self.last_noted_focus = active;
+            if let Some((strip, group)) = active {
+                let state = chrome.borrow();
+                let mut tree = state.tree_mut();
+                tree.desktop.outputs.note_focus(strip, group);
+            }
         }
-        self.last_noted_focus = active;
-        if let Some((strip, group)) = active {
+        // Every display shows a strip of its own: the one focus is on shows
+        // the active strip, the others keep theirs. Written only when that
+        // changed.
+        let behind = chrome.borrow().tree().desktop.shown_strips_behind();
+        if behind {
             let state = chrome.borrow();
-            let mut tree = state.tree_mut();
-            tree.desktop.outputs.note_focus(strip, group);
+            let _ = state.tree_mut().desktop.note_shown_strip();
         }
     }
 
@@ -561,7 +582,9 @@ impl ShellOverlayHost {
         let target = {
             let state = chrome.borrow();
             let mut tree = state.tree_mut();
-            tree.desktop.outputs.set_focused(display);
+            // The display focus arrives on shows a strip of its own, which
+            // becomes the active one.
+            let _ = tree.desktop.focus_display(display);
             let Some(strip_id) = tree.desktop.active_strip.get(&tree.desktop.active).copied()
             else {
                 return true;
@@ -649,7 +672,12 @@ impl ShellOverlayHost {
                     .map_or(Step::Stay, |&(g, tab)| Step::Within(strip.id, g, tab)),
                 _ => match partition.neighbour(display, steps.signum()) {
                     Some(next) => {
-                        let arriving = partition.groups_on(strip, next);
+                        // The neighbour shows a strip of its own.
+                        let arriving = tree
+                            .desktop
+                            .strip_shown_on(next)
+                            .and_then(|id| ws.strips.iter().find(|s| s.id == id))
+                            .map_or_else(Vec::new, |shown| partition.groups_on(shown, next));
                         // Entering from the left lands on the first window,
                         // from the right on the last — the one nearest the
                         // seam just crossed.
