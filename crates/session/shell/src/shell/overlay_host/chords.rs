@@ -382,26 +382,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The Escape dismissal ladder. Priority matches z-order: palette >
-    /// overview > ws settings > quick settings.
-    pub(super) fn finish_notification_reading(
-        &mut self,
-        st: &mut crate::shell::chrome_state::ChromeState,
-    ) -> bool {
-        if st.overlays.quick_settings
-            && matches!(
-                st.quick_settings.current_level(),
-                tilo_quick_settings::QsLevel::Notifications
-            )
-            && self.notification_center.close_reader()
-        {
-            st.bump();
-            true
-        } else {
-            false
-        }
-    }
-
     /// Escape in the open search: step back out of an action's steps,
     /// then leave a resource scope, then clear what was typed, and only on
     /// an empty field close, so a slip of the finger never costs the search.
@@ -498,10 +478,6 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        if self.finish_notification_reading(&mut st) {
-            *handled = true;
-            return true;
-        }
         if st.overlays.quick_settings {
             // A drill-in is a nested page, so Escape follows its visible Back
             // affordance before it dismisses the whole popover. This keeps
@@ -510,19 +486,9 @@ impl ShellOverlayHost {
             // Quick Settings.
             // An open section closes before the panel does, as its
             // chevron would.
-            if st.quick_settings.wifi_password.take().is_some() {
-                st.bump();
-            } else if !matches!(
-                st.quick_settings.current_level(),
-                tilo_quick_settings::QsLevel::Root
-            ) || st.quick_settings.pasting()
-            {
-                // Clipboard history opened to paste has no page behind it.
-                st.quick_settings_back();
-            } else if self.qs_root.close_section(&mut st.quick_settings) {
-                st.bump();
-            } else {
+            if !self.quick_settings.back() {
                 st.overlays.quick_settings = false;
+                st.quick_settings.paste_origin = None;
                 st.bump();
             }
             *handled = true;

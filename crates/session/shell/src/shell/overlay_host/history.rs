@@ -31,30 +31,6 @@ pub(super) fn clipboard_history_source_label(
         )
 }
 
-pub(super) fn clipboard_history_matches_query(
-    item: &crate::compositor::selection::ClipboardHistorySnapshot,
-    query: &str,
-    fabric: Option<&DeviceFabricView>,
-) -> bool {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return true;
-    }
-    let source = clipboard_history_source_label(item, fabric);
-    let mut searchable = source.to_lowercase();
-    for mime in &item.mime_types {
-        searchable.push(' ');
-        searchable.push_str(&mime.to_lowercase());
-    }
-    if let Some(preview) = item.text_preview.as_deref() {
-        searchable.push(' ');
-        searchable.push_str(&preview.to_lowercase());
-    }
-    query
-        .split_whitespace()
-        .all(|term| searchable.contains(term))
-}
-
 /// Resolve only addresses the action explicitly declared. Semantic resource
 /// ids such as `notes.page:abc` are labels within an app, not record ids or
 /// URIs; treating them as either would make History's Open control navigate

@@ -2059,8 +2059,7 @@ impl ShellDriver {
             }
             "quick-settings" => self.scene_quick_settings(),
             "qs-muted" => self.scene_qs_muted(),
-            "qs-edit" => self.scene_qs_edit(false),
-            "qs-edit-drag" => self.scene_qs_edit(true),
+            "qs-edit" => self.scene_qs_edit(),
             "qs-hardware-wired" => self.scene_qs_hardware_wired(),
             "qs-compact" => self.scene_qs_compact(),
             "qs-scrolled" => self.scene_qs_scrolled(),
@@ -2653,11 +2652,11 @@ impl ShellDriver {
         self.fb.host_mut().force_quick_settings_settled();
     }
 
-    fn scene_qs_edit(&mut self, dragging: bool) {
+    fn scene_qs_edit(&mut self) {
         self.scene_quick_settings();
         self.fb
             .host_mut()
-            .force_quick_settings_edit_for_visual_test(dragging);
+            .force_quick_settings_edit_for_visual_test();
     }
 
     fn scene_qs_hardware_wired(&mut self) {

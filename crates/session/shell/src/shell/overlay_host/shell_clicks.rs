@@ -64,7 +64,8 @@ impl ShellOverlayHost {
             return true;
         }
         if flags.quick_settings {
-            self.handle_shell_quick_settings_click(p, handled);
+            // The panel took what was over it; anything else closed it.
+            *handled = true;
             return true;
         }
         if flags.ws_settings {

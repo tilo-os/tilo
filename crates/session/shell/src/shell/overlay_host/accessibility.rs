@@ -207,98 +207,9 @@ impl ShellOverlayHost {
                     }
                 }
                 LayerId::QuickSettings => {
-                    if let Some(chrome) = self.chrome.as_ref() {
-                        let state = chrome.borrow();
-                        if matches!(
-                            state.quick_settings.current_level(),
-                            tilo_quick_settings::QsLevel::Notifications
-                        ) {
-                            // One semantic snapshot has one clock edge, so
-                            // adjacent rows cannot label their ages across a
-                            // relative-time boundary on a loaded compositor.
-                            root.children.push(self.notification_center.accessibility(
-                                &ChromeNotifications::new(chrome).with_agents(&self.room_activity),
-                                &self.qs_notification_layout(),
-                                Instant::now(),
-                            ));
-                        } else if let tilo_quick_settings::QsLevel::BluetoothDetails(address) =
-                            state.quick_settings.current_level()
-                        {
-                            let accessory = state
-                                .quick_settings
-                                .bt_devices
-                                .iter()
-                                .find(|device| device.address.eq_ignore_ascii_case(address));
-                            let accessory_fallback = t("a11y-bluetooth-accessory");
-                            let accessory_name = accessory
-                                .map_or(accessory_fallback.as_str(), |device| device.name.as_str());
-                            let view = self
-                                .device_fabric_call(DeviceFabricUiAction::Snapshot)
-                                .unwrap_or_default();
-                            let rows = std::iter::once(None)
-                                .chain(view.devices.into_iter().map(Some))
-                                .collect::<Vec<_>>();
-                            let visible = self.qs_device_fabric_visible_rows();
-                            let start = self
-                                .qs_device_fabric_start
-                                .min(rows.len().saturating_sub(visible));
-                            let shown = visible.min(rows.len().saturating_sub(start));
-                            let items = rows
-                                .into_iter()
-                                .skip(start)
-                                .take(shown)
-                                .enumerate()
-                                .map(|(index, device)| match device {
-                                    None => AccessNode::new(Role::Button)
-                                        .with_name(t_args(
-                                            "a11y-bluetooth-disconnect",
-                                            &[("accessory", accessory_name.into())],
-                                        ))
-                                        .with_position(index.saturating_add(1), shown),
-                                    Some(device) => AccessNode::new(Role::Button)
-                                        .with_name(t_args(
-                                            "a11y-bluetooth-move-to",
-                                            &[("device", device.label.as_str().into())],
-                                        ))
-                                        .with_description(if device.is_local {
-                                            t("a11y-bluetooth-destination-local")
-                                        } else if device.online {
-                                            t("a11y-bluetooth-destination-online")
-                                        } else {
-                                            t("a11y-bluetooth-destination-offline")
-                                        })
-                                        .with_state(
-                                            AccessState::new()
-                                                .disabled(device.is_local || !device.online),
-                                        )
-                                        .with_position(index.saturating_add(1), shown),
-                                })
-                                .collect();
-                            root.children.push(
-                                AccessNode::new(Role::Dialog)
-                                    .with_name(t_args(
-                                        "a11y-bluetooth-move",
-                                        &[("accessory", accessory_name.into())],
-                                    ))
-                                    .with_description(t("a11y-bluetooth-move-description"))
-                                    .with_state(AccessState::new().modal(true))
-                                    .with_children(vec![
-                                        AccessNode::new(Role::List)
-                                            .with_name(t("a11y-bluetooth-destinations"))
-                                            .with_children(items),
-                                    ]),
-                            );
-                        } else {
-                            root.children
-                                .push(self.qs_root.accessibility_snapshot(&state.quick_settings));
-                            // The inline password, while it is asked for,
-                            // holds the keyboard like a sheet.
-                            if self.wifi_password_prompt_up()
-                                && let Some(prompt) = state.quick_settings.wifi_password.as_ref()
-                            {
-                                root.children.push(self.wifi_password_accessibility(prompt));
-                            }
-                        }
+                    if let Some(mut panel) = self.quick_settings_accessibility() {
+                        super::sheet_accessibility::route_quick_settings(&mut panel);
+                        root.children.push(panel);
                     }
                 }
                 LayerId::DisplayLayouts => {
@@ -336,29 +247,7 @@ impl ShellOverlayHost {
             LayerId::Collaborators => self
                 .collaborators_overlay
                 .accessibility_rect_for_path(child_path),
-            LayerId::QuickSettings => {
-                let drill_in_action = (self.chrome.is_some() && matches!(child_path, [0]))
-                    .then(|| self.quick_settings_rect());
-                let notification_action = self.chrome.as_ref().and_then(|chrome| {
-                    if !matches!(
-                        chrome.borrow().quick_settings.current_level(),
-                        tilo_quick_settings::QsLevel::Notifications
-                    ) {
-                        return None;
-                    }
-                    let [0, dialog_path @ ..] = child_path else {
-                        return None;
-                    };
-                    self.notification_center.accessibility_rect_for_path(
-                        &ChromeNotifications::new(chrome).with_agents(&self.room_activity),
-                        &self.qs_notification_layout(),
-                        dialog_path,
-                    )
-                });
-                drill_in_action
-                    .or(notification_action)
-                    .or_else(|| self.qs_root.accessibility_rect_for_path(child_path))
-            }
+            LayerId::QuickSettings => self.quick_settings_accessibility_rect(child_path),
             LayerId::WorkspaceSettings => {
                 let ownership = self.workspace_settings_overlay.ownership_action_rect();
                 let ownership_present = ownership.area() > 0.0;
@@ -419,9 +308,7 @@ impl ShellOverlayHost {
             LayerId::Collaborators => self
                 .collaborators_overlay
                 .focus_accessibility_path(child_path),
-            LayerId::QuickSettings => {
-                focus_quick_settings_accessibility(self, child_path)
-            }
+            LayerId::QuickSettings => self.quick_settings_accessibility_rect(child_path).is_some(),
             LayerId::NowPlaying => self.focus_now_playing_accessibility(child_path),
             LayerId::WorkspaceSettings => {
                 !child_path.is_empty() && self.synthetic_accessibility_rect(path).is_some()

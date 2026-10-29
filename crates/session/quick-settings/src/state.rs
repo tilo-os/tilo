@@ -6,8 +6,8 @@ use crate::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
 /// and the focused window, in desktop coordinates, either unknown.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PasteOrigin {
-    pub caret: Option<vello::kurbo::Rect>,
-    pub window: Option<vello::kurbo::Rect>,
+    pub caret: Option<ui::vello::kurbo::Rect>,
+    pub window: Option<ui::vello::kurbo::Rect>,
 }
 
 /// One monitor's brightness control in Quick Settings.

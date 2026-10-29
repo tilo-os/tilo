@@ -39,7 +39,7 @@ impl ShellOverlayHost {
         mut self,
         config: settings_store::hardware::QuickSettingsConfig,
     ) -> Self {
-        self.qs_root = QuickSettingsRoot::with_config(config);
+        self.quick_settings = quick_settings::QuickSettingsPanel::with_arrangement(config);
         self
     }
 
@@ -150,7 +150,6 @@ impl ShellOverlayHost {
     /// summoned from, the way choosing it in any clipboard manager does;
     /// browsed from Quick Settings, it is only copied.
     pub(super) fn choose_clipboard_item(&mut self, id: [u8; 32]) {
-        self.qs_selected_clipboard = Some(id);
         let _ = self.clipboard_manager_call(ClipboardManagerAction::Activate(id));
         let Some(chrome) = self.chrome.as_ref() else {
             return;

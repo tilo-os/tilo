@@ -198,27 +198,6 @@ impl ShellOverlayHost {
             .map_or_else(Vec::new, |bridge| bridge(action))
     }
 
-    pub(super) fn filtered_clipboard_history(
-        &self,
-    ) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot> {
-        self.filter_clipboard_history(self.clipboard_manager_call(ClipboardManagerAction::Snapshot))
-    }
-
-    /// `history` narrowed to what the Clipboard section's search matches.
-    pub(super) fn filter_clipboard_history(
-        &self,
-        mut history: Vec<crate::compositor::selection::ClipboardHistorySnapshot>,
-    ) -> Vec<crate::compositor::selection::ClipboardHistorySnapshot> {
-        if self.qs_clipboard_query.trim().is_empty() {
-            return history;
-        }
-        let fabric = self.device_fabric_call(DeviceFabricUiAction::Snapshot).ok();
-        history.retain(|item| {
-            clipboard_history_matches_query(item, &self.qs_clipboard_query, fabric.as_ref())
-        });
-        history
-    }
-
     /// Supply identities the host has already verified (for example, through
     /// Contacts or a previous in-person verification). The invite sheet may
     /// reuse only these exact keys for its “someone I know” choices.

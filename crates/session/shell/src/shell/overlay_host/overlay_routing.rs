@@ -22,17 +22,6 @@ impl ShellOverlayHost {
         }
         // Focus loss or a fresh press ends an abandoned navigation gesture.
         // Escape alone keeps the matching release owned across page changes.
-        if matches!(
-            event,
-            WindowEvent::Focused(false)
-                | WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: winit::event::MouseButton::Left,
-                    ..
-                }
-        ) {
-            self.qs_navigation_release_pending = false;
-        }
         // A finger put down on another display works there, as the pointer
         // arriving there does: an edge swipe or a tap the shell keeps for
         // itself never becomes pointer motion, and what it opens belongs
@@ -141,68 +130,17 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Retains root navigation releases and slider drags before modal absorption.
-    pub(super) fn route_qs_pointer_capture(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        handled: &mut bool,
-    ) -> bool {
-        if let WindowEvent::Touch(touch) = event
-            && self.route_qs_slider_touch(touch, scale_factor)
-        {
-            *handled = true;
-            return true;
-        }
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: winit::event::MouseButton::Left,
-                ..
-            }
-        ) && std::mem::take(&mut self.qs_navigation_release_pending)
-        {
-            *handled = true;
-            return true;
-        }
-        if self.now_playing_card.scrubbing() {
-            match event {
-                WindowEvent::CursorMoved { .. } => {
-                    if let Some(point) = self.last_cursor {
-                        self.drag_now_playing_seek(point);
-                    }
-                    *handled = true;
-                    return true;
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: winit::event::MouseButton::Left,
-                    ..
-                } => {
-                    self.release_now_playing_seek();
-                    *handled = true;
-                    return true;
-                }
-                _ => {}
-            }
-        }
-        if !self.qs_root.drag_active() {
+    /// A drag along the now-playing card's playhead keeps the pointer
+    /// until it is let go.
+    pub(super) fn route_now_playing_scrub(&mut self, event: &WindowEvent) -> bool {
+        if !self.now_playing_card.scrubbing() {
             return false;
         }
         match event {
             WindowEvent::CursorMoved { .. } => {
-                if let (Some(point), Some(chrome)) = (self.last_cursor, self.chrome.clone()) {
-                    let panel = self.quick_settings_rect();
-                    let mut st = chrome.borrow_mut();
-                    if self
-                        .qs_root
-                        .update_drag(point, panel, &mut st.quick_settings)
-                    {
-                        st.bump();
-                    }
+                if let Some(point) = self.last_cursor {
+                    self.drag_now_playing_seek(point);
                 }
-                *handled = true;
                 true
             }
             WindowEvent::MouseInput {
@@ -210,98 +148,21 @@ impl ShellOverlayHost {
                 button: winit::event::MouseButton::Left,
                 ..
             } => {
-                let finishing_layout_drag = self.qs_root.edit_mode();
-                let commit = self
-                    .chrome
-                    .as_ref()
-                    .and_then(|chrome| self.qs_root.finish_drag(&chrome.borrow().quick_settings));
-                if let Some(commit) = commit {
-                    self.commit_quick_settings_slider(commit);
-                }
-                if finishing_layout_drag && let Some(chrome) = self.chrome.as_ref() {
-                    // `finish_drag` commits the shared reorder controller on
-                    // release; publish that one durable layout change.
-                    chrome.borrow_mut().bump();
-                }
-                *handled = true;
+                self.release_now_playing_seek();
                 true
             }
             _ => false,
         }
     }
 
-    /// A finger on a Quick Settings slider works it as the pointer held down
-    /// does: it lands as a press, the value follows it, and lifting commits.
-    /// Whether the contact was a slider's.
-    fn route_qs_slider_touch(&mut self, touch: &winit::event::Touch, scale_factor: f64) -> bool {
-        use ui::widget::SliderTouchStep;
-        let mut finger = self.qs_slider_touch;
-        let step = finger.step(touch, scale_factor, |point| {
-            self.qs_slider_face_at(point) || self.now_playing_seek_at(point)
-        });
-        self.qs_slider_touch = finger;
-        match step {
-            SliderTouchStep::Press(point) => {
-                let p = self.untransform_quick_settings_pointer(point, Instant::now());
-                if !self.handle_now_playing_click(p) {
-                    self.handle_shell_quick_settings_root_click(p);
-                }
-                true
-            }
-            SliderTouchStep::Move(point) if self.now_playing_card.scrubbing() => {
-                self.drag_now_playing_seek(point);
-                true
-            }
-            SliderTouchStep::Release if self.now_playing_card.scrubbing() => {
-                self.release_now_playing_seek();
-                true
-            }
-            SliderTouchStep::Move(point) => {
-                if let Some(chrome) = self.chrome.clone() {
-                    let panel = self.quick_settings_rect();
-                    let mut st = chrome.borrow_mut();
-                    if self
-                        .qs_root
-                        .update_drag(point, panel, &mut st.quick_settings)
-                    {
-                        st.bump();
-                    }
-                }
-                true
-            }
-            SliderTouchStep::Release => {
-                let commit = self
-                    .chrome
-                    .as_ref()
-                    .and_then(|chrome| self.qs_root.finish_drag(&chrome.borrow().quick_settings));
-                if let Some(commit) = commit {
-                    self.commit_quick_settings_slider(commit);
-                }
-                true
-            }
-            SliderTouchStep::Ignored => false,
-        }
-    }
-
-    /// Whether a finger landing at `point` (logical, as drawn) is on a
-    /// slider of the open Quick Settings root page.
-    pub(super) fn qs_slider_face_at(&self, point: Point) -> bool {
-        let Some(chrome) = self.chrome.as_ref() else {
-            return false;
-        };
-        let Ok(st) = chrome.try_borrow() else {
-            return false;
-        };
-        if !st.overlays.quick_settings
-            || !matches!(
-                st.quick_settings.current_level(),
-                tilo_quick_settings::QsLevel::Root
-            )
-        {
-            return false;
-        }
-        let p = self.untransform_quick_settings_pointer(point, Instant::now());
-        self.quick_settings_rect().contains(p) && self.qs_root.slider_face_at(p, &st.quick_settings)
+    pub(super) fn is_pointer_event(event: &WindowEvent) -> bool {
+        matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch(_)
+        )
     }
 
     /// A key on a portal sheet that takes no typed text: move between its
@@ -547,15 +408,12 @@ impl ShellOverlayHost {
     }
 
     pub(super) fn notification_history_covers_pointer(&self, point: Point) -> bool {
-        self.chrome.as_ref().is_some_and(|chrome| {
-            let st = chrome.borrow();
-            st.overlays.quick_settings
-                && matches!(
-                    st.quick_settings.current_level(),
-                    tilo_quick_settings::QsLevel::Notifications
-                )
-                && self.quick_settings_rect().contains(point)
-        })
+        self.overlay_flags().quick_settings
+            && matches!(
+                self.quick_settings.showing().page,
+                tilo_quick_settings::Page::Notifications | tilo_quick_settings::Page::Notification
+            )
+            && self.quick_settings_rect().contains(point)
     }
 
     /// Banners own completed clicks before ordinary overlay absorption.

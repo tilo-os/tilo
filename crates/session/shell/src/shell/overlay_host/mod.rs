@@ -34,7 +34,7 @@ pub(crate) use agent_markers::AccessibleAgentMarker;
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
-use ui::num::{f32_of_f64, f64_of_usize, isize_of_usize, usize_of_f64, usize_of_isize};
+use ui::num::{f32_of_f64, f64_of_usize, isize_of_usize, usize_of_isize};
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
@@ -48,7 +48,7 @@ use vello::Scene;
 use vello::kurbo::RoundedRect;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
-use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::quick_settings_refresh::QsField;
@@ -121,8 +121,8 @@ use device_fabric::{
     media_handoff_failure_key, sentence_case, speaker_group_summary,
 };
 use history::{
-    HistoryTargetAddress, clipboard_history_matches_query, clipboard_history_relative_time,
-    clipboard_history_source_label, history_target_address,
+    HistoryTargetAddress, clipboard_history_relative_time, clipboard_history_source_label,
+    history_target_address,
 };
 #[cfg(test)]
 use shortcuts::configured_shortcut_matches;
@@ -142,7 +142,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
-    PermissionPrompt, PromptChoice, SecretPrompt, TextInput, Widget, WindowGroup as UiWindowGroup,
+    PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup,
 };
 
 #[cfg(test)]
@@ -171,18 +171,11 @@ pub use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};
 #[cfg(test)]
 use tilo_desktop::drill_in as qs;
-use tilo_desktop::drill_in::DrillInList;
-use tilo_desktop::notifications::{
-    CenterLayout, CenterMetrics, CenterOutcome, NotificationCenter, NotificationHost as _,
-};
 use tilo_desktop::workspace_settings::EXPIRY_CHOICES;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
 use tilo_desktop::workspace_settings::overlay::{
     AgentAccessKey, EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey,
     WorkspaceSettingsOverlay,
-};
-use tilo_quick_settings::root::{
-    BluetoothIntent, QuickSettingsRoot, RootAction, SliderCommit, WifiIntent,
 };
 use ui::widget::ButtonRole;
 
@@ -274,7 +267,6 @@ mod projection;
 mod qs_device_input;
 mod qs_device_rows;
 mod qs_input;
-mod qs_paint;
 mod qs_state;
 #[cfg(test)]
 #[allow(
@@ -284,6 +276,7 @@ mod qs_state;
 #[path = "qs_wifi_radio_tests.rs"]
 mod qs_wifi_radio_tests;
 mod queries;
+mod quick_settings;
 mod room_activity;
 mod scene;
 mod shortcut_guide_sheet;
@@ -299,7 +292,6 @@ mod tab_rename;
 mod thing_menu;
 mod top_bar;
 mod tree_harvest;
-mod wifi_password;
 mod window_focus;
 mod workspace_content;
 mod ws_emoji;
@@ -316,10 +308,10 @@ use overview_layout::{
 use overview_paint::OverviewPanelCache;
 pub(crate) use portal_prompts::{prompt_choice_to_outcome, prompt_label};
 use qs_state::{
-    QS_CLIPBOARD_ROWS, QS_WIFI_RESCAN, QsDeviceSource, QsPanelMetrics,
-    focus_quick_settings_accessibility, quick_settings_settled_bounds, radio_field,
+    QS_WIFI_RESCAN, QsDeviceSource, QsPanelMetrics, quick_settings_settled_bounds, radio_field,
     scanned_wifi_security, sound_outputs_of,
 };
+pub(crate) use quick_settings::QUICK_SETTINGS_WINDOW;
 use room_activity::ActivityRefreshGate;
 #[cfg(test)]
 use room_activity::{
@@ -386,7 +378,7 @@ struct OverlayInputs {
     shortcut_config: settings_store::hardware::ShortcutConfig,
     shortcut_triggers: crate::shell::automation_triggers::TriggerHost,
     desktop_controls: DesktopControlsSource,
-    qs_root: QuickSettingsRoot,
+    quick_settings: quick_settings::QuickSettingsPanel,
     qs_refresh: crate::shell::quick_settings_refresh::QsRefresh,
     qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
     qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
@@ -689,37 +681,11 @@ pub struct ShellOverlayHost {
     workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
-    /// The notification centre's viewer-local state: scroll position,
-    /// keyboard selection and folded groups. The notifications themselves
-    /// stay owned by `ChromeState`.
-    notification_center: NotificationCenter,
-    /// The resolved caption (`xs`) and label (`sm`) sizes the Quick Settings
-    /// pages paint with, captured from the theme at the top of each frame so
-    /// the notification-history geometry — resolved before a frame has a
-    /// theme, like the root's — measures the type it actually draws, with
-    /// the ui scale and the text scale both included.
-    qs_type_lines: CenterMetrics,
     /// The quick settings panel's width and window margin, from the theme
     /// at the top of each frame (HIG 9.6: a utility Panel is
     /// `panel_width_utility`, grown with the text; it stays the floating
     /// Panel margin inside its display).
     qs_panel: QsPanelMetrics,
-    /// Offset into the separate clipboard history. Clipboard and notification
-    /// panes retain independent positions when the person switches between
-    /// them.
-    qs_clipboard_history_start: usize,
-    qs_clipboard_wheel_remainder: f64,
-    /// Stable keyboard target for clipboard history. The content hash is
-    /// retained instead of an index so concurrent fabric merges cannot make
-    /// Enter activate a different item than the highlighted one.
-    qs_selected_clipboard: Option<[u8; 32]>,
-    /// Ephemeral, metadata-only clipboard manager filter. It is never synced
-    /// and never causes a retained payload to become the live clipboard.
-    qs_clipboard_query: String,
-    /// Offset into the complete media/output/device list. Unlike the initial
-    /// compact implementation, no enrolled device disappears after row seven.
-    qs_device_fabric_start: usize,
-    qs_device_fabric_wheel_remainder: f64,
     /// The local source the next device click routes to. This is private
     /// view state, never convergent fabric state.
     qs_selected_source: Option<QsDeviceSource>,
@@ -922,13 +888,8 @@ pub struct ShellOverlayHost {
     /// Wakes the compositor loop when a peer stream's picture finishes
     /// decoding; handed to every peer view this host mounts.
     peer_picture_wake: Option<media::realtime::PictureWake>,
-    /// Quick-settings root-page presentation, geometry and input state.
-    qs_root: QuickSettingsRoot,
-    // Navigation can shrink the panel before the matching release arrives.
-    qs_navigation_release_pending: bool,
-    /// The finger holding a Quick Settings slider, read as the pointer held
-    /// down by the toolkit's [`ui::widget::SliderTouch`].
-    qs_slider_touch: ui::widget::SliderTouch,
+    /// Quick Settings: the app, mounted here and shown in the popover.
+    quick_settings: quick_settings::QuickSettingsPanel,
     /// Where the now-playing card beside the root page reads players and
     /// sends transport commands.
     now_playing_source: std::rc::Rc<dyn crate::shell::now_playing::NowPlayingSource>,
@@ -948,14 +909,9 @@ pub struct ShellOverlayHost {
     /// a test dispatcher updates the existing provider rather than registering
     /// a duplicate action source.
     qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
-    /// Shared drill-in chrome for host-owned pages (Bluetooth details).
-    qs_aux_drill_in: DrillInList,
     /// When the open Wi-Fi section last asked for a scan: it scans again
     /// while it stays open, so the list follows the room.
     qs_wifi_scanned_at: Option<Instant>,
-    /// The section whose host-described rows were last read, so opening the
-    /// Clipboard afresh starts at the newest copy with no search.
-    qs_hosted_section: Option<tilo_quick_settings::QsSection>,
     /// Live battery/network/volume readings, or `None` when nothing
     /// polls — `--shots` and headless tests have no poller so their
     /// pixels don't depend on host hardware. See
@@ -1109,11 +1065,6 @@ pub struct ShellOverlayHost {
     /// The Super+P display sheet, including controller, editor, animation,
     /// painted geometry, and event routing.
     projection_overlay: Box<ProjectionOverlay>,
-    /// The Wi-Fi join prompt — its passphrase field is the only place the
-    /// passphrase lives — and the prompt (`WifiPasswordPrompt::id`) it is
-    /// typed for.
-    wifi_prompt: Box<SecretPrompt>,
-    wifi_password_prompt: Option<u64>,
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.
     display_identify: crate::shell::display_identify::DisplayIdentify,
@@ -1779,10 +1730,6 @@ mod overview_panel_tests;
 )]
 #[path = "overview_transition_tests.rs"]
 mod overview_transition_tests;
-
-#[cfg(test)]
-#[path = "wifi_password_tests.rs"]
-mod wifi_password_tests;
 
 #[cfg(test)]
 #[path = "open_window_rows_tests.rs"]

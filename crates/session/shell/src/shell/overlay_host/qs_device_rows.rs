@@ -1,4 +1,4 @@
-//! Quick settings device rows: geometry, details and faces.
+//! Quick settings device rows: what each says and offers.
 
 #[allow(
     clippy::wildcard_imports,
@@ -7,24 +7,6 @@
 use super::*;
 
 impl ShellOverlayHost {
-    /// Copy `index` of the Clipboard section, where the page shows it.
-    pub(super) fn qs_clipboard_row_rect(&self, index: usize) -> Rect {
-        self.chrome
-            .as_ref()
-            .and_then(|chrome| {
-                self.qs_root.hosted_row_rect(
-                    &chrome.borrow().quick_settings,
-                    tilo_quick_settings::QsSection::Clipboard,
-                    index,
-                )
-            })
-            .unwrap_or(Rect::ZERO)
-    }
-
-    pub(super) fn qs_device_control_rect(row: Rect) -> Rect {
-        tilo_quick_settings::hosted::control_rect(row)
-    }
-
     /// The Devices row text for a local input: whether it is the one in
     /// use, and its level.
     pub(super) fn local_input_detail(input: &LocalMediaInputView) -> String {
@@ -41,10 +23,6 @@ impl ShellOverlayHost {
         detail
     }
 
-    pub(super) fn qs_realtime_consent_actions(row: Rect) -> (Rect, Rect) {
-        tilo_quick_settings::hosted::pair_rects(row)
-    }
-
     pub(super) fn qs_selected_media(&self) -> Option<&String> {
         match &self.qs_selected_source {
             Some(QsDeviceSource::Media(session_id)) => Some(session_id),
@@ -52,17 +30,13 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Which of a device row's two trailing buttons `point` hits: `true` for
-    /// the first (allow), `false` for the second (decline), `None` for neither.
-    pub(super) fn qs_device_row_choice(&self, row_index: usize, point: Point) -> Option<bool> {
-        let (first, second) =
-            Self::qs_realtime_consent_actions(self.qs_devices_row_rect(row_index));
-        if first.contains(point) {
-            Some(true)
-        } else if second.contains(point) {
-            Some(false)
-        } else {
-            None
+    /// Which of a request's two buttons was pressed: `true` for the first
+    /// (allow), `false` for the second (decline), `None` for neither.
+    pub(super) const fn qs_device_row_choice(part: tilo_quick_settings::RowPart) -> Option<bool> {
+        match part {
+            tilo_quick_settings::RowPart::Allow => Some(true),
+            tilo_quick_settings::RowPart::Decline => Some(false),
+            _ => None,
         }
     }
 
@@ -156,140 +130,6 @@ impl ShellOverlayHost {
         clippy::too_many_lines,
         reason = "the bounded device rows share paint geometry with their capability and transport status"
     )]
-    pub(super) fn draw_qs_bluetooth_details(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        qs: &tilo_quick_settings::QuickSettingsState,
-        address: &str,
-    ) {
-        let accessory = qs
-            .bt_devices
-            .iter()
-            .find(|device| device.address.eq_ignore_ascii_case(address));
-        let fallback_name = t("a11y-bluetooth-accessory");
-        let name = accessory.map_or(fallback_name.as_str(), |device| device.name.as_str());
-        self.draw_qs_drill_in_header(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &t_args("a11y-bluetooth-move", &[("accessory", name.into())]),
-        );
-        let panel = self.quick_settings_rect();
-        text_renderer.draw_style(
-            scene,
-            &t("qs-bluetooth-move-note"),
-            theme.tokens.colors.text_dim,
-            transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
-            Some(f32_of_f64(panel.width() - 24.0)),
-            &theme.text(TextRole::Caption),
-        );
-        let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
-            self.draw_qs_drill_in_empty(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &t("qs-devices-fabric-unavailable"),
-            );
-            return;
-        };
-        let rows = std::iter::once(None)
-            .chain(view.devices.into_iter().map(Some))
-            .collect::<Vec<_>>();
-        let _ = self.clamp_qs_device_fabric_start(rows.len());
-        let visible_rows = self.qs_device_fabric_visible_rows();
-        for (index, item) in rows
-            .iter()
-            .skip(self.qs_device_fabric_start)
-            .take(visible_rows)
-            .enumerate()
-        {
-            let row = self.qs_device_row_rect(index);
-            let (title, detail, icon, enabled) = match item {
-                None => (
-                    t("qs-bluetooth-this-device"),
-                    t_args("qs-bluetooth-disconnect", &[("accessory", name.into())]),
-                    ui::icons::Icon::Bluetooth,
-                    accessory.is_some_and(|device| device.connected),
-                ),
-                Some(device) => (
-                    device.label.clone(),
-                    if device.is_local {
-                        t("qs-bluetooth-this-certified")
-                    } else if device.online {
-                        t("qs-bluetooth-move-here")
-                    } else {
-                        t("qs-devices-offline")
-                    },
-                    ui::icons::Icon::Monitor,
-                    !device.is_local && device.online,
-                ),
-            };
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(row, "")
-                    .hovered(enabled && self.last_cursor.is_some_and(|point| row.contains(point)))
-                    .disabled(!enabled)
-                    .accessible_name(&format!("{title}. {detail}")),
-            );
-            ui::icons::draw_icon(
-                scene,
-                transform,
-                Rect::new(row.x0 + 12.0, row.y0 + 15.0, row.x0 + 32.0, row.y0 + 35.0),
-                icon,
-                theme.tokens.colors.text_primary,
-                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            );
-            text_renderer.draw_style(
-                scene,
-                &title,
-                theme.tokens.colors.text_primary,
-                transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
-                Some(f32_of_f64(row.width() - 54.0)),
-                &theme.text(TextRole::Label),
-            );
-            text_renderer.draw_style(
-                scene,
-                &detail,
-                theme.tokens.colors.text_dim,
-                transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
-                Some(f32_of_f64(row.width() - 54.0)),
-                &theme.text(TextRole::Caption),
-            );
-        }
-        if rows.len() > visible_rows {
-            let shown = visible_rows.min(rows.len().saturating_sub(self.qs_device_fabric_start));
-            text_renderer.draw_style(
-                scene,
-                &t_args(
-                    "qs-devices-showing",
-                    &[
-                        (
-                            "first",
-                            self.qs_device_fabric_start.saturating_add(1).into(),
-                        ),
-                        (
-                            "last",
-                            self.qs_device_fabric_start.saturating_add(shown).into(),
-                        ),
-                        ("total", rows.len().into()),
-                    ],
-                ),
-                theme.tokens.colors.text_dim,
-                transform.pre_translate((panel.x0 + 12.0, panel.y1 - 14.0).into()),
-                Some(f32_of_f64(panel.width() - 24.0)),
-                &theme.text(TextRole::Caption),
-            );
-        }
-    }
-
     /// The title, detail, icon, selected state and enabled state of one
     /// device-fabric row: what the pane draws and what it announces.
     #[expect(

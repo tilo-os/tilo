@@ -368,7 +368,7 @@ impl ShellOverlayHost {
                 }
                 Ask::Read(id) => {
                     if chrome.borrow_mut().read_notification(id) {
-                        self.notification_center.open_reader(id);
+                        self.quick_settings.read(id);
                     }
                 }
                 Ask::AnswerCall(id) => {

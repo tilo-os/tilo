@@ -41,6 +41,8 @@ impl tts::Speaker for RecordingSpeaker {
 
 fn press(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, key: NamedKey) {
     press_key(host, taffy, node, Key::Named(key), ModifiersState::empty());
+    // The panel answers on its next frame, as it would on screen.
+    host.force_quick_settings_settled();
 }
 
 #[test]
@@ -61,6 +63,7 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
         });
         state.bump();
     }
+    let _ = layout_host(&mut host);
     host.force_quick_settings_settled();
     let (taffy, node) = layout_host(&mut host);
     narrator.observe(&host.chrome_narration_snapshot());
@@ -88,9 +91,7 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
     narrator.observe(&host.chrome_narration_snapshot());
     let spoken = speaker.take();
     assert!(
-        spoken
-            .first()
-            .is_some_and(|u| u.text.starts_with("Mute, switch, ")),
+        spoken.first().is_some_and(|u| u.text.starts_with("Mute, ")),
         "got {spoken:?}"
     );
     press(&mut host, &taffy, node, NamedKey::Tab);

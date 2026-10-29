@@ -3543,6 +3543,27 @@ impl ChromeState {
     /// another device routes that action back to exactly that device. An
     /// entry restored after a restart has no sender left, so the caller opens
     /// the verified app instead. Acted-on entries leave the history.
+    /// Whether opening kept notification `id` reaches something: its sender,
+    /// another device, a scheduled launch or its app. One nothing reaches is
+    /// read in full where it is kept instead.
+    pub fn history_notification_opens(&self, id: u64) -> bool {
+        let Some(notification) = self.notification_log.history_entry(id) else {
+            return false;
+        };
+        let key = notification.default_action_key();
+        crate::shell::notification::scheduled_launch(notification).is_some()
+            || (notification.remote_route.is_some()
+                && key
+                    .clone()
+                    .and_then(|key| remote_action_command(notification, &key))
+                    .is_some())
+            || (notification.remote_route.is_none()
+                && self.notification_bridge.is_some()
+                && notification.sender_id.is_some()
+                && key.is_some())
+            || (notification.remote_route.is_none() && notification.app_id.is_some())
+    }
+
     pub fn activate_history_notification(&mut self, id: u64) -> HistoryActivation {
         let Some(notification) = self.notification_log.history_entry(id) else {
             return HistoryActivation::Missing;

@@ -116,11 +116,10 @@ impl Widget for ShellOverlayHost {
         // the dates and numbers it formats never reads the settings file.
         let _ = ui::format::region::current();
         let mut steps = UpdateSteps::start();
-        // The roster, the display sheet's list and the quick settings page
-        // glide on after a flick, repainted as a wheel's scroll is.
-        let glided = self.collaborators_overlay.advance_scroll()
-            | self.projection_overlay.advance_scroll()
-            | self.advance_qs_root_scroll();
+        // The roster and the display sheet's list glide on after a flick,
+        // repainted as a wheel's scroll is.
+        let glided =
+            self.collaborators_overlay.advance_scroll() | self.projection_overlay.advance_scroll();
         if glided && let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().bump();
         }
@@ -203,7 +202,8 @@ impl Widget for ShellOverlayHost {
         // Devices and the Clipboard follow the fabric and the history while
         // they show.
         self.refresh_qs_hosted_rows();
-        let quick_settings_dirty = self.apply_quick_settings_readings();
+        let quick_settings_dirty =
+            self.apply_quick_settings_readings() | self.pump_quick_settings(doc, path);
         let projection_open = self.overlay_flags().projection;
         let display_storage_dirty =
             self.projection_overlay.poll_storage(projection_open) | self.close_settled_projection();
@@ -361,7 +361,6 @@ impl Widget for ShellOverlayHost {
         }
         steps.mark("harvest-changes");
         self.clear_stale_open_target();
-        self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
         let presence_dirty = self.pump_presence_requests();
         let presence_dirty = self.sync_self_presence() | presence_dirty;
@@ -901,16 +900,7 @@ impl Widget for ShellOverlayHost {
         if st.overlays.collaborators {
             return self.collaborators_overlay.primary_vertical_scroll();
         }
-        if st.overlays.quick_settings
-            && matches!(
-                st.quick_settings.current_level(),
-                tilo_quick_settings::QsLevel::Notifications
-            )
-        {
-            self.notification_center.reading_scroll()
-        } else {
-            None
-        }
+        None
     }
 
     fn apply_primary_vertical_scroll(
@@ -924,11 +914,9 @@ impl Widget for ShellOverlayHost {
             self.layers
                 .emoji_picker
                 .apply_primary_vertical_scroll(action)
-        } else if self.overlay_flags().collaborators {
+        } else {
             self.collaborators_overlay
                 .apply_primary_vertical_scroll(action)
-        } else {
-            self.notification_center.apply_reading_scroll(action)
         };
         if matches!(result, ui::widget::PrimaryScrollResult::Changed(_))
             && let Some(chrome) = &self.chrome
@@ -1189,10 +1177,14 @@ impl Widget for ShellOverlayHost {
         self.rect
     }
 
-    /// A finger on a Quick Settings slider holds it, as the pointer does;
-    /// it never turns into a scroll of the page.
+    /// A finger on the open Quick Settings panel is the panel's: its own
+    /// sliders and lists decide what the finger does.
     fn claims_raw_touch(&self, point: Point) -> bool {
-        self.qs_slider_face_at(point)
+        self.overlay_flags().quick_settings
+            && self
+                .quick_settings
+                .rect()
+                .contains(self.untransform_quick_settings_pointer(point, Instant::now()))
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -1717,44 +1709,7 @@ impl ShellOverlayHost {
         if *ctx.handled {
             return;
         }
-        if let Some(chrome) = self.chrome.clone() {
-            let reading = {
-                let st = chrome.borrow();
-                st.overlays.quick_settings
-                    && matches!(
-                        st.quick_settings.current_level(),
-                        tilo_quick_settings::QsLevel::Notifications
-                    )
-                    && self.notification_center.is_reading()
-            };
-            if reading
-                && self
-                    .notification_center
-                    .reader_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
-            {
-                chrome.borrow_mut().bump();
-            }
-            if *ctx.handled {
-                return;
-            }
-        }
-        if self.route_qs_pointer_capture(event, ctx.scale_factor, ctx.handled) {
-            return;
-        }
-        if self.route_qs_root_scroll(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
-            return;
-        }
-        if let WindowEvent::MouseWheel { delta, .. } = event
-            && (self.handle_qs_notification_wheel(*delta, ctx.scale_factor)
-                || self.handle_qs_clipboard_wheel(*delta, ctx.scale_factor)
-                || self.handle_qs_device_fabric_wheel(*delta, ctx.scale_factor))
-        {
-            *ctx.handled = true;
-            return;
-        }
-        if Self::is_pointer_event(event)
-            && self.route_wifi_password_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
-        {
+        if self.route_quick_settings_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         if (Self::is_pointer_event(event) || matches!(event, WindowEvent::Focused(false)))
@@ -1823,14 +1778,6 @@ impl ShellOverlayHost {
         }
         // So does a tab's name field, while a tab is named in its pill.
         if self.route_tab_rename_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
-            return;
-        }
-        // Ahead of every chord: a password can contain any character, and
-        // a `k` in one must not open search instead.
-        if !Self::is_pointer_event(event)
-            && !self.keyboard_held_ahead_of_wifi_password()
-            && self.route_wifi_password_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id))
-        {
             return;
         }
         if !Self::is_pointer_event(event)

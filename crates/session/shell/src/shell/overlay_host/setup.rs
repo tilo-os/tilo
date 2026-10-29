@@ -257,7 +257,7 @@ impl ShellOverlayHost {
                 desktop_controls: DesktopControlsSource::Persisted(
                     settings_store::desktop_controls::DesktopControlsConfig::load(),
                 ),
-                qs_root: QuickSettingsRoot::load_persisted(),
+                quick_settings: quick_settings::QuickSettingsPanel::persisted(),
                 qs_refresh: crate::shell::quick_settings_refresh::QsRefresh::new(),
                 qs_actions,
                 qs_action_slot,
@@ -324,7 +324,7 @@ impl ShellOverlayHost {
                 desktop_controls: DesktopControlsSource::Explicit(
                     settings_store::desktop_controls::DesktopControlsConfig::default(),
                 ),
-                qs_root: QuickSettingsRoot::with_config(
+                quick_settings: quick_settings::QuickSettingsPanel::with_arrangement(
                     settings_store::hardware::QuickSettingsConfig::default(),
                 ),
                 qs_refresh: crate::shell::quick_settings_refresh::QsRefresh::without_os_reads(),
@@ -452,15 +452,7 @@ impl ShellOverlayHost {
             workspace_switch_source: ui::tokens::MotionSource::default(),
             workspace_switch_latency: crate::compositor::switch_latency::SwitchLatency::default(),
             qs_was_open: false,
-            notification_center: NotificationCenter::new(),
-            qs_type_lines: CenterLayout::metrics(&Theme::dark(), &mut TextRenderer::new()),
             qs_panel: QsPanelMetrics::for_theme(&Theme::dark()),
-            qs_clipboard_history_start: 0,
-            qs_clipboard_wheel_remainder: 0.0,
-            qs_selected_clipboard: None,
-            qs_clipboard_query: String::new(),
-            qs_device_fabric_start: 0,
-            qs_device_fabric_wheel_remainder: 0.0,
             qs_selected_source: None,
             layers: Box::default(),
             session_action_channel: std::sync::mpsc::channel(),
@@ -536,9 +528,7 @@ impl ShellOverlayHost {
             // User intent is durable, while the root filters it against the
             // live hardware snapshot when it paints.  Tests that construct a
             // root directly still receive deterministic defaults.
-            qs_root: inputs.qs_root,
-            qs_navigation_release_pending: false,
-            qs_slider_touch: ui::widget::SliderTouch::default(),
+            quick_settings: inputs.quick_settings,
             now_playing_source: inputs.now_playing,
             now_playing_card: crate::shell::now_playing_panel::NowPlayingCard::new(),
             now_playing_preferred: None,
@@ -546,9 +536,7 @@ impl ShellOverlayHost {
             desk: desk::DeskState::default(),
             qs_actions: inputs.qs_actions,
             qs_action_slot: inputs.qs_action_slot,
-            qs_aux_drill_in: DrillInList::default(),
             qs_wifi_scanned_at: None,
-            qs_hosted_section: None,
             status_bridge: None,
             status_copied: std::cell::RefCell::default(),
             audio_service: None,
@@ -569,8 +557,6 @@ impl ShellOverlayHost {
             collaborators_painted: Scene::new(),
             collaborators_painted_panel: Rect::ZERO,
             projection_overlay: inputs.projection_overlay,
-            wifi_prompt: Box::new(Self::new_wifi_prompt()),
-            wifi_password_prompt: None,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),
             overview_row_drawn: Vec::new(),

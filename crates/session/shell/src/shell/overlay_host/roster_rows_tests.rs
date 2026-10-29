@@ -186,7 +186,6 @@ fn quick_settings_bounds_cover_shadows_and_hints_yield_to_modal_surfaces() {
         host.qs_motion = super::qs_motion::QsMotion::opened();
         host.qs_motion.follow(&super::qs_motion::QsFrame {
             open: false,
-            stack: &[tilo_quick_settings::QsLevel::Root],
             height: 300.0,
             motion: ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
             source: ui::tokens::MotionSource::Pointer,

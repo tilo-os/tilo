@@ -1118,21 +1118,6 @@ impl ShellOverlayHost {
         self.clear_stale_open_target();
     }
 
-    /// Clears a typed wifi passphrase once the quick-settings popover
-    /// closes, so it doesn't outlive the window it was entered in — and
-    /// lets go of the field's value as soon as its prompt is gone, however
-    /// it went.
-    pub(super) fn clear_stale_wifi_password(&mut self) {
-        if let Some(chrome) = self.chrome.clone() {
-            let open = chrome.borrow().overlays.quick_settings;
-            let mut st = chrome.borrow_mut();
-            if !open && st.quick_settings.wifi_password.take().is_some() {
-                st.bump();
-            }
-        }
-        self.sync_wifi_password_input();
-    }
-
     /// Frames the focused group and lights its focus marker through the
     /// shared surface, from the tree's active strip and group. Framing is
     /// edge-triggered, so free wheel-scrolling isn't fought by a per-frame

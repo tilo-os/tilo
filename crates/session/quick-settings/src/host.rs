@@ -14,6 +14,7 @@ use ui::LocalState;
 
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
+pub use crate::faces::visible_controls;
 
 /// What the panel shows now, so the host reads what it lists: Wi-Fi's
 /// networks while that section is open, an accessory's devices while its

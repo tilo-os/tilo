@@ -129,7 +129,7 @@ pub(crate) fn tiles(state: &QuickSettingsState) -> Vec<TileFace> {
 }
 
 /// The controls of `arrangement` this machine has what they control for.
-pub(crate) fn visible_controls(
+pub fn visible_controls(
     arrangement: &QuickSettingsConfig,
     state: &QuickSettingsState,
 ) -> Vec<QuickSettingsControl> {

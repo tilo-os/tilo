@@ -20371,12 +20371,8 @@ dependencies = [
  "serde",
  "settings-store",
  "tilo-app",
- "tilo-cpu-raster",
- "tilo-desktop",
  "tilo-media",
  "tilo-power-mgmt",
- "tilo-vello",
- "tilo-winit",
  "tracing",
  "workspace-hack",
 ]

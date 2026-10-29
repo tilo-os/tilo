@@ -5,17 +5,16 @@
         reason = "in a test an exact comparison is the assertion, not a hazard"
     )
 )]
-//! `QuickSettings` — the top-right status-area popover: sliders, a grid of
-//! tiles and rows whose sections (Wi-Fi, Bluetooth, VPN, sound, the
-//! battery, devices, the clipboard) open in place on the root page, and the
-//! drill-in pages that stay pages (notification history, one accessory's
-//! handoff) through `nav_stack`.
-
+//! Quick Settings — the top-right status-area popover — as an app: sliders,
+//! a grid of tiles and rows whose sections (Wi-Fi, Bluetooth, VPN, sound,
+//! the battery, devices, the clipboard) open in place, and the pages that
+//! stay pages (the notifications, one accessory's handoff).
 //!
-//! The panel, its sections and its state live here, below the shell, so a
-//! change to the compositor or chrome does not rebuild them and their tests
-//! run on their own. The shell reads the device into [`QuickSettingsState`]
-//! and lands the panel's actions.
+//! The app's resource is the panel ([`QuickSettings`]): which page shows
+//! and what is open, changed by its actions. What it does to the device is
+//! its effects ([`QsEffect`]). The desktop that shows it lends it a
+//! [`host::PanelHost`] that reads the device into [`QuickSettingsState`]
+//! and carries the effects out; a screenshot or a test lends a fixture.
 
 // The derives below name the resource crate by its own name.
 use ui::tilo_resource;
@@ -29,9 +28,7 @@ pub mod hosted;
 mod i18n;
 mod prepare;
 pub mod resource;
-pub mod root;
 pub mod scenarios;
-pub mod sections;
 mod state;
 pub mod status;
 mod view;
@@ -169,13 +166,13 @@ pub enum QsSection {
     Battery,
     /// Where sound plays: this machine's outputs.
     Sound,
-    /// Certified personal devices, local audio outputs and media routes.
-    /// The overlay host paints its rows ([`QuickSettingsState::device_rows`]).
+    /// Certified personal devices, local audio outputs and media routes,
+    /// as the desktop describes them ([`QuickSettingsState::device_rows`]).
     ///
     /// [`QuickSettingsState::device_rows`]: crate::QuickSettingsState::device_rows
     Devices,
     /// Private clipboard history, including authenticated same-person
-    /// copies. The overlay host paints its rows.
+    /// copies.
     Clipboard,
 }
 

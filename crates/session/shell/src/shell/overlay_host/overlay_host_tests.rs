@@ -1336,48 +1336,6 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
     }
 
     fn print_screen_preserves_transactional_workflows_below_capture() {
-        let mut h = build_harness();
-        h.host.begin_wifi_password("Tilo test network");
-        assert!(pump(
-            &mut h,
-            &ui::synthetic_input::key_input(
-                &Key::Character("a".into()),
-                winit::event::ElementState::Pressed
-            ),
-            Modifiers::default()
-        ));
-
-        assert!(pump(
-            &mut h,
-            &key_press(Key::Named(NamedKey::PrintScreen)),
-            Modifiers::default()
-        ));
-        assert!(
-            h.chrome.borrow().quick_settings.wifi_password.is_some(),
-            "a typed Wi-Fi credential must not be discarded by Print Screen"
-        );
-        assert!(h.host.capture_studio.is_open());
-        assert!(pump(
-            &mut h,
-            &key_press(Key::Named(NamedKey::Escape)),
-            Modifiers::default()
-        ));
-        assert!(!h.host.capture_studio.is_open());
-        assert!(pump(
-            &mut h,
-            &ui::synthetic_input::key_input(
-                &Key::Character("b".into()),
-                winit::event::ElementState::Pressed
-            ),
-            Modifiers::default()
-        ));
-        assert!(h.chrome.borrow().quick_settings.wifi_password.is_some());
-        assert_eq!(
-            h.host.wifi_password_field().map(TextInput::value),
-            Some("ab"),
-            "after capture closes, the original credential field must regain its text focus and selection"
-        );
-
         let mut permission = build_harness();
         permission
             .host

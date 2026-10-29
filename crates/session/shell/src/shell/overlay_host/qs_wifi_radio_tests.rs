@@ -104,30 +104,11 @@ impl Panel {
         Self { host, chrome, wake }
     }
 
-    /// Press the Wi-Fi tile's body (not its chevron), as a pointer would.
+    /// Press the Wi-Fi tile, as the panel's switch does.
     fn press_wifi(&mut self) {
-        let panel = Rect::new(100.0, 48.0, 500.0, 900.0);
-        let action = {
-            let mut state = self.chrome.borrow_mut();
-            let qs = &mut state.quick_settings;
-            let _ = self
-                .host
-                .qs_root
-                .handle_click(Point::new(-10.0, -10.0), panel, qs);
-            let tile = self
-                .host
-                .qs_root
-                .semantic_rects(qs)
-                .into_iter()
-                .find(|(name, _)| name == "quick_settings_network")
-                .expect("the Wi-Fi tile")
-                .1;
-            self.host
-                .qs_root
-                .handle_click(Point::new(tile.x0 + 8.0, tile.center().y), panel, qs)
-        };
+        let on = self.chrome.borrow().quick_settings.wifi;
         self.host
-            .apply_quick_settings_root_action(action, &self.chrome.clone());
+            .run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::SetWifi { on: !on });
     }
 
     /// Let the radio worker finish and land its result.

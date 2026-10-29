@@ -27,9 +27,7 @@ impl ShellOverlayHost {
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.overview_zoom_moving(now),
                 workspace_switch: self.workspace_switch_owed() || self.workspace_slide_moving(now),
-                quick_settings: self.qs_motion.is_animating(now)
-                    || self.qs_root.is_animating(now)
-                    || self.qs_root_scroll_fading(),
+                quick_settings: self.qs_motion.is_animating(now),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_moving(now),
                 power_menu: layers.power_menu.is_animating(now),
@@ -163,8 +161,6 @@ impl ShellOverlayHost {
         self.refresh_active_tab_presence();
         self.refresh_live_layout();
         self.hand_flying_windows_to_the_overview(ui::time::now());
-        self.qs_root.set_layout_text_scale(theme.text_scale);
-        self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
         self.qs_panel = QsPanelMetrics::for_theme(theme);
         if let Some(chrome) = self.chrome.as_ref() {
             // A live projection holds notification banners back so their
@@ -173,10 +169,6 @@ impl ShellOverlayHost {
                 self.projection_overlay.controller().status,
                 crate::shell::projection::ProjectionStatus::Connected { .. }
             ));
-            // The root keeps its natural size; a popover shorter than the
-            // page scrolls it (`QuickSettingsRoot::draw`).
-            let state = chrome.borrow();
-            self.qs_root.sync_displays(&state.quick_settings);
         }
 
         let flags = self.overlay_flags();
@@ -820,15 +812,10 @@ impl ShellOverlayHost {
             ("fullscreen-hint", self.fullscreen_hint_deadline(now)),
             ("now-playing", self.now_playing_wake_deadline(now)),
             (
-                "quick-settings-scroll",
-                self.chrome
-                    .as_ref()
-                    .is_some_and(|chrome| chrome.borrow().overlays.quick_settings)
-                    .then(|| {
-                        self.qs_root
-                            .scroll_wake_deadline(&self.overview_layout_theme)
-                    })
-                    .flatten(),
+                "quick-settings",
+                self.quick_settings
+                    .app()
+                    .and_then(ui::widget::Widget::next_wake_deadline),
             ),
             ("quick-settings-wifi-scan", self.qs_wifi_rescan_deadline()),
             ("window-previews", self.window_previews_wake_deadline(now)),

@@ -73,14 +73,6 @@ impl ShellOverlayHost {
         if self.handle_collaborators_keyboard(logical_key, shift_down, handled) {
             return true;
         }
-        if self.handle_quick_settings_keyboard(
-            logical_key,
-            shift_down,
-            mstate.control_key(),
-            handled,
-        ) {
-            return true;
-        }
         let configured_action = self.configured_shortcut_action(logical_key, modifiers);
         if self.handle_banner_keyboard(logical_key, configured_action, shift_down, repeat, handled)
         {
@@ -617,24 +609,34 @@ impl ShellOverlayHost {
         let queued = std::mem::take(&mut chrome.borrow_mut().device_local_invocations);
         let ran = !queued.is_empty();
         for invocation in queued {
-            let started = match self.desktop_surface_mut() {
-                Some(surface) => surface.invoke_device_local_action(
-                    invocation.tab,
-                    &invocation.address,
-                    &invocation.arguments,
-                ),
-                None => Err(tilo_actions::DoorError::Unknown(invocation.address.clone())),
+            let started = if invocation.tab == QUICK_SETTINGS_WINDOW {
+                self.invoke_quick_settings_action(&invocation.address, &invocation.arguments)
+            } else {
+                match self.desktop_surface_mut() {
+                    Some(surface) => surface.invoke_device_local_action(
+                        invocation.tab,
+                        &invocation.address,
+                        &invocation.arguments,
+                    ),
+                    None => Err(tilo_actions::DoorError::Unknown(invocation.address.clone())),
+                }
             };
             *invocation.answer.borrow_mut() = Some(receipt(started));
         }
         if ran {
             crate::shell::search::invocation_wake::waker().wake_by_ref();
         }
+        // Quick Settings is this device's own, whether or not it is open:
+        // its actions are always there for a script or an agent here.
+        let panel = self
+            .quick_settings_device_local_resources()
+            .map(|resources| (QUICK_SETTINGS_WINDOW, resources));
         let windows: Vec<DeviceLocalWindow> = self
             .desktop_surface_mut()
             .map(tilo_desktop::composition::DesktopSurface::device_local_windows)
             .unwrap_or_default()
             .into_iter()
+            .chain(panel)
             .map(|(tab, resources)| DeviceLocalWindow {
                 tab,
                 actions: tilo_actions::door::survey(&resources),

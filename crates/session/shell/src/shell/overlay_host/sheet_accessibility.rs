@@ -2,47 +2,36 @@
 //!
 //! The modal sheets painted over every overlay — the portal and polkit
 //! sheet, the network-secrets sheet, the file chooser and the invite/join
-//! sheet — and the Quick Settings Wi-Fi password prompt each publish a
-//! dialog with roles, names, focus and state, and are operated through
-//! action targets they name themselves. Secrets are published as password
-//! text without their value.
+//! sheet — each publish a dialog with roles, names, focus and state, and
+//! are operated through action targets they name themselves, as the Quick
+//! Settings panel's nodes are. Secrets are published as password text
+//! without their value.
 //!
 //! Sheet nodes follow the per-overlay children of the host's semantic root,
 //! so the ordinal paths those overlays route by are unchanged.
 
-use ui::a11y::{AccessNode, AccessState, Action, Politeness, Role};
+use ui::a11y::{AccessNode, Action, Politeness, Role};
 
 use super::{ShellOverlayHost, fullscreen_hint, t};
-use tilo_quick_settings::WifiPasswordPrompt;
 
-const WIFI_PASSWORD_PREFIX: &str = "wifi-password:";
+const QUICK_SETTINGS_PREFIX: &str = "quick-settings:";
 const FILE_PICKER_PREFIX: &str = "file-picker:";
-
-/// Give every keyed node of the Wi-Fi prompt an action target carrying its
-/// key path and the prompt it belongs to, so an action aimed at one prompt
-/// can never type into or submit another, even for the same network.
-fn route_wifi_prompt(children: &mut [AccessNode], prompt: u64, path: &mut Vec<u64>) {
-    for child in children {
-        let Some(key) = child.key else {
-            continue;
-        };
-        path.push(key);
-        let encoded = path
-            .iter()
-            .map(u64::to_string)
-            .collect::<Vec<_>>()
-            .join("/");
-        let target = format!("{WIFI_PASSWORD_PREFIX}{encoded}#{prompt}");
-        child.semantic_key = Some(target.clone());
-        child.action_target = Some(target);
-        route_wifi_prompt(&mut child.children, prompt, path);
-        path.pop();
-    }
-}
 
 /// Give every node of the chooser's own semantic tree an action target
 /// carrying its key path, which is what the chooser resolves actions by.
 fn route_file_picker(node: &mut AccessNode, parent: &[u64]) {
+    route_keyed(node, parent, FILE_PICKER_PREFIX);
+}
+
+/// Give every node of the Quick Settings panel's tree an action target
+/// carrying its key path, which is what the panel resolves actions by: a
+/// screen reader sets a slider or turns a switch through the panel's own
+/// controls.
+pub(super) fn route_quick_settings(node: &mut AccessNode) {
+    route_keyed(node, &[], QUICK_SETTINGS_PREFIX);
+}
+
+fn route_keyed(node: &mut AccessNode, parent: &[u64], prefix: &str) {
     let mut path = parent.to_vec();
     if let Some(key) = node.key {
         path.push(key);
@@ -53,12 +42,12 @@ fn route_file_picker(node: &mut AccessNode, parent: &[u64]) {
             .map(u64::to_string)
             .collect::<Vec<_>>()
             .join("/");
-        let target = format!("{FILE_PICKER_PREFIX}{encoded}");
+        let target = format!("{prefix}{encoded}");
         node.semantic_key = Some(target.clone());
         node.action_target = Some(target);
     }
     for child in &mut node.children {
-        route_file_picker(child, &path);
+        route_keyed(child, &path, prefix);
     }
 }
 
@@ -77,7 +66,6 @@ impl ShellOverlayHost {
             || self.file_picker_owns_keyboard()
             || self.peer_sync_overlay.visible()
             || self.directory_sheet.is_open()
-            || self.wifi_password_prompt_up()
     }
 
     /// Whether the file chooser takes the keys: a sheet does while its
@@ -90,16 +78,6 @@ impl ShellOverlayHost {
                 PickerPlace::Display(_) => true,
                 PickerPlace::Hidden => false,
             }
-    }
-
-    pub(super) fn wifi_password_prompt_up(&self) -> bool {
-        self.overlay_flags().quick_settings
-            && self.chrome.as_ref().is_some_and(|chrome| {
-                let state = chrome.borrow();
-                state.quick_settings.wifi_password.is_some()
-                    && state.quick_settings.current_level() == &tilo_quick_settings::QsLevel::Root
-                    && state.quick_settings.section == Some(tilo_quick_settings::QsSection::Wifi)
-            })
     }
 
     /// The modal sheets over every overlay, bottom to top as painted.
@@ -190,21 +168,6 @@ impl ShellOverlayHost {
         nodes
     }
 
-    /// The Quick Settings prompt for a protected network's password: the
-    /// network it joins, the password as password text, progress and the
-    /// last failure as live text, and its buttons — the shared password
-    /// prompt's own parts, in a dialog named by the network.
-    pub(super) fn wifi_password_accessibility(&self, prompt: &WifiPasswordPrompt) -> AccessNode {
-        let mut children = self.wifi_prompt.access_node().children;
-        route_wifi_prompt(&mut children, prompt.id, &mut Vec::new());
-        AccessNode::new(Role::Dialog)
-            .with_name(prompt.ssid.clone())
-            .with_description(t("qs-wifi-protected"))
-            .with_bounds(self.qs_password_rect())
-            .with_state(AccessState::new().modal(true).busy(prompt.connecting))
-            .with_children(children)
-    }
-
     /// Route an action aimed at a sheet's node. `None` when the target is
     /// not a sheet's; `Some(handled)` otherwise, including for a target
     /// from a sheet that has since closed, which changes nothing.
@@ -237,55 +200,20 @@ impl ShellOverlayHost {
                 _ => ui::widget::Widget::perform_action(picker, action, &keys, state, path),
             });
         }
-        let rest = target.strip_prefix(WIFI_PASSWORD_PREFIX)?;
-        Some(self.perform_wifi_password_action(rest, action))
-    }
-
-    fn perform_wifi_password_action(&mut self, rest: &str, action: &Action) -> bool {
-        let Some((path, id)) = rest.split_once('#') else {
-            return false;
-        };
-        let Ok(path) = path
+        let encoded = target.strip_prefix(QUICK_SETTINGS_PREFIX)?;
+        let Ok(keys) = encoded
             .split('/')
             .map(str::parse::<u64>)
             .collect::<Result<Vec<_>, _>>()
         else {
-            return false;
+            return Some(false);
         };
-        let Some(chrome) = self.chrome.clone() else {
-            return false;
+        let Some(app) = self.quick_settings.app_mut() else {
+            return Some(false);
         };
-        let current = chrome
-            .borrow()
-            .quick_settings
-            .wifi_password
-            .as_ref()
-            .is_some_and(|prompt| prompt.id.to_string() == id);
-        if !current || !self.wifi_password_prompt_up() || !self.sync_wifi_password_input() {
-            return false;
-        }
-        if matches!(action, Action::ScrollIntoView) {
-            return true;
-        }
-        // The prompt's field is local: the scratch document is never
-        // written and never leaves this call.
-        let mut scratch = automerge::AutoCommit::new();
-        let applied = self.wifi_prompt.perform_access_action(
-            action,
-            &path,
-            &mut ui::widget::Edits::lend(&mut scratch),
-            &automerge::ROOT,
-        );
-        if self.wifi_prompt.error().is_none() {
-            let mut state = chrome.borrow_mut();
-            if let Some(prompt) = state.quick_settings.wifi_password.as_mut() {
-                // Typing clears a rejection message; it was about the old
-                // value.
-                prompt.error = None;
-            }
-            state.bump();
-        }
-        self.settle_wifi_prompt();
-        applied
+        Some(match action {
+            Action::ScrollIntoView => true,
+            _ => ui::widget::Widget::perform_action(app.as_mut(), action, &keys, state, path),
+        })
     }
 }

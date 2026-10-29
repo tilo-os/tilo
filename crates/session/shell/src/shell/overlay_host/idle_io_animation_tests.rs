@@ -194,10 +194,7 @@ fn wifi_radio_dispatch_does_not_wait_for_the_native_network_operation() {
     host.set_quick_settings_wake(Arc::new(move || {
         let _ = wake_tx.send(());
     }));
-    host.dispatch_quick_settings_toggle_actions(tilo_quick_settings::root::PendingRootActions {
-        wifi: Some(true),
-        ..Default::default()
-    });
+    host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::SetWifi { on: true });
     // The dispatch returned while the radio operation is still held.
     assert_eq!(
         tilo_test_env::recv("the native radio operation to start", &fixture.entered),
@@ -251,20 +248,8 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
     host.set_quick_settings_wake(Arc::new(move || {
         let _ = wake_tx.send(());
     }));
-    host.force_quick_settings_settled();
-    // Lay the page out where a frame would, so its targets are where a
-    // click lands.
-    let panel = host.quick_settings_rect();
-    let _ = host.qs_root.handle_click(
-        Point::new(-10.0, -10.0),
-        panel,
-        &mut chrome.borrow_mut().quick_settings,
-    );
-    let target =
-        |host: &ShellOverlayHost| host.quick_settings_target("quick_settings_section_turn_on");
-    let turn_on = target(&host).expect("the section offers to turn Wi-Fi on");
-    let mut handled = false;
-    host.handle_shell_quick_settings_click(turn_on.center(), &mut handled);
+    // The section's Turn on is the panel's Set Wi-Fi.
+    host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::SetWifi { on: true });
     assert_eq!(
         tilo_test_env::recv("the native radio operation to start", &fixture.entered),
         os_actions::RadioChange::Wifi(true)
@@ -276,8 +261,12 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
     );
     assert!(!host.needs_animation_frame());
     assert!(
-        target(&host).is_none(),
-        "while it turns on there is nothing to press"
+        !tilo_quick_settings::subline(
+            settings_store::hardware::QuickSettingsControl::Wifi,
+            &chrome.borrow().quick_settings
+        )
+        .is_empty(),
+        "while it turns on the tile says so"
     );
     let doc = automerge::AutoCommit::new();
     // The radio is still held: an update that waited on it would never return.

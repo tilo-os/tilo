@@ -546,7 +546,7 @@ impl ShellOverlayHost {
     /// keyboard: the compositor's sheet, modal over everything, or Quick
     /// Settings' Wi-Fi prompt. Its field takes the input method.
     pub fn shell_prompt_up(&self) -> bool {
-        self.portal_prompt_up() || self.wifi_password_prompt_up()
+        self.portal_prompt_up()
     }
 
     fn portal_prompt_up(&self) -> bool {
@@ -559,14 +559,25 @@ impl ShellOverlayHost {
         if self.portal_prompt_up() {
             self.portal_dialogs.prompt()
         } else {
-            self.wifi_password_prompt_up().then_some(&self.wifi_prompt)
+            None
         }
     }
 
     /// Whether the input method serves an overlay's own field — search's,
     /// or a password prompt's — rather than the focused node's.
     pub fn overlay_owns_ime(&self) -> bool {
-        self.palette_visible || self.shell_prompt_up()
+        self.palette_visible || self.shell_prompt_up() || self.quick_settings_field().is_some()
+    }
+
+    /// The Quick Settings field with the keyboard (the clipboard's search,
+    /// a network's password), while the panel is open.
+    fn quick_settings_field(&self) -> Option<&dyn ui::widget::AppWidget> {
+        if !self.overlay_flags().quick_settings {
+            return None;
+        }
+        self.quick_settings
+            .app()
+            .filter(|app| app.ime_cursor_rect().is_some())
     }
 
     /// The overlay field the input method serves ([`Self::overlay_owns_ime`]).
@@ -574,15 +585,21 @@ impl ShellOverlayHost {
         if self.palette_visible {
             return self.palette_ime_field();
         }
-        self.shell_prompt()
-            .and_then(|prompt| ui::ime::ImeWindowState::from_widget(prompt))
+        if let Some(prompt) = self.shell_prompt() {
+            return ui::ime::ImeWindowState::from_widget(prompt);
+        }
+        self.quick_settings_field()
+            .and_then(|field| ui::ime::ImeWindowState::from_widget(field))
     }
 
     pub(crate) fn overlay_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         if self.palette_visible {
             return self.palette_ime_edit_fingerprint(key);
         }
-        self.shell_prompt()?.ime_edit_fingerprint(key)
+        if let Some(prompt) = self.shell_prompt() {
+            return prompt.ime_edit_fingerprint(key);
+        }
+        self.quick_settings_field()?.ime_edit_fingerprint(key)
     }
 
     /// Where the on-screen keyboard covers the desktop, so a password
@@ -1106,17 +1123,16 @@ impl ShellOverlayHost {
         // user-visible open contract completely: keyboard traversal starts
         // on Edit instead of inheriting stale focus from a previous open.
         if !self.qs_was_open {
-            self.qs_root.reset_focus();
             self.refresh_quick_settings_summaries();
+            self.quick_settings.mount();
+            if let Some(app) = self.quick_settings.app_mut() {
+                app.set_focus(true);
+            }
         }
         self.qs_was_open = true;
         self.qs_motion = qs_motion::QsMotion::opened();
-        // An open section stands open too, not at the start of its motion.
-        if let Some(chrome) = self.chrome.clone() {
-            self.refresh_qs_hosted_rows();
-            self.qs_root
-                .settle_sections(&chrome.borrow().quick_settings);
-        }
+        self.refresh_qs_hosted_rows();
+        self.settle_quick_settings();
     }
 
     /// Fixes the quick-settings visual to an in-flight opening pose for a
@@ -1130,16 +1146,12 @@ impl ShellOverlayHost {
         self.qs_motion = qs_motion::QsMotion::held_at(permille);
     }
 
-    /// Screenshot-driver hook for the Quick Settings edit surface.
-    pub fn force_quick_settings_edit_for_visual_test(&mut self, dragging: bool) {
+    /// Screenshot-driver hook for the Quick Settings edit surface: the
+    /// panel arranging its controls, through its own action.
+    pub fn force_quick_settings_edit_for_visual_test(&mut self) {
         if !self.overlay_flags().quick_settings {
             return;
         }
-        if dragging {
-            let rect = self.quick_settings_rect();
-            self.qs_root.start_edit_drag_for_visual_test(rect);
-        } else {
-            self.qs_root.set_edit_mode_for_visual_test(true);
-        }
+        self.quick_settings_edit();
     }
 }

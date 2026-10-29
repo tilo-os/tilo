@@ -110,7 +110,6 @@
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/desktop/src/workspace_settings.rs" = 6000
 "crates/session/network-actor/src/lib.rs" = 6500
-"crates/session/quick-settings/src/root.rs" = 4000
 "crates/session/shell/examples/redraw_bench.rs" = 7000
 "crates/session/shell/src/bin/shots/driver.rs" = 4492
 "crates/session/shell/src/bin/shots/scenario.rs" = 6500
