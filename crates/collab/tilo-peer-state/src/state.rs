@@ -686,7 +686,7 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
+        self.require_member_writer(key, now)?;
         if user_public_key == self.core.authority.user_public_key {
             return Err("owner role cannot be changed through member governance".into());
         }
@@ -755,6 +755,16 @@ impl StatePeer {
     fn require_governance_writer(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
         self.owner_device(&key.verifying_key().to_bytes(), now)
             .map(drop)
+    }
+
+    /// A current member's device. What it writes into the room's membership
+    /// is admitted as far as its person's grants reach, as every receiver
+    /// admits it (`room::membership`); the rest of governance stays the
+    /// owner's.
+    fn require_member_writer(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
+        let device = key.verifying_key().to_bytes();
+        self.certificate(&device, now)?;
+        self.role(&device, now).map(drop)
     }
 
     /// `device`'s certificate when it is one of the owner's devices, current

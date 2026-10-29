@@ -153,3 +153,34 @@ fn an_administrator_moderates_and_an_editor_does_not() {
         .unwrap();
     assert!(!moderates(&peer));
 }
+
+/// A member writes the room's membership from their own device, as far as
+/// their grants reach: an administrator's device changes a role itself, an
+/// editor's cannot.
+#[test]
+fn an_administrators_own_device_changes_a_role_and_an_editors_cannot() {
+    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+    let editor_key = SigningKey::from_bytes(&[6; 32]);
+    assert!(
+        peer.clone()
+            .governance_mut()
+            .set_member_role(user, crate::join::MemberRole::Viewer, &editor_key, now)
+            .is_err()
+    );
+    peer.governance_mut()
+        .set_member_administrator(user, &host_key, now)
+        .unwrap();
+    assert!(
+        peer.governance_mut()
+            .set_member_role(user, crate::join::MemberRole::Viewer, &editor_key, now)
+            .unwrap()
+    );
+    assert_eq!(
+        peer.permissions(editor.device_public_key, now)
+            .unwrap()
+            .role,
+        Role::Viewer
+    );
+    assert!(!is_administrator(&peer, user, now));
+}

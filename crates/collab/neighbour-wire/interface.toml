@@ -30,7 +30,6 @@ sources = [
     "crates/collab/tilo-user-identity/src/directory.rs",
     "crates/collab/actions/src/outcome.rs",
     "crates/collab/tilo-user-identity/src/revocation.rs",
-    "crates/collab/tilo-user-identity/src/succession.rs",
     "crates/hosting/tilo-delivery-protocol/src/peer_actions/signed.rs",
     "crates/collab/collab-types/src/op.rs",
     "crates/collab/collab-types/src/identity.rs",
