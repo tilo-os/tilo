@@ -310,11 +310,7 @@ fn a_secret_is_typed_into_a_masked_field_and_never_into_the_query() {
     let (mut h, runs) = steps_harness(QUERY);
     select(&mut h, "Zqfixture unlock");
     assert!(press(&mut h, NamedKey::Enter));
-    let kind = h
-        .host
-        .search
-        .argument_step()
-        .map(|(_, spec)| spec.kind.clone());
+    let kind = h.host.search.argument_step().map(|(_, spec)| spec.kind);
     assert_eq!(
         kind,
         Some(ui::widget::command_palette::ArgumentKind::Secret),

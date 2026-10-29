@@ -56,7 +56,7 @@ struct RankingHarness {
     invoked: Rc<RefCell<Vec<String>>>,
 }
 
-/// ArrowDown in the launcher: the next row is the person's choice, and the
+/// `ArrowDown` in the launcher: the next row is the person's choice, and the
 /// launcher says so.
 fn select_next(h: &mut AbsorbHarness) {
     let next = h.host.search.cursor().saturating_add(1);

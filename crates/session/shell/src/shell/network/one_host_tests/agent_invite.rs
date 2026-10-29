@@ -97,4 +97,5 @@ fn an_app_opens_in_a_hosted_workspace_after_an_agent_is_invited() {
         device.tree.read().governance_refusals.is_empty(),
         "nothing was refused"
     );
+    drop(device);
 }
