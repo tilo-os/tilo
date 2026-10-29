@@ -292,7 +292,7 @@ def quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
-CLOCK = re.compile(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\b")
+CLOCK = re.compile(r"(?<!\d)([01]?\d|2[0-3])[:.]([0-5]\d)(?!\d)")
 
 
 def clock_minutes(text: str) -> int | None:
@@ -1071,27 +1071,42 @@ cryptsetup close e2e-target
         self.lockout_before = self.lockout()
         self.power_off(label)
 
-    def clock_advances(self, label: str, text: str) -> None:
+    def read_clock(self, path: Path | None) -> tuple[int | None, str]:
+        """The time the boot sign-in's clock shows, read from its line alone: the band above the
+        card, at the top middle of the screen. Read with the rest of the screen, its large
+        digits come out wrong (5 as 9)."""
+        if not path:
+            return None, ""
+        crop = self.private / f"clock-{path.stem}.png"
+        subprocess.run(["convert", str(path), "-gravity", "north", "-crop", "70%x36%+0+0", "+repage",
+                        "-gravity", "south", "-crop", "100%x66%+0+0", "+repage",
+                        "-colorspace", "gray", "-negate", str(crop)], check=True, capture_output=True)
+        ocr = subprocess.run(["tesseract", str(crop), "stdout", "--psm", "7"],
+                             capture_output=True, text=True)
+        text = ocr.stdout.strip() if ocr.returncode == 0 else ""
+        return clock_minutes(text), text
+
+    def clock_advances(self, label: str, path: Path | None) -> None:
         """Item 14: the boot sign-in's clock moves on by itself. Read now, then again after 70 s
         with no input; the time shown must have advanced by a minute or two."""
-        first = clock_minutes(text)
+        first, first_text = self.read_clock(path)
         time.sleep(70)
-        path, later_text = self.cycle.screen()
-        self.cycle.keep_screen(f"{label}-clock-later", path, later_text)
-        later = clock_minutes(later_text)
-        evidence = {"first": first, "later": later, "waited_s": 70}
+        later_path, later_text = self.cycle.screen()
+        self.cycle.keep_screen(f"{label}-clock-later", later_path, later_text)
+        later, later_read = self.read_clock(later_path)
+        evidence = {"first": first_text, "later": later_read, "waited_s": 70}
         if first is None or later is None:
             self.item("14", "failed", "the boot sign-in's clock could not be read "
-                      f"(first {first}, 70 s later {later})", **evidence)
+                      f"(first {first_text!r}, 70 s later {later_read!r})", **evidence)
             return
         advanced = (later - first) % (12 * 60)
         evidence["advanced_min"] = advanced
         if 1 <= advanced <= 2:
             self.item("14", "passed", f"the boot sign-in's clock moved on by {advanced} min in 70 s "
-                      "with no input", **evidence)
+                      f"with no input ({first_text} to {later_read})", **evidence)
         else:
             self.item("14", "failed", f"the boot sign-in's clock moved by {advanced} min in 70 s "
-                      "with no input, not by one", **evidence)
+                      f"with no input ({first_text} to {later_read}), not by one", **evidence)
 
     def boot_sign_in(self) -> None:
         """Item 3: the boot sign-in screen instead of the disk prompt, then the session without
@@ -1107,7 +1122,7 @@ cryptsetup close e2e-target
             self.recover_boot(label, kind)
             return
         self.cycle.keep_screen("boot-sign-in", path, text)
-        self.clock_advances(label, text)
+        self.clock_advances(label, path)
         self.cycle.type(self.account)
         self.cycle.keys("ret")
         time.sleep(1)
