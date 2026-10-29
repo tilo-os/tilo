@@ -53,7 +53,9 @@ pub(super) fn run(
         signature_hex: hex::encode(signature),
     });
     let manifest_bytes = manifest.to_toml_string()?.into_bytes();
+    // A new package, so written at this build's format.
     let mut root = SignedRoot {
+        format: tilo_app_package::TAPP_FORMAT_VERSION,
         manifest_hash: BlobHash::of(&manifest_bytes),
         signature: Some([0; 64]),
         ..package.meta.root

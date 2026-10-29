@@ -77,6 +77,13 @@ mounted image.
 
 - There is no negotiation and no code for an older number. A side at another
   number says so and stops.
+- One exception: environment images (`env-runtime`, `tool`). An environment
+  names its images by package id, the hash of a signed root that includes the
+  package format, so an image cannot be rewritten at a new format without
+  becoming another image. A device reads images of every package format that
+  shipped (`tilo_app_package::tapp::READABLE_FORMATS`); a format that changes
+  the archive, signed root or chunk list layout adds its reader there before
+  images at it ship. Apps are not excepted: one at an older format is behind.
 - The Rust runtime a native app links has no stable ABI, so a build names the
   exact runtime build it links (`package.runtime`), and the store fetches that
   runtime with the app.
