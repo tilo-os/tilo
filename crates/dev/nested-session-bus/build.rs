@@ -12,20 +12,17 @@ fn find(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-fn main() {
+fn main() -> std::io::Result<()> {
     println!("cargo:rerun-if-env-changed=PATH");
-    let out = Path::new(&std::env::var_os("OUT_DIR").expect("OUT_DIR")).join("dbus-daemon");
-    let daemon = match find("dbus-daemon") {
-        Some(path) => {
-            println!("cargo:rerun-if-changed={}", path.display());
-            std::fs::read(&path).expect("reading dbus-daemon")
-        }
-        None => {
-            println!(
-                "cargo:warning=no dbus-daemon in this build environment: nested-session-bus embeds none"
-            );
-            Vec::new()
-        }
+    let out_dir = std::env::var_os("OUT_DIR").ok_or(std::io::ErrorKind::NotFound)?;
+    let daemon = if let Some(path) = find("dbus-daemon") {
+        println!("cargo:rerun-if-changed={}", path.display());
+        std::fs::read(&path)?
+    } else {
+        println!(
+            "cargo:warning=no dbus-daemon in this build environment: nested-session-bus embeds none"
+        );
+        Vec::new()
     };
-    std::fs::write(&out, daemon).expect("writing the embedded dbus-daemon");
+    std::fs::write(Path::new(&out_dir).join("dbus-daemon"), daemon)
 }

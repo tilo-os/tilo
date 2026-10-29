@@ -16,9 +16,10 @@ use std::process::ExitCode;
 
 static DAEMON: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/dbus-daemon"));
 
+/// Arguments and environment entries come from the kernel as C strings: none holds a NUL.
 fn cstrings(items: impl Iterator<Item = OsString>) -> Vec<CString> {
     items
-        .map(|s| CString::new(s.into_vec()).expect("no NUL in arguments or environment"))
+        .filter_map(|s| CString::new(s.into_vec()).ok())
         .collect()
 }
 
@@ -46,9 +47,9 @@ fn main() -> ExitCode {
         eprintln!("nested-session-bus: writing the daemon: {e}");
         return ExitCode::from(126);
     }
-    let mut args = std::env::args_os();
-    args.next();
-    let argv = cstrings(std::iter::once(OsString::from("dbus-daemon")).chain(args));
+    let mut given = std::env::args_os();
+    given.next();
+    let argv = cstrings(std::iter::once(OsString::from("dbus-daemon")).chain(given));
     let envp = cstrings(std::env::vars_os().map(|(k, v)| {
         let mut kv = k;
         kv.push("=");
