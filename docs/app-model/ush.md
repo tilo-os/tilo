@@ -359,16 +359,20 @@ same ones: Left, Right, Home, End, `Ctrl+A/E/B/F`, `Alt+B/F` and
 empty line ends the session. An open quote, a trailing `\` or an open block
 asks for more lines with `$PS2`. A paste (bracketed) goes in as it is,
 newlines included, and runs only on Enter. The editor reads keys through the
-shell's host (`Host::edit_mode` switches the terminal), so it is the same on
-a device, on a host and in a browser.
+shell's host (`Host::edit_mode` switches the terminal; on the Tilo side it
+is the session's pty, switched by `ush::tilo_side::DevicePlace`), so it is the
+same on a device, on a host and in a browser.
 
 **History** is the person's own record, `terminal.history` (see [Search and
 history](#search-and-history)): Up and Down recall it, newest first, after
 the lines this shell ran; `Ctrl+R` searches it; `history` lists it, numbered,
 oldest first. It follows the person across sessions and devices, and the
 shell keeps no history file. A host that holds the record answers the shell
-itself; in a guest the editor asks Terminal on the session's terminal, under
-the session's key, and Terminal answers on the input, a page at a time:
+itself (`Host::history`; on the Tilo side, the place the shell runs in,
+`ush_tilo::Place::history`). On a device the record is Terminal's, so the
+editor of the session's shell, on the Tilo side or in a guest alike, asks
+Terminal on the session's terminal, under the session's key, and Terminal
+answers on the input, a page at a time:
 
 ```text
 shell → ESC ] 133 ; H ; k=<key> ; s=<skip> ; n=<limit> ; q=<b64> BEL
@@ -386,15 +390,25 @@ built-in, one of Tilo's own commands, a function, an alias or one of the
 environment's tools on `PATH`; after `$`, a variable; a word starting with
 `-`, one of the options of the shell's own command it follows; anything else,
 a path, read through the host, so only what the environment's grants show.
-A second Tab lists what it could become.
+A second Tab lists what it could become. On the Tilo side the environment's
+tools are named from the images its guest is built from (the runtime and its
+tools, as the record names them), along the guest's `PATH`, without starting
+the guest; an image this device does not hold yet is not fetched for it.
 
 **Jobs.** `cmd &` runs as a job beside the shell, on a copy of it: the
 shell's own commands run concurrently in the shell's process, and a program
-runs in the guest in a process group of the job's. `jobs`, `fg`, `bg`,
+runs in the guest in a process group of the job's: `exec-serve` makes the
+group for the job's first program and says which it is, the job's next
+programs join it, and the shell stops, continues and ends it over the
+program's socket ([`guest_exec`](../../crates/runtime/ush/src/guest_exec.rs)).
+While the job is in the foreground the group holds the terminal, whichever of
+its streams the terminal is. `jobs`, `fg`, `bg`,
 `wait` and `kill %n` (or the number `$!` gives) move them. Each line the
 person runs is the foreground job: Ctrl+C interrupts it, and Ctrl+Z stops it
-and gives the prompt back (a program gets the terminal's signals itself; the
-shell's own commands stop at their next write or step). What a stopped line
+and gives the prompt back (a program gets the terminal's signals itself, and
+the server tells the shell it stopped; a Ctrl+Z that reaches the shell stops
+the job's programs with it; the shell's own commands stop at their next write
+or step). What a stopped line
 had changed in the shell before it stopped stays with the job, as in a
 subshell. A background job reads nothing from the terminal, and its output
 reaches the screen through the shell, so it keeps a run of its own: its file
