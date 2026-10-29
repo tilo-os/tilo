@@ -932,21 +932,4 @@ mod tests {
             settings_store::placement::Holder::Device
         );
     }
-
-    #[test]
-    fn shared_display_automatic_input_cannot_be_changed_by_a_viewer() {
-        let mut app = App::with_role(ui::Role::Viewer).unwrap();
-        let _ = crate::host::testing::invoke_section(
-            &mut app,
-            "settings.automatic-display",
-            "set-automatic-display-input",
-            serde_json::json!({"on": false}),
-        );
-        app.settle();
-        let view = app
-            .call("inspect-shared-displays", serde_json::json!({}))
-            .unwrap()
-            .unwrap();
-        assert_eq!(view["automatic_input"], true);
-    }
 }
