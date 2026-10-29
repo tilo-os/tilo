@@ -636,9 +636,26 @@ pub struct Chip {
     footprint: Option<taffy::Size<f32>>,
 }
 
+/// What leads a reference's label on its chip: a link.
+pub const REFERENCE_LEAD: ChipLead = ChipLead::Glyph(Icon::Link);
+
 impl Chip {
     pub fn new(label: impl Into<String>) -> Self {
         Self::new_owned(label.into())
+    }
+
+    /// A reference to a resource another app keeps, named `label` and
+    /// addressed by `id`: the pill a reference is everywhere, led by a link
+    /// and announced as opening it. Pressing it does what
+    /// [`Self::on_click`] says: open the resource where it lives.
+    #[must_use]
+    pub fn reference(label: impl Into<String>, id: &str) -> Self {
+        let label = label.into();
+        let name = crate::i18n::widget_format("reference-open", &[("label", label.clone().into())]);
+        Self::new_owned(label)
+            .with_id(format!("reference:{id}"))
+            .with_lead(REFERENCE_LEAD)
+            .with_accessible_name(name)
     }
 
     /// [`Self::new`] once its text is owned: one copy in the toolkit

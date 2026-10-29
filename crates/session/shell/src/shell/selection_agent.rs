@@ -148,6 +148,21 @@ impl SelectionSeed {
             .or(self.view.as_ref())
     }
 
+    /// The resource the request is about, in the app that keeps it, as a reference that opens
+    /// it: what the composer's subject chip opens. `None` when the app named none.
+    pub(crate) fn subject_resource(&self) -> Option<tilo_reference::ResourceAt> {
+        let resource = self.about()?.resource.as_ref()?;
+        Some(tilo_reference::ResourceAt {
+            app: self.app_id.clone(),
+            record: None,
+            reference: tilo_reference::ResourceRef::whole(
+                resource.kind.clone(),
+                resource.id.clone(),
+                resource.label.clone(),
+            ),
+        })
+    }
+
     /// The `subject_json` argument of `desktop:tasks/queue`: what the
     /// request is about, the resource the app published and the selection
     /// in it. The subject only: it attaches nothing, so the task runs with a

@@ -560,6 +560,11 @@ pub struct RunRecord {
 pub struct RecordQuery {
     /// The run, by its range in the history.
     pub range: Range,
+    /// The run, by the task it worked (`task:<id>`, or a Tasks issue's address), in place of
+    /// [`Self::range`]: what a view that follows the task rather than the history (the agent
+    /// composer) names it by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
     /// The record inside that run.
     pub app_id: String,
     pub id: String,
