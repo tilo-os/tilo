@@ -379,17 +379,6 @@ impl Widget for ShellOverlayHost {
         // off-thread — without this the store never writes to disk.
         if let Some(chrome) = self.chrome.as_ref() {
             let state = chrome.borrow();
-            // Release native document launch data once its tab is gone —
-            // covers removals through workspace/peer reconciliation as well
-            // as the explicit close action. Looked for through the guard
-            // first, so a frame with nothing to release writes nothing.
-            let mut tree = state.tree_mut();
-            if state.hosted_inputs.documents_to_prune(&tree)
-                && state.hosted_inputs.prune_documents(&mut tree)
-            {
-                tree.queue_save();
-            }
-            drop(tree);
             let records = state.records().clone();
             drop(state);
             records.tick();

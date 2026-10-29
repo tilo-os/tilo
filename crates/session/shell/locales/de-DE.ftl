@@ -1864,9 +1864,6 @@ peer-window-install = { $app } installieren
 peer-window-installing = { $app } wird installiert …
 peer-window-unavailable = { $app } ist für dieses Gerät nicht verfügbar.
 hosted-window-running-on = Läuft auf { $device }
-shell-document-unavailable = Dokument nicht verfügbar
-shell-named-document-unavailable = { $name } nicht verfügbar
-shell-path-open-failed = { $path } kann nicht geöffnet werden: { $error }
 editor-disk-conflict = Die Datei wurde auf dem Datenträger geändert; ungespeicherte Änderungen bleiben für die Konfliktlösung erhalten
 editor-hint-disk-conflict = Datei auf dem Datenträger geändert. Ungespeicherte Änderungen bleiben erhalten.
 editor-hint-focused = Live geteilter Code  ·  Strg+Z zum Rückgängigmachen
@@ -2290,7 +2287,6 @@ airdrop-error-verification = Fingerabdruck stimmt nicht überein. Keine Datei ge
 airdrop-error-fresh-consent = Einen neuen AirDrop-Versuch starten, um Empfänger und Datei erneut zu bestätigen.
 
 # Ein Dokument, das ein Tab nicht wiederherstellen konnte
-hosted-document-unavailable = { $path } ist nicht verfügbar: { $error }
 
 # Eine Kamera, ein Mikrofon oder ein Scanner, geteilt von einem deiner anderen Geräte
 remote-capture-source-label = { $app } auf einem anderen Gerät

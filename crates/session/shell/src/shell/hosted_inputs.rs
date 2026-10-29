@@ -24,26 +24,6 @@ pub struct NativeAppRegistration {
     pub opens_mime_types: &'static [&'static str],
 }
 
-/// Device-local launch data for one open hosted document: which app opens
-/// which file. The app reads the file itself, so the shell never does: on
-/// the workspace mount the first read hydrates it from a peer, which the
-/// compositor loop must not wait for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HostedDocument {
-    pub provider_id: &'static str,
-    pub path: PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HostedDocumentState {
-    Ready(HostedDocument),
-    Unavailable {
-        provider_id: &'static str,
-        path: PathBuf,
-        reason: String,
-    },
-}
-
 #[derive(Clone, Default)]
 pub struct HostedTileInputs {
     pub files: Option<file_explorer::StartupInputs>,
@@ -52,7 +32,6 @@ pub struct HostedTileInputs {
     fixture_clock: Option<tilo_desktop::chrome::ClockSnapshot>,
     file_services: Option<file_explorer::files_app::HostedFileServices>,
     native_apps: Arc<[NativeAppRegistration]>,
-    documents: Rc<RefCell<HashMap<TabId, HostedDocumentState>>>,
     file_directories: Rc<RefCell<HashMap<TabId, PathBuf>>>,
     /// The framework apps this host mounts in its own process; without
     /// them a tab of such an app says it is unavailable.
@@ -115,13 +94,6 @@ impl HostedTileInputs {
                     kind: AppKind::FileExplorer,
                     opens_extensions: &[],
                     opens_mime_types: &[],
-                },
-                NativeAppRegistration {
-                    package_id: "org.nirios.Editor",
-                    display_name: "Editor",
-                    kind: AppKind::Other("Editor".into()),
-                    opens_extensions: &["txt"],
-                    opens_mime_types: &["text/plain"],
                 },
             ]),
             in_process: Some(Rc::new(RefCell::new(apps))),
@@ -213,7 +185,6 @@ impl HostedTileInputs {
             fixture_clock: None,
             file_services,
             native_apps: Arc::default(),
-            documents: Rc::default(),
             file_directories: Rc::default(),
             in_process: Some(Rc::new(RefCell::new(apps))),
             private_profile: None,
@@ -304,27 +275,6 @@ impl HostedTileInputs {
         &self.native_apps
     }
 
-    pub(crate) fn native_app_for_path(
-        &self,
-        path: &std::path::Path,
-    ) -> Option<NativeAppRegistration> {
-        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-        let mime = mime_guess::from_path(path).first_raw();
-        self.native_apps
-            .iter()
-            .find(|app| {
-                app.opens_extensions.iter().any(|claim| *claim == extension)
-                    || mime.is_some_and(|mime| app.opens_mime_types.contains(&mime))
-            })
-            .cloned()
-    }
-
-    pub(crate) fn bind_document(&self, tab: TabId, document: HostedDocument) {
-        self.documents
-            .borrow_mut()
-            .insert(tab, HostedDocumentState::Ready(document));
-    }
-
     /// Choose the directory a newly-created hosted Files tab presents. The
     /// binding is device-local launch data, just like [`Self::bind_document`];
     /// filesystem authority is granted separately by chrome.
@@ -346,82 +296,6 @@ impl HostedTileInputs {
             });
         inputs.initial_dir = directory;
         Some(inputs)
-    }
-
-    /// Whether [`Self::prune_documents`] would release anything: some
-    /// document's tab has left every workspace. Read through a shared
-    /// reference, so the frame that finds nothing takes no write.
-    pub(crate) fn documents_to_prune(&self, tree: &super::state::WorkspaceTree) -> bool {
-        let documents = self.documents.borrow();
-        if tree.native_document_tabs.is_empty() && documents.is_empty() {
-            return false;
-        }
-        let live = live_tabs(tree);
-        tree.native_document_tabs
-            .keys()
-            .chain(documents.keys())
-            .any(|tab| !live.contains(tab))
-    }
-
-    /// Release launch data once its tab leaves any workspace, without rereading files.
-    /// Returns whether persisted references changed.
-    pub(crate) fn prune_documents(&self, tree: &mut super::state::WorkspaceTree) -> bool {
-        if tree.native_document_tabs.is_empty() && self.documents.borrow().is_empty() {
-            return false;
-        }
-        let live = live_tabs(tree);
-        let before = tree.native_document_tabs.len();
-        tree.native_document_tabs
-            .retain(|tab, _| live.contains(tab));
-        self.documents
-            .borrow_mut()
-            .retain(|tab, _| live.contains(tab));
-        before != tree.native_document_tabs.len()
-    }
-
-    #[cfg(target_os = "macos")]
-    pub(crate) fn restore_documents(&self, tree: &mut super::state::WorkspaceTree) {
-        // Old profiles can contain already closed tabs. Filter before filesystem I/O.
-        self.prune_documents(tree);
-        let references = &tree.native_document_tabs;
-        for (&tab, reference) in references {
-            let provider_id = reference.provider_id.as_str();
-            let Some(app) = self
-                .native_apps
-                .iter()
-                .find(|app| app.package_id == provider_id)
-            else {
-                continue;
-            };
-            // Restored at startup, before any frame: whether the file is
-            // still readable text decides between the editor and a notice.
-            let restored = reference
-                .path
-                .canonicalize()
-                .and_then(|path| std::fs::read_to_string(&path).map(|_| path));
-            let state = match restored {
-                Ok(path) => HostedDocumentState::Ready(HostedDocument {
-                    provider_id: app.package_id,
-                    path,
-                }),
-                Err(error) => HostedDocumentState::Unavailable {
-                    provider_id: app.package_id,
-                    path: reference.path.clone(),
-                    reason: crate::shell::i18n::t_args(
-                        "hosted-document-unavailable",
-                        &[
-                            ("path", reference.path.display().to_string().into()),
-                            ("error", error.to_string().into()),
-                        ],
-                    ),
-                },
-            };
-            self.documents.borrow_mut().insert(tab, state);
-        }
-    }
-
-    pub(crate) fn document(&self, tab: TabId) -> Option<HostedDocumentState> {
-        self.documents.borrow().get(&tab).cloned()
     }
 
     /// Mount Files for tab `tab` of `room`, starting where the shell says,
@@ -598,127 +472,4 @@ mod desktop_catalog_tests {
                 .any(|app| app.display_name == "Files" && app.kind == AppKind::FileExplorer)
         );
     }
-}
-
-#[cfg(test)]
-#[cfg(target_os = "macos")]
-mod document_lifecycle_tests {
-    use super::*;
-    use crate::compositor::macos::{Options, prepare};
-    use crate::shell::{state::NativeDocumentReference, window_actions};
-
-    #[test]
-    #[serial_test::serial]
-    fn closed_hosted_documents_are_pruned_and_restart_retains_live_documents() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("note.txt");
-        std::fs::write(&path, "live document\n").unwrap();
-        let options = Options {
-            state_dir: directory.path().join("state"),
-            files_dir: directory.path().to_path_buf(),
-            shots: None,
-        };
-        let tabs = {
-            let session = prepare(&options).unwrap();
-            let inputs = session.chrome.borrow().hosted_inputs.clone();
-            let reference = NativeDocumentReference {
-                provider_id: "org.nirios.Editor".into(),
-                path: path.canonicalize().unwrap(),
-            };
-            let mut tabs = Vec::new();
-            for _ in 0..2 {
-                let tab = window_actions::open_hosted(
-                    &mut session.chrome.borrow_mut(),
-                    AppKind::Other("Editor".into()),
-                    "note.txt",
-                    window_actions::Destination::Here,
-                );
-                session
-                    .tree
-                    .write()
-                    .native_document_tabs
-                    .insert(tab, reference.clone());
-                inputs.bind_document(
-                    tab,
-                    HostedDocument {
-                        provider_id: "org.nirios.Editor",
-                        path: reference.path.clone(),
-                    },
-                );
-                tabs.push(tab);
-            }
-            let mut driver = ui::headless::FrameHarness::new(
-                ui::State::new(),
-                Box::new(session.host),
-                (1280, 800),
-            );
-            driver.set_modifiers(&["meta".into()]);
-            driver.key("w");
-            driver.set_modifiers(&[]);
-            assert!(
-                !session
-                    .tree
-                    .read()
-                    .native_document_tabs
-                    .contains_key(&tabs[1]),
-                "closing a tab must remove its persisted document reference"
-            );
-            assert!(
-                inputs.document(tabs[1]).is_none(),
-                "closing must release cached text"
-            );
-            assert!(matches!(
-                inputs.document(tabs[0]),
-                Some(HostedDocumentState::Ready(_))
-            ));
-            session
-                .tree
-                .write()
-                .native_document_tabs
-                .insert(tabs[1], reference);
-            session.tree.read().queue_save();
-            drop(driver);
-            drop(session.chrome);
-            drop(session.records);
-            drop(session.tree);
-            tabs
-        };
-        let reopened = prepare(&options).unwrap();
-        assert!(
-            !reopened
-                .tree
-                .read()
-                .native_document_tabs
-                .contains_key(&tabs[1])
-        );
-        let restored = reopened.chrome.borrow().hosted_inputs.clone();
-        assert!(
-            restored.document(tabs[1]).is_none(),
-            "stale references must be filtered before restoration"
-        );
-        assert!(
-            matches!(restored.document(tabs[0]), Some(HostedDocumentState::Ready(document)) if document.provider_id == "org.nirios.Editor" && document.path == path.canonicalize().unwrap())
-        );
-        let mut driver =
-            ui::headless::FrameHarness::new(ui::State::new(), Box::new(reopened.host), (1280, 800));
-        assert!(crate::shell::tab_binding::remove_tab(
-            &mut reopened.tree.write(),
-            tabs[0]
-        ));
-        driver.profile_frame();
-        assert!(reopened.tree.read().native_document_tabs.is_empty());
-        assert!(restored.document(tabs[0]).is_none());
-    }
-}
-
-/// Every tab in any workspace of `tree`.
-fn live_tabs(tree: &super::state::WorkspaceTree) -> std::collections::HashSet<TabId> {
-    tree.desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .map(|tab| tab.id)
-        .collect()
 }

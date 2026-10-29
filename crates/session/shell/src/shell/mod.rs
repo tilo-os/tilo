@@ -511,31 +511,10 @@ fn try_to_ui_tile_for_tab(
                     "in-process apps",
                 ));
             }
-            ShellKind::Other(s) if s.eq_ignore_ascii_case("Editor") => {
-                match tab.and_then(|tab| inputs.document(tab)) {
-                    Some(hosted_inputs::HostedDocumentState::Unavailable {
-                        path, reason, ..
-                    }) => UiTile::Notice {
-                        title: path.file_name().map_or_else(
-                            || crate::shell::i18n::t("shell-document-unavailable"),
-                            |name| {
-                                crate::shell::i18n::t_args(
-                                    "shell-named-document-unavailable",
-                                    &[("name", name.to_string_lossy().into_owned().into())],
-                                )
-                            },
-                        ),
-                        detail: reason,
-                    },
-                    _ => {
-                        return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
-                            "in-process apps",
-                        ));
-                    }
-                }
-            }
             ShellKind::Other(s)
-                if s.eq_ignore_ascii_case("Notes") || s.eq_ignore_ascii_case("Word") =>
+                if s.eq_ignore_ascii_case("Editor")
+                    || s.eq_ignore_ascii_case("Notes")
+                    || s.eq_ignore_ascii_case("Word") =>
             {
                 return Err(hosted_inputs::HostedTileError::RequiredServiceMissing(
                     "in-process apps",
@@ -632,141 +611,22 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
     });
 }
 
-/// Preserve the standalone synchronous opener for legacy embeddings. It runs
-/// inside the Files event path, where an admission preflight would re-enter
-/// the tile's record loan. Hosted native Files use the deferred owner route
-/// below instead.
+/// Files opens a document through the shell: in the app that owns it.
 fn open_legacy_document_from_files(
     chrome: &chrome_state::Chrome,
     path: &std::path::Path,
 ) -> Result<(), String> {
-    let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
-    if let Some(app) = native_app {
-        let path = path.canonicalize().map_err(|error| {
-            crate::shell::i18n::t_args(
-                "shell-path-open-failed",
-                &[
-                    ("path", path.display().to_string().into()),
-                    ("error", error.to_string().into()),
-                ],
-            )
-        })?;
-        // The editor reads the file itself; read here, a file on the
-        // workspace mount would hydrate on the compositor loop.
-        let title = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        );
-        window_actions::open_hosted_after_setup(
-            &mut chrome.borrow_mut(),
-            app.kind,
-            title,
-            window_actions::Destination::Here,
-            |state, tab| {
-                {
-                    let mut tree = state.tree_mut();
-                    tree.native_document_tabs.insert(
-                        tab,
-                        state::NativeDocumentReference {
-                            provider_id: app.package_id.to_string(),
-                            path: path.clone(),
-                        },
-                    );
-                    tree.queue_save();
-                }
-                state.hosted_inputs.bind_document(
-                    tab,
-                    hosted_inputs::HostedDocument {
-                        provider_id: app.package_id,
-                        path,
-                    },
-                );
-            },
-        );
-        return Ok(());
-    }
     doc_open::open_in_workspace(path, chrome)
         .map(|_| ())
         .map_err(|error| error.user_message())
 }
 
-/// Admit an exact native document record before publishing its tab/input pair.
-/// This is called only by the owning Files open route after its record loan has
-/// ended, so `TileHost` can retain its existing-only record-follow contract.
+/// The owning Files open route, called after its record loan has ended.
 pub(crate) fn open_document_from_files(
     chrome: &chrome_state::Chrome,
     path: &std::path::Path,
 ) -> Result<(), String> {
-    let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
-    if let Some(app) = native_app {
-        let path = path
-            .canonicalize()
-            .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
-        // The editor reads the file itself; read here, a file on the
-        // workspace mount would hydrate on the compositor loop.
-        let checkout = ui::record::RecordCheckout::new(
-            ui::record::RecordId::for_file(&path),
-            ui::record::RecordKind::new("text-document"),
-        );
-        let records = { chrome.borrow().records().clone() };
-        match records.try_open_record(&checkout) {
-            Ok(_) => {}
-            Err(ui::record::RecordOpenError::MissingRecord) => {
-                records.create_record(&checkout).map_err(|error| {
-                    format!(
-                        "cannot open {}: document storage unavailable: {error}",
-                        path.display()
-                    )
-                })?;
-                records.try_open_record(&checkout).map_err(|error| {
-                    format!(
-                        "cannot open {}: document storage unavailable: {error}",
-                        path.display()
-                    )
-                })?;
-            }
-            Err(error) => {
-                return Err(format!(
-                    "cannot open {}: document storage unavailable: {error}",
-                    path.display()
-                ));
-            }
-        }
-        let title = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        );
-        window_actions::open_hosted_after_setup(
-            &mut chrome.borrow_mut(),
-            app.kind,
-            title,
-            window_actions::Destination::Here,
-            |state, tab| {
-                {
-                    let mut tree = state.tree_mut();
-                    tree.native_document_tabs.insert(
-                        tab,
-                        state::NativeDocumentReference {
-                            provider_id: app.package_id.to_string(),
-                            path: path.clone(),
-                        },
-                    );
-                    tree.queue_save();
-                }
-                state.hosted_inputs.bind_document(
-                    tab,
-                    hosted_inputs::HostedDocument {
-                        provider_id: app.package_id,
-                        path,
-                    },
-                );
-            },
-        );
-        return Ok(());
-    }
-    doc_open::open_in_workspace(path, chrome)
-        .map(|_| ())
-        .map_err(|error| error.user_message())
+    open_legacy_document_from_files(chrome, path)
 }
 
 /// Files' "Open With": candidates, launches and defaults all come from
@@ -1359,75 +1219,6 @@ mod hosted_app_tests {
                 note: String::new(),
             }),
             UiKind::App(ui::icons::Icon::FileText)
-        );
-    }
-}
-
-#[cfg(test)]
-mod legacy_files_opener_regressions {
-    use super::*;
-
-    struct ClearDocumentOpener;
-
-    impl Drop for ClearDocumentOpener {
-        fn drop(&mut self) {
-            file_explorer::files_app::clear_document_opener();
-        }
-    }
-
-    fn legacy_chrome(
-        root: &std::path::Path,
-        records: ui::record::RecordStore,
-    ) -> chrome_state::Chrome {
-        let tree =
-            crate::shell::state::WorkspaceTreeHandle::new(state::WorkspaceTree::bootstrap_demo());
-        let chrome = chrome_state::ChromeState::new_with_handle(tree);
-        chrome.borrow_mut().hosted_inputs =
-            hosted_inputs::HostedTileInputs::for_host_directory_privately(root)
-                .expect("owned Files root");
-        chrome.borrow_mut().set_records(records);
-        install_document_opener(&chrome);
-        chrome
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn deferred_native_file_admission_preserves_existing_file_record_heads() {
-        use automerge::transaction::Transactable;
-
-        let directory = tempfile::tempdir().expect("temporary Files root");
-        let document = directory.path().join("existing.txt");
-        std::fs::write(&document, "existing contents\n").expect("fixture document");
-        let document = document.canonicalize().expect("canonical fixture document");
-        let mut owners = ui::record::RecordOwners::new(directory.path().join("profile"));
-        let records = owners
-            .open(SHELL_RECORDS_PACKAGE, "deferred-file-admission")
-            .expect("canonical profile record store");
-        let checkout = ui::record::RecordCheckout::new(
-            ui::record::RecordId::for_file(&document),
-            ui::record::RecordKind::new("text-document"),
-        );
-        records
-            .create_record(&checkout)
-            .expect("existing document record");
-        let before = records
-            .with(&checkout.id, |doc| {
-                doc.put(automerge::ROOT, "body", "preserved existing body")
-                    .expect("seed existing document");
-                doc.get_heads()
-            })
-            .expect("existing document writable");
-        let chrome = legacy_chrome(directory.path(), records.clone());
-        let _clear = ClearDocumentOpener;
-
-        open_document_from_files(&chrome, &document).expect("deferred native admission");
-
-        assert_eq!(
-            records
-                .with(&checkout.id, automerge::AutoCommit::get_heads)
-                .expect("existing document remains available"),
-            before,
-            "deferred admission must not replace or mutate an already-open canonical file record"
         );
     }
 }

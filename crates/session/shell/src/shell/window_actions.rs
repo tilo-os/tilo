@@ -460,7 +460,6 @@ pub(crate) fn close_tab_unrecorded(
     if !removed {
         return Err(TabActionError::UnknownTab);
     }
-    st.hosted_inputs.prune_documents(&mut st.tree_mut());
     // Close is durable before the client is asked to exit.
     st.tree().queue_save();
     // A window still to open in a room not ready yet: its launch goes with
