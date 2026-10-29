@@ -43,6 +43,12 @@ pub trait PaneArea: Any {
         false
     }
 
+    /// When the area next wants to look at the device again while nothing
+    /// else happens (a page that re-reads it on a timer).
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        None
+    }
+
     /// The effects of the area that differ from their declaration on this
     /// device now.
     fn statuses(&self) -> Vec<ui::framework::EffectStatus> {

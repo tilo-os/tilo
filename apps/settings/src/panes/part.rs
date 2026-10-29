@@ -446,10 +446,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
         build: |app, _| model_pane(bluetooth::area(app).map(bluetooth::BluetoothArea::model)),
     },
     crate::area::PaneEntry {
-        categories: &[Category::Sound],
-        build: |app, _| model_pane(audio::area(app).map(audio::AudioArea::model)),
-    },
-    crate::area::PaneEntry {
         categories: &[Category::Displays],
         build: |app, _| model_pane(display::area(app).map(display::DisplayArea::model)),
     },
@@ -501,10 +497,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
         categories: &[Category::DeviceMesh],
         build: |app, _| model_pane(device_mesh::area(app).map(device_mesh::DeviceMeshArea::model)),
-    },
-    crate::area::PaneEntry {
-        categories: &[Category::Speakers],
-        build: |app, _| model_pane(speakers::area(app).map(speakers::SpeakersArea::model)),
     },
     crate::area::PaneEntry {
         categories: &[Category::Users],
@@ -598,9 +590,9 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_value!("sound.input_level" => audio::values::input_level),
     crate::setting::setting_switch!("sound.mute" => audio::values::mute, audio::mute),
     crate::setting::setting_value!("sound.balance" => known audio::values::balance),
-    crate::setting::setting_switch!("sound.mono" => audio::values::mono, audio::mono),
-    crate::setting::setting_switch!("sound.echo" => audio::values::echo, audio::echo_cancellation),
-    crate::setting::setting_switch!("sound.system_sounds" => audio::values::system_sounds, audio::system_sounds),
+    crate::setting::setting_bound_switch!("sound.mono" => audio::values::mono, crate::prefs::AudioPrefs => audio::mono),
+    crate::setting::setting_bound_switch!("sound.echo" => audio::values::echo, crate::prefs::AudioPrefs => audio::echo_cancellation),
+    crate::setting::setting_bound_switch!("sound.system_sounds" => audio::values::system_sounds, crate::prefs::AudioPrefs => audio::system_sounds),
     crate::setting::setting_value!("keyboard.layout" => mouse_keyboard::values::layout),
     crate::setting::setting_value!("keyboard.key_repeat" => known mouse_keyboard::values::key_repeat),
     crate::setting::setting_value!("keyboard.compose" => known mouse_keyboard::values::compose),

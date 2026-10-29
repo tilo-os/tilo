@@ -69,6 +69,8 @@ pub(crate) fn view(
         crate::categories::Category::Power => power::view(cx, app),
         crate::categories::Category::RegionFormats => region::view(cx, app),
         crate::categories::Category::KeyboardShortcuts => keyboard_shortcuts::view(cx, app),
+        crate::categories::Category::Sound => audio::view(cx, app),
+        crate::categories::Category::Speakers => speakers::view(cx, app),
         _ => None,
     }
 }

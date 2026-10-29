@@ -1203,6 +1203,24 @@ impl Widget for SettingsWindow {
                 .is_some_and(ui::Widget::needs_animation_frame)
     }
 
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let areas = self
+            .app
+            .areas()
+            .iter()
+            .filter_map(crate::area::PaneArea::next_wake)
+            .min();
+        let children = self
+            .children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .min();
+        match (areas, children) {
+            (Some(areas), Some(children)) => Some(areas.min(children)),
+            (areas, children) => areas.or(children),
+        }
+    }
+
     fn has_pending_visual_work(&self) -> bool {
         self.app
             .areas()

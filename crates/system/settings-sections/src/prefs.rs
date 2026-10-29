@@ -1350,7 +1350,24 @@ impl ui::storage::SettingsSchema for AudioPrefs {
     version = 2,
     migrate = crate::leaves_moved_out
 )]
-impl AudioPrefs {}
+impl AudioPrefs {
+    /// Play both channels in each ear, or stereo again. The compositor
+    /// session keeps the mono transform; the field is changed only here.
+    #[action(id = "set-mono-output")]
+    pub fn set_mono_output(&mut self, on: bool) -> Result<(), tilo_resource::Refusal> {
+        self.mono_output = on;
+        Ok(())
+    }
+
+    /// Give calls an echo-cancelled microphone, or the microphone as it
+    /// is. The compositor session provides it; the field is changed only
+    /// here.
+    #[action(id = "set-echo-cancellation")]
+    pub fn set_echo_cancellation(&mut self, on: bool) -> Result<(), tilo_resource::Refusal> {
+        self.echo_cancellation = on;
+        Ok(())
+    }
+}
 
 impl ui::storage::SettingsSchema for AudioDevicePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio_device");
@@ -1358,7 +1375,37 @@ impl ui::storage::SettingsSchema for AudioDevicePrefs {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.audio-device", label = "Sound on this device")]
-impl AudioDevicePrefs {}
+impl AudioDevicePrefs {
+    /// Remember the output device this device plays through, chosen again
+    /// when Settings next finds it. Choosing an output in Sound runs this.
+    #[action(id = "remember-output-device")]
+    pub fn remember_output(
+        &mut self,
+        #[param("The output device's name")] device: String,
+    ) -> Result<(), tilo_resource::Refusal> {
+        self.output_device = Some(remembered(device)?);
+        Ok(())
+    }
+
+    /// Remember the input device this device records from, chosen again
+    /// when Settings next finds it. Choosing an input in Sound runs this.
+    #[action(id = "remember-input-device")]
+    pub fn remember_input(
+        &mut self,
+        #[param("The input device's name")] device: String,
+    ) -> Result<(), tilo_resource::Refusal> {
+        self.input_device = Some(remembered(device)?);
+        Ok(())
+    }
+}
+
+/// A device's name as it is remembered: never empty.
+fn remembered(device: String) -> Result<String, tilo_resource::Refusal> {
+    if device.trim().is_empty() {
+        return Err(tilo_resource::Refusal::new("a device name is needed"));
+    }
+    Ok(device)
+}
 
 impl ui::storage::SettingsSchema for DisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
