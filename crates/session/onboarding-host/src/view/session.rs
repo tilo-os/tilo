@@ -8,28 +8,28 @@ use tilo_user_identity::IdentityPaths;
 /// Taken from the process environment once, where the shell builds the
 /// view, so nothing behind the view reads the environment again.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct SessionPaths {
-    pub(crate) home: Option<PathBuf>,
+pub struct SessionPaths {
+    pub home: Option<PathBuf>,
     /// The account whose removable media a picker offers.
-    pub(crate) user: Option<OsString>,
-    pub(crate) identity: Option<SystemIdentity>,
+    pub user: Option<OsString>,
+    pub identity: Option<SystemIdentity>,
     /// What this device calls itself to a device it pairs with.
-    pub(crate) device_label: String,
+    pub device_label: String,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct SystemIdentity {
-    pub(crate) root: PathBuf,
-    pub(crate) paths: IdentityPaths,
+pub struct SystemIdentity {
+    pub root: PathBuf,
+    pub paths: IdentityPaths,
 }
 
 impl SessionPaths {
-    pub(crate) fn from_process() -> Self {
+    pub fn from_process() -> Self {
         let root = std::env::var_os("TILO_IDENTITY_ROOT")
             .filter(|value| !value.is_empty())
             .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
         Self {
-            home: crate::onboarding::session_home(),
+            home: crate::identity::session_home(),
             user: std::env::var_os("USER").filter(|value| !value.is_empty()),
             identity: Some(SystemIdentity {
                 root,
@@ -42,7 +42,7 @@ impl SessionPaths {
     /// OOBE is trusted compositor chrome, so its chooser follows the user rather
     /// than an application's capability scope. Keep roots narrow: the home tree
     /// plus conventional removable-media mount roots, never the whole filesystem.
-    pub(crate) fn picker_scope(&self) -> (PathBuf, Vec<PathBuf>) {
+    pub fn picker_scope(&self) -> (PathBuf, Vec<PathBuf>) {
         let home = self
             .home
             .clone()
@@ -77,7 +77,7 @@ impl SessionPaths {
         (initial, roots)
     }
 
-    pub(crate) fn identity_paths(&self) -> Option<IdentityPaths> {
+    pub fn identity_paths(&self) -> Option<IdentityPaths> {
         self.identity
             .as_ref()
             .map(|identity| identity.paths.clone())
@@ -94,15 +94,15 @@ fn directory_has_subdirectory(path: &Path) -> bool {
     })
 }
 
-pub(crate) fn identity_root_unavailable() -> String {
+pub fn identity_root_unavailable() -> String {
     "this login has no system identity root".to_string()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl super::OnboardingView {
     /// The production view of a login with no home and no system identity
     /// root: nothing outside `identity_dir` reaches it.
-    pub(crate) fn isolated(identity_dir: PathBuf, recovery_only: bool) -> Self {
+    pub fn isolated(identity_dir: PathBuf, recovery_only: bool) -> Self {
         Self::new_in_session(
             identity_dir,
             SessionPaths::default(),
@@ -112,7 +112,7 @@ impl super::OnboardingView {
     }
 
     /// [`Self::isolated`] for a Tilo session on an existing Linux host.
-    pub(crate) fn isolated_host_desktop(identity_dir: PathBuf) -> Self {
+    pub fn isolated_host_desktop(identity_dir: PathBuf) -> Self {
         Self::new_in_session(
             identity_dir,
             SessionPaths::default(),

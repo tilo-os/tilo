@@ -5,25 +5,12 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::TryRecvError;
 
-use os_actions::codec_pack::{CodecAction, PackState};
+use os_actions::codec_pack::CodecAction;
 
 use super::OnboardingView;
-use crate::shell::i18n::t_args;
+use tilo_onboarding::t_args;
 
 impl OnboardingView {
-    /// Whether the page still offers its own Install (or Try again) choice:
-    /// nothing runs and nothing was asked yet, or the last try failed.
-    pub(super) fn codec_choice_offered(&self) -> bool {
-        let failed = self.codec_error.is_some() || self.codec_status.state == PackState::Failed;
-        (failed && self.codec_running.is_none()) || !self.codec_install_requested()
-    }
-
-    pub(super) fn codec_install_requested(&self) -> bool {
-        self.codec_running.is_some()
-            || self.codec_error.is_some()
-            || self.codec_status.state != PackState::NotInstalled
-    }
-
     pub(super) fn start_codec_install(&mut self) {
         let Some(setup) = self.codec_setup.as_ref() else {
             return;

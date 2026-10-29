@@ -306,6 +306,7 @@ members = [
     "crates/platform/tilo-input-context",
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
+    "crates/platform/tilo-durable-writer",
     "crates/platform/tilolang-tilo",
     "crates/platform/tilolang-host",
     "crates/platform/tilo-lock",

@@ -1,5 +1,5 @@
 // Real source admission and activation; the bounded private helper reply is synthetic here.
-use crate::onboarding_view::OnboardingView;
+use crate::view::OnboardingView;
 use ed25519_dalek::Signer as _;
 use sha2::{Digest as _, Sha256};
 use std::os::unix::fs::PermissionsExt as _;
@@ -65,7 +65,7 @@ fn current_owner_prepared_activation_keeps_original_record_device_and_selected_d
     )
     .unwrap();
     runtime_identity::set_active_identity(&identity, "member").unwrap();
-    let registry_store = crate::identity_registry::IdentityRegistryStore::at(&identity);
+    let registry_store = tilo_identity_host::registry::IdentityRegistryStore::at(&identity);
     let mut registry = registry_store.load().unwrap();
     registry.register_record(&record).unwrap();
     registry_store.save(&registry).unwrap();
@@ -104,9 +104,9 @@ fn current_owner_prepared_activation_keeps_original_record_device_and_selected_d
     .unwrap();
     let reply = serde_json::json!({"identity_public_key":key,"account_count":2,"current_identity":selected,"device_label":"Existing laptop","portable_home":{"schema":1,"setup_binding":"selected-original-files","selection":"full_home","applications":true},"service_sessions":{"schema":1,"sessions":[{"id":"approved-slack","service":"slack"}],"sealed_bytes":128,"ciphertext_sha256":vec![1;32]}});
     let bytes = serde_json::to_vec(&reply).unwrap();
-    let imported = crate::onboarding_prepared::Imported::admit(&bytes, &identity).unwrap();
+    let imported = crate::prepared::Imported::admit(&bytes, &identity).unwrap();
     let mut view = OnboardingView::new(identity.clone());
-    view.prepared_review = Some(crate::onboarding_prepared::Pending::open(&home).unwrap());
+    view.prepared_review = Some(crate::prepared::Pending::open(&home).unwrap());
     let (minted, root_key, home_declaration, applications, browser, sessions, held) =
         view.activate_prepared(imported).unwrap();
     assert_eq!(minted.path, record);
@@ -130,7 +130,7 @@ fn current_owner_prepared_activation_keeps_original_record_device_and_selected_d
         .unwrap();
     held.validate().unwrap();
     assert!(
-        crate::onboarding_prepared::Pending::open(&home)
+        crate::prepared::Pending::open(&home)
             .unwrap()
             .completed(&identity)
             .unwrap(),
@@ -149,9 +149,9 @@ fn current_owner_prepared_activation_keeps_original_record_device_and_selected_d
         0o600,
     )
     .unwrap();
-    assert!(crate::onboarding_prepared::Imported::admit(&bytes, &identity).is_err());
+    assert!(crate::prepared::Imported::admit(&bytes, &identity).is_err());
     assert!(
-        crate::onboarding_prepared::Pending::open(&home)
+        crate::prepared::Pending::open(&home)
             .unwrap()
             .completed(&identity)
             .is_err()

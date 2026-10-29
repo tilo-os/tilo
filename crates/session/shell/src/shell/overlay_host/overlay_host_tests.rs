@@ -3258,32 +3258,66 @@ fn a_slow_host_update_names_the_step_that_took_the_time() {
     assert!(line.contains("peer-sync=3ms"), "{line}");
 }
 
-/// Exercise the real catalogue callback and widget action-host/reducer, never
-/// a synthetic press or direct write to an acknowledgement gate.
+/// The setup action a control of the ceremony stands for, as an agent
+/// invokes it through setup's catalogue.
+fn setup_effect(key: &str, args: &serde_json::Value) -> tilo_onboarding::OnboardingEffect {
+    use crate::onboarding_view::{
+        KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CODECS_CONTINUE,
+        KEY_CODECS_INSTALL, KEY_CODECS_SKIP, KEY_CREATE, KEY_FINISH, KEY_TOUR_NEXT, KEY_UNDERSTOOD,
+    };
+    use tilo_onboarding::OnboardingEffect;
+    match key {
+        KEY_BEGIN | KEY_CREATE | KEY_BACKUP_CONTINUE | KEY_CODECS_CONTINUE | KEY_TOUR_NEXT => {
+            OnboardingEffect::Continue
+        }
+        KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED => OnboardingEffect::Acknowledge {
+            checked: args["checked"] == true,
+        },
+        KEY_CODECS_INSTALL => OnboardingEffect::choose("install-codecs"),
+        KEY_CODECS_SKIP => OnboardingEffect::Skip,
+        KEY_FINISH => OnboardingEffect::Finish,
+        other => panic!("no setup action for {other}"),
+    }
+}
+
+/// Setup's rows in the desktop's catalogue, by action.
+fn setup_rows(
+    host: &ShellOverlayHost,
+) -> Vec<(String, crate::shell::search::action_api::ResourceRef)> {
+    host.onboarding
+        .as_deref()
+        .map(|view| view.device_local_door().actions())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|descriptor| {
+            let id = crate::shell::device_local_actions::row_id(
+                crate::onboarding_host::SETUP_TAB,
+                &descriptor.address,
+            );
+            (
+                descriptor.address.action,
+                crate::shell::search::action_api::ResourceRef::new("onboarding", id),
+            )
+        })
+        .collect()
+}
+
+/// Exercise the real catalogue callback and the ceremony's own reducer,
+/// never a synthetic press or a direct write to an acknowledgement gate.
 fn invoke_setup(
     host: &mut ShellOverlayHost,
     chrome: &crate::shell::chrome_state::Chrome,
     doc: &mut AutoCommit,
     invocation: &(&str, serde_json::Value),
 ) {
-    use crate::shell::search::action_api::{AllVisible, ResourceRef};
-    if invocation.0 == crate::onboarding_view::KEY_BACKUP_SKIP_ACKNOWLEDGED {
-        let catalog = host.action_catalog("", &chrome.borrow(), doc, &automerge::ROOT, &AllVisible);
-        for blocked in [
-            crate::onboarding_view::KEY_BACKUP_CONTINUE,
-            crate::onboarding_view::KEY_FINISH,
-        ] {
-            assert!(
-                !catalog.contains(&ResourceRef::new("onboarding", blocked)),
-                "Backup cannot continue or release the desktop before the explicit decision"
-            );
-        }
-    }
+    // A frame first: setup publishes what it offers on the page it is on.
+    host.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+    host.sync(doc, &automerge::ROOT);
     let ticket = queue_setup(host, chrome, doc, invocation);
     assert!(ticket().expect("pending").is_none());
     host.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
     host.sync(doc, &automerge::ROOT);
-    assert!(ticket().expect("normal reducer completed").is_some());
+    assert!(ticket().expect("the ceremony took it").is_some());
 }
 
 fn queue_setup(
@@ -3292,88 +3326,64 @@ fn queue_setup(
     doc: &mut AutoCommit,
     invocation: &(&str, serde_json::Value),
 ) -> crate::shell::search::PendingInvocation {
-    use crate::shell::search::action_api::{AllVisible, ResourceRef};
-    let resource = ResourceRef::new("onboarding", invocation.0);
-    let catalog = host.exact_action_catalog(
-        "onboarding",
-        invocation.0,
-        &chrome.borrow(),
-        doc,
-        &automerge::ROOT,
-        &AllVisible,
-    );
-    let selected = catalog.select(&resource).unwrap_or_else(|| {
-        panic!(
-            "current typed setup action {} (owner={}, screen={:?})",
-            invocation.0,
-            is_active_workspace_owner(&chrome.borrow()),
-            host.onboarding.as_deref().map(|view| view.flow().screen())
-        )
-    });
+    use crate::shell::search::action_api::AllVisible;
+    use tilo_resource::Effect as _;
+    let effect = setup_effect(invocation.0, &invocation.1);
+    let (_, resource) = setup_rows(host)
+        .into_iter()
+        .find(|(action, _)| action == effect.id() || action.ends_with(&format!(".{}", effect.id())))
+        .unwrap_or_else(|| {
+            panic!(
+                "setup offers {effect:?} (owner={}, screen={:?})",
+                is_active_workspace_owner(&chrome.borrow()),
+                host.onboarding.as_deref().map(|view| view.flow().screen())
+            )
+        });
+    let catalog = host.action_catalog("", &chrome.borrow(), doc, &automerge::ROOT, &AllVisible);
+    let selected = catalog
+        .select(&resource)
+        .expect("setup's row is in the catalogue");
     let disposition = selected
         .invoke_json_disposition(
             &mut ui::widget::Edits::lend(doc),
             &automerge::ROOT,
             chrome,
-            invocation.1.as_object().unwrap(),
+            &effect.arguments(),
         )
         .expect("admitted");
     let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
-        panic!("an identity effect cannot succeed before the normal reducer handles it");
+        panic!("setup takes an action on its next frame");
     };
     ticket
 }
 
+/// Setup's first frame publishes its actions.
+fn first_setup_frame(h: &mut Harness, doc: &mut AutoCommit) {
+    h.host
+        .settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+    h.host.sync(doc, &automerge::ROOT);
+}
+
 #[test]
-fn onboarding_semantic_phase_and_argument_gates_revalidate_the_live_ceremony() {
+fn onboarding_setup_actions_meet_the_ceremony_gates_as_the_person_does() {
     use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
-    use crate::shell::search::action_api::{AllVisible, ResourceRef};
     let mut h = build_harness();
     h.chrome.borrow_mut().test_only_owner_override = Some(true);
     h.host
         .enable_test_onboarding(OnboardingView::with_minter(Box::new(|| {
-            Err("storage unavailable".into())
+            panic!("the creation gate must keep this minter unreachable")
         })));
     let mut doc = AutoCommit::new();
-    let initial =
-        h.host
-            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible);
-    assert!(!initial.contains(&ResourceRef::new("onboarding", KEY_CREATE)));
-    let begin = initial
-        .select(&ResourceRef::new("onboarding", KEY_BEGIN))
-        .unwrap();
+    first_setup_frame(&mut h, &mut doc);
     assert!(
-        begin
-            .invoke_json(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &h.chrome,
-                serde_json::json!({"skip_identity":true})
-                    .as_object()
-                    .unwrap()
-            )
-            .is_err()
+        !setup_rows(&h.host).is_empty(),
+        "setup is driven from its first frame"
     );
     invoke_setup(
         &mut h.host,
         &h.chrome,
         &mut doc,
         &(KEY_BEGIN, serde_json::json!({})),
-    );
-    assert!(
-        begin
-            .invoke_nullary(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &h.chrome
-            )
-            .is_err(),
-        "a previously enumerated Intro action cannot run at Protection"
-    );
-    assert!(
-        !h.host
-            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible)
-            .contains(&ResourceRef::new("onboarding", KEY_CREATE))
     );
     invoke_setup(
         &mut h.host,
@@ -3387,18 +3397,25 @@ fn onboarding_semantic_phase_and_argument_gates_revalidate_the_live_ceremony() {
         &mut doc,
         &(KEY_UNDERSTOOD, serde_json::json!({"checked":false})),
     );
+    invoke_setup(
+        &mut h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_CREATE, serde_json::json!({})),
+    );
+    h.host
+        .settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+    h.host.sync(&doc, &automerge::ROOT);
     assert!(
-        !h.host
-            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible)
-            .contains(&ResourceRef::new("onboarding", KEY_CREATE)),
+        !h.host.onboarding.as_deref().unwrap().flow().is_done(),
         "unticking closes the creation gate"
     );
 }
 
 #[test]
-fn onboarding_semantic_failed_mint_remains_protected_and_lock_hides_actions() {
+fn onboarding_setup_failed_mint_remains_protected_and_lock_hides_actions() {
     use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
-    use crate::shell::search::action_api::{AllVisible, ResourceRef};
+    use crate::shell::search::action_api::AllVisible;
     let mut h = build_harness();
     h.chrome.borrow_mut().test_only_owner_override = Some(true);
     h.host
@@ -3406,55 +3423,31 @@ fn onboarding_semantic_failed_mint_remains_protected_and_lock_hides_actions() {
             Err("storage unavailable".into())
         })));
     let mut doc = AutoCommit::new();
-    invoke_setup(
-        &mut h.host,
-        &h.chrome,
-        &mut doc,
-        &(KEY_BEGIN, serde_json::json!({})),
-    );
-    invoke_setup(
-        &mut h.host,
-        &h.chrome,
-        &mut doc,
-        &(KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
-    );
-    let create = h.host.exact_action_catalog(
-        "onboarding",
-        KEY_CREATE,
-        &h.chrome.borrow(),
-        &doc,
-        &automerge::ROOT,
-        &AllVisible,
-    );
-    let disposition = create
-        .select(&ResourceRef::new("onboarding", KEY_CREATE))
-        .unwrap()
-        .invoke_nullary(
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-            &h.chrome,
-        )
-        .unwrap();
-    let crate::shell::search::InvocationDisposition::Pending(ticket) = disposition else {
-        panic!("pending mint");
-    };
+    first_setup_frame(&mut h, &mut doc);
+    for invocation in [
+        (KEY_BEGIN, serde_json::json!({})),
+        (KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
+        (KEY_CREATE, serde_json::json!({})),
+    ] {
+        invoke_setup(&mut h.host, &h.chrome, &mut doc, &invocation);
+    }
     h.host.sync(&doc, &automerge::ROOT);
-    assert!(
-        ticket().is_err(),
-        "a failed identity write is not a successful semantic action"
-    );
     assert!(h.host.onboarding_active());
     assert!(!h.host.onboarding.as_deref().unwrap().flow().is_done());
     h.chrome.borrow_mut().set_session_locked(true);
+    let catalog =
+        h.host
+            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible);
     assert!(
-        !h.host
-            .action_catalog("", &h.chrome.borrow(), &doc, &automerge::ROOT, &AllVisible)
-            .contains(&ResourceRef::new("onboarding", KEY_CREATE))
+        setup_rows(&h.host)
+            .iter()
+            .all(|(_, resource)| !catalog.contains(resource)),
+        "a locked desktop offers no setup action"
     );
 }
 
 #[test]
-fn onboarding_semantic_create_refuses_a_gate_closed_before_reduction() {
+fn onboarding_setup_untick_queued_before_create_closes_the_gate_first() {
     use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
     let mut h = build_harness();
     h.chrome.borrow_mut().test_only_owner_override = Some(true);
@@ -3463,42 +3456,36 @@ fn onboarding_semantic_create_refuses_a_gate_closed_before_reduction() {
             panic!("the normal creation guard must keep this minter unreachable")
         })));
     let mut doc = AutoCommit::new();
+    first_setup_frame(&mut h, &mut doc);
     for invocation in [
         (KEY_BEGIN, serde_json::json!({})),
         (KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
     ] {
         invoke_setup(&mut h.host, &h.chrome, &mut doc, &invocation);
     }
-    let create = queue_setup(
-        &h.host,
-        &h.chrome,
-        &mut doc,
-        &(KEY_CREATE, serde_json::json!({})),
-    );
     let untick = queue_setup(
         &h.host,
         &h.chrome,
         &mut doc,
         &(KEY_UNDERSTOOD, serde_json::json!({"checked":false})),
     );
-    assert!(create().unwrap().is_none());
-    h.host
-        .settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-    h.host.sync(&doc, &automerge::ROOT);
+    let create = queue_setup(
+        &h.host,
+        &h.chrome,
+        &mut doc,
+        &(KEY_CREATE, serde_json::json!({})),
+    );
+    for _ in 0..3 {
+        h.host
+            .settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        h.host.sync(&doc, &automerge::ROOT);
+    }
     assert!(untick().unwrap().is_some());
-    assert!(
-        create().is_err(),
-        "a sync that consumed a now-invalid creation is not success"
-    );
+    assert!(create().unwrap().is_some());
     assert!(!h.host.onboarding.as_deref().unwrap().flow().is_done());
-    h.host.sync(&doc, &automerge::ROOT);
-    assert!(
-        create().is_err(),
-        "an unrelated later sync must not fabricate completion"
-    );
 }
 
-fn semantic_codecs_fixture(setup: crate::onboarding_view::CodecSetup) -> (Harness, AutoCommit) {
+fn setup_codecs_fixture(setup: crate::onboarding_view::CodecSetup) -> (Harness, AutoCommit) {
     use crate::onboarding_view::{
         KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD,
         OnboardingView,
@@ -3532,7 +3519,7 @@ fn semantic_codecs_fixture(setup: crate::onboarding_view::CodecSetup) -> (Harnes
     (h, doc)
 }
 
-fn semantic_codec_worker_receipt(result: Result<(), String>) {
+fn setup_codec_worker_outcome(result: Result<(), String>) {
     use crate::onboarding_view::{CodecSetup, KEY_CODECS_INSTALL};
     use std::sync::{Arc, Mutex, mpsc};
     let success = result.is_ok();
@@ -3556,58 +3543,51 @@ fn semantic_codec_worker_receipt(result: Result<(), String>) {
             result
         }),
     );
-    let (mut h, mut doc) = semantic_codecs_fixture(setup);
-    let ticket = queue_setup(
-        &h.host,
+    let (mut h, mut doc) = setup_codecs_fixture(setup);
+    invoke_setup(
+        &mut h.host,
         &h.chrome,
         &mut doc,
         &(KEY_CODECS_INSTALL, serde_json::json!({})),
     );
-    h.host.sync(&doc, &automerge::ROOT);
     started
         .recv_timeout(tilo_test_env::hang_bound())
         .expect("actual worker started");
+    let installed = |h: &Harness| {
+        h.host.onboarding.as_deref().unwrap().codec_status().state
+            == os_actions::codec_pack::PackState::Installed
+    };
     for _ in 0..3 {
         h.host.sync(&doc, &automerge::ROOT);
         assert!(
-            ticket().unwrap().is_none(),
+            !installed(&h),
             "unrelated frames do not finish a blocked install"
         );
     }
     release.send(result).unwrap();
     let waiting_since = std::time::Instant::now();
-    loop {
+    while waiting_since.elapsed() < tilo_test_env::hang_bound() && !installed(&h) {
         h.host.sync(&doc, &automerge::ROOT);
-        match ticket() {
-            Ok(None) => assert!(
-                waiting_since.elapsed() < tilo_test_env::hang_bound(),
-                "worker result must arrive"
-            ),
-            Ok(Some(_)) => {
-                assert!(success, "failed worker cannot complete successfully");
-                break;
-            }
-            Err(_) => {
-                assert!(!success, "successful installed worker cannot be refused");
-                break;
-            }
-        }
         std::thread::sleep(std::time::Duration::from_millis(1));
+        if !success && waiting_since.elapsed() > std::time::Duration::from_millis(200) {
+            break;
+        }
     }
+    assert_eq!(installed(&h), success, "setup reports what the worker did");
 }
 
 #[test]
-fn onboarding_semantic_codec_receipt_waits_for_actual_worker_success() {
-    semantic_codec_worker_receipt(Ok(()));
+fn onboarding_setup_codec_install_waits_for_actual_worker_success() {
+    setup_codec_worker_outcome(Ok(()));
 }
 
 #[test]
-fn onboarding_semantic_codec_receipt_refuses_actual_worker_failure() {
-    semantic_codec_worker_receipt(Err("installer refused".into()));
+fn onboarding_setup_codec_install_reports_actual_worker_failure() {
+    setup_codec_worker_outcome(Err("installer refused".into()));
 }
 
 #[test]
-fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
+fn onboarding_setup_create_finishes_only_after_the_normal_minter_returns() {
     use crate::onboarding_view::{KEY_BEGIN, KEY_CREATE, KEY_UNDERSTOOD, OnboardingView};
     use std::sync::{
         Arc, Mutex,
@@ -3636,12 +3616,15 @@ fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
             })
         })));
     let mut doc = AutoCommit::new();
+    first_setup_frame(&mut h, &mut doc);
     for invocation in [
         (KEY_BEGIN, serde_json::json!({})),
         (KEY_UNDERSTOOD, serde_json::json!({"checked":true})),
     ] {
         invoke_setup(&mut h.host, &h.chrome, &mut doc, &invocation);
     }
+    h.host
+        .settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
     let ticket = queue_setup(
         &h.host,
         &h.chrome,

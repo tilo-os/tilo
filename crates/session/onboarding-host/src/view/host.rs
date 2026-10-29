@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
 use tilo_onboarding::{OnboardingEffect, OnboardingSeat, Page, Secrets, Step};
+use ui::device_local_door::SharedDoor;
 use ui::theme::Theme;
 use ui::widget::{AppModel, AppWidget, ModelPath, Widget};
 use vello::Scene;
@@ -32,6 +33,7 @@ pub(super) struct Hosted {
     app: Option<Box<dyn AppWidget>>,
     /// Mounting failed once: setup is not mounted again on every frame.
     refused: bool,
+    door: SharedDoor,
     node: Option<NodeId>,
 }
 
@@ -47,6 +49,7 @@ impl Hosted {
             seat: OnboardingSeat::new(secrets, Some(runtime_identity::unknown_recovery_words)),
             app: None,
             refused: false,
+            door: SharedDoor::default(),
             node: None,
         }
     }
@@ -55,25 +58,20 @@ impl Hosted {
         &self.seat
     }
 
-    /// Mount the app, once. It is this device's own: its actions reach only
-    /// the person at this device, and no room publishes them.
+    /// Mount the app, once. It is this device's own: a private window whose
+    /// actions reach only the person at this device, through its door
+    /// ([`Self::device_local_resources`]), and no room publishes them.
     fn mount(&mut self) {
         if self.app.is_some() || self.refused {
             return;
         }
         let seat = self.seat.clone();
-        let mounted = crate::shell::in_process::mount_sheet(
-            tilo_onboarding::definition(),
-            &crate::shell::state::local_user_id(),
-            "this-device",
-            "onboarding",
-            SETUP_INSTANCE,
-            |cx| cx.lend(seat),
-        )
+        let mounted = mount_in_memory(SETUP_INSTANCE, |cx| {
+            cx.provide_private();
+            cx.lend(seat);
+        })
         .and_then(|component| {
-            tilo_desktop::resolver::app_tile(component, None, |_| {
-                crate::shell::wake_compositor();
-            })
+            tilo_desktop::resolver::app_tile(component, None, |_| crate::host::wake())
         });
         match mounted {
             Ok(app) => self.app = Some(app),
@@ -82,6 +80,32 @@ impl Hosted {
                 tracing::error!(%error, "setup could not be mounted");
             }
         }
+    }
+
+    /// The setup app's actions for this device, shared with the catalogue
+    /// a person searching, a script or an agent here drives setup through.
+    pub(super) fn door(&self) -> SharedDoor {
+        self.door.clone()
+    }
+
+    /// Run what was asked through the door, then publish what the app
+    /// offers now. Mounts the app first, so its actions are there from the
+    /// first frame of setup.
+    pub(super) fn serve_door(&mut self) {
+        self.mount();
+        match self.app.as_deref_mut() {
+            Some(app) => {
+                self.door.serve(app);
+            }
+            None => self.door.refuse_queued(),
+        }
+        self.door.publish(self.app.as_deref());
+    }
+
+    /// Setup is gone: nothing more is offered or answered.
+    pub(super) fn close_door(&self) {
+        self.door.refuse_queued();
+        self.door.publish(None);
     }
 
     pub(super) fn build_layout(
@@ -205,10 +229,7 @@ impl OnboardingView {
             cancellable: self.migration_cancellable(),
         });
         #[cfg(target_os = "linux")]
-        let peer = self
-            .peer
-            .as_ref()
-            .map(crate::onboarding_peer::Peer::verification_code);
+        let peer = self.peer.as_ref().map(crate::peer::Peer::verification_code);
         #[cfg(not(target_os = "linux"))]
         let peer = None;
         Page {
@@ -234,13 +255,13 @@ impl OnboardingView {
             progress_error: self.progress_error.clone(),
             expected_identity: self.expected_identity.map(hex::encode),
             recovery_problem: self.recovery_problem.map(|problem| match problem {
-                crate::onboarding::IdentityProblem::KeyringUnavailable => {
+                crate::identity::IdentityProblem::KeyringUnavailable => {
                     tilo_onboarding::IdentityProblem::KeyringUnavailable
                 }
-                crate::onboarding::IdentityProblem::RecordMissing => {
+                crate::identity::IdentityProblem::RecordMissing => {
                     tilo_onboarding::IdentityProblem::RecordMissing
                 }
-                crate::onboarding::IdentityProblem::ChainInvalid => {
+                crate::identity::IdentityProblem::ChainInvalid => {
                     tilo_onboarding::IdentityProblem::ChainInvalid
                 }
             }),
@@ -318,19 +339,19 @@ impl OnboardingView {
         if self
             .portable_home
             .as_ref()
-            .is_some_and(crate::onboarding_portable_home::Pending::pending)
+            .is_some_and(crate::portable_home::Pending::pending)
         {
             Transfer::PortableHome
         } else if self
             .portable_applications
             .as_ref()
-            .is_some_and(crate::onboarding_portable_applications::Pending::pending)
+            .is_some_and(crate::portable_applications::Pending::pending)
         {
             Transfer::PortableApplications
         } else if self
             .browser
             .as_ref()
-            .is_some_and(crate::onboarding_browser::Pending::pending)
+            .is_some_and(crate::browser::Pending::pending)
         {
             Transfer::Browser
         } else {
@@ -341,15 +362,15 @@ impl OnboardingView {
     fn migration_needs_password(&self) -> bool {
         self.portable_home
             .as_ref()
-            .is_some_and(crate::onboarding_portable_home::Pending::needs_password)
+            .is_some_and(crate::portable_home::Pending::needs_password)
             || self
                 .portable_applications
                 .as_ref()
-                .is_some_and(crate::onboarding_portable_applications::Pending::needs_password)
+                .is_some_and(crate::portable_applications::Pending::needs_password)
             || self
                 .browser
                 .as_ref()
-                .is_some_and(crate::onboarding_browser::Pending::needs_password)
+                .is_some_and(crate::browser::Pending::needs_password)
     }
 
     /// Whether the transfer under way can still be cancelled.
@@ -365,15 +386,15 @@ impl OnboardingView {
                 || self
                     .portable_home
                     .as_ref()
-                    .is_some_and(crate::onboarding_portable_home::Pending::busy)
+                    .is_some_and(crate::portable_home::Pending::busy)
                 || self
                     .portable_applications
                     .as_ref()
-                    .is_some_and(crate::onboarding_portable_applications::Pending::busy)
+                    .is_some_and(crate::portable_applications::Pending::busy)
                 || self
                     .browser
                     .as_ref()
-                    .is_some_and(crate::onboarding_browser::Pending::busy)
+                    .is_some_and(crate::browser::Pending::busy)
                 || flag("original_copy")
                 || flag("retained_access"))
     }
@@ -385,12 +406,14 @@ impl OnboardingView {
 
     /// Take what the app's person asked into the ceremony's own queues.
     pub(super) fn take_app_asks(&mut self) {
-        let asked = self.app.seat().take_asked();
+        let mut asked = std::mem::take(&mut self.deferred_asks);
+        asked.extend(self.app.seat().take_asked());
         if asked.is_empty() {
             return;
         }
         let step = self.page().step();
-        for effect in asked {
+        let mut asked = asked.into_iter();
+        while let Some(effect) = asked.next() {
             match effect {
                 OnboardingEffect::Acknowledge { checked } => {
                     let kind = match step {
@@ -399,6 +422,11 @@ impl OnboardingView {
                         _ => continue,
                     };
                     self.acknowledgements.borrow_mut().push((kind, checked));
+                    // The acknowledgement settles into the document before
+                    // the next frame: what was asked after it waits for
+                    // that frame, so it meets the gate as it was left.
+                    self.deferred_asks = asked.collect();
+                    break;
                 }
                 OnboardingEffect::Enter { field, value } if field == "backup-file" => {
                     if step == Step::Restore {
@@ -467,4 +495,43 @@ impl OnboardingView {
             _ => return None,
         })
     }
+}
+
+/// Mount setup as a sheet: its record and its view live in memory, so it is
+/// there the moment it is asked for and never waits on a store. It acts as
+/// the session's person ([`crate::host::SessionHost::person`]).
+fn mount_in_memory(
+    instance: u64,
+    lend: impl FnOnce(&mut ui::application::HostContext),
+) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
+    use std::rc::Rc;
+    use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
+    use ui::launch::LaunchError;
+    use ui::permissions::{PermissionContext, Role, SharedPermissions, UserId};
+    use ui::record::{RecordId, RecordOwners};
+
+    const DEVICE: &str = "this-device";
+    const ROOM: &str = "onboarding";
+    let definition = tilo_onboarding::definition();
+    let author = crate::host::person();
+    let store: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
+    let records = RecordOwners::with_store(Rc::clone(&store))
+        .open(definition.app_id(), ROOM)
+        .map_err(LaunchError::Record)?;
+    let views = ui::application_view::InstanceViewStore::with_store(store, DEVICE, ROOM)
+        .map_err(LaunchError::Restore)?
+        .without_persistence();
+    let inputs = HostContextInputs {
+        records,
+        views: Rc::new(views),
+        device_id: DEVICE.to_owned(),
+        instance_id: instance,
+        permissions: SharedPermissions::new(PermissionContext::member(&author, Role::Owner)),
+        author: UserId(author),
+        action_context: tilo_actions::ActionContext::default(),
+    };
+    let mut context =
+        HostContext::prepare_new_record(definition, inputs, RecordId::room_default())?;
+    lend(&mut context);
+    definition.instantiate(context, LaunchTarget::New, RestoreInput::None)
 }

@@ -10,7 +10,7 @@ use super::{
     KEY_RECOVERY_KEY_CONFIRM, KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, MintedIdentity,
     OnboardingView, Path, PersistedStage, Screen, WordsCheck, clear_secret, t,
 };
-use crate::shell::i18n::t_args;
+use tilo_onboarding::t_args;
 
 /// Restore from a recovery key, then provision this device exactly as a
 /// restored backup file does.
@@ -19,7 +19,7 @@ pub(super) fn import_recovery_words(
     identity_paths: &tilo_user_identity::IdentityPaths,
     words: &str,
 ) -> Result<MintedIdentity, String> {
-    let store = crate::identity_registry::IdentityRegistryStore::at(import_dir);
+    let store = tilo_identity_host::registry::IdentityRegistryStore::at(import_dir);
     // The words carry no display name; like native minting, an unnamed
     // identity is shown by its fingerprint until the person names it.
     let profile = store.import_recovery_words(words, "").map_err(|error| {
@@ -35,7 +35,7 @@ pub(super) fn import_recovery_words(
         .map_err(|error| error.to_string())?;
     crate::firstboot::ensure_collaboration_identity(import_dir, identity_paths)
         .map_err(|error| error.to_string())?;
-    crate::device_fleet::DeviceFleetStore::at(import_dir, identity_paths.clone())
+    tilo_identity_host::device_fleet::DeviceFleetStore::at(import_dir, identity_paths.clone())
         .register_current_device(&profile.id)
         .map_err(|error| error.to_string())?;
     Ok(MintedIdentity {

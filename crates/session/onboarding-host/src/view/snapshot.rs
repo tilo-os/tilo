@@ -89,7 +89,7 @@ impl OnboardingView {
         self.expected_identity = self.recovery_only.then_some([0x3f; 32]);
         self.recovery_problem = self
             .recovery_only
-            .then_some(crate::onboarding::IdentityProblem::ChainInvalid);
+            .then_some(crate::identity::IdentityProblem::ChainInvalid);
         self.recovery_key_copy = None;
         self.recovery_key_written = false;
         self.recovery_key_copy_confirmed = false;

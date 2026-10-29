@@ -10,7 +10,9 @@ license.workspace = true
 
 [features]
 # Provisioning against the current Linux account requires a disposable root fixture.
-native-current-device-qualification = []
+native-current-device-qualification = [
+    "tilo-onboarding-host/native-current-device-qualification",
+]
 # Wall-clock idle qualification belongs to the scheduled performance lane.
 scheduled-idle-benchmark = []
 netns-e2e = []
@@ -337,6 +339,7 @@ tilo-quick-settings = { path = "../quick-settings" }
 tilo-sheets = { path = "../sheets" }
 tilo-onboarding = { path = "../onboarding" }
 tilo-onboarding-host = { path = "../onboarding-host" }
+tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
 # The notification banners, an app the shell hosts over the desktop.
 tilo-notification-banners = { path = "../notification-banners" }
 # The workspace overview, an app this process mounts.
@@ -476,6 +479,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-onboarding-host = { path = "../onboarding-host", features = ["test-support"] }
+tilo-durable-writer = { path = "../../platform/tilo-durable-writer", features = ["test-support"] }
 # Tests, examples and benches drive the apps the shell can draw itself.
 shell = { path = ".", features = ["in-process-apps"] }
 # The hooks the network tests reach the actor through.
