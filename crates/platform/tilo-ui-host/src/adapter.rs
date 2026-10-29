@@ -668,7 +668,6 @@ mod tests {
 
     #[test]
     fn rich_text_builds_and_an_activated_reference_opens_what_it_refers_to() {
-        use ui::widget::Widget as _;
         let mut reconciler = reconciler();
         let rich = tilo_render_protocol::patch::rich::RichText {
             blocks: vec![tilo_render_protocol::patch::rich::Block {
