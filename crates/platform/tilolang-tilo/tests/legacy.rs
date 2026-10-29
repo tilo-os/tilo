@@ -378,43 +378,119 @@ fn a_message_posted_to_an_older_conversation_follows_its_messages() {
 }
 
 #[test]
-fn an_older_boards_cards_keep_their_columns_and_move() {
+fn an_older_boards_cards_move_into_their_columns_by_its_migration_keeping_their_ids() {
     let packages = vec![app!("board")];
     let mut replica = open(include_str!("legacy/board.hex"), &packages);
     let app = "so.tilo.lang.board";
     let board = root(&replica, app);
     let (cards_field, card_ty) = field(&replica, app, "Board", "cards");
-    let cards = listed(&replica, &board, &cards_field);
-    assert_eq!(cards.len(), 9, "the release board's cards");
-    // Each card's column, written as the path the column had, names the column.
-    let column_of = |replica: &Replica, card: &str| -> String {
-        match replica
-            .host
-            .runtime()
-            .read(&board.item(card, card_ty.clone()), "column")
-            .unwrap()
-        {
-            Value::Ref(column) => match replica.host.runtime().read(&column.target, "title") {
-                Ok(Value::Text(title)) => title,
-                other => panic!("{other:?}"),
-            },
-            other => panic!("{other:?}"),
-        }
+    let (columns_field, column_ty) = field(&replica, app, "Board", "columns");
+    let (lane_field, _) = field(&replica, app, "Column", "cards");
+    let stored = |replica: &Replica| -> Vec<(String, String)> {
+        records(&replica.doc)
+            .into_iter()
+            .map(|(app, id, _)| (app, id))
+            .collect()
     };
-    assert_eq!(column_of(&replica, &cards[0]), "To do");
-    assert_eq!(column_of(&replica, &cards[8]), "Done");
-    // The last card, moved to just above the first, into its column.
+    let records_before = stored(&replica);
+    let before = listed(&replica, &board, &cards_field);
+    assert_eq!(before.len(), 9, "the release board's cards");
+    let titles = |replica: &Replica, cards: &[String]| -> Vec<Value> {
+        cards
+            .iter()
+            .map(|card| {
+                replica
+                    .host
+                    .runtime()
+                    .read(&board.item(card, card_ty.clone()), "title")
+                    .unwrap()
+            })
+            .collect()
+    };
+    let titles_before = titles(&replica, &before);
+    let columns = listed(&replica, &board, &columns_field);
+    assert_eq!(columns.len(), 3);
+    let lanes = |replica: &Replica| -> Vec<Vec<String>> {
+        columns
+            .iter()
+            .map(|col| listed(replica, &board.item(col, column_ty.clone()), &lane_field))
+            .collect()
+    };
+    assert!(lanes(&replica).iter().all(Vec::is_empty));
+
+    // Opened by the version that keeps cards in their columns, the board is migrated once: one
+    // change, the migration's own action.
+    assert_eq!(replica.host.migrate(), 1);
+    let committed = replica.host.take_committed();
+    assert_eq!(committed.len(), 1);
+    let meta = replica.host.package(app).unwrap().meta;
+    let place_cards = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "place_cards")
+        .unwrap();
+    assert_eq!(committed[0].action.action_id, place_cards.id);
+    for done in &committed {
+        replica.apply(&done.action);
+    }
+
+    // Each card is in its column, in the order the board showed them, under the id it had.
+    let after = lanes(&replica);
+    assert_eq!(
+        after.iter().map(Vec::len).collect::<Vec<_>>(),
+        vec![4, 2, 3],
+        "{after:?}"
+    );
+    assert_eq!(after.concat(), before);
+    assert_eq!(titles(&replica, &after.concat()), titles_before);
+    assert!(listed(&replica, &board, &cards_field).is_empty());
+    // Nothing was deleted: every record is where it was, and each card still holds the column it
+    // was in, which the new version no longer reads.
+    assert_eq!(stored(&replica), records_before);
+    let column = replica
+        .host
+        .runtime()
+        .read(&board.item(&before[8], card_ty.clone()), "column");
+    assert!(matches!(column, Ok(Value::Ref(_))), "{column:?}");
+    check_index(&replica, &packages, app);
+
+    // It ran once: neither this replica nor a peer opening the room afterwards runs it again.
+    assert_eq!(replica.host.migrate(), 0);
+    assert!(replica.host.take_committed().is_empty());
+    let peer = Replica::new("peer", replica.doc.clone().fork(), &packages).0;
+    assert_eq!(peer.host.migrate(), 0);
+    assert_eq!(lanes(&peer), after);
+
+    // The cards work in their columns as any other: one moved to the top of another column.
     let card = |id: &str| Value::resource(&board.item(id, card_ty.clone()));
+    let lane = |id: &str| Value::resource(&board.item(id, column_ty.clone()));
     call(
         &mut replica,
         app,
         "move_before",
-        vec![Value::resource(&board), card(&cards[8]), card(&cards[0])],
+        vec![lane(&columns[0]), card(&after[2][0]), card(&after[0][0])],
     );
-    let moved = listed(&replica, &board, &cards_field);
-    assert_eq!(moved[0], cards[8]);
-    assert_eq!(column_of(&replica, &cards[8]), "To do");
+    let moved = lanes(&replica);
+    assert_eq!(moved[0][0], after[2][0]);
+    assert_eq!(moved[2].len(), 2);
     check_index(&replica, &packages, app);
+}
+
+#[test]
+fn a_board_the_new_version_made_is_not_migrated() {
+    let packages = vec![app!("board")];
+    let mut replica = Replica::new("ada", AutoCommit::new(), &packages).0;
+    let app = "so.tilo.lang.board";
+    let board = replica.host.root_of(app).unwrap();
+    replica.commit();
+    call(
+        &mut replica,
+        app,
+        "new_column",
+        vec![Value::resource(&board)],
+    );
+    assert_eq!(replica.host.migrate(), 0);
+    assert!(replica.host.take_committed().is_empty());
 }
 
 #[test]

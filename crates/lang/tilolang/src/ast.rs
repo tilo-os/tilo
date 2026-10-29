@@ -197,7 +197,8 @@ pub struct FieldDecl {
     pub name: Ident,
     pub ty: TypeExpr,
     pub merge: Option<MergeSpec>,
-    /// `(title)` or `(body)`: what the field is to the platform.
+    /// `(title)` or `(body)`: what the field is to the platform; `(previously)`: what the type
+    /// held before, which only its migrations read.
     pub marker: Option<Ident>,
     pub default: Option<Expr>,
     pub span: Span,
@@ -248,6 +249,10 @@ pub enum ActionRole {
     Primary,
     /// Drawn as destructive; undone rather than confirmed.
     Destructive,
+    /// `migration action`: never offered; the platform runs it once on each resource of its
+    /// subject's type that a version before it wrote, as an ordinary action, to bring what that
+    /// version stored to where this one keeps it. Only a migration reads `(previously)` fields.
+    Migration,
 }
 
 impl ActionRole {
@@ -255,6 +260,7 @@ impl ActionRole {
         match self {
             Self::Primary => "primary",
             Self::Destructive => "destructive",
+            Self::Migration => "migration",
         }
     }
 }

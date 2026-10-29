@@ -86,15 +86,11 @@ async fn external_moderation_bridge_scoped_custody_rejects_changed_parameters_an
     use crate::invocation_scope::{
         PublishedInvocationLease, PublishedInvocationRequest, ResourceInvocationScope,
     };
-    let fixture = crate::bound_dispatch::legacy_document_tests::Fixture::in_room(
+    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_room(
         1980,
         "77777777-7777-4777-8777-777777777777",
     );
-    fixture
-        .store
-        .require_invocation_provenance(&fixture.checkout)
-        .unwrap();
-    let route = fixture.target.owner.broker_route().unwrap();
+    let route = fixture.owner.broker_route().unwrap();
     let (_endpoint, mut receive) = admit_for_test(route.channel_id()).unwrap();
     let operation = operation();
     let invocation = tilo_actions::InvocationId::new();
@@ -119,7 +115,7 @@ async fn external_moderation_bridge_scoped_custody_rejects_changed_parameters_an
     )
     .with_owner_token(Arc::new("original moderation caller"))
     .unwrap();
-    let scope = ResourceInvocationScope::for_owner(fixture.target.owner.clone(), lease).unwrap();
+    let scope = ResourceInvocationScope::for_owner(fixture.owner.clone(), lease).unwrap();
     let mut changed = operation.clone();
     changed.destination.base_url = "https://other-registry.example".into();
     assert!(scope.external_moderation(changed).is_err());

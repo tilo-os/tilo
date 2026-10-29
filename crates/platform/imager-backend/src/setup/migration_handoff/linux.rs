@@ -700,66 +700,6 @@ impl ResolvedSource {
         grant.into_flatpak_source()
     }
 
-    pub fn recover_promotion(
-        &self,
-        destination: &Path,
-        journals: &Path,
-        active_home: &Path,
-        adoption_journal: &Path,
-    ) -> Result<
-        (
-            super::super::user_transfer::TransferReview,
-            super::super::home_transfer::promotion::PromotionReview,
-        ),
-        String,
-    > {
-        self.require_copy_policy()?;
-        self.pin.validate().map_err(|error| error.to_string())?;
-        kernel_read_only(&self.pin).map_err(|error| error.to_string())?;
-        if self.plan.categories.flatpak {
-            let raw = self
-                .plan
-                .flatpak_inventory
-                .as_ref()
-                .ok_or("Original reviewed application inventory is missing")?;
-            let inventory = super::super::flatpak_transfer::HandoffInventory::parse(
-                &serde_json::to_vec(raw).map_err(|error| error.to_string())?,
-            )?;
-            inventory.validate_operation(&self.plan.operation_id)?;
-            let (mut transfer, promotion) = super::super::user_transfer::recover_promotion(
-                super::super::user_transfer::TransferRequest {
-                    source_home: self.home.clone(),
-                    target_home: destination.to_owned(),
-                    private_journals: journals.to_owned(),
-                    copy_home: self.plan.categories.home,
-                    copy_flatpak: true,
-                    system_refs: inventory.selected().to_vec(),
-                },
-                active_home,
-                adoption_journal,
-            )?;
-            if let Some(mount) = &self.mount {
-                transfer.retain_source_guard(mount.clone());
-            }
-            return Ok((transfer, promotion));
-        }
-        let (mut transfer, promotion) = super::super::user_transfer::recover_promotion(
-            super::super::user_transfer::TransferRequest {
-                source_home: self.home.clone(),
-                target_home: destination.to_owned(),
-                private_journals: journals.to_owned(),
-                copy_home: self.plan.categories.home,
-                copy_flatpak: false,
-                system_refs: Vec::new(),
-            },
-            active_home,
-            adoption_journal,
-        )?;
-        if let Some(mount) = &self.mount {
-            transfer.retain_source_guard(mount.clone());
-        }
-        Ok((transfer, promotion))
-    }
     pub fn review_transfer(
         &self,
         destination: &Path,

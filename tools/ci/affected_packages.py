@@ -341,18 +341,6 @@ def builder_mold_asset(name: str, entry: tuple[str, str]) -> bool:
     )
 
 
-def image_tool_asset(name: str, entry: tuple[str, str]) -> bool:
-    """chunkah's release source and vendor tree: only os/Containerfile.rechunk reads them."""
-    match = re.fullmatch(r"chunkah-(\d+\.\d+\.\d+)(?:-vendor)?\.tar\.gz", name)
-    if not match:
-        return False
-    return entry[1] == (
-        f"https://github.com/coreos/chunkah/releases/download/v{match.group(1)}/{name}"
-    )
-
-
-def no_workspace_asset(name: str, entry: tuple[str, str]) -> bool:
-    return builder_mold_asset(name, entry) or image_tool_asset(name, entry)
 
 
 def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) -> bool:
@@ -367,8 +355,8 @@ def builder_only_asset_manifest_change(root: Path, base: str | None, head: str) 
         if before.get(name) != after.get(name)
     }
     return bool(changed_names) and all(
-        (name not in before or no_workspace_asset(name, before[name]))
-        and (name not in after or no_workspace_asset(name, after[name]))
+        (name not in before or builder_mold_asset(name, before[name]))
+        and (name not in after or builder_mold_asset(name, after[name]))
         for name in changed_names
     )
 

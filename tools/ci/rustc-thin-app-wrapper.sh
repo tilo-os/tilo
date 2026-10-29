@@ -26,6 +26,20 @@ done
 
 case ":${TILO_THIN_BIN_CRATES:-}:" in
     *":${crate_name}:"*)
+        # An app whose code is its engine library (Settings) names that
+        # library itself (`#[link]`): the engine depends on the app's package,
+        # so Cargo cannot hand it over as a crate. The linker finds it where
+        # Cargo writes every dylib; build-thin-apps.sh links the engines
+        # before the apps.
+        engine_dirs=()
+        previous=""
+        for argument in "$@"; do
+            case "$previous:$argument" in
+                -L:dependency=*) engine_dirs+=(-L "native=${argument#dependency=}") ;;
+                *:-Ldependency=*) engine_dirs+=(-L "native=${argument#-Ldependency=}") ;;
+            esac
+            previous="$argument"
+        done
         link_map=()
         if [ -n "${TILO_THIN_LINK_MAP_DIR:-}" ]; then
             mkdir -p "$TILO_THIN_LINK_MAP_DIR"
@@ -54,7 +68,8 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
         # optimisation and parallel codegen, and links without the size passes.
         if [ "${TILO_THIN_OPTIMIZE:-size}" = speed ]; then
             exec "${compiler_command[@]}" "$@" -C prefer-dynamic \
-                -C link-arg=-Wl,-z,pack-relative-relocs ${link_map[@]+"${link_map[@]}"}
+                -C link-arg=-Wl,-z,pack-relative-relocs ${link_map[@]+"${link_map[@]}"} \
+                ${engine_dirs[@]+"${engine_dirs[@]}"}
         fi
         folding=()
         target=""
@@ -78,7 +93,7 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
             -C llvm-args=--enable-merge-functions \
             -C llvm-args=--enable-machine-outliner=always \
             -C link-arg=-Wl,-z,pack-relative-relocs \
-            "${folding[@]}" "${link_map[@]}"
+            "${folding[@]}" "${link_map[@]}" ${engine_dirs[@]+"${engine_dirs[@]}"}
         ;;
 esac
 

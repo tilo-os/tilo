@@ -44,13 +44,16 @@ pub enum GovernanceOutcome {
 }
 
 /// Apply certificate, role and immutable redemption receipt to the caller's
-/// existing canonical room document as one transaction, written by `writer`,
-/// any participant's device. The invitation is checked on its own: it
+/// existing canonical room document as one transaction, written by any
+/// participant's device. The invitation is checked on its own: it
 /// verifies, has not expired, names this room and the joiner when narrowed,
 /// was issued by a member who may invite with its role, and was not
-/// redeemed before. Whether `writer` may admit is decided as every receiver
+/// redeemed before. Whether its writer may admit is decided as every receiver
 /// decides it ([`crate::room::membership`]). On error `document` remains
 /// byte-for-byte unchanged.
+///
+/// The change is made under `document`'s actor, which the caller sets
+/// ([`crate::room_host_actor`]).
 ///
 /// # Errors
 ///
@@ -63,7 +66,6 @@ pub enum GovernanceOutcome {
 pub fn admit_invited_member(
     document: &mut AutoCommit,
     redemption: &crate::join::VerifiedRedemption,
-    writer: &SigningKey,
     now: SystemTime,
 ) -> Result<AdmissionOutcome, String> {
     let now_ns: u64 = now
@@ -160,9 +162,6 @@ pub fn admit_invited_member(
         .map_err(|error| error.to_string())?
         .ok_or("governed members missing")?
         .1;
-    candidate.set_actor(automerge::ActorId::from(
-        writer.verifying_key().to_bytes().to_vec(),
-    ));
     let ledger = match candidate
         .get(ROOT, "invitation_receipts_v1")
         .map_err(|error| error.to_string())?
@@ -269,6 +268,9 @@ fn member_display_name<'a>(
 
 /// Record a verified workspace delegation in the governed room document.
 ///
+/// The change is made under `document`'s actor, which the caller sets
+/// ([`crate::room_host_actor`]).
+///
 /// # Errors
 ///
 /// Returns an error if the delegation does not verify against `authority` or the
@@ -323,9 +325,6 @@ pub fn install_workspace_delegation(
     identity
         .workspace_delegations
         .sort_by_key(|item| (item.delegate.device_public_key, item.nonce));
-    candidate.set_actor(automerge::ActorId::from(
-        authority_key.verifying_key().to_bytes().to_vec(),
-    ));
     candidate
         .put(
             &identities,
@@ -340,6 +339,9 @@ pub fn install_workspace_delegation(
 }
 
 /// Change a governed collaborator's role in the room document.
+///
+/// The change is made under `document`'s actor, which the caller sets
+/// ([`crate::room_host_actor`]).
 ///
 /// # Errors
 ///
@@ -371,15 +373,15 @@ pub fn set_member_role(
         .map_err(|error| error.to_string())?
         .ok_or("governed members missing")?
         .1;
-    candidate.set_actor(automerge::ActorId::from(
-        authority_key.verifying_key().to_bytes().to_vec(),
-    ));
     put_member(&mut candidate, &members, user_public_key, role.into())?;
     candidate.commit();
     finish(document, candidate, &before)
 }
 
 /// Remove a governed collaborator from the room document.
+///
+/// The change is made under `document`'s actor, which the caller sets
+/// ([`crate::room_host_actor`]).
 ///
 /// # Errors
 ///
@@ -419,9 +421,6 @@ pub fn remove_member(
         return Ok(GovernanceOutcome::Unchanged);
     }
     let before = candidate.get_heads();
-    candidate.set_actor(automerge::ActorId::from(
-        authority_key.verifying_key().to_bytes().to_vec(),
-    ));
     if member {
         candidate
             .delete(&members, person.as_str())

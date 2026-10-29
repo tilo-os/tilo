@@ -155,6 +155,13 @@ impl LauncherSurface {
         self.ask(Ask::Open { scope, query });
     }
 
+    /// Open as the host asked, if it did.
+    fn take_open_request(&mut self) {
+        if let Some(scope) = self.link.take_open_request() {
+            self.open(scope, None);
+        }
+    }
+
     /// Close without a choice.
     pub fn dismiss(&mut self) {
         if !self.open {
@@ -482,6 +489,7 @@ impl Decorator for LauncherSurface {
         if let Some((width, list)) = self.link.room() {
             self.set_room(width, list);
         }
+        self.take_open_request();
         self.take_answer();
         self.palette.sync(state, path);
     }
@@ -552,6 +560,7 @@ impl Decorator for LauncherSurface {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        self.take_open_request();
         if !self.open {
             return;
         }

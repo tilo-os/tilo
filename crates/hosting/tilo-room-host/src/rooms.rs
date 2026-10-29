@@ -113,7 +113,8 @@ pub use tilo_relay_session::rooms::{
     HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, IssueInvitationRequest,
     IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
     PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT, RemoveMemberRequest,
-    RoomListing, RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM, member_resource,
+    RoomListing, RoomSummary, SAVE_SHORTCUT, SetMemberRoleRequest, UNHOST_ROOM, ask_host,
+    member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;
@@ -796,7 +797,12 @@ fn valid_name(name: &str) -> Result<&str, String> {
 /// the record encrypted, and every later change of the room (letting the
 /// next person in among them) is refused as incomplete encryption state.
 /// A room committed before this selection takes it on its next commit.
+///
+/// The copy also writes under the host's own actor
+/// ([`tilo_peer_state::room_host_actor`]): a device hosting its own rooms
+/// never writes one room from two documents under one actor.
 fn select_exact_admission(peer: &mut StatePeer) -> Result<(), String> {
+    peer.write_as_room_host();
     peer.select_admission_v5()
         .map_err(|error| format!("room exceeds exact admission bounds: {error}"))
 }
@@ -863,9 +869,6 @@ pub(crate) struct RoomServices {
     /// What the join answers say the host is: a certified host, or the
     /// governing device serving its own rooms.
     pub(crate) mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode,
-    /// The device's own sessions with its person's other hosts, when a
-    /// network runs beside this host ([`crate::host::PersonsHostSessions`]).
-    pub(crate) persons_hosts: Option<Arc<dyn crate::host::PersonsHostSessions>>,
     /// Each device whose session to this host authenticated: a host it
     /// dials and could not reach is dialled again then.
     pub(crate) arrivals: crate::federation::Arrivals,

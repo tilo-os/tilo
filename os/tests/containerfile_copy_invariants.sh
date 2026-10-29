@@ -269,6 +269,8 @@ containerfile="$repo/os/Containerfile"
 # /usr/libexec/tilo-net-answers: one payload row.
 # The session audio helper the compositor starts is installed by its
 # audio-service component at /usr/libexec/tilo-audio: one payload row.
+# The messaging service the compositor starts is installed by its
+# messaging-service component at /usr/libexec/tilo-messaging: one payload row.
 # tilo-runtime-resident.service, which keeps the shared app runtime's
 # libraries in memory, is a deliberate addition, and so are its user units
 # (tilo-runtime-resident.service and .path), which keep the runtimes a person
@@ -339,7 +341,7 @@ containerfile="$repo/os/Containerfile"
 # the 93tilo-boot-face module, which carried the login screen's face into the
 # initramfs for Plymouth's sign-in screen, and its row with a COPY of its own
 # are gone.
-expected_contract=2e3ae47d2c3f9ce4faec35172d0cf3a11f89e5f67d2162d8360f543da1b067cd
+expected_contract=755710d35f5021794189c797341d70dc8938c26f4cd03a894b43d5c5a32045c6
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

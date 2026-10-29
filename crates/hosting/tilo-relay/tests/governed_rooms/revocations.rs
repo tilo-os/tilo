@@ -2,7 +2,7 @@
 //! another device of that person, stops at the relay: it is admitted to no
 //! room the relay governs, administers none of them, and every member's
 //! replica refuses it from the room's governance.
-use governance_actions::{HOME_WORKSPACE, admitted, host_action, subscribed};
+use governance_actions::{admitted, connected, host_action};
 use tilo_relay::rooms::ENTER_ROOM;
 use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
@@ -28,16 +28,9 @@ fn hello(device: &TestDevice, revocations: Vec<RevocationEntry>) -> NeighbourMsg
     }
 }
 
-async fn enter(relay: &Relay, host: &TestDevice, device: &TestDevice, room: &str) {
-    let home = subscribed(relay, device, HOME_WORKSPACE).await;
-    let _: EnteredRoom = host_action(
-        &home,
-        host,
-        HOME_WORKSPACE,
-        ENTER_ROOM,
-        serde_json::json!({ "room": room }),
-    )
-    .await;
+async fn enter(relay: &Relay, device: &TestDevice, room: &str) {
+    let home = connected(relay, device).await;
+    let _: EnteredRoom = host_action(&home, ENTER_ROOM, serde_json::json!({ "room": room })).await;
 }
 
 /// `device` of `person` redeems an editor's invitation to `room` that
@@ -111,9 +104,9 @@ async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_
 
     // Alice's laptop governs two rooms through her relay; her phone is in
     // the first, and Bob is in it with two devices.
-    let plans = create_and_enter(&relay, &host, &laptop, "Plans").await;
-    let other = create_and_enter(&relay, &host, &laptop, "Other").await;
-    enter(&relay, &host, &phone, &plans.room).await;
+    let plans = create_and_enter(&relay, &laptop, "Plans").await;
+    let other = create_and_enter(&relay, &laptop, "Other").await;
+    enter(&relay, &phone, &plans.room).await;
     let mut tablet_peer = join(&relay, &laptop, &plans.room, &bob, &tablet).await;
     join(&relay, &laptop, &plans.room, &bob, &bob_laptop).await;
     for workspace in [plans.workspace_id, other.workspace_id] {

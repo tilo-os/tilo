@@ -1206,8 +1206,9 @@ doc = false
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
 "tilo-lockdown-policy" = { path = "../../../crates/session/tilo-lockdown-policy", default-features = false, features = [] }
 "tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
-"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = ["room"] }
+"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = ["room", "service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../../crates/system/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
+"tilo-messaging-service" = { path = "../../../crates/session/messaging-service", default-features = false, features = ["default", "service"] }
 "tilo-mime" = { path = "../../../crates/platform/tilo-mime", default-features = false, features = [] }
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
 "tilo-model-gateway" = { path = "../../../crates/agent/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }
@@ -1413,6 +1414,7 @@ doc = false
 "urlencoding-2_1_3" = { package = "urlencoding", version = "^2.1.3", default-features = false, features = [] }
 "ush" = { path = "../../../crates/runtime/ush", default-features = false, features = [] }
 "ush-shell" = { path = "../../../crates/runtime/ush-shell", default-features = false, features = [] }
+"ush-tilo" = { path = "../../../crates/runtime/ush-tilo", default-features = false, features = [] }
 "usvg-0_47_0" = { package = "usvg", version = "^0.47.0", default-features = false, features = ["default", "fontdb", "memmap-fonts", "rustybuzz", "system-fonts", "text", "ttf-parser", "unicode-bidi", "unicode-script", "unicode-vo"] }
 "utf-8-0_7_6" = { package = "utf-8", version = "^0.7.6", default-features = false, features = [] }
 "utf16_iter-1_0_5" = { package = "utf16_iter", version = "^1.0.5", default-features = false, features = [] }
@@ -3604,8 +3606,9 @@ doc = false
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
 "tilo-lockdown-policy" = { path = "../../../crates/session/tilo-lockdown-policy", default-features = false, features = [] }
 "tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
-"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = [] }
+"tilo-messaging" = { path = "../../../crates/platform/tilo-messaging", default-features = false, features = ["service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../../crates/system/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
+"tilo-messaging-service" = { path = "../../../crates/session/messaging-service", default-features = false, features = ["default", "service"] }
 "tilo-mime" = { path = "../../../crates/platform/tilo-mime", default-features = false, features = [] }
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
 "tilo-model-gateway" = { path = "../../../crates/agent/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }

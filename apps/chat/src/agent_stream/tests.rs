@@ -1,6 +1,7 @@
 use super::*;
 use crate::messages::chat_part;
 use crate::parts::ChatPart;
+use crate::testing::MountedChat;
 use crate::testing::Room;
 use ui::tilo_resource::Id;
 
@@ -361,12 +362,10 @@ fn stream_fixtures_are_durable_and_long_thread_uses_the_shared_scroll_service() 
     ] {
         let mut app = TestApp::<crate::ChatShell>::capture(Some(scenario)).unwrap();
         let state = app.state();
-        let held = app
-            .with_surface::<crate::ChatApp, _>(|surface| surface.held_messages())
-            .unwrap();
+        let held = app.with_chat(|surface| surface.held_messages()).unwrap();
         let message = state.message_row(&held, "shot_agent_stream").unwrap();
         assert!(message.work.as_ref().unwrap().stream.is_some());
-        app.with_surface::<crate::ChatApp, _>(|surface| {
+        app.with_chat(|surface| {
             assert_eq!(
                 surface.expanded_reasoning.contains(&message.id),
                 matches!(scenario, "agent-reasoning" | "agent-long-thread")

@@ -1165,8 +1165,12 @@ impl Resolver<'_> {
         before: &[FieldInfo],
     ) -> Option<String> {
         let m = f.marker.as_ref()?;
+        // What the type held before: kept in its records, read only by its migrations.
+        if m.name == "previously" {
+            return Some(m.name.clone());
+        }
         if !matches!(m.name.as_str(), "title" | "body") {
-            self.err("E092", m.span, format!("`({})` is not a field marker; a Text field can be marked `(title)`, what names the resource, or `(body)`, its main text", m.name));
+            self.err("E092", m.span, format!("`({})` is not a field marker; a Text field can be marked `(title)`, what names the resource, or `(body)`, its main text, and any field `(previously)`, what the type held before, which only its migrations read", m.name));
             return None;
         }
         let fits = info.ty == Ty::Text || (m.name == "body" && info.ty == Ty::RichText);

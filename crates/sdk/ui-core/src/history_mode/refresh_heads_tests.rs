@@ -5,7 +5,7 @@ use crate::application_test_support::{
     APP, ProbeHost, runner_permissions, runner_probe_definition,
 };
 use crate::bound_dispatch::CallbackBinding;
-use crate::history_mode::owner::{HistoryOwner, LegacyHistoryLifetime, OWNED_DOCUMENT_CLONES};
+use crate::history_mode::owner::{HistoryOwner, OWNED_DOCUMENT_CLONES, RecordOwnerLifetime};
 use crate::history_mode::{HistoryDefinition, HistoryResource, HistoryScopeDefinition};
 use crate::record::{RecordCheckout, RecordKind, RecordStore};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
@@ -251,11 +251,11 @@ fn refresh_heads_foreign_registration_and_stale_record_identity_remain_refused()
     let store = RecordStore::in_memory();
     let live = RecordCheckout::new(crate::RecordId::for_tab(941), RecordKind::new("note"));
     store.open_record(&live);
-    let lifetime = LegacyHistoryLifetime::new();
-    let live_owner = HistoryOwner::legacy(store.clone(), live.clone(), &lifetime);
+    let lifetime = RecordOwnerLifetime::new();
+    let live_owner = HistoryOwner::record(store.clone(), live.clone(), &lifetime);
     let resource = live_owner.resource(APP).unwrap();
     let stale = RecordCheckout::new(live.id.clone(), RecordKind::new("foreign-kind"));
-    let owner = HistoryOwner::legacy(store, stale, &lifetime);
+    let owner = HistoryOwner::record(store, stale, &lifetime);
     assert!(matches!(
         HistorySourceRegistration::owned("document", APP, owner.clone()),
         Err(HistoryRegistrationError::UnsupportedOwner)
@@ -356,7 +356,7 @@ fn refresh_heads_allocation_growth_independent_of_real_graph_size_in_all_documen
             let checkout =
                 RecordCheckout::new(crate::RecordId::for_tab(943), RecordKind::new("note"));
             store.open_record(&checkout);
-            let lifetime = LegacyHistoryLifetime::new();
+            let lifetime = RecordOwnerLifetime::new();
             let source = match route {
                 "owned" => {
                     store
@@ -366,7 +366,7 @@ fn refresh_heads_allocation_growth_independent_of_real_graph_size_in_all_documen
                     HistorySourceRegistration::owned(
                         "document",
                         APP,
-                        HistoryOwner::legacy(store.clone(), checkout.clone(), &lifetime),
+                        HistoryOwner::record(store.clone(), checkout.clone(), &lifetime),
                     )
                     .unwrap()
                 }

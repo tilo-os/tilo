@@ -3,8 +3,8 @@
 
 use super::*;
 
-fn app_with_doc() -> (MusicApp, AutoCommit) {
-    let mut app = MusicApp::new();
+fn app_with_doc() -> (Music, AutoCommit) {
+    let mut app = Music::new();
     let doc = crate::seed::sample_document();
     app.reload(&doc);
     (app, doc)

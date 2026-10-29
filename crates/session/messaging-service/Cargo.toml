@@ -1,0 +1,88 @@
+[package]
+name = "tilo-messaging-service"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The person's messaging accounts as their own process: Signal, WhatsApp, SMS and Tilo enrollment and the running accounts, served to Messages over an authenticated socket."
+
+[lib]
+name = "tilo_messaging_service"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-messaging"
+path = "src/main.rs"
+required-features = ["service"]
+
+[features]
+default = ["service"]
+# The service itself; without it, the crate is the session door the
+# compositor answers.
+service = [
+    "dep:launcher",
+    "dep:package-store",
+    "dep:tilo-messaging-protocol",
+    "dep:tilo-identity-host",
+    "dep:collab-types",
+    "dep:tilo-relay-protocol",
+    "dep:tilo-files",
+    "dep:tilo-paths",
+    "dep:tilo-rt",
+    "dep:tilo-resource",
+    "dep:tilo-secret-vault",
+    "dep:bounded-command",
+    "dep:hex",
+    "dep:uuid",
+    "dep:blake3",
+    "dep:zbus",
+    "dep:libc",
+    "dep:rustix",
+    "dep:tracing-subscriber",
+    "tokio/rt-multi-thread",
+    "tokio/time",
+    "tokio/macros",
+]
+
+# Explicit native RAM custody qualification of the Signal working profile:
+# needs a qualified tmpfs backing or permission to create a noswap fixture in
+# a private mount namespace.
+signal-profile-native-test = []
+
+[dependencies]
+accounts = { path = "../../system/accounts", features = ["person"] }
+serde.workspace = true
+serde_json.workspace = true
+tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
+tilo-messaging = { path = "../../platform/tilo-messaging", features = ["service-client"] }
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+zeroize.workspace = true
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+launcher = { path = "../../packaging/launcher", optional = true }
+package-store = { path = "../../packaging/package-store", features = ["store"], optional = true }
+tilo-messaging-protocol = { path = "../../system/messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"], optional = true }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host", optional = true }
+collab-types = { path = "../../collab/collab-types", optional = true }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol", optional = true }
+tilo-files = { path = "../../platform/tilo-files", optional = true }
+tilo-paths = { workspace = true, optional = true }
+tilo-rt = { workspace = true, optional = true }
+tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
+tilo-secret-vault = { path = "../../system/secret-vault", optional = true }
+bounded-command = { path = "../../system/bounded-command", optional = true }
+hex = { workspace = true, optional = true }
+uuid = { workspace = true, features = ["v4"], optional = true }
+blake3 = { workspace = true, optional = true }
+zbus = { workspace = true, features = ["tokio"], optional = true }
+libc = { workspace = true, optional = true }
+rustix = { workspace = true, features = ["net", "process"], optional = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+ed25519-dalek.workspace = true
+
+[lints]
+workspace = true

@@ -1,12 +1,13 @@
 //! A window shared live: the message that carries it, who may end it, the
 //! card a reader sees and what the desktop is asked to draw in it.
 
+use crate::testing::MountedChat;
 use serde_json::json;
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ActionInvoker;
 use ui::window_share::{EmbedState, OpenWindow};
 
-use crate::app::{ChatApp, Hit};
+use crate::app::Hit;
 use crate::record::ShareAccess;
 use crate::resource::ChatShell;
 use crate::testing::{chain, message_item, mounted_rows};
@@ -45,7 +46,7 @@ fn notes_window() -> OpenWindow {
 }
 
 fn hits(app: &mut TestApp<ChatShell>) -> Vec<String> {
-    app.surface_mut::<ChatApp>()
+    app.chat()
         .hits
         .iter()
         .map(|(_, hit)| hit.semantic_id())
@@ -147,9 +148,7 @@ fn a_shared_window_is_a_live_message_only_its_sharer_ends() {
         .into_iter()
         .find(|m| m.id == shared.id)
         .unwrap();
-    let label = app
-        .surface_mut::<ChatApp>()
-        .model_message_label(&ended_message);
+    let label = app.chat().model_message_label(&ended_message);
     assert!(
         label.ends_with("Plan\nNo longer shared"),
         "a screen reader hears it ended: {label}"
@@ -240,7 +239,7 @@ fn the_card_embeds_the_resource_its_desktop_draws_and_ends_as_a_neutral_card() {
     // The sharer switches what the others may do from the card, in place.
     let switch = Hit::SwitchShare(shared.id.clone(), ShareAccess::Edit).semantic_id();
     let edit_rect = app
-        .surface_mut::<ChatApp>()
+        .chat()
         .hits
         .iter()
         .find(|(_, hit)| hit.semantic_id() == switch)
@@ -268,10 +267,7 @@ fn the_card_embeds_the_resource_its_desktop_draws_and_ends_as_a_neutral_card() {
     app.harness().click_at(middle.x, middle.y);
     app.settle();
     assert!(
-        app.surface_mut::<ChatApp>()
-            .resource_navigation
-            .status(&shared.id)
-            .is_some(),
+        app.chat().resource_navigation.status(&shared.id).is_some(),
         "the press reached the card"
     );
 
@@ -299,18 +295,17 @@ fn the_desktop_shares_and_stops_through_chat_and_hears_what_is_shared() {
     let _hosted = ui::window_toolbar::enter(Some(&window));
     ui::window_share::set_drawn(true);
     ui::window_share::publish_windows(vec![notes_window()]);
-    app.surface_mut::<ChatApp>().active_channel = "c_chat".into();
+    app.chat().active_channel = "c_chat".into();
 
     // "Share to channel…" from the window's menu opens the panel on it.
     ui::window_share::ask_to_share(notes_window());
     app.settle();
-    let panel = app.surface_mut::<ChatApp>().live_shares.panel.clone();
+    let panel = app.chat().live_shares.panel.clone();
     assert_eq!(
         panel.map(|panel| (panel.chosen, panel.access)),
         Some((Some(7), ShareAccess::View))
     );
-    app.surface_mut::<ChatApp>()
-        .choose_share_access(ShareAccess::Edit);
+    app.chat().choose_share_access(ShareAccess::Edit);
     let found = hits(&mut app);
     assert!(found.contains(&Hit::SharePick(7).semantic_id()));
     assert!(found.contains(&Hit::ShareChosen.semantic_id()));
@@ -334,7 +329,7 @@ fn the_desktop_shares_and_stops_through_chat_and_hears_what_is_shared() {
         ("notes.workspace/pages/p1", "notes.workspace.pages"),
         "the note the window shows is what is shared"
     );
-    assert!(app.surface_mut::<ChatApp>().live_shares.panel.is_none());
+    assert!(app.chat().live_shares.panel.is_none());
     app.settle();
     let told = ui::window_share::shared();
     assert_eq!(told.len(), 1);

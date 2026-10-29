@@ -44,6 +44,25 @@ impl HostIdentity {
         &self,
         ws: WorkspaceId,
     ) -> Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>), String> {
+        self.current_material(Some(ws))
+    }
+
+    /// [`Self::current_native_material`] as the person this device is when
+    /// no workspace selects another identity: what its own host is opened
+    /// with and what it asks its person's hosts with.
+    ///
+    /// # Errors
+    /// As [`Self::current_native_material`].
+    pub fn current_person_material(
+        &self,
+    ) -> Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>), String> {
+        self.current_material(None)
+    }
+
+    fn current_material(
+        &self,
+        ws: Option<WorkspaceId>,
+    ) -> Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>), String> {
         let (cert, revocations) = if let Some(paths) = &self.identity_paths {
             let stored_key =
                 tilo_user_identity::persist::load_device_key(paths).map_err(|e| e.to_string())?;
@@ -58,7 +77,7 @@ impl HostIdentity {
                 .iter()
                 .filter_map(|(room, id)| {
                     let room = RoomId::parse(room)?;
-                    (room_topic(room) == ws).then_some(id)
+                    (Some(room_topic(room)) == ws).then_some(id)
                 });
             let selected_id = selected
                 .next()
@@ -85,12 +104,10 @@ impl HostIdentity {
             (cert, fleet.revocations)
         } else {
             (
-                self.workspace_device_certs
-                    .get(&ws)
+                ws.and_then(|ws| self.workspace_device_certs.get(&ws))
                     .unwrap_or(&self.device_cert)
                     .clone(),
-                self.workspace_revocations
-                    .get(&ws)
+                ws.and_then(|ws| self.workspace_revocations.get(&ws))
                     .cloned()
                     .unwrap_or_default(),
             )

@@ -9,6 +9,7 @@
 //! device — goes back to the same place where it can.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Model, Refusal, resource};
 
 /// Where an environment session runs: this device, or one of the person's
 /// relays by endpoint id — the vocabulary the supervisor speaks.
@@ -243,52 +244,75 @@ pub fn default_target(
     }
 }
 
-/// The most recently used environment, a device-local setting of the
-/// app's: which environment you last opened here says nothing about the next
-/// device, and nothing about it reaches a collaborator.
-#[derive(Clone, Debug)]
+/// The environment each device used last, by device: a record Terminal
+/// keeps beside its sessions in the workspace. Which environment you last
+/// opened on one device says nothing about the next, so each device reads
+/// and writes only its own entry.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct RecentEnvironments {
+    /// The environment, encoded as a request carries it, by device.
+    pub devices: std::collections::BTreeMap<String, String>,
+}
+
+#[resource(kind = "terminal.recent-environments", label = "Recent environments")]
+impl RecentEnvironments {
+    /// `device` opened the environment `target` (encoded as a request
+    /// carries it): a new tab there opens on it.
+    #[action(housekeeping)]
+    pub fn used(&mut self, device: String, target: String) -> Result<(), Refusal> {
+        if !matches!(
+            SessionTarget::decode(&target),
+            Some(SessionTarget::Environment { .. })
+        ) {
+            return Err(Refusal::new("not an environment"));
+        }
+        self.devices.insert(device, target);
+        Ok(())
+    }
+}
+
+impl RecentEnvironments {
+    /// The environment `device` used last.
+    #[must_use]
+    pub fn on(&self, device: &str) -> Option<SessionTarget> {
+        SessionTarget::decode(self.devices.get(device)?.trim())
+    }
+}
+
+/// The most recently used environment on this device: its entry in the
+/// [`RecentEnvironments`] record, where the window has one.
+#[derive(Clone, Default)]
 pub struct RecentTarget {
-    settings: Option<ui::storage::Settings<RecentTargetSetting>>,
+    record: Option<(ui::framework::PersonRecord<RecentEnvironments>, String)>,
 }
 
-/// What [`RecentTarget`] keeps: the target, encoded as a request carries it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RecentTargetSetting {
-    #[serde(default)]
-    pub target: Option<String>,
+impl std::fmt::Debug for RecentTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecentTarget")
+            .field("device", &self.record.as_ref().map(|(_, device)| device))
+            .finish_non_exhaustive()
+    }
 }
-
-impl ui::storage::SettingsSchema for RecentTargetSetting {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
-}
-
-/// The app id the setting is kept under.
-const TERMINAL_APP_ID: &str = "so.tilo.terminal";
 
 impl RecentTarget {
-    /// The app's settings in the document its host keeps.
-    pub fn discover() -> Self {
+    /// `device`'s entry in `record`.
+    pub fn in_record(
+        record: ui::framework::PersonRecord<RecentEnvironments>,
+        device: impl Into<String>,
+    ) -> Self {
         Self {
-            settings: Some(ui::storage::Settings::for_app(TERMINAL_APP_ID)),
+            record: Some((record, device.into())),
         }
     }
 
-    /// The setting in the settings document at `path`; tests use a scratch
-    /// profile's.
-    pub fn at(path: impl Into<std::path::PathBuf>) -> Self {
-        Self {
-            settings: Some(ui::storage::Settings::for_app(TERMINAL_APP_ID).in_profile(path)),
-        }
-    }
-
-    /// No store: nothing is remembered.
+    /// No record: nothing is remembered.
     pub fn none() -> Self {
-        Self { settings: None }
+        Self::default()
     }
 
     pub fn load(&self) -> Option<SessionTarget> {
-        let stored = self.settings.as_ref()?.get().target?;
-        SessionTarget::decode(stored.trim())
+        let (record, device) = self.record.as_ref()?;
+        record.with(|recent| recent.on(device))
     }
 
     /// Remember `target` if it is an environment; the device's own shell and
@@ -297,12 +321,14 @@ impl RecentTarget {
         if !matches!(target, SessionTarget::Environment { .. }) {
             return;
         }
-        let Some(settings) = self.settings.as_ref() else {
+        let Some((record, device)) = self.record.as_ref() else {
             return;
         };
-        if let Err(error) = settings.set(&RecentTargetSetting {
-            target: Some(target.encode()),
-        }) {
+        if self.load().as_ref() == Some(target) {
+            return;
+        }
+        let used = RecentEnvironments::USED.with((device.clone(), target.encode()));
+        if let Err(error) = record.invoke(&used) {
             tracing::warn!(%error, "terminal: the recent environment could not be kept");
         }
     }
@@ -311,30 +337,6 @@ impl RecentTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_recent_environment_is_a_device_local_setting() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().to_path_buf();
-        let recent = RecentTarget::at(&file);
-        recent.remember(&SessionTarget::Host);
-        assert_eq!(
-            recent.load(),
-            None,
-            "the device's own shell is never remembered"
-        );
-        recent.remember(&SessionTarget::environment("work"));
-        assert_eq!(recent.load(), Some(SessionTarget::environment("work")));
-        let stored = serde_json::Value::Object(ui::storage::settings_at(&file));
-        assert!(
-            stored["app_device_local"][TERMINAL_APP_ID]["target"].is_string(),
-            "{stored}"
-        );
-        assert!(
-            stored.get("app_personal").is_none(),
-            "it never roams to the person's other devices"
-        );
-    }
 
     #[test]
     fn a_target_round_trips_and_rejects_what_a_request_may_not_carry() {
@@ -421,8 +423,9 @@ mod tests {
 
     #[test]
     fn a_new_tab_opens_the_most_recent_environment_and_never_the_host_by_habit() {
-        let dir = tempfile::tempdir().unwrap();
-        let recent = RecentTarget::at(dir.path().join("recent.json"));
+        let mut app = ui::framework::testing::TestApp::<crate::TerminalShell>::new().unwrap();
+        let recent =
+            RecentTarget::in_record(app.person::<RecentEnvironments>().unwrap(), "test-device");
         assert_eq!(recent.load(), None);
         assert_eq!(
             default_target(recent.load().as_ref(), true),

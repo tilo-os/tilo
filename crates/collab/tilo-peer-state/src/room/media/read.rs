@@ -1,13 +1,11 @@
 //! Shared media data parsing; successful decoding confers no authority.
 use super::{MediaPolicyError, RoomMediaV1};
-use crate::resources::{OuterLimits, PeerResourceError};
 use crate::room::read::{ReadError, RoomRead, RoomValue, Selection};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Error {
     Policy(MediaPolicyError),
     Capacity,
-    Decode(PeerResourceError),
 }
 pub(crate) trait PolicyValue {
     fn policy(&self) -> &RoomMediaV1;
@@ -15,15 +13,6 @@ pub(crate) trait PolicyValue {
 impl PolicyValue for RoomMediaV1 {
     fn policy(&self) -> &RoomMediaV1 {
         self
-    }
-}
-/// A media policy decoded within [`OuterLimits`].
-pub(crate) struct BoundedPolicy {
-    policy: RoomMediaV1,
-}
-impl PolicyValue for BoundedPolicy {
-    fn policy(&self) -> &RoomMediaV1 {
-        &self.policy
     }
 }
 pub(crate) trait PolicyDecode {
@@ -38,23 +27,6 @@ impl PolicyDecode for LegacyPolicy {
             .map_err(|_| Error::Policy(MediaPolicyError::Malformed))
     }
 }
-pub(crate) struct BoundedDecode {
-    pub(crate) limits: OuterLimits,
-}
-impl PolicyDecode for BoundedDecode {
-    type Value = BoundedPolicy;
-    fn decode(&self, bytes: &[u8]) -> Result<Self::Value, Error> {
-        Ok(BoundedPolicy {
-            policy: crate::resources::decode(bytes, self.limits).map_err(|error| match error {
-                PeerResourceError::Malformed => Error::Policy(MediaPolicyError::Malformed),
-                PeerResourceError::Capacity => Error::Decode(error),
-            })?,
-        })
-    }
-}
-impl crate::resources::outer::EncodeSchema for RoomMediaV1 {}
-impl crate::resources::outer::Schema<'_> for RoomMediaV1 {}
-
 fn read_error(error: ReadError<Error>) -> Error {
     match error {
         ReadError::Malformed => Error::Policy(MediaPolicyError::Malformed),
@@ -122,8 +94,7 @@ fn canonical_matches(policy: &RoomMediaV1, bytes: &[u8]) -> bool {
 pub(super) fn legacy_error(error: Error) -> MediaPolicyError {
     match error {
         Error::Policy(error) => error,
-        Error::Capacity | Error::Decode(PeerResourceError::Capacity) => MediaPolicyError::Capacity,
-        Error::Decode(PeerResourceError::Malformed) => MediaPolicyError::Malformed,
+        Error::Capacity => MediaPolicyError::Capacity,
     }
 }
 

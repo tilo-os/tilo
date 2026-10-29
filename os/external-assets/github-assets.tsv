@@ -44,10 +44,6 @@ a78c32ec651aa445a2e5fbae08b91fb046aa9c538547ada4019f9d3ada9ba4d1	joycond-0df025a
 e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac	bootc-fa0d3f9.tar.gz	https://github.com/bootc-dev/bootc/archive/fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60.tar.gz
 # xwayland-satellite v0.8.2, built with os/external-assets/xwayland-satellite/.
 4ce9e47b359627e0407fcdc3651b1de51f27209056a1d8356acb181268819367	xwayland-satellite-8d135d3.tar.gz	https://github.com/Supreeeme/xwayland-satellite/archive/8d135d3b2854b30fd01ea6cd6c27e523dd50a839.tar.gz
-# chunkah, the content-based OCI re-layering of the published OS image (os/Containerfile.rechunk):
-# the release's source and its cargo vendor tree, built offline. GitHub asset SHA-256.
-12c0101532e4c65cd63244f28ed801296df9d0a7302e3646026387f684fb690b	chunkah-0.7.1.tar.gz	https://github.com/coreos/chunkah/releases/download/v0.7.1/chunkah-0.7.1.tar.gz
-56c73d1003f6c88fb8467434563a25ce65aa2125331b9d258202de3239dee328	chunkah-0.7.1-vendor.tar.gz	https://github.com/coreos/chunkah/releases/download/v0.7.1/chunkah-0.7.1-vendor.tar.gz
 67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006	sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
 821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77	sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz
 d15d7e476feec78d0ec9edc27b8f77279ec7a3e6227756e7036e5cd2066800f4	wasm-bindgen-0.2.108-x86_64-unknown-linux-musl.tar.gz	https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.108/wasm-bindgen-0.2.108-x86_64-unknown-linux-musl.tar.gz

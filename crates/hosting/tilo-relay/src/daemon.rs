@@ -514,7 +514,6 @@ impl Relay {
                 max_room_grants: cfg.max_room_grants,
                 apps: app_serving,
                 shell_payloads,
-                persons_hosts: None,
             },
             identity.clone(),
             endpoint.clone(),

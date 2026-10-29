@@ -2564,7 +2564,7 @@ mod tests {
             .into_iter()
             .filter_map(|inbound| match inbound {
                 InboundChannelGovernance::Frame { frame, .. } => Some(frame),
-                _ => None,
+                InboundChannelGovernance::AccessRequest { .. } => None,
             })
             .collect();
         assert_eq!(genesis.len(), 1, "announced once per session");

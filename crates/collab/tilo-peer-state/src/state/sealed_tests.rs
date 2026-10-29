@@ -333,32 +333,21 @@ fn the_key_holder_admits_the_opened_plaintext_and_keeps_the_record_encrypted() {
     let mut restored = restore(&holder, now).unwrap();
     assert_eq!(value(&restored), "\"opened by its key holder\"");
     let original = holder.durable().unwrap();
-    let bounded = crate::BoundedStatePeer::restore(
-        &original,
-        holder.room(),
-        holder.authority(),
-        std::slice::from_ref(holder.authority()),
-        &tilo_user_identity::RevocationList::new(),
-        now,
-        &crate::PeerLimits::default(),
-    )
-    .unwrap();
     let mut opened = 0;
-    let capture = bounded
-        .read()
+    let capture = restored
         .capture_document(
             a.verifying_key().to_bytes(),
             (APP, RECORD),
             now,
             1024 * 1024,
-            &mut |retained| {
+            Some(&mut |retained| {
                 assert_eq!(
                     retained, &envelope,
                     "original signed ciphertext must survive restore"
                 );
                 opened += 1;
                 Ok(plaintext.clone())
-            },
+            }),
         )
         .unwrap();
     assert_eq!(opened, 1);

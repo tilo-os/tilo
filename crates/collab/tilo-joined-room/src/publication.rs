@@ -911,12 +911,12 @@ fn validate_member_changes(
     {
         return Err("native membership publication differs from its room".into());
     }
-    let device = view.device().device_public_key;
+    // The actor this replica writes under: who wrote a change is never
+    // read from its actor, only which copy of the room made it.
+    let made_here = view.peer.room_actor_for(&view.device().device_public_key);
     for bytes in changes {
         let change = automerge::Change::from_bytes(bytes.clone()).map_err(|e| e.to_string())?;
-        if change.actor_id().to_bytes() != device.as_slice()
-            || !view.peer.room_holds_change(&change.hash())
-        {
+        if change.actor_id() != &made_here || !view.peer.room_holds_change(&change.hash()) {
             return Err("native membership publication carries a change not made here".into());
         }
     }

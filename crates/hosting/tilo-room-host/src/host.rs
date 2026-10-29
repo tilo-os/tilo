@@ -69,34 +69,6 @@ impl HostMode {
     }
 }
 
-/// The sessions a device already holds with the hosts of its person, on
-/// the person's continuity workspace, as its network keeps them.
-///
-/// A host keeps one session per device and workspace: a second
-/// subscription from the same device replaces the first. So the host a
-/// device runs never subscribes beside the device's network as the same
-/// device. It asks another host of its person its host operations
-/// ([`HOST_ACTIONS_PROVIDER`]) on the device's own session there instead.
-/// A certified host has no network beside it, and asks on a session of its
-/// own.
-///
-/// [`HOST_ACTIONS_PROVIDER`]: tilo_relay_session::rooms::HOST_ACTIONS_PROVIDER
-pub trait PersonsHostSessions: Send + Sync {
-    /// Ask the host `device` at `addr` `invoke` on this device's session of
-    /// its person's continuity workspace there, and answer its receipt.
-    fn ask(
-        &self,
-        device: [u8; 32],
-        addr: iroh_base::EndpointAddr,
-        invoke: tilo_actions::remote::InvokeRequest,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<tilo_actions::remote::ReceiptStatus, String>>
-                + Send,
-        >,
-    >;
-}
-
 /// What a host is opened with.
 #[derive(Clone)]
 pub struct HostConfig {
@@ -115,10 +87,6 @@ pub struct HostConfig {
     pub apps: Option<Arc<dyn AppServingPlane>>,
     /// Classifies co-edit bodies for every workspace the host opens.
     pub shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
-    /// The device's own sessions with its person's other hosts, for the
-    /// host a device runs ([`PersonsHostSessions`]); `None` for a host
-    /// with no network beside it.
-    pub persons_hosts: Option<Arc<dyn PersonsHostSessions>>,
 }
 
 impl HostConfig {
@@ -134,7 +102,6 @@ impl HostConfig {
             max_room_grants: None,
             apps: None,
             shell_payloads: crate::payloads::neighbour(),
-            persons_hosts: None,
         }
     }
 }
@@ -332,7 +299,6 @@ impl HostSessions {
             trust_policy: self.handler.trust_policy.clone(),
             agents: self.handler.agents.clone(),
             mode: cfg.mode.join_hint_mode(),
-            persons_hosts: cfg.persons_hosts.clone(),
             arrivals: self.handler.arrivals.clone(),
         }
     }

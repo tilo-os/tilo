@@ -732,8 +732,6 @@ pub(crate) struct EffectProbe {
     pub(crate) completions: Rc<Cell<usize>>,
     pub(crate) collab_events: Rc<Cell<usize>>,
     pub(crate) collab_wake_handles: Rc<RefCell<Vec<crate::WakeHandle>>>,
-    pub(crate) bracket: Rc<RefCell<Option<Vec<automerge::ChangeHash>>>>,
-    pub(crate) undo_request: Rc<Cell<Option<crate::undo::UndoRequest>>>,
 }
 pub(crate) fn native_effect_probe_parts(id: &'static str, operation: &'static str) -> EffectProbe {
     let starts = Rc::new(Cell::new(0));
@@ -744,13 +742,11 @@ pub(crate) fn native_effect_probe_parts(id: &'static str, operation: &'static st
     )));
     let collab_events = Rc::new(Cell::new(0));
     let collab_wake_handles = Rc::new(RefCell::new(Vec::new()));
-    let bracket = Rc::new(RefCell::new(None));
-    let undo_request = Rc::new(Cell::new(None));
     let root = Box::new(LiveOwner {
         resource_id: id,
         type_id: operation,
-        bracket: bracket.clone(),
-        undo_request: undo_request.clone(),
+        bracket: Rc::new(RefCell::new(None)),
+        undo_request: Rc::new(Cell::new(None)),
         text: Text::new(id),
         emitter: emitter.clone(),
         starts: starts.clone(),
@@ -773,8 +769,6 @@ pub(crate) fn native_effect_probe_parts(id: &'static str, operation: &'static st
         completions,
         collab_events,
         collab_wake_handles,
-        bracket,
-        undo_request,
     }
 }
 impl crate::widget::AppWidget for LiveOwner {

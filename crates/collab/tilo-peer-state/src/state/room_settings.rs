@@ -73,9 +73,7 @@ impl PeerGovernanceMut<'_> {
             .clone()
             .ok_or("room governance missing")?;
         let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         edit(&mut doc).map_err(err)?;
         doc.commit();
         if doc.get_heads() == before {

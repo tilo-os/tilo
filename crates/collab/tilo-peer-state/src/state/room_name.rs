@@ -33,9 +33,7 @@ impl PeerGovernanceMut<'_> {
         }
         let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
         let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         doc.put(ROOT, "name", name).map_err(err)?;
         doc.commit();
         let changes = doc

@@ -405,6 +405,9 @@ pub(crate) struct Core {
     pub(crate) opening: bool,
     /// Wakes the window once the vault is open.
     wake: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
+    /// Wakes the window when the messaging service's permission requests
+    /// change; dropped with it.
+    proposals_watch: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl Core {
@@ -453,12 +456,20 @@ impl Core {
             list_revision: 0,
             opening: false,
             wake: std::sync::Arc::default(),
+            proposals_watch: None,
         }
     }
 
     /// The vault in `model`: the person's in a live window.
     pub(crate) fn with_model(model: crate::PasswordsModel) -> Self {
         let mut core = Self::empty(Some(model));
+        // A request Messages' accounts make shows at once, not on the next
+        // look at the vault.
+        let wake = std::sync::Arc::clone(&core.wake);
+        core.proposals_watch =
+            tilo_messaging::service::observe_proposals(std::sync::Arc::new(move || {
+                wake.lock_recover().wake();
+            }));
         if core.open_without_waiting() {
             core.refresh();
             core.select_first_visible();
@@ -542,6 +553,9 @@ impl Core {
     }
 
     pub(crate) fn refresh(&mut self) {
+        if let Some(model) = self.model.as_mut() {
+            model.reload();
+        }
         let Some(model) = &self.model else {
             return;
         };

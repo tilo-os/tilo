@@ -228,8 +228,9 @@ refuses agent devices. Other users' agents are not admitted, and agents
 never call the host's room actions.
 
 Room administration on a relay (the room's `tilo.workspace` governance
-actions and the host's `tilo.host` operations over `Envelope::RemoteAction`,
-the `/rooms` pages, call control) is one decision, `Rooms::authorize`
+actions over `Envelope::RemoteAction`, the host's `tilo.host` operations
+asked of it directly over `Envelope::HostAction`, the `/rooms` pages, call
+control) is one decision, `Rooms::authorize`
 (`crates/hosting/tilo-relay/src/rooms/authority.rs`). The caller's
 certificate must be current and unrevoked, and not one of the relay's
 agents. A device of the relay's own user administers every room. Any other
