@@ -93,24 +93,18 @@ fn connect_hint(kind: SocketKind, error: &std::io::Error) -> String {
 }
 
 /// What a person reads when the admin's socket turns their process away:
-/// it serves only the device owner's own login, and a terminal app, with
-/// everything run in it, is not that. `tilo action` reaches the desktop
-/// from there, with the terminal workspace's scope.
-const TURNED_AWAY: &str = "tilo-control works only from the device owner's own login.\n\
-     In a terminal app, use `tilo action` instead:\n\
-     \x20 tilo actions              what this desktop can do\n\
-     \x20 tilo do <action>          do one of those things\n\
-     \x20 tilo open <app>           open an app";
-
-/// Whether the admin socket answered by turning this process away rather
-/// than answering its request.
-fn turned_away_by_admin_socket(kind: SocketKind, response: &serde_json::Value) -> bool {
-    kind == SocketKind::Admin
-        && tilo_control::client::refusal_of_process(
-            &tilo_control::client::Door::Admin(PathBuf::new()),
-            response,
-        )
-        .is_some()
+/// the desktop's own words for why (another account, a sandboxed app, a
+/// Terminal tab it no longer shows, or a request it does not serve), which
+/// stay accurate as the socket's rules change.
+fn admin_socket_refusal(kind: SocketKind, response: &serde_json::Value) -> Option<String> {
+    if kind != SocketKind::Admin {
+        return None;
+    }
+    tilo_control::client::refusal_of_process(
+        &tilo_control::client::Door::Admin(PathBuf::new()),
+        response,
+    )
+    .map(|message| format!("tilo-control: {message}"))
 }
 
 /// A next step for a refusal the compositor answered with.
@@ -1684,8 +1678,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    if turned_away_by_admin_socket(kind, &response) {
-        eprintln!("{TURNED_AWAY}");
+    if let Some(refusal) = admin_socket_refusal(kind, &response) {
+        eprintln!("{refusal}");
         return ExitCode::from(1);
     }
     let code = print_response(&invocation.command, &response);
@@ -1704,22 +1698,21 @@ mod tests {
     //! `shell::test_control::tests`.
     use super::*;
 
-    /// In the Terminal app the admin socket answers `not_permitted`; the
-    /// person is pointed at `tilo action`, in plain words.
+    /// The admin socket's refusal is shown in its own words, so the reason
+    /// a person reads is the one the desktop applied.
     #[test]
-    fn a_sandboxed_caller_is_pointed_at_tilo_action_without_jargon() {
+    fn an_admin_socket_refusal_is_shown_in_the_desktops_words() {
         let refused = serde_json::json!({"err": {
             "code": "not_permitted",
-            "message": "a sandboxed process cannot use the admin control socket"
+            "message": "programs inside a sandboxed app can't use tilo-control"
         }});
-        assert!(turned_away_by_admin_socket(SocketKind::Admin, &refused));
-        assert!(!turned_away_by_admin_socket(SocketKind::Named, &refused));
+        assert_eq!(
+            admin_socket_refusal(SocketKind::Admin, &refused).as_deref(),
+            Some("tilo-control: programs inside a sandboxed app can't use tilo-control")
+        );
+        assert_eq!(admin_socket_refusal(SocketKind::Named, &refused), None);
         let other = serde_json::json!({"err": {"code": "unknown_action", "message": ""}});
-        assert!(!turned_away_by_admin_socket(SocketKind::Admin, &other));
-        assert!(TURNED_AWAY.contains("tilo action"));
-        for jargon in ["socket", "collaboration", "sandbox", "connection"] {
-            assert!(!TURNED_AWAY.contains(jargon), "{jargon} in {TURNED_AWAY}");
-        }
+        assert_eq!(admin_socket_refusal(SocketKind::Admin, &other), None);
     }
 
     /// Ids join their parts with U+001F, which a terminal draws as nothing:

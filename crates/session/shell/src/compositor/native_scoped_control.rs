@@ -496,17 +496,17 @@ pub(super) fn settle_held(conn: &mut TestControlConn, frame_builder: &FrameBuild
 }
 
 impl TestControlConn {
-    /// A connection the agent door handed over for a program running in an
-    /// app ([`crate::compositor::workspace_door`]), with the request it
-    /// opened with and the scope it is served with.
+    /// A connection for a program running in an app
+    /// ([`crate::compositor::workspace_door`]), with the request it opened
+    /// with when one was already read, and the scope it is served with.
     pub(super) fn scoped(
         stream: UnixStream,
-        first_line: String,
+        first_line: Option<String>,
         scope: crate::compositor::workspace_door::AppScope,
     ) -> Option<Self> {
         let mut conn = Self::new(stream, false)?;
         conn.scope = Some(scope);
-        conn.replay = Some(zeroize::Zeroizing::new(first_line));
+        conn.replay = first_line.map(zeroize::Zeroizing::new);
         Some(conn)
     }
 }
@@ -523,20 +523,46 @@ pub(super) fn accept(
     state: &State,
 ) {
     while let Ok(handoff) = handed_over.try_recv() {
-        let scoped = conns.iter().filter(|conn| conn.scope.is_some()).count();
-        if scoped >= MAX_SCOPED_CONTROL_CONNS {
-            tracing::info!("agent door: too many programs in apps connected at once");
-            continue;
-        }
-        let Some(scope) = resolve(handoff.attribution, frame_builder, state) else {
-            crate::compositor::agent_door::refuse_control(handoff.stream);
-            continue;
-        };
-        if let Some(mut conn) = TestControlConn::scoped(handoff.stream, handoff.first_line, scope) {
-            conn.watch(handle);
-            conns.push(conn);
+        if let Err(stream) = take_on(
+            handoff.stream,
+            Some(handoff.first_line),
+            handoff.attribution,
+            conns,
+            handle,
+            frame_builder,
+            state,
+        ) {
+            crate::compositor::agent_door::refuse_control(stream);
         }
     }
+}
+
+/// Serve `stream` with the scope of the app `attribution` names — from the
+/// agent door's handover or the admin control socket alike. Gives the
+/// stream back when the tabs it asked from are not found; one over
+/// [`MAX_SCOPED_CONTROL_CONNS`] is dropped.
+pub(super) fn take_on(
+    stream: UnixStream,
+    first_line: Option<String>,
+    attribution: crate::compositor::workspace_door::Attribution,
+    conns: &mut Vec<TestControlConn>,
+    handle: &calloop::LoopHandle<'static, State>,
+    frame_builder: &FrameBuilder,
+    state: &State,
+) -> Result<(), UnixStream> {
+    let scoped = conns.iter().filter(|conn| conn.scope.is_some()).count();
+    if scoped >= MAX_SCOPED_CONTROL_CONNS {
+        tracing::info!("too many programs in apps connected at once");
+        return Ok(());
+    }
+    let Some(scope) = resolve(attribution, frame_builder, state) else {
+        return Err(stream);
+    };
+    if let Some(mut conn) = TestControlConn::scoped(stream, first_line, scope) {
+        conn.watch(handle);
+        conns.push(conn);
+    }
+    Ok(())
 }
 
 /// Find the tabs `attribution` asked from: the Terminal tab this desktop

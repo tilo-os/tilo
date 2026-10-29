@@ -117,7 +117,7 @@ fn a_program_in_an_app_lists_and_runs_actions_with_its_workspaces_scope() {
         .map_or(1, |group| group.active_tab);
     let mut conn = TestControlConn::scoped(
         server,
-        r#"{"op":"actions_enumerate","query":""}"#.into(),
+        Some(r#"{"op":"actions_enumerate","query":""}"#.into()),
         AppScope {
             package: "so.tilo.terminal".into(),
             room: room.clone(),

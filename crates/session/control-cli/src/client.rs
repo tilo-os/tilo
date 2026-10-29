@@ -229,7 +229,7 @@ impl Desktop {
     }
 
     /// One request, one answer. A door that turns this process away on its
-    /// first answer — the admin's socket refuses every app and what runs in
+    /// first answer — the admin's socket refuses a sandboxed app and what runs in
     /// one — hands the request on to the next door.
     ///
     /// # Errors

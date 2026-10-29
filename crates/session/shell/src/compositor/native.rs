@@ -14896,13 +14896,31 @@ pub fn run() {
                 match listener.accept() {
                     Ok((stream, _addr)) => {
                         match crate::compositor::admin_control::authorize(&stream) {
-                            Ok(()) => {
+                            Ok(crate::compositor::admin_control::Admission::Owner) => {
                                 if let Some(identity_dir) = identity_store.path().parent()
                                     && let Some(mut conn) =
                                         TestControlConn::admin(stream, identity_dir)
                                 {
                                     conn.watch(&event_loop.handle());
                                     test_control_conns.push(conn);
+                                }
+                            }
+                            Ok(crate::compositor::admin_control::Admission::InTerminal(
+                                attribution,
+                            )) => {
+                                if let Err(stream) = scoped_control::take_on(
+                                    stream,
+                                    None,
+                                    attribution,
+                                    &mut test_control_conns,
+                                    &event_loop.handle(),
+                                    &frame_builder,
+                                    &state,
+                                ) {
+                                    crate::compositor::admin_control::refuse(
+                                        stream,
+                                        &crate::compositor::admin_control::PeerRefusal::TerminalTabGone,
+                                    );
                                 }
                             }
                             Err(refusal) => {

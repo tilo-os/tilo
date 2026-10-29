@@ -24,11 +24,23 @@
 //!
 //! **The peer.** Every connection is checked against the kernel's account of
 //! the process on the other end (`SO_PEERCRED`): it must run as this session's
-//! own user, in this session's user and mount namespaces (a sandboxed app has
-//! its own, and is never shown the path anyway), and must not be an app this
-//! session launched, confined or not. An app acts through its own
-//! collaboration connection, with its own identity and grants, never with the
-//! admin's.
+//! own user. Then it is served as one of two callers:
+//!
+//! - **The owner**, when it shares this session's user and mount namespaces
+//!   and is not inside a sandboxed app: their own login, ssh, a
+//!   `systemd-run --user` unit, or an unconfined host app they launched (a
+//!   host terminal, say) and what runs in it. Such a process already has
+//!   the owner's full authority over their files and over this socket's
+//!   path, so turning it away would protect nothing.
+//! - **A Tilo Terminal tab**, when it runs in a Host session a Terminal tab
+//!   asked for — the person or an agent typing there. It is served with
+//!   that Terminal's workspace scope and grants ([`super::workspace_door`]),
+//!   asking the person before it reaches further, never with the owner's
+//!   whole authority.
+//!
+//! A process in a sandboxed app (its own namespaces, or a confined launch)
+//! is refused: it acts through its own collaboration connection, with its
+//! own identity and grants.
 //!
 //! Every invocation then passes the same capability gate as the palette
 //! (`PolicyVisibility`), so the socket reaches exactly what the admin may
@@ -189,8 +201,41 @@ pub(crate) struct Peer {
     pub uid: libc::uid_t,
     /// Whether it shares this session's user and mount namespaces.
     pub shares_namespaces: bool,
-    /// The package of the app this session launched that it descends from.
-    pub launched_app: Option<String>,
+    /// The app this session launched that it descends from.
+    pub launched_app: Option<LaunchedApp>,
+    /// Whether it runs in a tab of Tilo's Terminal, and what for.
+    pub terminal_tab: TerminalTab,
+}
+
+/// An app this session launched, from its own launch record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LaunchedApp {
+    pub package: String,
+    /// Launched in Tilo's sandbox, with its own identity and grants.
+    pub confined: bool,
+}
+
+/// Whether a process runs in a Host session a Tilo Terminal tab asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TerminalTab {
+    NotInOne,
+    /// In one, attributed to the Terminal and its workspace.
+    In(super::workspace_door::Attribution),
+    /// In one whose Terminal the desktop no longer recognises.
+    Unattributed,
+}
+
+/// Who an accepted connection is served as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Admission {
+    /// The device owner: their own login, ssh, or an unconfined host app
+    /// they run. Such a process already holds everything the owner's
+    /// account can do, so refusing it here would protect nothing.
+    Owner,
+    /// A program in a Tilo Terminal tab — the person or an agent typing
+    /// there — served with that Terminal's workspace scope and grants
+    /// ([`super::workspace_door`]), never with the owner's whole authority.
+    InTerminal(super::workspace_door::Attribution),
 }
 
 /// Why a connection was refused.
@@ -199,8 +244,11 @@ pub(crate) enum PeerRefusal {
     /// No peer credentials: nothing to decide on.
     Unidentified,
     OtherAccount,
-    Sandboxed,
-    LaunchedApp(String),
+    /// Runs in Tilo's sandbox: in its own namespaces, or descended from a
+    /// confined launch (whose package is named).
+    Sandboxed(Option<String>),
+    /// Runs in a Terminal tab the desktop no longer shows.
+    TerminalTabGone,
 }
 
 impl PeerRefusal {
@@ -212,49 +260,82 @@ impl PeerRefusal {
             Self::OtherAccount => "this works only for the account whose desktop this is; \
                  sign in as that account"
                 .to_string(),
-            // An app's process — the Terminal app and everything run in it —
-            // reaches the desktop's actions with that app's workspace scope,
-            // through `tilo action`, never with the owner's whole authority.
-            Self::Sandboxed | Self::LaunchedApp(_) => {
-                "programs inside an app can't use tilo-control; use `tilo action` instead"
-                    .to_string()
-            }
+            // A sandboxed app acts through its own collaboration connection,
+            // with the identity and grants it was given.
+            Self::Sandboxed(_) => "programs inside a sandboxed app can't use tilo-control; \
+                 the app acts with its own permissions"
+                .to_string(),
+            Self::TerminalTabGone => "this Terminal tab is no longer on the desktop, so \
+                 programs in it can't act for it; open a new tab and try again"
+                .to_string(),
         }
     }
 }
 
 /// Decide one connection from its peer's facts.
-pub(crate) fn peer_decision(peer: &Peer, own_uid: libc::uid_t) -> Result<(), PeerRefusal> {
+pub(crate) fn peer_decision(peer: &Peer, own_uid: libc::uid_t) -> Result<Admission, PeerRefusal> {
     if peer.uid != own_uid {
         return Err(PeerRefusal::OtherAccount);
     }
+    // A Terminal tab first: its shell is the shell runtime's child, so the
+    // launch records alone would not name the app it is typed in.
+    match &peer.terminal_tab {
+        TerminalTab::In(attribution) => return Ok(Admission::InTerminal(attribution.clone())),
+        TerminalTab::Unattributed => return Err(PeerRefusal::TerminalTabGone),
+        TerminalTab::NotInOne => {}
+    }
     if !peer.shares_namespaces {
-        return Err(PeerRefusal::Sandboxed);
+        return Err(PeerRefusal::Sandboxed(None));
     }
-    if let Some(package) = &peer.launched_app {
-        return Err(PeerRefusal::LaunchedApp(package.clone()));
+    if let Some(app) = &peer.launched_app
+        && app.confined
+    {
+        return Err(PeerRefusal::Sandboxed(Some(app.package.clone())));
     }
-    Ok(())
+    Ok(Admission::Owner)
 }
 
 /// Authorise an accepted connection from the kernel's account of its peer.
-pub(crate) fn authorize(stream: &UnixStream) -> Result<(), PeerRefusal> {
+pub(crate) fn authorize(stream: &UnixStream) -> Result<Admission, PeerRefusal> {
     let credentials =
         super::native::wayland_peer_credentials(stream).ok_or(PeerRefusal::Unidentified)?;
     let pid = u32::try_from(credentials.pid).map_err(|_| PeerRefusal::Unidentified)?;
     let peer = Peer {
         uid: credentials.uid,
         shares_namespaces: super::native::peer_shares_host_security_namespaces(pid),
-        launched_app: crate::shell::launcher::verified_package_for_descendant(pid),
+        launched_app: crate::shell::launcher::verified_launch_for_descendant(pid).map(|identity| {
+            LaunchedApp {
+                package: identity.package_id,
+                confined: identity.confined,
+            }
+        }),
+        terminal_tab: terminal_tab_of(pid),
     };
     peer_decision(&peer, rustix::process::geteuid().as_raw())
+}
+
+/// Whether `pid` runs in a Tilo Terminal tab's Host session, from the shell
+/// runtime's session records and the desktop's own launch records.
+fn terminal_tab_of(pid: u32) -> TerminalTab {
+    let Some(records) = ush::terminal_sessions::dir(std::env::var_os("XDG_RUNTIME_DIR")) else {
+        return TerminalTab::NotInOne;
+    };
+    if ush::terminal_sessions::session_of(&records, pid).is_none() {
+        return TerminalTab::NotInOne;
+    }
+    match super::workspace_door::attribute(pid) {
+        Some(attribution) if attribution.package == ush::host::TERMINAL_APP_ID => {
+            TerminalTab::In(attribution)
+        }
+        _ => TerminalTab::Unattributed,
+    }
 }
 
 /// Tell a refused client why, in the protocol's own error shape, then let
 /// the connection drop.
 pub(crate) fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
-    if let PeerRefusal::LaunchedApp(package) = refusal {
-        tracing::info!(%package, "admin control: a process inside an app was refused");
+    if let PeerRefusal::Sandboxed(Some(package)) = refusal {
+        tracing::info!(%package, "admin control: a process inside a sandboxed app was refused");
     }
     let reply = crate::shell::test_control::serialise_response(
         &crate::shell::test_control::Response::Err {
@@ -333,11 +414,15 @@ fn process_groups() -> Vec<libc::gid_t> {
 mod tests {
     use super::*;
 
-    fn peer(uid: libc::uid_t, shares_namespaces: bool, launched_app: Option<&str>) -> Peer {
+    fn peer(uid: libc::uid_t, shares_namespaces: bool, launched_app: Option<(&str, bool)>) -> Peer {
         Peer {
             uid,
             shares_namespaces,
-            launched_app: launched_app.map(str::to_string),
+            launched_app: launched_app.map(|(package, confined)| LaunchedApp {
+                package: package.to_owned(),
+                confined,
+            }),
+            terminal_tab: TerminalTab::NotInOne,
         }
     }
 
@@ -360,10 +445,24 @@ mod tests {
         ));
     }
 
+    fn terminal_attribution() -> crate::compositor::workspace_door::Attribution {
+        crate::compositor::workspace_door::Attribution {
+            package: ush::host::TERMINAL_APP_ID.to_owned(),
+            room: Some("room-1".into()),
+            holder: crate::compositor::workspace_door::Holder { pid: 42, start: 7 },
+            asked_from: crate::compositor::workspace_door::AskedFrom::HostedTerminal {
+                session: "s1".into(),
+            },
+        }
+    }
+
     #[test]
-    fn only_the_admins_own_unconfined_processes_connect() {
+    fn only_the_admins_own_unconfined_processes_connect_as_the_owner() {
         const ADMIN: libc::uid_t = 1000;
-        assert_eq!(peer_decision(&peer(ADMIN, true, None), ADMIN), Ok(()));
+        assert_eq!(
+            peer_decision(&peer(ADMIN, true, None), ADMIN),
+            Ok(Admission::Owner)
+        );
         assert_eq!(
             peer_decision(&peer(1001, true, None), ADMIN),
             Err(PeerRefusal::OtherAccount),
@@ -376,14 +475,57 @@ mod tests {
         );
         assert_eq!(
             peer_decision(&peer(ADMIN, false, None), ADMIN),
-            Err(PeerRefusal::Sandboxed),
+            Err(PeerRefusal::Sandboxed(None)),
             "a sandboxed app runs in its own namespaces"
         );
         assert_eq!(
-            peer_decision(&peer(ADMIN, true, Some("so.tilo.notes")), ADMIN),
-            Err(PeerRefusal::LaunchedApp("so.tilo.notes".into())),
-            "an app the session launched, even unconfined"
+            peer_decision(&peer(ADMIN, true, Some(("so.tilo.notes", true))), ADMIN),
+            Err(PeerRefusal::Sandboxed(Some("so.tilo.notes".into()))),
+            "a confined launch, even one sharing the namespaces"
         );
+    }
+
+    /// A host terminal the person launched UNCONFINED (`TILO_HOST_APP=1`)
+    /// already holds the owner's whole authority: refusing what runs in it
+    /// protected nothing, while `systemd-run --user` got through anyway.
+    #[test]
+    fn an_unconfined_host_app_is_served_as_the_owner() {
+        const ADMIN: libc::uid_t = 1000;
+        assert_eq!(
+            peer_decision(&peer(ADMIN, true, Some(("org.gnome.Ptyxis", false))), ADMIN),
+            Ok(Admission::Owner)
+        );
+    }
+
+    /// The person or an agent in a Tilo Terminal tab acts with that
+    /// Terminal's workspace grants, never the owner's, and a tab the
+    /// desktop no longer recognises gets nothing.
+    #[test]
+    fn a_terminal_tab_is_served_with_its_terminals_scope() {
+        const ADMIN: libc::uid_t = 1000;
+        let mut in_tab = peer(ADMIN, true, None);
+        in_tab.terminal_tab = TerminalTab::In(terminal_attribution());
+        assert_eq!(
+            peer_decision(&in_tab, ADMIN),
+            Ok(Admission::InTerminal(terminal_attribution()))
+        );
+        // The tab wins over an unconfined launch it may also descend from.
+        let mut nested = peer(ADMIN, true, Some(("org.gnome.Ptyxis", false)));
+        nested.terminal_tab = TerminalTab::In(terminal_attribution());
+        assert_eq!(
+            peer_decision(&nested, ADMIN),
+            Ok(Admission::InTerminal(terminal_attribution()))
+        );
+        let mut gone = peer(ADMIN, true, None);
+        gone.terminal_tab = TerminalTab::Unattributed;
+        assert_eq!(
+            peer_decision(&gone, ADMIN),
+            Err(PeerRefusal::TerminalTabGone),
+            "never falls back to the owner"
+        );
+        let mut other = peer(1001, true, None);
+        other.terminal_tab = TerminalTab::In(terminal_attribution());
+        assert_eq!(peer_decision(&other, ADMIN), Err(PeerRefusal::OtherAccount));
     }
 
     /// The live check over a real socket: this test process is its own
@@ -391,14 +533,14 @@ mod tests {
     #[test]
     fn a_connection_from_this_account_is_authorised_by_its_credentials() {
         let (client, server) = UnixStream::pair().expect("socket pair");
-        assert_eq!(authorize(&server), Ok(()));
+        assert_eq!(authorize(&server), Ok(Admission::Owner));
         drop(client);
     }
 
     #[test]
     fn a_refused_client_reads_why_in_the_protocol_shape() {
         let (mut client, server) = UnixStream::pair().expect("socket pair");
-        refuse(server, &PeerRefusal::Sandboxed);
+        refuse(server, &PeerRefusal::Sandboxed(None));
         let mut line = String::new();
         std::io::Read::read_to_string(&mut client, &mut line).expect("read refusal");
         let reply: serde_json::Value = serde_json::from_str(line.trim()).expect("one JSON line");
@@ -407,9 +549,8 @@ mod tests {
         assert!(
             reply["err"]["message"]
                 .as_str()
-                .is_some_and(
-                    |message| message.contains("inside an app") && message.contains("tilo action")
-                ),
+                .is_some_and(|message| message.contains("sandboxed app")
+                    && message.contains("own permissions")),
             "{reply}"
         );
     }
