@@ -150,7 +150,7 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
                 ));
             }
         }
-    } else if matches!(app, "todo" | "notes") {
+    } else if matches!(app, "tasks" | "notes") {
         misses.push(format!("{app}: no filter was chosen"));
     }
     let nodes = |size: &str| find(records, "open", size).and_then(|r| r.meta.get("nodes"));
@@ -208,7 +208,7 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
 #[test]
 fn the_runtime_does_the_work_of_what_it_shows() {
     let mut misses = Vec::new();
-    for app in ["notes", "chat", "todo", "today"] {
+    for app in ["notes", "chat", "tasks", "today"] {
         gate(app, &bench(app), &mut misses);
     }
     assert!(

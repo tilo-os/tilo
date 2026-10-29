@@ -1064,7 +1064,7 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
 /// how many of the todos are done.
 fn today_room() -> (Room, usize) {
     let mut room = Room::new("today");
-    room.seed("todo");
+    room.seed("tasks");
     room.seed("notes");
     let host = room.window.current_host().unwrap();
     let list = host.root_of("so.tilo.lang.todo").unwrap();
@@ -1248,7 +1248,7 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
 // its row's menu.
 #[test]
 fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() {
-    let mut room = Room::seeded("todo");
+    let mut room = Room::seeded("tasks");
     assert!(
         room.window.detail_target().is_some(),
         "the scenario's item is shown"
@@ -1257,8 +1257,8 @@ fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() 
     assert!(
         !header
             .iter()
-            .any(|label| label == "Check" || label == "Uncheck"),
-        "the Done switch stands for Check: {header:?}"
+            .any(|label| label == "Complete" || label == "Reopen"),
+        "the Done switch stands for Complete: {header:?}"
     );
     assert!(
         header.iter().any(|label| label == "Remove"),
@@ -1276,7 +1276,7 @@ fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() 
     assert!(
         menus
             .iter()
-            .any(|label| label == "Check" || label == "Uncheck"),
+            .any(|label| label == "Complete" || label == "Reopen"),
         "and in its row's menu: {menus:?}"
     );
 }
@@ -1427,7 +1427,7 @@ fn a_change_to_an_item_reaches_its_shown_row() {
 
 #[test]
 fn a_rows_checkbox_shows_whether_its_item_is_done_from_its_first_read() {
-    let mut room = Room::staged("todo", "a saturday list");
+    let mut room = Room::staged("tasks", "a busy week");
     let checked: Vec<bool> = room
         .items()
         .into_iter()
@@ -1934,7 +1934,7 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
 #[test]
 fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
     use ui::widget::Widget as _;
-    let mut room = Room::seeded("todo");
+    let mut room = Room::seeded("tasks");
     let (key, _) = room.rows().remove(0);
     room.activate(&key);
     let detail = room.window.detail_tree().expect("the item is shown");
@@ -1968,7 +1968,7 @@ fn a_keystroke_repaints_its_field_not_the_window() {
     // The item's column slides in: what a keystroke repaints is asked of the
     // window at rest.
     let _settled = ui::motion::testing::settled();
-    let mut room = Room::seeded("todo");
+    let mut room = Room::seeded("tasks");
     let (key, _) = room.rows().remove(0);
     room.activate(&key);
     let detail = room.window.detail_tree().expect("the item is shown");
@@ -2053,7 +2053,7 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
     assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
     assert_eq!(
         text(cards[0], "title"),
-        "Saturday",
+        "Tasks",
         "a card is headed by its resource's title"
     );
     let mut shown = Vec::new();

@@ -129,6 +129,14 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
 fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSchema> {
     let mut out = Vec::new();
     for f in &ty.search.filters {
+        // A filter on the time it is asked at holds of different items as time passes: it is
+        // answered from the columns of the fields it reads, never kept as a column of its own.
+        if f.pred
+            .as_ref()
+            .is_some_and(tilolang::pred::Pred::reads_clock)
+        {
+            continue;
+        }
         let parsed = parse_ty(&f.ty, &meta.app).ok();
         let (kind, cases) = match f.kind {
             FilterKind::Bool | FilterKind::Predicate => (ColumnKind::Bool, Vec::new()),

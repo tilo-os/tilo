@@ -5,8 +5,10 @@
 //!
 //! A named filter (`filter "Open" = not done`) is a predicate over the resource's own fields,
 //! checked here to be one the index can keep: it reads only the resource's own fields and
-//! literals, calls nothing and depends on no time, so a change to one field changes it and
-//! nothing else does. Lambdas of `filter` and `count` over a collection lower the same way.
+//! literals and calls nothing, so a change to one field changes it and nothing else does. One
+//! may compare a field with the time it is asked at (`due <= today`, `due <= today + 7d`): that
+//! is read when the filter is asked, and the index answers it from the field's column. Lambdas
+//! of `filter` and `count` over a collection lower the same way, without the time.
 
 use crate::ast::{self, BinOp, Expr, ExprKind, SearchBlock, SearchEntryKind, StrPart, UnOp};
 use crate::diag::{Diagnostic, Span};
@@ -693,8 +695,69 @@ impl Lower<'_> {
             };
             return Ok((Operand::Arg(u32::try_from(at).unwrap_or(u32::MAX)), ty));
         }
+        if let Some(clock) = self.clock(e) {
+            return clock;
+        }
         let (lit, ty) = self.literal(e, want)?;
         Ok((Operand::Lit(lit), ty))
+    }
+
+    /// `today`, `now`, either plus or minus a duration (`today + 1d`, `now - 7d`), in a named
+    /// filter: the time the filter is asked at ([`Operand::Clock`]). A lambda's predicate is
+    /// answered where it is written, so there they stay a query's (`query(T, due: ..today)`).
+    fn clock(&self, e: &Expr) -> Option<Lowered<(Operand<String>, Ty)>> {
+        if !matches!(self.fields, Fields::Own) {
+            return None;
+        }
+        let anchor = |e: &Expr| -> Option<bool> {
+            let word = match &e.kind {
+                ExprKind::Ident(w) => w.as_str(),
+                ExprKind::Call { callee, args } if args.is_empty() => match &callee.kind {
+                    ExprKind::Ident(w) => w.as_str(),
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            match word {
+                "today" => Some(true),
+                "now" => Some(false),
+                _ => None,
+            }
+        };
+        let (day, offset) = match &e.kind {
+            ExprKind::Binary { op, lhs, rhs } if matches!(op, BinOp::Add | BinOp::Sub) => {
+                let day = anchor(lhs)?;
+                let ExprKind::Duration(n, unit) = &rhs.kind else {
+                    return Some(Err((
+                        rhs.span,
+                        "a time a filter is asked at moves by a duration: `today + 1d`".into(),
+                    )));
+                };
+                let Some(secs) = crate::duration::seconds(*n, unit) else {
+                    return Some(Err((rhs.span, "the duration is too long".into())));
+                };
+                if day && secs.rem_euclid(crate::calendar::DAY) != 0 {
+                    return Some(Err((
+                        rhs.span,
+                        "`today` moves by whole days or weeks (`today + 1d`); `now` by any duration"
+                            .into(),
+                    )));
+                }
+                (
+                    day,
+                    if matches!(op, BinOp::Sub) {
+                        -secs
+                    } else {
+                        secs
+                    },
+                )
+            }
+            _ => (anchor(e)?, 0),
+        };
+        Some(Ok((
+            Operand::Clock { day, offset },
+            if day { Ty::Date } else { Ty::Time },
+        )))
     }
 
     /// A literal, of the type `want` where it needs one to read (`.open`, `.none`).

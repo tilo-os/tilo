@@ -27,7 +27,7 @@ pub struct Embedded {
 /// toolkit's components, which shows an app can do what the standard library does.
 pub const EMBEDDED: &[Embedded] = &[
     embedded!("counter"),
-    embedded!("todo"),
+    embedded!("tasks"),
     embedded!("notes"),
     embedded!("letters"),
     embedded!("chat"),

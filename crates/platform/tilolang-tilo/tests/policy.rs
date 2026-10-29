@@ -11,8 +11,8 @@ use tilolang_tilo::publish::{Caller, PlanRequest};
 
 use crate::fixtures::Replica;
 
-const TODO: &str = include_str!("../../../../apps/tl/todo/app.tl");
-const TODO_IDS: &str = include_str!("../../../../apps/tl/todo/app.ids");
+const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const LETTERS: &str = include_str!("../../../../apps/tl/letters/app.tl");
 const LETTERS_IDS: &str = include_str!("../../../../apps/tl/letters/app.ids");
 const APP: &str = "so.tilo.lang.todo";
@@ -39,7 +39,7 @@ fn standing(answers: Vec<tilo_action_policy::Grant>) -> Standing {
 /// The block that adds `title` to the todo list.
 fn add_block(replica: &Replica, title: &str) -> String {
     let list = replica.host.root_of(APP).unwrap();
-    format!("todo.add(@todo.TodoList:{}, \"{title}\")", list.id_string())
+    format!("todo.add(@todo.Tasks:{}, \"{title}\")", list.id_string())
 }
 
 fn state(block: AgentBlock) -> String {
@@ -68,7 +68,7 @@ fn an_agent_the_person_denied_the_app_is_denied() {
     let list = ada.host.root_of(APP).unwrap();
     ada.commit();
     let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
-    let kind = meta.kind_of("TodoList");
+    let kind = meta.kind_of("Tasks");
     let args = json!({"title": "Take the bins out"});
     let plan = |caller: Option<&Caller>| {
         ada.host.plan(&PlanRequest {
