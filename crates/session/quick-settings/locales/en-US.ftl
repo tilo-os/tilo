@@ -175,3 +175,6 @@ qs-action-set-bluetooth = Turn Bluetooth on or off
 qs-action-set-vpn = Turn a VPN on or off
 qs-action-set-wifi = Turn Wi-Fi on or off
 qs-unavailable = This device has no such control
+qs-nothing-plays = Nothing is playing that can do this
+qs-now-playing-player = Player
+qs-now-playing-output = Plays on
