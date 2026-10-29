@@ -9,6 +9,8 @@ description = "The session's xdg-desktop-portal backend: file chooser, screensho
 [dependencies]
 tilo-actions = { path = "../../collab/actions" }
 tilo-service = { path = "../service" }
+# Portal notifications are the session's notifications daemon's.
+tilo-notifications-service = { path = "../notifications-service" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # Holds taken for an app are the session's own inhibitions.
 tilo-power-mgmt = { path = "../../system/power", default-features = false }
@@ -62,6 +64,7 @@ workspace-hack = { version = "0.1" }
 pipewire = ["dep:pipewire"]
 
 [dev-dependencies]
+image = { workspace = true, features = ["png"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 

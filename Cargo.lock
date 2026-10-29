@@ -20538,6 +20538,7 @@ dependencies = [
  "tilo-files",
  "tilo-lock",
  "tilo-lockdown-policy",
+ "tilo-notifications-service",
  "tilo-paths",
  "tilo-power-mgmt",
  "tilo-resource",

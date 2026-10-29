@@ -84,6 +84,7 @@ pub mod screensaver;
 #[cfg(feature = "pipewire")]
 pub mod pipewire;
 pub mod remote_desktop;
+pub mod notification;
 pub mod reply;
 pub mod restore;
 pub mod screencast;

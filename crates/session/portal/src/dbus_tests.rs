@@ -13,14 +13,14 @@ use crate::auth::FRONTEND_BUS_NAME;
 use crate::{BUS_NAME, OBJECT_PATH, Portal, PortalAuthenticator, PortalCaller, question_handle};
 
 /// A session bus of its own, as `dbus-run-session` starts one, stopped on drop.
-struct SessionBus {
+pub(crate) struct SessionBus {
     daemon: std::process::Child,
     address: String,
     _directory: tempfile::TempDir,
 }
 
 impl SessionBus {
-    fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let directory = tempfile::tempdir().expect("temporary directory");
         let mut daemon = std::process::Command::new("dbus-daemon")
             .args(["--session", "--nofork", "--print-address=1"])
@@ -43,7 +43,7 @@ impl SessionBus {
         }
     }
 
-    async fn connect(&self) -> zbus::Connection {
+    pub(crate) async fn connect(&self) -> zbus::Connection {
         zbus::connection::Builder::address(self.address.as_str())
             .expect("address")
             .build()
