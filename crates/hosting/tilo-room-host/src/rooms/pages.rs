@@ -179,6 +179,9 @@ impl Rooms {
         Ok(match request {
             RoomsRequest::List => self.page_list(device, now).await?,
             RoomsRequest::Create { name } => self.page_create(device, &name, now).await?,
+            RoomsRequest::Place { room, name } => {
+                self.page_place(device, &room, &name, now).await?
+            }
             RoomsRequest::Enter { room } => {
                 self.enter(&room, device).await?;
                 self.page_room(&room).await?
@@ -595,6 +598,27 @@ impl Rooms {
         self.authorize(device, None, RoomOp::Host(HostOperation::CreateRoom), now)?;
         let created = self.create(name).await?;
         self.page_room(&created.room).await
+    }
+
+    /// Govern `room` here unless this host does, created as `name`, and
+    /// admit `device` to it as its owner.
+    async fn page_place(
+        &self,
+        device: &DeviceCert,
+        room: &str,
+        name: &str,
+        now: u64,
+    ) -> Result<RoomsReply, CollaborationError> {
+        self.authorize(device, None, RoomOp::Host(HostOperation::CreateRoom), now)?;
+        if !self.inner.rooms.lock().await.contains_key(room)
+            && let Err(error) = self.create_room(name, Some(room)).await
+            // Another device of the person placed it meanwhile.
+            && !self.inner.rooms.lock().await.contains_key(room)
+        {
+            return Err(error.into());
+        }
+        self.enter(room, device).await?;
+        self.page_room(room).await
     }
 
     async fn page_list(

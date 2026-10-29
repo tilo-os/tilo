@@ -14,12 +14,11 @@
 //! signature and route, its claims against the app surface it names) and
 //! keeps none: the page's apps hold their records.
 //!
-//! A workspace the host binds for its own person without governing it (a
-//! same-owner room) has no governance and no bootstrap: its members are the
-//! person's own devices the host admits. There the page takes the devices
-//! whose certificates the host relays, of its own person and not revoked by
-//! them, and the host when its person certified it to own workspaces, and
-//! admits a write that its relaying device signed for its route.
+//! A room's replica is the only source of what its governance says: a
+//! workspace with no governance yet (no bootstrap received) admits no
+//! member's write and names no channel participants. A page places its
+//! person's own workspaces on their host before joining them
+//! ([`crate::PeerHandle::join_placed`]), so those have governance too.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,7 +27,6 @@ use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::projection::{RoomLayout, room_layout, room_members};
 use tilo_peer_state::join::JoinTransportResponse;
 use tilo_peer_state::{StatePeer, TransportOrigin};
-use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 use web_time::SystemTime;
 
 use crate::channels::Channels;
@@ -39,108 +37,14 @@ pub(crate) struct Replicas {
     /// This device.
     device: [u8; 32],
     peers: BTreeMap<u64, StatePeer>,
-    /// The workspaces with no governance: their person's devices as the
-    /// host relayed them.
-    ungoverned: Ungoverned,
-}
-
-/// What a page knows of the workspaces the host binds for its person
-/// without governing them.
-struct Ungoverned {
-    /// This device's person.
-    user: [u8; 32],
-    /// The host, when its person certified it to own workspaces.
-    host: Option<[u8; 32]>,
-    /// What this device's person revoked.
-    revocations: RevocationList,
-    devices: BTreeMap<u64, BTreeMap<[u8; 32], DeviceCert>>,
-}
-
-impl Ungoverned {
-    /// Take in the certificate `author` announced on `workspace_id`, and
-    /// what its person revoked; returns whether the devices changed.
-    fn hello(
-        &mut self,
-        workspace_id: u64,
-        author: [u8; 32],
-        cert: DeviceCert,
-        revocations: Vec<RevocationEntry>,
-    ) -> Result<bool, String> {
-        for entry in revocations {
-            if entry.user_public_key == self.user {
-                let _ = self.revocations.insert(entry);
-            }
-        }
-        if cert.device_public_key != author || cert.user_public_key != self.user {
-            return Err("the certificate is not its sender's own person's".into());
-        }
-        tilo_user_identity::verify_device_cert(&cert).map_err(|error| error.to_string())?;
-        Ok(self
-            .devices
-            .entry(workspace_id)
-            .or_default()
-            .insert(author, cert)
-            .is_none())
-    }
-
-    /// Admit the document `author` wrote to a workspace with no
-    /// governance: one its relaying device signed for its route.
-    fn document(author: [u8; 32], message: &NeighbourMsg) -> Result<bool, String> {
-        let NeighbourMsg::AppDocument {
-            app_id,
-            cluster_id,
-            record_id,
-            envelope,
-            ..
-        } = message
-        else {
-            return Err("not a document message".into());
-        };
-        collab_types::verify_op(envelope).map_err(|error| error.to_string())?;
-        if *envelope.author.as_bytes() != author {
-            return Err("envelope author is not the authenticated device".into());
-        }
-        if envelope.artifact != collab_types::document_artifact_id(app_id, cluster_id, record_id) {
-            return Err("artifact does not match route".into());
-        }
-        Ok(true)
-    }
-
-    fn participants(&self, workspace_id: u64) -> BTreeSet<Ed25519PublicKey> {
-        self.devices
-            .get(&workspace_id)
-            .into_iter()
-            .flat_map(BTreeMap::keys)
-            .chain(&self.host)
-            .filter(|device| !self.revocations.is_revoked(device))
-            .map(|device| Ed25519PublicKey::from_bytes(*device))
-            .collect()
-    }
 }
 
 impl Replicas {
-    /// The rooms of `device`, of the person `user`, reaching them through
-    /// the host `host`; `revocations` are what its person revoked.
-    pub(crate) fn new(
-        device: [u8; 32],
-        user: [u8; 32],
-        host: &DeviceCert,
-        revocations: RevocationList,
-    ) -> Self {
-        let host = (host.capabilities.can_own_workspaces
-            && !host.capabilities.foreign
-            && host.user_public_key == user
-            && tilo_user_identity::verify_device_cert(host).is_ok())
-        .then_some(host.device_public_key);
+    /// The rooms of `device`.
+    pub(crate) fn new(device: [u8; 32]) -> Self {
         Self {
             device,
             peers: BTreeMap::new(),
-            ungoverned: Ungoverned {
-                user,
-                host,
-                revocations,
-                devices: BTreeMap::new(),
-            },
         }
     }
 
@@ -218,14 +122,7 @@ impl Replicas {
         now: SystemTime,
     ) -> Result<bool, String> {
         let Some(peer) = self.peers.get_mut(&workspace_id) else {
-            return match message {
-                NeighbourMsg::IdentityHello {
-                    cert, revocations, ..
-                } => self
-                    .ungoverned
-                    .hello(workspace_id, author, *cert, revocations),
-                _ => Err("the workspace has no governance".into()),
-            };
+            return Err("the workspace has no governance".into());
         };
         let origin = if retained {
             TransportOrigin::RetainedRelayDelta(author)
@@ -251,8 +148,9 @@ impl Replicas {
         message: &NeighbourMsg,
         now: SystemTime,
     ) -> Result<bool, String> {
+        // Held until the room's bootstrap arrives.
         let Some(peer) = self.peers.get(&workspace_id) else {
-            return Ungoverned::document(author, message);
+            return Ok(false);
         };
         let origin = if retained {
             TransportOrigin::RetainedRelayDelta(author)
@@ -279,16 +177,11 @@ impl Replicas {
 
     /// The devices that may sign and be added to `route`'s channel: those
     /// the room's governance lets read its record, the room's governor and
-    /// this device; in a workspace with no governance, its person's devices
-    /// the host relayed and the host. `None` while the room's governance
-    /// does not answer for the route.
+    /// this device. `None` while the room's governance does not answer for
+    /// the route.
     pub(crate) fn participants(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
         let workspace_id = route.workspace_id().ok()?;
-        let Some(peer) = self.peers.get(&workspace_id) else {
-            let mut participants = self.ungoverned.participants(workspace_id);
-            participants.insert(Ed25519PublicKey::from_bytes(self.device));
-            return Some(participants);
-        };
+        let peer = self.peers.get(&workspace_id)?;
         let channel = Channels::channel(route);
         let record = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
         let readers = peer

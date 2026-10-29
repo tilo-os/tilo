@@ -888,6 +888,9 @@ struct RoomsInner {
     host: RoomServices,
     dir: PathBuf,
     rooms: AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedRoom>>>>,
+    /// Held while a room is created: two devices placing the same room at
+    /// once create it once.
+    creating: AsyncMutex<()>,
     calls: Arc<voice::Calls>,
     page_joins: std::sync::Mutex<pages::PageJoins>,
     /// The room UUID after each settled governance decision.
@@ -1051,6 +1054,7 @@ impl Rooms {
                 dir,
                 rooms: AsyncMutex::new(rooms),
                 calls: Arc::default(),
+                creating: AsyncMutex::new(()),
                 page_joins: std::sync::Mutex::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 record_writes: tokio::sync::broadcast::channel(256).0,
@@ -1111,6 +1115,7 @@ impl Rooms {
     /// The name is not 1–80 characters, `room` is no UUID or held here
     /// already, or the room could not be written.
     pub async fn create_room(&self, name: &str, room: Option<&str>) -> Result<RoomSummary, String> {
+        let _creating = self.inner.creating.lock().await;
         if let Some(room) = room
             && self.inner.rooms.lock().await.contains_key(room)
         {
@@ -1120,6 +1125,25 @@ impl Rooms {
             && self.inner.dir.join(room).with_extension(RELEASED).exists()
         {
             return Err("this host released that room; its files stay here".into());
+        }
+        // A room this host serves for its governor elsewhere is that
+        // governor's: governing it here as well would fork it.
+        if let Some(workspace_id) =
+            room.and_then(|room| tilo_relay_protocol::room_workspace_id(room).ok())
+        {
+            let bound = self
+                .inner
+                .host
+                .workspaces
+                .lock()
+                .await
+                .get(&workspace_id)
+                .cloned();
+            if let Some(bound) = bound
+                && bound.lock().await.admission == crate::room_access::AdmissionMode::Governed
+            {
+                return Err("this host has that room already".into());
+            }
         }
         let room = match room {
             Some(room) => GovernedRoom::create_in(

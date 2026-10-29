@@ -473,6 +473,11 @@ fn addressed(envelope: Envelope) -> Option<PeerEvent> {
 
 enum Command {
     Join(u64),
+    /// Join the room (its UUID) of this device's person, named as given,
+    /// once the host governs it ([`PeerHandle::join_placed`]).
+    JoinPlaced(String, String),
+    /// The host answered the placement of this workspace.
+    Placed(u64),
     OpenRecord(u64, DocumentRoute),
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
@@ -700,12 +705,7 @@ impl PeerHandle {
         channels.restore(saved.channels);
         channels.restore_requests(saved.requests);
         let task = Task {
-            replicas: crate::replica::Replicas::new(
-                config.cert.device_public_key,
-                config.cert.user_public_key,
-                &config.host_cert,
-                config.revocations.clone(),
-            ),
+            replicas: crate::replica::Replicas::new(config.cert.device_public_key),
             commands: commands.downgrade(),
             watched: crate::watching::WatchedKeys::default(),
             config,
@@ -713,6 +713,7 @@ impl PeerHandle {
             store,
             shared: shared.clone(),
             rooms: BTreeSet::new(),
+            placing: BTreeMap::new(),
             live: BTreeSet::new(),
             outbox: record.outbox.iter().cloned().collect(),
             record,
@@ -772,6 +773,22 @@ impl PeerHandle {
     /// Subscribe to a room.
     pub fn join(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::Join(workspace_id))
+    }
+
+    /// Join `room` (its UUID), a workspace of this device's person, named
+    /// `name`: the host is first asked to govern it
+    /// ([`tilo_relay_protocol::rooms::RoomsRequest::Place`]), creating it
+    /// unless it does, so the room has governance like every other; then it
+    /// is subscribed. Where the host places nothing for this device (a room
+    /// of another person's, a host reached without its rooms route), the
+    /// room is subscribed as it is, and its own admission decides.
+    ///
+    /// # Errors
+    ///
+    /// `room` is no room UUID, or the session is closed.
+    pub fn join_placed(&self, room: &str, name: &str) -> Result<(), String> {
+        tilo_relay_protocol::room_workspace_id(room).map_err(|error| error.to_string())?;
+        self.send(Command::JoinPlaced(room.to_owned(), name.to_owned()))
     }
 
     /// Open `route`, an on-demand record of the joined room `workspace_id`
@@ -1236,6 +1253,9 @@ struct Task {
     store: Arc<dyn PeerStore>,
     shared: Arc<Mutex<Shared>>,
     rooms: BTreeSet<u64>,
+    /// Rooms of this device's person joined once the host governs them:
+    /// each one's UUID and name, until the host answered its placement.
+    placing: BTreeMap<u64, (String, String)>,
     live: BTreeSet<u64>,
     outbox: VecDeque<OutboxEntry>,
     record: PeerRecord,
@@ -1871,6 +1891,14 @@ impl Task {
         };
         match command {
             Command::Join(workspace_id) => self.join(workspace_id, client),
+            Command::JoinPlaced(room, name) => self.join_placed(room, name, client),
+            Command::Placed(workspace_id) => {
+                if self.placing.remove(&workspace_id).is_some() {
+                    self.join(workspace_id, client)
+                } else {
+                    true
+                }
+            }
             Command::OpenRecord(workspace_id, route) => {
                 self.open_record(workspace_id, route, client)
             }
@@ -1974,6 +2002,57 @@ impl Task {
         client.is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
     }
 
+    /// Join `room` once the host governs it ([`PeerHandle::join_placed`]).
+    fn join_placed(&mut self, room: String, name: String, client: Option<&Link>) -> bool {
+        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(&room) else {
+            return true;
+        };
+        if self.rooms.contains(&workspace_id) {
+            return true;
+        }
+        self.update(|status| {
+            status.rooms.entry(workspace_id).or_insert(false);
+        });
+        self.placing.insert(workspace_id, (room, name));
+        match client {
+            Some(client) => self.place(workspace_id, client),
+            None => true,
+        }
+    }
+
+    /// Ask the host to govern the room joined as `workspace_id`; it is
+    /// subscribed once the host answers, whatever it answers.
+    fn place(&self, workspace_id: u64, client: &Link) -> bool {
+        let Some((room, name)) = self.placing.get(&workspace_id).cloned() else {
+            return true;
+        };
+        let commands = self.commands.clone();
+        let placed = move || {
+            if let Some(commands) = commands.upgrade() {
+                let _ = commands.send(Command::Placed(workspace_id));
+            }
+        };
+        match client {
+            Link::Https(link) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let request = tilo_relay_protocol::rooms::RoomsRequest::Place { room, name };
+                    // Refused (not this person's host, a room governed
+                    // elsewhere) or unanswered: the room's admission decides.
+                    let _ =
+                        tilo_relay_client::https::rooms(http.as_ref(), &session, &request).await;
+                    placed();
+                });
+            }
+            // Rooms are administered over HTTPS only: a native peer joins
+            // rooms placed for it otherwise.
+            #[cfg(feature = "iroh")]
+            Link::Iroh(_) => placed(),
+        }
+        true
+    }
+
     /// `command`, unless this page only watches and it would write: then
     /// it is answered here, sending nothing, and `None` is returned. A
     /// watching page joins no live plane, publishes, compacts and acts on
@@ -2036,6 +2115,9 @@ impl Task {
         }
         for workspace_id in &self.rooms {
             sent_ok &= client.send(self.subscribe(client, *workspace_id)).is_ok();
+        }
+        for workspace_id in self.placing.keys() {
+            sent_ok &= self.place(*workspace_id, client);
         }
         for (channel, (workspace_id, _)) in &self.opened_records {
             sent_ok &= client

@@ -212,6 +212,7 @@ impl Drop for Participant {
 }
 
 async fn join(host: &Relay, root: &SigningKey, device: &Device) -> RelayCoeditSession {
+    crate::support::place(host, &device.cert).await;
     let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .bind()
         .await

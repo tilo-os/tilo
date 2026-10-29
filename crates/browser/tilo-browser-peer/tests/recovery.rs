@@ -17,6 +17,9 @@
 mod participant;
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use collab_types::DocumentMutation;
 use tilo_browser_peer::{FailureSubject, Host, LocalState, PeerEvent, PeerSnapshot};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
@@ -44,7 +47,7 @@ async fn refresh_asks_the_restarted_host_for_the_room_again() {
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    peer.join(workspace()).unwrap();
+    peer.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&peer]).await;
     let tree = DocumentMutation::Snapshot(b"desktop tree".to_vec());
     peer.publish(route(), &tree).unwrap();
@@ -109,7 +112,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    peer.join(workspace()).unwrap();
+    peer.join_placed(support::ROOM, "Workspace").unwrap();
     // Wait for the join's own `Ready` event, not a ready phase: the join
     // is a command the session takes up later, so the phase can read
     // ready (connected, no room waiting) before the room is even asked

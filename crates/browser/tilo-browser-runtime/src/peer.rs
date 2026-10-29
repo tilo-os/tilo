@@ -1796,11 +1796,21 @@ impl WasmPeer {
         self.listeners.borrow_mut().push(listener);
     }
 
-    /// Join a room (uuid).
+    /// Join a room (uuid). A page of the person's own joins it once its
+    /// host governs it, creating it there as `name` (the workspace's name,
+    /// `Workspace` when the page knows none) unless the host has it; a
+    /// page that only watches joins it as it is.
     #[wasm_bindgen(js_name = joinRoom)]
-    pub fn join_room(&self, room: &str) -> Result<(), JsError> {
+    pub fn join_room(&self, room: &str, name: Option<String>) -> Result<(), JsError> {
         let workspace_id = workspace(room)?;
-        self.handle.join(workspace_id).map_err(js_error)?;
+        if self.handle.watching() {
+            self.handle.join(workspace_id).map_err(js_error)?;
+        } else {
+            let name = name.filter(|name| !name.trim().is_empty());
+            self.handle
+                .join_placed(room, name.as_deref().unwrap_or("Workspace"))
+                .map_err(js_error)?;
+        }
         self.voice_rooms
             .borrow_mut()
             .insert(workspace_id, room.to_owned());

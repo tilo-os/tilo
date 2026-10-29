@@ -213,7 +213,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         host_device.cert.clone(),
         laptop.key.clone(),
     );
-    laptop_peer.join(workspace()).unwrap();
+    laptop_peer.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&laptop_peer]).await;
 
     // The phone opens the pairing link: it names Ada, and nothing else.
@@ -248,7 +248,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         phone_key.clone(),
         store.clone(),
     );
-    phone_peer.join(workspace()).unwrap();
+    phone_peer.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&phone_peer]).await;
     let snapshot = DocumentMutation::Snapshot(b"written on the laptop".to_vec());
     laptop_peer.publish(route(), &snapshot).unwrap();
@@ -275,7 +275,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     phone_peer.close();
     assert_eq!(store.load().unwrap().cert.as_ref(), Some(&cert));
     let reloaded = start_peer_with_store(page, cert, host_cert, phone_key, store);
-    reloaded.join(workspace()).unwrap();
+    reloaded.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&reloaded]).await;
     let later = DocumentMutation::Incremental(b"after the reload".to_vec());
     laptop_peer.publish(route(), &later).unwrap();

@@ -16,6 +16,9 @@
 mod participant;
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use std::sync::atomic::Ordering;
 
 use collab_types::DocumentMutation;
@@ -23,7 +26,7 @@ use tilo_browser_peer::{Host, PeerEvent};
 use tilo_relay_protocol::web::MAX_PAGE_BYTES;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{Recording, enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use support::{Recording, enrol, ready, route, start_host, start_peer, wait_for};
 
 fn noise(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
@@ -60,7 +63,7 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         host_device.cert.clone(),
         author.key,
     );
-    author.join(workspace()).unwrap();
+    author.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&author]).await;
     let checkpoint = DocumentMutation::Snapshot(noise(5 * 1024 * 1024 / 2, 1));
     author.publish(route(), &checkpoint).unwrap();
@@ -86,13 +89,19 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         host_device.cert.clone(),
         joiner.key,
     );
-    joiner.join(workspace()).unwrap();
+    joiner.join_placed(support::ROOM, "Workspace").unwrap();
     let mut received: Vec<DocumentMutation> = Vec::new();
     wait_for("the checkpoint and its tail", || {
-        received.extend(joiner.drain().into_iter().filter_map(|event| match event {
-            PeerEvent::Document(document) => document.mutation(),
-            _ => None,
-        }));
+        received.extend(
+            joiner
+                .drain()
+                .into_iter()
+                .filter(support::members_document)
+                .filter_map(|event| match event {
+                    PeerEvent::Document(document) => document.mutation(),
+                    _ => None,
+                }),
+        );
         let done = received.len() > TAIL;
         async move { done.then_some(()) }
     })

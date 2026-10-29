@@ -15,17 +15,21 @@
 mod participant;
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use std::sync::atomic::Ordering;
 
 use collab_types::DocumentMutation;
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, PeerSnapshot};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use support::{Recording, enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use support::{Recording, enrol, ready, route, start_host, start_peer, wait_for};
 
 fn documents(peer: &PeerHandle) -> Vec<DocumentMutation> {
     peer.drain()
         .into_iter()
+        .filter(support::members_document)
         .filter_map(|event| match event {
             PeerEvent::Document(document) => document.mutation(),
             _ => None,
@@ -107,8 +111,8 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         host_device.cert.clone(),
         observer.key,
     );
-    author.join(workspace()).unwrap();
-    observer.join(workspace()).unwrap();
+    author.join_placed(support::ROOM, "Workspace").unwrap();
+    observer.join_placed(support::ROOM, "Workspace").unwrap();
     observer.open_route(route()).unwrap();
     ready(&[&author, &observer]).await;
 
@@ -169,7 +173,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         host_device.cert.clone(),
         fresh.key,
     );
-    fresh.join(workspace()).unwrap();
+    fresh.join_placed(support::ROOM, "Workspace").unwrap();
     fresh.open_route(route()).unwrap();
     assert_eq!(receive(&fresh, HISTORY + 4).await.len(), HISTORY + 4);
     eprintln!(

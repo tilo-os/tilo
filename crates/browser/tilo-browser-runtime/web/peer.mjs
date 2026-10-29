@@ -749,7 +749,7 @@ async function connect({
   profile, device, displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {}, requireExistingCertificate = false, namespaces = globalThis.localStorage,
-  watching = false, background = false,
+  watching = false, background = false, workspaceName,
 }) {
   if (watching) voiceOptions = false;
   userPublicKey ??= identity?.userPublicKey;
@@ -1047,7 +1047,9 @@ async function connect({
     );
     peer.subscribe(publish);
     if (room) {
-      peer.joinRoom(room);
+      // A room of the person's own its host does not govern yet is placed
+      // there under the workspace's name.
+      peer.joinRoom(room, workspaceName);
       if (liveEnabled) {
         live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, watching, participant: {
           kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), activity,
