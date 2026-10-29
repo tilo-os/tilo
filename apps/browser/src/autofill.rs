@@ -1,6 +1,6 @@
-//! Opt-in address profiles: the person's own, kept in their own room
-//! ([`AddressBook`]). They follow the person to their other devices and never
-//! reach a collaborator; a private window has none.
+//! Opt-in address profiles ([`AddressBook`]), a record Browser keeps beside
+//! its own in the workspace it is open in, synced with the workspace; a
+//! private window has none.
 
 use crate::browsing_mode::BrowsingMode;
 use serde::{Deserialize, Serialize};
@@ -75,7 +75,7 @@ impl std::fmt::Debug for AddressProfile {
     }
 }
 
-/// The person's address book, a resource of their own room: whether
+/// The address book, a record of Browser's in the workspace: whether
 /// autofill is on, and the saved profiles. Every way in keeps each profile
 /// valid and the book within its limit.
 #[derive(Model, Clone, Debug, Default, PartialEq)]

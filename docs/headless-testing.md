@@ -18,7 +18,7 @@ cargo test --locked -p tilo-action-broker --lib collab_broker_capnp::tests::cert
 The Browser and Store fixtures provision a disposable identity and run the actual
 identity service, collaboration broker, original application factory and directory
 RPC. Browser retains its primary document, browsing history and address book. All
-three use the certified person's own room, so publication must wait for their
+three are records of Browser in the launch room, so publication must wait for their
 initial joins to become ready. Store must publish `inspect-catalogue` through the
 same authorized context. No application action is invoked.
 

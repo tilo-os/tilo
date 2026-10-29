@@ -2,8 +2,8 @@
 //! commit after which words, the words they kept as typed when corrected,
 //! and where they tend to hit each letter.
 //!
-//! It is the person's own resource ([`ui::framework::PersonRecord`]): it
-//! follows them to their other devices and never reaches a collaborator.
+//! It is a record of the keyboard's ([`ui::framework::PersonRecord`]),
+//! kept in the workspace the keyboard is open in and synced with it.
 //! Nothing typed into a secret field, and nothing at all while
 //! personalization is off, is learned.
 

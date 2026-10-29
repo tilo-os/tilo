@@ -340,10 +340,9 @@ pub struct Visit {
     pub count: Counter,
 }
 
-/// The person's browsing history as a resource of their own room: each
-/// visited page, keyed by URL, with its title, last visit and visit count.
-/// It follows them to their other devices and never reaches a
-/// collaborator.
+/// The browsing history, a record of Browser's in the workspace it is open
+/// in: each visited page, keyed by URL, with its title, last visit and
+/// visit count. It syncs with the workspace.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = BrowsingHistory::valid_imports)]
 pub struct BrowsingHistory {

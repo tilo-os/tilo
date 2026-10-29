@@ -473,10 +473,11 @@ mod tests {
     }
 
     #[test]
-    fn what_the_person_watched_is_kept_in_their_own_record_not_the_library() {
+    fn what_was_watched_is_kept_in_a_record_of_its_own_not_the_library() {
         use crate::history::WatchHistory;
         let person = "ad".repeat(32);
-        let mut app = TestApp::<TubeShell>::for_person(&person).unwrap();
+        let room = "00000000-0000-4000-8000-0000000000ad";
+        let mut app = TestApp::<TubeShell>::for_person_in(&person, room).unwrap();
         app.effect(&TubeEffect::MarkWatched {
             video: "vid_donut".into(),
         })
@@ -493,12 +494,12 @@ mod tests {
         };
         let history = app.person::<WatchHistory>().unwrap();
         assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
-        assert!(history.syncs(), "it follows the person to their devices");
+        assert!(history.syncs(), "it syncs with the workspace");
         let route = history.record().route().unwrap();
         assert_eq!(
             route.cluster_id.to_string(),
-            ui::record::person::scope_of(&ui::permissions::UserId(person)),
-            "in the person's own room"
+            room,
+            "in the workspace Tube is open in"
         );
         let library = app.peer_document().save();
         assert!(

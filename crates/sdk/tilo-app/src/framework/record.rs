@@ -512,7 +512,7 @@ impl<'a> Records<'a> {
         self
     }
 
-    /// The person's own record of `P` ([`RecordEnv::person`](super::RecordEnv::person)).
+    /// The app's record of `P` ([`RecordEnv::person`](super::RecordEnv::person)).
     pub fn person<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
             return self;

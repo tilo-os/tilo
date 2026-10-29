@@ -1,7 +1,7 @@
-//! A resource of the person's own, kept beside the record an app shows:
-//! edited through its actions with attribution, history and undo, the same
-//! record on each of the person's devices, and never part of the room a
-//! collaborator shares.
+//! A record of a kind an app keeps beside the one it shows, in the
+//! workspace it is open in: edited through its actions with attribution,
+//! history and undo, the same record on each device that holds the
+//! workspace, and apart from the record the app shows.
 
 use tilo_app::prelude::*;
 
@@ -20,7 +20,7 @@ impl Queue {
     }
 }
 
-/// What the person watched: theirs alone.
+/// What was watched in the workspace.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Watched {
     pub videos: Collection<String>,
@@ -61,14 +61,8 @@ fn ada() -> String {
     "ad".repeat(32)
 }
 
-fn bob() -> String {
-    "b0".repeat(32)
-}
-
-/// The person room of `person`.
-fn room_of(person: &str) -> String {
-    tilo_app::record::person::scope_of(&tilo_app::permissions::UserId(person.to_owned()))
-}
+/// The workspace the tests open the app in.
+const ROOM: &str = "00000000-0000-4000-8000-00000000000a";
 
 fn videos(record: &PersonRecord<Watched>) -> Vec<String> {
     let mut videos: Vec<String> = record.with(|state| state.videos.values().cloned().collect());
@@ -77,19 +71,19 @@ fn videos(record: &PersonRecord<Watched>) -> Vec<String> {
 }
 
 #[test]
-fn a_persons_record_is_the_same_record_on_each_of_their_devices() {
-    let mut laptop = TestApp::<QueueApp>::for_person(&ada()).unwrap();
-    let mut phone = TestApp::<QueueApp>::for_person(&ada()).unwrap();
+fn a_record_of_a_kind_is_the_same_record_on_each_device_of_the_workspace() {
+    let mut laptop = TestApp::<QueueApp>::for_person_in(&ada(), ROOM).unwrap();
+    let mut phone = TestApp::<QueueApp>::for_person_in(&ada(), ROOM).unwrap();
     let on_laptop = laptop.person::<Watched>().unwrap();
     let on_phone = phone.person::<Watched>().unwrap();
-    assert!(on_laptop.syncs(), "Ada has a root identity, so a room");
+    assert!(on_laptop.syncs(), "the workspace has a room id");
     let route = on_laptop.record().route().unwrap();
     assert_eq!(route, on_phone.record().route().unwrap());
     assert_eq!(route.app_id, QueueApp::ID);
     assert_eq!(
         route.cluster_id.to_string(),
-        room_of(&ada()),
-        "the record lives in Ada's own room"
+        ROOM,
+        "the record lives in the workspace the app is open in"
     );
 
     // Each device watches something before they meet; the record's genesis
@@ -124,59 +118,51 @@ fn a_persons_record_is_the_same_record_on_each_of_their_devices() {
     assert_eq!(videos(&on_laptop), ["on-the-phone"]);
     assert!(on_laptop.redo());
 
-    // It is not the room's record: the queue the app shows holds nothing
-    // of it.
+    // It is a record of its own: the queue the app shows holds nothing of
+    // it.
     let queue = laptop.peer_document();
     assert!(!format!("{queue:?}").contains("on-the-laptop"));
 }
 
 #[test]
-fn a_collaborator_in_the_same_room_never_holds_the_persons_record() {
-    let mut ada_app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
-    let mut bob_app = TestApp::<QueueApp>::for_person(&bob()).unwrap();
-    let adas = ada_app.person::<Watched>().unwrap();
-    adas.invoke(&Watched::WATCH.with("private")).unwrap();
+fn each_workspace_has_its_own_record_of_a_kind() {
+    let mut here = TestApp::<QueueApp>::for_person_in(&ada(), ROOM).unwrap();
+    let mut elsewhere =
+        TestApp::<QueueApp>::for_person_in(&ada(), "00000000-0000-4000-8000-00000000000b").unwrap();
+    let watched_here = here.person::<Watched>().unwrap();
+    watched_here.invoke(&Watched::WATCH.with("here")).unwrap();
 
-    // They share the queue: Bob merges what Ada queued, and nothing of what
-    // she watched comes with it.
-    ada_app.invoke(Queue::ADD.with("shared")).unwrap();
-    let mut shared = ada_app.peer_document();
-    bob_app.merge_peer(&mut shared).unwrap();
-    assert_eq!(bob_app.state().items, ["shared"]);
-    let saved = shared.save();
-    assert!(
-        !saved
-            .windows(b"private".len())
-            .any(|window| window == b"private"),
-        "the shared record carries none of Ada's history"
-    );
-
-    // Bob's own history is a record in his own room, on another route:
-    // nothing routes Ada's to him.
-    let bobs = bob_app.person::<Watched>().unwrap();
-    assert!(bobs.with(|state| state.videos.is_empty()));
-    let (ada_route, bob_route) = (
-        adas.record().route().unwrap(),
-        bobs.record().route().unwrap(),
+    // The app opened in another workspace starts empty, on another route:
+    // nothing routes this workspace's record there.
+    let watched_elsewhere = elsewhere.person::<Watched>().unwrap();
+    assert!(watched_elsewhere.with(|state| state.videos.is_empty()));
+    let (route_here, route_elsewhere) = (
+        watched_here.record().route().unwrap(),
+        watched_elsewhere.record().route().unwrap(),
     );
     assert_eq!(
-        ada_route.record, bob_route.record,
+        route_here.record, route_elsewhere.record,
         "the same kind of record"
     );
     assert_ne!(
-        ada_route.cluster_id, bob_route.cluster_id,
-        "in each person's own room"
+        route_here.cluster_id, route_elsewhere.cluster_id,
+        "in each workspace"
     );
 
-    // Even handed Ada's bytes, Bob's record refuses them: they belong to
-    // another room.
-    let adas_bytes = adas.record().document().unwrap();
-    assert!(bobs.record().merge_peer_document(adas_bytes).is_err());
-    assert!(bobs.with(|state| state.videos.is_empty()));
+    // Even handed this workspace's bytes, the other refuses them: they
+    // belong to another workspace.
+    let bytes = watched_here.record().document().unwrap();
+    assert!(
+        watched_elsewhere
+            .record()
+            .merge_peer_document(bytes)
+            .is_err()
+    );
+    assert!(watched_elsewhere.with(|state| state.videos.is_empty()));
 }
 
 #[test]
-fn a_persons_record_survives_a_relaunch() {
+fn a_record_of_a_kind_survives_a_relaunch() {
     let mut app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
     app.person::<Watched>()
         .unwrap()
@@ -221,8 +207,8 @@ fn the_palette_and_agents_take_back_the_persons_own_steps() {
         .unwrap();
     assert_eq!(videos(&watched), ["first"]);
 
-    // The shared queue's history is not the person's: its undo has nothing
-    // of theirs to take back, and theirs nothing of the queue's.
+    // The queue's history is another record's: its undo has nothing of
+    // the watch history to take back, and that nothing of the queue's.
     app.invoke(Queue::ADD.with("shared")).unwrap();
     app.call_on("person:test.watched", "undo", serde_json::json!({}))
         .unwrap();
@@ -235,11 +221,31 @@ fn the_palette_and_agents_take_back_the_persons_own_steps() {
     );
 }
 
-/// The queue app keeps the person's watch history for all of their apps;
-/// the editor app adds to it too.
-impl tilo_app::tilo_resource::SharedRecord for Watched {
+/// What the person saved for later, which the queue app keeps for all of
+/// their apps; the editor app adds to it too.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Saved {
+    pub videos: Collection<String>,
+}
+
+#[resource(kind = "test.saved", label = "Saved", app = "so.tilo.test-queue")]
+impl Saved {
+    /// Save a video for later.
+    #[action]
+    pub fn save(&mut self, cx: &mut ActionCx, video: String) {
+        self.videos.push(cx.id(), video);
+    }
+}
+
+impl tilo_app::tilo_resource::SharedRecord for Saved {
     const OWNER: &'static str = QueueApp::ID;
     const EDITORS: &'static [&'static str] = &[EditorApp::ID];
+}
+
+fn saved(record: &PersonRecord<Saved>) -> Vec<String> {
+    let mut videos: Vec<String> = record.with(|state| state.videos.values().cloned().collect());
+    videos.sort();
+    videos
 }
 
 /// Another app, adding to the history the queue app keeps.
@@ -273,9 +279,9 @@ fn a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_e
     let mut owner_app = TestApp::<QueueApp>::for_person(&ada()).unwrap();
     let mut editor_app = TestApp::<EditorApp>::for_person(&ada()).unwrap();
     let mut reader_app = TestApp::<ReaderApp>::for_person(&ada()).unwrap();
-    let owned = owner_app.shared_person::<Watched>().unwrap();
-    let edited = editor_app.shared_person::<Watched>().unwrap();
-    let read = reader_app.shared_person::<Watched>().unwrap();
+    let owned = owner_app.shared_person::<Saved>().unwrap();
+    let edited = editor_app.shared_person::<Saved>().unwrap();
+    let read = reader_app.shared_person::<Saved>().unwrap();
     assert!(owned.editable() && edited.editable());
     assert!(!read.editable());
     for copy in [&edited, &read] {
@@ -287,10 +293,10 @@ fn a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_e
     }
 
     owned
-        .invoke(&Watched::WATCH.with("kept-by-the-owner"))
+        .invoke(&Saved::SAVE.with("kept-by-the-owner"))
         .unwrap();
     edited
-        .invoke(&Watched::WATCH.with("added-by-the-editor"))
+        .invoke(&Saved::SAVE.with("added-by-the-editor"))
         .unwrap();
     owned
         .record()
@@ -299,18 +305,17 @@ fn a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_e
     read.record()
         .merge_peer_document(owned.record().document().unwrap())
         .unwrap();
-    assert_eq!(videos(&read), ["added-by-the-editor", "kept-by-the-owner"]);
+    assert_eq!(saved(&read), ["added-by-the-editor", "kept-by-the-owner"]);
 
     assert!(
-        read.invoke(&Watched::WATCH.with("from-the-reader"))
-            .is_err(),
+        read.invoke(&Saved::SAVE.with("from-the-reader")).is_err(),
         "a reader does not change it"
     );
-    assert_eq!(videos(&read), ["added-by-the-editor", "kept-by-the-owner"]);
+    assert_eq!(saved(&read), ["added-by-the-editor", "kept-by-the-owner"]);
 
     // The editor's copy is kept in its own store across launches.
     drop(edited);
     let mut editor_app = editor_app.reopen().unwrap();
-    let kept = editor_app.shared_person::<Watched>().unwrap();
-    assert_eq!(videos(&kept), ["added-by-the-editor"]);
+    let kept = editor_app.shared_person::<Saved>().unwrap();
+    assert_eq!(saved(&kept), ["added-by-the-editor"]);
 }

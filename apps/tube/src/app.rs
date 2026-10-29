@@ -75,8 +75,7 @@ pub struct TubeApp {
     /// The library's published actions and Tube's effects, which the
     /// screens' controls are bound to. `None` until the framework attaches.
     actions: Option<Actions<Library>>,
-    /// The person's watch history, a record in their own room, in a live
-    /// window.
+    /// The watch history, a record beside the library, in a live window.
     history: Option<PersonRecord<WatchHistory>>,
     /// The person's playback preferences, a personal setting, once the
     /// framework attaches the surface; a bare widget keeps them in its model.
