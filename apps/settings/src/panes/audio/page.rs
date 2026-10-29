@@ -9,7 +9,7 @@ use media::audio::AudioStream;
 use provider_settings_ui::bound::SettingRows as _;
 use settings_store::system_sounds::SystemSoundEvent;
 use ui::LocalState;
-use ui::framework::{Actions, ViewCx};
+use ui::framework::{Actions, Dispatcher, ViewCx};
 use ui::widget::{Button, Dropdown, Element, Row, Slider, Widget};
 
 use super::{
@@ -18,7 +18,6 @@ use super::{
     event_sound, follow_shown, level_meter, mono, stream_live_row, system_sounds,
 };
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::AudioPrefs;
 use crate::resource::Settings;
@@ -36,20 +35,25 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     let held = area(app)?;
     let following = held.model().borrow_mut().follow();
     let shown = held.shown.clone();
-    let actions = cx.actions();
+    let (actions, dispatcher) = (cx.actions(), cx.dispatcher());
     let app = Rc::clone(app);
     let prefs = cx.settings::<AudioPrefs>();
     cx.record(&prefs, move |cx| {
-        let (app, actions, shown, following) = (
+        let (app, actions, dispatcher, shown, following) = (
             Rc::clone(&app),
             actions.clone(),
+            dispatcher.clone(),
             shown.clone(),
             Rc::clone(&following),
         );
         let shape = cx.value(|prefs: &AudioPrefs| (prefs.system_sounds.enabled, prefs.mono_output));
         cx.switch(&shape, move |cx, &(sounds_on, mono_on)| {
-            let (app, actions, following) =
-                (Rc::clone(&app), actions.clone(), Rc::clone(&following));
+            let (app, actions, dispatcher, following) = (
+                Rc::clone(&app),
+                actions.clone(),
+                dispatcher.clone(),
+                Rc::clone(&following),
+            );
             if let Some(area) = area(&app) {
                 area.saw_mono(mono_on);
             }
@@ -57,7 +61,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
             cx.switch(&shown, move |cx, _| {
                 let _followed = &following;
                 match area(&app) {
-                    Some(area) => page(cx, &actions, app.host(), area, sounds_on),
+                    Some(area) => page(cx, &actions, &dispatcher, area, sounds_on),
                     None => crate::widgets::page(Vec::new()),
                 }
             })
@@ -69,7 +73,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
 fn page(
     cx: &ViewCx<AudioPrefs>,
     actions: &Actions<Settings>,
-    host: &PaneCx,
+    dispatcher: &Dispatcher<Settings>,
     area: &AudioArea,
     sounds_on: bool,
 ) -> Element {
@@ -103,7 +107,7 @@ fn page(
     // output, with its own volume and mute: the music app to the headphones
     // while the browser stays on the speakers.
     cards.push(streams_card(
-        host,
+        dispatcher,
         &model,
         &t("sound-apps"),
         &model.graph.playback_streams,
@@ -113,7 +117,7 @@ fn page(
     // The capture streams (which app is using the microphone), routed to a
     // chosen input, with their own level and mute.
     cards.push(streams_card(
-        host,
+        dispatcher,
         &model,
         &t("sound-recording"),
         &model.graph.record_streams,
@@ -418,7 +422,7 @@ fn hardware_card(
 /// its volume, mute and (with more than one device) where it plays, or
 /// `empty_note` rather than a made-up line.
 fn streams_card(
-    host: &PaneCx,
+    dispatcher: &Dispatcher<Settings>,
     model: &AudioModel,
     title: &str,
     streams: &[AudioStream],
@@ -435,7 +439,7 @@ fn streams_card(
         .iter()
         .map(|stream| {
             row(stream_row(
-                host,
+                dispatcher,
                 model,
                 stream,
                 &options,
@@ -520,7 +524,7 @@ fn device_list(
 /// where it plays. Its controls act on its row of the published surface,
 /// where its volume, mute and route are operations.
 fn stream_row(
-    host: &PaneCx,
+    dispatcher: &Dispatcher<Settings>,
     model: &AudioModel,
     s: &AudioStream,
     options: &[String],
@@ -537,7 +541,8 @@ fn stream_row(
                 &[("app", s.app.as_str().into())],
             ))
             .with_enabled(!muted),
-        host.row_binding(
+        crate::on_row::binding(
+            dispatcher,
             &resource,
             effect(AudioEffect::SET_STREAM_VOLUME).map(move |volume: f64| (id, volume)),
         ),
@@ -552,7 +557,8 @@ fn stream_row(
             },
             &t(if muted { "sound-unmute" } else { "sound-mute" }),
         ),
-        host.row_binding(
+        crate::on_row::binding(
+            dispatcher,
             &resource,
             effect(AudioEffect::SET_STREAM_MUTED).map(move |()| (id, !muted)),
         ),
@@ -579,7 +585,8 @@ fn stream_row(
             .with_placeholder(&current);
         let route = bound(
             route,
-            host.row_binding(
+            crate::on_row::binding(
+                dispatcher,
                 &resource,
                 effect(AudioEffect::ROUTE_STREAM).map(move |device: String| (id, device)),
             ),

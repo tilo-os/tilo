@@ -82,10 +82,12 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&AudioArea> {
 pub(crate) mod values;
 
 /// The switch that mutes the output: the device's, as search shows it.
-pub(crate) fn mute(cx: &PaneCx, on: bool) -> Item {
-    cx.row(t("sound-mute"))
-        .id("audio.mute")
-        .toggle_effect(&LocalState::new(on), effect(AudioEffect::SET_OUTPUT_MUTED))
+pub(crate) fn mute(cx: &ViewCx<Settings>, on: bool) -> Item {
+    cx.setting(t("sound-mute")).id("audio.mute").toggle_effect(
+        &LocalState::new(on),
+        &cx.actions(),
+        effect(AudioEffect::SET_OUTPUT_MUTED),
+    )
 }
 
 /// The switch that plays both channels in each ear.

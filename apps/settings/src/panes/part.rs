@@ -478,7 +478,7 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_value!("sound.output_device" => audio::values::output_device),
     crate::setting::setting_value!("sound.input_device" => audio::values::input_device),
     crate::setting::setting_value!("sound.input_level" => audio::values::input_level),
-    crate::setting::setting_switch!("sound.mute" => audio::values::mute, audio::mute),
+    crate::setting::setting_view_switch!("sound.mute" => audio::values::mute, audio::mute),
     crate::setting::setting_value!("sound.balance" => known audio::values::balance),
     crate::setting::setting_bound_switch!("sound.mono" => audio::values::mono, crate::prefs::AudioPrefs => audio::mono),
     crate::setting::setting_bound_switch!("sound.echo" => audio::values::echo, crate::prefs::AudioPrefs => audio::echo_cancellation),
