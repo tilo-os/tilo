@@ -50,6 +50,9 @@ struct View {
 /// then sent to the field focused then (the press may have opened another note, whose first
 /// field takes the keyboard).
 struct Typed {
+    /// How many presses the window had sent when the person typed it: it waits until the app
+    /// ran them.
+    after: u64,
     /// The field, by key in the composed tree: none while no field had the keyboard (the press
     /// took it).
     key: Option<String>,
@@ -116,8 +119,8 @@ pub struct AppWindow {
     /// said it ran (`ToUi::Took`).
     fired: u64,
     took: u64,
-    /// What the person typed since a press the app has not run yet.
-    typed: Option<Typed>,
+    /// What the person typed after presses the app has not run yet, oldest first.
+    typed: std::collections::VecDeque<Typed>,
     /// The control to take the keyboard once the window's tree is laid out, by key in the
     /// composed tree ([`Widget::take_focus_request`]).
     focus_request: Option<String>,
@@ -179,7 +182,7 @@ impl AppWindow {
             activations: 0,
             fired: 0,
             took: 0,
-            typed: None,
+            typed: std::collections::VecDeque::new(),
             focus_request: None,
         }
     }
@@ -452,8 +455,8 @@ impl AppWindow {
         // The field keeps what the person typed into it while a press was running.
         if let Some(typed) = self
             .typed
-            .as_mut()
-            .filter(|typed| typed.key.as_deref() == Some(key.as_str()))
+            .iter_mut()
+            .find(|typed| typed.key.as_deref() == Some(key.as_str()))
         {
             if let Value::Text(text) = &value {
                 typed.sent = Some(text.clone());
@@ -795,22 +798,33 @@ impl AppWindow {
         // Typing after a press the app has not run yet waits for it: the press may open
         // something else into the field the person types into.
         if self.fired > self.took {
+            let fired = self.fired;
             // The person moved on to another field meanwhile: what they typed before stays
             // where they typed it.
-            if self
-                .typed
-                .as_ref()
-                .is_some_and(|typed| typed.key.as_deref() != Some(composed))
+            if self.typed.back().is_some_and(|typed| {
+                typed.after == fired
+                    && typed.key.is_some()
+                    && typed.key.as_deref() != Some(composed)
+            }) && let Some(typed) = self.typed.pop_back()
             {
-                self.send_typed_now();
+                self.send_typed_now(typed);
             }
-            let typed = self.typed.get_or_insert_with(|| Typed {
-                key: Some(composed.to_owned()),
-                base: before,
-                now: String::new(),
-                sent: None,
-            });
-            typed.now.clone_from(&text);
+            if !self
+                .typed
+                .back()
+                .is_some_and(|typed| typed.after == fired && typed.key.as_deref() == Some(composed))
+            {
+                self.typed.push_back(Typed {
+                    after: fired,
+                    key: Some(composed.to_owned()),
+                    base: before,
+                    now: String::new(),
+                    sent: None,
+                });
+            }
+            if let Some(typed) = self.typed.back_mut() {
+                typed.now.clone_from(&text);
+            }
             self.bound
                 .borrow_mut()
                 .insert(composed.to_owned(), Value::Text(text.clone()));
@@ -838,14 +852,18 @@ impl AppWindow {
         else {
             return;
         };
-        if let Some(typed) = self.typed.as_mut()
-            && typed
-                .key
-                .as_deref()
-                .is_none_or(|key| key.starts_with(DETAIL) && key != field)
-        {
-            typed.sent = Some(self.texts.get(&field).cloned().unwrap_or_default());
-            typed.key = Some(field.clone());
+        // What was typed after the press the app just ran, not after a later one.
+        let took = self.took;
+        for typed in &mut self.typed {
+            if typed.after <= took
+                && typed
+                    .key
+                    .as_deref()
+                    .is_none_or(|key| key.starts_with(DETAIL) && key != field)
+            {
+                typed.sent = Some(self.texts.get(&field).cloned().unwrap_or_default());
+                typed.key = Some(field.clone());
+            }
         }
         self.focus_request = Some(field);
     }
@@ -873,27 +891,42 @@ impl AppWindow {
         self.take_events();
         if self.fired <= self.took
             || key.state != ui::winit::event::ElementState::Pressed
-            || self.typed.as_ref().is_some_and(|typed| typed.key.is_some())
             || types_text(self.body.as_ref())
         {
             return false;
         }
-        self.typed
-            .get_or_insert_with(|| Typed {
+        let fired = self.fired;
+        match self
+            .typed
+            .back_mut()
+            .filter(|typed| typed.after == fired && typed.key.is_none())
+        {
+            Some(typed) => typed.now.push_str(text),
+            None => self.typed.push_back(Typed {
+                after: fired,
                 key: None,
                 base: String::new(),
-                now: String::new(),
+                now: text.to_owned(),
                 sent: None,
-            })
-            .now
-            .push_str(text);
+            }),
+        }
         true
     }
 
-    /// Send what the person typed while a press was running, once the app ran it.
+    /// Send what the person typed after each press the app ran since.
     fn send_typed(&mut self) {
-        if self.fired <= self.took && self.typed.is_some() {
-            self.send_typed_now();
+        let mut sent = false;
+        while self
+            .typed
+            .front()
+            .is_some_and(|typed| typed.after <= self.took)
+        {
+            if let Some(typed) = self.typed.pop_front() {
+                self.send_typed_now(typed);
+                sent = true;
+            }
+        }
+        if sent {
             self.refresh_bound();
         }
     }
@@ -901,10 +934,7 @@ impl AppWindow {
     /// Send what the person typed while a press was running into the field it went into,
     /// against what the field shows now: what they typed keeps its place from the field's end.
     /// Typed while no field had the keyboard, and no field took it since: nowhere to go.
-    fn send_typed_now(&mut self) {
-        let Some(typed) = self.typed.take() else {
-            return;
-        };
+    fn send_typed_now(&mut self, typed: Typed) {
         let Some(key) = typed.key else {
             return;
         };

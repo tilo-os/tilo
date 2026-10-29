@@ -462,6 +462,27 @@ fn keys_typed_right_after_new_note_land_in_the_new_notes_title_in_the_live_windo
 }
 
 #[test]
+fn notes_made_by_presses_the_host_has_not_answered_yet_each_take_what_was_typed_after_their_own() {
+    let mut session = Session::live_notes();
+    // From the empty notebook's New note, then the header's, before the host answered either.
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
+    session.window.type_text("First");
+    session.window.frame();
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
+    session.window.type_text("Second");
+    session.settle();
+    let mut titles = session.titles();
+    titles.sort();
+    assert_eq!(
+        titles,
+        ["UntitledFirst", "UntitledSecond"],
+        "what was typed after each press is that press's note's title"
+    );
+}
+
+#[test]
 fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() {
     let mut session = Session::live_notes();
     let plus = session.new_note_button();
