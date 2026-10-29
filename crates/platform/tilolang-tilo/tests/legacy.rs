@@ -33,14 +33,14 @@ type Package = (&'static str, &'static str);
 /// needs.
 fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
     vec![
-        (include_str!("legacy/todo.hex"), vec![app!("todo")]),
+        (include_str!("legacy/todo.hex"), vec![app!("tasks")]),
         (include_str!("legacy/notes.hex"), vec![app!("notes")]),
         (include_str!("legacy/letters.hex"), vec![app!("letters")]),
         (include_str!("legacy/chat.hex"), vec![app!("chat")]),
         (include_str!("legacy/board.hex"), vec![app!("board")]),
         (
             include_str!("legacy/today.hex"),
-            vec![app!("notes"), app!("todo"), app!("chat"), app!("today")],
+            vec![app!("notes"), app!("tasks"), app!("chat"), app!("today")],
         ),
     ]
 }
@@ -267,11 +267,11 @@ fn field(replica: &Replica, app: &str, ty: &str, name: &str) -> (String, String)
 
 #[test]
 fn items_of_an_older_record_move_change_and_go_keeping_their_ids() {
-    let packages = vec![app!("todo")];
+    let packages = vec![app!("tasks")];
     let mut replica = open(include_str!("legacy/todo.hex"), &packages);
     let app = "so.tilo.lang.todo";
     let list = root(&replica, app);
-    let (items_field, item_ty) = field(&replica, app, "TodoList", "items");
+    let (items_field, item_ty) = field(&replica, app, "Tasks", "items");
     let before = listed(&replica, &list, &items_field);
     assert!(before.len() >= 3);
     let item = |id: &str| Value::resource(&list.item(id, item_ty.clone()));

@@ -9,8 +9,8 @@ use tilolang_tilo::publish::Caller;
 
 use crate::fixtures::Replica;
 
-const TODO: &str = include_str!("../../../../apps/tl/todo/app.tl");
-const TODO_IDS: &str = include_str!("../../../../apps/tl/todo/app.ids");
+const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const APP: &str = "so.tilo.lang.todo";
 
 fn agent() -> Caller {
@@ -54,14 +54,14 @@ fn run(replica: &mut Replica, source: &str, confirm: bool) -> Json {
 }
 
 fn items(replica: &mut Replica) -> usize {
-    let answer = run(replica, "todo.todos.items.len()", false);
+    let answer = run(replica, "todo.tasks.items.len()", false);
     answer["output"][0].as_str().unwrap().parse().unwrap()
 }
 
 #[test]
 fn a_programs_lets_are_kept_for_the_next_program() {
     let mut ada = ada();
-    let first = run(&mut ada, "let list = todo.todos\nlist.items.len()", false);
+    let first = run(&mut ada, "let list = todo.tasks\nlist.items.len()", false);
     assert_eq!(first["state"], "done", "{first:#}");
     assert_eq!(first["output"], serde_json::json!(["0"]), "{first:#}");
     assert_eq!(first["lets"][0]["name"], "list", "{first:#}");
@@ -78,7 +78,7 @@ fn a_programs_lets_are_kept_for_the_next_program() {
 #[test]
 fn a_program_that_changes_many_resources_is_previewed_and_applied_on_confirm() {
     let mut ada = ada();
-    let bulk = "for t in [\"a\", \"b\", \"c\", \"d\", \"e\"] {\n    todo.add(todo.todos, t)\n}";
+    let bulk = "for t in [\"a\", \"b\", \"c\", \"d\", \"e\"] {\n    todo.add(todo.tasks, t)\n}";
     let previewed = run(&mut ada, bulk, false);
     assert_eq!(previewed["state"], "preview", "{previewed:#}");
     let steps = previewed["steps"].as_array().unwrap();
@@ -97,7 +97,7 @@ fn a_program_that_changes_many_resources_is_previewed_and_applied_on_confirm() {
 #[test]
 fn a_program_that_fails_changes_nothing() {
     let mut ada = ada();
-    let failing = "todo.add(todo.todos, \"milk\")\nprint(1 / (todo.todos.items.len() - 1))";
+    let failing = "todo.add(todo.tasks, \"milk\")\nprint(1 / (todo.tasks.items.len() - 1))";
     let answer = run(&mut ada, failing, false);
     assert_ne!(answer["state"], "done", "{answer:#}");
     assert_eq!(answer["changed"], 0, "{answer:#}");

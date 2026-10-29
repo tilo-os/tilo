@@ -29,8 +29,6 @@ type Task {
     /// The project it belongs to; none while it waits in the inbox.
     project: Option<Project> = .none
     priority: Priority = .none
-    /// The smaller steps it takes, each checked off on its own.
-    steps: Collection<Step>
 
     search {
         filter "Inbox" = project == .none (icon: .inbox)
@@ -48,6 +46,8 @@ type Task {
 type Step {
     title: Text (title)
     done: Bool = false
+    /// The task it is a step of.
+    task: Task
 }
 
 /// A project: tasks that work towards one outcome.
@@ -62,6 +62,9 @@ type Tasks {
     /// Every task, in the order people put them.
     items: Collection<Task>
     projects: Collection<Project>
+    /// The steps of every task, each naming its task: a task's checklist is the run of its
+    /// steps, which the index answers without reading the others.
+    steps: Collection<Step>
 }
 
 root tasks: Tasks
@@ -138,9 +141,9 @@ action prioritize(t: Task, priority: Priority) (icon: .flag) {
 }
 
 /// Adds a step to a task's checklist.
-action add_step(t: Task, title: Text) {
+action add_step(tasks: Tasks, t: Task, title: Text) {
     if title != "" {
-        t.steps.insert(Step(title: title))
+        tasks.steps.insert(Step(title: title, task: t))
     }
 }
 
@@ -150,8 +153,8 @@ action check_step(s: Step, done: Bool = not s.done) (label: if done { "Complete"
 }
 
 /// Removes a step from a task's checklist.
-destructive action remove_step(t: Task, s: Step) (icon: .trash) {
-    t.steps.remove(s)
+destructive action remove_step(tasks: Tasks, s: Step) (icon: .trash) {
+    tasks.steps.remove(s)
 }
 
 /// Deletes a task.
@@ -181,6 +184,11 @@ action move(tasks: Tasks, t: Task, after: Task) {
 /// Renames a project.
 action rename(p: Project, name: Text) {
     p.name = name
+}
+
+/// The steps of a task, in order.
+fn steps_of(t: Task) -> List<Step> {
+    tasks.steps.filter(s -> s.task == t)
 }
 
 /// The tasks of a project, in order.
@@ -320,9 +328,10 @@ view task_page(t: Task) {
             }
         }
         section("Steps") {
-            if not t.steps.is_empty() {
+            let steps = steps_of(t)
+            if not steps.is_empty() {
                 ui.VirtualList {
-                    for s in t.steps {
+                    for s in steps {
                         ui.ListItem(item: s) {
                             step_row(s)
                         }
@@ -330,7 +339,7 @@ view task_page(t: Task) {
                 }
             }
             ui.TextInput(value: step, placeholder: "Add a step") {
-                on submit: add_step(t, step).then(set(step, ""))
+                on submit: add_step(tasks, t, step).then(set(step, ""))
             }
         }
         input(bind: t.notes, placeholder: "Add notes", lines: 6)
@@ -353,9 +362,9 @@ scenario "a busy week" -> Task {
     tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
     tasks.items.insert(Task(title: "Pack the books", project: flat, done: true))
     let copy = tasks.items.insert(Task(title: "Write the launch post", project: launch, due: 2026-07-06, priority: .urgent, notes: "Lead with the offline editor, then sharing."))
-    copy.steps.insert(Step(title: "Outline", done: true))
-    copy.steps.insert(Step(title: "First draft"))
-    copy.steps.insert(Step(title: "Screenshots"))
+    tasks.steps.insert(Step(title: "Outline", done: true, task: copy))
+    tasks.steps.insert(Step(title: "First draft", task: copy))
+    tasks.steps.insert(Step(title: "Screenshots", task: copy))
     tasks.items.insert(Task(title: "Check the pricing page on phones", project: launch, due: 2026-07-08))
     tasks.items.insert(Task(title: "Set up the redirects", project: launch, done: true))
     as mia at 2026-06-29T16:00Z {
