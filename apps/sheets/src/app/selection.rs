@@ -12,6 +12,13 @@ impl SheetsApp {
     /// the rest of the workbook, and each acts on the selection as it is
     /// when they are published.
     pub(crate) fn selection_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Workbook>> {
+        self.refresh_selection_declarations();
+        self.store.borrow().selection_declarations()
+    }
+
+    /// Build the edits bound to the selection again when what they are built
+    /// from changed.
+    fn refresh_selection_declarations(&self) {
         let key = SelectionKey {
             revision: self.revision,
             sheet: self.active_sheet,
@@ -20,14 +27,21 @@ impl SheetsApp {
             selected: self.grid.selected_cells(),
             currency: self.default_currency(),
         };
-        if let Some((built, decls)) = &*self.selection_decls.borrow()
-            && *built == key
-        {
-            return decls.clone();
+        if matches!(&self.store.borrow().selection, Some((built, _)) if *built == key) {
+            return;
         }
         let decls = self.build_selection_declarations();
-        *self.selection_decls.borrow_mut() = Some((key, decls.clone()));
-        decls
+        self.store.borrow_mut().selection = Some((key, decls));
+    }
+
+    /// Hand the view what the grid shows now: the active sheet, the
+    /// currency amounts are read in and the edits bound to the selection.
+    pub(super) fn share_view(&self) {
+        self.refresh_selection_declarations();
+        let (active, currency) = (self.active_sheet_id(), self.default_currency());
+        let mut store = self.store.borrow_mut();
+        store.active_sheet = active;
+        store.currency = currency;
     }
 
     #[allow(

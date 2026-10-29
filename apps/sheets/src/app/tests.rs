@@ -454,10 +454,12 @@ pub(super) fn sample_app() -> TestApp<crate::resource::SheetsShell> {
     app
 }
 
-/// The active sheet's index and the status the surface shows.
+/// The sheet the grid shows and its status, once it took up what effects
+/// asked of it.
 fn shown(app: &mut TestApp<crate::resource::SheetsShell>) -> (usize, String) {
+    app.settle();
     app.with_surface::<SheetsApp, _>(|sheets| (sheets.active_sheet, sheets.status.clone()))
-        .expect("the grid is the surface")
+        .expect("the grid is in the view")
 }
 
 fn raw_at(app: &TestApp<crate::resource::SheetsShell>, sheet: usize, addr: Addr) -> String {
