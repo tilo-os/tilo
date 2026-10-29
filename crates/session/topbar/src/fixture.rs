@@ -107,7 +107,7 @@ fn profile() -> ProfileModel {
     ProfileModel {
         name: "Quinn".into(),
         identity: LOCAL.into(),
-        colour: Some(ui::vello::peniko::Color::from_rgb8(0x5b, 0x8d, 0xef)),
+        colour: Some(ui::presence::identity_colour(LOCAL)),
         offers_presence: true,
         ..ProfileModel::default()
     }
@@ -126,7 +126,10 @@ pub fn feed(scenario: Option<&str>) -> BarFeed {
         },
         own: Some(OwnChip {
             name: "Quinn".into(),
-            rgb: (0x5b, 0x8d, 0xef),
+            rgb: {
+                let colour = ui::presence::identity_colour(LOCAL).to_rgba8();
+                (colour.r, colour.g, colour.b)
+            },
             identity: String::new(),
         }),
         invite: Invite::when(true),

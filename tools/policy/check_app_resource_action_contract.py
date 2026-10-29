@@ -166,6 +166,10 @@ NOT_CONTROL_CALLBACKS = {
     "open, under the person's grants",
     "on_stage": "stages view state for a screenshot scenario",
     "on_screen_reader_chord": "the host's observer of the screen reader chord, not a control",
+    "on_close": "the window search's close puts back what the view showed before it opened: "
+    "what this window shows, no edit",
+    "on_sync": "a view's per-sync upkeep hook, run by the framework, not a control",
+    "on_presented": "a view's after-frame hook, run by the framework, not a control",
 }
 # Buttons a toolkit composite draws itself and runs a closure for: a row's
 # and a property's actions, a row's swipe actions, a card's hover action, a

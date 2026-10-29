@@ -70,8 +70,6 @@ pub struct AccessApp {
     /// What its answers are asked for by.
     pub scope: String,
     pub label: String,
-    /// Its answers in one line, while it is closed.
-    pub summary: String,
     /// Whether any of its answers was set here, and what that means open.
     pub customised: bool,
     pub detail: String,
@@ -371,18 +369,31 @@ fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
     column(groups)
 }
 
-/// One app: its name and answers in a line, which opens to an Allow / Ask
-/// first / Deny control for each kind of action, with Reset once any of
-/// them was set here.
+/// One app: its name, and its answers as one tag each while it is closed,
+/// which opens to an Allow / Ask first / Deny control for each kind of
+/// action, with Reset once any of them was set here.
 fn access_app(review: &AgentReview, app: &AccessApp, open: bool, parts: &Parts) -> Element {
     let toggle = parts.clone();
     let scope = app.scope.clone();
-    let mut head = ListRow::new(format!("ws-agent-app-{}", app.scope), app.label.clone())
-        .secondary(if open {
-            app.detail.clone()
-        } else {
-            app.summary.clone()
-        })
+    let mut head = ListRow::new(format!("ws-agent-app-{}", app.scope), app.label.clone());
+    if open {
+        head = head.secondary(app.detail.clone());
+    } else {
+        let answers: Vec<String> = app
+            .kinds
+            .iter()
+            .filter_map(|kind| {
+                let answer = review.answers.get(kind.answer)?;
+                Some(format!("{}: {answer}", kind.label))
+            })
+            .collect();
+        let tags: Vec<(&str, ChipStyle)> = answers
+            .iter()
+            .map(|answer| (answer.as_str(), ChipStyle::Neutral))
+            .collect();
+        head = head.tags(&tags);
+    }
+    let mut head = head
         .disclosure()
         .selected(open)
         .on_activate(move || toggle.toggle_app(&scope));
@@ -583,7 +594,6 @@ pub(super) fn sample_review() -> AgentReview {
             AccessApp {
                 scope: "so.tilo.notes".to_owned(),
                 label: "Notes".to_owned(),
-                summary: "Reading: Allow · Changes: Ask first · Outside: Deny".to_owned(),
                 customised: true,
                 detail: "Set here for this agent".to_owned(),
                 kinds: vec![
@@ -595,7 +605,6 @@ pub(super) fn sample_review() -> AgentReview {
             AccessApp {
                 scope: "so.tilo.calendar".to_owned(),
                 label: "Calendar".to_owned(),
-                summary: "Reading: Allow · Changes: Allow · Outside: Ask first".to_owned(),
                 customised: false,
                 detail: "Follows its admission".to_owned(),
                 kinds: vec![
