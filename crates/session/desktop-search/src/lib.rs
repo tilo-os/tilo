@@ -17,6 +17,10 @@
 //!   on-disk indexes of what apps publish and of the person's files.
 //! - [`availability`]: what the manifest registry knows of each app: where
 //!   it runs, its category and the words people know it by.
+//! - [`usage`] and [`preferences`]: what the person chose before, and the
+//!   sources they switched off; the host keeps both.
+//! - Features `settings` and `catalogue` (native): Settings' pages and the
+//!   apps a person can get, from their own crates' indexes.
 
 pub mod answers;
 pub mod availability;
@@ -30,13 +34,19 @@ pub mod indexed;
 pub mod lazy;
 pub mod model;
 pub mod palette;
+pub mod preferences;
 pub mod providers;
 pub mod rank;
+pub mod usage;
 pub mod window;
 
 pub use lazy::{
     DESKTOP_SEARCH, DesktopSearchApi, LazyDesktopSearch, MakeDesktopSearch, builtin_desktop_search,
 };
-pub use model::{ActionTarget, Hit, InvokeTarget, Source, Target, search};
+pub use model::{
+    ActionTarget, DESKTOP_APP, Hit, InvokeTarget, OPEN_ACTION, OPEN_ANCHOR, Source, Target, search,
+};
 pub use palette::{DesktopSearch, SearchData};
+pub use preferences::SearchPreferences;
 pub use ui::search::system::ResourceKind;
+pub use usage::Usage;

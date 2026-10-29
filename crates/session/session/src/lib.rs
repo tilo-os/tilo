@@ -24,6 +24,7 @@ mod chrome;
 mod panels;
 mod setup;
 mod sheets;
+mod search;
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -43,6 +44,7 @@ use ui::application::ComponentRunnerInputs;
 use ui::headless::FrameHarness;
 use ui::host_operation::ResourceOperationStart;
 
+pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::host::PanelHost;
 
 use chrome::{SessionChrome, SessionRules};
@@ -59,6 +61,8 @@ use tilo_sheets::workspace_settings::{
 pub use os_actions::SessionAction;
 
 pub use tilo_onboarding_host::view::OnboardingView;
+use panels::{Banners, Held, Popover};
+use search::SessionSearch;
 
 /// The generation the session's own desktop commands carry.
 const GENERATION: &str = "session";
@@ -99,6 +103,12 @@ pub struct Options {
 fn no_session_actions(action: SessionAction) -> Result<(), String> {
     tracing::info!(?action, "this session carries out no session actions");
     Ok(())
+    /// What the desktop's search reaches beyond the desktop.
+    pub search: SearchOptions,
+    /// The action host: what open apps publish and run, and where what is
+    /// chosen in search runs by address. Without one, search finds the
+    /// desktop's own and starts nothing.
+    pub apps: Option<Rc<dyn AppActions>>,
 }
 
 impl Default for Options {
@@ -112,13 +122,56 @@ impl Default for Options {
             quick_settings: None,
             setup: None,
             session_actions: no_session_actions,
+            search: SearchOptions::default(),
+            apps: None,
         }
+    }
+}
+
+/// The desktop's two hosted trees: the desk's under the windows and the
+/// chrome's above them.
+#[derive(Clone)]
+struct Layers {
+    desktop: DesktopHost,
+    chrome: Rc<RefCell<WidgetHost>>,
+}
+
+impl Layers {
+    /// `read` of the desk's hosted tree, then of the chrome's.
+    fn each<R>(&self, mut read: impl FnMut(&mut FrameHarness) -> R) -> [R; 2] {
+        let desk = self.desktop.with_widgets(|host| read(host.host_mut()));
+        let chrome = read(self.chrome.borrow_mut().host_mut());
+        [desk, chrome]
+    }
+
+    fn resources(&self) -> Vec<ResourceSpec> {
+        self.each(|host| host.resources()).concat()
+    }
+
+    /// Invoke the published action `action` of `resource` on the layer
+    /// that publishes it.
+    fn invoke(
+        &self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        let address = ActionAddress::new(resource, action);
+        let [desk, chrome] = self.each(|host| {
+            tilo_actions::door::resolve(&host.resources(), &address)
+                .is_some()
+                .then(|| host.invoke_published(resource, action, arguments))
+        });
+        desk.or(chrome)
+            .unwrap_or_else(|| Err(DoorError::Unknown(address.clone())))
     }
 }
 
 /// What the session keeps between frames, shared with the loop.
 struct Shared {
+    layers: Layers,
     handle: DesktopHandle,
+    search: Rc<SessionSearch>,
     /// What the desk and the chrome asked of the session.
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
     /// Where the chrome takes intents the session raises.
@@ -215,6 +268,42 @@ impl Shared {
                 }
             }
         }
+        let choices = self.handle.take_search_choices();
+        if choices.is_empty() {
+            return;
+        }
+        let room = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.room().to_string())
+                .unwrap_or_default()
+        });
+        for choice in choices {
+            self.search.perform(&room, choice, &mut |own| {
+                self.layers
+                    .invoke(
+                        own.address.resource.as_str(),
+                        own.address.action.as_str(),
+                        &own.arguments,
+                    )
+                    .map(drop)
+            });
+        }
+        // What the session's own actions asked of it.
+        self.follow_asks();
+    }
+
+    /// Read what the session publishes for search, after a frame.
+    fn observe(&self) {
+        let open_tabs = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect()
+        });
+        self.search.observe(&self.layers.resources(), open_tabs);
     }
 
     /// A card of the empty desk's launchpad: its app, else the desktop's
@@ -327,9 +416,6 @@ impl Mount<'_> {
 /// A running session: the compositor and the desktop it hosts.
 pub struct Session {
     compositor: Compositor,
-    desktop: DesktopHost,
-    /// The chrome above the windows.
-    chrome: Rc<RefCell<WidgetHost>>,
     shared: Rc<Shared>,
     banners: tilo_notification_banners::Link,
     /// The surface apps whose actions the session publishes.
@@ -433,8 +519,12 @@ impl Session {
             .map(|view| mount.add(Setup::new(view, options.scale)));
         let surfaces = mount.surfaces;
 
+        let search = Rc::new(SessionSearch::new(options.search, options.apps));
+        handle.set_search_host(Rc::clone(&search) as Rc<dyn tilo_desktop_surface::SearchHost>);
         let shared = Rc::new(Shared {
+            layers: Layers { desktop, chrome },
             handle,
+            search,
             asks,
             intents,
             quick_settings,
@@ -444,10 +534,9 @@ impl Session {
             session_actions: options.session_actions,
             lock: Cell::new(false),
         });
+        shared.observe();
         Ok(Self {
             compositor,
-            desktop,
-            chrome,
             shared,
             banners,
             surfaces,
@@ -482,8 +571,8 @@ impl Session {
 
     /// The desktop under the windows and its policy.
     #[must_use]
-    pub const fn desktop(&self) -> &DesktopHost {
-        &self.desktop
+    pub fn desktop(&self) -> &DesktopHost {
+        &self.shared.layers.desktop
     }
 
     /// The host side of the desktop surface.
@@ -541,6 +630,17 @@ impl Session {
             resources.extend(door.resources());
         }
         resources
+    /// Everything the desktop publishes now: the desk's resource (its
+    /// windows and the open search among its children) and the chrome's,
+    /// with their actions.
+    #[must_use]
+    pub fn resources(&self) -> Vec<ResourceSpec> {
+        self.shared.layers.resources()
+    }
+
+    /// A window was at `place`: where search's Continue reopens it.
+    pub fn record_place(&self, place: tilo_desktop_search::providers::places::Place) {
+        self.shared.search.record_place(place);
     }
 
     /// Invoke the published action `action` of resource `resource`, as
@@ -625,6 +725,9 @@ impl Session {
             Some(Err(error)) => Err(error),
             None => Err(DoorError::Unknown(ActionAddress::new(resource, action))),
         }
+        let started = self.shared.layers.invoke(resource, action, arguments)?;
+        self.shared.follow_asks();
+        Ok(started)
     }
 
     /// The labels of the desktop's accessibility trees, the desk's and the
@@ -641,6 +744,15 @@ impl Session {
                 .collect::<Vec<_>>()
         })
         .concat()
+        self.shared
+            .layers
+            .each(|host| {
+                host.a11y_nodes()
+                    .into_iter()
+                    .filter_map(|(_, node)| node.label().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .concat()
     }
 
     /// The power menu's seat: the session puts it up.
@@ -699,6 +811,7 @@ impl Session {
         self.compositor.render()?;
         self.shared.follow_asks();
         self.follow_lock();
+        self.shared.observe();
         Ok(())
     }
 
@@ -722,5 +835,10 @@ impl Session {
             }
             self.follow_lock();
         }
+        self.compositor.run(|compositor| {
+            shared.follow_asks();
+            shared.observe();
+            stop(compositor)
+        })
     }
 }

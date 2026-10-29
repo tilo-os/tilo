@@ -48,7 +48,7 @@ const BINARY_EXTS: &[&str] = &[
     "sqlite3", "db",
 ];
 
-const MAX_DEPTH: usize = 8;
+pub(crate) const MAX_DEPTH: usize = 8;
 /// Bytes of each file's body indexed — the biggest lever on tantivy's
 /// background merge memory: a 1 MB cap over a 50k-file home produced a
 /// multi-GB merge spike that OOM'd the compositor ~90s after boot.
@@ -321,7 +321,7 @@ fn walk_and_index(home: &Path, existing: &HashMap<String, u64>, writer: &mut Dis
     }
 }
 
-fn should_skip(path: &Path, home: &Path) -> bool {
+pub(crate) fn should_skip(path: &Path, home: &Path) -> bool {
     if let Ok(rel) = path.strip_prefix(home) {
         for comp in rel.components() {
             let comp = comp.as_os_str().to_string_lossy();

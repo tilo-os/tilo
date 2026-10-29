@@ -7,7 +7,7 @@
 use tilo_actions::{FlatAction, ResourceSpec};
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
-use crate::model::{Hit, Source, Target, search};
+use crate::model::{Hit, Source, Target, search, search_with};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, WebSearch, WindowEntry, Windows,
@@ -56,6 +56,12 @@ pub struct SearchData {
     /// What the empty field says it searches, where that is not
     /// everything ("Search Tube…").
     pub placeholder: Option<String>,
+    /// What the host searches beyond these (Settings' pages, the store's
+    /// catalogue, files, what apps hold), each over what is published or a
+    /// service answers. The search over everything asks them.
+    pub sources: Vec<Box<dyn Source>>,
+    /// The sources the person switched off, left out whatever they find.
+    pub preferences: crate::preferences::SearchPreferences,
 }
 
 /// A row the person moved to, as it is found again once the rows are
@@ -76,6 +82,10 @@ struct Sources {
     answers: Option<(Answers, WebSearch)>,
     /// The one window searched, when the search is a window's.
     window: Option<WindowSearch>,
+    host: Vec<Box<dyn Source>>,
+    preferences: crate::preferences::SearchPreferences,
+    /// Now, in Unix seconds, as the host said when search opened.
+    now: u64,
 }
 
 impl Sources {
@@ -90,6 +100,9 @@ impl Sources {
                 published: Published(Vec::new()),
                 answers: None,
                 window: Some(WindowSearch::new(data.resources, data.providers).within(data.scope)),
+                host: Vec::new(),
+                preferences: data.preferences,
+                now: data.now,
             };
         }
         Self {
@@ -120,6 +133,9 @@ impl Sources {
                 )
             }),
             window: None,
+            host: data.sources,
+            preferences: data.preferences,
+            now: data.now,
         }
     }
 
@@ -138,6 +154,8 @@ pub struct DesktopSearch {
     palette: CommandPalette,
     sources: Option<Sources>,
     recents: Recents,
+    /// What the person chose before, which orders equal matches.
+    usage: crate::usage::Usage,
     /// The hits the palette shows; entry `hit:{i}` is `rows[i]`.
     rows: Vec<Hit>,
     /// The kind of each "Show all" row; entry `more:{i}` is `more_rows[i]`.
@@ -176,6 +194,7 @@ impl DesktopSearch {
             palette,
             sources: None,
             recents: Recents::default(),
+            usage: crate::usage::Usage::default(),
             rows: Vec::new(),
             more_rows: Vec::new(),
             expanded: Vec::new(),
@@ -300,7 +319,11 @@ impl DesktopSearch {
             if let Some((answers, web)) = &sources.answers {
                 all.extend([answers as &dyn Source, web]);
             }
-            search(&query, &all, 0)
+            all.extend(sources.host.iter().map(|source| &**source));
+            all.retain(|source| sources.preferences.enabled(source.id()));
+            let usage = &self.usage;
+            let now = sources.now;
+            search_with(&query, &all, 0, &|hit| usage.strength(&query, hit, now))
         };
         // Each group shares what the palette shows without scrolling; a
         // group cut short offers the rest in place.
@@ -409,26 +432,7 @@ impl DesktopSearch {
             {
                 self.expand(more);
             } else if let Some(hit) = self.hit(&outcome.id) {
-                self.recents.record(&hit);
-                let mut target = hit.target;
-                let mut toggles = false;
-                if let Target::Invoke(invoke) = &mut target
-                    && let Some(descriptor) = &invoke.descriptor
-                {
-                    toggles = descriptor.state.toggles;
-                    if let (Some(param), Some(value)) =
-                        (descriptor.prompt_param(), outcome.argument)
-                    {
-                        invoke
-                            .arguments
-                            .insert(param.to_owned(), serde_json::Value::String(value));
-                    }
-                }
-                self.choice = Some(target);
-                // A switch stays in view, showing what it flipped to.
-                if !toggles {
-                    self.palette.close();
-                }
+                self.choose_hit(hit, outcome.argument);
             }
         }
         if self.sources.is_none() || self.palette.is_open() {
@@ -439,10 +443,65 @@ impl DesktopSearch {
             && let Some(hit) = self.palette.selected_id().and_then(|id| self.hit(id))
         {
             // An action row closed the palette after queueing its invocation.
-            self.recents.record(&hit);
+            self.remember(&hit);
         }
         self.finish();
         true
+    }
+
+    /// Choose `hit`, with `argument` the one line its action asks for:
+    /// it is remembered, and its target is the choice. A switch stays in
+    /// view, showing what it flipped to; anything else closes search.
+    fn choose_hit(&mut self, hit: Hit, argument: Option<String>) {
+        self.remember(&hit);
+        let mut target = hit.target;
+        let mut toggles = false;
+        if let Target::Invoke(invoke) = &mut target
+            && let Some(descriptor) = &invoke.descriptor
+        {
+            toggles = descriptor.state.toggles;
+            if let (Some(param), Some(value)) = (descriptor.prompt_param(), argument) {
+                invoke
+                    .arguments
+                    .insert(param.to_owned(), serde_json::Value::String(value));
+            }
+        }
+        self.choice = Some(target);
+        if !toggles {
+            self.palette.close();
+        }
+    }
+
+    fn remember(&mut self, hit: &Hit) {
+        self.recents.record(hit);
+        let now = self.sources.as_ref().map_or(0, |sources| sources.now);
+        let query = self.palette.query().to_owned();
+        self.usage.record(&query, hit, now);
+    }
+
+    /// Choose the shown row `index` ([`Self::results`]) as a person
+    /// choosing it does, with `argument` the line its action asks for:
+    /// what a caller of the desktop's published search runs. An app's own
+    /// action row ([`Target::Action`]) runs only from its window, through
+    /// the palette's control. Returns whether there was such a row.
+    pub fn choose(&mut self, index: usize, argument: Option<String>) -> bool {
+        let Some(hit) = self.rows.get(index).cloned() else {
+            return false;
+        };
+        self.choose_hit(hit, argument);
+        true
+    }
+
+    /// What the person chose before, to keep with the rest of what the host
+    /// keeps.
+    #[must_use]
+    pub fn usage(&self) -> &crate::usage::Usage {
+        &self.usage
+    }
+
+    /// What the person chose before, as the host kept it.
+    pub fn set_usage(&mut self, usage: crate::usage::Usage) {
+        self.usage = usage;
     }
 
     /// The chosen non-action row, for the host to perform.

@@ -5,8 +5,9 @@
 use ui::PlatformConventions;
 use ui::widget::Widget;
 
-use crate::model::Target;
+use crate::model::{Hit, Target};
 use crate::palette::{DesktopSearch, SearchData};
+use crate::usage::Usage;
 
 /// What a desktop asks of its search, as the trait object
 /// [`DESKTOP_SEARCH`] makes.
@@ -20,6 +21,11 @@ pub trait DesktopSearchApi {
     fn refresh(&mut self) -> bool;
     fn observe(&mut self) -> bool;
     fn take_choice(&mut self) -> Option<Target>;
+    fn results(&self) -> &[Hit];
+    fn query(&self) -> &str;
+    fn choose(&mut self, index: usize, argument: Option<String>) -> bool;
+    fn usage(&self) -> &Usage;
+    fn set_usage(&mut self, usage: Usage);
     fn set_max_width(&mut self, width: Option<f64>);
     fn desired_size(&self) -> (f64, f64);
     fn palette(&self) -> &dyn Widget;
@@ -53,6 +59,21 @@ impl DesktopSearchApi for DesktopSearch {
     }
     fn take_choice(&mut self) -> Option<Target> {
         Self::take_choice(self)
+    }
+    fn results(&self) -> &[Hit] {
+        Self::results(self)
+    }
+    fn query(&self) -> &str {
+        Self::query(self)
+    }
+    fn choose(&mut self, index: usize, argument: Option<String>) -> bool {
+        Self::choose(self, index, argument)
+    }
+    fn usage(&self) -> &Usage {
+        Self::usage(self)
+    }
+    fn set_usage(&mut self, usage: Usage) {
+        Self::set_usage(self, usage);
     }
     fn set_max_width(&mut self, width: Option<f64>) {
         self.palette_mut().set_max_width(width);
@@ -192,6 +213,37 @@ impl LazyDesktopSearch {
 
     pub fn take_choice(&mut self) -> Option<Target> {
         self.search.as_mut()?.take_choice()
+    }
+
+    /// The rows shown, in palette order; none while the code is on its way.
+    pub fn results(&self) -> &[Hit] {
+        self.search.as_ref().map_or(&[], |search| search.results())
+    }
+
+    /// What is typed; nothing while the code is on its way.
+    pub fn query(&self) -> &str {
+        self.search.as_ref().map_or("", |search| search.query())
+    }
+
+    /// Choose the shown row `index`, as a person choosing it does.
+    pub fn choose(&mut self, index: usize, argument: Option<String>) -> bool {
+        self.search
+            .as_mut()
+            .is_some_and(|search| search.choose(index, argument))
+    }
+
+    /// What the person chose before, once the code is in.
+    pub fn usage(&self) -> Option<&Usage> {
+        Some(self.search.as_ref()?.usage())
+    }
+
+    /// What the person chose before, as the host kept it: given once the
+    /// code is in.
+    pub fn set_usage(&mut self, usage: Usage) {
+        self.adopt();
+        if let Some(search) = &mut self.search {
+            search.set_usage(usage);
+        }
     }
 
     pub fn set_max_width(&mut self, width: Option<f64>) {

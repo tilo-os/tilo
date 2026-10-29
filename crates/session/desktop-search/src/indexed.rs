@@ -23,10 +23,7 @@ use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, provider_score};
 use crate::content_index::{AppContentIndex, Contents, IndexedEntry, SlotKey};
 use crate::model::{Hit, InvokeTarget, Source, Target};
 
-/// The action every framework app publishes to show the item at an anchor
-/// (`tilo_app::framework`'s `open`), and its parameter.
-pub const OPEN_ACTION: &str = "open";
-pub const OPEN_ANCHOR: &str = "anchor";
+pub use crate::model::{OPEN_ACTION, OPEN_ANCHOR};
 
 /// Separates the parts of a row id: an entry's key may hold anything, so
 /// it comes last.
@@ -149,29 +146,11 @@ pub fn parse_entry_id(id: &str) -> Option<(SlotKey, &str)> {
 /// the app's `open` at the entry's resource.
 #[must_use]
 pub fn opening(slot: &SlotKey, entry: &IndexEntry) -> InvokeTarget {
-    let (address, arguments) = match &entry.action {
-        Some(action) => (
-            tilo_actions::ActionAddress::new(&action.resource, &action.action),
-            serde_json::Map::new(),
-        ),
-        None => {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(
-                OPEN_ANCHOR.into(),
-                serde_json::Value::String(entry.resource.clone()),
-            );
-            (
-                tilo_actions::ActionAddress::new(&entry.resource, OPEN_ACTION),
-                arguments,
-            )
+    match &entry.action {
+        Some(action) => {
+            InvokeTarget::action(&slot.app, &slot.room, &action.resource, &action.action)
         }
-    };
-    InvokeTarget {
-        app: slot.app.clone(),
-        room: slot.room.clone(),
-        address,
-        arguments,
-        descriptor: None,
+        None => InvokeTarget::open(&slot.app, &slot.room, &entry.resource),
     }
 }
 

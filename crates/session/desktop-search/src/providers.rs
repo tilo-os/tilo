@@ -1,5 +1,18 @@
 //! Portable sources: everything a desktop can search without a compositor.
-//! Each takes a snapshot the host collects when search opens.
+//! Each takes a snapshot the host collects when search opens, of what is
+//! published (resources, actions, the desktop's model) or what a service
+//! answers; none reads a host's own chrome state.
+
+#[cfg(feature = "catalogue")]
+pub mod catalogue;
+#[cfg(feature = "indexes")]
+pub mod files;
+pub mod host_apps;
+pub mod jobs;
+pub mod people;
+pub mod places;
+#[cfg(feature = "settings")]
+pub mod settings;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -393,7 +406,9 @@ impl Source for Published {
             let toggles = descriptor.is_some_and(|action| action.state.toggles);
             (
                 std::cmp::Reverse(hit.score),
-                2 - i32::from(one_step) - i32::from(toggles),
+                2_i32
+                    .saturating_sub(i32::from(one_step))
+                    .saturating_sub(i32::from(toggles)),
             )
         });
         hits
@@ -919,7 +934,10 @@ impl Recents {
     /// Remember `hit` as the newest choice. An answer or a web search is
     /// what one query typed came to, nothing to go back to.
     pub fn record(&mut self, hit: &Hit) {
-        if matches!(hit.target, Target::Copy { .. } | Target::Open { .. }) {
+        if matches!(
+            hit.target,
+            Target::Copy { .. } | Target::Open { .. } | Target::Cancel { .. }
+        ) {
             return;
         }
         self.0

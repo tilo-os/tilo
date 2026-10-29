@@ -41,8 +41,22 @@ pub enum DesktopAction {
     FocusTab { tab: u64 },
     /// Close the tab `tab` (a window's tab asks its window to close).
     CloseTab { tab: u64 },
-    /// Open the desktop's search.
-    OpenSearch,
+    /// Open the desktop's search, with `query` typed when given.
+    OpenSearch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+    },
+    /// Type `query` into the open search.
+    SearchFor { query: String },
+    /// Choose the open search's row `row`, with `argument` the line its
+    /// action asks for.
+    ChooseSearchRow {
+        row: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        argument: Option<String>,
+    },
+    /// Show the person `person` in the people panel.
+    ShowPerson { person: String },
 }
 
 impl DesktopAction {
@@ -149,6 +163,34 @@ pub fn chrome_resource() -> ResourceSpec {
             Vec::new(),
             |_| DesktopAction::NewWorkspace,
         ))
+        .with_action(action(
+            tilo_desktop_search::providers::people::SHOW_PERSON,
+            t("desktop-action-show-person"),
+            vec![ActionParam::required_owned(
+                tilo_desktop_search::providers::people::PERSON_PARAM,
+                ParamType::Text,
+                t("desktop-action-param-person"),
+            )],
+            |args| DesktopAction::ShowPerson {
+                person: text(args, tilo_desktop_search::providers::people::PERSON_PARAM),
+            },
+        ))
+}
+
+fn text(args: &ActionArgs, name: &str) -> String {
+    args.text(name).unwrap_or_default().to_owned()
+}
+
+/// The resource of the open search, a child of the desk's.
+pub const SEARCH_RESOURCE: &str = "desktop:search";
+/// The kind of the open search's resource, and of each of its rows.
+pub const SEARCH_KIND: &str = "desktop.search";
+pub const SEARCH_ROW_KIND: &str = "desktop.search-row";
+
+/// The address of the open search's row `row`.
+#[must_use]
+pub fn search_row_id(row: usize) -> String {
+    format!("{SEARCH_RESOURCE}:row:{row}")
 }
 
 /// The kind of a window's resource.
@@ -160,10 +202,58 @@ pub fn tab_resource_id(tab: u64) -> String {
     format!("desktop:tab:{tab}")
 }
 
+/// The open search: what is typed, and each row it shows, which can be
+/// chosen.
+fn search_resource(query: &str, rows: &[tilo_desktop_surface::SearchRow]) -> ResourceSpec {
+    let rows = rows.iter().enumerate().map(|(at, row)| {
+        let index = u64::try_from(at).unwrap_or(u64::MAX);
+        let label = match &row.subtitle {
+            Some(subtitle) => format!("{} · {subtitle}", row.title),
+            None => row.title.clone(),
+        };
+        ResourceSpec::new(search_row_id(at), SEARCH_ROW_KIND, label).with_action(action(
+            "choose",
+            t("desktop-action-choose-search-row"),
+            vec![ActionParam::optional_owned(
+                "argument",
+                ParamType::Text,
+                t("desktop-action-param-argument"),
+            )],
+            move |args| DesktopAction::ChooseSearchRow {
+                row: index,
+                argument: args.text("argument").map(str::to_owned),
+            },
+        ))
+    });
+    let label = if query.is_empty() {
+        t("desktop-actions-search")
+    } else {
+        query.to_owned()
+    };
+    ResourceSpec::new(SEARCH_RESOURCE, SEARCH_KIND, label)
+        .with_action(action(
+            "search-for",
+            t("desktop-action-search-for"),
+            vec![ActionParam::required_owned(
+                "query",
+                ParamType::Text,
+                t("desktop-action-param-query"),
+            )],
+            |args| DesktopAction::SearchFor {
+                query: text(args, "query"),
+            },
+        ))
+        .with_children(rows)
+}
+
 /// The desk's resource and its actions, with each tab of `tabs`
-/// (`(tab, title)`) a resource of its own that can be focused and closed.
+/// (`(tab, title)`) a resource of its own that can be focused and closed,
+/// and the open search (its query and rows), when search is open.
 #[must_use]
-pub fn desk_resource(tabs: &[(u64, String)]) -> ResourceSpec {
+pub fn desk_resource(
+    tabs: &[(u64, String)],
+    search: Option<(&str, &[tilo_desktop_surface::SearchRow])>,
+) -> ResourceSpec {
     let windows = tabs.iter().map(|(id, title)| {
         let id = *id;
         ResourceSpec::new(tab_resource_id(id), WINDOW_KIND, title.clone())
@@ -180,12 +270,19 @@ pub fn desk_resource(tabs: &[(u64, String)]) -> ResourceSpec {
                 move |_| DesktopAction::CloseTab { tab: id },
             ))
     });
+    let search = search.map(|(query, rows)| search_resource(query, rows));
     ResourceSpec::new(DESK_RESOURCE, "desktop", t("desktop-actions-desk"))
         .with_action(action(
             "open-search",
             t("desktop-action-open-search"),
-            Vec::new(),
-            |_| DesktopAction::OpenSearch,
+            vec![ActionParam::optional_owned(
+                "query",
+                ParamType::Text,
+                t("desktop-action-param-query"),
+            )],
+            |args| DesktopAction::OpenSearch {
+                query: args.text("query").map(str::to_owned),
+            },
         ))
-        .with_children(windows)
+        .with_children(windows.chain(search))
 }

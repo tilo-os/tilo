@@ -16,6 +16,14 @@ tilo-surface-host = { path = "../surface-host" }
 tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface" }
+tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "settings", "catalogue"] }
+app-catalogue = { path = "../../packaging/app-catalogue" }
+# What the session binary's search reads of the device: the installed apps,
+# the machine's own, the person's search choices.
+tilo-installed-apps = { path = "../../packaging/installed-apps" }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
+settings-store = { path = "../../system/settings-store" }
+tilo-paths.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-quick-settings = { path = "../quick-settings" }

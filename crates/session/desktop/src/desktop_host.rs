@@ -308,17 +308,22 @@ impl DeskLayer {
 impl DeskLayer {
     /// Carry out a desk action; false for one of the chrome's.
     fn perform(&self, action: &DesktopAction) -> bool {
-        match *action {
+        match action {
             DesktopAction::FocusTab { tab } => {
-                self.handle.focus_tab(tab);
+                self.handle.focus_tab(*tab);
             }
             DesktopAction::CloseTab { tab } => {
                 let mut tree = self.handle.read(Clone::clone);
-                if tree.close_tab(tab).is_some() {
+                if tree.close_tab(*tab).is_some() {
                     self.handle.replace_tree(tree);
                 }
             }
-            DesktopAction::OpenSearch => self.handle.open_search(None),
+            DesktopAction::OpenSearch { query } => self.handle.open_search(query.clone()),
+            DesktopAction::SearchFor { query } => self.handle.set_search_query(query.clone()),
+            DesktopAction::ChooseSearchRow { row, argument } => self.handle.choose_search_row(
+                usize::try_from(*row).unwrap_or(usize::MAX),
+                argument.clone(),
+            ),
             _ => return false,
         }
         true
@@ -336,7 +341,12 @@ impl ui::resources::PublishesResources for DeskLayer {
                 .map(|tab| (tab.id, tab.title.clone()))
                 .collect()
         });
-        vec![desk_resource(&tabs)]
+        let (query, rows) = self.handle.search_rows();
+        let search = self
+            .handle
+            .search_open()
+            .then_some((query.as_str(), rows.as_slice()));
+        vec![desk_resource(&tabs, search)]
     }
 }
 
@@ -1300,16 +1310,17 @@ impl DesktopChrome {
 impl DesktopChrome {
     /// Carry out a chrome action; false for one of the desk's.
     fn perform(&mut self, action: &DesktopAction) -> bool {
-        let intent = match *action {
+        let intent = match action {
             DesktopAction::ToggleOverview => ChromeIntent::ToggleOverview,
             DesktopAction::ToggleQuickSettings => ChromeIntent::ToggleQuickSettings,
             DesktopAction::ToggleTiloMenu => ChromeIntent::ToggleTiloMenu,
             DesktopAction::ToggleWorkspaceMenu => ChromeIntent::ToggleWorkspaceMenu,
             DesktopAction::SwitchWorkspace { delta } => {
-                ChromeIntent::SwitchWorkspace(i32::try_from(delta).unwrap_or_default())
+                ChromeIntent::SwitchWorkspace(i32::try_from(*delta).unwrap_or_default())
             }
+            DesktopAction::ShowPerson { person } => ChromeIntent::ShowPerson(person.clone()),
             DesktopAction::StepStrip { steps } => {
-                let steps = isize::try_from(steps).unwrap_or_default();
+                let steps = isize::try_from(*steps).unwrap_or_default();
                 self.go_to_strip(|current| current.checked_add_signed(steps));
                 return true;
             }
@@ -1319,7 +1330,9 @@ impl DesktopChrome {
             }
             DesktopAction::FocusTab { .. }
             | DesktopAction::CloseTab { .. }
-            | DesktopAction::OpenSearch => return false,
+            | DesktopAction::OpenSearch { .. }
+            | DesktopAction::SearchFor { .. }
+            | DesktopAction::ChooseSearchRow { .. } => return false,
         };
         self.apply_intent(intent);
         true
