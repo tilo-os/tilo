@@ -5,6 +5,11 @@ ten minutes. A tilolang program on the door must be at least as terse, and bette
 the shell guesses, with authorship, history, permissions and undo. Today's `tilo_*` tools already
 work even with cheap models; tilolang has to beat them, measured (§9).
 
+Everything here is ordinary tilolang, not an agent dialect: `grep`, the chaining functions,
+assignments that compile to actions, and the typed decisions in §5 are available to every
+program (apps, shortcuts, flows, views). Agents just use them most. Calls that use a model
+declare it like any effect (`uses model`, like `uses web`), and their answers are recorded.
+
 ## 1. One tool, programs, sessions
 
 - The door (Tilo's MCP server, `docs/runtime-mcp.md`) has a tool `tilo` that takes a
