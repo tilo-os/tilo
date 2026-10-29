@@ -5317,8 +5317,8 @@ mod tests {
         room: &str,
         resource: &str,
         title: &str,
-    ) -> std::sync::Arc<crate::shell::search::app_content_index::AppContentIndex> {
-        use crate::shell::search::app_content_index::{AppContentIndex, SlotKey};
+    ) -> std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex> {
+        use tilo_desktop_search::content_index::{AppContentIndex, SlotKey};
         use ui::search::index_publication::{IndexDelta, IndexEntry};
 
         let index = std::sync::Arc::new(AppContentIndex::in_memory());

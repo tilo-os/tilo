@@ -138,8 +138,6 @@ impl FilesIndex {
     /// `~/.cache/tilo/files-index` can't be opened or created (a missing
     /// schema field, a corrupt directory, or similar).
     pub fn open_or_create(home: &Path) -> Result<Self, tilo_search::TantivyError> {
-        #[cfg(test)]
-        crate::shell::test_support::ambient_start("Files body index");
         let index = Arc::new(DiskIndex::open_or_create(&files_index_dir()?)?);
         let cache = Arc::new(Mutex::new(QueryCache::new(QUERY_CACHE_CAPACITY)));
 

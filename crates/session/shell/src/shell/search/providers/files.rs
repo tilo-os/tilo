@@ -1,7 +1,7 @@
 //! Files provider — searches the home directory for files and directories.
 //!
 //! Two backends: an in-memory index of the names under `~`, and a
-//! persistent content index (see [`super::super::files_index`]) over file
+//! persistent content index (see [`tilo_desktop_search::files_index`]) over file
 //! contents at `~/.cache/tilo/files-index`, rebuilt incrementally in the
 //! background. Neither starts at session construction — the first palette
 //! query (or an explicit [`FilesProvider::rescan`]) opens the index and
@@ -414,7 +414,7 @@ pub struct FilesIndexes {
     name_index: Arc<RwLock<NameIndex>>,
     /// Opened on a thread of its own from the first [`Self::ensure_ready`];
     /// unset until then, `None` when opening failed.
-    tantivy: Arc<OnceLock<Option<crate::shell::search::files_index::FilesIndex>>>,
+    tantivy: Arc<OnceLock<Option<tilo_desktop_search::files_index::FilesIndex>>>,
     /// Set once the home walk has been kicked and the content index opened.
     /// Test helpers that inject an index pre-set this so a walk never runs.
     ready: OnceLock<()>,
@@ -563,8 +563,10 @@ impl FilesIndexes {
             let opened = thread::Builder::new()
                 .name("tilo-search-files-open".into())
                 .spawn(move || {
+                    #[cfg(test)]
+                    crate::shell::test_support::ambient_start("Files body index");
                     let _ = tantivy.set(
-                        crate::shell::search::files_index::FilesIndex::open_or_create(&home).ok(),
+                        tilo_desktop_search::files_index::FilesIndex::open_or_create(&home).ok(),
                     );
                     wake.wake();
                 });

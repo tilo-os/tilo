@@ -1,7 +1,7 @@
 //! What apps hold, found whether or not they run.
 //!
 //! Answers from the session's persistent index of apps' search entries
-//! ([`crate::shell::search::app_content_index`]): a note, a message, a
+//! ([`tilo_desktop_search::content_index`]): a note, a message, a
 //! login, by its title, its secondary line and its short fields. A hit opens
 //! the app at the entry, through the same door a live hit takes: the
 //! entry's published action, or the app's `open` action at the entry's
@@ -36,12 +36,12 @@ use crate::shell::collab_broker_capnp::{
 };
 use crate::shell::i18n::t_args;
 use crate::shell::search::action_api::ActionError;
-use crate::shell::search::app_content_index::{
-    AppContentIndex, Contents, IndexedEntry, SlotKey, record_slot,
-};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchProximity, SearchResult,
+};
+use tilo_desktop_search::content_index::{
+    AppContentIndex, Contents, IndexedEntry, SlotKey, record_slot,
 };
 
 /// This provider's id.

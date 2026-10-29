@@ -12,12 +12,10 @@
 //! resources from the focused app ahead of equally relevant global results.
 
 pub mod action_api;
-pub mod app_content_index;
 mod app_scope;
 #[cfg(test)]
 mod fallback_tests;
 mod fallbacks;
-pub mod files_index;
 mod held_pages;
 #[cfg(test)]
 mod held_pages_tests;

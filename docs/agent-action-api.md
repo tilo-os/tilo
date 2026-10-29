@@ -299,7 +299,7 @@ identity; opening the editor creates no user schedule. Real sources/account acce
 and real schedule creation require the user's applicable authorization.
 
 The providers on a stock build are `actions` (the shell's own chrome),
-`applications`, `host-applications`, `notes`, `files`, `records` and `editor`.
+`applications`, `notes`, `files`, `records` and `editor`.
 
 The answer is one page of the listing: up to 200 rows unless the request names
 a `limit` (at most 2,000). Every answer says where it is:

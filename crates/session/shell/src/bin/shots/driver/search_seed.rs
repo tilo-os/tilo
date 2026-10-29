@@ -144,8 +144,8 @@ impl ShellDriver {
             secret: true,
             references: Vec::new(),
         };
-        shell::shell::search::app_content_index::session().apply(
-            &shell::shell::search::app_content_index::SlotKey::new(
+        tilo_desktop_search::content_index::session().apply(
+            &tilo_desktop_search::content_index::SlotKey::new(
                 "so.tilo.passwords",
                 &room,
                 "passwords:vault",

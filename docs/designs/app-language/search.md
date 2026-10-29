@@ -101,7 +101,7 @@ and three rules cover everything:
 ## 6. Who indexes
 
 - **Text search is the system's.** The shell keeps one persistent index of what the workspace
-  holds (`app_content_index`), published into by whatever holds the resources, and it answers
+  holds (`tilo_desktop_search::content_index`), published into by whatever holds the resources, and it answers
   even when nothing that published is running. Nobody keeps a private copy.
 - **Resources with an outside origin** (an IMAP server, YouTube) are searched through that
   origin's search capability, invoked by the system and merged into one ranking. What was

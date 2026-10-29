@@ -5,14 +5,14 @@
 //! the app opens there.
 //!
 //! The list is the session's index of what the room's apps hold
-//! ([`crate::shell::search::app_content_index`]): the workspace's settings
+//! ([`tilo_desktop_search::content_index`]): the workspace's settings
 //! list its resources and search finds them by name.
 
 use super::chat_seed::{
     NewWorkspace, Running, Step, broker_scratch, new_workspace, offered, offering,
 };
 use super::{RoomId, until};
-use crate::shell::search::app_content_index::{self, SlotKey};
+use tilo_desktop_search::content_index::{self as app_content_index, SlotKey};
 use ui::record::RecordCheckout;
 
 /// One app's way of making an item named `token`.

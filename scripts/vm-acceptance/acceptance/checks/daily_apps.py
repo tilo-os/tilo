@@ -71,7 +71,7 @@ def _lines(text: str) -> list[str]:
 def _require_installed(ctx, res, app: DailyApp) -> None:
     """The app's entry is in the host-applications catalogue, or the check cannot run."""
     def listed():
-        ids = {a["id"] for q in app.queries for a in ctx.vm.actions(q) if a["provider"] == "host-applications"}
+        ids = {a["id"] for q in app.queries for a in ctx.vm.actions(q) if a["provider"] == "applications"}
         return app.desktop_id in ids or None
 
     if wait_until(listed, 30, 2.0):
@@ -170,7 +170,7 @@ def _open(ctx, res, app: DailyApp):
     before = _procs(ctx)
     ctx.facts[f"groups_before:{app.label}"] = {g["id"] for g in core.all_groups(st0)}
     try:
-        group, t_group = ctx.open_app(app.desktop_id, "host-applications")
+        group, t_group = ctx.open_app(app.desktop_id, "applications")
     except CheckFailed:
         # Whether it started at all, and what it and the compositor said.
         ctx.shot(f"{app.label}-no-window")

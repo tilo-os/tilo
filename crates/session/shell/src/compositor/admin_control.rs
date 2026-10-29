@@ -606,7 +606,7 @@ mod first_use_tests {
             &ResourceRef::new("authentication-prompts", "answer@ticket"),
             &kind
         ));
-        for provider in ["app-actions", "session", "permissions", "host-applications"] {
+        for provider in ["app-actions", "session", "permissions", "applications"] {
             assert!(!gate.can_see(&ResourceRef::new(provider, "inspect"), &kind));
         }
         assert!(!first_use_permitted(&Command::Windows));
@@ -615,7 +615,7 @@ mod first_use_tests {
             wait_ms: None
         }));
         let command = crate::shell::test_control::parse_command(
-            r#"{"op":"actions_invoke","provider":"host-applications","id":"launch"}"#,
+            r#"{"op":"actions_invoke","provider":"applications","id":"launch"}"#,
         )
         .expect("real codec");
         assert!(!first_use_permitted(&command));

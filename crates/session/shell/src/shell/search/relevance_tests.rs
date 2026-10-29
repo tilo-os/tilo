@@ -23,8 +23,8 @@ use crate::shell::device_local_actions::DeviceLocalActionsProvider;
 use crate::shell::device_local_actions::DeviceLocalWindow;
 use crate::shell::host_apps::HostApp;
 use crate::shell::launcher::InstalledApp;
+use crate::shell::search::providers::StoreCatalogueProvider;
 use crate::shell::search::providers::applications::ApplicationsTestSource;
-use crate::shell::search::providers::host_applications::HostAppsTestSource;
 use crate::shell::search::providers::store_catalogue::{
     StoreCatalogueTestSource, StoreCatalogueTestState,
 };
@@ -32,7 +32,6 @@ use crate::shell::search::providers::{
     ActionsProvider, AppContentProvider, ApplicationsProvider, AskAgentProvider, ContinueProvider,
     FilesProvider, SessionActionPolicy, SessionActionsProvider, SettingsPagesProvider, WebProvider,
 };
-use crate::shell::search::providers::{HostApplicationsProvider, StoreCatalogueProvider};
 use crate::shell::search::{
     Availability, QueryArgs, ResourceKind, ResourceKindText as _, SearchRegistry, SearchResult,
 };
@@ -145,6 +144,7 @@ struct Palette {
     chrome: Chrome,
     document: AutoCommit,
     applications: Rc<ApplicationsProvider>,
+    apps: Arc<ApplicationsTestSource>,
     pages: Rc<SettingsPagesProvider>,
 }
 
@@ -152,7 +152,7 @@ impl Palette {
     fn new() -> Self {
         let mut registry = SearchRegistry::new();
         let apps = ApplicationsTestSource::new(installed_apps(), Vec::new());
-        let applications = Rc::new(ApplicationsProvider::with_test_source(apps));
+        let applications = Rc::new(ApplicationsProvider::with_test_source(Arc::clone(&apps)));
         registry.register(applications.clone());
         registry.register(Rc::new(ActionsProvider::new()));
         // Quick Settings' actions, as this device's catalogue of private
@@ -170,6 +170,7 @@ impl Palette {
             chrome,
             document: AutoCommit::new(),
             applications,
+            apps,
             pages,
         };
         palette.settled()
@@ -257,7 +258,7 @@ impl Palette {
         }
         self.registry
             .register(Rc::new(ContinueProvider::without_broker(Arc::new(
-                crate::shell::search::app_content_index::AppContentIndex::in_memory(),
+                tilo_desktop_search::content_index::AppContentIndex::in_memory(),
             ))));
         self
     }
@@ -279,7 +280,7 @@ impl Palette {
             .expect("a workspace in front")
             .room()
             .to_string();
-        let index = Arc::new(crate::shell::search::app_content_index::AppContentIndex::in_memory());
+        let index = Arc::new(tilo_desktop_search::content_index::AppContentIndex::in_memory());
         let state = IndexState {
             generation: 1,
             secrets_unlocked: None,
@@ -336,10 +337,7 @@ impl Palette {
             .map(|app| app.package_id)
             .chain(host.iter().map(|app| app.desktop_id.clone()))
             .collect();
-        self.registry
-            .register(Rc::new(HostApplicationsProvider::with_test_source(
-                HostAppsTestSource::new(host, installed_apps()),
-            )));
+        self.apps.replace_host_apps(host);
         let source = app_catalogue::appstream::AppstreamSource {
             remote: "flathub".into(),
             installation: app_catalogue::Installation::System,
@@ -1316,7 +1314,7 @@ fn installed_and_tilo_apps_lead_then_own_content_then_flatpak_store_pages() {
             "the installed Music leads, however exactly GNOME's Music matches: {:?}",
             titles(&rows)
         );
-        let musicpod = at("host-applications", "org.feichtmeier.Musicpod");
+        let musicpod = at(APP, "org.feichtmeier.Musicpod");
         let sheet_music = at("store-catalogue", "app:so.tilo.sheet-music");
         let first_file = rows
             .iter()
