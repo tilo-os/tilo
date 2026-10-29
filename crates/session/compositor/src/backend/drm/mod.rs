@@ -61,6 +61,7 @@ use smithay::utils::{DeviceFd, Point, Transform};
 
 use super::{Backend, BackendError, failed};
 use crate::output::{ModeRequest, OutputChange, apply_placement, find_mode, refresh_interval};
+use crate::pacing::Pacing;
 use crate::present::{Presentation, Shown};
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
@@ -110,6 +111,7 @@ struct Lit {
     /// When the next frame may be drawn though nothing was queued.
     next_frame: Instant,
     interval: Duration,
+    pacing: Pacing,
 }
 
 /// The dma-buf feedback for client surfaces on one output: the primary
@@ -628,6 +630,13 @@ fn render_gpu(
         if lit.queued || lit.dark || now < lit.next_frame {
             continue;
         }
+        // The build starts at its deadline; a wakeup a refresh or more
+        // past it is off the grid, and starts it.
+        let start = if now.saturating_duration_since(lit.next_frame) < lit.interval {
+            lit.next_frame
+        } else {
+            now
+        };
         let name = lit.output.name();
         lit.follow_vrr(vrr_wanted(
             lit.vrr != Vrr::Unable,
@@ -677,7 +686,11 @@ fn render_gpu(
             }
             None => submit(lit, &mut renderer, &elements, None, state, device, now),
         }
-        lit.next_frame = now.checked_add(lit.interval).unwrap_or(now);
+        if lit.queued {
+            lit.pacing.queued(start, Instant::now(), lit.interval);
+        } else {
+            lit.next_frame = lit.pacing.idle(now, lit.interval, lit.vrr == Vrr::On);
+        }
     }
 }
 
@@ -760,7 +773,22 @@ fn vblank(
         Err(error) => tracing::warn!(?error, output = lit.output.name(), "page flip not retired"),
     }
     lit.queued = false;
-    lit.next_frame = Instant::now();
+    let shown = vblank_instant(metadata);
+    lit.next_frame = lit.pacing.shown(shown, lit.interval, lit.vrr == Vrr::On);
+    if let Some(summary) = lit.pacing.take_summary(shown, lit.interval) {
+        tracing::debug!(
+            output = lit.output.name(),
+            shown = summary.shown,
+            missed = summary.missed,
+            interval_us = lit.interval.as_micros(),
+            lead_us = summary.lead_us,
+            cost_p50_us = summary.cost.0,
+            cost_p99_us = summary.cost.1,
+            build_to_vblank_p50_us = summary.build_to_vblank.0,
+            build_to_vblank_p99_us = summary.build_to_vblank.1,
+            "frame pacing"
+        );
+    }
     match lit.wake.as_mut() {
         // The link is up; what the kernel holds says the rest.
         Some(wake) if !wake.judged => {
@@ -1002,6 +1030,27 @@ fn vblank_shown(metadata: Option<&DrmEventMetadata>) -> Shown {
         },
         _ => Shown::Host,
     }
+}
+
+/// When a vertical blank happened: the kernel's monotonic stamp, or now
+/// when it gave none.
+fn vblank_instant(metadata: Option<&DrmEventMetadata>) -> Instant {
+    let now = Instant::now();
+    let Some(DrmEventMetadata {
+        time: DrmEventTime::Monotonic(time),
+        ..
+    }) = metadata
+    else {
+        return now;
+    };
+    let clock = smithay::reexports::rustix::time::clock_gettime(
+        smithay::reexports::rustix::time::ClockId::Monotonic,
+    );
+    let clock = Duration::new(
+        u64::try_from(clock.tv_sec).unwrap_or(0),
+        u32::try_from(clock.tv_nsec).unwrap_or(0),
+    );
+    now.checked_sub(clock.saturating_sub(*time)).unwrap_or(now)
 }
 
 fn pause(inner: &Rc<RefCell<Inner>>) {
@@ -1567,6 +1616,7 @@ fn light(
         feedback,
         next_frame: Instant::now(),
         interval,
+        pacing: Pacing::default(),
     })
 }
 
