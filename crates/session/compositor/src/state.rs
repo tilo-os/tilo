@@ -31,7 +31,6 @@ use smithay::wayland::compositor::{
     CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
-use smithay::wayland::selection::SelectionHandler;
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
@@ -112,6 +111,10 @@ pub struct State {
     /// Outputs turned off by a display configuration: known, not shown.
     pub(crate) disabled_outputs: Vec<Output>,
     pub(crate) idle: crate::power::Idle,
+    pub(crate) selections: crate::selection::Selections,
+    /// The compositor's event loop, for work the window manager schedules.
+    pub(crate) loop_handle:
+        Option<smithay::reexports::calloop::LoopHandle<'static, crate::LoopData>>,
 }
 
 impl State {
@@ -130,6 +133,8 @@ impl State {
         }
         seat.add_pointer();
         seat.add_touch();
+        let protocols = crate::protocols::Protocols::new(display);
+        let selections = crate::selection::Selections::new(display, &protocols.primary_selection);
         Self {
             display: display.clone(),
             started: Instant::now(),
@@ -147,7 +152,7 @@ impl State {
             hosts: Vec::new(),
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
-            protocols: crate::protocols::Protocols::new(display),
+            protocols,
             lock: crate::lock::Lock::new(display),
             text_input: crate::text_input::TextInput::new(display),
             cursor: crate::cursor::Cursor::new(),
@@ -161,6 +166,8 @@ impl State {
             output_power: crate::output_power::OutputPower::new(display),
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
+            selections,
+            loop_handle: None,
         }
     }
 
@@ -572,7 +579,7 @@ const X11_IDS: u64 = 1 << 40;
 
 /// What a policy learns about a window, Wayland or X11; `None` for
 /// override-redirect X11 windows, which place themselves.
-fn describe(window: &Window) -> Option<WindowInfo> {
+pub(crate) fn describe(window: &Window) -> Option<WindowInfo> {
     if let Some(toplevel) = window.toplevel() {
         return Some(window_info(toplevel));
     }
@@ -706,6 +713,83 @@ impl XdgShellHandler for State {
 
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
 
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, serial: Serial) {
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            self.window_request(&window, &crate::policy::WindowRequest::Move, Some(serial));
+        }
+    }
+
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: WlSeat,
+        serial: Serial,
+        edges: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
+    ) {
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            let request = crate::policy::WindowRequest::Resize(crate::requests::xdg_edges(edges));
+            self.window_request(&window, &request, Some(serial));
+        }
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        match self.window_of_toplevel(&surface) {
+            Some(window) => {
+                self.window_request(&window, &crate::policy::WindowRequest::Maximize(true), None)
+            }
+            None => {
+                surface.send_configure();
+            }
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            self.window_request(
+                &window,
+                &crate::policy::WindowRequest::Maximize(false),
+                None,
+            );
+        }
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        let output = output
+            .as_ref()
+            .and_then(Output::from_resource)
+            .map(|output| output.name());
+        match self.window_of_toplevel(&surface) {
+            Some(window) => self.window_request(
+                &window,
+                &crate::policy::WindowRequest::Fullscreen { on: true, output },
+                None,
+            ),
+            None => {
+                surface.send_configure();
+            }
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            let request = crate::policy::WindowRequest::Fullscreen {
+                on: false,
+                output: None,
+            };
+            self.window_request(&window, &request, None);
+        }
+    }
+
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_of_toplevel(&surface) {
+            self.window_request(&window, &crate::policy::WindowRequest::Minimize, None);
+        }
+    }
+
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.unmapped
             .retain(|window| window.toplevel() != Some(&surface));
@@ -734,18 +818,10 @@ impl SeatHandler for State {
         self.cursor.status = image;
     }
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|surface| self.display.get_client(surface.id()).ok());
-        smithay::wayland::selection::data_device::set_data_device_focus(
-            &self.display,
-            seat,
-            client,
-        );
+        self.selection_focus(client.as_ref());
     }
-}
-
-impl SelectionHandler for State {
-    type SelectionUserData = ();
 }
 
 impl DataDeviceHandler for State {
@@ -775,6 +851,14 @@ pub(crate) fn client_data(trusted: bool) -> Arc<ClientState> {
 }
 
 impl State {
+    /// The mapped window of a toplevel.
+    pub(crate) fn window_of_toplevel(&self, surface: &ToplevelSurface) -> Option<Window> {
+        self.space
+            .elements()
+            .find(|window| window.toplevel() == Some(surface))
+            .cloned()
+    }
+
     /// The window whose surface has keyboard focus.
     pub(crate) fn focused_window(&self) -> Option<WindowInfo> {
         let focus = self.seat.get_keyboard()?.current_focus()?;
