@@ -429,20 +429,6 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
 /// Every pane, by the categories it shows.
 pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
-        categories: &[Category::DefaultApps],
-        build: |app, _| {
-            personal_apps::area(app).map_or_else(
-                || crate::widgets::page(Vec::new()),
-                |area| {
-                    Box::new(personal_apps::PersonalAppsPane::new(
-                        app.host().clone(),
-                        area,
-                    )) as Box<dyn ui::widget::Widget>
-                },
-            )
-        },
-    },
-    crate::area::PaneEntry {
         categories: &[Category::TimeDate],
         build: |app, _| {
             time_date::area(app).map_or_else(

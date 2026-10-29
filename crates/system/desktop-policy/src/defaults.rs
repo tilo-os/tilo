@@ -72,6 +72,20 @@ impl ResourceKind {
         Ok(Self(format!("scheme:{scheme}")))
     }
 
+    /// The kind an id names (`ext:pdf`, `mime:text/html`, `scheme:https`),
+    /// as [`Self::as_str`] writes it; `None` for anything else.
+    #[must_use]
+    pub fn parse(id: &str) -> Option<Self> {
+        let (prefix, name) = id.split_once(':')?;
+        match prefix {
+            "ext" => Self::extension(name).ok(),
+            "mime" => Self::mime(name).ok(),
+            "scheme" => Self::scheme(name).ok(),
+            _ => None,
+        }
+        .filter(|parsed| parsed.as_str() == id)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

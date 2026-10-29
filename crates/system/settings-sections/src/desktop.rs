@@ -78,7 +78,29 @@ impl ui::storage::SettingsSchema for DefaultApps {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.default-apps", label = "Default apps")]
-impl DefaultApps {}
+impl DefaultApps {
+    /// Open one kind of file or link with an app. Only the chosen kind
+    /// changes: the handlers kept for every other kind, including kinds a
+    /// newer version knows, stay.
+    #[action(id = "set-default-app-handler")]
+    pub fn open_with(
+        &mut self,
+        #[param("The kind of file or link: `ext:pdf`, `mime:text/html`, `scheme:https`")]
+        kind: String,
+        #[param("The app's id")] app: String,
+    ) -> Result<(), tilo_resource::Refusal> {
+        let kind = desktop_policy::ResourceKind::parse(&kind).ok_or_else(|| {
+            tilo_resource::Refusal::new(format!("`{kind}` is not a kind of file or link"))
+        })?;
+        let app = app.trim();
+        if app.is_empty() {
+            return Err(tilo_resource::Refusal::new("an app id is needed"));
+        }
+        self.handlers
+            .insert(kind.as_str().to_owned(), app.to_owned());
+        Ok(())
+    }
+}
 
 /// This device's clock settings: whether its time zone follows its
 /// location. The session's zone follower reads the same leaf
