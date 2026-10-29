@@ -8,24 +8,18 @@
 use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
-use crate::widget::ModelPath;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
-use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::Widget;
-use crate::widget::chart_data::{ChartLink, ChartNode};
+use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
-};
+use crate::widget::chart_navigation::draw_title;
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct SankeyStyle {
@@ -54,11 +48,8 @@ impl Default for SankeyStyle {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SankeySelection {
-    Node(String),
-    Link(String),
-}
+/// What a Sankey diagram inspects and reports on activation.
+pub type SankeySelection = crate::widget::chart_data::GraphSelection;
 
 #[derive(Clone, Copy, Debug)]
 struct NodeBox {
@@ -77,61 +68,64 @@ struct LinkBand {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Hit {
+/// The inspected node or link, by index.
+pub enum Hit {
     Node(usize),
     Link(usize),
 }
 
-pub struct SankeyChart {
+pub struct SankeyMarks {
     nodes: Vec<ChartNode>,
     links: Vec<ChartLink>,
     style: SankeyStyle,
-    title: String,
-    height: f32,
-    rect: Rect,
-    inspection: ChartInspection<Hit>,
-    activated: Option<SankeySelection>,
+    frame: PlotFrame<Hit>,
     /// Trailing room kept for the last column's labels, measured at paint.
     label_reserve: f64,
 }
 
+/// Flows between columns of nodes, each ribbon as thick as its value.
+pub type SankeyChart = Plot<SankeyMarks>;
+
 impl SankeyChart {
     pub fn new(nodes: Vec<ChartNode>, links: Vec<ChartLink>) -> Self {
-        Self {
+        Plot::from_marks(SankeyMarks {
             nodes,
             links,
             style: SankeyStyle::default(),
-            title: String::new(),
-            height: 420.0,
-            rect: Rect::ZERO,
-            inspection: ChartInspection::default(),
-            activated: None,
+            frame: PlotFrame::new(420.0, 180.0),
             label_reserve: 0.0,
-        }
+        })
     }
     #[must_use]
     pub fn with_style(mut self, style: SankeyStyle) -> Self {
-        self.style = style;
-        self
-    }
-    #[must_use]
-    pub fn titled(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(180.0);
+        self.marks.style = style;
         self
     }
     pub fn set_data(&mut self, nodes: Vec<ChartNode>, links: Vec<ChartLink>) {
-        self.nodes = nodes;
-        self.links = links;
-        self.inspection.hovered = None;
+        self.marks.nodes = nodes;
+        self.marks.links = links;
+        self.marks.frame.inspection.hovered = None;
     }
-    pub fn take_activated(&mut self) -> Option<SankeySelection> {
-        self.activated.take()
+    pub fn inspect(&mut self, selection: &SankeySelection) -> bool {
+        let hit = match selection {
+            SankeySelection::Node(id) => self
+                .marks
+                .nodes
+                .iter()
+                .position(|node| node.id == *id)
+                .map(Hit::Node),
+            SankeySelection::Link(id) => self
+                .marks
+                .links
+                .iter()
+                .position(|link| link.id == *id && link.flows())
+                .map(Hit::Link),
+        };
+        self.inspect_item(hit)
     }
+}
+
+impl SankeyMarks {
     fn selection_for(&self, hit: Hit) -> Option<SankeySelection> {
         match hit {
             Hit::Node(index) => self
@@ -144,34 +138,19 @@ impl SankeyChart {
                 .map(|link| SankeySelection::Link(link.id.clone())),
         }
     }
-    pub fn inspect(&mut self, selection: &SankeySelection) -> bool {
-        self.inspection.hovered = match selection {
-            SankeySelection::Node(id) => self
-                .nodes
-                .iter()
-                .position(|node| node.id == *id)
-                .map(Hit::Node),
-            SankeySelection::Link(id) => self
-                .links
-                .iter()
-                .position(|link| link.id == *id && link.value.is_finite() && link.value > 0.0)
-                .map(Hit::Link),
-        };
-        self.inspection.keyboard = self.inspection.hovered.is_some();
-        self.anchor_hovered();
-        self.inspection.hovered.is_some()
-    }
-    pub fn clear_inspection(&mut self) {
-        self.inspection.clear();
-    }
 
     fn content_rect(&self) -> Rect {
-        let x1 = (self.rect.x1 - 18.0 - self.label_reserve).max(self.rect.x0 + 18.0);
+        let x1 = (self.frame.rect.x1 - 18.0 - self.label_reserve).max(self.frame.rect.x0 + 18.0);
         Rect::new(
-            self.rect.x0 + 18.0,
-            self.rect.y0 + if self.title.is_empty() { 18.0 } else { 52.0 },
+            self.frame.rect.x0 + 18.0,
+            self.frame.rect.y0
+                + if self.frame.title.is_empty() {
+                    18.0
+                } else {
+                    52.0
+                },
             x1,
-            self.rect.y1 - 18.0,
+            self.frame.rect.y1 - 18.0,
         )
     }
 
@@ -191,7 +170,7 @@ impl SankeyChart {
             .fold(0.0, f64::max);
         let pad = f64::from(theme.tokens.spacing.s2);
         let reserve = if widest > 0.0 { widest + pad } else { 0.0 };
-        self.label_reserve = reserve.min(self.rect.width() / 3.0).max(0.0);
+        self.label_reserve = reserve.min(self.frame.rect.width() / 3.0).max(0.0);
     }
 
     fn resolved_links(&self) -> Vec<(usize, usize, usize, f64)> {
@@ -412,7 +391,7 @@ impl SankeyChart {
             };
             let column = column_of(node.rect.x0);
             let room = if column == last {
-                self.rect.x1 - node.rect.x1 - 2.0 * pad
+                self.frame.rect.x1 - node.rect.x1 - 2.0 * pad
             } else {
                 gap - 2.0 * pad
             };
@@ -487,22 +466,27 @@ impl SankeyChart {
     }
 }
 
-impl InteractiveChart for SankeyChart {
+impl PlotMarks for SankeyMarks {
     type Hover = Hit;
-    fn inspection(&mut self) -> &mut ChartInspection<Hit> {
-        &mut self.inspection
+    type Activated = SankeySelection;
+    const NAME: &'static str = "SankeyChart";
+    const LABEL: &'static str = "Sankey diagram";
+
+    fn frame(&self) -> &PlotFrame<Hit> {
+        &self.frame
     }
-    fn update_hover(&mut self) {
+    fn frame_mut(&mut self) -> &mut PlotFrame<Hit> {
+        &mut self.frame
+    }
+    fn hit(&self, point: Point) -> Option<Hit> {
         let (nodes, links) = self.geometry();
-        if let Some(node) = nodes.iter().find(|node| {
-            node.rect
-                .inflate(3.0, 3.0)
-                .contains(self.inspection.pointer)
-        }) {
-            self.inspection.hovered = Some(Hit::Node(node.index));
-            return;
+        if let Some(node) = nodes
+            .iter()
+            .find(|node| node.rect.inflate(3.0, 3.0).contains(point))
+        {
+            return Some(Hit::Node(node.index));
         }
-        self.inspection.hovered = links
+        links
             .iter()
             .find(|link| {
                 (0_u32..=20).any(|step| {
@@ -510,17 +494,13 @@ impl InteractiveChart for SankeyChart {
                     let x = link.source.x + (link.target.x - link.source.x) * t;
                     let smooth = t * t * (3.0 - 2.0 * t);
                     let y = link.source.y + (link.target.y - link.source.y) * smooth;
-                    Point::new(x, y).distance(self.inspection.pointer) <= link.thickness / 2.0 + 4.0
+                    Point::new(x, y).distance(point) <= link.thickness / 2.0 + 4.0
                 })
             })
-            .map(|link| Hit::Link(link.index));
+            .map(|link| Hit::Link(link.index))
     }
-    fn activate_hovered(&mut self) -> bool {
-        let Some(hit) = self.inspection.hovered else {
-            return false;
-        };
-        self.activated = self.selection_for(hit);
-        self.activated.is_some()
+    fn activation(&self, &hit: &Hit) -> Option<SankeySelection> {
+        self.selection_for(hit)
     }
     fn keyboard_items(&self) -> Vec<Hit> {
         let (_, links) = self.geometry();
@@ -544,27 +524,32 @@ impl InteractiveChart for SankeyChart {
             }),
         }
     }
-}
-
-impl Widget for SankeyChart {
-    crate::widget::chart_navigation::chart_leaf!();
+    fn items(&self) -> Vec<PlotItem<SankeySelection>> {
+        graph_items(&self.nodes, &self.links, |value| format!("Flow {value}"))
+    }
 
     #[allow(
         clippy::too_many_lines,
         reason = "ribbons, nodes, labels and inspector share one ordered flow paint pass"
     )]
-    fn draw(
+    fn paint(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         self.measure_label_reserve(tr, theme);
         self.follow_keyboard_anchor();
         let (nodes, links) = self.geometry();
-        draw_title(scene, transform, tr, theme, self.rect, &self.title);
+        draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
         for link in &links {
             let Some(spec) = self.links.get(link.index) else {
                 continue;
@@ -577,7 +562,7 @@ impl Widget for SankeyChart {
             let base = spec
                 .color
                 .unwrap_or_else(|| Self::palette(theme, source_index));
-            let alpha = if self.inspection.hovered == Some(Hit::Link(link.index)) {
+            let alpha = if self.frame.inspection.hovered == Some(Hit::Link(link.index)) {
                 self.style.link_alpha.saturating_add(70)
             } else {
                 self.style.link_alpha
@@ -602,7 +587,7 @@ impl Widget for SankeyChart {
                 self.style.node_radius.min(node.rect.width() / 2.0),
             );
             scene.fill(Fill::NonZero, transform, color, None, &shape);
-            if self.inspection.hovered == Some(Hit::Node(node.index)) {
+            if self.frame.inspection.hovered == Some(Hit::Node(node.index)) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -613,7 +598,7 @@ impl Widget for SankeyChart {
             }
         }
         self.draw_node_labels(scene, transform, tr, theme, &nodes);
-        if let Some(hit) = self.inspection.hovered.filter(|_| self.style.tooltip) {
+        if let Some(hit) = self.frame.inspection.hovered.filter(|_| self.style.tooltip) {
             let (title, detail) = match hit {
                 Hit::Node(index) => {
                     let Some(node) = self.nodes.get(index) else {
@@ -661,83 +646,12 @@ impl Widget for SankeyChart {
                 transform,
                 tr,
                 theme,
-                self.inspection.pointer,
-                self.rect,
+                self.frame.inspection.pointer,
+                self.frame.rect,
                 150.0,
                 (&title, &detail),
             );
         }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        handle_chart_event(self, event, ctx);
-    }
-    fn accessibility(&self) -> Option<AccessNode> {
-        let mut children = self
-            .nodes
-            .iter()
-            .map(|node| {
-                AccessNode::new(Role::Button)
-                    .with_action_target(format!("node:{}", node.id))
-                    .with_name(&node.label)
-                    .with_description(&node.detail)
-                    .with_state(AccessState::new().focusable(true))
-            })
-            .collect::<Vec<_>>();
-        children.extend(
-            self.links
-                .iter()
-                .filter(|link| link.value.is_finite() && link.value > 0.0)
-                .map(|link| {
-                    AccessNode::new(Role::Button)
-                        .with_action_target(format!("link:{}", link.id))
-                        .with_name(format!("{} to {}", link.source, link.target))
-                        .with_description(if link.detail.is_empty() {
-                            format!("Flow {}", link.value)
-                        } else {
-                            link.detail.clone()
-                        })
-                        .with_state(AccessState::new().focusable(true))
-                }),
-        );
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name(if self.title.is_empty() {
-                    "Sankey diagram"
-                } else {
-                    &self.title
-                })
-                .with_children(children),
-        )
-    }
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        let Some(key) = crate::widget::chart_navigation::activated_key(action, key_path) else {
-            return false;
-        };
-        for node in &self.nodes {
-            if crate::a11y::hash_key(&format!("node:{}", node.id)) == key {
-                self.activated = Some(SankeySelection::Node(node.id.clone()));
-                return true;
-            }
-        }
-        for link in &self.links {
-            if crate::a11y::hash_key(&format!("link:{}", link.id)) == key {
-                self.activated = Some(SankeySelection::Link(link.id.clone()));
-                return true;
-            }
-        }
-        false
-    }
-    fn name(&self) -> &'static str {
-        "SankeyChart"
-    }
-    fn is_focusable(&self) -> bool {
-        true
     }
 }
 
@@ -770,13 +684,14 @@ mod tests {
     fn node_labels_never_collide_at_any_width() {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        let style = SankeyChart::label_style(&theme);
+        let style = SankeyMarks::label_style(&theme);
         for width in [200.0, 260.0, 360.0, 520.0, 900.0] {
             let mut chart = product_flow();
-            chart.rect = Rect::new(0.0, 0.0, width, 220.0);
-            chart.measure_label_reserve(&mut tr, &theme);
-            let (nodes, _) = chart.geometry();
+            chart.marks.frame.rect = Rect::new(0.0, 0.0, width, 220.0);
+            chart.marks.measure_label_reserve(&mut tr, &theme);
+            let (nodes, _) = chart.marks.geometry();
             let labels: Vec<Rect> = chart
+                .marks
                 .label_layout(&nodes, &mut tr, &theme)
                 .into_iter()
                 .map(|(_, label, origin, _)| {
@@ -786,7 +701,7 @@ mod tests {
                 .collect();
             for (i, a) in labels.iter().enumerate() {
                 assert!(
-                    a.x1 <= chart.rect.x1 + 0.5,
+                    a.x1 <= chart.marks.frame.rect.x1 + 0.5,
                     "{width}: {a:?} leaves the chart"
                 );
                 for b in labels.iter().skip(i + 1) {
@@ -818,6 +733,6 @@ mod tests {
                 ChartLink::new("self", "a", "a", 1.0),
             ],
         );
-        assert!(chart.resolved_links().is_empty());
+        assert!(chart.marks.resolved_links().is_empty());
     }
 }

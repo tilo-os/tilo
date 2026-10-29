@@ -5,27 +5,21 @@
     reason = "bounded radial and Bézier geometry"
 )]
 
-use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, BezPath, Point, Rect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
 use crate::paint::with_alpha;
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::Widget;
-use crate::widget::chart_data::{ChartLink, ChartNode};
+use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, chart_leaf, draw_title, handle_chart_event,
-};
+use crate::widget::chart_navigation::draw_title;
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 fn polar(center: Point, radius: f64, angle: f64) -> Point {
     Point::new(
@@ -66,11 +60,8 @@ impl Default for ChordStyle {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ChordSelection {
-    Node(String),
-    Link(String),
-}
+/// What a chord diagram inspects and reports on activation.
+pub type ChordSelection = crate::widget::chart_data::GraphSelection;
 #[derive(Clone)]
 struct NodeGeom {
     id: String,
@@ -87,81 +78,67 @@ struct LinkGeom {
     color: Color,
 }
 
-pub struct ChordChart {
+pub struct ChordMarks {
     nodes: Vec<ChartNode>,
     links: Vec<ChartLink>,
     style: ChordStyle,
-    title: String,
-    height: f32,
-    rect: Rect,
-    inspection: ChartInspection<ChordSelection>,
+    frame: PlotFrame<ChordSelection>,
     node_geometry: Vec<NodeGeom>,
     link_geometry: Vec<LinkGeom>,
-    activated: Option<ChordSelection>,
     /// The room the arc labels need beside the ring, measured at paint.
     label_room: f64,
 }
+
+/// Weighted links between nodes on a ring, as ribbons across it.
+pub type ChordChart = Plot<ChordMarks>;
+
 impl ChordChart {
     pub fn new(nodes: Vec<ChartNode>, links: Vec<ChartLink>) -> Self {
-        Self {
+        Plot::from_marks(ChordMarks {
             nodes,
             links,
             style: ChordStyle::default(),
-            title: String::new(),
-            height: 360.0,
-            rect: Rect::ZERO,
-            inspection: ChartInspection::default(),
+            frame: PlotFrame::new(360.0, 180.0),
             node_geometry: Vec::new(),
             link_geometry: Vec::new(),
-            activated: None,
             label_room: 0.0,
-        }
+        })
     }
     #[must_use]
     pub fn with_style(mut self, style: ChordStyle) -> Self {
-        self.style = style;
-        self
-    }
-    #[must_use]
-    pub fn titled(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(180.0);
+        self.marks.style = style;
         self
     }
     pub fn set_data(&mut self, nodes: Vec<ChartNode>, links: Vec<ChartLink>) {
-        self.nodes = nodes;
-        self.links = links;
-        self.inspection.hovered = None;
-    }
-    pub fn take_activated(&mut self) -> Option<ChordSelection> {
-        self.activated.take()
+        self.marks.nodes = nodes;
+        self.marks.links = links;
+        self.marks.frame.inspection.hovered = None;
     }
     pub fn inspect(&mut self, selection: &ChordSelection) -> bool {
-        self.inspection.hovered = match selection {
-            ChordSelection::Node(id) => self.nodes.iter().any(|node| node.id == *id),
+        let known = match selection {
+            ChordSelection::Node(id) => self.marks.nodes.iter().any(|node| node.id == *id),
             ChordSelection::Link(id) => self
+                .marks
                 .links
                 .iter()
-                .any(|link| link.id == *id && link.value.is_finite() && link.value > 0.0),
-        }
-        .then(|| selection.clone());
-        self.inspection.keyboard = self.inspection.hovered.is_some();
-        self.inspection.hovered.is_some()
+                .any(|link| link.id == *id && link.flows()),
+        };
+        self.inspect_item(known.then(|| selection.clone()))
     }
-    pub fn clear_inspection(&mut self) {
-        self.inspection.clear();
-    }
+}
+
+impl ChordMarks {
     fn geometry(&self) -> (Point, f64, f64) {
-        let top = if self.title.is_empty() { 10.0 } else { 38.0 };
+        let top = if self.frame.title.is_empty() {
+            10.0
+        } else {
+            38.0
+        };
         let area = Rect::new(
-            self.rect.x0 + 12.0,
-            self.rect.y0 + top,
-            self.rect.x1 - 12.0,
-            self.rect.y1 - 12.0,
+            self.frame.rect.x0 + 12.0,
+            self.frame.rect.y0 + top,
+            self.frame.rect.x1 - 12.0,
+            self.frame.rect.y1 - 12.0,
         );
         // The ring leaves the labels their measured room at the sides and a
         // line above and below.
@@ -193,7 +170,7 @@ impl ChordChart {
             .map(|node| f64::from(tr.measure_style(&node.label, None, &style).0))
             .fold(0.0, f64::max);
         let pad = f64::from(theme.tokens.spacing.s2);
-        self.label_room = (widest + 2.0 * pad).min(self.rect.width() / 4.0);
+        self.label_room = (widest + 2.0 * pad).min(self.frame.rect.width() / 4.0);
     }
 
     /// Each arc's label outside its arc, largest arc first: shortened to the
@@ -207,7 +184,7 @@ impl ChordChart {
         outer: f64,
     ) -> Vec<(String, Rect)> {
         let style = theme.text(TextRole::Caption);
-        let mut placer = crate::widget::chart_labels::LabelPlacer::new(self.rect, theme);
+        let mut placer = crate::widget::chart_labels::LabelPlacer::new(self.frame.rect, theme);
         let radius = outer
             + self
                 .style
@@ -228,7 +205,8 @@ impl ChordChart {
                 label.to_owned()
             };
             let mid = geom.start.midpoint(geom.end);
-            let room = crate::widget::chart_labels::radial_room(center, radius, mid, self.rect);
+            let room =
+                crate::widget::chart_labels::radial_room(center, radius, mid, self.frame.rect);
             let Some((shown, w, h)) =
                 crate::widget::chart_labels::fit_label(tr, &label, room, &style)
             else {
@@ -263,7 +241,7 @@ impl ChordChart {
             );
         }
     }
-    fn hit(&self, point: Point) -> Option<ChordSelection> {
+    fn hit_mark(&self, point: Point) -> Option<ChordSelection> {
         self.node_geometry
             .iter()
             .find(|g| g.path.winding(point) != 0)
@@ -306,20 +284,23 @@ fn ribbon(center: Point, radius: f64, a0: f64, a1: f64, b0: f64, b1: f64) -> Bez
     p
 }
 
-impl InteractiveChart for ChordChart {
+impl PlotMarks for ChordMarks {
     type Hover = ChordSelection;
-    fn inspection(&mut self) -> &mut ChartInspection<ChordSelection> {
-        &mut self.inspection
+    type Activated = ChordSelection;
+    const NAME: &'static str = "ChordChart";
+    const LABEL: &'static str = "Chord diagram";
+
+    fn frame(&self) -> &PlotFrame<ChordSelection> {
+        &self.frame
     }
-    fn update_hover(&mut self) {
-        self.inspection.hovered = self.hit(self.inspection.pointer);
+    fn frame_mut(&mut self) -> &mut PlotFrame<ChordSelection> {
+        &mut self.frame
     }
-    fn activate_hovered(&mut self) -> bool {
-        let Some(selection) = self.inspection.hovered.clone() else {
-            return false;
-        };
-        self.activated = Some(selection);
-        true
+    fn hit(&self, point: Point) -> Option<ChordSelection> {
+        self.hit_mark(point)
+    }
+    fn activation(&self, selection: &ChordSelection) -> Option<ChordSelection> {
+        Some(selection.clone())
     }
     fn keyboard_items(&self) -> Vec<ChordSelection> {
         self.nodes
@@ -328,7 +309,7 @@ impl InteractiveChart for ChordChart {
             .chain(
                 self.links
                     .iter()
-                    .filter(|link| link.value.is_finite() && link.value > 0.0)
+                    .filter(|link| link.flows())
                     .map(|link| ChordSelection::Link(link.id.clone())),
             )
             .collect()
@@ -346,24 +327,30 @@ impl InteractiveChart for ChordChart {
             ChordSelection::Link(_) => center,
         })
     }
-}
+    fn items(&self) -> Vec<PlotItem<ChordSelection>> {
+        graph_items(&self.nodes, &self.links, format_compact)
+    }
 
-impl Widget for ChordChart {
-    chart_leaf!();
     #[allow(
         clippy::too_many_lines,
         reason = "weighted allocation, ribbons, arcs, labels and inspector share chord geometry"
     )]
-    fn draw(
+    fn paint(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         self.measure_label_room(tr, theme);
-        draw_title(scene, transform, tr, theme, self.rect, &self.title);
+        draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
         let (center, inner, outer) = self.geometry();
         let index = self
             .nodes
@@ -462,8 +449,8 @@ impl Widget for ChordChart {
             });
         }
         for geom in &self.link_geometry {
-            let hovered =
-                self.inspection.hovered.as_ref() == Some(&ChordSelection::Link(geom.id.clone()));
+            let hovered = self.frame.inspection.hovered.as_ref()
+                == Some(&ChordSelection::Link(geom.id.clone()));
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -480,8 +467,8 @@ impl Widget for ChordChart {
             );
         }
         for geom in &self.node_geometry {
-            let hovered =
-                self.inspection.hovered.as_ref() == Some(&ChordSelection::Node(geom.id.clone()));
+            let hovered = self.frame.inspection.hovered.as_ref()
+                == Some(&ChordSelection::Node(geom.id.clone()));
             scene.fill(Fill::NonZero, transform, geom.color, None, &geom.path);
             if hovered {
                 scene.stroke(
@@ -498,6 +485,7 @@ impl Widget for ChordChart {
         }
         self.follow_keyboard_anchor();
         if let Some(selection) = self
+            .frame
             .inspection
             .hovered
             .as_ref()
@@ -534,86 +522,20 @@ impl Widget for ChordChart {
                 transform,
                 tr,
                 theme,
-                self.inspection.pointer,
-                self.rect,
+                self.frame.inspection.pointer,
+                self.frame.rect,
                 150.0,
                 (&label, &detail),
             );
         }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        handle_chart_event(self, event, ctx);
-    }
-    fn accessibility(&self) -> Option<AccessNode> {
-        let mut root = AccessNode::new(Role::Group).with_name(if self.title.is_empty() {
-            "Chord diagram"
-        } else {
-            &self.title
-        });
-        root.children = self
-            .nodes
-            .iter()
-            .map(|n| {
-                AccessNode::new(Role::Button)
-                    .with_action_target(format!("node:{}", n.id))
-                    .with_name(&n.label)
-                    .with_description(&n.detail)
-                    .with_state(AccessState::new().focusable(true))
-            })
-            .chain(
-                self.links
-                    .iter()
-                    .filter(|l| l.value.is_finite() && l.value > 0.0)
-                    .map(|l| {
-                        AccessNode::new(Role::Button)
-                            .with_action_target(format!("link:{}", l.id))
-                            .with_name(format!("{} to {}", l.source, l.target))
-                            .with_description(if l.detail.is_empty() {
-                                format_compact(l.value)
-                            } else {
-                                l.detail.clone()
-                            })
-                            .with_state(AccessState::new().focusable(true))
-                    }),
-            )
-            .collect();
-        Some(root)
-    }
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        keys: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        let Some(key) = crate::widget::chart_navigation::activated_key(action, keys) else {
-            return false;
-        };
-        for node in &self.nodes {
-            if crate::a11y::hash_key(&format!("node:{}", node.id)) == key {
-                self.activated = Some(ChordSelection::Node(node.id.clone()));
-                return true;
-            }
-        }
-        for link in &self.links {
-            if crate::a11y::hash_key(&format!("link:{}", link.id)) == key {
-                self.activated = Some(ChordSelection::Link(link.id.clone()));
-                return true;
-            }
-        }
-        false
-    }
-    fn name(&self) -> &'static str {
-        "ChordChart"
-    }
-    fn is_focusable(&self) -> bool {
-        true
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presence::PresenceCtx;
+    use crate::widget::Widget;
 
     #[test]
     fn arc_labels_stay_off_the_ring_and_off_each_other() {
@@ -634,7 +556,7 @@ mod tests {
                     ChartLink::new("s-d", "Sales", "Design", 21.0),
                 ],
             );
-            chart.rect = Rect::new(0.0, 0.0, w, h);
+            chart.marks.frame.rect = Rect::new(0.0, 0.0, w, h);
             let mut scene = Scene::new();
             chart.draw(
                 &mut scene,
@@ -643,8 +565,8 @@ mod tests {
                 &theme,
                 &PresenceCtx::default(),
             );
-            let (center, _, outer) = chart.geometry();
-            let labels = chart.label_layout(&mut tr, &theme, center, outer);
+            let (center, _, outer) = chart.marks.geometry();
+            let labels = chart.marks.label_layout(&mut tr, &theme, center, outer);
             assert!(!labels.is_empty(), "{w}: some arcs are named");
             for (i, (_, a)) in labels.iter().enumerate() {
                 let nearest = Point::new(center.x.clamp(a.x0, a.x1), center.y.clamp(a.y0, a.y1));
@@ -653,7 +575,8 @@ mod tests {
                     "{w}: {a:?} covers the ring"
                 );
                 assert!(
-                    a.x0 >= chart.rect.x0 - 0.5 && a.x1 <= chart.rect.x1 + 0.5,
+                    a.x0 >= chart.marks.frame.rect.x0 - 0.5
+                        && a.x1 <= chart.marks.frame.rect.x1 + 0.5,
                     "{w}: {a:?} leaves the chart"
                 );
                 for (_, b) in labels.iter().skip(i + 1) {

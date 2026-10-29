@@ -40,6 +40,25 @@ encodes magnitude; its `radius_exponent` supports perceptual area scaling.
 `ChordChart` automatically allocates weighted node arcs and connection ribbons;
 both are independently hoverable, clickable, and accessible.
 
+## One plot widget
+
+Every chart type except `CartesianPlot` and the trend `Chart`/`Sparkline`
+is the same widget, `Plot`, over that type's marks: `Heatmap` is
+`Plot<HeatmapMarks>`, `SankeyChart` is `Plot<SankeyMarks>`, and so on. Each
+type keeps its own constructor and style, and they all share one builder
+surface and one behaviour:
+
+| Builder | Does |
+|---|---|
+| `titled(title)` | Paints a heading and names the chart for screen readers |
+| `with_height(height)` | Fixes the height (each type has a floor) |
+| `inspect(..)` / `clear_inspection()` | Drives the inspected mark from the app |
+| `take_activated()` | The mark a click, tap, Enter or screen reader activated |
+| `set_series_visible(..)`, `toggle_series(..)`, `is_series_visible(..)`, `take_visibility_changed()` | Series visibility, for charts with series |
+
+Hover, touch, keyboard stepping, focus, activation, legend toggles and the
+accessibility tree live in `Plot`, so they behave the same in every type.
+
 ## Interactive gallery
 
 The catalogue is executable example code rather than a static mockup. It

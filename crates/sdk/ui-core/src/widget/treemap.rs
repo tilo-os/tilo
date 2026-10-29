@@ -5,24 +5,18 @@
     reason = "treemap partitioning is bounded floating-point geometry"
 )]
 
-use crate::widget::ModelPath;
 use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
-};
+use crate::widget::chart_navigation::draw_title;
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct TreemapStyle {
@@ -53,73 +47,50 @@ struct Tile {
     rect: Rect,
 }
 
-pub struct Treemap {
+pub struct TreemapMarks {
     items: Vec<ChartItem>,
     style: TreemapStyle,
-    title: String,
-    height: f32,
-    rect: Rect,
-    inspection: ChartInspection<usize>,
-    activated: Option<String>,
+    frame: PlotFrame<usize>,
 }
+
+/// Nested rectangles whose areas show each item's share.
+pub type Treemap = Plot<TreemapMarks>;
 
 impl Treemap {
     pub fn new(items: Vec<ChartItem>) -> Self {
-        Self {
+        Plot::from_marks(TreemapMarks {
             items,
             style: TreemapStyle::default(),
-            title: String::new(),
-            height: 360.0,
-            rect: Rect::ZERO,
-            inspection: ChartInspection::default(),
-            activated: None,
-        }
+            frame: PlotFrame::new(360.0, 100.0),
+        })
     }
     #[must_use]
     pub fn with_style(mut self, style: TreemapStyle) -> Self {
-        self.style = style;
-        self
-    }
-    #[must_use]
-    pub fn titled(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(100.0);
+        self.marks.style = style;
         self
     }
     pub fn set_items(&mut self, items: Vec<ChartItem>) {
-        self.items = items;
-        self.inspection.hovered = None;
-    }
-    pub fn take_activated(&mut self) -> Option<String> {
-        self.activated.take()
+        self.marks.items = items;
+        self.marks.frame.inspection.hovered = None;
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.inspection.hovered = self.items.iter().position(|item| item.id == id);
-        self.inspection.keyboard = self.inspection.hovered.is_some();
-        if let Some(rect) = self
-            .layout()
-            .into_iter()
-            .find(|tile| Some(tile.index) == self.inspection.hovered)
-            .map(|tile| self.tile_rect(tile))
-        {
-            self.inspection.pointer = rect.center();
-        }
-        self.inspection.hovered.is_some()
+        let item = self.marks.items.iter().position(|item| item.id == id);
+        self.inspect_item(item)
     }
-    pub fn clear_inspection(&mut self) {
-        self.inspection.clear();
-    }
+}
 
+impl TreemapMarks {
     fn content_rect(&self) -> Rect {
         Rect::new(
-            self.rect.x0 + 10.0,
-            self.rect.y0 + if self.title.is_empty() { 10.0 } else { 46.0 },
-            self.rect.x1 - 10.0,
-            self.rect.y1 - 10.0,
+            self.frame.rect.x0 + 10.0,
+            self.frame.rect.y0
+                + if self.frame.title.is_empty() {
+                    10.0
+                } else {
+                    46.0
+                },
+            self.frame.rect.x1 - 10.0,
+            self.frame.rect.y1 - 10.0,
         )
     }
 
@@ -234,28 +205,26 @@ impl SafeRect for Rect {
     }
 }
 
-impl InteractiveChart for Treemap {
+impl PlotMarks for TreemapMarks {
     type Hover = usize;
-    fn inspection(&mut self) -> &mut ChartInspection<usize> {
-        &mut self.inspection
+    type Activated = String;
+    const NAME: &'static str = "Treemap";
+    const LABEL: &'static str = "Treemap";
+
+    fn frame(&self) -> &PlotFrame<usize> {
+        &self.frame
     }
-    fn update_hover(&mut self) {
-        self.inspection.hovered = self
-            .layout()
+    fn frame_mut(&mut self) -> &mut PlotFrame<usize> {
+        &mut self.frame
+    }
+    fn hit(&self, point: Point) -> Option<usize> {
+        self.layout()
             .into_iter()
-            .find(|tile| self.tile_rect(*tile).contains(self.inspection.pointer))
-            .map(|tile| tile.index);
+            .find(|tile| self.tile_rect(*tile).contains(point))
+            .map(|tile| tile.index)
     }
-    fn activate_hovered(&mut self) -> bool {
-        let Some(item) = self
-            .inspection
-            .hovered
-            .and_then(|index| self.items.get(index))
-        else {
-            return false;
-        };
-        self.activated = Some(item.id.clone());
-        true
+    fn activation(&self, &index: &usize) -> Option<String> {
+        Some(self.items.get(index)?.id.clone())
     }
     fn keyboard_items(&self) -> Vec<usize> {
         self.valid_items()
@@ -266,21 +235,32 @@ impl InteractiveChart for Treemap {
             .find(|tile| tile.index == index)
             .map(|tile| self.tile_rect(tile).center())
     }
-}
+    fn items(&self) -> Vec<PlotItem<String>> {
+        self.valid_items()
+            .into_iter()
+            .filter_map(|index| self.items.get(index))
+            .map(|item| {
+                crate::widget::plot::value_item(&item.id, &item.label, &item.detail, item.value)
+            })
+            .collect()
+    }
 
-impl Widget for Treemap {
-    crate::widget::chart_navigation::chart_leaf!();
-
-    fn draw(
+    fn paint(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         self.follow_keyboard_anchor();
-        draw_title(scene, transform, tr, theme, self.rect, &self.title);
+        draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
         for tile in self.layout() {
             let Some(item) = self.items.get(tile.index) else {
                 continue;
@@ -294,7 +274,7 @@ impl Widget for Treemap {
                 .unwrap_or_else(|| Self::palette(theme, tile.index));
             let shape = RoundedRect::from_rect(rect, self.style.corner_radius);
             scene.fill(Fill::NonZero, transform, color, None, &shape);
-            if self.inspection.hovered == Some(tile.index) {
+            if self.frame.inspection.hovered == Some(tile.index) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -332,7 +312,7 @@ impl Widget for Treemap {
                 }
             }
         }
-        if let Some(index) = self.inspection.hovered.filter(|_| self.style.tooltip)
+        if let Some(index) = self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let Some(item) = self.items.get(index)
         {
             let detail = if item.detail.is_empty() {
@@ -345,62 +325,12 @@ impl Widget for Treemap {
                 transform,
                 tr,
                 theme,
-                self.inspection.pointer,
-                self.rect,
+                self.frame.inspection.pointer,
+                self.frame.rect,
                 130.0,
                 (&item.label, &detail),
             );
         }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        handle_chart_event(self, event, ctx);
-    }
-    fn accessibility(&self) -> Option<AccessNode> {
-        let children = self
-            .valid_items()
-            .into_iter()
-            .filter_map(|index| self.items.get(index))
-            .map(|item| {
-                AccessNode::new(Role::Button)
-                    .with_action_target(&item.id)
-                    .with_name(&item.label)
-                    .with_description(if item.detail.is_empty() {
-                        format!("Value {}", item.value)
-                    } else {
-                        item.detail.clone()
-                    })
-                    .with_state(AccessState::new().focusable(true))
-            })
-            .collect();
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name(if self.title.is_empty() {
-                    "Treemap"
-                } else {
-                    &self.title
-                })
-                .with_children(children),
-        )
-    }
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        crate::widget::chart_navigation::activate(
-            &mut self.activated,
-            action,
-            key_path,
-            self.items.iter().map(|item| &item.id),
-        )
-    }
-    fn name(&self) -> &'static str {
-        "Treemap"
-    }
-    fn is_focusable(&self) -> bool {
-        true
     }
 }
 
@@ -415,8 +345,8 @@ mod tests {
                 ChartItem::new("b", "B", 2.0),
                 ChartItem::new("c", "C", 1.0),
             ]);
-            map.rect = Rect::new(0.0, 0.0, 600.0, 300.0);
-            assert_eq!(map.layout().len(), 3);
+            map.marks.frame.rect = Rect::new(0.0, 0.0, 600.0, 300.0);
+            assert_eq!(map.marks.layout().len(), 3);
         }
 
         {
@@ -424,7 +354,7 @@ mod tests {
                 ChartItem::new("a", "A", f64::NAN),
                 ChartItem::new("b", "B", -2.0),
             ]);
-            assert!(map.valid_items().is_empty());
+            assert!(map.marks.valid_items().is_empty());
         }
     }
 }

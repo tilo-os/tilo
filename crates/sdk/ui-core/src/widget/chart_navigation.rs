@@ -194,24 +194,6 @@ pub(crate) fn activated_key(action: &crate::a11y::Action, keys: &[u64]) -> Optio
     }
 }
 
-/// Record in `activated` the id among `ids` whose accessibility key an
-/// `Activate` at `keys` targets; whether one did.
-pub(crate) fn activate<I: std::hash::Hash + AsRef<str>>(
-    activated: &mut Option<String>,
-    action: &crate::a11y::Action,
-    keys: &[u64],
-    ids: impl IntoIterator<Item = I>,
-) -> bool {
-    let Some(key) = activated_key(action, keys) else {
-        return false;
-    };
-    let Some(id) = ids.into_iter().find(|id| crate::a11y::hash_key(id) == key) else {
-        return false;
-    };
-    *activated = Some(id.as_ref().to_owned());
-    true
-}
-
 /// The pointer, hovered item and keyboard/touch state an interactive chart
 /// keeps between events.
 #[derive(Clone, Debug)]
@@ -261,13 +243,6 @@ pub(crate) trait InteractiveChart {
         };
         if let Some(anchor) = self.anchor(&item) {
             self.inspection().pointer = anchor;
-        }
-    }
-    /// Keeps the pointer on an item the keyboard chose while the chart's
-    /// geometry changes under it; call before painting.
-    fn follow_keyboard_anchor(&mut self) {
-        if self.inspection().keyboard {
-            self.anchor_hovered();
         }
     }
     /// Hovers whatever lies under the pointer.

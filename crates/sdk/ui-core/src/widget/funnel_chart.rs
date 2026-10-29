@@ -3,23 +3,17 @@
     reason = "funnel projection is bounded floating-point geometry"
 )]
 
-use crate::widget::ModelPath;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::Widget;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
-};
+use crate::widget::chart_navigation::draw_title;
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunnelDirection {
@@ -67,73 +61,51 @@ struct StageGeometry {
     conversion: f64,
 }
 
-pub struct FunnelChart {
+pub struct FunnelMarks {
     stages: Vec<ChartItem>,
     style: FunnelStyle,
-    title: String,
-    height: f32,
-    rect: Rect,
-    inspection: ChartInspection<usize>,
-    activated: Option<String>,
+    frame: PlotFrame<usize>,
 }
+
+/// Stages narrowing (funnel) or widening (pyramid) by value.
+pub type FunnelChart = Plot<FunnelMarks>;
 
 impl FunnelChart {
     pub fn new(stages: Vec<ChartItem>) -> Self {
-        Self {
+        Plot::from_marks(FunnelMarks {
             stages,
             style: FunnelStyle::default(),
-            title: String::new(),
-            height: 380.0,
-            rect: Rect::ZERO,
-            inspection: ChartInspection::default(),
-            activated: None,
-        }
+            frame: PlotFrame::new(380.0, 150.0),
+        })
     }
     #[must_use]
     pub fn with_style(mut self, style: FunnelStyle) -> Self {
-        self.style = style;
+        self.marks.style = style;
         self
     }
     #[must_use]
     pub fn direction(mut self, direction: FunnelDirection) -> Self {
-        self.style.direction = direction;
+        self.marks.style.direction = direction;
         self
-    }
-    #[must_use]
-    pub fn titled(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(150.0);
-        self
-    }
-    pub fn take_activated(&mut self) -> Option<String> {
-        self.activated.take()
     }
     pub fn inspect(&mut self, id: &str) -> bool {
-        self.inspection.hovered = self.stages.iter().position(|stage| stage.id == id);
-        self.inspection.keyboard = self.inspection.hovered.is_some();
-        if let Some(bounds) = self
-            .geometry()
-            .into_iter()
-            .find(|stage| Some(stage.index) == self.inspection.hovered)
-            .map(|stage| stage.bounds)
-        {
-            self.inspection.pointer = bounds.center();
-        }
-        self.inspection.hovered.is_some()
+        let stage = self.marks.stages.iter().position(|stage| stage.id == id);
+        self.inspect_item(stage)
     }
-    pub fn clear_inspection(&mut self) {
-        self.inspection.clear();
-    }
+}
+
+impl FunnelMarks {
     fn content_rect(&self) -> Rect {
         Rect::new(
-            self.rect.x0 + 90.0,
-            self.rect.y0 + if self.title.is_empty() { 14.0 } else { 48.0 },
-            self.rect.x1 - 90.0,
-            self.rect.y1 - 14.0,
+            self.frame.rect.x0 + 90.0,
+            self.frame.rect.y0
+                + if self.frame.title.is_empty() {
+                    14.0
+                } else {
+                    48.0
+                },
+            self.frame.rect.x1 - 90.0,
+            self.frame.rect.y1 - 14.0,
         )
     }
     fn valid(&self) -> Vec<usize> {
@@ -291,7 +263,7 @@ impl FunnelChart {
         }
         // Beside the stage, trailing-aligned to its leading edge at its middle.
         let edge = bounds.center().x - narrow.max(geometry.wide_width) / 2.0;
-        let room = edge - pad - self.rect.x0 - pad;
+        let room = edge - pad - self.frame.rect.x0 - pad;
         let Some((name, w, _)) =
             crate::widget::chart_labels::fit_label(tr, &stage.label, room, &name_style)
         else {
@@ -326,28 +298,33 @@ impl FunnelChart {
     }
 }
 
-impl InteractiveChart for FunnelChart {
+impl PlotMarks for FunnelMarks {
     type Hover = usize;
-    fn inspection(&mut self) -> &mut ChartInspection<usize> {
-        &mut self.inspection
+    type Activated = String;
+    const NAME: &'static str = "FunnelChart";
+    const LABEL: &'static str = "Funnel chart";
+
+    fn frame(&self) -> &PlotFrame<usize> {
+        &self.frame
     }
-    fn update_hover(&mut self) {
-        self.inspection.hovered = self
-            .geometry()
+    fn frame_mut(&mut self) -> &mut PlotFrame<usize> {
+        &mut self.frame
+    }
+    fn label(&self) -> &'static str {
+        if self.style.direction == FunnelDirection::Funnel {
+            Self::LABEL
+        } else {
+            "Pyramid chart"
+        }
+    }
+    fn hit(&self, point: Point) -> Option<usize> {
+        self.geometry()
             .into_iter()
-            .find(|stage| stage.bounds.contains(self.inspection.pointer))
-            .map(|stage| stage.index);
+            .find(|stage| stage.bounds.contains(point))
+            .map(|stage| stage.index)
     }
-    fn activate_hovered(&mut self) -> bool {
-        let Some(stage) = self
-            .inspection
-            .hovered
-            .and_then(|index| self.stages.get(index))
-        else {
-            return false;
-        };
-        self.activated = Some(stage.id.clone());
-        true
+    fn activation(&self, &index: &usize) -> Option<String> {
+        Some(self.stages.get(index)?.id.clone())
     }
     fn keyboard_items(&self) -> Vec<usize> {
         self.valid()
@@ -358,21 +335,32 @@ impl InteractiveChart for FunnelChart {
             .find(|stage| stage.index == index)
             .map(|stage| stage.bounds.center())
     }
-}
+    fn items(&self) -> Vec<PlotItem<String>> {
+        self.valid()
+            .into_iter()
+            .filter_map(|index| self.stages.get(index))
+            .map(|stage| {
+                crate::widget::plot::value_item(&stage.id, &stage.label, &stage.detail, stage.value)
+            })
+            .collect()
+    }
 
-impl Widget for FunnelChart {
-    crate::widget::chart_navigation::chart_leaf!();
-
-    fn draw(
+    fn paint(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         self.follow_keyboard_anchor();
-        draw_title(scene, transform, tr, theme, self.rect, &self.title);
+        draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
         for geometry in self.geometry() {
             let Some(stage) = self.stages.get(geometry.index) else {
                 continue;
@@ -381,7 +369,7 @@ impl Widget for FunnelChart {
                 .color
                 .unwrap_or_else(|| Self::palette(theme, geometry.index));
             scene.fill(Fill::NonZero, transform, color, None, &geometry.path);
-            if self.inspection.hovered == Some(geometry.index) {
+            if self.frame.inspection.hovered == Some(geometry.index) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -404,7 +392,7 @@ impl Widget for FunnelChart {
                 );
             }
         }
-        if let Some(index) = self.inspection.hovered.filter(|_| self.style.tooltip)
+        if let Some(index) = self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let Some(stage) = self.stages.get(index)
         {
             let detail = if stage.detail.is_empty() {
@@ -417,62 +405,12 @@ impl Widget for FunnelChart {
                 transform,
                 tr,
                 theme,
-                self.inspection.pointer,
-                self.rect,
+                self.frame.inspection.pointer,
+                self.frame.rect,
                 140.0,
                 (&stage.label, &detail),
             );
         }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        handle_chart_event(self, event, ctx);
-    }
-    fn accessibility(&self) -> Option<AccessNode> {
-        let children = self
-            .valid()
-            .into_iter()
-            .filter_map(|index| self.stages.get(index))
-            .map(|stage| {
-                AccessNode::new(Role::Button)
-                    .with_action_target(&stage.id)
-                    .with_name(&stage.label)
-                    .with_description(if stage.detail.is_empty() {
-                        format!("Value {}", stage.value)
-                    } else {
-                        stage.detail.clone()
-                    })
-                    .with_state(AccessState::new().focusable(true))
-            })
-            .collect();
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name(if self.style.direction == FunnelDirection::Funnel {
-                    "Funnel chart"
-                } else {
-                    "Pyramid chart"
-                })
-                .with_children(children),
-        )
-    }
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        crate::widget::chart_navigation::activate(
-            &mut self.activated,
-            action,
-            key_path,
-            self.stages.iter().map(|stage| &stage.id),
-        )
-    }
-    fn name(&self) -> &'static str {
-        "FunnelChart"
-    }
-    fn is_focusable(&self) -> bool {
-        true
     }
 }
 
@@ -485,6 +423,6 @@ mod tests {
             ChartItem::new("bad", "Bad", f64::NAN),
             ChartItem::new("zero", "Zero", 0.0),
         ]);
-        assert!(chart.valid().is_empty());
+        assert!(chart.marks.valid().is_empty());
     }
 }

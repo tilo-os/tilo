@@ -3453,13 +3453,15 @@ pub use chart::{
 };
 pub(crate) mod chart_data;
 pub(crate) mod chart_labels;
-pub use chart_data::{ChartItem, ChartLink, ChartNode};
+pub use chart_data::{ChartItem, ChartLink, ChartNode, GraphSelection};
 pub mod chart_legend;
 pub mod chart_navigation;
 pub use chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action,
     moved_index as move_chart_index, moved_item as move_chart_item,
 };
+pub mod plot;
+pub use plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 pub mod cartesian_plot;
 pub use cartesian_plot::{
     AxisLabelFormat, AxisRange, AxisScale, AxisTick, CartesianAnimationStyle, CartesianAnnotation,

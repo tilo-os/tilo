@@ -5,23 +5,17 @@
     reason = "categorical projection is bounded floating-point geometry"
 )]
 
-use crate::widget::ModelPath;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, RoundedRectRadii, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, RoundedRectRadii, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::Widget;
 use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_value};
 use crate::widget::chart_legend;
-use crate::widget::chart_navigation::{
-    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
-};
+use crate::widget::chart_navigation::draw_title;
+use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct Category {
@@ -180,124 +174,78 @@ struct Bar {
     display_value: f64,
 }
 
-pub struct CategoryChart {
+pub struct CategoryMarks {
     categories: Vec<Category>,
     series: Vec<CategorySeries>,
     style: CategoryChartStyle,
-    title: String,
-    height: f32,
-    rect: Rect,
-    inspection: ChartInspection<(usize, usize)>,
-    activated: Option<(String, String)>,
+    frame: PlotFrame<(usize, usize)>,
     toggles: chart_legend::SeriesToggles,
 }
 
+/// Values per category as grouped, stacked, percent or waterfall bars.
+pub type CategoryChart = Plot<CategoryMarks>;
+
 impl CategoryChart {
     pub fn new(categories: Vec<Category>, series: Vec<CategorySeries>) -> Self {
-        Self {
+        Plot::from_marks(CategoryMarks {
             categories,
             series,
             style: CategoryChartStyle::default(),
-            title: String::new(),
-            height: 340.0,
-            rect: Rect::ZERO,
-            inspection: ChartInspection::default(),
-            activated: None,
+            frame: PlotFrame::new(340.0, 120.0),
             toggles: chart_legend::SeriesToggles::default(),
-        }
+        })
     }
     #[must_use]
     pub fn with_style(mut self, style: CategoryChartStyle) -> Self {
-        self.style = style;
+        self.marks.style = style;
         self
     }
     #[must_use]
     pub fn layout(mut self, layout: CategoryLayout) -> Self {
-        self.style.layout = layout;
-        self
-    }
-    #[must_use]
-    pub fn titled(mut self, title: impl Into<String>) -> Self {
-        self.title = title.into();
-        self
-    }
-    #[must_use]
-    pub fn with_height(mut self, height: f32) -> Self {
-        self.height = height.max(120.0);
+        self.marks.style.layout = layout;
         self
     }
     pub fn set_data(&mut self, categories: Vec<Category>, series: Vec<CategorySeries>) {
-        self.categories = categories;
-        self.series = series;
-        self.toggles
-            .retain(|id| self.series.iter().any(|series| series.id == id));
-        self.inspection.hovered = None;
-    }
-    pub fn is_series_visible(&self, id: &str) -> bool {
-        self.series.iter().any(|series| series.id == id) && !self.toggles.is_hidden(id)
-    }
-    pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
-        if !self.series.iter().any(|series| series.id == id) {
-            return false;
-        }
-        let changed = self.toggles.set(id, visible);
-        if changed {
-            if self
-                .inspection
-                .hovered
-                .and_then(|(_, index)| self.series.get(index))
-                .is_some_and(|series| series.id == id)
-            {
-                self.inspection.hovered = None;
-            }
-        }
-        changed
-    }
-    pub fn toggle_series(&mut self, id: &str) -> bool {
-        self.set_series_visible(id, !self.is_series_visible(id))
-    }
-    pub fn take_visibility_changed(&mut self) -> Option<(String, bool)> {
-        self.toggles.take_changed()
-    }
-    pub fn take_activated(&mut self) -> Option<(String, String)> {
-        self.activated.take()
+        let marks = &mut self.marks;
+        marks.categories = categories;
+        marks.series = series;
+        marks
+            .toggles
+            .retain(|id| marks.series.iter().any(|series| series.id == id));
+        marks.frame.inspection.hovered = None;
     }
     pub fn inspect(&mut self, series_id: &str, category_id: &str) -> bool {
-        self.inspection.hovered = self.series.iter().enumerate().find_map(|(series, values)| {
-            (!self.toggles.is_hidden(&values.id) && values.id == series_id)
-                .then(|| {
-                    self.categories
-                        .iter()
-                        .enumerate()
-                        .find(|(category, item)| {
-                            item.id == category_id && self.value(series, *category).is_some()
-                        })
-                        .map(|(category, _)| (category, series))
-                })
-                .flatten()
-        });
-        self.inspection.keyboard = self.inspection.hovered.is_some();
-        if let Some((category, series)) = self.inspection.hovered
-            && let Some(bar) = self
-                .bars()
-                .into_iter()
-                .find(|bar| bar.category == category && bar.series == series)
-        {
-            self.inspection.pointer = bar.rect.center();
-        }
-        self.inspection.hovered.is_some()
+        let marks = &self.marks;
+        let hovered = marks
+            .series
+            .iter()
+            .enumerate()
+            .find_map(|(series, values)| {
+                (!marks.toggles.is_hidden(&values.id) && values.id == series_id)
+                    .then(|| {
+                        marks
+                            .categories
+                            .iter()
+                            .enumerate()
+                            .find(|(category, item)| {
+                                item.id == category_id && marks.value(series, *category).is_some()
+                            })
+                            .map(|(category, _)| (category, series))
+                    })
+                    .flatten()
+            });
+        self.inspect_item(hovered)
     }
-    pub fn clear_inspection(&mut self) {
-        self.inspection.clear();
-    }
+}
 
+impl CategoryMarks {
     fn plot_rect(&self) -> Rect {
         let legend_rows =
             if self.style.show_legend && self.style.layout != CategoryLayout::Waterfall {
                 chart_legend::rows(
                     self.series.iter().map(|series| series.name.as_str()),
-                    self.rect.x0 + 58.0,
-                    self.rect.x1 - 12.0,
+                    self.frame.rect.x0 + 58.0,
+                    self.frame.rect.x1 - 12.0,
                 )
             } else {
                 0
@@ -305,10 +253,16 @@ impl CategoryChart {
         let extra_legend_height =
             crate::num::f64_of_usize(legend_rows.saturating_sub(1)) * chart_legend::ROW_HEIGHT;
         Rect::new(
-            self.rect.x0 + 58.0,
-            self.rect.y0 + if self.title.is_empty() { 38.0 } else { 66.0 } + extra_legend_height,
-            self.rect.x1 - 12.0,
-            self.rect.y1 - 42.0,
+            self.frame.rect.x0 + 58.0,
+            self.frame.rect.y0
+                + if self.frame.title.is_empty() {
+                    38.0
+                } else {
+                    66.0
+                }
+                + extra_legend_height,
+            self.frame.rect.x1 - 12.0,
+            self.frame.rect.y1 - 42.0,
         )
     }
 
@@ -544,7 +498,7 @@ fn label_stride(needed: f64, room: f64) -> usize {
     crate::num::usize_of_f64((needed / room).ceil()).max(1)
 }
 
-impl CategoryChart {
+impl CategoryMarks {
     /// The corners of `bar`: a stack is one bar, rounded only at its ends.
     fn radii(&self, bars: &[Bar], bar: Bar) -> RoundedRectRadii {
         let radius = self.style.corner_radius.min(bar.rect.width() / 3.0);
@@ -616,30 +570,29 @@ mod range_tests {
     }
 }
 
-impl InteractiveChart for CategoryChart {
+impl PlotMarks for CategoryMarks {
     type Hover = (usize, usize);
-    fn inspection(&mut self) -> &mut ChartInspection<(usize, usize)> {
-        &mut self.inspection
+    type Activated = (String, String);
+    const NAME: &'static str = "CategoryChart";
+    const LABEL: &'static str = "Category chart";
+
+    fn frame(&self) -> &PlotFrame<(usize, usize)> {
+        &self.frame
     }
-    fn update_hover(&mut self) {
-        self.inspection.hovered = self
-            .bars()
+    fn frame_mut(&mut self) -> &mut PlotFrame<(usize, usize)> {
+        &mut self.frame
+    }
+    fn hit(&self, point: Point) -> Option<(usize, usize)> {
+        self.bars()
             .into_iter()
             .rev()
-            .find(|bar| bar.rect.inflate(2.0, 2.0).contains(self.inspection.pointer))
-            .map(|bar| (bar.category, bar.series));
+            .find(|bar| bar.rect.inflate(2.0, 2.0).contains(point))
+            .map(|bar| (bar.category, bar.series))
     }
-    fn activate_hovered(&mut self) -> bool {
-        let Some((category, series)) = self.inspection.hovered else {
-            return false;
-        };
-        let (Some(category), Some(series)) =
-            (self.categories.get(category), self.series.get(series))
-        else {
-            return false;
-        };
-        self.activated = Some((series.id.clone(), category.id.clone()));
-        true
+    fn activation(&self, &(category, series): &(usize, usize)) -> Option<(String, String)> {
+        let category = self.categories.get(category)?;
+        let series = self.series.get(series)?;
+        Some((series.id.clone(), category.id.clone()))
     }
     fn keyboard_items(&self) -> Vec<(usize, usize)> {
         let bars = self.bars();
@@ -650,64 +603,87 @@ impl InteractiveChart for CategoryChart {
         let bar = bars.iter().find(|bar| (bar.category, bar.series) == item)?;
         Some(bar.rect.center())
     }
-    fn toggle_legend_at(&mut self, point: Point) -> bool {
-        if !self.style.interactive_legend {
-            return false;
-        }
-        let Some(id) = self.toggles.hit(point) else {
-            return false;
-        };
-        // A legend entry claims the click even when its series is already gone.
-        let _ = self.toggle_series(&id);
-        true
+    fn items(&self) -> Vec<PlotItem<(String, String)>> {
+        self.series
+            .iter()
+            .enumerate()
+            .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
+            .flat_map(|(series_index, series)| {
+                self.categories
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(category_index, category)| {
+                        let value = self.value(series_index, category_index)?;
+                        Some(PlotItem::new(
+                            format!("{}:{}", series.id, category.id),
+                            format!("{}, {}", category.label, series.name),
+                            if value.detail.is_empty() {
+                                format!("Value {}", value.value)
+                            } else {
+                                value.detail.clone()
+                            },
+                            (series.id.clone(), category.id.clone()),
+                        ))
+                    })
+            })
+            .collect()
     }
-}
-
-impl Widget for CategoryChart {
-    crate::widget::chart_navigation::chart_leaf!();
+    fn series(&self) -> Vec<(&str, &str)> {
+        self.series
+            .iter()
+            .map(|series| (series.id.as_str(), series.name.as_str()))
+            .collect()
+    }
+    fn legend_interactive(&self) -> bool {
+        self.style.show_legend
+            && self.style.layout != CategoryLayout::Waterfall
+            && self.style.interactive_legend
+    }
+    fn toggles(&self) -> Option<&chart_legend::SeriesToggles> {
+        Some(&self.toggles)
+    }
+    fn toggles_mut(&mut self) -> Option<&mut chart_legend::SeriesToggles> {
+        Some(&mut self.toggles)
+    }
+    fn series_of(&self, &(_, series): &(usize, usize)) -> Option<&str> {
+        Some(self.series.get(series)?.id.as_str())
+    }
 
     #[allow(
         clippy::too_many_lines,
         reason = "axes, bars, labels, legend and inspector share one paint pass"
     )]
-    fn draw(
+    fn paint(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
     ) {
         let plot = self.plot_rect();
         let range = self.range();
         self.follow_keyboard_anchor();
-        draw_title(scene, transform, tr, theme, self.rect, &self.title);
-        for value in crate::charts::nice_ticks(range.0, range.1, 5) {
-            let y = self.y(value, range);
-            if self.style.show_grid {
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    theme.tokens.colors.border_standard,
-                    None,
-                    &Line::new((plot.x0, y), (plot.x1, y)),
-                );
-            }
-            let label = if self.style.layout == CategoryLayout::Percent {
-                format!("{:.0}%", value * 100.0)
-            } else {
-                format_axis_value(value, self.style.value_format)
-            };
-            let (width, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
-            tr.draw_style(
-                scene,
-                &label,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((plot.x0 - f64::from(width) - 9.0, y - 6.0)),
-                None,
-                &theme.text(TextRole::Caption),
-            );
+        draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
+        crate::widget::plot::ValueAxis {
+            plot,
+            range,
+            grid: self.style.show_grid,
+            label: |value| {
+                if self.style.layout == CategoryLayout::Percent {
+                    format!("{:.0}%", value * 100.0)
+                } else {
+                    format_axis_value(value, self.style.value_format)
+                }
+            },
         }
+        .paint(scene, transform, tr, theme);
         let bars = self.bars();
         for &bar in &bars {
             let Some(series) = self.series.get(bar.series) else {
@@ -727,7 +703,7 @@ impl Widget for CategoryChart {
             };
             let shape = RoundedRect::from_rect(bar.rect, self.radii(&bars, bar));
             scene.fill(Fill::NonZero, transform, color, None, &shape);
-            if self.inspection.hovered == Some((bar.category, bar.series)) {
+            if self.frame.inspection.hovered == Some((bar.category, bar.series)) {
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -796,7 +772,12 @@ impl Widget for CategoryChart {
             );
         }
         if self.style.show_legend && self.style.layout != CategoryLayout::Waterfall {
-            let y = self.rect.y0 + if self.title.is_empty() { 10.0 } else { 38.0 };
+            let y = self.frame.rect.y0
+                + if self.frame.title.is_empty() {
+                    10.0
+                } else {
+                    38.0
+                };
             self.toggles.paint(
                 scene,
                 transform,
@@ -809,13 +790,13 @@ impl Widget for CategoryChart {
                         series.color_in(theme),
                     )
                 }),
-                Rect::new(self.rect.x0 + 58.0, y, self.rect.x1 - 12.0, y),
+                Rect::new(self.frame.rect.x0 + 58.0, y, self.frame.rect.x1 - 12.0, y),
             );
         } else {
             self.toggles.clear_hits();
         }
         if let Some((category_index, series_index)) =
-            self.inspection.hovered.filter(|_| self.style.tooltip)
+            self.frame.inspection.hovered.filter(|_| self.style.tooltip)
             && let (Some(category), Some(series), Some(value)) = (
                 self.categories.get(category_index),
                 self.series.get(series_index),
@@ -837,99 +818,12 @@ impl Widget for CategoryChart {
                 transform,
                 tr,
                 theme,
-                self.inspection.pointer,
-                self.rect,
+                self.frame.inspection.pointer,
+                self.frame.rect,
                 130.0,
                 (&title, &detail),
             );
         }
-    }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        handle_chart_event(self, event, ctx);
-    }
-    fn accessibility(&self) -> Option<AccessNode> {
-        let children =
-            self.series
-                .iter()
-                .enumerate()
-                .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
-                .flat_map(|(series_index, series)| {
-                    self.categories.iter().enumerate().filter_map(
-                        move |(category_index, category)| {
-                            self.value(series_index, category_index).map(|value| {
-                                AccessNode::new(Role::Button)
-                                    .with_action_target(format!("{}:{}", series.id, category.id))
-                                    .with_name(format!("{}, {}", category.label, series.name))
-                                    .with_description(if value.detail.is_empty() {
-                                        format!("Value {}", value.value)
-                                    } else {
-                                        value.detail.clone()
-                                    })
-                                    .with_state(AccessState::new().focusable(true))
-                            })
-                        },
-                    )
-                })
-                .chain(
-                    self.series
-                        .iter()
-                        .filter(|_| {
-                            self.style.show_legend
-                                && self.style.layout != CategoryLayout::Waterfall
-                                && self.style.interactive_legend
-                        })
-                        .map(|series| self.toggles.access_node(&series.id, &series.name)),
-                )
-                .collect();
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name(if self.title.is_empty() {
-                    "Category chart"
-                } else {
-                    &self.title
-                })
-                .with_children(children),
-        )
-    }
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
-    ) -> bool {
-        let Some(key) = crate::widget::chart_navigation::activated_key(action, key_path) else {
-            return false;
-        };
-        if self.style.show_legend
-            && self.style.layout != CategoryLayout::Waterfall
-            && self.style.interactive_legend
-            && let Some(id) = chart_legend::SeriesToggles::activated(
-                self.series.iter().map(|series| series.id.as_str()),
-                key,
-            )
-        {
-            return self.toggle_series(&id);
-        }
-        for series in &self.series {
-            if self.toggles.is_hidden(&series.id) {
-                continue;
-            }
-            for category in &self.categories {
-                let target = format!("{}:{}", series.id, category.id);
-                if crate::a11y::hash_key(&target) == key {
-                    self.activated = Some((series.id.clone(), category.id.clone()));
-                    return true;
-                }
-            }
-        }
-        false
-    }
-    fn name(&self) -> &'static str {
-        "CategoryChart"
-    }
-    fn is_focusable(&self) -> bool {
-        true
     }
 }
 
@@ -944,7 +838,7 @@ mod tests {
                 vec![CategorySeries::new("s", "S", Color::WHITE, [10.0, -3.0])],
             )
             .layout(CategoryLayout::Waterfall);
-            let range = chart.range();
+            let range = chart.marks.range();
             assert!(range.1 >= 10.0);
         }
 
@@ -956,13 +850,13 @@ mod tests {
                     CategorySeries::new("large", "Large", Color::WHITE, [100.0]),
                 ],
             );
-            chart.rect = Rect::new(0.0, 0.0, 400.0, 340.0);
-            let two_series_width = chart.bars()[0].rect.width();
+            chart.marks.frame.rect = Rect::new(0.0, 0.0, 400.0, 340.0);
+            let two_series_width = chart.marks.bars()[0].rect.width();
             assert!(chart.set_series_visible("large", false));
-            let visible = chart.bars();
+            let visible = chart.marks.bars();
             assert_eq!(visible.len(), 1);
             assert!(visible[0].rect.width() > two_series_width);
-            assert!(chart.range().1 < 100.0);
+            assert!(chart.marks.range().1 < 100.0);
             assert_eq!(
                 chart.take_visibility_changed(),
                 Some(("large".to_owned(), false))
@@ -979,9 +873,9 @@ mod tests {
                 ],
             )
             .layout(CategoryLayout::Percent);
-            chart.rect = Rect::new(0.0, 0.0, 400.0, 340.0);
+            chart.marks.frame.rect = Rect::new(0.0, 0.0, 400.0, 340.0);
             assert!(chart.set_series_visible("three", false));
-            assert_eq!(chart.bars()[0].display_value, 1.0);
+            assert_eq!(chart.marks.bars()[0].display_value, 1.0);
         }
 
         fn crowded_labels_thin_to_what_fits() {
