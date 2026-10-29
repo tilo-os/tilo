@@ -459,29 +459,10 @@ impl Documents {
 }
 
 /// Write `record` to `path` readable by this user only, whole or not at
-/// all: a sibling written, flushed and renamed over it.
+/// all, in an owner-only folder.
 fn write_private(path: &Path, record: &Record) -> std::io::Result<()> {
-    use std::io::Write as _;
-    let folder = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("the record names no folder"))?;
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(folder)?;
     let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-    let mut sibling = path.as_os_str().to_owned();
-    sibling.push(".new");
-    let sibling = PathBuf::from(sibling);
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(&sibling)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    std::fs::rename(&sibling, path)
+    tilo_files::native::atomic::write_private(path, &bytes)
 }
 
 /// What a choice resolves to on the host, checked against what it is for.

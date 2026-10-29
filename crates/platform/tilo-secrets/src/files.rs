@@ -152,26 +152,7 @@ const fn libc_flags() -> i32 {
 
 /// Replace `path` with `bytes`, owner-only, atomically and durably.
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let dir = path.parent().ok_or_else(|| io::Error::other("no parent"))?;
-    let mut nonce = [0_u8; 8];
-    tilo_seal::fill_random(&mut nonce).map_err(io::Error::other)?;
-    let temp = dir.join(format!(".{}.tmp", hex::encode(nonce)));
-    let written = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc_flags())
-            .open(&temp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, path)
-    })();
-    if written.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    written?;
-    sync_dir(dir)
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
 }
 
 fn sync_dir(dir: &Path) -> io::Result<()> {

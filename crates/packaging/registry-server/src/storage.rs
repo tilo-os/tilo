@@ -2297,20 +2297,16 @@ fn read_if_exists(path: &Path, what: &str) -> Result<Option<Vec<u8>>, StorageErr
     }
 }
 
-/// Write bytes to `path` via a `.tmp` sibling + rename. Both the
-/// tmp and the final file end up in the same directory so the
-/// rename is atomic on every POSIX filesystem Tilo supports.
+/// Replace `path` with `bytes` atomically and durably, creating its
+/// directory first.
 ///
 /// # Errors
 ///
 /// Returns [`StorageError::Io`] if `path`'s parent can't be created
 /// or the write/rename fails.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| StorageError::Io(e.to_string()))?;
-    }
-    tilo_files::native::atomic::write(path, bytes).map_err(|e| StorageError::Io(e.to_string()))?;
-    Ok(())
+    tilo_files::native::atomic::write_creating_parent(path, bytes)
+        .map_err(|e| StorageError::Io(e.to_string()))
 }
 
 /// Percent-encode-ish rendering of a package id so it round-trips

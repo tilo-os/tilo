@@ -224,20 +224,10 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Write `content` next to `path` and rename it over, durably.
+/// Replace `path` with `content` at exactly `mode`, atomically and durably.
 fn write_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
-    let directory = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::Builder::new()
-        .prefix(&format!(".{}.", file_name(path)))
-        .tempfile_in(directory)
-        .at(directory)?;
-    temporary.write_all(content).at(temporary.path())?;
-    temporary.as_file().sync_all().at(temporary.path())?;
-    chmod(temporary.path(), mode)?;
-    temporary
-        .persist(path)
-        .map_err(|error| Error::os(&error.error, Some(path)))?;
-    Ok(())
+    tilo_files::native::atomic::write_with_mode(path, content, mode)
+        .map_err(|error| Error::os(&error, Some(path)))
 }
 
 pub(crate) fn write_json(path: &Path, value: &Value, mode: u32) -> Result<()> {

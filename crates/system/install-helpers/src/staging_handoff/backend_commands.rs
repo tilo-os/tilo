@@ -20,8 +20,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{Read as _, Write as _};
-use std::os::unix::fs::PermissionsExt;
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 
 use serde_json::Value;
@@ -111,21 +110,11 @@ pub fn write_machine_info(path: &Path, label: &OsStr) -> Result<()> {
     } else {
         String::new()
     };
-    let parent = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(machine_info(&existing, label).as_bytes())?;
-    temporary.flush()?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o644))?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(path)
-        .map_err(|error| Fail::Os(error.error.to_string()))?;
-    fs::File::open(parent)?.sync_all()?;
+    tilo_files::native::atomic::write_with_mode(
+        path,
+        machine_info(&existing, label).as_bytes(),
+        0o644,
+    )?;
     Ok(())
 }
 

@@ -37,8 +37,8 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
-use std::io::{Read as _, Write as _};
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
+use std::io::Read as _;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -1399,25 +1399,11 @@ pub fn check_mounts_command(host: &dyn Host, handoff_path: &Path, disk: &str) ->
     check_mounts(&handoff, &partitions, root)
 }
 
-/// Replaces `path` with `data` (mode `mode`) through a synced temporary file.
+/// Replaces `path` with `data` at exactly `mode`, atomically and durably.
 fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
-    let directory = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".tilo-staging.")
-        .tempfile_in(&directory)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(mode))?;
-    temporary.write_all(data)?;
-    temporary.as_file().sync_all()?;
-    temporary
-        .persist(path)
-        .map_err(|error| Fail::from(error.error))?;
-    fs::File::open(&directory)?.sync_all()?;
-    Ok(())
+    Ok(tilo_files::native::atomic::write_with_mode(
+        path, data, mode,
+    )?)
 }
 
 fn canonical(document: &Value) -> Vec<u8> {

@@ -15,7 +15,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -579,12 +579,9 @@ fn save_receipt(host: &dyn Host, result: &Value) -> Result<()> {
             .mode(0o700)
             .create(parent)?;
     }
-    let temporary = receipt.with_extension("tmp");
     let mut text = Dumps::CANONICAL.dumps(result);
     text.push('\n');
-    fs::write(&temporary, text)?;
-    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
-    fs::rename(&temporary, &receipt)?;
+    tilo_files::native::atomic::write_with_mode(&receipt, text.as_bytes(), 0o600)?;
     Ok(())
 }
 
