@@ -71,6 +71,8 @@ mod dbus_runtime_context;
 mod desktop_env_interactions;
 #[path = "desktop_smoke.rs"]
 mod desktop_smoke;
+#[path = "display_change_answers.rs"]
+mod display_change_answers;
 #[path = "display_layout_switcher.rs"]
 mod display_layout_switcher;
 #[path = "dmabuf_commit_barrier.rs"]
