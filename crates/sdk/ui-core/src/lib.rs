@@ -605,6 +605,7 @@ mod physical_input_trace;
 #[cfg(all(feature = "native", feature = "test-support"))]
 #[doc(hidden)]
 pub use physical_input_trace::Trace as NativePhysicalInputTrace;
+#[cfg(feature = "native")]
 pub mod input_frame;
 pub mod semantic_document_read;
 pub mod synthetic_input;
