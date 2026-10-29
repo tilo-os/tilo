@@ -532,6 +532,18 @@ pub enum Envelope {
         /// What it shows.
         showing: crate::voice::Showing,
     },
+
+    /// One of the host's own operations (`tilo.host`: creating, listing,
+    /// entering and hosting rooms), asked of the host itself by a device of
+    /// the host's own person, or the host's answer to it: an opaque
+    /// remote-action frame. It names no workspace: the authenticated
+    /// connection says who asks, and the host answers only its own person's
+    /// devices.
+    HostAction {
+        /// Opaque remote-action frame.
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
 }
 
 impl Envelope {
@@ -577,6 +589,7 @@ impl Envelope {
             Self::OpenRecord { .. } => "OpenRecord",
             Self::RecordOpened { .. } => "RecordOpened",
             Self::VoiceShow { .. } => "VoiceShow",
+            Self::HostAction { .. } => "HostAction",
         }
     }
 
@@ -622,7 +635,7 @@ impl Envelope {
             | Self::VoiceShow { workspace_id, .. }
             | Self::OpenRecord { workspace_id, .. }
             | Self::RecordOpened { workspace_id, .. } => Some(*workspace_id),
-            Self::Ping | Self::Pong | Self::PeerRelayHello { .. } => None,
+            Self::Ping | Self::Pong | Self::PeerRelayHello { .. } | Self::HostAction { .. } => None,
         }
     }
 }

@@ -18,6 +18,8 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 accounts = { path = "../../crates/system/accounts" }
+# The permission requests the messaging service makes for Messages.
+tilo-messaging = { path = "../../crates/platform/tilo-messaging", features = ["service-client"] }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 zeroize.workspace = true

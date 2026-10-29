@@ -34,37 +34,6 @@ impl crate::collaboration::PeerTransport for HostedModelTransport {
 }
 
 #[test]
-fn hosted_model_broker_alone_emits_acceptance() {
-    let request = remote_request(870, "async-bump");
-    let (mut app, _, _, _temp) = owned_counter(CounterCard::with_async_post_bump_reset());
-    let sent = Rc::new(RefCell::new(vec![]));
-    app.collaboration.manager =
-        CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
-    app.require_published_invocation_authorizer();
-    app.install_published_invocation_authorizer(original_remote_authorizer(
-        request.clone(),
-        original_remote_grant(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(99))),
-    ))
-    .unwrap();
-    deliver_remote(&mut app, &request);
-    assert!(
-        app.actions
-            .directed_invocations
-            .contains_key(&request.invocation)
-    );
-    assert!(
-        !sent.borrow().iter().any(|request| matches!(
-            request,
-            CollabRequest::UpdateInvocation {
-                update: tilo_actions::InvocationUpdate::Accepted { .. },
-                ..
-            }
-        )),
-        "the broker already owns acceptance before delivering this invocation"
-    );
-}
-
-#[test]
 fn hosted_model_advances_retained_job_once_without_draw_or_private_fixture_drain() {
     let mut app = App::new_with_controlled_inputs(
         State::new(),
@@ -276,6 +245,7 @@ fn hosted_directory_known_actual_owner_noop_keeps_revision_and_current_counter()
         optional: vec![],
         opens: &[],
         room_record: false,
+        member_record: false,
         opens_before_record: false,
         create: owned_declared_directory_factory,
     };

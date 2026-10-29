@@ -19,8 +19,9 @@ use ui::prelude::TestApp;
 /// names each editable path once with its operations; a parameter's schema
 /// does not repeat its description, nor a description its label. Raised
 /// from 64 KiB when every document resource gained `review-restore` and
-/// `restore-reviewed` (exact-item restore, #4581).
-const BUDGET: usize = 68 * 1024;
+/// `restore-reviewed` (exact-item restore, #4581), and from 68 KiB when the
+/// recent artworks became a record of their own beside the artwork.
+const BUDGET: usize = 72 * 1024;
 
 #[test]
 fn the_agent_surface_matches_its_golden_file_and_budget() {

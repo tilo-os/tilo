@@ -1396,11 +1396,6 @@ pub trait Widget {
     fn resets_callback_binding(&self) -> bool {
         false
     }
-    /// A legacy owner's actual live layout boundary, never framework chrome.
-    #[doc(hidden)]
-    fn legacy_callback_boundary(&self) -> Option<(NodeId, crate::history_mode::HistoryOwner)> {
-        None
-    }
     /// Drawn live content whose input is suspended by a framework surface.
     #[doc(hidden)]
     fn inactive_callback_boundary(&self) -> Option<NodeId> {
@@ -1498,20 +1493,9 @@ pub trait Widget {
     )]
     fn visit_resource_owners(
         &self,
-        request: &mut crate::bound_dispatch::legacy_document::ResourceReadRequest<'_>,
+        request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
     ) -> Result<(), tilo_actions::DoorError> {
         request.visit(self)
-    }
-    #[doc(hidden)]
-    #[allow(
-        private_interfaces,
-        reason = "finite toolkit resource ownership requests"
-    )]
-    fn visit_resource_owners_mut(
-        &mut self,
-        request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
-    ) -> Result<(), tilo_actions::DoorError> {
-        defaults::visit_resource_owners_mut(self.children_mut(), request)
     }
 
     /// Answer a request for a capability this widget takes part in (see

@@ -1091,18 +1091,31 @@ browser-welcome-subtitle = Your team's shared computer. Everything you make is s
 browser-welcome-hint = Arrow keys move, Enter opens, Ctrl+K finds any app
 browser-welcome-hint-mac = Arrow keys move, Enter opens, ⌘K finds any app
 
-# The overview panel a host without its own overview draws
-overview-panel-title = Overview
-overview-panel-you-are-here = You are here
-overview-panel-windows = Windows here
+# The workspace overview every desktop shows
+overview-title = Workspace overview
 overview-strip-empty = No windows
-overview-panel-no-windows = No windows yet
-overview-panel-window-count = { $count ->
-    [one] 1 window
-   *[other] { $count } windows
-}
-overview-panel-go-to = Go to
-overview-panel-new-workspace = New workspace
+overview-go-to = Go to
+overview-no-room = No room selected
+overview-you-are-here = You are here
+overview-shared-out = Shared out of here
+overview-more-shares = and { $count } more
+overview-share-with-two = { $first } and { $second }
+overview-share-with-many = { $count ->
+        [one] { $first } and { $count } other
+       *[other] { $first } and { $count } others
+    }
+overview-share-can-edit = { $with } can edit
+overview-new-workspace = New workspace
+overview-join-workspace = Join a workspace…
+overview-leave-workspace = Leave
+overview-a11y-leave = Leave { $name }
+overview-two-facts = { $first }, { $second }
+overview-windows-title = Windows in this workspace
+overview-windows-description = Each strip of this workspace, top to bottom, with its windows in order. The arrow keys move between them and Enter goes to one. F2 renames the strip a window is on, and Alt with Up or Down moves that strip. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace or strip to move it there.
+overview-strips-title = Strips in this workspace
+overview-strip-rename = Rename
+overview-strip-move-up = Move up
+overview-strip-move-down = Move down
 browser-new-workspace-name = Workspace { $number }
 room-notice-joined = { $name } joined
 room-notice-renamed = { $name } renamed the workspace to { $workspace }

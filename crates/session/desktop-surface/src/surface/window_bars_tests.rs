@@ -54,9 +54,6 @@ impl Widget for SlotApp {
 }
 
 impl AppWidget for SlotApp {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }

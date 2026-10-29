@@ -7,7 +7,6 @@ cgroups and process names of run 90408's dump (seat0 greeter as uid 974, the slo
 1001, the dev image's services, a root ssh session), with the dump's newer fields.
 """
 
-import json
 import sys
 import unittest
 from pathlib import Path
@@ -438,18 +437,7 @@ P 500 tilo-relay 9 50 1 2000
 T 11000 9900
 HZ 100
 """
-HOST = bytes(range(32))
 BUDGETS = {"idle_shared_broker_wakeups_per_s": 1.0, "idle_shared_shovel_wakeups_per_s": 0.0}
-
-
-def shared_state(governor_caps: dict | None, room="7a1e", pending=()):
-    """A state dump whose workspace 2 is in `room`, held under HOST's governance."""
-    rooms = {} if governor_caps is None else {room: {"governor": {
-        "device_public_key": list(HOST), "capabilities": governor_caps}}}
-    return {"workspace_tree": {
-        "active": 1,
-        "workspaces": [{"id": 1, "room": "0000"}, {"id": 2, "room": room}],
-        "native_authority": {"revision": 3, "rooms": rooms, "pending": {r: {} for r in pending}}}}
 
 
 class SharedWorkspaceTest(unittest.TestCase):
@@ -491,86 +479,13 @@ class SharedWorkspaceTest(unittest.TestCase):
         with self.assertRaises(core.Unobservable):
             resources.shared_idle(compositor_only, BUDGETS)
 
-    def test_a_room_a_host_governs_is_committed(self):
-        host = {"can_own_workspaces": False, "can_act_as_host": True, "foreign": False}
-        self.assertEqual(resources.committed_workspace(shared_state(host), HOST.hex())["id"], 2)
+    def test_a_room_is_held_once_its_enrollment_is_installed(self):
+        def state(rooms, pending=()):
+            return {"workspace_tree": {"native_authority": {"rooms": rooms, "pending": {r: {} for r in pending}}}}
+        self.assertTrue(resources.held_here(state({"7a1e": {}}), "7a1e"))
+        self.assertFalse(resources.held_here(state({}, pending=("7a1e",)), "7a1e"))
+        self.assertFalse(resources.held_here({"workspace_tree": {}}, "7a1e"))
 
-    def test_a_node_stewards_its_rooms_another_device_governs_none_and_pending_is_not_yet(self):
-        node = {"can_own_workspaces": True, "can_act_as_host": True, "foreign": False}
-        self.assertIsNone(resources.committed_workspace(shared_state(node), HOST.hex()))
-        host = {"can_own_workspaces": False, "can_act_as_host": True, "foreign": False}
-        self.assertIsNone(resources.committed_workspace(shared_state(host), bytes(32).hex()))
-        pending = shared_state(None, pending=("7a1e",))
-        self.assertIsNone(resources.committed_workspace(pending, HOST.hex()))
-        self.assertIn("pending: 7a1e", resources.describe_native_rooms(pending))
-        self.assertIn("7a1e (governor 000102030405)", resources.describe_native_rooms(shared_state(host)))
-
-    def test_only_the_runs_relay_leaves_the_home_peer_registry(self):
-        mine, other = "ab" * 32, "cd" * 32
-        text = json.dumps([{"device_node_id": mine, "label": "Acceptance home relay"},
-                           {"device_node_id": other, "label": "Home server"}])
-        self.assertEqual(json.loads(resources.without_home_peer(text, mine)),
-                         [{"device_node_id": other, "label": "Home server"}])
-        self.assertIsNone(resources.without_home_peer(text, "ef" * 32))
-        self.assertIsNone(resources.without_home_peer("", mine))
-        self.assertIsNone(resources.without_home_peer('{"not": "a list"}', mine))
-
-    def test_each_slot_user_has_its_own_relay_port_below_the_ephemeral_range(self):
-        ports = {resources.home_relay_port(uid) for uid in range(1000, 1010)}
-        self.assertEqual(len(ports), 10)
-        self.assertTrue(all(1024 < p < 32768 for p in ports))
-
-    def test_setup_enrolls_the_relay_as_production_does_and_names_what_failed(self):
-        key = '{"device_public_key": "%s", "relay_service_node_id": "%s"}' % ("ab" * 32, "cd" * 32)
-
-        def ctx_answering(pair="HOME-RELAY pairing\n", approve="HOME-RELAY approved\n",
-                          start="HOME-RELAY started\n"):
-            ran = []
-
-            class Vm:
-                def root_exec(self, script, timeout=120):
-                    ran.append(("root", script))
-                    if " pair " in script:
-                        return key + "\n" + pair
-                    if "tilo-relay --config" in script:
-                        return start
-                    return ""
-
-                def exec(self, script, timeout=120, check=True):
-                    ran.append(("person", script))
-                    return approve if " approve " in script else ""
-
-                def slot_uid(self):
-                    return 1001
-
-            class Ctx:
-                vm = Vm()
-
-                def write(self, name, text):
-                    pass
-            return Ctx(), ran
-
-        cases = {"did not approve": {"approve": "Error: approval timed out\n"},
-                 "no bundle": {"start": "HOME-RELAY no-bundle\n"},
-                 "did not start": {"start": "Failed to start transient service unit\n"},
-                 "pairing did not start": {"pair": "Failed to start transient service unit\n"}}
-        for said, answers in cases.items():
-            ctx, _ = ctx_answering(**answers)
-            with self.assertRaises(core.Unobservable) as raised:
-                resources.start_home_relay(ctx)
-            self.assertIn(said, str(raised.exception))
-        ctx, ran = ctx_answering()
-        relay = resources.start_home_relay(ctx)
-        self.assertEqual(relay, {"device": "ab" * 32, "service": "cd" * 32, "port": 24000 + 1001 % 8000})
-        # The server pairs as the relay's account, the person approves exactly that server
-        # on the machine's identity tree, and nothing is certified out of band.
-        approve = next(script for who, script in ran if who == "person" and " approve " in script)
-        self.assertIn("--identity-root /var/lib/tilo", approve)
-        self.assertIn("--expected-device " + "ab" * 32, approve)
-        self.assertIn("--expected-service " + "cd" * 32, approve)
-        self.assertFalse(any("certify" in script or "install-cert" in script for _, script in ran))
-        pair = next(script for who, script in ran if who == "root" and " pair " in script)
-        self.assertIn("--uid=tilo-relay", pair)
 
 if __name__ == "__main__":
     unittest.main()

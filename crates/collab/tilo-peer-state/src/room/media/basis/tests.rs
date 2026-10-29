@@ -1,5 +1,4 @@
 use super::*;
-use crate::resources::native::NativeBatch;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_automerge::ApplyIncoming;
@@ -40,29 +39,14 @@ fn revocation(root: &SigningKey, time: u64) -> RevocationEntry {
     tilo_user_identity::sign_revocation_entry(&mut entry, root).unwrap();
     entry
 }
-fn native(
-    doc: &mut AutoCommit,
-    extra: &[RevocationEntry],
-    collection_bytes: usize,
-) -> Result<[u8; 32], Error> {
-    let doc = NativeBatch::new(8 * 1024 * 1024).load(&doc.save()).unwrap();
-    bounded(
-        &doc.read(),
-        extra,
-        BasisLimits {
-            collection_bytes,
-            json: JsonLimits {
-                allocation_bytes: 2 * 1024 * 1024,
-                collection_entries: 4096,
-            },
-        },
-    )
+fn basis(doc: &AutoCommit, extra: &[RevocationEntry]) -> Result<[u8; 32], MediaPolicyError> {
+    legacy(doc, extra)
 }
 #[test]
 fn media_basis_matches_original_signed_room() {
-    let (mut doc, _, _) = fixture();
+    let (doc, _, _) = fixture();
     let expected = historical_basis(&doc, &[]).unwrap();
-    assert_eq!(native(&mut doc, &[], 4 * 1024 * 1024), Ok(expected));
+    assert_eq!(basis(&doc, &[]), Ok(expected));
     assert_eq!(
         super::super::parse(&doc),
         Ok(None),
@@ -92,15 +76,11 @@ fn media_basis_preserves_verified_earliest_revocation_and_canonical_tie_order() 
         vec![revocation(&root, 5), tie],
     ] {
         let expected = historical_basis(&doc, &extra).unwrap();
-        assert_eq!(native(&mut doc, &extra, 4 * 1024 * 1024), Ok(expected));
+        assert_eq!(basis(&doc, &extra), Ok(expected));
     }
     let mut invalid = revocation(&root, 1);
     invalid.signature[0] ^= 1;
-    assert_eq!(
-        native(&mut doc, &[invalid], 4 * 1024 * 1024),
-        Err(Error::Policy(MediaPolicyError::Binding))
-    );
-    assert_eq!(native(&mut doc, &[], 16), Err(Error::Capacity));
+    assert_eq!(basis(&doc, &[invalid]), Err(MediaPolicyError::Binding));
 }
 #[test]
 fn media_basis_matches_original_malformed_container_conflict_and_certificate_rejections() {
@@ -145,10 +125,7 @@ fn media_basis_matches_original_malformed_container_conflict_and_certificate_rej
         }
         doc.commit();
         let expected = historical_basis(&doc, &[]).unwrap_err();
-        assert_eq!(
-            native(&mut doc, &[], 4 * 1024 * 1024),
-            Err(Error::Policy(expected))
-        );
+        assert_eq!(basis(&doc, &[]), Err(expected));
     }
 }
 #[test]
@@ -183,7 +160,7 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
     .unwrap();
     doc.commit();
     let expected = historical_basis(&doc, &[]).unwrap();
-    assert_eq!(native(&mut doc, &[], 4 * 1024 * 1024), Ok(expected));
+    assert_eq!(basis(&doc, &[]), Ok(expected));
     // Existing admission binding validation remains independent of byte budget.
     row.admissions[0].user_public_key = [7; 32];
     doc.put(
@@ -194,49 +171,19 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
     .unwrap();
     doc.commit();
     assert_eq!(historical_basis(&doc, &[]), Err(MediaPolicyError::Binding));
-    assert_eq!(
-        native(&mut doc, &[], 4 * 1024 * 1024),
-        Err(Error::Policy(MediaPolicyError::Binding))
-    );
+    assert_eq!(basis(&doc, &[]), Err(MediaPolicyError::Binding));
 }
 
 #[test]
-fn media_basis_collection_and_json_limits_refuse_without_mutating_original_document() {
-    let (mut doc, _, _) = fixture();
-    let original = doc.save();
-    let native = NativeBatch::new(8 * 1024 * 1024).load(&original).unwrap();
-    for (collection_bytes, json_bytes, refusal) in [
-        (0, 2 * 1024 * 1024, Error::Capacity),
-        (
-            4 * 1024 * 1024,
-            1,
-            Error::Decode(PeerResourceError::Capacity),
-        ),
-    ] {
-        let refused = bounded(
-            &native.read(),
-            &[],
-            BasisLimits {
-                collection_bytes,
-                json: JsonLimits {
-                    allocation_bytes: json_bytes,
-                    collection_entries: 4096,
-                },
-            },
-        );
-        assert_eq!(refused, Err(refusal));
-    }
-    assert_eq!(doc.save(), original);
+fn media_basis_refuses_a_revocation_from_another_root() {
+    let (doc, _, _) = fixture();
     let foreign = SigningKey::from_bytes(&[44; 32]);
     let extra = revocation(&foreign, 1);
     assert_eq!(
         historical_basis(&doc, std::slice::from_ref(&extra)),
         Err(MediaPolicyError::Binding)
     );
-    assert_eq!(
-        self::native(&mut doc, &[extra], 4 * 1024 * 1024),
-        Err(Error::Policy(MediaPolicyError::Binding))
-    );
+    assert_eq!(basis(&doc, &[extra]), Err(MediaPolicyError::Binding));
 }
 
 // Frozen original algorithm is the independent byte/error oracle.

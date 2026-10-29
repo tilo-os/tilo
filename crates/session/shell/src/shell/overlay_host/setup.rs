@@ -494,6 +494,8 @@ impl ShellOverlayHost {
             ws_emoji: None,
             workspace_rename_submit_held: false,
             palette_was_visible: false,
+            launcher: None,
+            launcher_unavailable: false,
             palette_transition: ui::motion::Presence::closed(),
             faces: ui::widget::FaceMotions::default(),
             group_row_ptrs: HashMap::new(),

@@ -18,7 +18,7 @@ use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
 /// The mapped nodes that take part in history: those inside a bound
-/// component or a legacy tile, and widgets that show or ask for undo or
+/// component or a record owner, and widgets that show or ask for undo or
 /// report an action bracket. Found once per admitted map, so a frame's
 /// history sweep visits them and not every row of a long list.
 #[derive(Default)]
@@ -350,10 +350,6 @@ pub(super) struct ActionRuntime {
     // Independent from scheduling invalidation: mutable unbound decoder access.
     pub(super) action_registry_generation: u64,
     pub(super) action_transport: Box<dyn tilo_actions::ActionTransport>,
-    /// The local transport is usable only until an authoritative host transport
-    /// has been installed. Legacy document controls use this to avoid treating
-    /// a host-backed action as a process-local fallback.
-    pub(super) legacy_local_transport: bool,
     pub(super) resource_cache: RefCell<Option<ResourceCache>>,
     pub(super) bound_resource_cache: crate::bound_dispatch::BoundResourceCache,
     pub(super) bound_record_sync: Option<super::bound_record_sync::BoundRecordSync>,
@@ -467,7 +463,6 @@ impl ActionRuntime {
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
-            legacy_local_transport: true,
             resource_cache: RefCell::new(None),
             bound_resource_cache: crate::bound_dispatch::BoundResourceCache::default(),
             bound_record_sync: None,

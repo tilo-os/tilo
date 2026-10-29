@@ -19,7 +19,6 @@ fn an_app_whose_code_arrives_goes_on_with_the_arrival_its_window_showed() {
         with_monotonic_time(t0, || waiting.is_arriving()),
         "the window reserves the app's place at once"
     );
-    assert!(!waiting.uses_host_record());
     with_monotonic_time(at(400), || {
         let _ = paint(&mut waiting, &theme);
         assert_eq!(waiting.arrival_step(at(400)), Some(Step::Skeleton));

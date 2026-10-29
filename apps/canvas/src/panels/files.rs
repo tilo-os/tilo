@@ -13,9 +13,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::TryRecvError;
-use ui::tilo_resource::Invoke;
+use ui::tilo_resource::{AbsolutePath, Invoke};
 
-use ui::framework::{Dispatcher, Live, RecordEnv, Setting};
+use ui::framework::{Dispatcher, Live, PersonRecord, RecordEnv};
 use ui::portal::{
     ContentsChannel, ContentsOutcome, DestinationChannel, DestinationOutcome, FileFilter,
     PickRequest, PickedContents, SaveChannel, SaveOutcome,
@@ -28,7 +28,7 @@ use ui::winit::event::WindowEvent;
 use ui::{PresenceCtx, TextRenderer, Theme};
 
 use crate::actions::{NewArtwork, OpenArtwork};
-use crate::document::{self, ArtworkFile, EXTENSION, Recent, RecentArtworks};
+use crate::document::{self, ArtworkFile, ArtworkRecents, EXTENSION, Recent, RecentArtworks};
 use crate::model::Artwork;
 use crate::panels::export::{self, Settings};
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
@@ -72,7 +72,8 @@ enum Drawing {
 pub struct FileDesk {
     content: Element,
     tools: Tools,
-    recents: Setting<RecentArtworks>,
+    /// The recent artworks record and this device's id, in a live window.
+    recents: Option<(PersonRecord<ArtworkRecents>, String)>,
     live: Live<Artwork>,
     dispatch: Dispatcher<Artwork>,
     /// Where the window opens another of the workspace's artworks.
@@ -89,7 +90,7 @@ impl FileDesk {
     pub fn new(
         content: Element,
         tools: Tools,
-        recents: Setting<RecentArtworks>,
+        recents: Option<(PersonRecord<ArtworkRecents>, String)>,
         live: Live<Artwork>,
         env: RecordEnv<Artwork>,
     ) -> Self {
@@ -456,9 +457,13 @@ impl FileDesk {
         match read {
             Ok(bytes) => self.open_bytes(&Self::name_of(path), &bytes, Some(path)),
             Err(why) => {
-                if !path.exists() {
-                    let gone = path.display().to_string();
-                    self.keep_recents(|recents| recents.forget(&gone));
+                if !path.exists()
+                    && let Ok(gone) = AbsolutePath::new(path)
+                {
+                    self.keep_recents(
+                        |device| ArtworkRecents::FORGET.with((device, gone.clone())),
+                        |recents| recents.forget(&gone.to_string_lossy()),
+                    );
                 }
                 self.say("canvas-open-failed", &[("why", why.into())]);
             }
@@ -551,14 +556,34 @@ impl FileDesk {
             at_ms,
             thumbnail: None,
         };
-        self.keep_recents(|recents| recents.remember(recent));
+        self.keep_recents(
+            |device| ArtworkRecents::REMEMBER.with((device, recent.clone())),
+            |recents| recents.remember(recent.clone()),
+        );
     }
 
-    /// Change the recent artworks. Best effort: a device that keeps no
-    /// settings for the app simply shows no recent artworks.
-    fn keep_recents(&self, change: impl FnOnce(&mut RecentArtworks)) {
-        if let Err(error) = self.recents.update(change) {
-            tracing::warn!(%error, "could not remember the recent artworks");
+    /// Change this device's recent artworks: in the record through the
+    /// action `edit` makes for the device, or with `change` where there is
+    /// no record. Best effort: a failed write leaves the list as it was.
+    fn keep_recents(
+        &self,
+        edit: impl FnOnce(String) -> Invoke<ArtworkRecents>,
+        change: impl FnOnce(&mut RecentArtworks),
+    ) {
+        if let Some((record, device)) = &self.recents {
+            if let Err(error) = record.invoke(&edit(device.clone())) {
+                tracing::warn!(%error, "could not remember the recent artworks");
+            }
+        } else {
+            let device = self.tools.device.to_string();
+            self.tools.recents.update(|recents| {
+                change(
+                    std::rc::Rc::make_mut(recents)
+                        .devices
+                        .entry(device)
+                        .or_default(),
+                );
+            });
         }
     }
 }

@@ -2,11 +2,9 @@
 //! checked entry points that deliver a callback to one admitted node.
 use super::{
     BoundDispatchError, BoundNode, CallbackBinding, CallbackScopeGuard, DocumentEditStamp,
-    a11y_owner,
 };
-use crate::permissions::UserId;
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId, ROOT};
+use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
@@ -16,22 +14,13 @@ use taffy::{NodeId, TaffyTree};
 pub struct BoundNodeMap {
     pub(super) nodes: HashMap<NodeId, BoundNode>,
     pub(super) parents: HashMap<NodeId, NodeId>,
-    // Persistent across layout clears; aliases are allocated only for a new
-    // owner/lifetime + local node, never once per redraw or tree rebuild.
-    pub(super) a11y_aliases: a11y_owner::OwnerAliases,
 }
-/// A node to admit, with the binding, legacy owner and inactivity it inherits.
-type PendingAdmission = (
-    NodeId,
-    Option<Rc<CallbackBinding>>,
-    Option<crate::history_mode::HistoryOwner>,
-    bool,
-);
+/// A node to admit, with the binding and inactivity it inherits.
+type PendingAdmission = (NodeId, Option<Rc<CallbackBinding>>, bool);
 
-/// The legacy-owner and inactive callback boundaries widgets declare.
+/// The inactive callback boundaries widgets declare.
 #[derive(Default)]
 struct Boundaries {
-    legacy: HashMap<NodeId, crate::history_mode::HistoryOwner>,
     inactive: std::collections::HashSet<NodeId>,
 }
 
@@ -40,9 +29,6 @@ impl Boundaries {
     fn collect(&mut self, widget: &dyn Widget) {
         if let Some(node) = widget.inactive_callback_boundary() {
             self.inactive.insert(node);
-        }
-        if let Some((node, owner)) = widget.legacy_callback_boundary() {
-            self.legacy.insert(node, owner);
         }
         for child in widget.children() {
             self.collect(child);
@@ -69,17 +55,6 @@ impl BoundNodeMap {
             .ok_or(BoundDispatchError::MissingNode)?;
         if let Some(binding) = &entry.binding {
             binding.document_edit_stamp(document)
-        } else if let Some(legacy) = &entry.legacy {
-            legacy
-                .validate()
-                .map_err(|_| BoundDispatchError::ClosedLifetime)?;
-            let (store, checkout) = legacy.store_checkout();
-            let lifetime = legacy
-                .lifetime_id()
-                .ok_or(BoundDispatchError::ClosedLifetime)?;
-            store
-                .document_edit_stamp(&checkout.id, lifetime)
-                .map_err(BoundDispatchError::Record)
         } else {
             Ok(DocumentEditStamp::for_document(document))
         }
@@ -108,38 +83,16 @@ impl BoundNodeMap {
             .filter(|node| !node.inactive)
             .and_then(|node| node.binding.as_deref())
     }
-    /// Whether `node` was admitted inside a bound component or a legacy tile.
+    /// Whether `node` was admitted inside a bound component.
     pub(crate) fn has_owner(&self, node: NodeId) -> bool {
         self.nodes
             .get(&node)
-            .is_some_and(|entry| entry.binding.is_some() || entry.legacy.is_some())
-    }
-    pub(crate) fn legacy_for(&self, node: NodeId) -> Option<crate::history_mode::HistoryOwner> {
-        self.nodes.get(&node).and_then(|entry| entry.legacy.clone())
-    }
-    /// Whether any admitted node belongs to a legacy tile, whose record no
-    /// [`bound_owner_standing`] read follows.
-    pub(crate) fn has_legacy(&self) -> bool {
-        self.nodes.values().any(|entry| entry.legacy.is_some())
-    }
-    pub(crate) fn legacy_status(
-        &self,
-        node: NodeId,
-        author: &UserId,
-    ) -> Option<crate::undo::UndoStatus> {
-        let owner = self.legacy_for(node)?;
-        owner.validate().ok()?;
-        let (store, checkout) = owner.store_checkout();
-        // A status read is not a mutable loan: it must not advance the
-        // record's action generation.
-        store.read_history(&checkout.id, |doc, history| {
-            crate::undo::status_snapshot(doc, history, Some(author))
-        })
+            .is_some_and(|entry| entry.binding.is_some())
     }
     pub(crate) fn owns_document(&self, node: NodeId) -> bool {
         self.nodes
             .get(&node)
-            .is_some_and(|entry| entry.binding.is_some() || entry.legacy.is_some())
+            .is_some_and(|entry| entry.binding.is_some())
     }
     pub fn new() -> Self {
         Self::default()
@@ -213,14 +166,7 @@ impl BoundNodeMap {
         }
         let pending: Vec<_> = roots
             .iter()
-            .map(|(root, layout_root)| {
-                (
-                    *layout_root,
-                    root.callback_binding().map(Rc::new),
-                    None,
-                    false,
-                )
-            })
+            .map(|(root, layout_root)| (*layout_root, root.callback_binding().map(Rc::new), false))
             .collect();
         // SAFETY: the caller owns all supplied roots and layout pointers.
         unsafe { self.admit(pending, &boundaries, taffy, nodes) };
@@ -228,7 +174,7 @@ impl BoundNodeMap {
 
     /// Admit the subtree at `child`, which the widget at `parent` mounted in
     /// place ([`crate::widget::Remount`]), as a rebuild would: under the
-    /// binding, legacy owner and inactivity `parent` was admitted with, and
+    /// binding and inactivity `parent` was admitted with, and
     /// the boundaries the subtree's own widgets declare. Returns `false`
     /// when `parent` or `child` is not admitted, and the host rebuilds.
     ///
@@ -245,7 +191,7 @@ impl BoundNodeMap {
         let Some(entry) = self.nodes.get(&parent) else {
             return false;
         };
-        let inherited = (entry.binding.clone(), entry.legacy.clone(), entry.inactive);
+        let inherited = (entry.binding.clone(), entry.inactive);
         let Some(&pointer) = nodes.get(&child) else {
             return false;
         };
@@ -255,15 +201,10 @@ impl BoundNodeMap {
         // Its layout parent may be a structural node under `parent`.
         self.parents
             .insert(child, taffy.parent(child).unwrap_or(parent));
-        let (binding, legacy, inactive) = inherited;
+        let (binding, inactive) = inherited;
         // SAFETY: forwarded from the caller.
         unsafe {
-            self.admit(
-                vec![(child, binding, legacy, inactive)],
-                &boundaries,
-                taffy,
-                nodes,
-            );
+            self.admit(vec![(child, binding, inactive)], &boundaries, taffy, nodes);
         }
         true
     }
@@ -278,7 +219,7 @@ impl BoundNodeMap {
     }
 
     /// Admit each pending node and everything under it, inheriting its
-    /// binding, legacy owner and inactivity down the layout tree.
+    /// binding and inactivity down the layout tree.
     unsafe fn admit(
         &mut self,
         mut pending: Vec<PendingAdmission>,
@@ -286,9 +227,8 @@ impl BoundNodeMap {
         taffy: &TaffyTree<()>,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
     ) {
-        while let Some((node, inherited, inherited_legacy, inherited_inactive)) = pending.pop() {
+        while let Some((node, inherited, inherited_inactive)) = pending.pop() {
             let inactive = inherited_inactive || boundaries.inactive.contains(&node);
-            let mut legacy = boundaries.legacy.get(&node).cloned().or(inherited_legacy);
             let binding = if let Some(&pointer) = nodes.get(&node) {
                 // SAFETY: rebuild's owner guarantees all admitted pointers are live.
                 let widget = unsafe { &*pointer };
@@ -297,16 +237,12 @@ impl BoundNodeMap {
                 } else {
                     widget.callback_binding().map(Rc::new).or(inherited)
                 };
-                if binding.is_some() || widget.resets_callback_binding() {
-                    legacy = None;
-                }
                 self.nodes.insert(
                     node,
                     BoundNode {
                         pointer,
                         semantic_name: widget.name().to_owned(),
                         binding: binding.clone(),
-                        legacy: legacy.clone(),
                         inactive,
                     },
                 );
@@ -317,11 +253,10 @@ impl BoundNodeMap {
             if let Ok(children) = taffy.children(node) {
                 for child in children {
                     self.parents.insert(child, node);
-                    pending.push((child, binding.clone(), legacy.clone(), inactive));
+                    pending.push((child, binding.clone(), inactive));
                 }
             }
         }
-        self.a11y_aliases.admit(&self.nodes);
     }
 }
 
@@ -368,16 +303,6 @@ pub unsafe fn invoke_bound_node<R>(
             let _ = binding.drain_owned_tree(widget, document);
             result
         })
-    } else if let Some(owner) = &admitted.legacy {
-        owner
-            .validate()
-            .map_err(|_| BoundDispatchError::ClosedLifetime)?;
-        let (store, checkout) = owner.store_checkout();
-        store
-            .with_checked(&checkout.id, |doc| {
-                callback(unsafe { &mut **pointer }, doc, &ROOT)
-            })
-            .map_err(BoundDispatchError::Record)
     } else {
         // Explicitly admitted unbound widgets preserve the outer document.
         Ok(callback(unsafe { &mut **pointer }, outer, outer_root))
@@ -407,11 +332,6 @@ impl BoundNodeMap {
         let pointer = nodes.get(&node).ok_or(BoundDispatchError::MissingNode)?;
         if !std::ptr::eq(admitted.pointer, *pointer) {
             return Err(BoundDispatchError::MissingNode);
-        }
-        if let Some(owner) = &admitted.legacy {
-            owner
-                .validate()
-                .map_err(|_| BoundDispatchError::ClosedLifetime)?;
         }
         Ok(admitted)
     }
@@ -467,8 +387,8 @@ pub(crate) unsafe fn layout_bound_node<R>(
 /// widget, thousands of times a frame, to answer one flag each. A sweep
 /// keeps the scope it entered while the following nodes enter the same one
 /// ([`CallbackBinding::enters_same_scope`]), as a tree walk does under
-/// [`enter_widget`], and leaves it before a node of another component, a
-/// legacy tile or an unbound node, so each widget still answers inside its
+/// [`enter_widget`], and leaves it before a node of another component or an
+/// unbound node, so each widget still answers inside its
 /// own scope and nowhere else. The record and lifetime are checked for
 /// every node, as entering checks them.
 pub(crate) struct NodeSweep<'m> {

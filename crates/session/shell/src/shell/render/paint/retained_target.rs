@@ -15,7 +15,7 @@ use super::{
     RESILIENT_RENDER_ATTEMPTS, RetainedGpuTarget, SceneDamage, VELLO_BIN_PIXELS, VelloDrmBridge,
 };
 use tilo_output_passes::warmup;
-use ui::strip_layers;
+use ui::strip_layers::{LayerPresenter, LayerRaster, LayerTexture};
 
 /// Whether this process has published its pipelines for apps (see [`ui::pipeline_seed`]).
 static PIPELINE_SEED_PUBLISHED: std::sync::atomic::AtomicBool =
@@ -32,37 +32,12 @@ fn pipeline_seed_to_publish(gpu: &ui::gpu::DeviceHandle) -> Option<wgpu::Pipelin
     ui::pipeline_seed::empty(gpu)
 }
 
-/// Replace the seed for `gpu` under `dir` atomically, readable by every app and writable by the
-/// session only. `Ok(false)` when the backend has no cache data to share.
-fn write_pipeline_seed(
-    gpu: &ui::gpu::DeviceHandle,
-    cache: &wgpu::PipelineCache,
-    dir: &std::path::Path,
-) -> std::io::Result<bool> {
-    let Some(file) = ui::pipeline_seed::seed_file(dir, &gpu.adapter.get_info()) else {
-        return Ok(false);
-    };
-    let Some(data) = cache.get_data() else {
-        return Ok(false);
-    };
-    std::fs::create_dir_all(dir)?;
-    let staging = file.with_extension("tmp");
-    std::fs::write(&staging, &data)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o644))?;
-    }
-    std::fs::rename(&staging, &file)?;
-    Ok(true)
-}
-
 /// Write the session's pipelines where the launcher binds them, read-only, into every app.
 fn publish_pipeline_seed(gpu: &ui::gpu::DeviceHandle, cache: &wgpu::PipelineCache) {
     let dir = crate::shell::launcher::runtime_dir()
         .join("tilo")
         .join(launcher::gpu::PIPELINE_SEED_DIR_NAME);
-    match write_pipeline_seed(gpu, cache, &dir) {
+    match ui::pipeline_seed::publish(gpu, cache, &dir) {
         Ok(true) => tracing::info!(
             target: "shell::render",
             dir = %dir.display(),
@@ -168,8 +143,7 @@ impl RetainedGpuTarget {
             last_clip_single_group_full_attempts: 0,
             last_clip_single_group_sparse_attempts: 0,
             last_sparse_render_stats: None,
-            strip_layers: None,
-            last_layer_work: None,
+            layers: LayerPresenter::default(),
             staged_copies: None,
             raster_override: None,
             copy_scratch: ui::scroll_copy::CopyScratch::default(),
@@ -280,9 +254,7 @@ impl RetainedGpuTarget {
             self.base_color = color;
             self.invalidate();
             // The backdrop layer is rendered over the base colour.
-            if let Some(layers) = self.strip_layers.as_mut() {
-                layers.shown = None;
-            }
+            self.layers.forget();
         }
     }
 
@@ -441,19 +413,16 @@ impl RetainedGpuTarget {
     /// Whether [`Self::render_layers_until`] can present `cache`: a target
     /// rendered whole, in one piece, of the size the layers are drawn at.
     pub fn layers_eligible(&self, cache: &crate::shell::frame::FrameCache) -> bool {
-        !cache.strips.is_empty()
-            && cache.strips.len() == cache.layers.strips.len()
+        LayerPresenter::can_present(cache, self.size)
             && Self::band_rows(self.size).is_none()
-            && cache.width >= self.size.0
             && self.hdr_pass.is_none()
             && self.backdrop.is_none()
     }
 
     /// Render a frame that came as layers ([`crate::shell::frame::FramePaint::cache`])
-    /// by compositing retained layer textures: a strip pan copies what stays
-    /// on screen and rasterises only what it uncovered (see
-    /// [`strip_layers`]). `post_render` then reads the composited
-    /// target, as after [`Self::render_until`]. Waits for completion.
+    /// by compositing retained layer textures ([`LayerPresenter::present`]).
+    /// `post_render` then reads the composited target, as after
+    /// [`Self::render_until`]. Waits for completion.
     ///
     /// # Errors
     /// As [`Self::render_until`]; [`BridgeError::InvalidSize`] when the
@@ -483,47 +452,32 @@ impl RetainedGpuTarget {
         );
         self.reset_attempts();
         self.check_live(policy)?;
-        if self
-            .strip_layers
-            .as_ref()
-            .is_none_or(|layers| layers.size != self.size)
-        {
-            self.strip_layers = Some(strip_layers::StripLayers::new(&self.device, self.size));
-        }
-        let shown = self.strip_layers.as_ref().and_then(|layers| {
-            layers.shown.as_ref().map(|shown| {
-                let current = self.retained_target_valid
-                    && shown.revision.is_some()
-                    && self.last_successful_revision == shown.revision;
-                (shown, current)
-            })
-        });
-        let work = match shown {
-            Some((shown, current)) => strip_layers::plan(Some(shown), cache, self.size, current),
-            None => strip_layers::plan(None, cache, self.size, false),
-        };
+        let holds = self
+            .last_successful_revision
+            .filter(|_| self.retained_target_valid);
         // The target holds this frame only once the composite lands.
         self.invalidate();
-        let result = self.run_layer_work(cache, &work, policy, post_render);
+        let mut layers = std::mem::take(&mut self.layers);
+        let result = layers.present(
+            &mut TargetLayers {
+                target: self,
+                policy,
+                post_render,
+            },
+            cache,
+            revision,
+            holds,
+        );
+        self.layers = layers;
         match &result {
             Ok(()) => {
                 self.retained_target_valid = true;
                 self.finished_frames = self.finished_frames.saturating_add(1);
                 self.last_successful_revision = Some(revision);
-                if let Some(layers) = self.strip_layers.as_mut() {
-                    layers.shown = Some(strip_layers::Shown::of(cache, revision));
-                }
             }
-            Err(error) => {
-                if let Some(layers) = self.strip_layers.as_mut() {
-                    layers.shown = None;
-                }
-                if !matches!(error, BridgeError::RecoveryExhausted { .. }) {
-                    self.poisoned = true;
-                }
-            }
+            Err(BridgeError::RecoveryExhausted { .. }) => {}
+            Err(_) => self.poisoned = true,
         }
-        self.last_layer_work = Some(work);
         result?;
         Ok(GpuFrameStats {
             revision,
@@ -541,12 +495,9 @@ impl RetainedGpuTarget {
     /// desktop at rest drawn as layers
     /// ([`crate::shell::frame::FrameBuilder::layers_at_rest`]), so that the
     /// first frame of the next strip pan copies and composites instead of
-    /// rasterising every layer. Rasterises only the layers that differ from
-    /// what the textures hold, a whole one in bands
-    /// (`strip_layers::warm_bands`), and stops between two renders
-    /// as soon as `keep_going` says a frame waits, keeping what it finished.
-    /// The output target is left alone. Returns the pixels rasterised, or
-    /// `None` when the layers cannot present `cache`.
+    /// rasterising every layer ([`LayerPresenter::warm`]). The output target
+    /// is left alone. Returns the pixels rasterised, or `None` when the
+    /// layers cannot present `cache`.
     ///
     /// # Errors
     /// As [`Self::render_layers_until`]; a failure forgets the layers.
@@ -567,41 +518,24 @@ impl RetainedGpuTarget {
         );
         self.reset_attempts();
         self.check_live(policy)?;
-        if self
-            .strip_layers
-            .as_ref()
-            .is_none_or(|layers| layers.size != self.size)
-        {
-            self.strip_layers = Some(strip_layers::StripLayers::new(&self.device, self.size));
-        }
-        if let Some(layers) = self.strip_layers.as_mut() {
-            layers.prime_composite(&self.device, &self.queue);
-        }
-        let shown = self
-            .strip_layers
-            .as_ref()
-            .and_then(|layers| layers.shown.as_ref());
-        let work = strip_layers::plan(shown, cache, self.size, false);
-        if work.rasterises_nothing() {
-            return Ok(Some(0));
-        }
-        let mut shown = self
-            .strip_layers
-            .as_mut()
-            .and_then(|layers| layers.shown.take())
-            .unwrap_or_else(strip_layers::Shown::unknown);
-        // The output keeps the frame it shows, which these textures no
-        // longer composite to.
-        shown.revision = None;
-        let warmed = self.warm_into(&mut shown, cache, &work, policy, keep_going);
+        let mut layers = std::mem::take(&mut self.layers);
+        let warmed = layers.warm(
+            &mut TargetLayers {
+                target: self,
+                policy,
+                post_render: |_: &wgpu::Device,
+                              _: &mut wgpu::CommandEncoder,
+                              _: &wgpu::TextureView| {},
+            },
+            cache,
+            keep_going,
+        );
+        self.layers = layers;
         // The pan's first frame renders the scenes the warm just rendered:
         // the scratch they left pooled is the scratch it needs, so it must
         // not be trimmed as a full frame's would be. What no render takes
         // again ages out of the pool (`Renderer::set_shrink_scratch`).
         self.last_frame_full = false;
-        if let Some(layers) = self.strip_layers.as_mut() {
-            layers.shown = warmed.is_ok().then_some(shown);
-        }
         match warmed {
             Ok(pixels) => Ok(Some(pixels)),
             Err(error) => {
@@ -611,150 +545,6 @@ impl RetainedGpuTarget {
                 Err(error)
             }
         }
-    }
-
-    /// [`Self::warm_layers`]' renders, noting in `shown` each layer as it
-    /// is done. Returns the pixels rasterised.
-    fn warm_into(
-        &mut self,
-        shown: &mut strip_layers::Shown,
-        cache: &crate::shell::frame::FrameCache,
-        work: &strip_layers::LayerWork,
-        policy: CompletionPolicy,
-        keep_going: &dyn Fn() -> bool,
-    ) -> Result<u64, BridgeError> {
-        use strip_layers::{Layer, WorkspaceWork};
-        let bands =
-            strip_layers::warm_bands(self.size).filter(|_| self.renderer.sparse_fine_supported());
-        let whole = u64::from(self.size.0).saturating_mul(u64::from(self.size.1));
-        let mut pixels = 0_u64;
-        for (layer, wanted) in [
-            (Layer::Backdrop, work.backdrop),
-            (Layer::Chrome, work.chrome),
-        ] {
-            if !wanted {
-                continue;
-            }
-            if !keep_going() {
-                return Ok(pixels);
-            }
-            // A chrome texture that holds the drawing the chrome changed
-            // from takes only the tiles that changed (a clock tick).
-            let damaged = work
-                .chrome_tiles
-                .clone()
-                .filter(|_| layer == Layer::Chrome && self.renderer.sparse_fine_supported());
-            shown.forget(layer);
-            let (scene, base) = if layer == Layer::Backdrop {
-                (&cache.layers.backdrop, self.base_color)
-            } else {
-                (&cache.layers.chrome, Color::TRANSPARENT)
-            };
-            if let Some(rects) = damaged {
-                let area = rects
-                    .iter()
-                    .map(|rect| u64::from(rect.width).saturating_mul(u64::from(rect.height)))
-                    .fold(0, u64::saturating_add);
-                if !rects.is_empty() {
-                    self.render_layer(layer, scene, Some(rects), base, policy)?;
-                }
-                shown.record(layer, cache);
-                pixels = pixels.saturating_add(area);
-                continue;
-            }
-            let done =
-                self.warm_whole(layer, (scene, base), bands.as_deref(), policy, keep_going)?;
-            if !done {
-                return Ok(pixels);
-            }
-            shown.record(layer, cache);
-            pixels = pixels.saturating_add(whole);
-        }
-        if work.workspace == WorkspaceWork::Unchanged || !keep_going() {
-            return Ok(pixels);
-        }
-        shown.forget(Layer::Workspace);
-        let strips =
-            self.warm_strips(cache, &work.workspace, bands.as_deref(), policy, keep_going)?;
-        if let Some(strips) = strips {
-            shown.record(Layer::Workspace, cache);
-            pixels = pixels.saturating_add(strips);
-        }
-        Ok(pixels)
-    }
-
-    /// [`Self::warm_layers`]' work on the strips texture: the pixels it
-    /// rasterised, or `None` when it stopped for a frame before the texture
-    /// held `cache`'s strips.
-    fn warm_strips(
-        &mut self,
-        cache: &crate::shell::frame::FrameCache,
-        work: &strip_layers::WorkspaceWork,
-        bands: Option<&[vello::FineDamageRect]>,
-        policy: CompletionPolicy,
-        keep_going: &dyn Fn() -> bool,
-    ) -> Result<Option<u64>, BridgeError> {
-        use strip_layers::{Layer, WorkspaceWork};
-        let mut scene = Scene::new();
-        strip_layers::append_panned(&mut scene, &cache.layers, &cache.strips);
-        match work {
-            WorkspaceWork::Unchanged => Ok(Some(0)),
-            WorkspaceWork::Whole => {
-                let whole = u64::from(self.size.0).saturating_mul(u64::from(self.size.1));
-                let done = self.warm_whole(
-                    Layer::Workspace,
-                    (&scene, Color::TRANSPARENT),
-                    bands,
-                    policy,
-                    keep_going,
-                )?;
-                Ok(done.then_some(whole))
-            }
-            WorkspaceWork::Pan { copies, uncovered } => {
-                let copied = self.copy_bands(copies, "tilo-strip-layer-warm-pan");
-                if !copied || !uncovered.is_empty() {
-                    let regions = (copied && self.renderer.sparse_fine_supported())
-                        .then(|| uncovered.clone());
-                    self.render_layer(
-                        Layer::Workspace,
-                        &scene,
-                        regions,
-                        Color::TRANSPARENT,
-                        policy,
-                    )?;
-                }
-                Ok(Some(
-                    uncovered
-                        .iter()
-                        .map(|rect| u64::from(rect.width).saturating_mul(u64::from(rect.height)))
-                        .fold(0, u64::saturating_add),
-                ))
-            }
-        }
-    }
-
-    /// Rasterise `scene` over `base` into all of `layer`, band by band when
-    /// `bands` cuts it, asking `keep_going` between two bands. Whether the
-    /// whole layer got drawn.
-    fn warm_whole(
-        &mut self,
-        layer: strip_layers::Layer,
-        (scene, base): (&Scene, Color),
-        bands: Option<&[vello::FineDamageRect]>,
-        policy: CompletionPolicy,
-        keep_going: &dyn Fn() -> bool,
-    ) -> Result<bool, BridgeError> {
-        let Some(bands) = bands else {
-            self.render_layer(layer, scene, None, base, policy)?;
-            return Ok(true);
-        };
-        for (index, band) in bands.iter().enumerate() {
-            if index > 0 && !keep_going() {
-                return Ok(false);
-            }
-            self.render_layer(layer, scene, Some(vec![*band]), base, policy)?;
-        }
-        Ok(true)
     }
 
     /// The target's pixels, RGBA, row by row: what the final pass reads.
@@ -817,8 +607,8 @@ impl RetainedGpuTarget {
 
     /// The work the latest [`Self::render_layers_until`] planned.
     #[cfg(test)]
-    pub(crate) fn last_layer_work_for_test(&self) -> Option<&strip_layers::LayerWork> {
-        self.last_layer_work.as_ref()
+    pub(crate) fn last_layer_work_for_test(&self) -> Option<&ui::strip_layers::LayerWork> {
+        self.layers.last_work()
     }
 
     /// Keep the frame `damage` describes without rendering it, as the DRM
@@ -844,17 +634,9 @@ impl RetainedGpuTarget {
     }
 
     /// The target went from `previous` to `revision` without a pixel
-    /// changing: layers it was composited from as `previous` are still what
-    /// it shows, so the next pan composites only what moves.
+    /// changing ([`LayerPresenter::kept`]).
     pub(super) fn layers_kept(&mut self, previous: u64, revision: u64) {
-        if let Some(shown) = self
-            .strip_layers
-            .as_mut()
-            .and_then(|layers| layers.shown.as_mut())
-            && shown.revision == Some(previous)
-        {
-            shown.revision = Some(revision);
-        }
+        self.layers.kept(previous, revision);
     }
 
     /// Hand the next render of frame `revision` the copies its producer
@@ -930,96 +712,7 @@ impl RetainedGpuTarget {
 
     /// The work the latest [`Self::render_layers_until`] did, for counters.
     pub fn last_layer_raster_pixels(&self) -> Option<(u64, u64)> {
-        self.last_layer_work
-            .as_ref()
-            .map(|work| (work.raster_pixels(self.size), work.composite_pixels()))
-    }
-
-    fn run_layer_work(
-        &mut self,
-        cache: &crate::shell::frame::FrameCache,
-        work: &strip_layers::LayerWork,
-        policy: CompletionPolicy,
-        post_render: impl Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
-    ) -> Result<(), BridgeError> {
-        use strip_layers::{Layer, WorkspaceWork};
-        let transparent = Color::TRANSPARENT;
-        if work.backdrop {
-            let base = self.base_color;
-            self.render_layer(Layer::Backdrop, &cache.layers.backdrop, None, base, policy)?;
-        }
-        // The chrome's changed tiles, or all of it.
-        let chrome_tiles = work
-            .chrome_tiles
-            .clone()
-            .filter(|_| self.renderer.sparse_fine_supported());
-        if work.chrome && chrome_tiles.as_ref().is_none_or(|tiles| !tiles.is_empty()) {
-            self.render_layer(
-                Layer::Chrome,
-                &cache.layers.chrome,
-                chrome_tiles,
-                transparent,
-                policy,
-            )?;
-        }
-        let panned = || {
-            let mut scene = Scene::new();
-            strip_layers::append_panned(&mut scene, &cache.layers, &cache.strips);
-            scene
-        };
-        match &work.workspace {
-            WorkspaceWork::Unchanged => {}
-            WorkspaceWork::Whole => {
-                let scene = panned();
-                self.render_layer(Layer::Workspace, &scene, None, transparent, policy)?;
-            }
-            WorkspaceWork::Pan { copies, uncovered } => {
-                let copied = self.copy_bands(copies, "tilo-strip-layer-pan");
-                if !copied || !uncovered.is_empty() {
-                    let scene = panned();
-                    let regions = (copied && self.renderer.sparse_fine_supported())
-                        .then(|| uncovered.clone());
-                    self.render_layer(Layer::Workspace, &scene, regions, transparent, policy)?;
-                }
-            }
-        }
-        self.check_live(policy)?;
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("tilo-strip-layer-composite"),
-            });
-        if let (Some(layers), Some(rect)) = (self.strip_layers.as_ref(), work.composite) {
-            layers.encode_composite(
-                strip_layers::CompositeTarget {
-                    device: &self.device,
-                    queue: &self.queue,
-                    encoder: &mut encoder,
-                    output: &self.view,
-                },
-                rect,
-            );
-        }
-        post_render(&self.device, &mut encoder, &self.view);
-        let submission = self.queue.submit([encoder.finish()]);
-        self.wait_submission(submission, policy)
-    }
-
-    /// Move the strips layer's bands `copies` names. `false` when they were
-    /// not moved: the layer is then rasterised whole.
-    fn copy_bands(&mut self, copies: &[strip_layers::BandCopy], label: &'static str) -> bool {
-        if copies.is_empty() {
-            return true;
-        }
-        let Some(layers) = self.strip_layers.as_mut() else {
-            return false;
-        };
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
-        let moved = layers.encode_copies(&self.device, &mut encoder, copies);
-        self.queue.submit([encoder.finish()]);
-        moved
+        self.layers.last_pixels(self.size)
     }
 
     /// Render `scene` into one layer's texture, through the target's own
@@ -1027,7 +720,7 @@ impl RetainedGpuTarget {
     /// the layer's texture stands in for the target's for the render.
     fn render_layer(
         &mut self,
-        layer: strip_layers::Layer,
+        layer: &mut LayerTexture,
         scene: &Scene,
         regions: Option<Vec<vello::FineDamageRect>>,
         base_color: Color,
@@ -1052,13 +745,10 @@ impl RetainedGpuTarget {
     }
 
     /// Exchange the target's texture with `layer`'s, size included.
-    fn swap_layer(&mut self, layer: strip_layers::Layer) {
-        if let Some(layers) = self.strip_layers.as_mut() {
-            let slot = layers.texture_mut(layer);
-            std::mem::swap(&mut self.texture, &mut slot.texture);
-            std::mem::swap(&mut self.view, &mut slot.view);
-            std::mem::swap(&mut self.size, &mut slot.size);
-        }
+    fn swap_layer(&mut self, layer: &mut LayerTexture) {
+        std::mem::swap(&mut self.texture, &mut layer.texture);
+        std::mem::swap(&mut self.view, &mut layer.view);
+        std::mem::swap(&mut self.size, &mut layer.size);
     }
 
     /// Completed output for read-only sampling, never a display presentation claim.
@@ -1861,5 +1551,69 @@ impl RetainedGpuTarget {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         (texture, view)
+    }
+}
+
+/// The target as the raster its layers are presented with: each layer
+/// renders through the target's own render path under `policy`, and the
+/// composite is followed by `post_render` and waited for.
+struct TargetLayers<'a, F> {
+    target: &'a mut RetainedGpuTarget,
+    policy: CompletionPolicy,
+    post_render: F,
+}
+
+impl<F> LayerRaster for TargetLayers<'_, F>
+where
+    F: Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+{
+    type Error = BridgeError;
+
+    fn device(&self) -> &wgpu::Device {
+        &self.target.device
+    }
+
+    fn queue(&self) -> &wgpu::Queue {
+        &self.target.queue
+    }
+
+    fn size(&self) -> (u32, u32) {
+        self.target.size
+    }
+
+    fn sparse(&self) -> bool {
+        self.target.renderer.sparse_fine_supported()
+    }
+
+    fn base_color(&self) -> Color {
+        self.target.base_color
+    }
+
+    fn render(
+        &mut self,
+        layer: &mut LayerTexture,
+        scene: &Scene,
+        regions: Option<Vec<vello::FineDamageRect>>,
+        base: Color,
+    ) -> Result<(), BridgeError> {
+        self.target
+            .render_layer(layer, scene, regions, base, self.policy)
+    }
+
+    fn composite(
+        &mut self,
+        encode: impl FnOnce(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    ) -> Result<(), BridgeError> {
+        let target = &mut *self.target;
+        target.check_live(self.policy)?;
+        let mut encoder = target
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("tilo-strip-layer-composite"),
+            });
+        encode(&target.device, &target.queue, &mut encoder, &target.view);
+        (self.post_render)(&target.device, &mut encoder, &target.view);
+        let submission = target.queue.submit([encoder.finish()]);
+        target.wait_submission(submission, self.policy)
     }
 }

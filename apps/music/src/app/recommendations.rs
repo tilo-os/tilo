@@ -2,7 +2,7 @@ use ui::paint::PaintCtx;
 use ui::tokens::TextRole;
 use ui::widget::{Button, Column, Element, Row, Text, Toggle};
 
-use super::{Action, MusicApp, View, page_part};
+use super::{Action, Music, View, page_part};
 use crate::model::Library;
 use crate::recommendations::Preferences;
 use crate::recommendations::{Input, suggestions};
@@ -298,7 +298,7 @@ fn page(
     Box::new(content)
 }
 
-impl MusicApp {
+impl Music {
     pub(super) fn draw_recommendations(
         &mut self,
         ctx: &mut PaintCtx<'_>,

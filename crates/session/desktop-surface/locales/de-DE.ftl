@@ -1109,18 +1109,31 @@ browser-welcome-subtitle = Der gemeinsame Computer deines Teams. Alles, was du m
 browser-welcome-hint = Pfeiltasten bewegen, Eingabe öffnet, Strg+K findet jede App
 browser-welcome-hint-mac = Pfeiltasten bewegen, Eingabe öffnet, ⌘K findet jede App
 
-# The overview panel a host without its own overview draws
-overview-panel-title = Übersicht
-overview-panel-you-are-here = Du bist hier
-overview-panel-windows = Fenster hier
+# The workspace overview every desktop shows
+overview-title = Arbeitsbereichsübersicht
 overview-strip-empty = Keine Fenster
-overview-panel-no-windows = Noch keine Fenster
-overview-panel-window-count = { $count ->
-    [one] 1 Fenster
-   *[other] { $count } Fenster
-}
-overview-panel-go-to = Wechseln zu
-overview-panel-new-workspace = Neuer Arbeitsbereich
+overview-go-to = Wechseln zu
+overview-no-room = Kein Raum ausgewählt
+overview-you-are-here = Du bist hier
+overview-shared-out = Von hier aus geteilt
+overview-more-shares = und { $count } weitere
+overview-share-with-two = { $first } und { $second }
+overview-share-with-many = { $count ->
+        [one] { $first } und { $count } weitere Person
+       *[other] { $first } und { $count } weitere Personen
+    }
+overview-share-can-edit = { $with } darf bearbeiten
+overview-new-workspace = Neuer Arbeitsbereich
+overview-join-workspace = Einem Arbeitsbereich beitreten…
+overview-leave-workspace = Verlassen
+overview-a11y-leave = { $name } verlassen
+overview-two-facts = { $first }, { $second }
+overview-windows-title = Fenster in diesem Arbeitsbereich
+overview-windows-description = Jede Leiste dieses Arbeitsbereichs von oben nach unten, mit ihren Fenstern der Reihe nach. Die Pfeiltasten wechseln zwischen ihnen, Enter öffnet eines. F2 benennt die Leiste eines Fensters um, Alt mit Oben oder Unten verschiebt diese Leiste. Klicke oder tippe auf ein Fenster, um dorthin zu wechseln, klicke eines mit der mittleren Taste an, um es zu schließen, oder ziehe es auf einen anderen Arbeitsbereich oder eine andere Leiste, um es dorthin zu verschieben.
+overview-strips-title = Leisten in diesem Arbeitsbereich
+overview-strip-rename = Umbenennen
+overview-strip-move-up = Nach oben
+overview-strip-move-down = Nach unten
 browser-new-workspace-name = Arbeitsbereich { $number }
 room-notice-joined = { $name } ist dazugekommen
 room-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } umbenannt

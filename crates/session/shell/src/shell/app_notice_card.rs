@@ -323,10 +323,6 @@ impl Widget for AppNoticeCard {
 }
 
 impl AppWidget for AppNoticeCard {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
-
     fn app_kind(&self) -> AppKind {
         AppKind::Settings
     }
@@ -390,10 +386,6 @@ impl ui::widget::Decorator for ReopenCard {
 }
 
 impl AppWidget for ReopenCard {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
-
     fn app_kind(&self) -> AppKind {
         AppKind::Settings
     }

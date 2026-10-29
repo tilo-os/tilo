@@ -6,8 +6,6 @@
 mod guard;
 mod join;
 pub use join::BoundedJoinResponse;
-pub(crate) mod json;
-pub(crate) mod native;
 pub(crate) mod outer;
 pub(crate) use outer::decode;
 

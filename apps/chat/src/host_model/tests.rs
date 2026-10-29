@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::MountedChat;
 use std::{cell::Cell, task::Poll};
 use ui::models::{ModelBackend, ModelResponse, StopReason, StreamSink, Usage};
 
@@ -141,7 +142,7 @@ fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuat
         assert!(!stream.detail.is_empty());
         assert!(work.trace.is_empty());
         assert!(!original.text.contains("inert"));
-        app.with_surface::<ChatApp, _>(|surface| {
+        app.with_chat(|surface| {
             assert!(!surface.host_model.running());
             assert!(!surface.host_model.needs_frame());
             assert_eq!(
@@ -195,7 +196,7 @@ fn mounted_reasoning_overflow_splits_deltas_and_persists_terminal_without_contin
         (MAX_REASONING_BYTES / crate::record::MAX_MESSAGE_TEXT_BYTES + 1) as u64
     );
     assert!(work.trace.is_empty());
-    app.with_surface::<ChatApp, _>(|surface| {
+    app.with_chat(|surface| {
         assert!(!surface.host_model.running());
         assert_eq!(surface.model_controls("c_chat"), vec!["ask", "retry"]);
     })
@@ -221,7 +222,7 @@ fn mounted_contradictory_final_fails_and_keeps_persisted_partial() {
         assert_eq!(stream.finish, Some(AgentFinish::Failed));
         assert!(stream.detail.contains("previously published"));
         assert!(work.trace.is_empty());
-        app.with_surface::<ChatApp, _>(|surface| {
+        app.with_chat(|surface| {
             let attempt = surface.host_model.attempt.as_ref().unwrap();
             assert_eq!(
                 attempt.state.error.as_ref().unwrap().kind,
@@ -609,7 +610,7 @@ fn assert_mounted_model_attribution(
     a: &mut ui::framework::testing::TestApp<crate::ChatShell>,
     reply: &str,
 ) {
-    a.with_surface::<ChatApp, _>(|surface| {
+    a.with_chat(|surface| {
         let message = surface
             .search_messages
             .iter()
@@ -639,7 +640,7 @@ fn assert_mounted_model_attribution(
     })
     .unwrap();
     let assistive_label = a
-        .with_surface::<ChatApp, _>(|surface| {
+        .with_chat(|surface| {
             let message = surface
                 .search_messages
                 .iter()
@@ -656,7 +657,7 @@ fn assert_mounted_model_attribution(
     let row = message_resource(&resources, &crate::testing::item("messages", reply)).unwrap();
     // The document owns the primary label (the message text); the live
     // surface contributes attribution in the resource's presentation.
-    a.with_surface::<ChatApp, _>(|surface| {
+    a.with_chat(|surface| {
         let live = surface
             .published_rows()
             .into_iter()
@@ -688,7 +689,7 @@ fn captured_provider_stream_keeps_the_real_invoker_and_model_attribution() {
     )
     .unwrap();
     let label = capture
-        .with_surface::<ChatApp, _>(|surface| {
+        .with_chat(|surface| {
             let message = surface
                 .search_messages
                 .iter()
@@ -757,7 +758,7 @@ fn model_capabilities_are_mount_local() {
         serde_json::json!({"expanded": true}),
     )
     .unwrap();
-    a.with_surface::<ChatApp, _>(|surface| {
+    a.with_chat(|surface| {
         let message = surface
             .search_messages
             .iter()
@@ -770,7 +771,7 @@ fn model_capabilities_are_mount_local() {
         );
     })
     .unwrap();
-    a.with_surface::<ChatApp, _>(|surface| assert!(surface.host_model.models.is_available()))
+    a.with_chat(|surface| assert!(surface.host_model.models.is_available()))
         .unwrap();
     assert_eq!(first.requests.borrow().len(), 1);
     assert!(second.requests.borrow().is_empty());

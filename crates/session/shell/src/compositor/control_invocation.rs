@@ -5,8 +5,8 @@
 //! when its answer arrives, and a settling job when the broker records a
 //! change to it ([`invocation_wake`]); the loop then polls the connection's
 //! [`ControlInvocation`] again. [`ControlInvocation::recheck_at`] is the one
-//! deadline: when a `wait_ms` runs out, or a fallback for an answer that
-//! cannot signal (an admission's own timeout).
+//! deadline: when a `wait_ms` runs out, when an admission has waited
+//! [`MAX_ADMISSION_WAIT`], or a fallback for an answer that cannot signal.
 
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,12 @@ use crate::shell::test_control;
 /// The longest a reply waits for its invocation to settle, whatever
 /// `wait_ms` asked: the MCP door's bound.
 pub(crate) const MAX_SETTLE_WAIT: Duration = Duration::from_secs(30);
+
+/// The longest a reply waits for its invocation to be admitted. An
+/// admission whose answer never comes (storage that stopped, a device that
+/// went away) answers `action_timed_out` then rather than leaving the
+/// connection without a reply.
+pub(crate) const MAX_ADMISSION_WAIT: Duration = MAX_SETTLE_WAIT;
 
 /// How long an invocation that may not signal its answer is left before
 /// the loop looks again.
@@ -76,8 +82,11 @@ pub(crate) struct ControlInvocation {
 }
 
 enum Stage {
-    /// Not admitted yet.
-    Admission(PendingInvocation),
+    /// Not admitted yet; answered as timed out at `by`.
+    Admission {
+        ticket: PendingInvocation,
+        by: Option<Instant>,
+    },
     /// Admitted as a broker job that had not settled when last read.
     Settling(Settling),
 }
@@ -106,7 +115,10 @@ impl ControlInvocation {
     ) -> Self {
         Self {
             action,
-            stage: Stage::Admission(ticket),
+            stage: Stage::Admission {
+                ticket,
+                by: tilo_clock::now().checked_add(MAX_ADMISSION_WAIT),
+            },
             settle_by,
         }
     }
@@ -148,11 +160,21 @@ impl ControlInvocation {
             settle_by,
         } = self;
         let mut settling = match stage {
-            Stage::Admission(ticket) => {
+            Stage::Admission { ticket, by } => {
                 return match ticket() {
+                    Ok(None) if by.is_some_and(|by| tilo_clock::now() >= by) => {
+                        ControlInvocationPoll::Ready(test_control::Response::Err {
+                            code: "action_timed_out".into(),
+                            message: format!(
+                                "the action was not admitted within {}s; it may still \
+                                 take effect, so read its state before invoking it again",
+                                MAX_ADMISSION_WAIT.as_secs()
+                            ),
+                        })
+                    }
                     Ok(None) => ControlInvocationPoll::Waiting(Self {
                         action,
-                        stage: Stage::Admission(ticket),
+                        stage: Stage::Admission { ticket, by },
                         settle_by,
                     }),
                     Ok(Some(receipt)) => match Self::admitted(action, receipt, settle_by) {
@@ -190,9 +212,9 @@ impl ControlInvocation {
     pub(crate) fn recheck_at(&self, now: Instant) -> Option<Instant> {
         let soon = now.checked_add(RECHECK);
         match &self.stage {
-            // An admission wakes the loop when it is answered; its own
+            // An admission wakes the loop when it is answered; its
             // timeout does not.
-            Stage::Admission(_) => soon,
+            Stage::Admission { by, .. } => [*by, soon].into_iter().flatten().min(),
             Stage::Settling(settling) if settling.change.is_some() => self.settle_by,
             Stage::Settling(_) => [self.settle_by, soon].into_iter().flatten().min(),
         }
@@ -475,5 +497,27 @@ mod tests {
             panic!("a refusal answers");
         };
         assert_eq!(code, "action_failed");
+    }
+
+    #[test]
+    fn an_admission_that_never_answers_times_out() {
+        use ui::time::testing::with_monotonic_time;
+        let start = Instant::now();
+        let never: PendingInvocation = Rc::new(|| Ok(None));
+        let waiting = with_monotonic_time(start, || {
+            ControlInvocation::admitting(never, serde_json::json!("a"), None)
+        });
+        let ControlInvocationPoll::Waiting(waiting) =
+            with_monotonic_time(start, || waiting.poll(&mut Job::default()))
+        else {
+            panic!("still within the admission wait");
+        };
+        let past = start.checked_add(MAX_ADMISSION_WAIT).expect("later");
+        let ControlInvocationPoll::Ready(test_control::Response::Err { code, .. }) =
+            with_monotonic_time(past, || waiting.poll(&mut Job::default()))
+        else {
+            panic!("an admission past its wait answers");
+        };
+        assert_eq!(code, "action_timed_out");
     }
 }

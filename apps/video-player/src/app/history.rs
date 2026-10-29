@@ -2,7 +2,8 @@
 
 use super::{
     LocalMediaEntry, PlayerState, RESUME_END_MARGIN_MS, RESUME_WRITE_INTERVAL_MS, RecentMedia,
-    ResumeWrite, Widget, configured_player, local_source_token, resume_key, unix_now_ms,
+    RecentVideos, ResumeWrite, Widget, configured_player, local_source_token, resume_key,
+    unix_now_ms,
 };
 
 impl PlayerState {
@@ -32,10 +33,13 @@ impl PlayerState {
             .iter()
             .filter_map(|entry| self.saved_recent_row(entry))
             .collect();
-        match &self.setting {
-            Some(setting) => setting.update(|stored| stored.recent_history = entries),
-            None => Ok(()),
-        }
+        let Some((record, device)) = &self.recents else {
+            return Ok(());
+        };
+        let rows = serde_json::to_value(&entries).map_err(std::io::Error::other)?;
+        record
+            .invoke(&RecentVideos::KEEP.with((device.clone(), rows)))
+            .map_err(std::io::Error::other)
     }
 
     /// The row `entry` is kept as, or `None` when it cannot be kept: a page's
@@ -65,20 +69,28 @@ impl PlayerState {
             .map_or(0, |(position_ms, _)| position_ms)
     }
 
-    /// Write where the open video stands into its Recent row, leaving the
-    /// rest of this device's settings as they are.
+    /// Write where the videos stand into their Recent rows: one edit for
+    /// each row whose position moved, leaving the rest as they are.
     pub(super) fn persist_resume_position(&self) -> std::io::Result<()> {
-        let Some(setting) = &self.setting else {
+        let Some((record, device)) = &self.recents else {
             return Ok(());
         };
-        let resume = &self.resume;
-        setting.update(|stored| {
-            for row in &mut stored.recent_history {
-                row.position_ms = resume
-                    .point(&resume_key(&row.source))
-                    .map_or(0, |(position_ms, _)| position_ms);
-            }
-        })
+        let moved: Vec<(String, u64)> = record.with(|recent| {
+            recent
+                .on(device)
+                .iter()
+                .filter_map(|row| {
+                    let position_ms = self.position_of(&row.source);
+                    (position_ms != row.position_ms).then(|| (row.id.clone(), position_ms))
+                })
+                .collect()
+        });
+        for (id, position_ms) in moved {
+            record
+                .invoke(&RecentVideos::STOOD.with((device.clone(), id, position_ms)))
+                .map_err(std::io::Error::other)?;
+        }
+        Ok(())
     }
 
     /// Remember where the open video stands, so opening it again resumes

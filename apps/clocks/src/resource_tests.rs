@@ -316,11 +316,14 @@ fn one_published_tree_offers_every_clock_and_floats_timers_on_this_device_only()
         Some("At 7:30 AM, repeating Once.")
     );
 
-    // Phase: floating a timer from its row changes this device's settings,
+    // Phase: floating a timer from its row changes this device's entry in the record,
     // not the clocks everyone shares, and the row offers the way back.
     app.call_on(&timer, "float-timer", serde_json::json!({}))
         .unwrap();
-    let device = app.settings::<OnThisDevice>().get();
+    let device = app
+        .person::<ClocksOnDevices>()
+        .unwrap()
+        .with(|kept| kept.on("test-device"));
     assert_eq!(
         device.floating_timers.into_iter().collect::<Vec<_>>(),
         vec![timer.rsplit('/').next().unwrap().to_owned()]

@@ -282,7 +282,6 @@ mod tests {
         "distinct_letters_shots.rs",
         "distinct_letters_specimen.rs",
         "form_composition_shots.rs",
-        "managed_history_probe.rs",
         "manual_composition_shots.rs",
         "multiline_typing.rs",
         "native_file_picker.rs",

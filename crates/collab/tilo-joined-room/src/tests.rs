@@ -524,7 +524,7 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
 }
 
 #[test]
-fn an_unchanged_committed_read_does_not_restore_the_room() {
+fn an_unchanged_committed_read_does_not_capture_the_document() {
     let joined = enrolled();
     let member = member().verifying_key().to_bytes();
     let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
@@ -533,23 +533,23 @@ fn an_unchanged_committed_read_does_not_restore_the_room() {
             view.read_document(reader, APP, "", known, usize::MAX, joined.now)
         })
     };
-    crate::document_read::reset_room_restores();
+    crate::document_read::reset_captures();
     let Ok(DocumentRead::Captured(document)) = read(member, None) else {
         panic!("the first read admits the document");
     };
     assert!(
-        crate::document_read::room_restores() > 0,
-        "a first read restores the room so the counter can see a later skip"
+        crate::document_read::captures() > 0,
+        "a first read captures the document so the counter can see a later skip"
     );
-    let restores = crate::document_read::room_restores();
+    let captures = crate::document_read::captures();
     assert!(matches!(
         read(member, Some(document.revision)),
         Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
     ));
     assert_eq!(
-        crate::document_read::room_restores(),
-        restores,
-        "an idle reread of the same revision must not restore the room"
+        crate::document_read::captures(),
+        captures,
+        "an idle reread of the same revision must not capture the document"
     );
     assert!(
         read(stranger, Some(document.revision)).is_err(),
@@ -572,7 +572,7 @@ fn a_held_revision_is_checked_from_heads_with_the_read_permission() {
             view.holds_revision(reader, APP, "", known, joined.now)
         })
     };
-    crate::document_read::reset_room_restores();
+    crate::document_read::reset_captures();
     assert_eq!(holds(member, document.revision), Ok(Some(true)));
     assert_eq!(
         holds(member, [0; 32]),
@@ -580,9 +580,9 @@ fn a_held_revision_is_checked_from_heads_with_the_read_permission() {
         "another revision is not held"
     );
     assert_eq!(
-        crate::document_read::room_restores(),
+        crate::document_read::captures(),
         0,
-        "answered from the admitted heads, without restoring the room"
+        "answered from the admitted heads, without capturing the document again"
     );
     assert!(
         holds(stranger, document.revision).is_err(),

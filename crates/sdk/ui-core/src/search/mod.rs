@@ -66,7 +66,7 @@ pub use request::{
     SearchRequestScope, open_search_binding, open_search_invocation, scope_contains, search_button,
 };
 pub(crate) use request::{search_address, search_resource};
-pub use row::SearchRow;
+pub use row::{ActivationModifier, Alternate, CommandRow, RowFace, SearchRow};
 /// Fold text the way every index does: case, compatibility forms and
 /// alphabetic diacritics.
 pub use tilo_search::fold as fold_search_text;

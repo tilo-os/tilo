@@ -6,7 +6,7 @@
 //! playlists) through a [`NavFeed`], and what plays through a
 //! [`TransportFeed`]; what the person chose in either comes back as the
 //! window's own actions, never stored on the shell's side. The transport's
-//! controls run Music's own playback effects ([`MusicApp::transport_actions`]),
+//! controls run Music's own playback effects ([`Music::transport_actions`]),
 //! the ones an agent invokes, so the person and an agent steer one player
 //! the same way.
 
@@ -20,7 +20,7 @@ use ui::widget::{
     TransportEvent, TransportFeed, TransportRepeat, TransportState, WindowBarLink,
 };
 
-use super::{Action, MusicApp, View};
+use super::{Action, Music, View};
 use crate::actions::MusicEffect;
 use crate::model::{Library, RepeatMode};
 
@@ -103,7 +103,7 @@ pub(super) fn place_view(id: &str) -> Option<View> {
     DESTINATIONS.get(index).map(|(_, _, view)| view.clone())
 }
 
-impl MusicApp {
+impl Music {
     /// This window in a shell: its sidebar shows what `places` shows, its
     /// band's transport what `transport` shows, the shell's own buttons
     /// join the window bar through `bar`, and `pane` is the shell's front

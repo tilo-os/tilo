@@ -21,7 +21,7 @@ use ui::tilo_resource::Effect as _;
 use crate::actions::{MusicEffect, Place};
 use vello::peniko::BlendMode;
 
-use super::{Action, Fill, Instant, Look, MusicApp, Rect, Theme, View, line_of};
+use super::{Action, Fill, Instant, Look, Music, Rect, Theme, View, line_of};
 
 /// The page's song and the cover's flight between the band and the page.
 pub(in crate::app) struct NowPlaying {
@@ -177,7 +177,7 @@ impl Layout {
     }
 }
 
-impl MusicApp {
+impl Music {
     /// What the band's cover does: open Now Playing, or close it from it.
     pub(in crate::app) fn now_playing_toggle(&self) -> Action {
         if self.view == View::NowPlaying {
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn the_cover_opens_now_playing_and_closes_it_again() {
-        let mut app = MusicApp::new();
+        let mut app = Music::new();
         app.reload(&crate::seed::sample_document());
         app.on_nav(View::Songs);
         app.pb.current = Some("tk_g1".into());

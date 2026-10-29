@@ -176,6 +176,9 @@ pub struct Window {
     indexes: Option<std::path::PathBuf>,
     /// The room this window shows, which names where its indexes are kept.
     room: Option<String>,
+    /// The record of the room it shows, when that is not the workspace's record of the app (a
+    /// member's own): its indexes are its own.
+    record: Option<String>,
     /// The room's record, while it is read off the frame and the window shows what the indexes
     /// hold ([`Self::opening`]).
     opening: Option<ui::record::RecordOpening>,
@@ -224,6 +227,7 @@ impl Window {
             names,
             indexes: None,
             room: None,
+            record: None,
             opening: None,
             undo: ui::undo::UndoAccess::new(),
             undrawn: None,
@@ -262,15 +266,25 @@ impl Window {
         self
     }
 
+    /// This window showing `record` of its room, a record other than the workspace's record
+    /// of the app (the person's own): it keeps that record's indexes apart from the room's.
+    #[must_use]
+    pub fn of_record(mut self, record: &str) -> Self {
+        self.record = Some(record.to_owned());
+        self.place_indexes();
+        self
+    }
+
     /// Where the indexes of this window's room are kept, when they are kept on disk: a past
     /// version and a capture build theirs in memory.
     fn place_indexes(&mut self) {
-        let dir = match (self.mode, &self.indexes, &self.room) {
-            (RunMode::Live, Some(indexes), Some(room)) => {
-                Some(tilolang_tilo::index::room_dir(indexes, room))
-            }
-            _ => None,
-        };
+        let dir =
+            match (self.mode, &self.indexes, &self.room) {
+                (RunMode::Live, Some(indexes), Some(room)) => Some(
+                    tilolang_tilo::index::record_dir(indexes, room, self.record.as_deref()),
+                ),
+                _ => None,
+            };
         self.instance.set_index_dir(dir);
     }
 

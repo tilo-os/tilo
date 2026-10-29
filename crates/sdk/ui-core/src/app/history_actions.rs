@@ -24,6 +24,7 @@ use tilo_actions::{
 
 use super::App;
 use crate::history_source::{AuthorDirectory, DEFAULT_MAX_ENTRIES, committed_heads};
+use crate::host_core::HostCore as _;
 use crate::i18n::I18nManager;
 use crate::permissions::{ActionKind, PermissionScope, UserId};
 use crate::standalone_history::{
@@ -473,7 +474,7 @@ impl App {
             document_identity: self.state.document_identity(),
             permissions: &self.permission_ctx,
         };
-        let target = HistoryTarget::Legacy {
+        let target = HistoryTarget::Outer {
             app_id: crate::collaboration::local_app_id(),
             record: active_record.cloned(),
             document_identity: context.document_identity,

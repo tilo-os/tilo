@@ -10,9 +10,6 @@ impl AdmittedNodeNames {
     pub(crate) fn insert(&mut self, node: TaffyNodeId, pointer: *mut dyn Widget, name: String) {
         self.names.insert(node, (pointer, name));
     }
-    pub(crate) fn remove(&mut self, node: TaffyNodeId) {
-        self.names.remove(&node);
-    }
     fn get(&self, node: TaffyNodeId, pointer: *mut dyn Widget) -> Option<&str> {
         let (admitted, name) = self.names.get(&node)?;
         std::ptr::eq(*admitted, pointer).then_some(name)

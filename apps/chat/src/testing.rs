@@ -111,7 +111,7 @@ pub(crate) fn top_level_in(records: &ui::record::RecordStore, channel: &str) -> 
 pub(crate) fn mounted_messages(
     app: &mut ui::framework::testing::TestApp<crate::ChatShell>,
 ) -> crate::messages::Messages {
-    app.with_surface::<crate::ChatApp, _>(|surface| surface.held_messages())
+    app.with_chat(|surface| surface.held_messages())
         .unwrap_or_default()
 }
 
@@ -409,4 +409,22 @@ pub(crate) fn chat_with_kept_messages(version: u64, flat: bool) -> AutoCommit {
         .unwrap();
     doc.commit();
     doc
+}
+
+/// The chat a mounted app's window shows, reached as a test drives it.
+pub(crate) trait MountedChat {
+    /// The chat the window shows.
+    fn chat(&mut self) -> std::cell::RefMut<'_, crate::ChatApp>;
+    /// Visit the chat the window shows, as the next frame draws it.
+    fn with_chat<T>(&mut self, visit: impl FnOnce(&mut crate::ChatApp) -> T) -> Option<T>;
+}
+
+impl MountedChat for ui::framework::testing::TestApp<crate::ChatShell> {
+    fn chat(&mut self) -> std::cell::RefMut<'_, crate::ChatApp> {
+        self.surface_mut::<crate::ChatWindow>().state()
+    }
+
+    fn with_chat<T>(&mut self, visit: impl FnOnce(&mut crate::ChatApp) -> T) -> Option<T> {
+        self.with_surface::<crate::ChatWindow, _>(|window| visit(&mut window.state()))
+    }
 }

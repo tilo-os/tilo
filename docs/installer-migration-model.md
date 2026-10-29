@@ -51,7 +51,7 @@ What is moved. `portable_transfer::Purpose` is the one kind enum.
 
 | Kind | Source | Applied by |
 |---|---|---|
-| Home | Granted folders with exclusions, including cloud and Steam trees | The verified copier (`migration.rs`), or the live retained projection |
+| Home | Granted folders with exclusions, including cloud and Steam trees | Adoption of the admitted Home unit, or the live retained projection |
 | Applications | Flatpak apps and their data | Flatpak restore |
 | Browser | Products and profiles: bookmarks, history, supported sessions | Canonical signed first-launch import |
 | Accounts | Mail (Thunderbird), contacts, calendars, GNOME Online Accounts, iCloud | The account store and the streaming mail importer |

@@ -106,14 +106,6 @@ fn protected_inventory_codec_refuses_shape_operation_and_content_substitutions()
     assert_eq!(decoded, compact);
     let binding = OriginalInventoryBinding::parse(&decoded).unwrap().unwrap();
     binding.validate_bytes(&bytes).unwrap();
-    assert_eq!(
-        inline.applications_copy_plan().unwrap().flatpak_inventory,
-        inline.flatpak_inventory
-    );
-    assert!(
-        decoded.applications_copy_plan().is_err(),
-        "marker is no ordinary copy inventory"
-    );
     assert!(
         decoded.original_inventory_selection().is_err(),
         "marker alone cannot supply registration bytes"
@@ -236,12 +228,7 @@ fn protected_inventory_codec_preserves_ordinary_64k_plan_limit_without_truncatio
         .unwrap()
         .validate_bytes(&bytes)
         .unwrap();
-    assert!(
-        decoded.applications_copy_plan().is_err(),
-        "large inventory marker doesn't authorize ordinary copy"
-    );
     // A small ordinary inline plan keeps its existing interoperable encoding.
     let ordinary = original_inventory_codec_sample(1);
     assert_eq!(Plan::parse(&ordinary.bytes().unwrap()).unwrap(), ordinary);
-    ordinary.applications_copy_plan().unwrap();
 }

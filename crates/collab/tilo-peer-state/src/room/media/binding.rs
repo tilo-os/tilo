@@ -1,6 +1,5 @@
 //! Exact Chat binding data, read from any admitted document.
 use super::{CallPhaseV1, ChatCallBindingV1, MediaPolicyError, RoomMediaV1, read::Error};
-use crate::resources::native::NativeDocument;
 use crate::room::read::{self, LegacyRead, ReadError, RoomRead, RoomValue, Selection};
 use automerge::{ObjId, ReadDoc};
 
@@ -159,17 +158,6 @@ pub(super) fn resolve_legacy(
     }
     resolve(app, record, channel, &LegacyRead(doc)).map_err(super::read::legacy_error)
 }
-pub(crate) fn resolve_native(
-    app: &str,
-    record: &str,
-    channel: &str,
-    doc: &NativeDocument,
-) -> Result<Binding, Error> {
-    if doc.has_missing_dependencies() {
-        return Err(policy(MediaPolicyError::Binding));
-    }
-    resolve(app, record, channel, &doc.read())
-}
 fn validate_selected(
     policy_value: &RoomMediaV1,
     app: &str,
@@ -197,16 +185,6 @@ pub(super) fn validate_legacy(
         resolve_legacy(app, record, channel, doc).map_err(policy)
     })
     .map_err(super::read::legacy_error)
-}
-pub(crate) fn validate_native(
-    policy: &RoomMediaV1,
-    app: &str,
-    record: &str,
-    doc: &NativeDocument,
-) -> Result<(), Error> {
-    validate_selected(policy, app, record, |channel| {
-        resolve_native(app, record, channel, doc)
-    })
 }
 /// The winning map value of `key` under `parent`.
 fn winner_map<R: RoomRead>(room: &R, parent: &R::Object, key: &str) -> Result<R::Object, Error> {

@@ -292,7 +292,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     let cy_laptop = cy.enrol("cy-laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let room = create_and_enter(&relay, &host, &laptop, "Lounge").await;
+    let room = create_and_enter(&relay, &laptop, "Lounge").await;
     // Guests are Editors, as a public room admits them; Mo is made the
     // room's Moderator once he is in.
     admit(
@@ -511,7 +511,7 @@ async fn a_public_rooms_guest_is_answered_the_role_it_was_admitted_with() {
     let ada_browser = ada.enrol("ada-browser", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
-    let room = create_and_enter(&relay, &host, &laptop, "Lounge").await;
+    let room = create_and_enter(&relay, &laptop, "Lounge").await;
     admit(
         &relay,
         &laptop,

@@ -1857,10 +1857,10 @@ fn moved_render_apart(
     };
     let mut apart = (0, 0_u8);
     for copy in copies {
-        for y in copy.y..copy.y + copy.height {
+        for dy in 0..copy.height {
             for dx in 0..copy.width {
-                let moved = pixel(before, copy.src_x + dx, y);
-                let fresh = pixel(after, copy.dst_x + dx, y);
+                let moved = pixel(before, copy.src_x + dx, copy.src_y + dy);
+                let fresh = pixel(after, copy.dst_x + dx, copy.dst_y + dy);
                 let step = moved
                     .iter()
                     .zip(&fresh)

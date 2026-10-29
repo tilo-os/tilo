@@ -270,6 +270,8 @@ pub struct Instance {
     started: bool,
     loading: bool,
     moved: bool,
+    /// Whether the package's migrations ran over the room record since the window opened.
+    migrated: bool,
     /// The later build this instance runs, 0 for the installed one.
     generation: u64,
     follows: bool,
@@ -330,6 +332,7 @@ impl Instance {
             started: false,
             loading: false,
             moved: false,
+            migrated: false,
             generation: 0,
             follows: false,
             taken_build: None,
@@ -557,6 +560,14 @@ impl Instance {
             let synced = doc.is_some_and(|doc| host.sync_from(doc));
             if synced | host.poll_index() {
                 self.moved = true;
+            }
+            // Opened on what an earlier version wrote, the package brings it to where it keeps
+            // it now, once the record is had; what they commit goes as any action does.
+            if doc.is_some() && !self.migrated && self.mode == Mode::Live {
+                self.migrated = true;
+                if host.migrate() > 0 {
+                    self.moved = true;
+                }
             }
             return Some(host.clone());
         }

@@ -10,18 +10,13 @@
 //! offer the views and verbs that act on them.
 
 use std::path::PathBuf;
-use std::rc::Rc;
 
 use tilo_content::ContentStore;
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{
-    EffectAnswer, EffectCx, Effected, LaunchInput, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::effect::Answers;
-use ui::tilo_resource::{self, Derived, Effect as _, Id, Invoke, Refusal, resource};
+use ui::tilo_resource::{self, Derived, Id, Invoke, Refusal, resource};
 use ui::widget::{ContentKind, Element, NavList, NavShell};
 
 use crate::actions::PhotosEffect;
@@ -448,7 +443,7 @@ pub fn album_resource_id(album: &str) -> String {
     tilo_resource::items::item_resource_id::<PhotoLibrary>("albums", &Id::from_raw(album))
 }
 
-/// Framework app: the photos widget is the surface over [`PhotoLibrary`].
+/// Framework app: the photos window is the view of [`PhotoLibrary`].
 pub struct PhotosShell;
 
 impl ResourceApp for PhotosShell {
@@ -468,9 +463,6 @@ impl ResourceApp for PhotosShell {
         } else {
             PhotosApp::with_content(content)
         };
-        // A search hit, or an agent's `open`, shows the photograph or album
-        // it names.
-        cx.on_open_item(app.opener());
         // Any other place a hit names opens through the view it offers.
         let (live, dispatcher) = (cx.live().clone(), cx.dispatcher());
         cx.on_open(
@@ -502,7 +494,11 @@ impl ResourceApp for PhotosShell {
             .with_accessible_name(crate::strings::tr("photos-library"))
             .with_headings()
             .fed_by(&places);
-        Box::new(shell.sidebar(Box::new(sidebar)).content(cx.surface(app)))
+        Box::new(
+            shell
+                .sidebar(Box::new(sidebar))
+                .content(crate::app::view(cx, app)),
+        )
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -549,59 +545,6 @@ impl ResourceApp for PhotosShell {
     #[cfg(feature = "samples")]
     fn scenario(name: Option<&str>) -> Vec<Invoke<PhotoLibrary>> {
         crate::sample::scenario(name)
-    }
-}
-
-impl ResourceSurface<PhotoLibrary, PhotosEffect> for PhotosApp {
-    fn present(&mut self, state: &Rc<PhotoLibrary>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<PhotoLibrary>) {
-        self.attach_framework(cx.dispatcher(), cx.actions());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario.unwrap_or("opened"));
-    }
-
-    fn effect(
-        &mut self,
-        effect: PhotosEffect,
-        cx: &mut EffectCx<PhotoLibrary, Self>,
-    ) -> EffectAnswer {
-        let job = PhotosEffect::declarations()
-            .iter()
-            .any(|decl| decl.id == effect.id() && matches!(decl.answers, Answers::Later { .. }));
-        let invocation = cx.invocation().unwrap_or_default();
-        // A job's work reports under its invocation from the moment it
-        // starts, so its answer is kept before the work begins.
-        if job {
-            let reply = cx.reply();
-            self.register_reply(invocation, reply);
-        }
-        let state = cx.live().get();
-        match self.answer_effect(effect, invocation, &state) {
-            Ok(Some(output)) if job => {
-                self.settle_now(invocation, Ok(output));
-                Ok(Effected::Pending)
-            }
-            Ok(Some(output)) => Ok(Effected::Done(output)),
-            Ok(None) if job => Ok(Effected::Pending),
-            Ok(None) => Ok(Effected::done()),
-            Err(error) => {
-                self.forget_reply(invocation);
-                Err(error)
-            }
-        }
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.search_status_row().into_iter().collect()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.search_status_row().filter(|row| row.id() == id)
     }
 }
 

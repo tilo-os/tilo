@@ -255,7 +255,7 @@ pub fn record_dispatched_action<S: std::hash::BuildHasher>(
 
 /// Bound host variant. The exclusive owner keeps root and both maps stable.
 /// `order` names the mapped nodes to visit: every node that can report a
-/// bracket (a bound or legacy node, a [`CommittedActions`] widget), or all.
+/// bracket (a bound node, a [`CommittedActions`] widget), or all.
 pub(crate) unsafe fn record_dispatched_action_bound(
     state: &mut crate::state::State,
     root: *mut dyn crate::widget::Widget,
@@ -263,7 +263,6 @@ pub(crate) unsafe fn record_dispatched_action_bound(
     order: impl IntoIterator<Item = taffy::NodeId>,
     bindings: &crate::bound_dispatch::BoundNodeMap,
     author: &crate::permissions::UserId,
-    authority: &crate::permissions::PermissionContext,
 ) -> bool {
     let mut brackets = Vec::new();
     {
@@ -308,14 +307,6 @@ pub(crate) unsafe fn record_dispatched_action_bound(
                 });
                 bound_changed |= matches!(drained, Ok(Ok(true)));
             }
-        } else if bindings.legacy_for(node).is_some() {
-            // SAFETY: the exact live map has exclusive ownership for this sweep.
-            bound_changed |= unsafe {
-                crate::bound_dispatch::drain_legacy_node_action(
-                    bindings, nodes, node, authority, author,
-                )
-            }
-            .unwrap_or(false);
         } else {
             // SAFETY: each unique live node is visited only once this sweep.
             if let Ok(Some(before)) = unsafe {

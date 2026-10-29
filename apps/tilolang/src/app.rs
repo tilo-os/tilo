@@ -101,6 +101,12 @@ impl ResourceApp for TlApp {
         })
     }
 
+    // A package whose records are each member's own (`records: .own`) keeps them in the
+    // person's own record of the workspace.
+    fn member_record() -> bool {
+        crate::installed_bundle().is_some_and(|bundle| bundle.meta.own_records)
+    }
+
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::i18n::CATALOG)
     }
@@ -177,6 +183,11 @@ impl ResourceApp for TlApp {
             }
             if let Some(room) = cx.room() {
                 window = window.in_room(&room);
+            }
+            // Another record than the workspace's: the person's own, for a package that keeps
+            // each member's.
+            if let Some(record) = cx.record_id().filter(|id| !id.is_package_primary()) {
+                window = window.of_record(record.as_str());
             }
             window
         };

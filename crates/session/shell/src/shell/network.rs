@@ -4970,6 +4970,7 @@ impl ShellNetwork {
                 });
             }
         }
+        drop(tree);
         focus
     }
 
@@ -5105,6 +5106,7 @@ impl ShellNetwork {
                 }
             }
         }
+        drop(tree);
         noted
     }
 

@@ -37,7 +37,7 @@ use ui::application::ApplicationDefinition;
 pub const UNBUNDLED_ID: &str = "so.tilo.lang";
 
 /// The record kind of an app's room record.
-pub const RECORD_KIND: &str = "tilolang.room";
+pub const RECORD_KIND: &str = tilolang_tilo::RECORD_KIND;
 
 /// The variable the launcher names the package's signed id with.
 pub const PACKAGE_ID_ENV: &str = "TILO_PACKAGE_ID";

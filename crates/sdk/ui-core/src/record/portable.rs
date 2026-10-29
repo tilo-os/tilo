@@ -354,7 +354,7 @@ mod tests {
         let restored = RecordOwners::portable(cache)
             .open("so.tilo.test", "room")
             .unwrap();
-        restored.open_record_checked(&checkout).unwrap();
+        restored.open_existing_record_checked(&checkout).unwrap();
         assert!(restored.is_ready(&checkout.id));
     }
     #[test]
