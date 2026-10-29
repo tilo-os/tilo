@@ -12,7 +12,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use shell::shell::chrome_state::{Chrome, ChromeState, SearchScope};
+use shell::shell::chrome_state::{ChromeState, SearchScope};
 use shell::shell::state::{Collaborator, WorkspaceTree};
 use shell::shell::topbar_chrome::TopBarChrome;
 use shell::shell::{build_tilo_root, build_tilo_root_with_chrome, state::TileContent};
@@ -23,199 +23,190 @@ use ui::widget::Widget;
 use crate::support::host::{Layout, lay_out_with_text};
 
 #[test]
-fn bootstrap_root_builds_and_seeds_the_demo_tabs_in_order() {
-    // Phase `root_builds_without_panic_for_bootstrap_tree`.
-    {
-        let tree = WorkspaceTree::bootstrap_default();
-        let _root = build_tilo_root(&tree);
-    }
+fn root_builds_without_panic_for_bootstrap_tree() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let _root = build_tilo_root(&tree);
+}
 
-    // Phase `bootstrap_demo_seeds_four_demo_tabs_in_order`.
-    {
-        // A first boot starts empty, so `bootstrap_demo` is the fixture with a tab
-        // to act on.
-        let tree = WorkspaceTree::bootstrap_demo();
-        let ws = tree.desktop.active_workspace().expect("active workspace");
-        let strip = ws.strips.first().expect("at least one strip");
-        let group = strip.window_groups.first().expect("at least one group");
-        let titles: Vec<&str> = group.tabs.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(titles, vec!["Notes", "Files", "Terminal", "Document"]);
-        // A window the user never opened, showing an app that doesn't exist, is
-        // worse than not offering it — nothing seeded here may be a Stub.
-        for tab in &group.tabs {
-            match &tab.tile {
-                TileContent::AppPlaceholder { .. } => {}
-                other => panic!(
-                    "the default workspace seeded a non-hydratable tile for the \
-                     {:?} tab: {:?}. Seed only apps the shell can actually host.",
-                    tab.title, other
-                ),
-            }
+#[test]
+fn bootstrap_demo_seeds_four_demo_tabs_in_order() {
+    // A first boot starts empty, so `bootstrap_demo` is the fixture with a tab
+    // to act on.
+    let tree = WorkspaceTree::bootstrap_demo();
+    let ws = tree.desktop.active_workspace().expect("active workspace");
+    let strip = ws.strips.first().expect("at least one strip");
+    let group = strip.window_groups.first().expect("at least one group");
+    let titles: Vec<&str> = group.tabs.iter().map(|t| t.title.as_str()).collect();
+    assert_eq!(titles, vec!["Notes", "Files", "Terminal", "Document"]);
+    // A window the user never opened, showing an app that doesn't exist, is
+    // worse than not offering it — nothing seeded here may be a Stub.
+    for tab in &group.tabs {
+        match &tab.tile {
+            TileContent::AppPlaceholder { .. } => {}
+            other => panic!(
+                "the default workspace seeded a non-hydratable tile for the \
+                 {:?} tab: {:?}. Seed only apps the shell can actually host.",
+                tab.title, other
+            ),
         }
-        for tab in &group.tabs {
-            // The terminal is the one tab whose hydration can legitimately fail (no
-            // /dev/ptmx in a sandbox), and it says so in its label.
-            if tab.title == "Terminal" {
-                continue;
-            }
-            assert_eq!(
-                shell::shell::resolve_tile_shape_for_test(&tab.tile),
-                "App",
-                "the {:?} tab hydrated into a stub card instead of a real app",
-                tab.title,
-            );
+    }
+    for tab in &group.tabs {
+        // The terminal is the one tab whose hydration can legitimately fail (no
+        // /dev/ptmx in a sandbox), and it says so in its label.
+        if tab.title == "Terminal" {
+            continue;
         }
+        assert_eq!(
+            shell::shell::resolve_tile_shape_for_test(&tab.tile),
+            "App",
+            "the {:?} tab hydrated into a stub card instead of a real app",
+            tab.title,
+        );
     }
 }
 
 #[test]
-fn chrome_state_is_shared_defaults_sensibly_and_mutates_through_chrome() {
-    // Phase `chrome_state_shared_across_sibling_widgets`.
-    {
-        let tree = WorkspaceTree::bootstrap_default();
-        let chrome = ChromeState::new(tree);
+fn chrome_state_shared_across_sibling_widgets() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree);
 
-        let a = chrome.clone();
-        let b = chrome;
+    let a = chrome.clone();
+    let b = chrome;
 
-        a.borrow_mut().overlays.overview = true;
-        assert!(b.borrow().overlays.overview);
+    a.borrow_mut().overlays.overview = true;
+    assert!(b.borrow().overlays.overview);
 
-        let before = b.borrow().revision;
-        a.borrow_mut().bump();
-        assert_eq!(b.borrow().revision, before.wrapping_add(1));
-    }
-
-    // Phase `quick_settings_state_defaults_and_mutates_through_chrome`.
-    {
-        let tree = WorkspaceTree::bootstrap_default();
-        let chrome = ChromeState::new(tree);
-        // Defaults are deliberate: brightness > 0 so the slider has a visible fill,
-        // wifi on / bluetooth off to match most fresh installs.
-        let defaults = QuickSettingsState::default();
-        assert_eq!(chrome.borrow().quick_settings, defaults);
-        assert!(defaults.wifi && !defaults.bluetooth);
-
-        // Writes go through the shared handle so every chrome widget sees them.
-        {
-            let mut st = chrome.borrow_mut();
-            st.quick_settings.brightness = 0.25;
-            st.quick_settings.bluetooth = true;
-            st.bump();
-        }
-        // `QuickSettingsState` isn't `Copy` (the drill-in vectors), so clone out
-        // from behind the `Ref` before asserting.
-        let qs = chrome.borrow().quick_settings.clone();
-        assert!((qs.brightness - 0.25).abs() < 1e-5);
-        assert!(qs.bluetooth);
-    }
-
-    // Phase `search_scope_defaults_to_workspace_and_mutates_through_chrome`.
-    {
-        let tree = WorkspaceTree::bootstrap_default();
-        let chrome = ChromeState::new(tree);
-        // Default narrows Cmd-K to the current workspace so peers don't leak
-        // cross-workspace results by accident.
-        assert_eq!(chrome.borrow().search_scope, SearchScope::Workspace);
-
-        {
-            let mut st = chrome.borrow_mut();
-            st.search_scope = SearchScope::All;
-            st.bump();
-        }
-        assert_eq!(chrome.borrow().search_scope, SearchScope::All);
-        assert_eq!(SearchScope::Workspace.label(), "Workspace");
-        assert_eq!(SearchScope::All.label(), "Everywhere");
-    }
-
-    // Phase `collaborators_overlay_defaults_off_and_toggles_through_chrome`.
-    {
-        let tree = WorkspaceTree::bootstrap_default();
-        let chrome = ChromeState::new(tree);
-        assert!(!chrome.borrow().overlays.collaborators);
-        assert!(!chrome.borrow().overlays.quick_settings);
-        {
-            let mut st = chrome.borrow_mut();
-            st.overlays.collaborators = true;
-            st.bump();
-        }
-        assert!(chrome.borrow().overlays.collaborators);
-        // Sibling overlays: opening one doesn't implicitly close the other (the
-        // outside-click handler does).
-        {
-            let mut st = chrome.borrow_mut();
-            st.overlays.quick_settings = true;
-            st.bump();
-        }
-        assert!(chrome.borrow().overlays.collaborators);
-        assert!(chrome.borrow().overlays.quick_settings);
-    }
+    let before = b.borrow().revision;
+    a.borrow_mut().bump();
+    assert_eq!(b.borrow().revision, before.wrapping_add(1));
 }
 
 #[test]
-fn workspace_rename_commits_for_the_owner_but_not_a_guest() {
-    // Phase `commit_workspace_name_applies_buffer_to_active_workspace`.
+fn quick_settings_state_defaults_and_mutates_through_chrome() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree);
+    // Defaults are deliberate: brightness > 0 so the slider has a visible fill,
+    // wifi on / bluetooth off to match most fresh installs.
+    let defaults = QuickSettingsState::default();
+    assert_eq!(chrome.borrow().quick_settings, defaults);
+    assert!(defaults.wifi && !defaults.bluetooth);
+
+    // Writes go through the shared handle so every chrome widget sees them.
     {
-        let mut tree = WorkspaceTree::bootstrap_default();
-        tree.own_workspaces_for_test(shell::shell::state::local_user_id_for_room);
-        let chrome = ChromeState::new(tree);
-
-        {
-            let mut st = chrome.borrow_mut();
-            st.editing_workspace_name = Some("Research".to_string());
-        }
-        chrome.borrow_mut().commit_workspace_name();
-        let st = chrome.borrow();
-        assert_eq!(st.editing_workspace_name, None);
-        assert_eq!(
-            st.tree().desktop.active_workspace().unwrap().name,
-            "Research"
-        );
-
-        // An empty/whitespace buffer must *not* overwrite the name.
-        drop(st);
-        {
-            let mut st = chrome.borrow_mut();
-            st.editing_workspace_name = Some("   ".to_string());
-        }
-        chrome.borrow_mut().commit_workspace_name();
-        assert_eq!(
-            chrome
-                .borrow()
-                .tree()
-                .desktop
-                .active_workspace()
-                .unwrap()
-                .name,
-            "Research"
-        );
+        let mut st = chrome.borrow_mut();
+        st.quick_settings.brightness = 0.25;
+        st.quick_settings.bluetooth = true;
+        st.bump();
     }
+    // `QuickSettingsState` isn't `Copy` (the drill-in vectors), so clone out
+    // from behind the `Ref` before asserting.
+    let qs = chrome.borrow().quick_settings.clone();
+    assert!((qs.brightness - 0.25).abs() < 1e-5);
+    assert!(qs.bluetooth);
+}
 
-    // Phase `guest_cannot_commit_a_workspace_rename`.
+#[test]
+fn search_scope_defaults_to_workspace_and_mutates_through_chrome() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree);
+    // Default narrows Cmd-K to the current workspace so peers don't leak
+    // cross-workspace results by accident.
+    assert_eq!(chrome.borrow().search_scope, SearchScope::Workspace);
+
     {
-        let mut tree = WorkspaceTree::bootstrap_default();
-        tree.own_workspaces_for_test(|_| "another-room-owner".into());
-        let chrome = ChromeState::new(tree);
-        let original = chrome
+        let mut st = chrome.borrow_mut();
+        st.search_scope = SearchScope::All;
+        st.bump();
+    }
+    assert_eq!(chrome.borrow().search_scope, SearchScope::All);
+    assert_eq!(SearchScope::Workspace.label(), "Workspace");
+    assert_eq!(SearchScope::All.label(), "Everywhere");
+}
+
+#[test]
+fn collaborators_overlay_defaults_off_and_toggles_through_chrome() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let chrome = ChromeState::new(tree);
+    assert!(!chrome.borrow().overlays.collaborators);
+    assert!(!chrome.borrow().overlays.quick_settings);
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.collaborators = true;
+        st.bump();
+    }
+    assert!(chrome.borrow().overlays.collaborators);
+    // Sibling overlays: opening one doesn't implicitly close the other (the
+    // outside-click handler does).
+    {
+        let mut st = chrome.borrow_mut();
+        st.overlays.quick_settings = true;
+        st.bump();
+    }
+    assert!(chrome.borrow().overlays.collaborators);
+    assert!(chrome.borrow().overlays.quick_settings);
+}
+
+#[test]
+fn commit_workspace_name_applies_buffer_to_active_workspace() {
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tree.own_workspaces_for_test(shell::shell::state::local_user_id_for_room);
+    let chrome = ChromeState::new(tree);
+
+    {
+        let mut st = chrome.borrow_mut();
+        st.editing_workspace_name = Some("Research".to_string());
+    }
+    chrome.borrow_mut().commit_workspace_name();
+    let st = chrome.borrow();
+    assert_eq!(st.editing_workspace_name, None);
+    assert_eq!(
+        st.tree().desktop.active_workspace().unwrap().name,
+        "Research"
+    );
+
+    // An empty/whitespace buffer must *not* overwrite the name.
+    drop(st);
+    {
+        let mut st = chrome.borrow_mut();
+        st.editing_workspace_name = Some("   ".to_string());
+    }
+    chrome.borrow_mut().commit_workspace_name();
+    assert_eq!(
+        chrome
             .borrow()
             .tree()
             .desktop
             .active_workspace()
             .unwrap()
-            .name
-            .clone();
+            .name,
+        "Research"
+    );
+}
 
-        {
-            let mut st = chrome.borrow_mut();
-            st.editing_workspace_name = Some("Misleading local rename".into());
-            assert!(!st.can_rename_active_workspace());
-        }
-        chrome.borrow_mut().commit_workspace_name();
+#[test]
+fn guest_cannot_commit_a_workspace_rename() {
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tree.own_workspaces_for_test(|_| "another-room-owner".into());
+    let chrome = ChromeState::new(tree);
+    let original = chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .unwrap()
+        .name
+        .clone();
 
-        let st = chrome.borrow();
-        assert_eq!(st.editing_workspace_name, None);
-        assert_eq!(st.tree().desktop.active_workspace().unwrap().name, original);
+    {
+        let mut st = chrome.borrow_mut();
+        st.editing_workspace_name = Some("Misleading local rename".into());
+        assert!(!st.can_rename_active_workspace());
     }
+    chrome.borrow_mut().commit_workspace_name();
+
+    let st = chrome.borrow();
+    assert_eq!(st.editing_workspace_name, None);
+    assert_eq!(st.tree().desktop.active_workspace().unwrap().name, original);
 }
 
 /// The bar and the workspace menu offer renaming the workspace and a new
@@ -326,481 +317,198 @@ fn a_workspace_rename_writes_only_the_name_into_the_tree_document() {
 }
 
 #[test]
-fn topbar_avatars_cap_at_three_and_never_leak_into_an_empty_workspace() {
-    // Phase `topbar_renders_up_to_three_avatars_then_overflow_chip`.
-    {
-        // The top bar reads the active workspace's roster first (tree-level
-        // fallback only when it is empty), so seed onto the active workspace.
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let active_id = tree.desktop.active;
-        let active_ws = tree
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == active_id)
-            .expect("active workspace");
+fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
+    // The top bar reads the active workspace's roster first (tree-level
+    // fallback only when it is empty), so seed onto the active workspace.
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let active_id = tree.desktop.active;
+    let active_ws = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == active_id)
+        .expect("active workspace");
 
-        // 2 peers → 2 avatars, no overflow.
-        active_ws.collaborators =
-            vec![Collaborator::new("a", "Ada"), Collaborator::new("b", "Ben")];
-        let top = TopBarChrome::from_tree(&tree.desktop);
-        assert_eq!(top.collaborator_initials(), &['A', 'B']);
-        assert_eq!(top.collaborator_overflow(), 0);
+    // 2 peers → 2 avatars, no overflow.
+    active_ws.collaborators = vec![Collaborator::new("a", "Ada"), Collaborator::new("b", "Ben")];
+    let top = TopBarChrome::from_tree(&tree.desktop);
+    assert_eq!(top.collaborator_initials(), &['A', 'B']);
+    assert_eq!(top.collaborator_overflow(), 0);
 
-        // 5 peers → first 3 initials drawn + "+2" chip.
-        let active_ws = tree
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == active_id)
-            .expect("active workspace");
-        active_ws.collaborators = vec![
-            Collaborator::new("a", "Ada"),
-            Collaborator::new("b", "Ben"),
-            Collaborator::new("c", "Cae"),
-            Collaborator::new("d", "Dia"),
-            Collaborator::new("e", "Eli"),
-        ];
-        let top = TopBarChrome::from_tree(&tree.desktop);
-        assert_eq!(top.collaborator_initials(), &['A', 'B', 'C']);
-        assert_eq!(top.collaborator_overflow(), 2);
-    }
-
-    // Phase `topbar_does_not_leak_tree_collaborators_into_an_empty_workspace`.
-    {
-        // The active workspace roster is authoritative. A tree-level roster may
-        // describe people elsewhere, but must not create phantom room presence.
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let active_id = tree.desktop.active;
-        let active_ws = tree
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == active_id)
-            .expect("active workspace");
-        active_ws.collaborators.clear();
-        tree.desktop.collaborators = vec![Collaborator::new("a", "Ada")];
-
-        let top = TopBarChrome::from_tree(&tree.desktop);
-        assert!(top.collaborator_initials().is_empty());
-        assert_eq!(top.collaborator_overflow(), 0);
-    }
+    // 5 peers → first 3 initials drawn + "+2" chip.
+    let active_ws = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == active_id)
+        .expect("active workspace");
+    active_ws.collaborators = vec![
+        Collaborator::new("a", "Ada"),
+        Collaborator::new("b", "Ben"),
+        Collaborator::new("c", "Cae"),
+        Collaborator::new("d", "Dia"),
+        Collaborator::new("e", "Eli"),
+    ];
+    let top = TopBarChrome::from_tree(&tree.desktop);
+    assert_eq!(top.collaborator_initials(), &['A', 'B', 'C']);
+    assert_eq!(top.collaborator_overflow(), 2);
 }
 
 #[test]
-fn tab_presence_seeds_per_tab_peers_and_colours_without_phantom_carets() {
-    // Phase `sync_tab_presence_seeds_per_tab_peer_registrations`.
-    {
-        // A `Collaborator` with `active_tab` must reach
-        // `PresenceCtx.peers_on(PresenceKey::Tab{hex(id)})` after sync — this is
-        // what lights the tab-pill dots, whatever the top-bar count says.
-        use shell::shell::sync_tab_presence_from_tree;
-        use ui::permissions::UserId;
-        use ui::presence::{PresenceCtx, PresenceKey};
+fn topbar_does_not_leak_tree_collaborators_into_an_empty_workspace() {
+    // The active workspace roster is authoritative. A tree-level roster may
+    // describe people elsewhere, but must not create phantom room presence.
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let active_id = tree.desktop.active;
+    let active_ws = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == active_id)
+        .expect("active workspace");
+    active_ws.collaborators.clear();
+    tree.desktop.collaborators = vec![Collaborator::new("a", "Ada")];
 
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        // A real tab id from the tree, so the actual id formatting is exercised.
-        let ws = tree.desktop.active_workspace().expect("active workspace");
-        let strip = ws.strips.first().expect("strip");
-        let grp = strip.window_groups.first().expect("group");
-        let tab_a = grp.tabs[0].id;
-        let tab_b = grp.tabs[1].id;
-
-        // Attribute Ada to tab_a, Ben to tab_b, Cae to no tab at all.
-        let ws_mut = tree
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == tree.desktop.active)
-            .expect("active ws mut");
-        ws_mut.collaborators = vec![
-            Collaborator::with_active_tab("a", "Ada", tab_a),
-            Collaborator::with_active_tab("b", "Ben", tab_b),
-            Collaborator::new("c", "Cae"),
-        ];
-
-        let mut ctx = PresenceCtx::empty();
-        sync_tab_presence_from_tree(&tree, &mut ctx);
-
-        let key_a = PresenceKey::Tab {
-            id: format!("{tab_a:x}"),
-        };
-        let key_b = PresenceKey::Tab {
-            id: format!("{tab_b:x}"),
-        };
-        assert_eq!(ctx.peers_on(&key_a), &[UserId("a".into())]);
-        assert_eq!(ctx.peers_on(&key_b), &[UserId("b".into())]);
-
-        // Cae has no `active_tab`, so no tab id may attribute her.
-        let all_peers: Vec<&UserId> = ctx.here.values().flat_map(|v| v.iter()).collect();
-        assert!(
-            all_peers.iter().all(|u| u.0 != "c"),
-            "collaborator with no active_tab must not register anywhere: {all_peers:?}"
-        );
-    }
-
-    // Phase `sync_tab_presence_seeds_per_user_color_overrides_from_collaborators`.
-    {
-        // A `cursor_color` override must copy into `PresenceCtx::color_overrides`
-        // during sync so every affordance reads one authoritative colour; peers
-        // without one fall through to the palette-pinned `user_color`.
-        use shell::shell::sync_tab_presence_from_tree;
-        use ui::permissions::UserId;
-        use ui::presence::PresenceCtx;
-
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let ws_mut = tree
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == tree.desktop.active)
-            .expect("active ws mut");
-        // Ada has an override, Ben does not; Cae is on the tree-level roster, and
-        // her override must be seeded too.
-        ws_mut.collaborators = vec![
-            Collaborator::new("a", "Ada").with_cursor_color("#abcdef"),
-            Collaborator::new("b", "Ben"),
-        ];
-        tree.desktop.collaborators =
-            vec![Collaborator::new("c", "Cae").with_cursor_color("#112233")];
-
-        let mut ctx = PresenceCtx::empty();
-        sync_tab_presence_from_tree(&tree, &mut ctx);
-
-        assert_eq!(
-            ctx.color_for(&UserId("a".into())),
-            (0xab, 0xcd, 0xef),
-            "Ada's #abcdef override should be honoured",
-        );
-        assert_eq!(
-            ctx.color_for(&UserId("c".into())),
-            (0x11, 0x22, 0x33),
-            "tree-level collaborator's override should also seed",
-        );
-        // Ben has no override → falls through to the palette-pinned colour.
-        assert_eq!(
-            ctx.color_for(&UserId("b".into())),
-            ui::presence::user_color("b"),
-            "no-override peer must still use palette fallback",
-        );
-    }
+    let top = TopBarChrome::from_tree(&tree.desktop);
+    assert!(top.collaborator_initials().is_empty());
+    assert_eq!(top.collaborator_overflow(), 0);
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
-    // Phase `chrome_file_drop_appends_tab_and_bumps_revision`.
-    {
-        // Production path: `ChromeState::handle_file_drop_at_placement`, what a
-        // `WindowEvent::DroppedFile` onto a group reaches.
-        let tree = WorkspaceTree::bootstrap_demo();
-        let chrome = ChromeState::new(tree);
-        let before_rev = chrome.borrow().revision;
-        let (group_id, before_tab_count) = {
-            let state = chrome.borrow();
-            let group = &state.tree().desktop.workspaces[0].strips[0].window_groups[0];
-            (group.id, group.tabs.len())
-        };
+fn sync_tab_presence_seeds_per_tab_peer_registrations() {
+    // A `Collaborator` with `active_tab` must reach
+    // `PresenceCtx.peers_on(PresenceKey::Tab{hex(id)})` after sync — this is
+    // what lights the tab-pill dots, whatever the top-bar count says.
+    use shell::shell::sync_tab_presence_from_tree;
+    use ui::permissions::UserId;
+    use ui::presence::{PresenceCtx, PresenceKey};
 
-        let tab_id = chrome
-            .borrow_mut()
-            .handle_file_drop_at_placement(
-                std::path::Path::new("/tmp/main.ts"),
-                shell::shell::tab_binding::Placement::TabIn(group_id),
-            )
-            .expect("tab_id");
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    // A real tab id from the tree, so the actual id formatting is exercised.
+    let ws = tree.desktop.active_workspace().expect("active workspace");
+    let strip = ws.strips.first().expect("strip");
+    let grp = strip.window_groups.first().expect("group");
+    let tab_a = grp.tabs[0].id;
+    let tab_b = grp.tabs[1].id;
 
-        let st = chrome.borrow();
-        assert!(
-            st.revision > before_rev,
-            "a file drop should bump the chrome revision so widgets re-sync"
-        );
-        let group = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
-        assert_eq!(group.active_tab, tab_id);
-        assert_eq!(group.tabs.len(), before_tab_count + 1);
-        let dropped = group.tabs.iter().find(|tab| tab.id == tab_id).unwrap();
-        assert_eq!(dropped.title, "main.ts");
-    }
+    // Attribute Ada to tab_a, Ben to tab_b, Cae to no tab at all.
+    let ws_mut = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == tree.desktop.active)
+        .expect("active ws mut");
+    ws_mut.collaborators = vec![
+        Collaborator::with_active_tab("a", "Ada", tab_a),
+        Collaborator::with_active_tab("b", "Ben", tab_b),
+        Collaborator::new("c", "Cae"),
+    ];
 
-    // Phase `workspace_name_click_asks_for_the_workspace_menu`.
-    // Clicking the top bar's workspace name must ask the host for the
-    // workspace menu, under the name, driven end-to-end: if dispatch is
-    // intercepted before `TopBarChrome` sees the click, nothing is asked.
-    {
-        use automerge::AutoCommit;
-        use taffy::NodeId;
+    let mut ctx = PresenceCtx::empty();
+    sync_tab_presence_from_tree(&tree, &mut ctx);
 
-        let (mut bar, chrome, taffy, node, hit) = topbar_with_workspace_pill_hit();
+    let key_a = PresenceKey::Tab {
+        id: format!("{tab_a:x}"),
+    };
+    let key_b = PresenceKey::Tab {
+        id: format!("{tab_b:x}"),
+    };
+    assert_eq!(ctx.peers_on(&key_a), &[UserId("a".into())]);
+    assert_eq!(ctx.peers_on(&key_b), &[UserId("b".into())]);
 
-        // The widget tracks the cursor itself, because winit delivers MouseInput
-        // without a position.
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let modifiers = winit::event::Modifiers::default();
-
-        let cm = ui::synthetic_input::cursor_moved(hit.x, hit.y);
-        bar.handle_event(
-            &cm,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        let mi = ui::synthetic_input::mouse_press();
-        bar.handle_event(
-            &mi,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-
-        assert!(
-            handled,
-            "click on the workspace name should be handled by the top bar"
-        );
-        let asked = chrome.borrow_mut().bar_popover_request.take();
-        assert!(
-            matches!(
-                asked,
-                Some(shell::shell::chrome_state::BarPopoverRequest::WorkspaceMenu { anchor })
-                    if anchor.contains(hit)
-            ),
-            "the first click asks for the workspace menu under the name: {asked:?}"
-        );
-
-        let mut handled2 = false;
-        bar.handle_event(
-            &mi,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled2,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        assert!(handled2);
-        assert!(
-            chrome.borrow().bar_popover_request.is_some(),
-            "a second click asks again: the host toggles"
-        );
-    }
-
-    // Phase `top_right_corner_click_opens_quick_settings`.
-    // The painted tray remains inset, but the physical top-right screen corner
-    // is part of its interaction target so a fast edge throw opens Quick Settings.
-    {
-        use automerge::AutoCommit;
-        use taffy::NodeId;
-
-        let (mut bar, chrome, taffy, node, _) = topbar_with_workspace_pill_hit();
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut focus: Option<NodeId> = None;
-        let modifiers = winit::event::Modifiers::default();
-        let mut handled = false;
-        bar.handle_event(
-            &ui::synthetic_input::cursor_moved(1599.0, 1.0),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        bar.handle_event(
-            &ui::synthetic_input::mouse_press(),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state),
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-
-        assert!(
-            handled,
-            "the top-right corner must be an active tray target"
-        );
-        assert!(chrome.borrow().overlays.quick_settings);
-    }
-
-    // Phase `full_root_click_toggles_the_workspace_menu`.
-    // Drives the **full** `build_tilo_root` tree, where routing via
-    // `ShellOverlayHost::handle_event` once failed to reach `TopBarChrome`:
-    // a click on the workspace name opens the workspace menu, a second
-    // one closes it.
-    {
-        fn pill_hit(widget: &dyn Widget) -> Option<Point> {
-            widget
-                .test_rects()
-                .into_iter()
-                .find(|(name, rect)| name == "topbar_workspace_pill" && rect.area() > 0.0)
-                .map(|(_, rect)| rect.center())
-                .or_else(|| widget.children().into_iter().find_map(pill_hit))
-        }
-        fn menu_shown(widget: &dyn Widget) -> bool {
-            widget.name() == "WorkspaceMenu" || widget.children().into_iter().any(menu_shown)
-        }
-        use automerge::AutoCommit;
-        use taffy::NodeId;
-        use ui::presence::PresenceCtx;
-        use ui::text_render::TextRenderer;
-        use ui::theme::Theme;
-        use vello::Scene;
-        use vello::kurbo::{Affine, Point};
-
-        const W: f32 = 1600.0;
-        const H: f32 = 900.0;
-
-        let tree = WorkspaceTree::bootstrap_default();
-
-        let (mut root, chrome) = build_tilo_root_with_chrome(&tree);
-        assert!(!chrome.borrow().overlays.overview);
-
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let Layout {
-            taffy,
-            child_node: root_node,
-        } = lay_out_with_text(root.as_mut(), W, H, &theme, &mut tr);
-
-        // A draw pass is required so the inner TopBarChrome populates its
-        // workspace pill, which handle_event hit-tests against.
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        let hit = pill_hit(root.as_ref()).expect("painted root exports its workspace pill");
-        assert!(!menu_shown(root.as_ref()));
-
-        let mut state = AutoCommit::new();
-        let root_path = automerge::ROOT.clone();
-        let modifiers = winit::event::Modifiers::default();
-        let mut focus: Option<NodeId> = None;
-
-        click_full_root(
-            &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, modifiers, hit,
-        );
-        assert!(
-            menu_shown(root.as_ref()),
-            "click on the workspace name via full root must open the workspace menu"
-        );
-        assert!(
-            chrome.borrow().bar_popover_request.is_none(),
-            "taken at once"
-        );
-
-        // The open menu takes the second press: it closes, and the name
-        // under it does not open it again.
-        click_full_root(
-            &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, modifiers, hit,
-        );
-        assert!(
-            !menu_shown(root.as_ref()),
-            "second click on the workspace name must close the workspace menu"
-        );
-    }
-
-    // Phase `overview_toggle_signals_animation_frames_until_settled`.
-    // Clicking must start an animation the host keeps ticking:
-    // `needs_animation_frame()` stays true through the transition and `App`
-    // polls it to schedule redraws. Without it the crossfade paints one frame
-    // and freezes (the "overview button doesn't work" report).
-    {
-        use automerge::AutoCommit;
-        use ui::presence::PresenceCtx;
-        use ui::text_render::TextRenderer;
-        use ui::theme::Theme;
-        use vello::Scene;
-        use vello::kurbo::Affine;
-
-        const W: f32 = 1600.0;
-        const H: f32 = 900.0;
-
-        let tree = WorkspaceTree::bootstrap_default();
-        let (mut root, chrome) = build_tilo_root_with_chrome(&tree);
-
-        assert!(
-            !root.needs_animation_frame(),
-            "static root should not request animation frames"
-        );
-
-        // Toggled directly through the chrome handle — only the animation signal
-        // is under test here.
-        chrome.borrow_mut().overlays.overview = true;
-        chrome.borrow_mut().bump();
-
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        lay_out_with_text(root.as_mut(), W, H, &theme, &mut tr);
-
-        // First draw: sets `overview_target = 1.0` and arms `transition_started`.
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        let _ = AutoCommit::new();
-        root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        assert!(
-            root.needs_animation_frame(),
-            "host must request animation frames while the overview crossfade is in flight"
-        );
-
-        // Sleep past the configured transition duration, then draw once more so
-        // `tick_overview_transition`'s elapsed check clears `transition_started`.
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        assert!(
-            !root.needs_animation_frame(),
-            "host must stop requesting animation frames once the crossfade settles"
-        );
-    }
+    // Cae has no `active_tab`, so no tab id may attribute her.
+    let all_peers: Vec<&UserId> = ctx.here.values().flat_map(|v| v.iter()).collect();
+    assert!(
+        all_peers.iter().all(|u| u.0 != "c"),
+        "collaborator with no active_tab must not register anywhere: {all_peers:?}"
+    );
 }
 
-/// Builds a `TopBarChrome` over a fresh bootstrap tree, lays it out at a
-/// fixed 1600x900 viewport and draws once so its workspace pill is placed,
-/// returning the pieces a caller needs to dispatch a synthetic click plus
-/// the pill's screen-space centre. Split out of the click phases to keep
-/// them under the line limit.
-fn topbar_with_workspace_pill_hit() -> (
-    TopBarChrome,
-    Chrome,
-    taffy::TaffyTree<()>,
-    taffy::NodeId,
-    vello::kurbo::Point,
-) {
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
+#[test]
+fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
+    // A `cursor_color` override must copy into `PresenceCtx::color_overrides`
+    // during sync so every affordance reads one authoritative colour; peers
+    // without one fall through to the palette-pinned `user_color`.
+    use shell::shell::sync_tab_presence_from_tree;
+    use ui::permissions::UserId;
+    use ui::presence::PresenceCtx;
+
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let ws_mut = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == tree.desktop.active)
+        .expect("active ws mut");
+    // Ada has an override, Ben does not; Cae is on the tree-level roster, and
+    // her override must be seeded too.
+    ws_mut.collaborators = vec![
+        Collaborator::new("a", "Ada").with_cursor_color("#abcdef"),
+        Collaborator::new("b", "Ben"),
+    ];
+    tree.desktop.collaborators = vec![Collaborator::new("c", "Cae").with_cursor_color("#112233")];
+
+    let mut ctx = PresenceCtx::empty();
+    sync_tab_presence_from_tree(&tree, &mut ctx);
+
+    assert_eq!(
+        ctx.color_for(&UserId("a".into())),
+        (0xab, 0xcd, 0xef),
+        "Ada's #abcdef override should be honoured",
+    );
+    assert_eq!(
+        ctx.color_for(&UserId("c".into())),
+        (0x11, 0x22, 0x33),
+        "tree-level collaborator's override should also seed",
+    );
+    // Ben has no override → falls through to the palette-pinned colour.
+    assert_eq!(
+        ctx.color_for(&UserId("b".into())),
+        ui::presence::user_color("b"),
+        "no-override peer must still use palette fallback",
+    );
+}
+
+#[test]
+fn chrome_file_drop_appends_tab_and_bumps_revision() {
+    // Production path: `ChromeState::handle_file_drop_at_placement`, what a
+    // `WindowEvent::DroppedFile` onto a group reaches.
+    let tree = WorkspaceTree::bootstrap_demo();
+    let chrome = ChromeState::new(tree);
+    let before_rev = chrome.borrow().revision;
+    let (group_id, before_tab_count) = {
+        let state = chrome.borrow();
+        let group = &state.tree().desktop.workspaces[0].strips[0].window_groups[0];
+        (group.id, group.tabs.len())
+    };
+
+    let tab_id = chrome
+        .borrow_mut()
+        .handle_file_drop_at_placement(
+            std::path::Path::new("/tmp/main.ts"),
+            shell::shell::tab_binding::Placement::TabIn(group_id),
+        )
+        .expect("tab_id");
+
+    let st = chrome.borrow();
+    assert!(
+        st.revision > before_rev,
+        "a file drop should bump the chrome revision so widgets re-sync"
+    );
+    let group = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
+    assert_eq!(group.active_tab, tab_id);
+    assert_eq!(group.tabs.len(), before_tab_count + 1);
+    let dropped = group.tabs.iter().find(|tab| tab.id == tab_id).unwrap();
+    assert_eq!(dropped.title, "main.ts");
+}
+
+// The painted tray remains inset, but the physical top-right screen corner
+// is part of its interaction target so a fast edge throw opens Quick
+// Settings, through the whole root as a real click reaches the bar.
+#[test]
+fn top_right_corner_click_opens_quick_settings() {
+    use automerge::AutoCommit;
+    use taffy::NodeId;
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
@@ -808,53 +516,168 @@ fn topbar_with_workspace_pill_hit() -> (
     use vello::kurbo::{Affine, Point};
 
     let tree = WorkspaceTree::bootstrap_default();
-    let chrome = ChromeState::new(tree.clone());
-    assert!(
-        !chrome.borrow().overlays.overview,
-        "precondition: overview starts closed"
+    let (mut root, chrome) = build_tilo_root_with_chrome(&tree);
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let Layout {
+        taffy,
+        child_node: root_node,
+    } = lay_out_with_text(root.as_mut(), 1600.0, 900.0, &theme, &mut tr);
+    let mut scene = Scene::new();
+    root.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        &PresenceCtx::default(),
     );
+    let mut state = AutoCommit::new();
+    let mut focus: Option<NodeId> = None;
+    click_full_root(
+        &mut root,
+        &taffy,
+        root_node,
+        &mut state,
+        &automerge::ROOT,
+        &mut focus,
+        winit::event::Modifiers::default(),
+        Point::new(1599.0, 1.0),
+    );
+    assert!(
+        chrome.borrow().overlays.quick_settings,
+        "the top-right corner must be an active tray target"
+    );
+}
 
-    let mut bar = TopBarChrome::from_tree(&tree.desktop)
-        .with_chrome(shell::shell::topbar_chrome::native_source(chrome.clone()));
+// Drives the **full** `build_tilo_root` tree, where routing via
+// `ShellOverlayHost::handle_event` once failed to reach the top bar:
+// a click on the workspace name opens the workspace menu, a second
+// one closes it.
+#[test]
+fn full_root_click_toggles_the_workspace_menu() {
+    fn pill_hit(widget: &dyn Widget) -> Option<Point> {
+        widget
+            .test_rects()
+            .into_iter()
+            .find(|(name, rect)| name == "topbar_workspace_pill" && rect.area() > 0.0)
+            .map(|(_, rect)| rect.center())
+            .or_else(|| widget.children().into_iter().find_map(pill_hit))
+    }
+    fn menu_shown(widget: &dyn Widget) -> bool {
+        widget
+            .as_any()
+            .and_then(|root| root.downcast_ref::<shell::shell::overlay_host::ShellOverlayHost>())
+            .is_some_and(|host| host.workspace_menu_labels().is_some())
+    }
+    use automerge::AutoCommit;
+    use taffy::NodeId;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use vello::kurbo::{Affine, Point};
+
+    const W: f32 = 1600.0;
+    const H: f32 = 900.0;
+
+    let tree = WorkspaceTree::bootstrap_default();
+
+    let (mut root, chrome) = build_tilo_root_with_chrome(&tree);
+    assert!(!chrome.borrow().overlays.overview);
 
     let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
-    let viewport = taffy
-        .new_with_children(
-            Style {
-                size: Size::from_lengths(1600.0, 900.0),
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    taffy
-        .compute_layout_with_measure(
-            viewport,
-            Size {
-                width: AvailableSpace::Definite(1600.0),
-                height: AvailableSpace::Definite(900.0),
-            },
-            |_, _, _, _, _| taffy::Size::ZERO,
-        )
-        .expect("compute_layout");
-    bar.apply_layout(&taffy, node, Point::ORIGIN);
-
-    let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
+    let Layout {
+        taffy,
+        child_node: root_node,
+    } = lay_out_with_text(root.as_mut(), W, H, &theme, &mut tr);
+
+    // A draw pass is required so the top bar app lays out its
+    // workspace pill, which handle_event hit-tests against.
+    let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-    let btn = bar.workspace_menu_rect();
-    assert!(
-        btn.area() > 0.0,
-        "draw should have placed the workspace pill"
+    let hit = pill_hit(root.as_ref()).expect("painted root exports its workspace pill");
+    assert!(!menu_shown(root.as_ref()));
+
+    let mut state = AutoCommit::new();
+    let root_path = automerge::ROOT.clone();
+    let modifiers = winit::event::Modifiers::default();
+    let mut focus: Option<NodeId> = None;
+
+    click_full_root(
+        &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, modifiers, hit,
     );
-    let hit = Point::new(f64::midpoint(btn.x0, btn.x1), f64::midpoint(btn.y0, btn.y1));
+    assert!(
+        menu_shown(root.as_ref()),
+        "click on the workspace name via full root must open the workspace menu"
+    );
 
-    (bar, chrome, taffy, node, hit)
+    // The open menu takes the second press: it closes, and the name
+    // under it does not open it again.
+    click_full_root(
+        &mut root, &taffy, root_node, &mut state, &root_path, &mut focus, modifiers, hit,
+    );
+    assert!(
+        !menu_shown(root.as_ref()),
+        "second click on the workspace name must close the workspace menu"
+    );
+}
+
+// Clicking must start an animation the host keeps ticking:
+// `needs_animation_frame()` stays true through the transition and `App`
+// polls it to schedule redraws. Without it the crossfade paints one frame
+// and freezes (the "overview button doesn't work" report).
+#[test]
+fn overview_toggle_signals_animation_frames_until_settled() {
+    use automerge::AutoCommit;
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use vello::kurbo::Affine;
+
+    const W: f32 = 1600.0;
+    const H: f32 = 900.0;
+
+    let tree = WorkspaceTree::bootstrap_default();
+    let (mut root, chrome) = build_tilo_root_with_chrome(&tree);
+
+    assert!(
+        !root.needs_animation_frame(),
+        "static root should not request animation frames"
+    );
+
+    // Toggled directly through the chrome handle — only the animation signal
+    // is under test here.
+    chrome.borrow_mut().overlays.overview = true;
+    chrome.borrow_mut().bump();
+
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    lay_out_with_text(root.as_mut(), W, H, &theme, &mut tr);
+
+    // First draw: sets `overview_target = 1.0` and arms `transition_started`.
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    let _ = AutoCommit::new();
+    root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    assert!(
+        root.needs_animation_frame(),
+        "host must request animation frames while the overview crossfade is in flight"
+    );
+
+    // Sleep past the configured transition duration, then draw once more so
+    // `tick_overview_transition`'s elapsed check clears `transition_started`.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    assert!(
+        !root.needs_animation_frame(),
+        "host must stop requesting animation frames once the crossfade settles"
+    );
 }
 
 /// One cursor-move + left-press at `hit`, mirroring how a real click event

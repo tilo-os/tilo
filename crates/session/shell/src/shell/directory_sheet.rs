@@ -1,55 +1,20 @@
-//! "Join a workspace…": the public workspaces a person can join, as a sheet
-//! in place, the way chat apps let people browse and join servers.
+//! "Join a workspace…": the public workspaces a person can join.
 //!
-//! The sheet lists what the sites this computer knows serve in their
-//! directories ([`crate::shell::network::DirectoryListing`]), the site's own
-//! community workspace first: each with its name, what it is, who is in it
-//! now and how lively it is, and Join. Search narrows the list as the person
-//! types; Enter on a site (`example.org`) asks that site's directory too,
-//! and a link or an invitation code goes to the join field
-//! ([`crate::shell::peer_sync_overlay`]), which "Join with a link or code"
-//! opens as well. Join adds the workspace and switches into it at once.
-//!
-//! The component owns presentation, input and its painted geometry. The
-//! host carries out the [`DirectoryRequest`]s it emits off the frame loop
-//! and hands the answers back ([`DirectorySheet::show`],
-//! [`DirectorySheet::joined`], [`DirectorySheet::failed`]). It comes and
-//! goes on the standard [`ui::motion::Appear`] motion.
+//! The sheet itself is an app ([`tilo_sheets::directory`]); this is what the
+//! shell holds for it: what the sites this computer knows serve in their
+//! directories ([`crate::shell::network::DirectoryListing`]), where the
+//! joins of this session stand, and the [`DirectoryRequest`]s the person's
+//! choices become, which the host carries out off the frame loop and
+//! answers ([`DirectorySheet::show`], [`DirectorySheet::joined`],
+//! [`DirectorySheet::failed`]).
 
-use tilo_desktop::text_entry::{self, Mods};
-use ui::TextRole;
-use ui::a11y::{AccessNode, AccessState, Action, Role};
-use ui::num::{f32_of_f64, f64_of_usize};
-use ui::paint::PaintCtx;
-use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::text_selection::Selection;
-use ui::theme::Theme;
-use ui::widget::{ButtonRole, FieldFace, TextInput, Widget as _};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use tilo_sheets::directory::{Directory, DirectoryEffect, Listing, ListingAction, Status};
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::network::join_field::{self, JoinText};
 use crate::shell::network::{DirectoryListing, JoinProgress, SiteJoinState};
 use tilo_relay_protocol::directory::Activity;
 use tilo_relay_protocol::rooms::RoomRole;
-
-/// Assistive targets this sheet publishes start with this.
-const TARGET_PREFIX: &str = "directory:";
-/// The tallest the sheet grows.
-const MAX_HEIGHT: f64 = ui::tokens::Metrics::BASE.sheet_max_height as f64;
-const ROW_H: f64 = ui::tokens::Metrics::BASE.listing_row_height as f64;
-/// The workspace's mark at a row's start.
-const MARK: f64 = ui::tokens::Metrics::BASE.avatar_row as f64;
-/// One face of who is here now.
-const FACE: f64 = ui::tokens::Metrics::BASE.face_stack as f64;
-/// How far each face overlaps the one before.
-const FACE_STEP: f64 = ui::tokens::Metrics::BASE.face_stack_step as f64;
-/// Faces shown before the rest collapse into "+N".
-const FACES_SHOWN: usize = 4;
 
 /// What the host carries out for the sheet.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,87 +27,22 @@ pub enum DirectoryRequest {
     Open(Box<DirectoryListing>),
     /// Open the join field with this text (a link, a code, or nothing).
     LinkOrCode(String),
-}
-
-/// What one event did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DirectoryOutcome {
-    pub consumed: bool,
-    pub request: Option<DirectoryRequest>,
-}
-
-impl DirectoryOutcome {
-    fn consumed() -> Self {
-        Self {
-            consumed: true,
-            request: None,
-        }
-    }
-
-    fn ignored() -> Self {
-        Self::default()
-    }
-
-    fn request(request: DirectoryRequest) -> Self {
-        Self {
-            consumed: true,
-            request: Some(request),
-        }
-    }
-}
-
-/// Where the sheet's list stands.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-enum Status {
-    /// Asking the directories.
-    #[default]
-    Loading,
-    /// The listings are shown.
-    Ready,
-    /// No directory answered; why.
-    Failed(String),
-}
-
-/// Something the sheet paints that a press or an assistive action lands on.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Target {
-    /// The row button of the `n`th listing shown: Join, or Open once held.
-    Row(usize),
-    Search,
-    LinkOrCode,
+    /// Take the sheet down.
     Close,
 }
 
 #[derive(Default)]
 pub struct DirectorySheet {
     open: bool,
-    appearing: ui::motion::Appearing,
-    query: String,
-    /// The search field's caret and selection, byte indices into `query`.
-    query_selection: Selection,
-    /// The shared text input that paints the search while it holds text.
-    input: Option<TextInput>,
     listings: Vec<DirectoryListing>,
     status: Status,
-    /// The listing being joined, by its key, and why the last join failed.
+    /// The listing being joined, by its key.
     joining: Option<String>,
+    /// What became of the last join or read, when it went wrong.
     note: Option<String>,
     /// Where the joins this session runs stand, as the network last said:
     /// a listing joining shows it, one that failed says why.
     joins: Vec<SiteJoinState>,
-    /// The first row shown.
-    scroll: usize,
-    /// The row the keyboard chose.
-    selected: Option<usize>,
-    /// The sheet as last painted, and its pose then.
-    rect: Rect,
-    pose: Option<ui::motion::Pose>,
-    targets: Vec<(Target, Rect)>,
-    /// What the pointer is over: a row lifts, and its button lifts with it.
-    hover: Option<Target>,
-    /// The row under the pointer, and where each row was last painted.
-    hover_row: Option<usize>,
-    row_rects: Vec<(usize, Rect)>,
 }
 
 /// The key a listing is joined and found again by.
@@ -194,9 +94,9 @@ fn joins_as(listing: &DirectoryListing) -> String {
     )
 }
 
-/// What Enter does with what was typed into the search field, when no row
-/// is chosen: a link or an invitation goes to the join field, a site is
-/// looked up; a word is a search.
+/// What Enter does with what was typed into the search field: a link or an
+/// invitation goes to the join field, a site is looked up; a word is a
+/// search.
 fn typed_request(query: &str) -> Option<DirectoryRequest> {
     let query = query.trim();
     if query.is_empty() {
@@ -222,47 +122,28 @@ impl DirectorySheet {
     /// Open the sheet, asking the directories afresh.
     pub fn open(&mut self) -> DirectoryRequest {
         self.open = true;
-        self.appearing.show(true);
-        self.set_query(String::new());
         self.status = Status::Loading;
         self.note = None;
         self.joining = None;
-        self.scroll = 0;
-        self.selected = None;
         DirectoryRequest::Fetch { site: None }
     }
 
-    /// Close it; it leaves on its motion and takes no more input.
+    /// Close it.
     pub fn close(&mut self) {
         self.open = false;
-        self.appearing.show(false);
         self.joining = None;
     }
 
-    /// Whether it takes input: open, not leaving.
+    /// Whether it is up.
     #[must_use]
     pub fn is_open(&self) -> bool {
         self.open
     }
 
-    /// Whether anything of it is drawn: open, or still leaving.
-    #[must_use]
-    pub fn visible(&self) -> bool {
-        self.open || self.appearing.is_drawn()
-    }
-
-    /// Whether it moves this frame.
-    #[must_use]
-    pub fn needs_animation_frame(&self) -> bool {
-        self.appearing.is_moving()
-    }
-
     /// Show what the directories listed.
     pub fn show(&mut self, listings: Vec<DirectoryListing>) {
         self.listings = listings;
-        self.status = Status::Ready;
-        self.scroll = 0;
-        self.selected = None;
+        self.status = Status::Listed;
     }
 
     /// Say why the directories could not be read, or why a join failed.
@@ -296,23 +177,16 @@ impl DirectorySheet {
         self.close();
     }
 
-    /// What it shows now: the listings that answer the search.
-    #[must_use]
-    pub fn shown(&self) -> Vec<&DirectoryListing> {
+    /// The listings that answer `query`.
+    fn matching(&self, query: &str) -> Vec<&DirectoryListing> {
         self.listings
             .iter()
-            .filter(|listing| listing.matches(&self.query))
+            .filter(|listing| listing.matches(query))
             .collect()
     }
 
-    /// What was typed into the search field.
-    #[must_use]
-    pub fn query(&self) -> &str {
-        &self.query
-    }
-
-    /// Whether the listing `key` names is being joined: asked here, or
-    /// joining in this session already.
+    /// Whether `listing` is being joined: asked here, or joining in this
+    /// session already.
     #[must_use]
     pub fn is_joining(&self, listing: &DirectoryListing) -> bool {
         self.joining.as_deref() == Some(key_of(listing).as_str())
@@ -347,884 +221,136 @@ impl DirectorySheet {
         }
     }
 
-    /// Route one event to the sheet while it is open. Every key belongs to
-    /// it: a link pasted into the search shares characters with chords.
-    pub fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: Modifiers,
-        cursor: Option<Point>,
-    ) -> DirectoryOutcome {
-        if !self.open {
-            return DirectoryOutcome::ignored();
+    /// What pressing `listing`'s button asks: Open once held, else Join,
+    /// one join at a time.
+    fn choose(&mut self, listing: &DirectoryListing) -> Option<DirectoryRequest> {
+        if listing.joined {
+            return Some(DirectoryRequest::Open(Box::new(listing.clone())));
         }
-        let mods = modifiers.state();
-        match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => self.handle_key(logical_key, mods),
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-                ..
-            } => {
-                let Some(point) = cursor.map(|point| self.to_local(point)) else {
-                    return DirectoryOutcome::consumed();
-                };
-                let hit = self.target_at(point);
-                match hit {
-                    Some(Target::Search) => {
-                        // The field looks like a text field; clicking it
-                        // places a caret and dragging selects, through the
-                        // same editor that paints it.
-                        self.field_pointer(event, cursor, modifiers);
-                        DirectoryOutcome::consumed()
-                    }
-                    Some(target) => self.activate(&target),
-                    // A press outside the sheet closes it, as a press
-                    // outside any sheet does.
-                    None if !self.rect.contains(point) => {
-                        self.close();
-                        DirectoryOutcome::consumed()
-                    }
-                    None => DirectoryOutcome::consumed(),
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: winit::event::MouseButton::Left,
-                ..
-            } => {
-                self.field_pointer(event, cursor, modifiers);
-                DirectoryOutcome::consumed()
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let down = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y < 0.0,
-                    MouseScrollDelta::PixelDelta(point) => point.y < 0.0,
-                };
-                let last = self.shown().len().saturating_sub(1);
-                self.scroll = if down {
-                    self.scroll.saturating_add(1).min(last)
-                } else {
-                    self.scroll.saturating_sub(1)
-                };
-                DirectoryOutcome::consumed()
-            }
-            WindowEvent::CursorMoved { .. } => {
-                self.field_pointer(event, cursor, modifiers);
-                // What the pointer is over lifts, as everywhere else in the
-                // shell: the rows and the buttons on them had no hover at
-                // all.
-                let local = cursor.map(|point| self.to_local(point));
-                self.hover = local.and_then(|point| self.target_at(point));
-                self.hover_row = local.and_then(|point| {
-                    self.row_rects
-                        .iter()
-                        .find(|(_, rect)| rect.contains(point))
-                        .map(|(index, _)| *index)
-                });
-                DirectoryOutcome::consumed()
-            }
-            WindowEvent::KeyboardInput { .. } | WindowEvent::MouseInput { .. } => {
-                DirectoryOutcome::consumed()
-            }
-            _ => DirectoryOutcome::ignored(),
+        if self.progress(listing) == Some(&JoinProgress::Joining) {
+            // Joining already: say so, and that it opens by itself.
+            self.note = Some(t_args(
+                "directory-already-joining",
+                &[("name", listing.entry.name.clone().into())],
+            ));
+            return None;
         }
+        if self.joining.is_some() {
+            // One join at a time: the first is still on its way.
+            return None;
+        }
+        self.joining = Some(key_of(listing));
+        self.note = None;
+        Some(DirectoryRequest::Join(Box::new(listing.clone())))
     }
 
-    /// The target under `point`, in the sheet's own space.
-    fn target_at(&self, point: Point) -> Option<Target> {
-        self.targets
-            .iter()
-            .find(|(_, rect)| rect.area() > 0.0 && rect.contains(point))
-            .map(|(target, _)| target.clone())
-    }
-
-    /// Whether the pointer is over `target`.
-    fn hovered(&self, target: &Target) -> bool {
-        self.hover.as_ref() == Some(target)
-    }
-
-    /// Let the painted search field take a pointer event and copy its
-    /// selection back into the query the drawer owns.
-    fn field_pointer(
-        &mut self,
-        event: &WindowEvent,
-        cursor: Option<Point>,
-        modifiers: Modifiers,
-    ) -> bool {
-        // The field was laid out in the sheet's local space; the event
-        // carries a desktop position. Move the caret with a local cursor
-        // first, then hand the event itself to the editor.
-        let local =
-            cursor
-                .map(|point| self.to_local(point))
-                .map(|point| WindowEvent::CursorMoved {
-                    device_id: winit::event::DeviceId::dummy(),
-                    position: winit::dpi::PhysicalPosition::new(point.x, point.y),
-                });
-        let Some(input) = self.input.as_mut() else {
-            return false;
-        };
-        let mut took = false;
-        if let Some(local) = local.as_ref() {
-            took |= input.handle_chrome_pointer(local, 1.0, modifiers);
-        }
-        if !matches!(event, WindowEvent::CursorMoved { .. }) {
-            took |= input.handle_chrome_pointer(event, 1.0, modifiers);
-        }
-        if took {
-            let (anchor, cursor) = input.selection_anchor_focus_or_caret();
-            self.query_selection = ui::text_selection::Selection { anchor, cursor };
-        }
-        took
-    }
-
-    fn handle_key(&mut self, key: &Key, mods: ModifiersState) -> DirectoryOutcome {
-        match key {
-            Key::Named(NamedKey::Escape) => {
-                if self.query.is_empty() {
-                    self.close();
-                } else {
-                    self.set_query(String::new());
-                }
-                DirectoryOutcome::consumed()
+    /// What the sheet's request `effect` asks of the host, if anything.
+    pub fn answer(&mut self, effect: DirectoryEffect) -> Option<DirectoryRequest> {
+        match effect {
+            DirectoryEffect::Join { key } | DirectoryEffect::Open { key } => {
+                let listing = self
+                    .listings
+                    .iter()
+                    .find(|listing| key_of(listing) == key)
+                    .cloned()?;
+                self.choose(&listing)
             }
-            Key::Named(NamedKey::ArrowDown) => {
-                let count = self.shown().len();
-                if count > 0 {
-                    self.selected = Some(
-                        self.selected
-                            .map_or(0, |at| at.saturating_add(1).min(count.saturating_sub(1))),
-                    );
-                    self.keep_selection_in_view();
-                }
-                DirectoryOutcome::consumed()
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                self.selected = match self.selected {
-                    Some(0) | None => None,
-                    Some(at) => Some(at.saturating_sub(1)),
-                };
-                self.keep_selection_in_view();
-                DirectoryOutcome::consumed()
-            }
-            Key::Named(NamedKey::Enter) => {
-                self.trace_enter();
-                self.enter()
-            }
-            // Everything else edits the search, as in every field.
-            _ => {
-                let before = self.query.clone();
-                let _ = text_entry::apply(
-                    key,
-                    Mods::from_state(mods),
-                    &mut self.query,
-                    &mut self.query_selection,
-                );
-                if self.query != before {
-                    self.selected = None;
-                    self.scroll = 0;
-                }
-                DirectoryOutcome::consumed()
-            }
-        }
-    }
-
-    /// Enter: the chosen row, else what was typed, else the one row the
-    /// search leaves.
-    fn enter(&mut self) -> DirectoryOutcome {
-        match self.selected {
-            Some(row) => self.activate(&Target::Row(row)),
-            None => match typed_request(&self.query) {
+            DirectoryEffect::Look { text } => match typed_request(&text) {
                 Some(DirectoryRequest::Fetch { site }) => {
                     self.status = Status::Loading;
-                    DirectoryOutcome::request(DirectoryRequest::Fetch { site })
+                    Some(DirectoryRequest::Fetch { site })
                 }
-                Some(request) => DirectoryOutcome::request(request),
+                Some(request) => Some(request),
                 // One workspace answers the search: Enter joins it.
-                None if self.shown().len() == 1 => self.activate(&Target::Row(0)),
-                None => DirectoryOutcome::consumed(),
+                None => match self.matching(&text).as_slice() {
+                    [only] => {
+                        let only = (*only).clone();
+                        self.choose(&only)
+                    }
+                    _ => None,
+                },
             },
-        }
-    }
-
-    /// Say what Enter will do with the search, never what was typed: a
-    /// pasted invitation is a secret.
-    fn trace_enter(&self) {
-        let typed = match typed_request(&self.query) {
-            Some(DirectoryRequest::LinkOrCode(_)) => "link or code",
-            Some(DirectoryRequest::Fetch { .. }) => "site",
-            Some(_) => "other",
-            None if self.query.trim().is_empty() => "nothing",
-            None => "search words",
-        };
-        tracing::info!(
-            typed,
-            typed_chars = self.query.chars().count(),
-            selected = ?self.selected,
-            shown = self.shown().len(),
-            "directory sheet: Enter on the join field"
-        );
-    }
-
-    /// Text an input method committed into the search.
-    pub fn commit_text(&mut self, text: &str) -> bool {
-        if !self.open {
-            return false;
-        }
-        text_entry::commit(text, &mut self.query, &mut self.query_selection);
-        self.selected = None;
-        self.scroll = 0;
-        true
-    }
-
-    fn set_query(&mut self, query: String) {
-        self.query_selection = Selection::collapsed(query.len());
-        self.query = query;
-        self.selected = None;
-        self.scroll = 0;
-    }
-
-    fn keep_selection_in_view(&mut self) {
-        let Some(row) = self.selected else {
-            return;
-        };
-        let rows = self.rows_fitting();
-        if row < self.scroll {
-            self.scroll = row;
-        } else if rows > 0 && row >= self.scroll.saturating_add(rows) {
-            self.scroll = row.saturating_add(1).saturating_sub(rows);
-        }
-    }
-
-    /// How many rows the last paint had room for.
-    fn rows_fitting(&self) -> usize {
-        self.targets
-            .iter()
-            .filter(|(target, _)| matches!(target, Target::Row(_)))
-            .count()
-            .max(1)
-    }
-
-    fn activate(&mut self, target: &Target) -> DirectoryOutcome {
-        match target {
-            Target::Row(row) => {
-                let Some(listing) = self.shown().get(*row).map(|listing| (*listing).clone()) else {
-                    return DirectoryOutcome::consumed();
-                };
-                if listing.joined {
-                    return DirectoryOutcome::request(DirectoryRequest::Open(Box::new(listing)));
-                }
-                if self.progress(&listing) == Some(&JoinProgress::Joining) {
-                    // Joining already: say so, and that it opens by itself.
-                    self.note = Some(t_args(
-                        "directory-already-joining",
-                        &[("name", listing.entry.name.into())],
-                    ));
-                    return DirectoryOutcome::consumed();
-                }
-                if self.joining.is_some() {
-                    // One join at a time: the first is still on its way.
-                    return DirectoryOutcome::consumed();
-                }
-                self.joining = Some(key_of(&listing));
-                self.note = None;
-                DirectoryOutcome::request(DirectoryRequest::Join(Box::new(listing)))
+            // What was typed goes along when it is a link, a code or a site;
+            // a search word does not.
+            DirectoryEffect::LinkOrCode { text } => {
+                let typed = text.trim().to_owned();
+                Some(DirectoryRequest::LinkOrCode(
+                    if typed_request(&typed).is_some() {
+                        typed
+                    } else {
+                        String::new()
+                    },
+                ))
             }
-            Target::Search => DirectoryOutcome::consumed(),
-            Target::LinkOrCode => {
-                // What was typed goes along when it is a link, a code or a
-                // site; a search word does not.
-                let typed = self.query.trim().to_owned();
-                let text = if typed_request(&typed).is_some() {
-                    typed
-                } else {
-                    String::new()
-                };
-                DirectoryOutcome::request(DirectoryRequest::LinkOrCode(text))
+            DirectoryEffect::Refresh => {
+                self.status = Status::Loading;
+                Some(DirectoryRequest::Fetch { site: None })
             }
-            Target::Close => {
+            DirectoryEffect::Done => {
                 self.close();
-                DirectoryOutcome::consumed()
+                Some(DirectoryRequest::Close)
             }
         }
     }
 
-    fn to_local(&self, point: Point) -> Point {
-        self.pose.map_or(point, |pose| pose.to_local(point))
-    }
-
-    /// Paint the sheet over `host_rect`, centred.
-    pub fn draw(
-        &mut self,
-        host_rect: Rect,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.appearing.follow(self.open, theme.motion());
-        self.targets.clear();
-        self.row_rects.clear();
-        if !self.visible() {
-            self.rect = Rect::ZERO;
-            self.pose = None;
-            return;
-        }
-        // Theme type tokens already carry the person's text scale.
-        let renderer_scale = text.text_scale();
-        text.set_text_scale(1.0);
-        let margin = f64::from(theme.tokens.spacing.s4);
-        let w = f64::from(theme.tokens.metrics.panel_width_sheet)
-            .min(host_rect.width() - 2.0 * margin)
-            .max(0.0);
-        let h = self
-            .content_height(theme)
-            .min(MAX_HEIGHT)
-            .min(host_rect.height() - 2.0 * margin)
-            .max(0.0);
-        let center = host_rect.center();
-        self.rect = Rect::from_center_size(center, (w, h));
-        let pose = self.appearing.pose(self.rect, center);
-        self.pose = Some(pose);
-        if let Some(drawn) = pose.begin(scene, transform, self.rect.inflate(32.0, 32.0)) {
-            self.paint(scene, drawn, text, theme);
-            pose.end(scene);
-        }
-        text.set_text_scale(renderer_scale);
-    }
-
-    /// How tall the sheet is with what it shows: its title, the search,
-    /// the note, the rows (or the line saying why there are none) and the
-    /// footer, so a short list makes a short sheet.
-    fn content_height(&self, theme: &Theme) -> f64 {
-        let tokens = &theme.tokens;
-        let pad = f64::from(tokens.spacing.s4);
-        let gap = f64::from(tokens.spacing.s2);
-        let control_h = f64::from(tokens.metrics.min_pointer_target);
-        let caption = f64::from(theme.text(TextRole::Caption).line_height_px());
-        let heading = f64::from(theme.text(TextRole::Heading).line_height_px());
-        let note = if self.note.is_some() {
-            caption + gap
-        } else {
-            0.0
-        };
-        let rows = match self.status {
-            Status::Ready if !self.shown().is_empty() => ROW_H * f64_of_usize(self.shown().len()),
-            _ => caption + gap * 2.0,
-        };
-        pad + heading + gap + control_h + gap + note + rows + gap + control_h + pad
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one paint pass laid out top to bottom from shared running offsets"
-    )]
-    fn paint(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let rect = self.rect;
-        let painted = ui::chrome::shell::paint_panel(scene, transform, rect, theme, 1.0);
-        let theme = &painted.theme;
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let pad = f64::from(tokens.spacing.s4);
-        let gap = f64::from(tokens.spacing.s2);
-        let control_h = f64::from(tokens.metrics.min_pointer_target);
-        let avail = (rect.width() - pad * 2.0).max(0.0);
-        let mut y = rect.y0 + pad;
-
-        // The title.
-        let heading = theme.text(TextRole::Heading);
-        let title = text.elide_to_width_style(&t("directory-title"), f32_of_f64(avail), &heading);
-        text.draw_style(
-            scene,
-            &title,
-            colors.text_primary,
-            transform.pre_translate((rect.x0 + pad, y).into()),
-            None,
-            &heading,
-        );
-        y += f64::from(heading.line_height_px()) + gap;
-
-        // The search field: the shared field face and text input, so caret,
-        // selection and input methods behave as in every other field.
-        let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + control_h);
-        self.paint_search(scene, transform, text, theme, field);
-        self.targets.push((Target::Search, field));
-        y = field.y1 + gap;
-
-        // The footer: Join with a link or code, and Close.
-        let mut paint = PaintCtx::new(scene, transform, text, theme);
-        let footer_y = rect.y1 - pad - control_h;
-        let close_label = t("directory-close");
-        let link_label = t("directory-link-or-code");
-        let close_w = button_face(Rect::ZERO, &close_label, false)
-            .intrinsic_width(paint.text, theme)
-            .min(avail / 2.0);
-        let close = Rect::new(
-            rect.x1 - pad - close_w,
-            footer_y,
-            rect.x1 - pad,
-            footer_y + control_h,
-        );
-        let link_w = button_face(Rect::ZERO, &link_label, false)
-            .intrinsic_width(paint.text, theme)
-            .min(avail - close_w - gap);
-        let link = Rect::new(
-            rect.x0 + pad,
-            footer_y,
-            rect.x0 + pad + link_w,
-            footer_y + control_h,
-        );
-        ui::widget::Button::paint(
-            paint.scene,
-            transform,
-            paint.text,
-            theme,
-            &button_face(link, &link_label, false).hovered(self.hovered(&Target::LinkOrCode)),
-        );
-        ui::widget::Button::paint(
-            paint.scene,
-            transform,
-            paint.text,
-            theme,
-            &button_face(close, &close_label, false).hovered(self.hovered(&Target::Close)),
-        );
-        self.targets.push((Target::LinkOrCode, link));
-        self.targets.push((Target::Close, close));
-        let list_bottom = footer_y - gap;
-
-        // A note above the list: a join that failed, a site not reached.
-        let caption = theme.text(TextRole::Caption);
-        if let Some(note) = self.note.as_deref() {
-            let note = paint
-                .text
-                .elide_to_width_style(note, f32_of_f64(avail), &caption);
-            paint.text.draw_style(
-                paint.scene,
-                &note,
-                colors.text_primary,
-                transform.pre_translate((rect.x0 + pad, y).into()),
-                None,
-                &caption,
-            );
-            y += f64::from(caption.line_height_px()) + gap;
-        }
-
-        // The list, or why there is none.
-        let empty = match &self.status {
-            Status::Loading => Some(t("directory-loading")),
-            Status::Failed(error) => Some(t_args(
-                "directory-failed",
-                &[("error", error.clone().into())],
-            )),
-            Status::Ready if self.listings.is_empty() => Some(t("directory-empty")),
-            Status::Ready if self.shown().is_empty() => Some(t_args(
-                "directory-no-match",
-                &[("query", self.query.trim().to_owned().into())],
-            )),
-            Status::Ready => None,
-        };
-        if let Some(empty) = empty {
-            let shown = paint
-                .text
-                .elide_to_width_style(&empty, f32_of_f64(avail), &caption);
-            paint.text.draw_style(
-                paint.scene,
-                &shown,
-                colors.text_dim,
-                transform.pre_translate((rect.x0 + pad, y + gap).into()),
-                None,
-                &caption,
-            );
-            return;
-        }
-        let now_ms = tilo_clock::unix_now_ms();
-        let rows: Vec<DirectoryListing> = self
-            .shown()
-            .into_iter()
-            .skip(self.scroll)
-            .cloned()
-            .collect();
-        let ground = ui::chrome::shell::panel_ground(theme);
-        for (offset, listing) in rows.iter().enumerate() {
-            if y + ROW_H > list_bottom + 0.5 {
-                break;
-            }
-            let index = self.scroll.saturating_add(offset);
-            let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + ROW_H);
-            self.row_rects.push((index, row));
-            let chosen = self.selected == Some(index);
-            let hovered = self.hover_row == Some(index);
-            if chosen || hovered {
-                ui::chrome::shell::paint_row_selection(
-                    paint.scene,
-                    transform,
-                    row,
-                    ui::chrome::SelectionState::new(chosen, hovered, false),
-                    ground,
-                    theme,
-                );
-            }
-            // The workspace's mark.
-            let mark = Rect::new(
-                row.x0 + gap,
-                row.center().y - MARK / 2.0,
-                row.x0 + gap + MARK,
-                row.center().y + MARK / 2.0,
-            );
-            let identity = key_of(listing);
-            ui::widget::AvatarFace::new(&listing.entry.name, &identity)
-                .square()
-                .paint(&mut paint, mark);
-            // Its button: Join, Joining…, or Open once held.
-            let label = if listing.joined {
-                t("directory-open")
-            } else if self.is_joining(listing) {
-                t("directory-joining")
-            } else if self.failure(listing).is_some() {
-                t("directory-try-again")
-            } else {
-                t("directory-join")
-            };
-            let primary = !listing.joined;
-            let button_w = button_face(Rect::ZERO, &label, primary)
-                .intrinsic_width(paint.text, theme)
-                .min(row.width() / 3.0);
-            let button = Rect::new(
-                row.x1 - gap - button_w,
-                row.center().y - control_h / 2.0,
-                row.x1 - gap,
-                row.center().y + control_h / 2.0,
-            );
-            ui::widget::Button::paint(
-                paint.scene,
-                transform,
-                paint.text,
-                theme,
-                &button_face(button, &label, primary)
-                    .hovered(self.hovered(&Target::Row(index)))
-                    .disabled(
-                        (self.joining.is_some() && !self.is_joining(listing) && !listing.joined)
-                            || self.progress(listing) == Some(&JoinProgress::Joining),
-                    ),
-            );
-            self.targets.push((Target::Row(index), button));
-            // Who is here now, before the button.
-            let faces_end = button.x0 - gap;
-            let faces_start = draw_faces(&mut paint, listing, faces_end, row.center().y, ground);
-            // Name, what it is, how lively.
-            let text_x = mark.x1 + gap * 1.5;
-            let text_w = (faces_start - gap - text_x).max(0.0);
-            let name_style = theme.text(TextRole::Body).with_weight(TextWeight::Semibold);
-            // A site's own workspace carries a tag saying whose it is,
-            // after its name: two things, never joined into one string.
-            let tag = listing.entry.community.then(|| {
-                t_args(
-                    "directory-community-tag",
-                    &[("host", listing.host.clone().into())],
-                )
-            });
-            let tag_w = tag.as_deref().map_or(0.0, |tag| {
-                ui::widget::BadgeFace::intrinsic_width(tag, paint.text, theme).min(text_w / 2.0)
-            });
-            let name_w = if tag_w > 0.0 {
-                (text_w - tag_w - gap).max(0.0)
-            } else {
-                text_w
-            };
-            let third = match self.failure(listing) {
-                Some(reason) => (
-                    t_args(
-                        "directory-join-failed-line",
-                        &[("error", reason.to_owned().into())],
-                    ),
-                    colors.semantic.danger,
-                ),
-                None => (activity_line(listing, now_ms), colors.text_dim),
-            };
-            let lines = [
-                (listing.entry.name.clone(), name_style, colors.text_primary),
-                (
-                    if listing.entry.description.is_empty() {
+    /// What the sheet shows at `now_ms`.
+    #[must_use]
+    pub fn view(&self, now_ms: u64) -> Directory {
+        let listings = self
+            .listings
+            .iter()
+            .map(|listing| {
+                let failure = self.failure(listing);
+                Listing {
+                    key: key_of(listing),
+                    name: listing.entry.name.clone(),
+                    about: if listing.entry.description.is_empty() {
                         listing.host.clone()
                     } else {
-                        listing.entry.description.replace('\n', " ")
+                        listing.entry.description.clone()
                     },
-                    caption.clone(),
-                    colors.text_dim,
-                ),
-                (third.0, caption.clone(), third.1),
-            ];
-            let line_h = f64::from(caption.line_height_px());
-            let mut line_y = row.center().y - (line_h * 3.0) / 2.0 - 2.0;
-            for (index, (content, style, color)) in lines.into_iter().enumerate() {
-                let width = if index == 0 { name_w } else { text_w };
-                let shown = paint
-                    .text
-                    .elide_to_width_style(&content, f32_of_f64(width), &style);
-                paint.text.draw_style(
-                    paint.scene,
-                    &shown,
-                    color,
-                    transform.pre_translate((text_x, line_y).into()),
-                    None,
-                    &style,
-                );
-                let step = f64::from(style.line_height_px()).max(line_h);
-                if index == 0
-                    && let Some(tag) = tag.as_deref()
-                {
-                    let tag_x =
-                        text_x + f64::from(paint.text.measure_style(&shown, None, &style).0) + gap;
-                    ui::widget::BadgeFace::new(
-                        Rect::new(tag_x, line_y, tag_x + tag_w, line_y + step),
-                        tag,
-                    )
-                    .paint(paint.scene, transform, paint.text, theme);
-                }
-                line_y += step;
-            }
-            y += ROW_H;
-        }
-    }
-
-    fn paint_search(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        field: Rect,
-    ) {
-        let placeholder = t("directory-search");
-        let face = FieldFace::new(field, &self.query)
-            .placeholder(&placeholder)
-            .text_role(TextRole::Body)
-            .focused(self.open);
-        if self.query.is_empty() {
-            face.paint(scene, transform, text, theme);
-            return;
-        }
-        face.paint_chrome(scene, transform, theme);
-        let input = self.input.get_or_insert_with(|| {
-            TextInput::new(Vec::new())
-                .with_plain_chrome()
-                .with_spellcheck(false)
-                .with_autocorrect(false)
-                .with_text_role(TextRole::Body)
-        });
-        input.set_text(&self.query);
-        input.set_selection(self.query_selection.anchor, self.query_selection.cursor);
-        input.set_focus(self.open);
-        input.apply_layout_external(face.text_rect(theme));
-        let input_theme = theme
-            .clone()
-            .with_text_scale(theme.text_scale * theme.ui_scale);
-        input.draw(
-            scene,
-            transform,
-            text,
-            &input_theme,
-            &PresenceCtx::default(),
-        );
-    }
-
-    /// The sheet for assistive technology: the search field, each listing
-    /// as a button that joins (or opens) it, and the footer.
-    #[must_use]
-    pub fn accessibility(&self) -> Option<AccessNode> {
-        if !self.open {
-            return None;
-        }
-        let mut sheet = AccessNode::new(Role::Dialog)
-            .with_name(t("directory-title"))
-            .with_bounds(self.rect);
-        let shown = self.shown();
-        for (target, rect) in &self.targets {
-            let node = match target {
-                Target::Search => AccessNode::new(Role::TextInput)
-                    .with_name(t("directory-search"))
-                    .with_value(self.query.clone()),
-                Target::LinkOrCode => {
-                    AccessNode::new(Role::Button).with_name(t("directory-link-or-code"))
-                }
-                Target::Close => AccessNode::new(Role::Button).with_name(t("directory-close")),
-                Target::Row(row) => {
-                    let Some(listing) = shown.get(*row) else {
-                        continue;
-                    };
-                    let verb = if listing.joined {
-                        "directory-open-named"
-                    } else {
-                        "directory-join-named"
-                    };
-                    let standing = match self.progress(listing) {
-                        Some(JoinProgress::Joining) => format!(" {}", t("directory-joining")),
-                        Some(JoinProgress::Failed(reason)) => format!(
-                            " {}",
+                    host: listing.host.clone(),
+                    tag: listing.entry.community.then(|| {
+                        t_args(
+                            "directory-community-tag",
+                            &[("host", listing.host.clone().into())],
+                        )
+                    }),
+                    activity: failure.map_or_else(
+                        || activity_line(listing, now_ms),
+                        |reason| {
                             t_args(
                                 "directory-join-failed-line",
-                                &[("error", reason.clone().into())]
+                                &[("error", reason.to_owned().into())],
                             )
-                        ),
-                        Some(JoinProgress::NeedsJoinAgain) => {
-                            format!(" {}", t("workspace-needs-join-again"))
-                        }
-                        None => String::new(),
-                    };
-                    AccessNode::new(Role::Button)
-                        .with_name(t_args(verb, &[("name", listing.entry.name.clone().into())]))
-                        .with_description(format!(
-                            "{} {}. {}.{standing}",
-                            listing.entry.description,
-                            activity_line(listing, tilo_clock::unix_now_ms()),
-                            joins_as(listing)
-                        ))
-                        .with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .focused(self.selected == Some(*row)),
-                        )
-                }
-            };
-            sheet.children.push(
-                node.with_bounds(*rect)
-                    .with_action_target(format!("{TARGET_PREFIX}{}", self.slug(target))),
-            );
-        }
-        Some(sheet)
-    }
-
-    /// What a target does, as its assistive name: never its position.
-    fn slug(&self, target: &Target) -> String {
-        match target {
-            Target::Row(row) => format!(
-                "join/{}",
-                self.shown()
-                    .get(*row)
-                    .map(|listing| key_of(listing))
-                    .unwrap_or_default()
-            ),
-            Target::Search => "search".into(),
-            Target::LinkOrCode => "link-or-code".into(),
-            Target::Close => "close".into(),
-        }
-    }
-
-    /// Carry out `action` on the target `target` names.
-    pub fn perform_accessibility_action(
-        &mut self,
-        target: &str,
-        action: &Action,
-    ) -> Option<DirectoryOutcome> {
-        let part = target.strip_prefix(TARGET_PREFIX)?;
-        if !self.open {
-            return None;
-        }
-        if part == "search" {
-            return match action {
-                Action::SetValue(value) => {
-                    self.set_query(value.chars().filter(|c| !c.is_control()).collect());
-                    Some(DirectoryOutcome::consumed())
-                }
-                Action::Focus | Action::Activate | Action::ScrollIntoView => {
-                    Some(DirectoryOutcome::consumed())
-                }
-                _ => None,
-            };
-        }
-        let target = match part {
-            "link-or-code" => Target::LinkOrCode,
-            "close" => Target::Close,
-            other => {
-                let key = other.strip_prefix("join/")?;
-                Target::Row(
-                    self.shown()
+                        },
+                    ),
+                    joins_as: joins_as(listing),
+                    here: listing
+                        .entry
+                        .here
                         .iter()
-                        .position(|listing| key_of(listing) == key)?,
-                )
-            }
-        };
-        match action {
-            Action::Activate => Some(self.activate(&target)),
-            Action::Focus | Action::ScrollIntoView => Some(DirectoryOutcome::consumed()),
-            _ => None,
+                        .map(|face| (face.name.clone(), face.user_public_key.clone()))
+                        .collect(),
+                    here_count: usize::try_from(listing.entry.here_count).unwrap_or(usize::MAX),
+                    action: if listing.joined {
+                        ListingAction::Open
+                    } else if self.is_joining(listing) {
+                        ListingAction::Joining
+                    } else if failure.is_some() {
+                        ListingAction::TryAgain
+                    } else {
+                        ListingAction::Join
+                    },
+                    waiting: self.joining.is_some() && !self.is_joining(listing) && !listing.joined,
+                }
+            })
+            .collect();
+        Directory {
+            status: self.status.clone(),
+            listings,
+            note: self.note.clone(),
         }
-    }
-
-    /// The painted targets by name, for harnesses.
-    #[must_use]
-    pub fn test_rects(&self) -> Vec<(String, Rect)> {
-        self.targets
-            .iter()
-            .map(|(target, rect)| (format!("directory.{}", self.slug(target)), *rect))
-            .collect()
-    }
-}
-
-/// Whether `target` was published by this sheet.
-#[must_use]
-pub fn is_accessibility_target(target: &str) -> bool {
-    target.starts_with(TARGET_PREFIX)
-}
-
-/// The people of `listing` in it now, ending at `x_end`: their faces, then
-/// "+N" for the rest. Returns where they begin.
-fn draw_faces(
-    paint: &mut PaintCtx<'_>,
-    listing: &DirectoryListing,
-    x_end: f64,
-    cy: f64,
-    ground: vello::peniko::Color,
-) -> f64 {
-    let faces = &listing.entry.here;
-    let total = usize::try_from(listing.entry.here_count)
-        .unwrap_or(usize::MAX)
-        .max(faces.len());
-    if total == 0 {
-        return x_end;
-    }
-    let shown = faces.len().min(FACES_SHOWN);
-    let extra = total.saturating_sub(shown);
-    let slots = shown.saturating_add(usize::from(extra > 0));
-    let width = FACE + FACE_STEP * f64_of_usize(slots.saturating_sub(1));
-    let x0 = x_end - width;
-    for (k, face) in faces.iter().take(shown).enumerate() {
-        let x = x0 + FACE_STEP * f64_of_usize(k);
-        let rect = Rect::new(x, cy - FACE / 2.0, x + FACE, cy + FACE / 2.0);
-        ui::widget::AvatarFace::new(&face.name, &face.user_public_key)
-            .ringed_on(ground)
-            .paint(paint, rect);
-    }
-    if extra > 0 {
-        let x = x0 + FACE_STEP * f64_of_usize(shown);
-        let rect = Rect::new(x, cy - FACE / 2.0, x + FACE, cy + FACE / 2.0);
-        ui::widget::AvatarFace::paint_overflow(paint, rect, extra, Some(ground));
-    }
-    x0
-}
-
-/// A button's face: the Regular shared `Button`, the primary role for Join.
-fn button_face(at: Rect, label: &str, primary: bool) -> ui::widget::ButtonFace<'_> {
-    let face = ui::widget::ButtonFace::new(at, label);
-    if primary {
-        face.role(ButtonRole::Primary)
-    } else {
-        face
     }
 }
 
@@ -1257,60 +383,49 @@ mod tests {
         }
     }
 
-    fn key(key: Key) -> WindowEvent {
-        let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
-        ui::synthetic_input::keyboard_input(event)
-    }
-
-    fn typed(sheet: &mut DirectorySheet, text: &str) {
-        for ch in text.chars() {
-            let _ = sheet.handle_event(
-                &key(Key::Character(ch.to_string().into())),
-                Modifiers::default(),
-                None,
-            );
-        }
+    fn press(sheet: &mut DirectorySheet, listing: &DirectoryListing) -> Option<DirectoryRequest> {
+        sheet.answer(DirectoryEffect::Join {
+            key: key_of(listing),
+        })
     }
 
     #[test]
-    fn opening_asks_the_directories_and_search_narrows_what_was_listed() {
+    fn opening_asks_the_directories_and_enter_joins_the_one_workspace_a_search_names() {
         let mut sheet = DirectorySheet::default();
         assert_eq!(sheet.open(), DirectoryRequest::Fetch { site: None });
+        assert_eq!(sheet.view(0).status, Status::Loading);
         sheet.show(vec![listing("Rust Club", false), listing("Bakers", false)]);
-        assert_eq!(sheet.shown().len(), 2);
-        typed(&mut sheet, "rust");
-        let names: Vec<_> = sheet.shown().iter().map(|l| l.entry.name.clone()).collect();
-        assert_eq!(names, ["Rust Club"]);
-        let outcome = sheet.handle_event(
-            &key(Key::Named(NamedKey::Enter)),
-            Modifiers::default(),
-            None,
-        );
+        assert_eq!(sheet.view(0).listings.len(), 2);
+        let outcome = sheet.answer(DirectoryEffect::Look {
+            text: "rust".into(),
+        });
         assert!(
-            matches!(outcome.request, Some(DirectoryRequest::Join(ref joined)) if joined.entry.name == "Rust Club")
+            matches!(outcome, Some(DirectoryRequest::Join(ref joined)) if joined.entry.name == "Rust Club")
         );
-        assert!(sheet.is_joining(&sheet.shown()[0].clone()));
+        assert_eq!(sheet.view(0).listings[0].action, ListingAction::Joining);
+        assert!(sheet.view(0).listings[1].waiting, "one join at a time");
     }
 
     #[test]
     fn a_held_workspace_opens_instead_of_joining_and_joins_go_one_at_a_time() {
         let mut sheet = DirectorySheet::default();
         let _ = sheet.open();
-        sheet.show(vec![
+        let (held, new, other) = (
             listing("Held", true),
             listing("New", false),
             listing("Other", false),
-        ]);
+        );
+        sheet.show(vec![held.clone(), new.clone(), other.clone()]);
         assert!(matches!(
-            sheet.activate(&Target::Row(0)).request,
+            press(&mut sheet, &held),
             Some(DirectoryRequest::Open(_))
         ));
         assert!(matches!(
-            sheet.activate(&Target::Row(1)).request,
+            press(&mut sheet, &new),
             Some(DirectoryRequest::Join(_))
         ));
         assert_eq!(
-            sheet.activate(&Target::Row(2)).request,
+            press(&mut sheet, &other),
             None,
             "the first join is still on its way"
         );
@@ -1319,8 +434,9 @@ mod tests {
             sheet.is_open(),
             "a failed join leaves the sheet up to try again"
         );
+        assert!(sheet.view(0).note.is_some_and(|note| note.contains("New")));
         assert!(matches!(
-            sheet.activate(&Target::Row(2)).request,
+            press(&mut sheet, &other),
             Some(DirectoryRequest::Join(_))
         ));
         sheet.joined();
@@ -1344,48 +460,24 @@ mod tests {
             state(&joining, JoinProgress::Joining),
             state(&failed, JoinProgress::Failed("the host refused".into())),
         ]);
-        assert!(
-            sheet.is_joining(&joining),
-            "a join running shows on its row"
-        );
+        let view = sheet.view(0);
+        assert_eq!(view.listings[0].action, ListingAction::Joining);
+        assert_eq!(view.listings[1].action, ListingAction::TryAgain);
+        assert!(view.listings[1].activity.contains("the host refused"));
         assert_eq!(
-            sheet.activate(&Target::Row(0)).request,
+            press(&mut sheet, &joining),
             None,
             "a join already on its way is not asked again"
         );
         let note = sheet
+            .view(0)
             .note
-            .clone()
             .expect("the sheet says why nothing happened");
         assert!(note.contains("already joining Lounge"), "{note}");
-        assert_eq!(sheet.failure(&failed), Some("the host refused"));
         assert!(
-            matches!(
-                sheet.activate(&Target::Row(1)).request,
-                Some(DirectoryRequest::Join(_))
-            ),
+            matches!(press(&mut sheet, &failed), Some(DirectoryRequest::Join(_))),
             "a failed join is tried again"
         );
-    }
-
-    #[test]
-    fn a_short_list_makes_a_short_sheet() {
-        let theme = Theme::default();
-        let mut sheet = DirectorySheet::default();
-        let _ = sheet.open();
-        sheet.show(vec![listing("Lounge", false)]);
-        let one = sheet.content_height(&theme);
-        sheet.show(
-            (0..12)
-                .map(|k| listing(&format!("Room {k}"), false))
-                .collect(),
-        );
-        let twelve = sheet.content_height(&theme);
-        assert!(
-            one < MAX_HEIGHT,
-            "one row does not fill the tallest sheet: {one}"
-        );
-        assert!((twelve - one - ROW_H * 11.0).abs() < 0.5, "{one} {twelve}");
     }
 
     #[test]
@@ -1413,31 +505,21 @@ mod tests {
         let _ = sheet.open();
         sheet.show(Vec::new());
         assert_eq!(
-            sheet.activate(&Target::LinkOrCode).request,
+            sheet.answer(DirectoryEffect::LinkOrCode {
+                text: "rust".into()
+            }),
             Some(DirectoryRequest::LinkOrCode(String::new())),
-            "nothing typed: the field opens empty"
+            "a search word does not go to the join field"
         );
-    }
-
-    #[test]
-    fn escape_clears_the_search_first_then_closes() {
-        let mut sheet = DirectorySheet::default();
-        let _ = sheet.open();
-        sheet.show(vec![listing("A", false)]);
-        typed(&mut sheet, "zz");
-        let _ = sheet.handle_event(
-            &key(Key::Named(NamedKey::Escape)),
-            Modifiers::default(),
-            None,
+        assert_eq!(
+            sheet.answer(DirectoryEffect::Look {
+                text: "example.org".into()
+            }),
+            Some(DirectoryRequest::Fetch {
+                site: Some("example.org".into())
+            })
         );
-        assert!(sheet.is_open());
-        assert_eq!(sheet.query(), "");
-        let _ = sheet.handle_event(
-            &key(Key::Named(NamedKey::Escape)),
-            Modifiers::default(),
-            None,
-        );
-        assert!(!sheet.is_open());
+        assert_eq!(sheet.view(0).status, Status::Loading);
     }
 
     #[test]

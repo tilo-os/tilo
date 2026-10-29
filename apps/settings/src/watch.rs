@@ -7,9 +7,8 @@
 //! ([`tilo_files::native::watch_changes`]): a change flags itself and wakes
 //! the window, and nothing else does.
 //!
-//! A pane follows only while it is shown: the guard it holds
-//! ([`crate::pane_model::PaneModel::follow`]) owns the watches, and the
-//! last pane dropping it stops them.
+//! A pane follows only while it is shown: the guard its view part holds
+//! owns the watches, and the last part dropping it stops them.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -127,9 +126,8 @@ impl Watched {
 
 /// A device service followed by its own signals (`NetworkManager`,
 /// `BlueZ`): a count each change it reports moves, and what keeps the
-/// follow running. A pane holds it while shown
-/// ([`crate::pane_model::PaneModel::follow`]); its model reads the device
-/// again when [`Self::changes`] moves.
+/// follow running. A pane's view part holds it while shown; its area reads
+/// the device again when [`Self::changes`] moves.
 pub struct Counted {
     changes: Arc<std::sync::atomic::AtomicU64>,
     /// What keeps the follow running; `None` when nothing is followed.

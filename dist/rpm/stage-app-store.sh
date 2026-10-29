@@ -194,6 +194,10 @@ find "$stage/usr/share/tilo-apps" "$stage/etc/tilo" -type f -exec chmod 0644 {} 
 find "$stage/usr/lib/tilo-apps" -type f -exec chmod 0644 {} +
 find "$stage/usr/lib/tilo-apps/pkgs" -type f -path '*/bin/*' -exec chmod 0755 {} +
 find "$stage/usr/lib/tilo-apps/bin" -type f ! -name '*.tilo-shim' -exec chmod 0755 {} + 2>/dev/null || true
+# Every command an app declares must run once installed: each shim needs its
+# sidecar, or typing the command only reports the sidecar missing.
+[[ ! -d $stage/usr/lib/tilo-apps/bin ]] \
+    || "$repo_root/dist/verify-cli-shims.sh" "$stage/usr/lib/tilo-apps/bin"
 # Signed runtime metadata remains data, while loaders and shared objects need
 # execute permission. Signatures cover bytes, not modes.
 find "$stage/usr/lib/tilo-runtime" -type f -exec chmod 0644 {} +

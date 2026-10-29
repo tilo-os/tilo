@@ -197,7 +197,21 @@ app as a seat (`HostContext::lend`): plain data in (whether the sheet is up,
 what this session offers) and requests out (what the person chose), which the
 shell carries out. A sheet's window is `WindowRole::Sheet`, so it stands on no
 ground of its own and the desktop shows around it. The power menu, the
-question about a tool's display change and the shortcut guide are apps.
+question about a tool's display change, the Super+P display sheet, the
+shortcut guide and "Join a workspace…" are apps.
+
+The workspace overview (Super+Tab) is one too (`crates/session/overview`), with
+one thing a sheet does not need: it pictures other apps' windows, whose
+buffers belong to other clients. It never draws them. It names each window it
+pictures and the rect its picture rests at through a `WindowFlight`
+(`tilo_desktop::window_flight`), and the compositor draws every named window
+from what it already holds (a client's latest buffer, a live paint of a window
+the shell draws), flying each from where it stands on its strip to that rect
+on the overview's zoom and back (`overlay_host/window_flight.rs`). The
+compositor keeps the clock and reports it, with where each window stands, so
+the app's own drawing (titles, selection, its panel) moves in step. The
+overview's view is `tilo_desktop::overview_panel::OverviewPanel`, the same
+widget the browser desktop draws.
 
 ## Migration
 

@@ -1020,15 +1020,17 @@ pub fn write_key_changed<T: Model>(
 }
 
 /// The key under which a data enum (`#[derive(Model)]` on an enum with
-/// fields) names its variant, beside the variant's fields. No Rust field can
-/// have this name, so it never collides with one.
+/// fields) names its variant, beside the variant's fields. No field may be
+/// stored under a key beginning with `$`, so it never collides with one.
 pub const VARIANT_KEY: &str = "$variant";
 
 /// The map a data enum's variant `variant` is stored in, in `slot`: made
-/// when the slot holds anything else, its variant name written, and the
-/// fields of another variant it held before removed, so concurrent edits of
-/// the same variant merge field by field and a change of variant is one
-/// last-writer-wins write of its name.
+/// when the slot holds anything else, its variant name written, and every
+/// key but the name and `fields` (the keys this variant stores its fields
+/// under) removed: another variant's fields, and the flat keys an older
+/// layout stored fields under. Concurrent edits of the same variant merge
+/// field by field, and a change of variant is one last-writer-wins write of
+/// its name.
 ///
 /// # Errors
 /// Returns the document's write error.
@@ -1050,6 +1052,86 @@ pub fn variant_map(
         doc.delete(&obj, key.as_str())?;
     }
     Ok(obj)
+}
+
+/// The field `key` of a data enum's variant, stored under `storage` of the
+/// map `obj` (a key of its variant's own), or [`Model::missing`].
+///
+/// A document of the older layout stored each field under its bare name
+/// beside the variant's: when `storage` holds nothing, that key is read, as
+/// it was written. [`variant_map`] removes it the next time the value is
+/// stored.
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+#[doc(hidden)]
+pub fn read_variant_field<T: Model>(
+    doc: &Doc,
+    obj: &ObjId,
+    storage: &str,
+    key: &str,
+) -> Result<T, ModelError> {
+    let slot = match get_slot(doc, obj, storage)? {
+        Some(slot) => Some(slot),
+        None => get_slot(doc, obj, key)?,
+    };
+    load_at(doc, slot.as_ref().map(|(value, id)| (value, id)), key)
+}
+
+/// Write the field `key` of a data enum's variant under `storage` of the
+/// map `obj`.
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+#[doc(hidden)]
+pub fn write_variant_field<T: Model>(
+    doc: &mut Doc,
+    obj: &ObjId,
+    storage: &str,
+    key: &str,
+    value: &T,
+) -> Result<(), ModelError> {
+    value.store(doc, Slot::Key(obj, storage)).located(key)
+}
+
+/// [`read_variant_field`] of a field stored whole (`#[model(atom)]`).
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+#[doc(hidden)]
+pub fn read_variant_atom<T: crate::table::Atomic>(
+    doc: &Doc,
+    obj: &ObjId,
+    storage: &str,
+    key: &str,
+) -> Result<T, ModelError> {
+    let slot = match get_slot(doc, obj, storage)? {
+        Some(slot) => Some(slot),
+        None => get_slot(doc, obj, key)?,
+    };
+    let atom = crate::table::Run(T::ATOM);
+    match slot {
+        Some((value, id)) => atom.load(doc, &value, &id),
+        None => atom.missing(),
+    }
+    .located(key)
+}
+
+/// [`write_variant_field`] of a field stored whole (`#[model(atom)]`).
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+#[doc(hidden)]
+pub fn write_variant_atom<T: crate::table::Atomic>(
+    doc: &mut Doc,
+    obj: &ObjId,
+    storage: &str,
+    key: &str,
+    value: &T,
+) -> Result<(), ModelError> {
+    crate::table::Run(T::ATOM)
+        .store(value, doc, Slot::Key(obj, storage))
+        .located(key)
 }
 
 /// The variant a data enum stored at `value` (the object `id`) names.

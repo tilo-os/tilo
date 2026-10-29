@@ -448,9 +448,6 @@ pub(crate) fn resize_edge(
 
 #[cfg(test)]
 mod tests {
-    use automerge::ROOT;
-    use automerge::transaction::Transactable;
-
     use super::{HeaderBar, HeaderRequest, app_draws_frame, resize_edge};
     use crate::app::App;
     use crate::headless::FrameHarness;
@@ -459,16 +456,7 @@ mod tests {
     use crate::widget::Widget;
 
     fn app_with_history() -> App {
-        let mut state = crate::State::new();
-        for title in ["first", "second"] {
-            state.doc.put(ROOT, "title", title).unwrap();
-            state.commit_action(None, None);
-        }
-        let mut app =
-            App::new_with_controlled_inputs(state, Box::new(crate::widget::Text::new("Document")));
-        app.enable_document_history_chrome();
-        app.init_layout();
-        app
+        crate::app::framework_history_tests::native_chrome_app()
     }
 
     fn driver(commands: &[HostCommand], theme: crate::Theme) -> FrameHarness {
@@ -524,7 +512,13 @@ mod tests {
             app.invoke_host_command(invocation),
             "the palette's door opens it"
         );
-        assert!(app.document_history_snapshot().unwrap().is_some());
+        crate::app::framework_history_tests::layout(&mut app);
+        assert!(
+            app.host_commands(false)
+                .iter()
+                .any(|command| command.binding.address().action == "hide"),
+            "History opened"
+        );
     }
 
     #[test]

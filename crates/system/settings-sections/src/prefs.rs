@@ -347,7 +347,508 @@ impl ui::storage::SettingsSchema for InputDevicePrefs {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.input-device", label = "Input on this device")]
-impl InputDevicePrefs {}
+impl InputDevicePrefs {
+    /// Give one of this device's keyboards its own layouts, the one it types
+    /// with and each layout's options; `all` holds the options of the shared
+    /// layouts.
+    #[action(id = "set-keyboard-layouts")]
+    pub fn set_keyboard_layouts(
+        &mut self,
+        #[param("The keyboard's device key, or `all` for the shared layouts")] keyboard: String,
+        #[param(
+            "Its layouts in switching order, the one it types with, and each layout's options"
+        )]
+        profile: settings_store::keyboard_sources::KeyboardProfile,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        device_key(&keyboard)?;
+        if keyboard == settings_store::keyboard_sources::OSK {
+            return Err(ui::tilo_resource::Refusal::new(
+                "the on-screen keyboard's layouts are its own section's",
+            ));
+        }
+        valid_layouts(&profile.sources, &profile.active)?;
+        if let Some(layout) = profile
+            .options
+            .keys()
+            .find(|layout| !profile.sources.contains(layout))
+        {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{layout}` has options but is not one of the layouts"
+            )));
+        }
+        if let Some(model) = profile
+            .options
+            .values()
+            .filter_map(|options| options.model.as_deref())
+            .find(|model| !valid_keyboard_model(model))
+        {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{model}` is not a physical keyboard model"
+            )));
+        }
+        self.keyboard_assignments.insert(keyboard, profile);
+        Ok(())
+    }
+
+    /// Make a keyboard that types its own layouts type the shared ones
+    /// again, forgetting its own list.
+    #[action(id = "use-shared-layouts")]
+    pub fn use_shared_layouts(
+        &mut self,
+        #[param("The keyboard's device key")] keyboard: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let shared = matches!(
+            keyboard.as_str(),
+            settings_store::keyboard_sources::ALL | settings_store::keyboard_sources::OSK
+        );
+        if shared || self.keyboard_assignments.remove(&keyboard).is_none() {
+            return Err(ui::tilo_resource::Refusal::new(
+                "this keyboard already types the shared layouts",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Choose the physical keyboard model the keyboard drawing shows and the
+    /// keyboard types with.
+    #[action(id = "set-keyboard-model")]
+    pub fn set_keyboard_model(
+        &mut self,
+        #[param("`pc104`, `pc105`, `jp106` or `kr106`")] model: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if !valid_keyboard_model(&model) {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{model}` is not a physical keyboard model"
+            )));
+        }
+        self.keyboard_model = model;
+        self.keyboard_inspected_key = "AD01".into();
+        self.keyboard_preview_level = 0;
+        self.keyboard_preview_extra_levels = false;
+        Ok(())
+    }
+
+    /// Draw a layout without typing with it, or, with none, what the
+    /// keyboard really types.
+    #[action(id = "show-keyboard-layout", housekeeping)]
+    pub fn show_keyboard_layout(
+        &mut self,
+        #[param("An XKB layout or layout:variant (de, us:intl); none for the live keyboard")]
+        layout: Option<String>,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if let Some(layout) = &layout
+            && settings_store::hardware::KeyboardInputSource::parse(layout).is_none()
+        {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{layout}` is not a keyboard layout"
+            )));
+        }
+        self.keyboard_preview = layout;
+        self.keyboard_preview_level = 0;
+        self.keyboard_preview_extra_levels = false;
+        Ok(())
+    }
+
+    /// Choose the modifier level and the physical key the keyboard drawing
+    /// inspects, without typing anything.
+    #[action(id = "inspect-keyboard", housekeeping)]
+    pub fn inspect_keyboard(
+        &mut self,
+        #[param("The modifier level, counting from 0")] level: u32,
+        #[param("Whether the levels past the fourth are offered")] extra_levels: bool,
+        #[param("The physical key's XKB name, such as `AD01`")] key: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let level = usize::try_from(level)
+            .ok()
+            .filter(|level| *level < MAX_KEYBOARD_LEVELS)
+            .ok_or_else(|| ui::tilo_resource::Refusal::new("no keyboard has this level"))?;
+        if key.is_empty() || key.len() > 8 || !key.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{key}` is not a physical key"
+            )));
+        }
+        self.keyboard_preview_level = level;
+        self.keyboard_preview_extra_levels = extra_levels;
+        self.keyboard_inspected_key = key;
+        Ok(())
+    }
+
+    /// Map a drawing tablet onto one display, or every display.
+    #[action(id = "set-tablet-output")]
+    pub fn set_tablet_output(
+        &mut self,
+        #[param("The tablet's device id")] device: String,
+        #[param("A display's connector, or `desktop`")] output: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let output = if output == tablet_choices::WHOLE_DESKTOP {
+            None
+        } else if output.is_empty() || output.len() > 128 || output.chars().any(char::is_control) {
+            return Err(ui::tilo_resource::Refusal::new(format!(
+                "`{output}` is not a display"
+            )));
+        } else {
+            Some(output)
+        };
+        self.tablet(&device)?.output = output;
+        Ok(())
+    }
+
+    /// Keep a tablet's aspect ratio when mapping it, or stretch it.
+    #[action(id = "set-tablet-keep-aspect")]
+    pub fn set_tablet_keep_aspect(
+        &mut self,
+        #[param("The tablet's device id")] device: String,
+        on: bool,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.tablet(&device)?.keep_aspect = on;
+        Ok(())
+    }
+
+    /// Turn a tablet around for the left hand, or back.
+    #[action(id = "set-tablet-left-handed")]
+    pub fn set_tablet_left_handed(
+        &mut self,
+        #[param("The tablet's device id")] device: String,
+        on: bool,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.tablet(&device)?.left_handed = on;
+        Ok(())
+    }
+
+    /// Set how firmly a tablet's pen must press.
+    #[action(id = "set-tablet-tip-feel")]
+    pub fn set_tablet_tip_feel(
+        &mut self,
+        #[param("The tablet's device id")] device: String,
+        #[param("Soft (0.0) to firm (1.0)")] feel: f64,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if !(feel.is_finite() && (0.0..=1.0).contains(&feel)) {
+            return Err(ui::tilo_resource::Refusal::new(
+                "the value must be between 0.0 and 1.0",
+            ));
+        }
+        self.tablet(&device)?.pressure_curve =
+            settings_store::hardware::pressure_curve_for_feel(feel);
+        Ok(())
+    }
+
+    /// Set what one of a pen's buttons does.
+    #[action(id = "set-tablet-button")]
+    pub fn set_tablet_button(
+        &mut self,
+        #[param("The tablet's device id")] device: String,
+        #[param("The button: `lower`, `upper` or `third`")] button: String,
+        #[param("A pen-button choice: `left`, `right`, `disabled`, `shortcut:search`, …")]
+        action: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let action = tablet_choices::stylus_button(&action).ok_or_else(|| {
+            ui::tilo_resource::Refusal::new(format!("`{action}` is not a pen-button choice"))
+        })?;
+        let config = self.tablet(&device)?;
+        match button.as_str() {
+            "lower" => config.lower_button = action,
+            "upper" => config.upper_button = action,
+            "third" => config.third_button = action,
+            _ => {
+                return Err(ui::tilo_resource::Refusal::new(format!(
+                    "`{button}` is not a pen button"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Set what a pen's eraser end does.
+    #[action(id = "set-tablet-eraser")]
+    pub fn set_tablet_eraser(
+        &mut self,
+        #[param("The tablet's device id")] device: String,
+        #[param("An eraser choice: `native`, `right`, `shortcut:search`, …")] action: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        let action = tablet_choices::eraser(&action).ok_or_else(|| {
+            ui::tilo_resource::Refusal::new(format!("`{action}` is not an eraser choice"))
+        })?;
+        self.tablet(&device)?.eraser = action;
+        Ok(())
+    }
+
+    /// Set what a pad button does.
+    #[action(id = "set-pad-button")]
+    pub fn set_pad_button(
+        &mut self,
+        #[param("The pad's device id")] device: String,
+        #[param("The button, counting from 0")] button: u32,
+        #[param("`none`, `show-map` or a shortcut such as `shortcut:search`")] action: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if button >= tablet_choices::MAX_PAD_BUTTONS {
+            return Err(ui::tilo_resource::Refusal::new("unknown pad button"));
+        }
+        let choice = tablet_choices::pad_button(&action).ok_or_else(|| {
+            ui::tilo_resource::Refusal::new(format!("`{action}` is not a pad-button choice"))
+        })?;
+        tablet_choices::set_pad_button(self.tablet(&device)?, button, choice);
+        Ok(())
+    }
+
+    /// Set what a pad's ring or strip does in one mode.
+    #[action(id = "set-pad-dial")]
+    pub fn set_pad_dial(
+        &mut self,
+        #[param("The pad's device id")] device: String,
+        #[param("`ring` or `strip`")] dial: String,
+        #[param("Which ring or strip, counting from 0")] index: u32,
+        #[param("The mode, counting from 0")] mode: u32,
+        #[param(
+            "What it does: `nothing`, `scroll`, `zoom`, `brush-size`, `volume` or `brightness`"
+        )]
+        action: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if index >= tablet_choices::MAX_PAD_DIALS || mode >= tablet_choices::MAX_PAD_MODES {
+            return Err(ui::tilo_resource::Refusal::new("unknown pad control"));
+        }
+        let dial = match dial.as_str() {
+            "ring" => settings_store::hardware::PadDial::Ring(index),
+            "strip" => settings_store::hardware::PadDial::Strip(index),
+            _ => {
+                return Err(ui::tilo_resource::Refusal::new(format!(
+                    "`{dial}` is not a ring or strip"
+                )));
+            }
+        };
+        let action = tablet_choices::dial(&action).ok_or_else(|| {
+            ui::tilo_resource::Refusal::new(format!("`{action}` is not a dial choice"))
+        })?;
+        self.tablet(&device)?.set_dial_action(dial, mode, action);
+        Ok(())
+    }
+}
+
+/// The most modifier levels a keyboard drawing inspects.
+const MAX_KEYBOARD_LEVELS: usize = 32;
+
+impl InputDevicePrefs {
+    /// The saved settings of the tablet or pad `device`, created on first
+    /// use. Keys are device identities from the compositor's snapshot, so
+    /// anything else is refused rather than stored.
+    fn tablet(
+        &mut self,
+        device: &str,
+    ) -> Result<&mut settings_store::hardware::TabletConfig, ui::tilo_resource::Refusal> {
+        device_key(device)?;
+        Ok(self.tablets.entry(device.to_owned()).or_default())
+    }
+}
+
+/// Refuse what cannot be a device identity from the compositor's snapshot.
+fn device_key(key: &str) -> Result<(), ui::tilo_resource::Refusal> {
+    if key.is_empty() || key.len() > 512 || key.chars().any(char::is_control) {
+        return Err(ui::tilo_resource::Refusal::new("unknown device"));
+    }
+    Ok(())
+}
+
+/// Whether `model` is a physical keyboard model the keyboard drawing knows.
+#[must_use]
+pub fn valid_keyboard_model(model: &str) -> bool {
+    matches!(model, "pc104" | "pc105" | "jp106" | "kr106")
+}
+
+/// Refuse layouts that are not keyboard layouts or input methods, a list
+/// without the one typed with, or none.
+fn valid_layouts(layouts: &[String], active: &str) -> Result<(), ui::tilo_resource::Refusal> {
+    if let Some(layout) = layouts
+        .iter()
+        .find(|layout| settings_store::hardware::InputSource::parse(layout).is_none())
+    {
+        return Err(ui::tilo_resource::Refusal::new(format!(
+            "`{layout}` is not a keyboard layout"
+        )));
+    }
+    if !layouts.iter().any(|layout| layout == active) {
+        return Err(ui::tilo_resource::Refusal::new(format!(
+            "`{active}` is not one of the layouts"
+        )));
+    }
+    Ok(())
+}
+
+/// A tablet's pen-button, eraser, pad-button and ring choices as Settings
+/// names them: stable ids an agent passes and a menu offers.
+pub mod tablet_choices {
+    use settings_store::hardware::{
+        EraserAction, PadDialAction, ShortcutAction, StylusButtonAction, TabletConfig,
+    };
+
+    /// The Map-to choice for spanning every display.
+    pub const WHOLE_DESKTOP: &str = "desktop";
+    /// Pad buttons Settings offers a shortcut for; pads have far fewer.
+    pub const MAX_PAD_BUTTONS: u32 = 32;
+    /// Rings and strips Settings offers a mapping for, of each kind.
+    pub const MAX_PAD_DIALS: u32 = 4;
+    /// Modes per ring or strip Settings offers a mapping for.
+    pub const MAX_PAD_MODES: u32 = 8;
+    /// The pad-button choice for a button that does nothing.
+    pub const PAD_BUTTON_NONE: &str = "none";
+    /// The pad-button choice for the button that shows the pad's map.
+    pub const PAD_BUTTON_SHOW_MAP: &str = "show-map";
+
+    /// The pen-button choices besides the shortcuts, by id.
+    pub const STYLUS_BUTTONS: [(&str, StylusButtonAction); 7] = [
+        ("default", StylusButtonAction::Default),
+        ("left", StylusButtonAction::Left),
+        ("middle", StylusButtonAction::Middle),
+        ("right", StylusButtonAction::Right),
+        ("back", StylusButtonAction::Back),
+        ("forward", StylusButtonAction::Forward),
+        ("disabled", StylusButtonAction::Disabled),
+    ];
+
+    /// The eraser choices besides the shortcuts, by id.
+    pub const ERASERS: [(&str, EraserAction); 6] = [
+        ("native", EraserAction::Native),
+        ("left", EraserAction::Left),
+        ("middle", EraserAction::Middle),
+        ("right", EraserAction::Right),
+        ("back", EraserAction::Back),
+        ("forward", EraserAction::Forward),
+    ];
+
+    /// What a ring or strip can do, by id.
+    pub const DIALS: [(&str, PadDialAction); 6] = [
+        ("nothing", PadDialAction::Nothing),
+        ("scroll", PadDialAction::Scroll),
+        ("zoom", PadDialAction::Zoom),
+        ("brush-size", PadDialAction::BrushSize),
+        ("volume", PadDialAction::Volume),
+        ("brightness", PadDialAction::Brightness),
+    ];
+
+    /// `shortcut:<name>`, the choice running a desktop shortcut.
+    #[must_use]
+    pub fn shortcut_id(action: ShortcutAction) -> String {
+        let name = serde_json::to_value(action)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_default();
+        format!("shortcut:{name}")
+    }
+
+    /// The shortcut a `shortcut:<name>` choice runs.
+    #[must_use]
+    pub fn shortcut(id: &str) -> Option<ShortcutAction> {
+        let name = id.strip_prefix("shortcut:")?;
+        serde_json::from_value(serde_json::Value::String(name.to_string())).ok()
+    }
+
+    #[must_use]
+    pub fn stylus_button_id(action: StylusButtonAction) -> String {
+        match action {
+            StylusButtonAction::Shortcut(shortcut) => shortcut_id(shortcut),
+            other => STYLUS_BUTTONS
+                .iter()
+                .find(|(_, value)| *value == other)
+                .map_or("default", |(id, _)| id)
+                .to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn stylus_button(id: &str) -> Option<StylusButtonAction> {
+        STYLUS_BUTTONS
+            .iter()
+            .find(|(choice, _)| *choice == id)
+            .map(|(_, value)| *value)
+            .or_else(|| shortcut(id).map(StylusButtonAction::Shortcut))
+    }
+
+    #[must_use]
+    pub fn eraser_id(action: EraserAction) -> String {
+        match action {
+            EraserAction::Shortcut(shortcut) => shortcut_id(shortcut),
+            other => ERASERS
+                .iter()
+                .find(|(_, value)| *value == other)
+                .map_or("native", |(id, _)| id)
+                .to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn eraser(id: &str) -> Option<EraserAction> {
+        ERASERS
+            .iter()
+            .find(|(choice, _)| *choice == id)
+            .map(|(_, value)| *value)
+            .or_else(|| shortcut(id).map(EraserAction::Shortcut))
+    }
+
+    #[must_use]
+    pub fn dial_id(action: PadDialAction) -> &'static str {
+        DIALS
+            .iter()
+            .find(|(_, value)| *value == action)
+            .map_or("scroll", |(id, _)| id)
+    }
+
+    #[must_use]
+    pub fn dial(id: &str) -> Option<PadDialAction> {
+        DIALS
+            .iter()
+            .find(|(choice, _)| *choice == id)
+            .map(|(_, value)| *value)
+    }
+
+    /// What a pad button does in an app without tablet support.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum PadButtonChoice {
+        Nothing,
+        /// Shows what every control does while held.
+        ShowMap,
+        Shortcut(ShortcutAction),
+    }
+
+    /// The choice `config` makes for pad button `button`.
+    #[must_use]
+    pub fn pad_button_id(config: &TabletConfig, button: u32) -> String {
+        if config.pad_map_button == Some(button) {
+            return PAD_BUTTON_SHOW_MAP.to_string();
+        }
+        config.pad_buttons.get(&button).map_or_else(
+            || PAD_BUTTON_NONE.to_string(),
+            |shortcut| shortcut_id(*shortcut),
+        )
+    }
+
+    /// The choice an id names; `None` when it is not one.
+    #[must_use]
+    pub fn pad_button(id: &str) -> Option<PadButtonChoice> {
+        match id {
+            PAD_BUTTON_NONE => Some(PadButtonChoice::Nothing),
+            PAD_BUTTON_SHOW_MAP => Some(PadButtonChoice::ShowMap),
+            _ => shortcut(id).map(PadButtonChoice::Shortcut),
+        }
+    }
+
+    /// Make pad button `button` do `choice`. One button shows the map:
+    /// picking it for another moves it there.
+    pub fn set_pad_button(config: &mut TabletConfig, button: u32, choice: PadButtonChoice) {
+        if config.pad_map_button == Some(button) {
+            config.pad_map_button = None;
+        }
+        match choice {
+            PadButtonChoice::Nothing => {
+                config.pad_buttons.remove(&button);
+            }
+            PadButtonChoice::ShowMap => {
+                config.pad_buttons.remove(&button);
+                config.pad_map_button = Some(button);
+            }
+            PadButtonChoice::Shortcut(shortcut) => {
+                config.pad_buttons.insert(button, shortcut);
+            }
+        }
+    }
+}
 
 #[ui::tilo_resource::resource(
     kind = "settings.input",
@@ -384,6 +885,37 @@ impl InputPrefs {
         self.keyboard_layouts = next.keyboard_layouts;
         self.keyboard_layout = next.keyboard_layout;
         Ok(())
+    }
+
+    /// Type with these keyboard layouts, switching between them in this
+    /// order.
+    #[action(id = "set-layouts")]
+    pub fn set_layouts(
+        &mut self,
+        #[param(
+            "XKB layouts or layout:variants (de, us:intl) and input methods, in switching order"
+        )]
+        layouts: Vec<String>,
+        #[param("The one typed with, one of them")] active: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        valid_layouts(&layouts, &active)?;
+        self.keyboard_layouts = layouts;
+        self.keyboard_layout = active;
+        self.normalise_keyboard_sources();
+        Ok(())
+    }
+
+    /// Set which shortcut pastes in one app when the shell pastes for the
+    /// person (Super+V with an image or files), or `default` to go back to
+    /// what its app id suggests (Ctrl+Shift+V for terminals, else Ctrl+V).
+    #[action(id = "set-paste-shortcut")]
+    pub fn paste_with(
+        &mut self,
+        #[param("The app's id, such as `org.wezfurlong.wezterm`")] app: String,
+        #[param("The shortcut: `ctrl_v`, `ctrl_shift_v` or `default`")] shortcut: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.set_paste_shortcut(&app, &shortcut)
+            .map_err(ui::tilo_resource::Refusal::new)
     }
 }
 
@@ -816,6 +1348,30 @@ impl UpdatePrefs {
         if automerge::ReadDoc::get(doc, automerge::ROOT, "channel")?.is_some() {
             automerge::transaction::Transactable::delete(doc, automerge::ROOT, "channel")?;
         }
+        Ok(())
+    }
+
+    /// Keep whether the machine's update timer runs, as the machine said
+    /// after a change: the timer is the setting, this what it last said.
+    #[action(id = "record-automatic-updates", housekeeping)]
+    pub fn record_automatic(
+        &mut self,
+        #[param("Whether the update timer runs")] on: bool,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        self.auto = on;
+        Ok(())
+    }
+
+    /// Keep when updates were last checked for successfully.
+    #[action(id = "record-update-check", housekeeping)]
+    pub fn record_check(
+        &mut self,
+        #[param("When the check finished, as a person reads it")] at: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        if at.trim().is_empty() {
+            return Err(ui::tilo_resource::Refusal::new("a time is needed"));
+        }
+        self.last_checked = at;
         Ok(())
     }
 }
@@ -1337,7 +1893,24 @@ impl ui::storage::SettingsSchema for AudioPrefs {
     version = 2,
     migrate = crate::leaves_moved_out
 )]
-impl AudioPrefs {}
+impl AudioPrefs {
+    /// Play both channels in each ear, or stereo again. The compositor
+    /// session keeps the mono transform; the field is changed only here.
+    #[action(id = "set-mono-output")]
+    pub fn set_mono_output(&mut self, on: bool) -> Result<(), tilo_resource::Refusal> {
+        self.mono_output = on;
+        Ok(())
+    }
+
+    /// Give calls an echo-cancelled microphone, or the microphone as it
+    /// is. The compositor session provides it; the field is changed only
+    /// here.
+    #[action(id = "set-echo-cancellation")]
+    pub fn set_echo_cancellation(&mut self, on: bool) -> Result<(), tilo_resource::Refusal> {
+        self.echo_cancellation = on;
+        Ok(())
+    }
+}
 
 impl ui::storage::SettingsSchema for AudioDevicePrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("audio_device");
@@ -1345,7 +1918,37 @@ impl ui::storage::SettingsSchema for AudioDevicePrefs {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.audio-device", label = "Sound on this device")]
-impl AudioDevicePrefs {}
+impl AudioDevicePrefs {
+    /// Remember the output device this device plays through, chosen again
+    /// when Settings next finds it. Choosing an output in Sound runs this.
+    #[action(id = "remember-output-device")]
+    pub fn remember_output(
+        &mut self,
+        #[param("The output device's name")] device: String,
+    ) -> Result<(), tilo_resource::Refusal> {
+        self.output_device = Some(remembered(device)?);
+        Ok(())
+    }
+
+    /// Remember the input device this device records from, chosen again
+    /// when Settings next finds it. Choosing an input in Sound runs this.
+    #[action(id = "remember-input-device")]
+    pub fn remember_input(
+        &mut self,
+        #[param("The input device's name")] device: String,
+    ) -> Result<(), tilo_resource::Refusal> {
+        self.input_device = Some(remembered(device)?);
+        Ok(())
+    }
+}
+
+/// A device's name as it is remembered: never empty.
+fn remembered(device: String) -> Result<String, tilo_resource::Refusal> {
+    if device.trim().is_empty() {
+        return Err(tilo_resource::Refusal::new("a device name is needed"));
+    }
+    Ok(device)
+}
 
 impl ui::storage::SettingsSchema for DisplayPrefs {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
@@ -1358,7 +1961,16 @@ impl ui::storage::SettingsSchema for DisplayPrefs {
     version = 2,
     migrate = crate::leaves_moved_out
 )]
-impl DisplayPrefs {}
+impl DisplayPrefs {
+    /// Let the built-in panel's brightness follow the ambient light, or
+    /// not. Settings offers it where a light sensor can drive the panel; the
+    /// field is changed only here.
+    #[action(id = "set-automatic-brightness")]
+    pub fn set_automatic_brightness(&mut self, on: bool) -> Result<(), tilo_resource::Refusal> {
+        self.auto_brightness = on;
+        Ok(())
+    }
+}
 
 impl ui::storage::SettingsSchema for NightLightPrefs {
     const SCOPE: ui::storage::Scope =

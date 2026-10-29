@@ -231,6 +231,11 @@ impl ShellDriver {
     /// compositor would report — rather than one display the size of the
     /// viewport, so each window group's width is a fraction of its own
     /// monitor.
+    /// The displays the shell is laid out across, as last set.
+    pub fn outputs(&self) -> &[shell::compositor::backend::Output] {
+        &self.outputs
+    }
+
     pub fn set_outputs(&mut self, outputs: &[shell::compositor::backend::Output]) {
         self.outputs = outputs.to_vec();
         self.fb
@@ -513,6 +518,19 @@ impl ShellDriver {
         self.move_cursor(p);
         self.press();
         self.release();
+    }
+
+    /// Activate the control the shell's semantic tree names `name`, a
+    /// control of the chrome or of a surface it hosts as an app, as
+    /// assistive technology activates it. Whether one on screen took it.
+    pub fn activate_named(&mut self, name: &str) -> bool {
+        self.fb.perform_semantic_named(
+            name,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut self.state),
+            &self.root_obj,
+            &mut self.focus,
+        )
     }
 
     /// Synthesise a `MouseWheel` event at the cursor's current position
@@ -1041,6 +1059,7 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             tree.set_peer_salt(crate::own_device::SHOWN_SALT);
             crate::own_device::seed_research(&mut tree, crate::own_device::SHOWN_SALT, &person);
+            drop(tree);
         }
         self.with_chrome(ChromeState::bump);
     }
@@ -2332,9 +2351,6 @@ impl ShellDriver {
 
     fn scene_palette(&mut self) {
         self.fb.host_mut().set_palette_visible(true);
-        // Production opens the palette focused (`open_palette_with_scope`);
-        // otherwise the focus ring is absent from the shot.
-        self.fb.host_mut().set_palette_focus(true);
         // Settle the rising-edge open animation: frame 0 (`alpha == 0`)
         // is indistinguishable from bare desktop.
         self.fb.host_mut().force_palette_settled();
@@ -2351,7 +2367,6 @@ impl ShellDriver {
     fn scene_palette_app_query(&mut self) {
         self.fb.host_mut().set_palette_visible(true);
         self.fb.host_mut().force_palette_settled();
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().set_palette_query("calculator");
         let root = self.root_obj.clone();
         self.fb
@@ -2369,7 +2384,6 @@ impl ShellDriver {
             st.search_scope = shell::shell::chrome_state::SearchScope::ActiveApp;
         });
         self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
         self.fb.host_mut().set_palette_query("tilo");
         self.fb
@@ -2465,7 +2479,6 @@ impl ShellDriver {
     fn scene_palette_records(&mut self) {
         self.seed_records_in_other_rooms();
         self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
         self.fb.host_mut().set_palette_query("dune");
         let root = self.root_obj.clone();
@@ -2478,7 +2491,6 @@ impl ShellDriver {
     /// one most likely to be left looking broken.
     fn scene_palette_no_results(&mut self) {
         self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
         self.fb
             .host_mut()
@@ -2531,7 +2543,6 @@ impl ShellDriver {
     /// and an open app's name.
     fn scene_palette_query(&mut self, query: &str) {
         self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
         self.fb.host_mut().set_palette_query(query);
         let root = self.root_obj.clone();
@@ -2542,7 +2553,6 @@ impl ShellDriver {
 
     fn scene_palette_typed(&mut self) {
         self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
         self.fb.host_mut().set_palette_query("open");
         let root = self.root_obj.clone();
@@ -3286,7 +3296,7 @@ impl ShellDriver {
         self.step_frames(2);
     }
 
-    /// The display sheet (`projection_overlay.rs`, Win+P), settled
+    /// The display sheet (`tilo_sheets::displays`, Win+P), settled
     /// past its 220 ms slide-in by stepping the frames a live session would.
     fn scene_projection(&mut self) {
         self.with_chrome(|st| {
@@ -3408,14 +3418,7 @@ impl ShellDriver {
         // The bar places what it opens under its own controls, which a
         // paint lays out first.
         let _ = self.paint();
-        self.with_chrome(|st| {
-            st.bar_popover_request = Some(
-                shell::shell::chrome_state::BarPopoverRequest::WorkspaceMenu {
-                    anchor: vello::kurbo::Rect::ZERO,
-                },
-            );
-            st.bump();
-        });
+        self.host_mut().toggle_workspace_menu();
         self.step_frames(20);
     }
 
@@ -3424,10 +3427,7 @@ impl ShellDriver {
         // The bar places what it opens under its own controls, which a
         // paint lays out first.
         let _ = self.paint();
-        self.with_chrome(|st| {
-            st.bar_popover_request = Some(shell::shell::chrome_state::BarPopoverRequest::Profile);
-            st.bump();
-        });
+        self.host_mut().toggle_profile_card();
         self.step_frames(20);
     }
 
@@ -3801,7 +3801,7 @@ impl ShellDriver {
     /// `"ws_settings_tab[general|members|permissions]"` — keys needing
     /// chrome-internal accessors no tree walk reaches), then falls back to
     /// the widget-tree registry keyed by `test_id` or path
-    /// (`ShellOverlayHost/TopBarChrome`).
+    /// (`ShellOverlayHost/EmbeddedApp/topbar`).
     ///
     /// # A client tile has two names, and only one is the one you guessed
     ///
@@ -4019,7 +4019,7 @@ mod tests {
         }
         // Phase `widget_registry_finds_topbar_buttons`.
         // `widget_registry` must enumerate the live widget tree after a
-        // paint, surfacing a `TopBarChrome` entry from the bootstrap default —
+        // paint, surfacing the top bar app's `topbar` from the bootstrap default —
         // pinned so a regression in `ShellOverlayHost::children()` fails here
         // rather than silently returning an empty registry.
         {
@@ -4038,8 +4038,8 @@ mod tests {
                 registry.keys().collect::<Vec<_>>()
             );
             assert!(
-                registry.keys().any(|k| k.contains("TopBarChrome")),
-                "registry should contain TopBarChrome; keys={:?}",
+                registry.contains_key("topbar"),
+                "registry should contain the top bar; keys={:?}",
                 registry.keys().collect::<Vec<_>>()
             );
         }

@@ -497,9 +497,9 @@ impl ResourceRoot {
     /// keeps an app's explicit views). A row a surface hands out again (the same [`LiveRow`], kept
     /// while what it shows holds) over the same document child publishes
     /// the node it published last time, so what reads the forest skips it
-    /// as seen; only a surface that binds edits to rows
-    /// ([`super::super::ResourceSurface::ROW_DECLARATIONS`]) has its rows
-    /// bound afresh.
+    /// as seen; only a view that binds edits to rows
+    /// ([`Publishes::row_edits`](super::super::Publishes::row_edits)) has its
+    /// rows bound afresh.
     fn with_live_rows(
         &self,
         raw: &SharedChildren,
@@ -575,18 +575,6 @@ impl ResourceRoot {
         }
         if binds {
             self.bind_rows_shared(&mut children, adds);
-        }
-        #[cfg(debug_assertions)]
-        if !binds {
-            self.surfaces(&mut |surface| {
-                for child in &children {
-                    debug_assert!(
-                        !surface.offers_on_row(child.id()),
-                        "a surface binds edits on `{}` without `ResourceSurface::ROW_DECLARATIONS`",
-                        child.id()
-                    );
-                }
-            });
         }
         let children = match last {
             Some(last)

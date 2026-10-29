@@ -10,9 +10,10 @@ name: Build / RPM snapshot
 
 on:
   workflow_dispatch:
-  schedule:
-    # Nightly backstop for both architectures' snapshot.
-    - cron: "23 2 * * *"
+  # No `schedule:`: a scheduled run's actor is forgejo-actions, which the hosted-runner
+  # admission patch does not admit, so such a run would wait for a runner that never takes it.
+  # The CI host controller dispatches this workflow at its cron slots instead
+  # (apps/ci-runners/host_controller.py, TIMER_WORKFLOWS), as a user the patch admits.
   push:
     branches: [stable]
     paths:

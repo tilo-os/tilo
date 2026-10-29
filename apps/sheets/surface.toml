@@ -3,7 +3,7 @@
 [[resources]]
 kind = "sheets.workbook"
 label = "Workbook"
-version = 1
+version = 2
 fields = [
   { path = "sheets", type = "Collection<Sheet>", stored = "collection" },
   { path = "sheets.*.name", type = "Atom", label = true },

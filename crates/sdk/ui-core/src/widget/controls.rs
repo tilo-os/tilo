@@ -148,15 +148,17 @@ pub trait ActionControls: Widget {
     }
 }
 
-/// The custody, drain and availability [`ActionControls`] methods of a
+/// The custody, drain and availability
+/// [`ActionControls`](crate::widget::controls::ActionControls) methods of a
 /// widget whose only producer is its optional `self.action` emitter. Pass
 /// `custody` to leave availability to a widget that refreshes it itself.
+#[macro_export]
 macro_rules! optional_emitter_controls {
     () => {
-        crate::widget::controls::optional_emitter_controls!(custody);
+        $crate::optional_emitter_controls!(custody);
         fn refresh_control_action_availability(
             &mut self,
-            allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+            allowed: &std::collections::HashSet<$crate::tilo_actions::ActionAddress>,
         ) {
             if let Some(action) = &mut self.action {
                 action.refresh_availability(allowed);
@@ -166,21 +168,21 @@ macro_rules! optional_emitter_controls {
     (custody) => {
         fn install_control_custody(
             &mut self,
-            domain: &crate::ControlDomain,
-            attachment: crate::control_custody::CustodyAttachment,
+            domain: &$crate::ControlDomain,
+            attachment: $crate::control_custody::CustodyAttachment,
         ) {
             if let Some(action) = &mut self.action {
                 let _ = action.install_custody(domain, attachment);
             }
         }
-        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        fn take_control_invocation(&mut self) -> Option<$crate::tilo_actions::ControlInvocation> {
             self.action
                 .as_mut()
-                .and_then(crate::widget::ActionEmitter::take)
+                .and_then($crate::widget::ActionEmitter::take)
         }
     };
 }
-pub(crate) use optional_emitter_controls;
+pub use crate::optional_emitter_controls;
 
 /// A value control's binding: its action, else the collaborative document
 /// key it writes, else its legacy change callback, else its semantic action.

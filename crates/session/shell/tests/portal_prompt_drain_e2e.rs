@@ -208,160 +208,160 @@ fn answer(host: &mut ShellOverlayHost, choice: PromptChoice) {
 used by the assert right after; ending the borrow earlier would mean cloning \
 the capability records for no real gain"
 )]
-async fn allowing_or_denying_a_prompt_releases_the_portal_call() {
-    // Phase `allowing_a_prompt_releases_the_portal_call`.
-    {
-        let prompts = PromptQueueHandle::new(PromptResolver::Channel);
-        let (mut host, grants, ws) = host_with_portal(prompts.clone());
-        let (_s, _c, proxy) = access_proxy(context(grants, prompts.clone(), ws)).await;
+async fn allowing_a_prompt_releases_the_portal_call() {
+    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+    let (mut host, grants, ws) = host_with_portal(prompts.clone());
+    let (_s, _c, proxy) = access_proxy(context(grants, prompts.clone(), ws)).await;
 
-        let call = spawn_access(proxy);
-        pump_until_prompt(&mut host).await;
+    let call = spawn_access(proxy);
+    pump_until_prompt(&mut host).await;
 
-        // The queue handed its entry over rather than keeping it.
-        assert_eq!(
-            prompts.queued_len(),
-            0,
-            "the portal queue must be emptied by the drain, not merely read"
-        );
+    // The queue handed its entry over rather than keeping it.
+    assert_eq!(
+        prompts.queued_len(),
+        0,
+        "the portal queue must be emptied by the drain, not merely read"
+    );
 
-        answer(&mut host, PromptChoice::Allow);
-        let (code, _) = await_response(&mut host, call).await;
-        assert_eq!(code, 0, "Allow must resolve the request as granted");
-    }
+    answer(&mut host, PromptChoice::Allow);
+    let (code, _) = await_response(&mut host, call).await;
+    assert_eq!(code, 0, "Allow must resolve the request as granted");
+}
 
-    // Phase `denying_a_prompt_releases_the_portal_call_too`.
-    {
-        let prompts = PromptQueueHandle::new(PromptResolver::Channel);
-        let (mut host, grants, ws) = host_with_portal(prompts.clone());
-        let (_s, _c, proxy) = access_proxy(context(grants.clone(), prompts, ws)).await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "caps borrows out of guard (app_capabilities returns Vec<&CapOverride>) and is \
+used by the assert right after; ending the borrow earlier would mean cloning \
+the capability records for no real gain"
+)]
+async fn denying_a_prompt_releases_the_portal_call_too() {
+    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+    let (mut host, grants, ws) = host_with_portal(prompts.clone());
+    let (_s, _c, proxy) = access_proxy(context(grants.clone(), prompts, ws)).await;
 
-        let call = spawn_access(proxy);
-        pump_until_prompt(&mut host).await;
-        answer(&mut host, PromptChoice::Deny);
+    let call = spawn_access(proxy);
+    pump_until_prompt(&mut host).await;
+    answer(&mut host, PromptChoice::Deny);
 
-        let (code, _) = await_response(&mut host, call).await;
-        assert_eq!(code, 1, "Deny must answer, not strand, the caller");
+    let (code, _) = await_response(&mut host, call).await;
+    assert_eq!(code, 1, "Deny must answer, not strand, the caller");
 
-        // And nothing was recorded for an app the user said no to.
-        let tree = grants.tree_handle();
+    // And nothing was recorded for an app the user said no to.
+    let tree = grants.tree_handle();
+    let guard = tree.read();
+    let caps = guard
+        .desktop
+        .workspaces
+        .iter()
+        .find(|w| w.id == ws)
+        .expect("workspace")
+        .app_capabilities(APP);
+    assert!(
+        caps.is_empty(),
+        "a denied prompt must record nothing; got {caps:?}"
+    );
+}
+
+// Session-scoped approval answers the call and persists locally, so the next
+// request does not ask again without leaking the choice to workspace peers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_grant_answers_and_persists() {
+    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+    let (mut host, grants, ws) = host_with_portal(prompts.clone());
+    let (_s, _c, proxy) = access_proxy(context(grants.clone(), prompts, ws)).await;
+
+    let call = spawn_access(proxy.clone());
+    pump_until_prompt(&mut host).await;
+    answer(&mut host, PromptChoice::Session);
+    let (code, _) = await_response(&mut host, call).await;
+    assert_eq!(code, 0);
+
+    // The app asks again in the same session: answered without a prompt.
+    let (code, _) = await_response(&mut host, spawn_access(proxy)).await;
+    assert_eq!(
+        code, 0,
+        "an app allowed for this session is not asked again"
+    );
+    assert!(
+        host.permission_prompt_mut_for_tests().is_none(),
+        "no prompt may appear for a question already answered for the session"
+    );
+
+    assert_eq!(
+        grants.lookup(&PortalCaller::new(ws, APP), CapabilityKind::Camera),
+        Some(shell::shell::state::GRANT_SESSION)
+    );
+    let tree = grants.tree_handle();
+    let has_replicated_camera = {
         let guard = tree.read();
-        let caps = guard
+        guard
             .desktop
             .workspaces
             .iter()
             .find(|w| w.id == ws)
             .expect("workspace")
-            .app_capabilities(APP);
-        assert!(
-            caps.is_empty(),
-            "a denied prompt must record nothing; got {caps:?}"
-        );
-    }
+            .app_capabilities(APP)
+            .into_iter()
+            .any(|c| {
+                matches!(
+                    Capability::from_capability(c),
+                    Some(Capability::Camera { .. })
+                )
+            })
+    };
+    assert!(
+        !has_replicated_camera,
+        "a private portal decision must not enter the collaborative workspace"
+    );
 }
 
+// The compositor with no chrome cannot show a prompt. It must say so
+// by answering, rather than holding a sender nobody will ever fulfil.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn session_grants_persist_and_unshowable_requests_are_denied() {
-    // Phase `a_session_grant_answers_and_persists`.
-    // Session-scoped approval answers the call and persists locally, so the next
-    // request does not ask again without leaking the choice to workspace peers.
-    {
+async fn a_request_that_cannot_be_shown_is_denied_rather_than_parked() {
+    async fn phase() {
         let prompts = PromptQueueHandle::new(PromptResolver::Channel);
-        let (mut host, grants, ws) = host_with_portal(prompts.clone());
-        let (_s, _c, proxy) = access_proxy(context(grants.clone(), prompts, ws)).await;
-
-        let call = spawn_access(proxy.clone());
-        pump_until_prompt(&mut host).await;
-        answer(&mut host, PromptChoice::Session);
-        let (code, _) = await_response(&mut host, call).await;
-        assert_eq!(code, 0);
-
-        // The app asks again in the same session: answered without a prompt.
-        let (code, _) = await_response(&mut host, spawn_access(proxy)).await;
-        assert_eq!(
-            code, 0,
-            "an app allowed for this session is not asked again"
-        );
-        assert!(
-            host.permission_prompt_mut_for_tests().is_none(),
-            "no prompt may appear for a question already answered for the session"
-        );
-
-        assert_eq!(
-            grants.lookup(&PortalCaller::new(ws, APP), CapabilityKind::Camera),
-            Some(shell::shell::state::GRANT_SESSION)
-        );
-        let tree = grants.tree_handle();
-        let has_replicated_camera = {
-            let guard = tree.read();
-            guard
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.id == ws)
-                .expect("workspace")
-                .app_capabilities(APP)
-                .into_iter()
-                .any(|c| {
-                    matches!(
-                        Capability::from_capability(c),
-                        Some(Capability::Camera { .. })
-                    )
-                })
+        let grants = {
+            let mut tree = WorkspaceTree::default();
+            let id = WorkspaceId::from(1);
+            tree.desktop.workspaces.push(Workspace::new(id, "demo"));
+            tree.set_active(id);
+            GrantStoreHandle::new(tree.shared())
         };
-        assert!(
-            !has_replicated_camera,
-            "a private portal decision must not enter the collaborative workspace"
-        );
-    }
+        let ws = WorkspaceId::from(1);
+        let (_s, _c, proxy) = access_proxy(context(grants, prompts.clone(), ws)).await;
 
-    // Phase `a_request_that_cannot_be_shown_is_denied_rather_than_parked`.
-    // The compositor with no chrome cannot show a prompt. It must say so
-    // by answering, rather than holding a sender nobody will ever fulfil.
-    {
-        async fn phase() {
-            let prompts = PromptQueueHandle::new(PromptResolver::Channel);
-            let grants = {
-                let mut tree = WorkspaceTree::default();
-                let id = WorkspaceId::from(1);
-                tree.desktop.workspaces.push(Workspace::new(id, "demo"));
-                tree.set_active(id);
-                GrantStoreHandle::new(tree.shared())
-            };
-            let ws = WorkspaceId::from(1);
-            let (_s, _c, proxy) = access_proxy(context(grants, prompts.clone(), ws)).await;
+        let call = spawn_access(proxy);
 
-            let call = spawn_access(proxy);
-
-            // Drop the queue's contents the way a compositor with no chrome does.
-            let deadline = tilo_test_env::hang_deadline();
-            while std::time::Instant::now() < deadline {
-                if prompts.queued_len() > 0 {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+        // Drop the queue's contents the way a compositor with no chrome does.
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
+            if prompts.queued_len() > 0 {
+                break;
             }
-            assert!(prompts.queued_len() > 0, "the request must reach the queue");
-            for pending in prompts.drain() {
-                drop(pending);
-            }
-
-            let deadline = tilo_test_env::hang_deadline();
-            while std::time::Instant::now() < deadline {
-                if call.is_finished() {
-                    let (code, _) = call.await.expect("join");
-                    assert_eq!(
-                        code, 1,
-                        "a dropped prompt must read as deny, not as a pending request"
-                    );
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-            panic!("dropping the prompt left the caller hung — the sender was not released");
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
-        Box::pin(phase()).await;
+        assert!(prompts.queued_len() > 0, "the request must reach the queue");
+        for pending in prompts.drain() {
+            drop(pending);
+        }
+
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
+            if call.is_finished() {
+                let (code, _) = call.await.expect("join");
+                assert_eq!(
+                    code, 1,
+                    "a dropped prompt must read as deny, not as a pending request"
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("dropping the prompt left the caller hung — the sender was not released");
     }
+    Box::pin(phase()).await;
 }
 
 #[allow(

@@ -2,7 +2,7 @@
 //! controls, in the hosted window whose controls are bound to the
 //! settings document.
 
-use crate::{SettingsShell, categories::Category, settings_app::SettingsApp};
+use crate::{SettingsShell, categories::Category};
 use ui::framework::testing::TestApp;
 use ui::vello::kurbo::Rect;
 use ui::widget::Widget;
@@ -113,7 +113,7 @@ fn scroll_and_change_each_pane() {
             }
             let after = content_offset(app.harness().root_widget());
             assert_eq!(
-                app.with_widget::<SettingsApp, _>(|s| s.selected()),
+                app.with_widget::<crate::window::Inspected, _>(|s| s.selected()),
                 Some(category)
             );
             assert!(

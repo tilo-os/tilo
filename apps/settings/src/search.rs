@@ -103,8 +103,8 @@ mod tests {
     /// a removed pane names nothing.
     #[test]
     fn every_search_anchor_names_its_panes_row() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let app = config.app();
+        let profile = tempfile::tempdir().expect("a private profile");
+        let app = crate::SettingsApp::with_config_root(profile.path().join("tilo"));
         let hits = source().search("");
         assert_eq!(hits.len(), Category::ALL.len());
         for (category, hit) in Category::ALL.iter().copied().zip(hits) {
@@ -146,13 +146,15 @@ mod tests {
                     .expect("the mounted app opens the hit's anchor");
                 app.harness().relayout();
                 assert_eq!(
-                    app.surface::<crate::SettingsApp, _>(|surface| surface.selected()),
+                    app.with_widget::<crate::window::Inspected, _>(|surface| surface.selected()),
                     Some(category),
                     "search opens {category:?} at width {width}"
                 );
                 if width == 440 {
                     assert_eq!(
-                        app.surface::<crate::SettingsApp, _>(|surface| surface.sidebar_open()),
+                        app.with_widget::<crate::window::Inspected, _>(
+                            |surface| surface.sidebar_open()
+                        ),
                         Some(false),
                         "the narrow search result opens content rather than the category list"
                     );

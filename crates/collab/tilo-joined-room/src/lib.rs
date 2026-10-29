@@ -17,21 +17,26 @@ mod checkpoint;
 mod document_read;
 mod effect_history;
 mod effect_receipt;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod enroll;
 mod enrollment;
+#[cfg(not(target_arch = "wasm32"))]
 mod file_store;
+#[cfg(not(target_arch = "wasm32"))]
 mod history_content;
 mod limits;
 mod private_direct_conversations;
 mod publication;
 mod record;
 pub mod renewal;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod session;
 mod shortcuts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]
 mod tests;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod voice;
 mod workspace_membership;
 #[cfg(test)]
@@ -45,7 +50,9 @@ pub use checkpoint::{
     CheckpointRoute, CheckpointSchema, MaterializedCheckpoint, NameBinding, NativeCheckpoint,
 };
 pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
-pub use file_store::open_file;
+#[cfg(not(target_arch = "wasm32"))]
+pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
+#[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use private_direct_conversations::{
@@ -53,8 +60,7 @@ pub use private_direct_conversations::{
     DirectMessageSend, DirectMessageStatus, PrivateDirectConversationStore,
 };
 pub use publication::{
-    NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, reserved_file_bytes,
-    validate_file_layout,
+    NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, validate_file_layout,
 };
 pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
@@ -66,12 +72,28 @@ use parking_lot::{Mutex, RwLock};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Weak},
-    time::SystemTime,
 };
 use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_desktop_model::{RoomId, WorkspaceId};
 use tilo_peer_state::{AdmissionReport, StatePeer, TransportOrigin};
 use tilo_user_identity::DeviceCert;
+use web_time::SystemTime;
+
+/// Tell this process's authorization watchers that something they read may
+/// have changed. A page has none: it decides nothing for other processes.
+fn policy_changed() {
+    #[cfg(not(target_arch = "wasm32"))]
+    tilo_identity_host::policy_change::announce();
+}
+
+/// Whether `hint` names this device, `device`, as the room's host: a room
+/// placed on this device, whose host runs in this process. Such a room is
+/// joined over the host's in-process carrier, never dialled: an endpoint
+/// cannot dial itself.
+#[must_use]
+pub fn hosted_by(hint: &tilo_peer_state::join::TransportHint, device: &[u8; 32]) -> bool {
+    &hint.host.device_public_key == device
+}
 
 /// Where an owner's record is durable.
 pub trait Store: std::any::Any + Send + Sync {
@@ -288,7 +310,7 @@ impl SharedOwner {
             self.notify(*room, view.continuity());
         }
         drop(current);
-        tilo_identity_host::policy_change::announce();
+        policy_changed();
     }
     fn fenced(&self, current: &Current, room: RoomId) -> bool {
         current.fenced || current.denied.contains(&room) || !self.store.healthy()
@@ -306,14 +328,14 @@ impl SharedOwner {
         }
         // A new publication can change a room's tasks, which the broker
         // offers as actions: it re-checks on this rather than on a clock.
-        tilo_identity_host::policy_change::announce();
+        policy_changed();
         result
     }
 }
 impl Drop for SharedOwner {
     fn drop(&mut self) {
         // Rooms that required this owner have none now.
-        tilo_identity_host::policy_change::announce();
+        policy_changed();
     }
 }
 impl WeakNativeWorkspaceOwner {
@@ -408,6 +430,17 @@ impl NativeWorkspaceOwner {
         self.0.notify(room, continuity);
         Ok(true)
     }
+    /// The record as last published.
+    #[must_use]
+    pub fn storage(&self) -> NativeAuthorityStorage {
+        self.0.authority.read().clone()
+    }
+    /// The revision of the record as last published: every publication
+    /// raises it.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.0.authority.read().revision
+    }
     /// Every room with a committed enrollment.
     #[must_use]
     pub fn rooms(&self) -> Vec<RoomId> {
@@ -458,7 +491,7 @@ impl NativeWorkspaceOwner {
         let continuity = current.rooms.get(&room).map_or(0, |view| view.continuity());
         self.0.notify(room, continuity);
         drop(current);
-        tilo_identity_host::policy_change::announce();
+        policy_changed();
     }
     /// Admits genuine relay provenance; pending document prerequisites are also durable.
     ///
@@ -562,7 +595,7 @@ impl NativeWorkspaceOwner {
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let device = candidate.device().device_public_key;
         if candidate.device() != candidate.governor()
-            || !session::hosted_by(candidate.transport_hint()?, &device)
+            || !hosted_by(candidate.transport_hint()?, &device)
         {
             return Err("the room is not governed by this device's own host".into());
         }

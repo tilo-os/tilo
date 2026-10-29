@@ -86,10 +86,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::window_view::{Published, PublishingWindow};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::framework::{
-    ActionControl, Actions, EffectAnswer, EffectCx, EffectStatus, Effected, ResourceSurface,
-    SurfaceCx, ViewCx,
+    ActionControl, Actions, EffectAnswer, EffectCx, EffectStatus, Effected, ViewCx,
 };
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
@@ -660,7 +660,7 @@ pub fn view(cx: &mut ViewCx<Imager>) -> ui::widget::Element {
                     .then(|| preview.portable_source.reviewed_original())
                     .flatten()
                 }));
-            cx.surface(app)
+            crate::app::wizard_view(cx, app)
         } else {
             let previous = suspended.borrow_mut().take();
             let returned = previous.is_some();
@@ -670,9 +670,7 @@ pub fn view(cx: &mut ViewCx<Imager>) -> ui::widget::Element {
                 media_return: Some(navigation.reason.clone()),
                 ..InstallerPreview::default()
             });
-            cx.surface(retained_preview::RetainedPreview::new(
-                preview, &suspended, returned,
-            ))
+            retained_preview::view(cx, preview, &suspended, returned)
         }
     })
 }
@@ -765,6 +763,8 @@ pub struct InstallerPreview {
     /// until the receiver proves its identity and a person approves it.
     source_handoff: Option<imager_backend::setup::source_handoff::Handoff>,
     source_state: Option<imager_backend::setup::source_handoff::SourceState>,
+    /// What the window shares with the view it stands in.
+    published: Rc<RefCell<Published>>,
 }
 
 impl Default for InstallerPreview {
@@ -855,6 +855,7 @@ impl Default for InstallerPreview {
             password_next_focus: Rc::default(),
             password_touched: [false; 2],
             password_focused: None,
+            published: Rc::default(),
         }
     }
 }
@@ -5211,11 +5212,9 @@ impl InstallerPreview {
 }
 
 impl InstallerPreview {
-    fn reattach_after_media(&mut self, cx: SurfaceCx<Imager>) {
+    fn reattach_after_media(&mut self, cx: &ViewCx<Imager>) {
         self.actions = Some(cx.actions());
-        {
-            self.direct.context = Some(cx.clone());
-        }
+        self.direct.context = Some(cx.mounts());
         self.dispatcher = Some(cx.dispatcher());
         self.dirty = true;
     }
@@ -5323,8 +5322,12 @@ impl InstallerPreview {
     }
 }
 
-impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
-    fn present(&mut self, state: &Rc<Imager>) {
+impl PublishingWindow for InstallerPreview {
+    fn published(&self) -> &Rc<RefCell<Published>> {
+        &self.published
+    }
+
+    fn present(&mut self, state: &Imager) {
         self.install_preferences = state.profile.clone();
         self.install_preferences.user.password.clear();
         self.install_preferences.encryption_passphrase.clear();
@@ -5340,7 +5343,16 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
             }
         }
     }
-    fn attach(&mut self, cx: SurfaceCx<Imager>) {
+    fn statuses(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
+    }
+}
+
+impl InstallerPreview {
+    /// Attach the window to the view it stands in: its published effects,
+    /// and on a live window the controllers and the child windows it
+    /// mounts.
+    fn attach_view(&mut self, cx: &ViewCx<Imager>) {
         self.actions = Some(cx.actions());
         if cx.launch_flag("--demo") {
             // Reuse the capture fixture and production renderer without attaching
@@ -5356,9 +5368,7 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
         if imager_backend::prepared_identity::require_supported().is_ok() {
             let _ = self.restart.inspect();
         }
-        {
-            self.direct.context = Some(cx.clone());
-        }
+        self.direct.context = Some(cx.mounts());
         self.dispatcher = Some(cx.dispatcher());
         self.journey.categories = [true; 3];
         // The OS profile is entered explicitly; Desktop never reads a host profile.
@@ -5391,11 +5401,11 @@ impl ResourceSurface<Imager, InstallerPreviewEffect> for InstallerPreview {
     fn effect(
         &mut self,
         effect: InstallerPreviewEffect,
-        _cx: &mut EffectCx<Imager, Self>,
+        _cx: &mut EffectCx<Imager>,
     ) -> EffectAnswer {
         self.answer_preview(effect)
     }
-    fn effects(&self) -> Vec<EffectStatus> {
+    fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut statuses = Vec::new();
         for declaration in InstallerPreviewEffect::declarations() {
             if self.demo && !demo::admits_id(declaration.id) {
@@ -5538,13 +5548,19 @@ impl Widget for InstallerPreview {
         Some(self)
     }
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
+        let staged = self.published.borrow_mut().take_staged();
+        if let Some(crate::window_view::Staged(scenario)) = staged {
+            self.stage(scenario.as_deref());
+        }
         self.drain();
         if let Some(child) = &mut self.composed {
             child.sync(state, path);
         }
+        self.publish();
     }
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let changed = self.drain();
+        let changed = self.drain() || self.published.borrow().staging();
         self.composed
             .as_mut()
             .is_some_and(|child| child.update(state, path))

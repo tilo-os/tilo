@@ -16,6 +16,9 @@
 
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use std::collections::BTreeSet;
 
 use channel_crypto::{Access, ChannelPeer, VaultKey};
@@ -91,6 +94,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         .bind()
         .await
         .unwrap();
+    support::place(&host.relay, &laptop.cert).await;
     let client = RelayClient::connect(
         endpoint,
         host.relay.node_addr(),
@@ -158,6 +162,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         .bind()
         .await
         .unwrap();
+    support::place(&host.relay, &observer.cert).await;
     let observer_client = RelayClient::connect(
         observer_endpoint,
         host.relay.node_addr(),
@@ -234,7 +239,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
             panic!("the note was never held for its keys, then opened");
         })
     };
-    peer.join(workspace()).unwrap();
+    peer.join_placed(support::ROOM, "Workspace").unwrap();
     peer.open_route(route.clone()).unwrap();
     ready(&[&peer]).await;
     // Written before it holds the keys: held, then sealed once admitted.
@@ -258,8 +263,15 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
+        // The room's host takes part as well: its own writes are not the browser's.
+        if support::is_host(&author) {
+            continue;
+        }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) => {
+            // The page asks for the channels of the room's other records too.
+            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. })
+                if request.channel == channel =>
+            {
                 assert_eq!(author, *browser_device.as_bytes());
                 request
                     .verify()
@@ -278,7 +290,11 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
                 }
                 sent_welcome = true;
             }
-            Ok(NeighbourMsg::AppDocument { envelope, .. }) => {
+            Ok(NeighbourMsg::AppDocument {
+                envelope,
+                record_id,
+                ..
+            }) if record_id == route.record => {
                 assert_eq!(author, *browser_device.as_bytes());
                 let metadata = envelope
                     .encryption
@@ -329,6 +345,34 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // that epoch's key: it waits for the key instead of being refused.
     let phone = enrol(&root, "phone", DeviceCapabilities::member());
     let phone_device = Ed25519PublicKey::from_bytes(phone.key.verifying_key().to_bytes());
+    // The phone announces itself in the room, as every device does: the
+    // browser vouches only for devices whose certificate the host relayed,
+    // and holds a commit adding any other until its certificate arrives.
+    let phone_endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    support::place(&host.relay, &phone.cert).await;
+    let phone_client = RelayClient::connect(
+        phone_endpoint,
+        host.relay.node_addr(),
+        root.verifying_key().to_bytes(),
+        phone.cert.clone(),
+        phone.key.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let phone_session =
+        RelayCoeditSession::join(phone_client, workspace(), *phone_device.as_bytes()).unwrap();
+    publish(
+        &phone_session,
+        &NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+            cert: Box::new(phone.cert.clone()),
+            revocations: Vec::new(),
+        },
+    );
     let mut phone_peer =
         ChannelPeer::waiting(None, channel, Box::new(phone.key.clone()), &vault).unwrap();
     let phone_request = phone_peer
@@ -413,6 +457,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     })
     .await;
     assert_eq!(refused, "cleartext on a channel that requires it sealed");
+    phone_session.close().await;
     peer.close();
     host.relay.shutdown().await;
 }
@@ -450,6 +495,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         .bind()
         .await
         .unwrap();
+    support::place(&host.relay, &laptop.cert).await;
     let client = RelayClient::connect(
         endpoint,
         host.relay.node_addr(),
@@ -490,7 +536,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         )
     };
     let first = start();
-    first.join(workspace()).unwrap();
+    first.join_placed(support::ROOM, "Workspace").unwrap();
     first.open_route(route.clone()).unwrap();
     ready(&[&first]).await;
     first
@@ -511,7 +557,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     first.close();
 
     let reloaded = start();
-    reloaded.join(workspace()).unwrap();
+    reloaded.join_placed(support::ROOM, "Workspace").unwrap();
     reloaded.open_route(route.clone()).unwrap();
     let browser_device = Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes());
     let allowed = BTreeSet::from([Ed25519PublicKey::from_bytes(laptop_device), browser_device]);
@@ -521,11 +567,18 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
             .await
             .expect("the held edit after the reload")
             .expect("host session open");
-        let Inbound::Delta { data, .. } = inbound else {
+        let Inbound::Delta { author, data } = inbound else {
             continue;
         };
+        // The room's host takes part as well: its own writes are not the browser's.
+        if support::is_host(&author) {
+            continue;
+        }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) => {
+            // The page asks for the channels of the room's other records too.
+            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. })
+                if request.channel == channel =>
+            {
                 laptop_peer.learn_request(*request, &vault).unwrap();
                 laptop_peer.reconcile_now(&allowed, &vault).unwrap();
                 for frame in take(&mut laptop_peer, &vault) {
@@ -539,7 +592,11 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
                     );
                 }
             }
-            Ok(NeighbourMsg::AppDocument { envelope, .. }) => {
+            Ok(NeighbourMsg::AppDocument {
+                envelope,
+                record_id,
+                ..
+            }) if record_id == route.record => {
                 let metadata = envelope.encryption.expect("sealed");
                 break laptop_peer
                     .content_keys()
@@ -593,6 +650,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         .bind()
         .await
         .unwrap();
+    support::place(&host.relay, &laptop.cert).await;
     let client = RelayClient::connect(
         endpoint,
         host.relay.node_addr(),
@@ -620,7 +678,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         host_device.cert.clone(),
         browser.key.clone(),
     );
-    peer.join(workspace()).unwrap();
+    peer.join_placed(support::ROOM, "Workspace").unwrap();
     peer.open_route(route.clone()).unwrap();
     ready(&[&peer]).await;
     peer.publish(
@@ -653,8 +711,15 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         let Inbound::Delta { author, data } = inbound else {
             continue;
         };
+        // The room's host takes part as well: its own writes are not the browser's.
+        if support::is_host(&author) {
+            continue;
+        }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
-            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) => {
+            // The page asks for the channels of the room's other records too.
+            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. })
+                if request.channel == channel =>
+            {
                 assert_eq!(author, *browser_device.as_bytes());
                 assert_eq!(request.channel, channel);
                 laptop_peer.learn_request(*request, &vault).unwrap();
@@ -670,7 +735,11 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
                     );
                 }
             }
-            Ok(NeighbourMsg::AppDocument { envelope, .. }) => {
+            Ok(NeighbourMsg::AppDocument {
+                envelope,
+                record_id,
+                ..
+            }) if record_id == route.record => {
                 assert_eq!(author, *browser_device.as_bytes());
                 let metadata = envelope
                     .encryption

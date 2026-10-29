@@ -7,20 +7,20 @@
 //! summary of what changed. It lives in `ui` (not a leaf crate) because
 //! both an app's history and the compositor's room-level timeline need it.
 //!
-//! Two summary strategies, in order of preference: **structural**, which
-//! materialises the window with [`tilo_doc::snapshot::series`] and
-//! diffs snapshots for real per-paragraph insert/delete counts on
-//! documents carrying the `tilo-doc` schema; and **patch**, the fallback that
-//! reads the change's own patch set via `AutoCommit::diff`, weaker only in
-//! that it can't see tilo-doc-level concepts like comments or block moves.
-//! Neither path guesses — an indescribable change gets
-//! `"no visible change"` rather than an invented summary.
+//! A row says what a change did as the change's action record names it
+//! ([`sentence::step_summary`]); a change made outside any action (a framework
+//! change, or a write that names no finer action than the document) says so
+//! in the framework's words, never by guessing from its content. Its op class
+//! and text delta are read from the change itself: **structural**, which
+//! materialises the window with [`tilo_doc::snapshot::series`] and diffs
+//! snapshots for real per-paragraph insert/delete counts on documents carrying
+//! the `tilo-doc` schema; and **patch**, which reads the change's own patch
+//! set via `AutoCommit::diff`.
 //!
 //! [`HistoryEntry::id`] is the first sixteen bytes of the change hash, so
 //! it's content-addressed and stable across peers, letting
 //! [`heads_for_entry`] turn a clicked row back into a document state.
 
-use crate::num::i64_of_usize;
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 use tilo_sort::CompactSort as _;
 
@@ -101,9 +101,6 @@ pub use sentence::ThreadWords;
 /// the whole chain.
 pub const DEFAULT_MAX_ENTRIES: usize = 200;
 
-/// Deliberately not a guess.
-pub const NO_VISIBLE_CHANGE: &str = "no visible change";
-
 /// Automerge's history readers close an open transaction. Inspect a committed
 /// copy only while an edit is pending, so browsing never steals the app's action
 /// boundary or publishes a temporary, unstamped change as a stable history ID.
@@ -146,7 +143,6 @@ pub struct HistorySource {
     artifact_kind: ArtifactKind,
     max_entries: usize,
     record_genesis: bool,
-    field_paths: bool,
     pass_over: Option<PassOver>,
 }
 
@@ -168,7 +164,6 @@ impl HistorySource {
             artifact_kind: ArtifactKind::File,
             max_entries: DEFAULT_MAX_ENTRIES,
             record_genesis: true,
-            field_paths: true,
             pass_over: None,
         }
     }
@@ -188,16 +183,6 @@ impl HistorySource {
 
     fn passes_over(&self, change: &automerge::Change) -> bool {
         self.pass_over.is_some_and(|pass_over| pass_over(change))
-    }
-
-    /// Describe a change that edited a document's fields by how many it
-    /// edited, never by their paths. A document's own history names the
-    /// fields for whoever inspects it; a feed read by people shows no
-    /// storage keys.
-    #[must_use]
-    pub fn without_field_paths(mut self) -> Self {
-        self.field_paths = false;
-        self
     }
 
     /// Leave out a record's genesis: the change that created it with its
@@ -309,14 +294,38 @@ fn timestamp_from_ms(time_ms: i64) -> SystemTime {
         .unwrap_or(UNIX_EPOCH)
 }
 
+/// What a change did to the document, read from the change itself: its op
+/// class, its text delta, and whether anything it did shows.
+#[derive(Clone, Copy)]
+struct Effect {
+    entry_kind: EntryKind,
+    text_delta: Option<(usize, usize)>,
+    visible: bool,
+}
+
+impl Effect {
+    const fn shows(entry_kind: EntryKind, text_delta: Option<(usize, usize)>) -> Self {
+        Self {
+            entry_kind,
+            text_delta,
+            visible: true,
+        }
+    }
+
+    const fn nothing(text_delta: Option<(usize, usize)>) -> Self {
+        Self {
+            entry_kind: EntryKind::Details,
+            text_delta,
+            visible: false,
+        }
+    }
+}
+
 /// The op class follows what actually moved, in the order a reader cares
 /// about: a new comment is a comment even if it also touched text; content
 /// edits beat pure deletions; a reordering with no content change is a
 /// move; anything left is metadata.
-fn structural_summary(
-    prev: &DocSnapshot,
-    cur: &DocSnapshot,
-) -> (String, EntryKind, Option<(usize, usize)>) {
+fn structural_effect(prev: &DocSnapshot, cur: &DocSnapshot) -> Effect {
     let diff = tilo_doc::diff_snapshots(prev, cur);
 
     let mut inserted = 0usize;
@@ -357,66 +366,32 @@ fn structural_summary(
 
     let blocks_added = diff.summary.added;
     let blocks_removed = diff.summary.removed;
-    let props = diff.properties.len();
-    let comments = cur.comments.len().saturating_sub(prev.comments.len());
-    let pure_reorder = blocks_added == 0 && blocks_removed == 0 && block_order_changed(prev, cur);
-    // Checked before the character counts: a removed block also removes its
-    // text, and "-1 block" is what the reader wants, not "-6 chars".
+    let comments = cur.comments.len() > prev.comments.len();
+    // A removed block also removes its text: it is a deletion, not an edit.
     let pure_removal = blocks_removed > 0 && blocks_added == 0 && inserted == 0;
 
     // A removed block contributes the text it took with it, so every
-    // branch below can report counted characters without exception.
+    // class below carries counted characters without exception.
     let delta = Some((inserted, deleted));
-    if comments > 0 {
-        let s = if comments == 1 {
-            "+1 comment".to_string()
-        } else {
-            format!("+{comments} comments")
-        };
-        return (s, EntryKind::Comment, delta);
+    if comments {
+        return Effect::shows(EntryKind::Comment, delta);
     }
     if pure_removal {
-        return (
-            plural_signed(negative_count(blocks_removed), "block"),
-            EntryKind::Delete,
-            delta,
-        );
+        return Effect::shows(EntryKind::Delete, delta);
     }
-    if inserted > 0 || deleted > 0 {
-        return (
-            format!("+{inserted} -{deleted} chars"),
-            EntryKind::Text,
-            delta,
-        );
-    }
-    if blocks_added > 0 {
-        return (
-            plural_signed(i64_of_usize(blocks_added), "block"),
-            EntryKind::Text,
-            delta,
-        );
+    if inserted > 0 || deleted > 0 || blocks_added > 0 {
+        return Effect::shows(EntryKind::Text, delta);
     }
     if blocks_removed > 0 {
-        return (
-            plural_signed(negative_count(blocks_removed), "block"),
-            EntryKind::Delete,
-            delta,
-        );
+        return Effect::shows(EntryKind::Delete, delta);
     }
-    if pure_reorder {
-        return ("reordered".to_string(), EntryKind::Move, delta);
+    if block_order_changed(prev, cur) {
+        return Effect::shows(EntryKind::Move, delta);
     }
-    if formatting > 0 {
-        return (
-            plural(formatting, "formatting change"),
-            EntryKind::Details,
-            delta,
-        );
+    if formatting > 0 || !diff.properties.is_empty() {
+        return Effect::shows(EntryKind::Details, delta);
     }
-    if props > 0 {
-        return (plural(props, "property"), EntryKind::Details, delta);
-    }
-    (NO_VISIBLE_CHANGE.to_string(), EntryKind::Details, delta)
+    Effect::nothing(delta)
 }
 
 /// Same set of top-level block ids but a different order — a move rather
@@ -434,71 +409,30 @@ fn block_order_changed(prev: &DocSnapshot, cur: &DocSnapshot) -> bool {
     sa == sb && a != b
 }
 
-/// Describe, in one short phrase, what moving `doc` from `from` to `to` does:
-/// `"+12 -3 chars"`, `"+1 item"`, `"2 fields"`.
-///
-/// The public face of the same producer the history rows are built from, so an
-/// Undo control and the timeline describe an action identically rather than
-/// each inventing wording. Like every summary here it never guesses: a change
-/// whose effect cannot be described comes back as [`NO_VISIBLE_CHANGE`].
-///
-/// `&mut AutoCommit` because reading a diff flushes the open transaction; the
-/// document is not otherwise modified.
-pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHash]) -> String {
-    // A change made through an action says what it did. Reading that costs
-    // one change's metadata; diffing the span costs a scan of the document,
-    // which an undo control asking every frame cannot afford.
-    if let [head] = to
-        && !from.contains(head)
-        && let Some(summary) = tilo_actions::entry_of(doc.committed_document(), *head)
-            .as_ref()
-            .and_then(sentence::step_summary)
-    {
-        return summary;
-    }
-    patch_summary(doc, from, to, true).0
-}
-
-/// Describe a change by reading its own patch set. The fallback for documents
-/// that don't carry the tilo-doc schema. With `paths`, edited fields are named by
-/// their document paths; without, counted.
-fn patch_summary(
-    doc: &mut AutoCommit,
-    before: &[ChangeHash],
-    after: &[ChangeHash],
-    paths: bool,
-) -> (String, EntryKind, Option<(usize, usize)>) {
+/// [`patch_effect`] of the patches `before -> after` reads. For documents
+/// that don't carry the tilo-doc schema.
+fn diff_effect(doc: &mut AutoCommit, before: &[ChangeHash], after: &[ChangeHash]) -> Effect {
     let patches = doc.diff(before, after);
-    summarize_patches(doc, &patches, paths)
+    patch_effect(doc, &patches)
 }
 
-/// [`patch_summary`] of patches already read; `doc` is a replica holding
-/// the objects they touch.
-fn summarize_patches(
-    doc: &AutoCommit,
-    patches: &[automerge::Patch],
-    paths: bool,
-) -> (String, EntryKind, Option<(usize, usize)>) {
-    // A change that only named a version or recorded a run reports as
-    // nothing visible, so the caller drops the row.
+/// What patches already read did; `doc` is a replica holding the objects
+/// they touch.
+fn patch_effect(doc: &AutoCommit, patches: &[automerge::Patch]) -> Effect {
+    // A change that only named a version or recorded a run shows nothing,
+    // so the caller drops the row.
     if is_history_metadata(patches) {
-        return (NO_VISIBLE_CHANGE.to_string(), EntryKind::Details, None);
+        return Effect::nothing(None);
     }
     let mut inserted = 0usize;
     let mut text_deleted = 0usize;
-    let mut list_inserted = 0usize;
-    let mut list_deleted = 0usize;
-    let mut fields = 0usize;
-    let mut field_deleted = 0usize;
-    let mut marks = 0usize;
-    let mut field_paths: Vec<String> = Vec::new();
+    let mut list_inserted = false;
+    let mut list_deleted = false;
+    let mut fields = false;
+    let mut field_deleted = false;
+    let mut marks = false;
 
     for p in patches {
-        if let Some(path) = field_path(p)
-            && !field_paths.contains(&path)
-        {
-            field_paths.push(path);
-        }
         let is_text = matches!(doc.object_type(&p.obj), Ok(ObjType::Text));
         match &p.action {
             PatchAction::SpliceText { value, .. } => {
@@ -508,148 +442,30 @@ fn summarize_patches(
                 if is_text {
                     text_deleted = text_deleted.saturating_add(*length);
                 } else {
-                    list_deleted = list_deleted.saturating_add(*length);
+                    list_deleted = true;
                 }
             }
-            PatchAction::Insert { values, .. } => {
-                list_inserted = list_inserted.saturating_add(values.len());
-            }
-            // Both arms only ever mark that a scalar field changed — an
-            // increment is bookkeeping the same way a put is.
-            PatchAction::PutMap { .. } | PatchAction::Increment { .. } => {
-                fields = fields.saturating_add(1);
-            }
-            PatchAction::DeleteMap { .. } => field_deleted = field_deleted.saturating_add(1),
-            PatchAction::PutSeq { .. } => list_inserted = list_inserted.saturating_add(1),
-            PatchAction::Mark { marks: m } => marks = marks.saturating_add(m.len()),
+            PatchAction::Insert { .. } | PatchAction::PutSeq { .. } => list_inserted = true,
+            // Both only ever mark that a scalar field changed — an increment
+            // is bookkeeping the same way a put is.
+            PatchAction::PutMap { .. } | PatchAction::Increment { .. } => fields = true,
+            PatchAction::DeleteMap { .. } => field_deleted = true,
+            PatchAction::Mark { marks: m } => marks |= !m.is_empty(),
             PatchAction::Conflict { .. } => {}
         }
     }
 
     let delta = Some((inserted, text_deleted));
-    if inserted > 0 || text_deleted > 0 {
-        return (
-            format!("+{inserted} -{text_deleted} chars"),
-            EntryKind::Text,
-            delta,
-        );
+    if inserted > 0 || text_deleted > 0 || list_inserted {
+        return Effect::shows(EntryKind::Text, delta);
     }
-    if list_inserted > 0 {
-        return (
-            plural_signed(i64_of_usize(list_inserted), "item"),
-            EntryKind::Text,
-            delta,
-        );
+    if list_deleted || (field_deleted && !fields) {
+        return Effect::shows(EntryKind::Delete, delta);
     }
-    if list_deleted > 0 {
-        return (
-            plural_signed(negative_count(list_deleted), "item"),
-            EntryKind::Delete,
-            delta,
-        );
+    if fields || field_deleted || marks {
+        return Effect::shows(EntryKind::Details, delta);
     }
-    if (fields > 0 || field_deleted > 0)
-        && let Some((first, rest)) = field_paths.split_first()
-    {
-        let removed = fields == 0;
-        let class = if removed {
-            EntryKind::Delete
-        } else {
-            EntryKind::Details
-        };
-        let label = if paths {
-            edited_fields_label(first, rest.len(), removed)
-        } else {
-            counted_fields_label(field_paths.len(), removed)
-        };
-        return (label, class, delta);
-    }
-    if fields > 0 {
-        return (plural(fields, "field"), EntryKind::Details, delta);
-    }
-    if marks > 0 {
-        return (
-            plural(marks, "formatting change"),
-            EntryKind::Details,
-            delta,
-        );
-    }
-    (NO_VISIBLE_CHANGE.to_string(), EntryKind::Details, delta)
-}
-
-/// The dotted document path of the map entry `patch` writes, such as
-/// `settings.theme`. Sequence positions are omitted: an index names where a
-/// value sat, not what it is.
-fn field_path(patch: &automerge::Patch) -> Option<String> {
-    let leaf = match &patch.action {
-        PatchAction::PutMap { key, .. }
-        | PatchAction::DeleteMap { key }
-        | PatchAction::Increment {
-            prop: automerge::Prop::Map(key),
-            ..
-        } => key.clone(),
-        _ => return None,
-    };
-    let mut parts: Vec<&str> = patch
-        .path
-        .iter()
-        .filter_map(|(_, prop)| match prop {
-            automerge::Prop::Map(key) => Some(key.as_str()),
-            automerge::Prop::Seq(_) => None,
-        })
-        .collect();
-    parts.push(&leaf);
-    Some(parts.join("."))
-}
-
-/// "Edited title" / "Edited title and 2 more", or "Removed …" when the change
-/// only deleted entries.
-fn edited_fields_label(path: &str, more: usize, removed: bool) -> String {
-    crate::i18n::I18nManager::format(
-        if removed {
-            "history-removed-field"
-        } else {
-            "history-edited-field"
-        },
-        &[("path", path.into()), ("more", more.into())],
-    )
-}
-
-/// "Edited 3 fields", or "Removed …" when the change only deleted entries.
-fn counted_fields_label(count: usize, removed: bool) -> String {
-    crate::i18n::I18nManager::format(
-        if removed {
-            "history-removed-fields"
-        } else {
-            "history-edited-fields"
-        },
-        &[("count", count.into())],
-    )
-}
-
-fn plural(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("{n} {noun}")
-    } else {
-        format!("{n} {noun}s")
-    }
-}
-
-/// Converts a count to a negative `i64` for [`plural_signed`]. Saturates at
-/// `i64::MIN` rather than risking overflow on the negation; no realistic
-/// count gets anywhere near that bound.
-fn negative_count(n: usize) -> i64 {
-    i64_of_usize(n).checked_neg().unwrap_or(i64::MIN)
-}
-
-fn plural_signed(n: i64, noun: &str) -> String {
-    let mag = usize::try_from(n.unsigned_abs()).unwrap_or(usize::MAX);
-    let sign = if n < 0 { '-' } else { '+' };
-    if mag == 1 {
-        format!("{sign}1 {noun}")
-    } else {
-        format!("{sign}{mag} {noun}s")
-    }
+    Effect::nothing(delta)
 }
 
 #[cfg(test)]

@@ -76,52 +76,9 @@ impl ResourceApp for MailApp {
 
 thread_local! {
     static QUERIES: RefCell<Vec<SearchQuery>> = const { RefCell::new(Vec::new()) };
-    static SAVE_RETRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-struct QuerySurface(ui_core::widget::Text);
-
-impl ui_core::widget::Decorator for QuerySurface {
-    type Inner = ui_core::widget::Text;
-    fn inner(&self) -> &Self::Inner {
-        &self.0
-    }
-    fn inner_mut(&mut self) -> &mut Self::Inner {
-        &mut self.0
-    }
-}
-
-impl crate::framework::ResourceSurface<Mailbox> for QuerySurface {
-    fn present(&mut self, _: &Rc<Mailbox>) {}
-    fn take_save_retry(&mut self) -> bool {
-        SAVE_RETRY.with(|retry| retry.replace(false))
-    }
-    fn search_query(&mut self, query: &SearchQuery) {
-        QUERIES.with_borrow_mut(|queries| queries.push(query.clone()));
-    }
-}
-
-struct QueryApp;
-impl ResourceApp for QueryApp {
-    type Resource = Mailbox;
-    const ID: &'static str = "so.tilo.test-search-query";
-    const TITLE: &'static str = "Query";
-    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
-        cx.surface(QuerySurface(ui_core::widget::Text::new("Results")))
-    }
-}
-
-#[test]
-fn record_owner_consumes_the_surfaces_save_retry_once() {
-    SAVE_RETRY.with(|retry| retry.set(false));
-    let mut app = TestApp::<QueryApp>::new().unwrap();
-    assert!(!app.take_save_retry().unwrap());
-    SAVE_RETRY.with(|retry| retry.set(true));
-    assert!(app.take_save_retry().unwrap());
-    assert!(!app.take_save_retry().unwrap());
-}
-
-/// The same, a view looking queries up beside its content.
+/// A view looking queries up beside its content.
 struct ViewQueryApp;
 impl ResourceApp for ViewQueryApp {
     type Resource = Mailbox;
@@ -138,18 +95,9 @@ impl ResourceApp for ViewQueryApp {
 }
 
 #[test]
-fn platform_search_delivers_only_the_latest_bounded_query_to_the_surface() {
-    delivers_only_the_latest_bounded_query::<QueryApp>();
-}
-
-#[test]
 fn platform_search_delivers_only_the_latest_bounded_query_to_a_view() {
-    delivers_only_the_latest_bounded_query::<ViewQueryApp>();
-}
-
-fn delivers_only_the_latest_bounded_query<A: ResourceApp<Resource = Mailbox>>() {
     QUERIES.with_borrow_mut(Vec::clear);
-    let mut app = TestApp::<A>::new().unwrap();
+    let mut app = TestApp::<ViewQueryApp>::new().unwrap();
     QUERIES.with_borrow_mut(Vec::clear);
     app.harness()
         .with_widget_mut(|root: &mut ResourceRoot| {
@@ -187,43 +135,7 @@ thread_local! {
     static FOUND: RefCell<Vec<SearchEntry>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A surface that asks a server what the search asks, which answers later.
-struct ServerSurface(ui_core::widget::Text);
-
-impl ui_core::widget::Decorator for ServerSurface {
-    type Inner = ui_core::widget::Text;
-    fn inner(&self) -> &Self::Inner {
-        &self.0
-    }
-    fn inner_mut(&mut self) -> &mut Self::Inner {
-        &mut self.0
-    }
-}
-
-impl crate::framework::ResourceSurface<Mailbox> for ServerSurface {
-    fn present(&mut self, _: &Rc<Mailbox>) {}
-    fn search_query(&mut self, _: &SearchQuery) {
-        LOOKING.with(|looking| looking.set(true));
-    }
-    fn search_pending(&self) -> bool {
-        LOOKING.with(std::cell::Cell::get)
-    }
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        FOUND.with_borrow(Clone::clone)
-    }
-}
-
-struct ServerApp;
-impl ResourceApp for ServerApp {
-    type Resource = Mailbox;
-    const ID: &'static str = "so.tilo.test-server-search";
-    const TITLE: &'static str = "Server";
-    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
-        cx.surface(ServerSurface(ui_core::widget::Text::new("Results")))
-    }
-}
-
-/// The same, a view asking the server beside its content.
+/// A view asking a server what the search asks, which answers later.
 struct ViewServerApp;
 impl ResourceApp for ViewServerApp {
     type Resource = Mailbox;
@@ -241,19 +153,10 @@ impl ResourceApp for ViewServerApp {
 }
 
 #[test]
-fn a_showing_search_waits_for_what_a_server_finds_and_shows_it() {
-    waits_for_what_a_server_finds::<ServerApp>();
-}
-
-#[test]
 fn a_showing_search_waits_for_what_a_views_server_finds() {
-    waits_for_what_a_server_finds::<ViewServerApp>();
-}
-
-fn waits_for_what_a_server_finds<A: ResourceApp<Resource = Mailbox>>() {
     LOOKING.with(|looking| looking.set(false));
     FOUND.with_borrow_mut(Vec::clear);
-    let mut app = TestApp::<A>::new().unwrap();
+    let mut app = TestApp::<ViewServerApp>::new().unwrap();
     let query = SearchQuery::new("archive");
     let (search, first) = app
         .harness()
@@ -265,7 +168,7 @@ fn waits_for_what_a_server_finds<A: ResourceApp<Resource = Mailbox>>() {
         })
         .unwrap();
     assert!(first.results.is_empty(), "nothing held matches yet");
-    let token = first.pending.expect("the surface has yet to answer");
+    let token = first.pending.expect("the view has yet to answer");
     assert!(
         matches!(search.poll_page(&token), PagePoll::Pending),
         "not yet asked"

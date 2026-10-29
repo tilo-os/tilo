@@ -10,7 +10,9 @@
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use crate::{ModelDescriptor, OpenAiApi, ProviderProfile, ProviderProtocol, SignInIssuer};
+use crate::{
+    KeyHeader, ModelDescriptor, OpenAiApi, ProviderProfile, ProviderProtocol, SignInIssuer,
+};
 
 /// The Anthropic Messages API version every request names.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -151,6 +153,28 @@ pub struct Header {
 ///
 /// Anthropic without a `secret`.
 pub fn headers(protocol: ProviderProtocol, secret: Option<&str>) -> Result<Vec<Header>, String> {
+    keyed_headers(protocol, KeyHeader::of(protocol), secret)
+}
+
+/// [`headers`], with the key in `key_header` rather than the protocol's
+/// own.
+///
+/// # Errors
+///
+/// Anthropic without a `secret`.
+pub fn keyed_headers(
+    protocol: ProviderProtocol,
+    key_header: KeyHeader,
+    secret: Option<&str>,
+) -> Result<Vec<Header>, String> {
+    let key = |secret: &str| Header {
+        name: key_header.name(),
+        value: Zeroizing::new(match key_header {
+            KeyHeader::Bearer => format!("Bearer {secret}"),
+            KeyHeader::XApiKey | KeyHeader::ApiKey => secret.into(),
+        }),
+        secret: true,
+    };
     match (protocol, secret) {
         (ProviderProtocol::Anthropic, None) => {
             Err("Anthropic requests require a configured credential".into())
@@ -161,17 +185,9 @@ pub fn headers(protocol: ProviderProtocol, secret: Option<&str>) -> Result<Vec<H
                 value: Zeroizing::new(ANTHROPIC_VERSION.into()),
                 secret: false,
             },
-            Header {
-                name: "x-api-key",
-                value: Zeroizing::new(secret.into()),
-                secret: true,
-            },
+            key(secret),
         ]),
-        (ProviderProtocol::OpenAiCompatible, Some(secret)) => Ok(vec![Header {
-            name: "authorization",
-            value: Zeroizing::new(format!("Bearer {secret}")),
-            secret: true,
-        }]),
+        (ProviderProtocol::OpenAiCompatible, Some(secret)) => Ok(vec![key(secret)]),
         (ProviderProtocol::OpenAiCompatible, None) => Ok(Vec::new()),
     }
 }
@@ -338,16 +354,32 @@ fn responses_result(body: &str) -> Result<Value, String> {
     last.ok_or_else(unreadable)
 }
 
-/// The URL listing `profile`'s models: `GET /v1/models` of an Anthropic
-/// endpoint, `GET /models` of the others.
-pub fn models_url(profile: &ProviderProfile) -> String {
+/// The URL listing `profile`'s models: its own path under the endpoint, or
+/// from its origin when the path starts with `/`
+/// ([`ProviderProfile::models_path`]), else `GET /v1/models` of an Anthropic
+/// endpoint and `GET /models` of the others. `None` when the provider lists
+/// none.
+pub fn models_url(profile: &ProviderProfile) -> Option<String> {
     let base = profile.endpoint.trim_end_matches('/');
     let base = base
         .strip_suffix("/chat/completions")
         .or_else(|| base.strip_suffix("/v1/messages"))
         .or_else(|| base.strip_suffix("/responses"))
         .unwrap_or(base);
-    match profile.protocol {
+    if let Some(path) = &profile.models_path {
+        let path = path.trim();
+        if path.is_empty() {
+            return None;
+        }
+        // A path from the origin: an Anthropic-compatible endpoint whose
+        // provider lists its models beside its OpenAI-compatible one.
+        if path.starts_with('/') {
+            let origin = url::Url::parse(base).ok()?.origin().ascii_serialization();
+            return Some(format!("{origin}{path}"));
+        }
+        return Some(format!("{base}/{path}"));
+    }
+    Some(match profile.protocol {
         ProviderProtocol::Anthropic if base.ends_with("/v1") => format!("{base}/models"),
         ProviderProtocol::Anthropic => format!("{base}/v1/models"),
         // The ChatGPT backend lists the models of the client version it is
@@ -356,15 +388,17 @@ pub fn models_url(profile: &ProviderProfile) -> String {
             format!("{base}/models?client_version={CHATGPT_CLIENT_VERSION}")
         }
         ProviderProtocol::OpenAiCompatible => format!("{base}/models"),
-    }
+    })
 }
 
 /// At most this many models are read from one list.
 const MAX_LISTED_MODELS: usize = 512;
 
 /// The models of a model-list response: `data[].id` (`OpenAI`, Anthropic
-/// and every compatible provider) or `models[].slug` (the `ChatGPT` backend),
-/// with the provider's display name and context size when it gives them.
+/// and every compatible provider), `models[].slug` (the `ChatGPT` backend)
+/// or `models[].name` (Gemini's own list), with the provider's display
+/// name, context size and capabilities when it gives them, and the family
+/// table's capabilities when it does not ([`crate::capabilities`]).
 /// Sorted by id; duplicates and blank ids dropped.
 pub fn parse_models(body: &str) -> Result<Vec<ModelDescriptor>, String> {
     let value: Value =
@@ -388,16 +422,14 @@ pub fn parse_models(body: &str) -> Result<Vec<ModelDescriptor>, String> {
     let mut models: Vec<ModelDescriptor> = entries
         .iter()
         .filter_map(|entry| {
-            let id = text(entry, &[id_key, "id"])?;
-            let context = ["context_length", "context_window", "max_context_length"]
-                .iter()
-                .find_map(|key| entry.get(*key).and_then(Value::as_u64))
-                .and_then(|tokens| u32::try_from(tokens).ok());
-            Some(ModelDescriptor {
-                label: text(entry, &["display_name", "name"]).unwrap_or_else(|| id.clone()),
-                context_window: context,
+            let id = text(entry, &[id_key, "id", "name"])?;
+            let mut model = ModelDescriptor {
+                label: text(entry, &["display_name", "displayName", "name"])
+                    .unwrap_or_else(|| id.clone()),
                 ..ModelDescriptor::new(id)
-            })
+            };
+            crate::capabilities::apply_listing(&mut model, entry);
+            Some(model)
         })
         .take(MAX_LISTED_MODELS)
         .collect();
@@ -454,7 +486,10 @@ pub fn profile_headers(
     profile: &ProviderProfile,
     secret: Option<&str>,
 ) -> Result<Vec<Header>, String> {
-    let mut all = headers(profile.protocol, secret)?;
+    let key_header = profile
+        .key_header
+        .unwrap_or_else(|| KeyHeader::of(profile.protocol));
+    let mut all = keyed_headers(profile.protocol, key_header, secret)?;
     let constant = |name: &'static str, value: &str| Header {
         name,
         value: Zeroizing::new(value.into()),
@@ -640,7 +675,7 @@ mod tests {
 
     #[test]
     fn a_chatgpt_sign_in_speaks_responses_to_its_account() {
-        let chatgpt = crate::presets::Preset::ChatGpt.profile();
+        let chatgpt = crate::presets::Preset::CHATGPT.profile();
         assert!(speaks_responses(&chatgpt));
         assert_eq!(
             profile_url(&chatgpt),
@@ -700,7 +735,7 @@ mod tests {
     #[test]
     fn openai_s_own_api_takes_responses_and_other_endpoints_chat_unless_told() {
         use crate::presets::Preset;
-        let openai = Preset::OpenAi.profile();
+        let openai = Preset::OPENAI.profile();
         assert_eq!(openai_api(&openai), Some(OpenAiApi::Responses));
         assert!(!speaks_responses(&openai));
         assert_eq!(
@@ -711,7 +746,7 @@ mod tests {
             responses_url(&openai),
             "https://api.openai.com/v1/responses"
         );
-        let mut typed = Preset::Compatible.profile();
+        let mut typed = Preset::COMPATIBLE.profile();
         assert_eq!(typed.openai_api, None);
         for endpoint in [
             "https://api.openai.com/v1",
@@ -738,23 +773,23 @@ mod tests {
         typed.openai_api = Some(OpenAiApi::Responses);
         assert_eq!(openai_api(&typed), Some(OpenAiApi::Responses));
         assert_eq!(responses_url(&typed), "http://127.0.0.1:8787/v1/responses");
-        let mut chat = Preset::OpenAi.profile();
+        let mut chat = Preset::OPENAI.profile();
         chat.openai_api = Some(OpenAiApi::ChatCompletions);
         assert_eq!(openai_api(&chat), Some(OpenAiApi::ChatCompletions));
         assert_eq!(
-            openai_api(&Preset::ChatGpt.profile()),
+            openai_api(&Preset::CHATGPT.profile()),
             Some(OpenAiApi::Responses)
         );
         assert_eq!(
-            openai_api(&Preset::Groq.profile()),
+            openai_api(&Preset::GROQ.profile()),
             Some(OpenAiApi::ChatCompletions)
         );
-        assert_eq!(openai_api(&Preset::Anthropic.profile()), None);
+        assert_eq!(openai_api(&Preset::ANTHROPIC.profile()), None);
     }
 
     #[test]
     fn a_copilot_sign_in_names_the_editor_its_api_requires() {
-        let copilot = crate::presets::Preset::Copilot.profile();
+        let copilot = crate::presets::Preset::COPILOT.profile();
         assert!(!speaks_responses(&copilot));
         let names: Vec<_> = profile_headers(&copilot, Some("tid"))
             .unwrap()
@@ -772,18 +807,22 @@ mod tests {
     fn model_lists_come_from_each_dialect() {
         use crate::presets::Preset;
         assert_eq!(
-            models_url(&Preset::Anthropic.profile()),
-            "https://api.anthropic.com/v1/models"
+            models_url(&Preset::ANTHROPIC.profile()).as_deref(),
+            Some("https://api.anthropic.com/v1/models")
         );
         assert_eq!(
-            models_url(&Preset::Groq.profile()),
-            "https://api.groq.com/openai/v1/models"
+            models_url(&Preset::GROQ.profile()).as_deref(),
+            Some("https://api.groq.com/openai/v1/models")
         );
-        let mut typed = Preset::Compatible.profile();
+        let mut typed = Preset::COMPATIBLE.profile();
         typed.endpoint = "http://10.0.0.2:8000/v1/chat/completions".into();
-        assert_eq!(models_url(&typed), "http://10.0.0.2:8000/v1/models");
+        assert_eq!(
+            models_url(&typed).as_deref(),
+            Some("http://10.0.0.2:8000/v1/models")
+        );
         assert!(
-            models_url(&Preset::ChatGpt.profile())
+            models_url(&Preset::CHATGPT.profile())
+                .unwrap()
                 .starts_with("https://chatgpt.com/backend-api/codex/models?client_version=")
         );
 

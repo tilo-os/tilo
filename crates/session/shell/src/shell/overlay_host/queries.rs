@@ -7,36 +7,102 @@
 use super::*;
 
 impl ShellOverlayHost {
-    /// Cached "+ Add workspace" tile rect, `Rect::ZERO` while the overview
-    /// is hidden. Lets tests assert it's on screen and click its centre.
-    pub fn add_workspace_rect_for_tests(&self) -> Rect {
-        self.add_workspace_hit_rect()
+    /// Full ordered list of scopes shown in the banner. Includes
+    /// [`SearchScope::ActiveApp`] only when there's a currently focused
+    /// tab — otherwise the pill would render an empty label.
+    pub(super) fn search_scope_list(&self) -> Vec<crate::shell::chrome_state::SearchScope> {
+        use crate::shell::chrome_state::SearchScope;
+        let mut out = Vec::with_capacity(3);
+        if self
+            .chrome
+            .as_ref()
+            .and_then(|c| c.borrow().active_app_title())
+            .is_some()
+        {
+            out.push(SearchScope::ActiveApp);
+        }
+        out.push(SearchScope::Workspace);
+        out.push(SearchScope::All);
+        out
     }
 
-    /// The new-workspace row while the overview is open.
-    ///
-    /// The fade's first sample is still alpha 0, and that sample clears the
-    /// painted hit cache so a closing overview cannot create a room. The
-    /// row's geometry is the control: `list-targets` and a click both use
-    /// it as soon as the overlay flag is up, including that first sample.
-    pub(super) fn add_workspace_hit_rect(&self) -> Rect {
-        if !self.overlay_flags().overview {
-            return Rect::ZERO;
+    /// Label for the i-th scope pill. [`SearchScope::ActiveApp`] names
+    /// the focused app (`Notes app`), truncated to `MAX_APP_PILL_CHARS`
+    /// — "app" is explicit because the kind-filter strip above uses the
+    /// same names for a different axis.
+    pub(crate) fn search_scope_pill_label(
+        &self,
+        scope: crate::shell::chrome_state::SearchScope,
+    ) -> String {
+        use crate::shell::chrome_state::SearchScope;
+        const MAX_APP_PILL_CHARS: usize = 14;
+        if let Some(resource_label) = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            (state.search_scope == scope)
+                .then(|| {
+                    state
+                        .search_resource_scope
+                        .as_ref()
+                        .map(|resource| resource.label.clone())
+                })
+                .flatten()
+        }) {
+            const MAX_RESOURCE_PILL_CHARS: usize = 18;
+            let label = if resource_label.chars().count() > MAX_RESOURCE_PILL_CHARS {
+                let head: String = resource_label
+                    .chars()
+                    .take(MAX_RESOURCE_PILL_CHARS)
+                    .collect();
+                format!("{head}…")
+            } else {
+                resource_label
+            };
+            return format!("‹ {label}");
         }
-        let content = self.overview_content_rect();
-        let top = self.overview_list_top().max(content.y0);
-        if top >= content.y1 {
-            return Rect::ZERO;
+        match scope {
+            SearchScope::ActiveApp => {
+                let Some(raw) = self
+                    .chrome
+                    .as_ref()
+                    .and_then(|c| c.borrow().active_app_title())
+                else {
+                    return SearchScope::ActiveApp.localized_label();
+                };
+                let title = if raw.chars().count() > MAX_APP_PILL_CHARS {
+                    let head: String = raw.chars().take(MAX_APP_PILL_CHARS).collect();
+                    format!("{head}…")
+                } else {
+                    raw
+                };
+                // An app already called "… app" doesn't get told twice.
+                if title.to_lowercase().ends_with(" app") {
+                    title
+                } else {
+                    t_args("host-search-scope-app", &[("title", title.into())])
+                }
+            }
+            other => other.localized_label(),
         }
-        let band = Rect::new(content.x0, top, content.x1, content.y1);
-        let row = self
-            .overview_add_workspace_rect_for(self.overview_cards().len())
-            .intersect(band);
-        if row.width() > 0.0 && row.height() > 0.0 {
-            row
-        } else {
-            Rect::ZERO
-        }
+    }
+
+    /// True if `p` is over any open overlay's hit rect, so
+    /// [`Widget::handle_event`] absorbs every pointer event and not just
+    /// `Pressed` — otherwise `Released`/`CursorMoved` fall through and
+    /// light up affordances underneath.
+    pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
+        (self.palette_visible && self.search_card().contains(p))
+            || self.cursor_over_other_open_overlay(p)
+    }
+
+    pub(super) fn cursor_over_other_open_overlay(&self, p: Point) -> bool {
+        let f = self.overlay_flags();
+        self.dictation_pointer_at((p.x, p.y))
+            || (f.collaborators && self.collaborators_overlay.contains(p))
+            || (f.quick_settings && self.quick_settings_rect().contains(p))
+            || (f.ws_settings && self.ws_settings_rect().contains(p))
+            || f.projection
+            || (self.layers.emoji_picker.is_open()
+                && self.layers.emoji_picker.card_rect().contains(p))
     }
 
     /// Test-only: a strip's `GroupRow` rect in screen-space. `None` if no
@@ -254,19 +320,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// One rect per workspace card in the overview, in tree order.
-    /// Empty while the overview is closed.
-    pub fn overview_row_rects_for_tests(&self) -> Vec<Rect> {
-        if !self.overlay_flags().overview {
-            return Vec::new();
-        }
-        let Some(chrome) = self.chrome.as_ref() else {
-            return Vec::new();
-        };
-        let count = chrome.borrow().tree().desktop.workspaces.len();
-        (0..count).map(|i| self.overview_row_rect(i)).collect()
-    }
-
     /// The invite, join and pairing sheet's named controls, as last laid
     /// out (`peer-sync.primary`, `peer-sync-who`, …).
     pub fn peer_sync_prompt_rects_for_tests(&self) -> Vec<(String, Rect)> {
@@ -353,13 +406,7 @@ impl ShellOverlayHost {
         self.desk_pointer(p, ui::time::now());
         // Resting on the banner stack holds its banners; leaving it into the
         // window under it lets them go, though that window takes the motion.
-        if let Some(chrome) = self.chrome.clone()
-            && self
-                .notification_stack
-                .note_pointer(&ChromeNotifications::new(&chrome), Some(p))
-        {
-            chrome.borrow_mut().bump();
-        }
+        self.note_banner_pointer(Some(p));
         // The strip switcher reads the path toward the ribbon over the
         // windows it crosses, as the top-edge reveals do.
         self.strip_switcher_pointer_moved(p);
@@ -412,11 +459,11 @@ impl ShellOverlayHost {
     pub fn palette_snapshot(&self) -> (bool, String, Option<String>, Vec<(String, String)>) {
         (
             self.palette_visible,
-            self.palette.query().to_string(),
-            self.palette
+            self.search.query().to_string(),
+            self.search
                 .selected_id()
                 .map(std::string::ToString::to_string),
-            self.palette
+            self.search
                 .visible_entries()
                 .into_iter()
                 .map(|e| (e.id.clone(), e.label.clone()))
@@ -528,37 +575,31 @@ impl ShellOverlayHost {
     /// carries labels only, not the badge/source-marker text a harness
     /// needs to tell "already have this" from "fetches this" apart.
     pub fn palette_rows_detailed(&self) -> Vec<(String, String, Option<String>)> {
-        self.palette
+        self.search
             .visible_entries()
             .into_iter()
             .map(|e| (e.id.clone(), e.label.clone(), e.description.clone()))
             .collect()
     }
 
-    /// Focus the palette's query field. `open_palette_with_scope` does
-    /// this; harnesses that force `palette_visible` need it too or they
-    /// capture the unfocused field.
-    pub fn set_palette_focus(&mut self, focused: bool) {
-        self.palette.set_focus(focused);
-    }
-
-    /// The palette owns text input while open, including when its host
-    /// routes keys directly without changing the native widget focus.
+    /// The launcher's field owns text input while search is open, including
+    /// when its host routes keys directly without changing the native
+    /// widget focus.
     pub fn palette_ime_field(&self) -> Option<ui::ime::ImeWindowState> {
-        (self.palette_visible && self.palette.is_focused())
-            .then(|| ui::ime::ImeWindowState::from_widget(&self.palette))
-            .flatten()
+        let launcher = self.launcher.as_ref().filter(|_| self.palette_visible)?;
+        let app: &dyn Widget = launcher.app.as_ref();
+        ui::ime::ImeWindowState::from_widget(app)
     }
 
     pub(crate) fn palette_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        self.palette.ime_edit_fingerprint(key)
+        self.launcher.as_ref()?.app.ime_edit_fingerprint(key)
     }
 
     /// Whether one of the shell's password prompts is up and takes the
     /// keyboard: the compositor's sheet, modal over everything, or Quick
     /// Settings' Wi-Fi prompt. Its field takes the input method.
     pub fn shell_prompt_up(&self) -> bool {
-        self.portal_prompt_up() || self.wifi_password_prompt_up()
+        self.portal_prompt_up()
     }
 
     fn portal_prompt_up(&self) -> bool {
@@ -571,14 +612,28 @@ impl ShellOverlayHost {
         if self.portal_prompt_up() {
             self.portal_dialogs.prompt()
         } else {
-            self.wifi_password_prompt_up().then_some(&self.wifi_prompt)
+            None
         }
     }
 
-    /// Whether the input method serves an overlay's own field — the
-    /// palette's, or a password prompt's — rather than the focused node's.
+    /// Whether the input method serves an overlay's own field — search's,
+    /// or a password prompt's — rather than the focused node's.
     pub fn overlay_owns_ime(&self) -> bool {
-        self.palette_visible || self.shell_prompt_up() || self.canvas_takes_keys()
+        self.palette_visible
+            || self.shell_prompt_up()
+            || self.quick_settings_field().is_some()
+            || self.canvas_takes_keys()
+    }
+
+    /// The Quick Settings field with the keyboard (the clipboard's search,
+    /// a network's password), while the panel is open.
+    fn quick_settings_field(&self) -> Option<&dyn ui::widget::AppWidget> {
+        if !self.overlay_flags().quick_settings {
+            return None;
+        }
+        self.quick_settings
+            .app()
+            .filter(|app| app.ime_cursor_rect().is_some())
     }
 
     /// The overlay field the input method serves ([`Self::overlay_owns_ime`]).
@@ -586,21 +641,29 @@ impl ShellOverlayHost {
         if self.palette_visible {
             return self.palette_ime_field();
         }
-        if !self.shell_prompt_up() && self.canvas_takes_keys() {
-            return self.canvas_ime_field();
+        if let Some(prompt) = self.shell_prompt() {
+            return ui::ime::ImeWindowState::from_widget(prompt);
         }
-        self.shell_prompt()
-            .and_then(|prompt| ui::ime::ImeWindowState::from_widget(prompt))
+        if let Some(field) = self.quick_settings_field() {
+            return ui::ime::ImeWindowState::from_widget(field);
+        }
+        self.canvas_ime_field()
     }
 
     pub(crate) fn overlay_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         if self.palette_visible {
             return self.palette_ime_edit_fingerprint(key);
         }
-        if !self.shell_prompt_up() && self.canvas_takes_keys() {
+        if let Some(prompt) = self.shell_prompt() {
+            return prompt.ime_edit_fingerprint(key);
+        }
+        if let Some(field) = self.quick_settings_field() {
+            return field.ime_edit_fingerprint(key);
+        }
+        if self.canvas_takes_keys() {
             return self.canvas_ime_edit_fingerprint(key);
         }
-        self.shell_prompt()?.ime_edit_fingerprint(key)
+        None
     }
 
     /// Where the on-screen keyboard covers the desktop, so a password
@@ -874,13 +937,13 @@ impl ShellOverlayHost {
     /// The command-palette query buffer, for the `shots` harness to
     /// assert a synthetic `Type("…")` landed.
     pub fn palette_query(&self) -> &str {
-        self.palette.query()
+        self.search.query()
     }
 
     /// Force-set the query buffer, for `shots` to seed a query while the
     /// palette is closed without round-tripping synthetic key events.
     pub fn set_palette_query(&mut self, q: &str) {
-        self.palette.set_query(q);
+        self.search.set_query(q);
     }
 
     /// The rooms held through the web, which the overview offers to leave:
@@ -1043,29 +1106,6 @@ impl ShellOverlayHost {
         self.peer_sync_overlay.show_pairing(link.to_owned());
     }
 
-    /// Fast-forwards the overview crossfade so a headless single-frame
-    /// render sees the settled layer, not the alpha-zero start.
-    pub fn force_overview_settled(&mut self, target: bool) {
-        self.overview_zoom.snap(target);
-        self.overview_naming = None;
-        // Same seeding the animated open does, so a single-frame paint
-        // matches what a real open leaves behind.
-        self.reseed_overview_selection(target);
-    }
-
-    /// Start the keyboard on the current room each time the overview
-    /// opens, and forget any press when it closes.
-    pub(super) fn reseed_overview_selection(&mut self, open: bool) {
-        self.overview_selection = if open {
-            self.overview_here_index()
-        } else {
-            None
-        };
-        self.overview_window_selection = None;
-        self.overview_window_interrupted = false;
-        self.overview_press = None;
-    }
-
     /// Open the search of the app in `tab` with `query` typed, as the app's
     /// own search control asks for it (`Self::open_app_search`), for
     /// `bin/shots`.
@@ -1124,17 +1164,16 @@ impl ShellOverlayHost {
         // user-visible open contract completely: keyboard traversal starts
         // on Edit instead of inheriting stale focus from a previous open.
         if !self.qs_was_open {
-            self.qs_root.reset_focus();
             self.refresh_quick_settings_summaries();
+            self.quick_settings.mount();
+            if let Some(app) = self.quick_settings.app_mut() {
+                app.set_focus(true);
+            }
         }
         self.qs_was_open = true;
         self.qs_motion = qs_motion::QsMotion::opened();
-        // An open section stands open too, not at the start of its motion.
-        if let Some(chrome) = self.chrome.clone() {
-            self.refresh_qs_hosted_rows();
-            self.qs_root
-                .settle_sections(&chrome.borrow().quick_settings);
-        }
+        self.refresh_qs_hosted_rows();
+        self.settle_quick_settings();
     }
 
     /// Fixes the quick-settings visual to an in-flight opening pose for a
@@ -1148,16 +1187,16 @@ impl ShellOverlayHost {
         self.qs_motion = qs_motion::QsMotion::held_at(permille);
     }
 
-    /// Screenshot-driver hook for the Quick Settings edit surface.
+    /// Screenshot-driver hook for the Quick Settings edit surface: the
+    /// panel arranging its controls, through its own action, and when
+    /// `dragging`, a control held part-way through the panel's own drag.
     pub fn force_quick_settings_edit_for_visual_test(&mut self, dragging: bool) {
         if !self.overlay_flags().quick_settings {
             return;
         }
+        self.quick_settings_edit();
         if dragging {
-            let rect = self.quick_settings_rect();
-            self.qs_root.start_edit_drag_for_visual_test(rect);
-        } else {
-            self.qs_root.set_edit_mode_for_visual_test(true);
+            self.drag_quick_settings_control_for_capture();
         }
     }
 }

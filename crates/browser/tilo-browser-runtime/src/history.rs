@@ -394,7 +394,6 @@ pub(crate) fn own_recent_actions(
             continue;
         };
         let entries = ui::HistorySource::new()
-            .without_field_paths()
             .without_record_genesis()
             .with_authors(authors.clone())
             .with_max_entries(MAX_OWN_ACTIONS)

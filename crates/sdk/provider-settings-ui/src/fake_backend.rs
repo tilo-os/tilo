@@ -5,6 +5,8 @@ struct BackendState {
     revision: u64,
     keys: HashMap<String, CredentialStatus>,
     fail_next: bool,
+    /// What a provider lists, when not the two stand-in models.
+    listing: Option<Vec<agent_provider_config::ModelDescriptor>>,
 }
 
 #[derive(Default)]
@@ -76,6 +78,10 @@ impl ProviderAdmin for FakeAdminBackend {
             // A provider answers only with the key it was given.
             if self.state.lock_recover().keys.get(&id) != Some(&CredentialStatus::Configured) {
                 return Err(ModelError::new(ErrorKind::Authentication));
+            }
+            let listing = self.state.lock_recover().listing.clone();
+            if let Some(listing) = listing {
+                return Ok(listing);
             }
             Ok(vec![
                 agent_provider_config::ModelDescriptor {

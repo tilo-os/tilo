@@ -33,10 +33,10 @@ on:
       - "os/dev/open-snapshot-pr.py"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/workflows/build-kernel.yml"
-  schedule:
-    # The nightly backstop rebuilds both native kernels even when nothing in
-    # their inputs moved, so a broken toolchain or snapshot cannot hide.
-    - cron: "37 3 * * *"
+  # No `schedule:`: a scheduled run's actor is forgejo-actions, which the hosted-runner
+  # admission patch does not admit, so such a run would wait for a runner that never takes it.
+  # The CI host controller dispatches this workflow at its cron slots instead
+  # (apps/ci-runners/host_controller.py, TIMER_WORKFLOWS), as a user the patch admits.
   workflow_dispatch:
 
 concurrency:

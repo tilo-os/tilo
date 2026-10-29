@@ -867,7 +867,7 @@ pub(crate) fn match_reason_in(
             .contains(weight)
         })
         .map(|(text, weight)| (text.trim(), *weight))
-        // An address ("quick-settings.volume.set") is no reason a person reads.
+        // An address ("quick-settings.open") is no reason a person reads.
         .filter(|(text, _)| !text.contains(['.', ':', '/']))
         .find(|(text, weight)| {
             text.chars().count() <= MATCH_REASON_MAX_SCALARS && shows(text, *weight)
@@ -2142,189 +2142,183 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn oversized_and_exhaustive_queries_stay_bounded_for_every_provider() {
-        // Phase `oversized_query_never_routes_to_a_shell_provider`.
-        {
-            use std::cell::Cell;
+    fn oversized_query_never_routes_to_a_shell_provider() {
+        use std::cell::Cell;
 
-            struct CountingProvider(Rc<Cell<usize>>);
-            impl SearchProvider for CountingProvider {
-                fn id(&self) -> &'static str {
-                    "counting"
-                }
-                fn name(&self) -> &'static str {
-                    "Counting"
-                }
-                fn resource_kinds(&self) -> &[ResourceKind] {
-                    &[ResourceKind::Action]
-                }
-                fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
-                    self.0.set(self.0.get().saturating_add(1));
-                    Vec::new()
-                }
+        struct CountingProvider(Rc<Cell<usize>>);
+        impl SearchProvider for CountingProvider {
+            fn id(&self) -> &'static str {
+                "counting"
             }
-
-            let calls = Rc::new(Cell::new(0));
-            let mut registry = SearchRegistry::new();
-            registry.register(Rc::new(CountingProvider(Rc::clone(&calls))));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let query = "夏".repeat(ui::search::MAX_SEARCH_QUERY_SCALARS + 1);
-            let args = QueryArgs {
-                needle: &query,
-                scope: SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            };
-
-            assert!(registry.query(&args).is_empty());
-            assert_eq!(calls.get(), 0, "providers must not receive abusive input");
-            let page = registry
-                .query_provider_page("counting", &args, None, SearchBudget::PALETTE)
-                .expect("registered provider");
-            assert!(page.exhausted && page.results.is_empty());
-            assert_eq!(calls.get(), 0, "direct paging has the same input gate");
+            fn name(&self) -> &'static str {
+                "Counting"
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::Action]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                self.0.set(self.0.get().saturating_add(1));
+                Vec::new()
+            }
         }
 
-        // Phase `exhaustive_query_is_bounded_without_starving_later_providers`.
-        {
-            use std::cell::Cell;
+        let calls = Rc::new(Cell::new(0));
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(CountingProvider(Rc::clone(&calls))));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let query = "夏".repeat(ui::search::MAX_SEARCH_QUERY_SCALARS + 1);
+        let args = QueryArgs {
+            needle: &query,
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
 
-            let calls = Rc::new(Cell::new(0));
-            let mut registry = SearchRegistry::new();
-            registry.register(Rc::new(PagedProvider {
-                calls: Rc::clone(&calls),
-                id: "endless",
-                pages: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let args = QueryArgs {
-                needle: "",
-                scope: SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            };
+        assert!(registry.query(&args).is_empty());
+        assert_eq!(calls.get(), 0, "providers must not receive abusive input");
+        let page = registry
+            .query_provider_page("counting", &args, None, SearchBudget::PALETTE)
+            .expect("registered provider");
+        assert!(page.exhausted && page.results.is_empty());
+        assert_eq!(calls.get(), 0, "direct paging has the same input gate");
+    }
 
-            let rows = registry.query_exhaustive(&args);
-            assert_eq!(calls.get(), HEADLESS_MAX_PAGES);
-            assert!(rows.len() <= HEADLESS_MAX_RESULTS);
+    #[test]
+    fn exhaustive_query_is_bounded_without_starving_later_providers() {
+        use std::cell::Cell;
 
-            // A large earlier source can keep returning continuations even when
-            // an agent is looking for one exact application from a later source.
-            registry.register(Rc::new(FakeProvider {
-                id: "applications".into(),
-                kinds: vec![ResourceKind::Application],
-                results: vec![mk_result(
-                    ResourceKind::Application,
-                    "applications",
-                    "dev.tilo.calculator",
-                    "Calculator",
-                    100,
-                )],
-                max_score: Some(100),
-            }));
-            calls.set(0);
-            let rows = registry.query_exhaustive(&args);
-            assert!(
-                rows.iter().any(|row| row.id == "dev.tilo.calculator"),
-                "an earlier paged source must not hide a later application's search result"
-            );
-            assert!(calls.get() < HEADLESS_MAX_PAGES);
-            assert!(rows.len() <= HEADLESS_MAX_RESULTS);
+        let calls = Rc::new(Cell::new(0));
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(PagedProvider {
+            calls: Rc::clone(&calls),
+            id: "endless",
+            pages: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
 
-            let later_calls = Rc::new(Cell::new(0));
-            registry.register(Rc::new(PagedProvider {
-                calls: Rc::clone(&later_calls),
-                id: "later",
-                pages: Some(2),
-            }));
-            calls.set(0);
-            let rows = registry.query_exhaustive(&args);
-            assert_eq!(
-                later_calls.get(),
-                2,
-                "later sources must also follow continuations"
-            );
-            assert_eq!(
-                calls
-                    .get()
-                    .saturating_add(later_calls.get())
-                    .saturating_add(1),
-                HEADLESS_MAX_PAGES
-            );
-            let first_second = rows.iter().position(|row| row.id == "endless-1").unwrap();
-            let later_first = rows.iter().position(|row| row.id == "later-0").unwrap();
-            assert!(
-                first_second < later_first,
-                "equal-score ties retain provider order, not page visitation order"
-            );
-            assert!(rows.iter().any(|row| row.id == "later-1"));
+        let rows = registry.query_exhaustive(&args);
+        assert_eq!(calls.get(), HEADLESS_MAX_PAGES);
+        assert!(rows.len() <= HEADLESS_MAX_RESULTS);
 
-            calls.set(0);
-            later_calls.set(0);
-            let _ = registry.query(&args);
-            assert_eq!(
-                calls.get(),
-                1,
-                "interactive search remains one page per source"
-            );
-            assert_eq!(later_calls.get(), 1);
-        }
+        // A large earlier source can keep returning continuations even when
+        // an agent is looking for one exact application from a later source.
+        registry.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "applications",
+                "dev.tilo.calculator",
+                "Calculator",
+                100,
+            )],
+            max_score: Some(100),
+        }));
+        calls.set(0);
+        let rows = registry.query_exhaustive(&args);
+        assert!(
+            rows.iter().any(|row| row.id == "dev.tilo.calculator"),
+            "an earlier paged source must not hide a later application's search result"
+        );
+        assert!(calls.get() < HEADLESS_MAX_PAGES);
+        assert!(rows.len() <= HEADLESS_MAX_RESULTS);
 
-        // Phase `exhaustive_query_pages_a_default_provider_to_its_end`: a
-        // provider on the default `query_page` with more rows than one page
-        // holds is listed whole, and the listing says it is complete.
-        {
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let args = QueryArgs {
-                needle: "",
-                scope: SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            };
-            let mut legacy = SearchRegistry::new();
-            legacy.register(Rc::new(FakeProvider {
-                id: "legacy".into(),
-                kinds: vec![ResourceKind::Action],
-                results: (0..60)
-                    .map(|index| {
-                        mk_result(
-                            ResourceKind::Action,
-                            "legacy",
-                            &format!("legacy-{index}"),
-                            "legacy",
-                            1,
-                        )
-                    })
-                    .collect(),
-                max_score: None,
-            }));
-            let (rows, completion) = legacy.query_catalogue(&args, false);
-            assert!(rows.iter().any(|row| row.id == "legacy-0"));
-            assert!(rows.iter().any(|row| row.id == "legacy-59"));
-            assert_eq!(
-                rows.iter()
-                    .filter(|row| row.provider_id == "legacy")
-                    .count(),
-                60
-            );
-            assert!(completion.complete, "{completion:?}");
-        }
+        let later_calls = Rc::new(Cell::new(0));
+        registry.register(Rc::new(PagedProvider {
+            calls: Rc::clone(&later_calls),
+            id: "later",
+            pages: Some(2),
+        }));
+        calls.set(0);
+        let rows = registry.query_exhaustive(&args);
+        assert_eq!(
+            later_calls.get(),
+            2,
+            "later sources must also follow continuations"
+        );
+        assert_eq!(
+            calls
+                .get()
+                .saturating_add(later_calls.get())
+                .saturating_add(1),
+            HEADLESS_MAX_PAGES
+        );
+        let first_second = rows.iter().position(|row| row.id == "endless-1").unwrap();
+        let later_first = rows.iter().position(|row| row.id == "later-0").unwrap();
+        assert!(
+            first_second < later_first,
+            "equal-score ties retain provider order, not page visitation order"
+        );
+        assert!(rows.iter().any(|row| row.id == "later-1"));
+
+        calls.set(0);
+        later_calls.set(0);
+        let _ = registry.query(&args);
+        assert_eq!(
+            calls.get(),
+            1,
+            "interactive search remains one page per source"
+        );
+        assert_eq!(later_calls.get(), 1);
+    }
+
+    // Phase `exhaustive_query_pages_a_default_provider_to_its_end`: a
+    // provider on the default `query_page` with more rows than one page
+    // holds is listed whole, and the listing says it is complete.
+    #[test]
+    fn oversized_and_exhaustive_queries_stay_bounded_for_every_provider() {
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+        let mut legacy = SearchRegistry::new();
+        legacy.register(Rc::new(FakeProvider {
+            id: "legacy".into(),
+            kinds: vec![ResourceKind::Action],
+            results: (0..60)
+                .map(|index| {
+                    mk_result(
+                        ResourceKind::Action,
+                        "legacy",
+                        &format!("legacy-{index}"),
+                        "legacy",
+                        1,
+                    )
+                })
+                .collect(),
+            max_score: None,
+        }));
+        let (rows, completion) = legacy.query_catalogue(&args, false);
+        assert!(rows.iter().any(|row| row.id == "legacy-0"));
+        assert!(rows.iter().any(|row| row.id == "legacy-59"));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.provider_id == "legacy")
+                .count(),
+            60
+        );
+        assert!(completion.complete, "{completion:?}");
     }
 
     #[test]
@@ -2423,779 +2417,699 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn registry_merges_dedupes_and_ranks_rows_within_declared_ceilings() {
-        // Phase `registry_merges_and_sorts_by_kind_then_score`.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "notes".into(),
-                kinds: vec![ResourceKind::Note],
-                results: vec![
-                    // Above the loose-match share: these are real matches
-                    // whose titles merely don't spell the query.
-                    mk_result(ResourceKind::Note, "notes", "n1", "note b", 20),
-                    mk_result(ResourceKind::Note, "notes", "n2", "note a", 50),
-                ],
-                max_score: None,
-            }));
-            reg.register(Rc::new(FakeProvider {
-                id: "actions".into(),
-                kinds: vec![ResourceKind::Action],
-                results: vec![mk_result(ResourceKind::Action, "actions", "a1", "act", 30)],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let out = reg.query(&QueryArgs {
-                needle: "x",
-                scope: SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            });
-            assert_eq!(out.len(), 3);
-            // Notes' strongest hit (50) beats the action's (30).
-            assert_eq!(out[0].kind, ResourceKind::Note);
-            assert_eq!(out[0].id, "n2");
-            assert_eq!(out[1].id, "n1");
-            assert_eq!(out[2].kind, ResourceKind::Action);
-        }
+    fn registry_merges_and_sorts_by_kind_then_score() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![
+                // Above the loose-match share: these are real matches
+                // whose titles merely don't spell the query.
+                mk_result(ResourceKind::Note, "notes", "n1", "note b", 20),
+                mk_result(ResourceKind::Note, "notes", "n2", "note a", 50),
+            ],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: vec![mk_result(ResourceKind::Action, "actions", "a1", "act", 30)],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "x",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+        assert_eq!(out.len(), 3);
+        // Notes' strongest hit (50) beats the action's (30).
+        assert_eq!(out[0].kind, ResourceKind::Note);
+        assert_eq!(out[0].id, "n2");
+        assert_eq!(out[1].id, "n1");
+        assert_eq!(out[2].kind, ResourceKind::Action);
+    }
 
-        // Phase `exact_title_beats_a_high_scoring_metadata_match_across_providers`.
-        {
-            let mut reg = SearchRegistry::new();
-            let mut settings = mk_result(
-                ResourceKind::Action,
-                "actions",
-                "settings",
-                "Open workspace settings",
-                100,
+    #[test]
+    fn exact_title_beats_a_high_scoring_metadata_match_across_providers() {
+        let mut reg = SearchRegistry::new();
+        let mut settings = mk_result(
+            ResourceKind::Action,
+            "actions",
+            "settings",
+            "Open workspace settings",
+            100,
+        );
+        settings.subtitle = Some("Manage notes integrations".into());
+        reg.register(Rc::new(FakeProvider {
+            id: "actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: vec![settings],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Notes", 0)],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "notes",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+
+        assert_eq!(out[0].title, "Notes");
+    }
+
+    #[test]
+    fn registry_collapses_duplicate_stable_rows_from_one_provider() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![
+                mk_result(ResourceKind::Note, "notes", "same-note", "Old title", 20),
+                mk_result(
+                    ResourceKind::Note,
+                    "notes",
+                    "same-note",
+                    "Current title",
+                    80,
+                ),
+            ],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "title",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].title, "Current title");
+    }
+
+    // Every provider's declared ceiling must actually bound it — the
+    // invariant the whole cross-provider comparison rests on.
+    #[test]
+    fn a_provider_never_scores_above_its_declared_ceiling() {
+        use crate::shell::search::providers::{
+            actions::ActionsProvider, applications::ApplicationsProvider, files::FilesProvider,
+        };
+        let providers: Vec<Rc<dyn SearchProvider>> = vec![
+            Rc::new(ActionsProvider::new()),
+            Rc::new(ApplicationsProvider::new()),
+            Rc::new(FilesProvider::new()),
+        ];
+        for p in providers {
+            assert!(
+                p.max_score() > 0,
+                "{:?} declares a non-positive ceiling",
+                p.id()
             );
-            settings.subtitle = Some("Manage notes integrations".into());
-            reg.register(Rc::new(FakeProvider {
-                id: "actions".into(),
-                kinds: vec![ResourceKind::Action],
-                results: vec![settings],
-                max_score: None,
-            }));
-            reg.register(Rc::new(FakeProvider {
-                id: "notes".into(),
-                kinds: vec![ResourceKind::Note],
-                results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Notes", 0)],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let out = reg.query(&QueryArgs {
-                needle: "notes",
-                scope: SearchScope::All,
-                active_provider_id: None,
+        }
+    }
+
+    // Equally-strong results keep their provider's ordering, not re-sorted by title.
+    #[test]
+    fn equally_strong_results_keep_the_providers_order() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            // Emitted worst-alphabetical-first: a title sort would reverse this.
+            results: vec![
+                mk_result(ResourceKind::File, "files", "f1", "zebra.rs", 80),
+                mk_result(ResourceKind::File, "files", "f2", "middle.rs", 80),
+                mk_result(ResourceKind::File, "files", "f3", "alpha.rs", 80),
+            ],
+            max_score: Some(120),
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "rs",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+        assert_eq!(
+            out.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["f1", "f2", "f3"],
+            "the provider ranked these; the registry must not re-alphabetise them"
+        );
+    }
+
+    #[test]
+    fn disabling_a_provider_removes_it_from_every_search_surface() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Note", 80)],
+            max_score: None,
+        }));
+        reg.set_provider_enabled("notes", false);
+
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let args = QueryArgs {
+            needle: "note",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+
+        assert!(!reg.provider_enabled("notes"));
+        assert_eq!(reg.providers_iter().count(), 0);
+        assert!(reg.registered_kinds().is_empty());
+        assert!(!reg.query_revision(&args).contains("notes"));
+        assert!(reg.query(&args).is_empty());
+        assert!(
+            reg.query_provider_page("notes", &args, None, SearchBudget::PALETTE)
+                .is_none(),
+            "agent paging must honor the same preference as the palette"
+        );
+
+        reg.set_provider_enabled("notes", true);
+        assert_eq!(reg.query(&args).len(), 1);
+    }
+
+    #[test]
+    fn search_preferences_parse_deduplicate_and_ignore_malformed_ids() {
+        let mut values = serde_json::Map::new();
+        values.insert(
+            SearchPreferences::DISABLED_KEY.into(),
+            serde_json::json!(["files", "files", "actions", "", 7, "x".repeat(257)]),
+        );
+
+        let preferences = SearchPreferences::from_values(&values);
+        assert!(!preferences.provider_enabled("files"));
+        assert!(preferences.provider_enabled("notes"));
+        assert_eq!(preferences.disabled_providers.len(), 1);
+
+        let registry = SearchRegistry::with_preferences(&preferences);
+        assert!(!registry.provider_enabled("files"));
+        assert!(registry.provider_enabled("notes"));
+    }
+
+    #[test]
+    fn shared_preferences_change_a_live_registry_without_restarting() {
+        let preferences = Rc::new(RefCell::new(SearchPreferences::default()));
+        let mut registry = SearchRegistry::with_preferences_handle(Rc::clone(&preferences));
+        registry.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: Vec::new(),
+            max_score: None,
+        }));
+
+        assert_eq!(registry.providers_iter().count(), 1);
+        preferences
+            .borrow_mut()
+            .set_provider_enabled("files", false);
+        assert_eq!(registry.providers_iter().count(), 0);
+    }
+
+    #[test]
+    fn providers_attached_after_startup_join_the_customization_catalog() {
+        let mut registry = SearchRegistry::new();
+        let catalog = registry.provider_catalog_handle();
+        assert!(catalog.borrow().is_empty());
+
+        registry.register(Rc::new(FakeProvider {
+            id: "live-app-actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: Vec::new(),
+            max_score: None,
+        }));
+        assert_eq!(
+            catalog.borrow().as_slice(),
+            &[("live-app-actions".into(), "live-app-actions".into())]
+        );
+
+        registry.set_provider_enabled("live-app-actions", false);
+        assert_eq!(
+            catalog.borrow().len(),
+            1,
+            "a disabled dynamic source must remain discoverable for re-enabling"
+        );
+        assert!(registry.providers_iter().next().is_none());
+    }
+
+    #[test]
+    fn reconnecting_provider_replaces_stale_resources_for_palette_and_agent_paging() {
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(FakeProvider {
+            id: "mail".into(),
+            kinds: vec![ResourceKind::Record],
+            results: vec![mk_result(
+                ResourceKind::Record,
+                "mail",
+                "old",
+                "Disconnected mailbox",
+                10,
+            )],
+            max_score: None,
+        }));
+        registry.register(Rc::new(FakeProvider {
+            id: "mail".into(),
+            kinds: vec![ResourceKind::Record],
+            results: vec![mk_result(
+                ResourceKind::Record,
+                "mail",
+                "fresh",
+                "Reconnected mailbox",
+                20,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let args = QueryArgs {
+            needle: "mailbox",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+
+        assert_eq!(registry.providers_iter().count(), 1);
+        let rows = registry.query(&args);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "fresh");
+        let page = registry
+            .query_provider_page("mail", &args, None, SearchBudget::PALETTE)
+            .expect("replacement provider page");
+        assert_eq!(page.results.len(), 1);
+        assert_eq!(page.results[0].id, "fresh");
+    }
+
+    #[test]
+    fn registered_kinds_is_deduped_and_ordered() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "a".into(),
+            kinds: vec![ResourceKind::File, ResourceKind::Note],
+            results: vec![],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "b".into(),
+            kinds: vec![ResourceKind::Note, ResourceKind::Action],
+            results: vec![],
+            max_score: None,
+        }));
+        let kinds = reg.registered_kinds();
+        assert_eq!(
+            kinds,
+            vec![ResourceKind::Action, ResourceKind::Note, ResourceKind::File,]
+        );
+    }
+
+    #[test]
+    fn workspace_scope_prefers_the_focused_app_but_everywhere_is_neutral() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(ResourceKind::Note, "notes", "near", "Draft", 60)],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(
+                ResourceKind::Note,
+                "files",
+                "global",
+                "Draft",
+                70,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let query = |scope| {
+            reg.query(&QueryArgs {
+                needle: "draft",
+                scope,
+                active_provider_id: Some("notes"),
                 wanted_kinds: &[],
                 chrome: &chrome.borrow(),
                 doc: &doc,
                 doc_root: &root,
-            });
+            })
+        };
 
-            assert_eq!(out[0].title, "Notes");
+        assert_eq!(query(SearchScope::Workspace)[0].id, "near");
+        assert_eq!(query(SearchScope::All)[0].id, "global");
+        assert_eq!(query(SearchScope::All).len(), 2);
+    }
+
+    #[test]
+    fn workspace_scope_uses_provider_owned_resource_location() {
+        struct LocatedProvider {
+            id: &'static str,
+            result: SearchResult,
+            proximity: SearchProximity,
         }
-
-        // Phase `registry_collapses_duplicate_stable_rows_from_one_provider`.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "notes".into(),
-                kinds: vec![ResourceKind::Note],
-                results: vec![
-                    mk_result(ResourceKind::Note, "notes", "same-note", "Old title", 20),
-                    mk_result(
-                        ResourceKind::Note,
-                        "notes",
-                        "same-note",
-                        "Current title",
-                        80,
-                    ),
-                ],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let out = reg.query(&QueryArgs {
-                needle: "title",
-                scope: SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            });
-
-            assert_eq!(out.len(), 1);
-            assert_eq!(out[0].title, "Current title");
-        }
-
-        // Phase `a_provider_never_scores_above_its_declared_ceiling`.
-        // Every provider's declared ceiling must actually bound it — the
-        // invariant the whole cross-provider comparison rests on.
-        {
-            use crate::shell::search::providers::{
-                actions::ActionsProvider, applications::ApplicationsProvider, files::FilesProvider,
-            };
-            let providers: Vec<Rc<dyn SearchProvider>> = vec![
-                Rc::new(ActionsProvider::new()),
-                Rc::new(ApplicationsProvider::new()),
-                Rc::new(FilesProvider::new()),
-            ];
-            for p in providers {
-                assert!(
-                    p.max_score() > 0,
-                    "{:?} declares a non-positive ceiling",
-                    p.id()
-                );
+        impl SearchProvider for LocatedProvider {
+            fn id(&self) -> &str {
+                self.id
+            }
+            fn name(&self) -> &str {
+                self.id
+            }
+            fn resource_kinds(&self) -> &[ResourceKind] {
+                &[ResourceKind::Note]
+            }
+            fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+                vec![self.result.clone()]
+            }
+            fn proximity(&self, _result: &SearchResult, _chrome: &ChromeState) -> SearchProximity {
+                self.proximity
             }
         }
 
-        // Phase `equally_strong_results_keep_the_providers_order`.
-        // Equally-strong results keep their provider's ordering, not re-sorted by title.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "files".into(),
-                kinds: vec![ResourceKind::File],
-                // Emitted worst-alphabetical-first: a title sort would reverse this.
-                results: vec![
-                    mk_result(ResourceKind::File, "files", "f1", "zebra.rs", 80),
-                    mk_result(ResourceKind::File, "files", "f2", "middle.rs", 80),
-                    mk_result(ResourceKind::File, "files", "f3", "alpha.rs", 80),
-                ],
-                max_score: Some(120),
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let out = reg.query(&QueryArgs {
-                needle: "rs",
-                scope: SearchScope::Workspace,
+        let mut reg = SearchRegistry::new();
+        // Register global first so Everywhere's stable tie order proves the
+        // workspace flip comes from proximity, not provider order.
+        reg.register(Rc::new(LocatedProvider {
+            id: "global",
+            result: mk_result(ResourceKind::Note, "global", "far", "Draft", 60),
+            proximity: SearchProximity::Global,
+        }));
+        reg.register(Rc::new(LocatedProvider {
+            id: "local",
+            result: mk_result(ResourceKind::Note, "local", "near", "Draft", 60),
+            proximity: SearchProximity::CurrentWorkspace,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let query = |scope| {
+            reg.query(&QueryArgs {
+                needle: "draft",
+                scope,
                 active_provider_id: None,
                 wanted_kinds: &[],
                 chrome: &chrome.borrow(),
                 doc: &doc,
                 doc_root: &root,
-            });
-            assert_eq!(
-                out.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
-                vec!["f1", "f2", "f3"],
-                "the provider ranked these; the registry must not re-alphabetise them"
-            );
-        }
+            })
+        };
+
+        assert_eq!(query(SearchScope::All)[0].id, "far");
+        assert_eq!(query(SearchScope::Workspace)[0].id, "near");
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn search_preferences_and_provider_lifecycle_reach_the_live_registry() {
-        // Phase `disabling_a_provider_removes_it_from_every_search_surface`.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "notes".into(),
-                kinds: vec![ResourceKind::Note],
-                results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Note", 80)],
-                max_score: None,
-            }));
-            reg.set_provider_enabled("notes", false);
-
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let args = QueryArgs {
-                needle: "note",
-                scope: SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
+    fn query_revision_changes_with_scope_focus_and_kind_filter() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: Vec::new(),
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let revision = |scope, active_provider_id, wanted_kinds: &[ResourceKind]| {
+            reg.query_revision(&QueryArgs {
+                needle: "draft",
+                scope,
+                active_provider_id,
+                wanted_kinds,
                 chrome: &chrome.borrow(),
                 doc: &doc,
                 doc_root: &root,
-            };
+            })
+        };
 
-            assert!(!reg.provider_enabled("notes"));
-            assert_eq!(reg.providers_iter().count(), 0);
-            assert!(reg.registered_kinds().is_empty());
-            assert!(!reg.query_revision(&args).contains("notes"));
-            assert!(reg.query(&args).is_empty());
-            assert!(
-                reg.query_provider_page("notes", &args, None, SearchBudget::PALETTE)
-                    .is_none(),
-                "agent paging must honor the same preference as the palette"
-            );
-
-            reg.set_provider_enabled("notes", true);
-            assert_eq!(reg.query(&args).len(), 1);
-        }
-
-        // Phase `search_preferences_parse_deduplicate_and_ignore_malformed_ids`.
-        {
-            let mut values = serde_json::Map::new();
-            values.insert(
-                SearchPreferences::DISABLED_KEY.into(),
-                serde_json::json!(["files", "files", "actions", "", 7, "x".repeat(257)]),
-            );
-
-            let preferences = SearchPreferences::from_values(&values);
-            assert!(!preferences.provider_enabled("files"));
-            assert!(preferences.provider_enabled("notes"));
-            assert_eq!(preferences.disabled_providers.len(), 1);
-
-            let registry = SearchRegistry::with_preferences(&preferences);
-            assert!(!registry.provider_enabled("files"));
-            assert!(registry.provider_enabled("notes"));
-        }
-
-        // Phase `shared_preferences_change_a_live_registry_without_restarting`.
-        {
-            let preferences = Rc::new(RefCell::new(SearchPreferences::default()));
-            let mut registry = SearchRegistry::with_preferences_handle(Rc::clone(&preferences));
-            registry.register(Rc::new(FakeProvider {
-                id: "files".into(),
-                kinds: vec![ResourceKind::File],
-                results: Vec::new(),
-                max_score: None,
-            }));
-
-            assert_eq!(registry.providers_iter().count(), 1);
-            preferences
-                .borrow_mut()
-                .set_provider_enabled("files", false);
-            assert_eq!(registry.providers_iter().count(), 0);
-        }
-
-        // Phase `providers_attached_after_startup_join_the_customization_catalog`.
-        {
-            let mut registry = SearchRegistry::new();
-            let catalog = registry.provider_catalog_handle();
-            assert!(catalog.borrow().is_empty());
-
-            registry.register(Rc::new(FakeProvider {
-                id: "live-app-actions".into(),
-                kinds: vec![ResourceKind::Action],
-                results: Vec::new(),
-                max_score: None,
-            }));
-            assert_eq!(
-                catalog.borrow().as_slice(),
-                &[("live-app-actions".into(), "live-app-actions".into())]
-            );
-
-            registry.set_provider_enabled("live-app-actions", false);
-            assert_eq!(
-                catalog.borrow().len(),
-                1,
-                "a disabled dynamic source must remain discoverable for re-enabling"
-            );
-            assert!(registry.providers_iter().next().is_none());
-        }
-
-        // Phase `reconnecting_provider_replaces_stale_resources_for_palette_and_agent_paging`.
-        {
-            let mut registry = SearchRegistry::new();
-            registry.register(Rc::new(FakeProvider {
-                id: "mail".into(),
-                kinds: vec![ResourceKind::Record],
-                results: vec![mk_result(
-                    ResourceKind::Record,
-                    "mail",
-                    "old",
-                    "Disconnected mailbox",
-                    10,
-                )],
-                max_score: None,
-            }));
-            registry.register(Rc::new(FakeProvider {
-                id: "mail".into(),
-                kinds: vec![ResourceKind::Record],
-                results: vec![mk_result(
-                    ResourceKind::Record,
-                    "mail",
-                    "fresh",
-                    "Reconnected mailbox",
-                    20,
-                )],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let args = QueryArgs {
-                needle: "mailbox",
-                scope: SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            };
-
-            assert_eq!(registry.providers_iter().count(), 1);
-            let rows = registry.query(&args);
-            assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0].id, "fresh");
-            let page = registry
-                .query_provider_page("mail", &args, None, SearchBudget::PALETTE)
-                .expect("replacement provider page");
-            assert_eq!(page.results.len(), 1);
-            assert_eq!(page.results[0].id, "fresh");
-        }
-
-        // Phase `registered_kinds_is_deduped_and_ordered`.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "a".into(),
-                kinds: vec![ResourceKind::File, ResourceKind::Note],
-                results: vec![],
-                max_score: None,
-            }));
-            reg.register(Rc::new(FakeProvider {
-                id: "b".into(),
-                kinds: vec![ResourceKind::Note, ResourceKind::Action],
-                results: vec![],
-                max_score: None,
-            }));
-            let kinds = reg.registered_kinds();
-            assert_eq!(
-                kinds,
-                vec![ResourceKind::Action, ResourceKind::Note, ResourceKind::File,]
-            );
-        }
+        let workspace = revision(SearchScope::Workspace, Some("notes"), &[]);
+        assert_ne!(workspace, revision(SearchScope::All, Some("notes"), &[]));
+        assert_ne!(workspace, revision(SearchScope::Workspace, None, &[]));
+        assert_ne!(
+            workspace,
+            revision(SearchScope::Workspace, Some("notes"), &[ResourceKind::Note])
+        );
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn search_scope_and_kind_filters_narrow_without_widening() {
-        // Phase `workspace_scope_prefers_the_focused_app_but_everywhere_is_neutral`.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "notes".into(),
-                kinds: vec![ResourceKind::Note],
-                results: vec![mk_result(ResourceKind::Note, "notes", "near", "Draft", 60)],
-                max_score: None,
-            }));
-            reg.register(Rc::new(FakeProvider {
-                id: "files".into(),
-                kinds: vec![ResourceKind::Note],
-                results: vec![mk_result(
-                    ResourceKind::Note,
-                    "files",
-                    "global",
-                    "Draft",
-                    70,
-                )],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let query = |scope| {
-                reg.query(&QueryArgs {
-                    needle: "draft",
+    fn active_app_scope_narrows_to_matching_provider() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(ResourceKind::Note, "notes", "n1", "n", 10)],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: vec![mk_result(ResourceKind::File, "files", "f1", "f", 10)],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "x",
+            scope: SearchScope::ActiveApp,
+            active_provider_id: Some("notes"),
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].provider_id, "notes");
+    }
+
+    // Scoped to an app, the app's resources lead and its actions follow,
+    // even where an action's name matched better; over the workspace
+    // the best match leads.
+    #[test]
+    fn an_apps_search_lists_what_it_holds_before_what_it_does() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note, ResourceKind::Action],
+            results: vec![
+                mk_result(ResourceKind::Action, "notes", "new", "Note", 100),
+                mk_result(ResourceKind::Note, "notes", "n1", "Trains, a note", 5),
+            ],
+            max_score: Some(100),
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let kinds = |scope| -> Vec<ResourceKind> {
+            reg.query_grouped(
+                &QueryArgs {
+                    needle: "note",
                     scope,
                     active_provider_id: Some("notes"),
                     wanted_kinds: &[],
                     chrome: &chrome.borrow(),
                     doc: &doc,
                     doc_root: &root,
-                })
-            };
+                },
+                0,
+            )
+            .into_iter()
+            .map(|group| group.kind)
+            .collect()
+        };
+        assert_eq!(
+            kinds(SearchScope::ActiveApp),
+            [ResourceKind::Note, ResourceKind::Action]
+        );
+        assert_eq!(
+            kinds(SearchScope::Workspace),
+            [ResourceKind::Action, ResourceKind::Note]
+        );
+    }
 
-            assert_eq!(query(SearchScope::Workspace)[0].id, "near");
-            assert_eq!(query(SearchScope::All)[0].id, "global");
-            assert_eq!(query(SearchScope::All).len(), 2);
-        }
+    // A search scoped to an app shows only the app's own sources; the
+    // pinned journey is `a_search_scoped_to_an_app_shows_only_that_app_
+    // until_the_scope_is_cleared` in the overlay host's tests.
+    #[test]
+    fn active_app_scope_leaves_out_the_systems_actions() {
+        use crate::shell::search::providers::actions::ActionsProvider;
 
-        // Phase `workspace_scope_uses_provider_owned_resource_location`.
-        {
-            struct LocatedProvider {
-                id: &'static str,
-                result: SearchResult,
-                proximity: SearchProximity,
-            }
-            impl SearchProvider for LocatedProvider {
-                fn id(&self) -> &str {
-                    self.id
-                }
-                fn name(&self) -> &str {
-                    self.id
-                }
-                fn resource_kinds(&self) -> &[ResourceKind] {
-                    &[ResourceKind::Note]
-                }
-                fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
-                    vec![self.result.clone()]
-                }
-                fn proximity(
-                    &self,
-                    _result: &SearchResult,
-                    _chrome: &ChromeState,
-                ) -> SearchProximity {
-                    self.proximity
-                }
-            }
-
-            let mut reg = SearchRegistry::new();
-            // Register global first so Everywhere's stable tie order proves the
-            // workspace flip comes from proximity, not provider order.
-            reg.register(Rc::new(LocatedProvider {
-                id: "global",
-                result: mk_result(ResourceKind::Note, "global", "far", "Draft", 60),
-                proximity: SearchProximity::Global,
-            }));
-            reg.register(Rc::new(LocatedProvider {
-                id: "local",
-                result: mk_result(ResourceKind::Note, "local", "near", "Draft", 60),
-                proximity: SearchProximity::CurrentWorkspace,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let query = |scope| {
-                reg.query(&QueryArgs {
-                    needle: "draft",
-                    scope,
-                    active_provider_id: None,
-                    wanted_kinds: &[],
-                    chrome: &chrome.borrow(),
-                    doc: &doc,
-                    doc_root: &root,
-                })
-            };
-
-            assert_eq!(query(SearchScope::All)[0].id, "far");
-            assert_eq!(query(SearchScope::Workspace)[0].id, "near");
-        }
-
-        // Phase `query_revision_changes_with_scope_focus_and_kind_filter`.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "notes".into(),
-                kinds: vec![ResourceKind::Note],
-                results: Vec::new(),
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let revision = |scope, active_provider_id, wanted_kinds: &[ResourceKind]| {
-                reg.query_revision(&QueryArgs {
-                    needle: "draft",
-                    scope,
-                    active_provider_id,
-                    wanted_kinds,
-                    chrome: &chrome.borrow(),
-                    doc: &doc,
-                    doc_root: &root,
-                })
-            };
-
-            let workspace = revision(SearchScope::Workspace, Some("notes"), &[]);
-            assert_ne!(workspace, revision(SearchScope::All, Some("notes"), &[]));
-            assert_ne!(workspace, revision(SearchScope::Workspace, None, &[]));
-            assert_ne!(
-                workspace,
-                revision(SearchScope::Workspace, Some("notes"), &[ResourceKind::Note])
+        for active in [Some("notes"), None] {
+            assert!(
+                !scope_allows(&ActionsProvider::new(), SearchScope::ActiveApp, active),
+                "the system's actions are not the app's own ({active:?})"
             );
         }
-
-        // Phase `active_app_scope_narrows_to_matching_provider`.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "notes".into(),
-                kinds: vec![ResourceKind::Note],
-                results: vec![mk_result(ResourceKind::Note, "notes", "n1", "n", 10)],
-                max_score: None,
-            }));
-            reg.register(Rc::new(FakeProvider {
-                id: "files".into(),
-                kinds: vec![ResourceKind::File],
-                results: vec![mk_result(ResourceKind::File, "files", "f1", "f", 10)],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let out = reg.query(&QueryArgs {
-                needle: "x",
-                scope: SearchScope::ActiveApp,
-                active_provider_id: Some("notes"),
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            });
-            assert_eq!(out.len(), 1);
-            assert_eq!(out[0].provider_id, "notes");
-        }
-
-        // Phase `an_apps_search_lists_what_it_holds_before_what_it_does`.
-        // Scoped to an app, the app's resources lead and its actions follow,
-        // even where an action's name matched better; over the workspace
-        // the best match leads.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "notes".into(),
-                kinds: vec![ResourceKind::Note, ResourceKind::Action],
-                results: vec![
-                    mk_result(ResourceKind::Action, "notes", "new", "Note", 100),
-                    mk_result(ResourceKind::Note, "notes", "n1", "Trains, a note", 5),
-                ],
-                max_score: Some(100),
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let kinds = |scope| -> Vec<ResourceKind> {
-                reg.query_grouped(
-                    &QueryArgs {
-                        needle: "note",
-                        scope,
-                        active_provider_id: Some("notes"),
-                        wanted_kinds: &[],
-                        chrome: &chrome.borrow(),
-                        doc: &doc,
-                        doc_root: &root,
-                    },
-                    0,
-                )
-                .into_iter()
-                .map(|group| group.kind)
-                .collect()
-            };
-            assert_eq!(
-                kinds(SearchScope::ActiveApp),
-                [ResourceKind::Note, ResourceKind::Action]
-            );
-            assert_eq!(
-                kinds(SearchScope::Workspace),
-                [ResourceKind::Action, ResourceKind::Note]
-            );
-        }
-
-        // Phase `active_app_scope_leaves_out_the_systems_actions`.
-        // A search scoped to an app shows only the app's own sources; the
-        // pinned journey is `a_search_scoped_to_an_app_shows_only_that_app_
-        // until_the_scope_is_cleared` in the overlay host's tests.
-        {
-            use crate::shell::search::providers::actions::ActionsProvider;
-
-            for active in [Some("notes"), None] {
-                assert!(
-                    !scope_allows(&ActionsProvider::new(), SearchScope::ActiveApp, active),
-                    "the system's actions are not the app's own ({active:?})"
-                );
-            }
-            assert!(scope_allows(
-                &ActionsProvider::new(),
-                SearchScope::Workspace,
-                Some("notes")
-            ));
-        }
-
-        // Phase `unresolved_active_app_scope_never_widens_to_unrelated_providers`.
-        {
-            let unrelated = FakeProvider {
-                id: "files".into(),
-                kinds: vec![ResourceKind::File],
-                results: Vec::new(),
-                max_score: None,
-            };
-            assert!(!scope_allows(&unrelated, SearchScope::ActiveApp, None));
-        }
-
-        // Phase `wanted_kinds_filter_hides_unrequested`.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "mixed".into(),
-                kinds: vec![ResourceKind::Note, ResourceKind::File],
-                results: vec![
-                    mk_result(ResourceKind::Note, "mixed", "n", "a", 10),
-                    mk_result(ResourceKind::File, "mixed", "f", "b", 10),
-                ],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let out = reg.query(&QueryArgs {
-                needle: "x",
-                scope: SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[ResourceKind::Note],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            });
-            assert_eq!(out.len(), 1);
-            assert_eq!(out[0].kind, ResourceKind::Note);
-        }
+        assert!(scope_allows(
+            &ActionsProvider::new(),
+            SearchScope::Workspace,
+            Some("notes")
+        ));
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn the_strongest_match_leads_whether_app_action_or_file() {
-        // Phase `the_same_providers_flip_when_the_action_scores_highest`.
-        // Same two providers, but now the action is the strongest hit and must lead.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "notes".into(),
-                kinds: vec![ResourceKind::Note],
-                results: vec![mk_result(ResourceKind::Note, "notes", "n1", "note b", 10)],
-                max_score: None,
-            }));
-            reg.register(Rc::new(FakeProvider {
-                id: "actions".into(),
-                kinds: vec![ResourceKind::Action],
-                results: vec![mk_result(ResourceKind::Action, "actions", "a1", "act", 90)],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let out = reg.query(&QueryArgs {
-                needle: "x",
-                scope: SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            });
-            assert_eq!(out[0].kind, ResourceKind::Action);
-        }
+    fn unresolved_active_app_scope_never_widens_to_unrelated_providers() {
+        let unrelated = FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: Vec::new(),
+            max_score: None,
+        };
+        assert!(!scope_allows(&unrelated, SearchScope::ActiveApp, None));
+    }
 
-        // Phase `a_matching_application_outranks_file_hits_for_the_same_word`.
-        // A typed app name must put the app in the row Enter activates, not a
-        // source file whose path happens to contain the word.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "files".into(),
-                kinds: vec![ResourceKind::File],
-                results: vec![
-                    mk_result(ResourceKind::File, "files", "f1", "Calculator.h", 120),
-                    mk_result(ResourceKind::File, "files", "f2", "calculator.rs", 120),
-                ],
-                max_score: Some(120),
-            }));
-            reg.register(Rc::new(FakeProvider {
-                id: "applications".into(),
-                kinds: vec![ResourceKind::Application],
-                results: vec![mk_result(
-                    ResourceKind::Application,
-                    "applications",
-                    "so.tilo.calculator",
-                    "Open Calculator",
-                    100,
-                )],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let out = reg.query(&QueryArgs {
-                needle: "calculator",
-                scope: SearchScope::Workspace,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            });
-            assert_eq!(
-                out.first().map(|r| r.provider_id.as_str()),
-                Some("applications"),
-                "the installed app must be the row Enter activates, ahead of \
-                 {} file hits: {:?}",
-                out.iter().filter(|r| r.kind == ResourceKind::File).count(),
-                out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
-            );
-            assert_eq!(out[0].id, "so.tilo.calculator");
-        }
+    #[test]
+    fn wanted_kinds_filter_hides_unrequested() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "mixed".into(),
+            kinds: vec![ResourceKind::Note, ResourceKind::File],
+            results: vec![
+                mk_result(ResourceKind::Note, "mixed", "n", "a", 10),
+                mk_result(ResourceKind::File, "mixed", "f", "b", 10),
+            ],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "x",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[ResourceKind::Note],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].kind, ResourceKind::Note);
+    }
 
-        // Phase `an_exact_app_name_beats_an_action_that_only_matched_its_subtitle`.
-        // A word that exactly names an app must not lose to a word buried in
-        // another entry's subtitle, even though actions sort above applications.
-        {
-            for (needle, action_title, _action_subtitle, action_score) in [
-                // "permissions" appears only in the action's subtitle (25).
-                (
-                    "permissions",
-                    "Workspace settings",
-                    "General, roles, files, permissions",
-                    25,
-                ),
-                (
-                    "settings",
-                    "Workspace settings",
-                    "General, roles, files, permissions",
-                    50,
-                ),
-            ] {
-                let mut reg = SearchRegistry::new();
-                reg.register(Rc::new(FakeProvider {
-                    id: "actions".into(),
-                    kinds: vec![ResourceKind::Action],
-                    results: vec![mk_result(
-                        ResourceKind::Action,
-                        "actions",
-                        "open-ws-settings",
-                        action_title,
-                        action_score,
-                    )],
-                    max_score: None,
-                }));
-                reg.register(Rc::new(FakeProvider {
-                    id: "applications".into(),
-                    kinds: vec![ResourceKind::Application],
-                    results: vec![mk_result(
-                        ResourceKind::Application,
-                        "applications",
-                        "so.tilo.app",
-                        needle,
-                        100,
-                    )],
-                    max_score: None,
-                }));
-                let chrome = mk_chrome();
-                let (doc, root) = mk_doc();
-                let out = reg.query(&QueryArgs {
-                    needle,
-                    scope: SearchScope::Workspace,
-                    active_provider_id: None,
-                    wanted_kinds: &[],
-                    chrome: &chrome.borrow(),
-                    doc: &doc,
-                    doc_root: &root,
-                });
-                assert_eq!(
-                    out.first().map(|r| r.provider_id.as_str()),
-                    Some("applications"),
-                    "typing {needle:?} must offer the app first, not the \
-                     action that scored {action_score} on its subtitle: {:?}",
-                    out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
-                );
-            }
-        }
+    // Same two providers, but now the action is the strongest hit and must lead.
+    #[test]
+    fn the_same_providers_flip_when_the_action_scores_highest() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(ResourceKind::Note, "notes", "n1", "note b", 10)],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: vec![mk_result(ResourceKind::Action, "actions", "a1", "act", 90)],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "x",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+        assert_eq!(out[0].kind, ResourceKind::Action);
+    }
 
-        // Phase `an_action_still_leads_when_it_is_the_strongest_match`.
-        // The converse: this is a reordering, not a blanket demotion of actions.
-        {
+    // A typed app name must put the app in the row Enter activates, not a
+    // source file whose path happens to contain the word.
+    #[test]
+    fn a_matching_application_outranks_file_hits_for_the_same_word() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: vec![
+                mk_result(ResourceKind::File, "files", "f1", "Calculator.h", 120),
+                mk_result(ResourceKind::File, "files", "f2", "calculator.rs", 120),
+            ],
+            max_score: Some(120),
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "applications",
+                "so.tilo.calculator",
+                "Open Calculator",
+                100,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "calculator",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+        assert_eq!(
+            out.first().map(|r| r.provider_id.as_str()),
+            Some("applications"),
+            "the installed app must be the row Enter activates, ahead of \
+             {} file hits: {:?}",
+            out.iter().filter(|r| r.kind == ResourceKind::File).count(),
+            out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
+        );
+        assert_eq!(out[0].id, "so.tilo.calculator");
+    }
+
+    // A word that exactly names an app must not lose to a word buried in
+    // another entry's subtitle, even though actions sort above applications.
+    #[test]
+    fn an_exact_app_name_beats_an_action_that_only_matched_its_subtitle() {
+        for (needle, action_title, _action_subtitle, action_score) in [
+            // "permissions" appears only in the action's subtitle (25).
+            (
+                "permissions",
+                "Workspace settings",
+                "General, roles, files, permissions",
+                25,
+            ),
+            (
+                "settings",
+                "Workspace settings",
+                "General, roles, files, permissions",
+                50,
+            ),
+        ] {
             let mut reg = SearchRegistry::new();
             reg.register(Rc::new(FakeProvider {
                 id: "actions".into(),
@@ -3204,8 +3118,8 @@ mod tests {
                     ResourceKind::Action,
                     "actions",
                     "open-ws-settings",
-                    "Workspace settings",
-                    100,
+                    action_title,
+                    action_score,
                 )],
                 max_score: None,
             }));
@@ -3215,50 +3129,8 @@ mod tests {
                 results: vec![mk_result(
                     ResourceKind::Application,
                     "applications",
-                    "so.tilo.wp",
-                    "Word Processor",
-                    20,
-                )],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let out = reg.query(&QueryArgs {
-                needle: "workspace",
-                scope: SearchScope::Workspace,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            });
-            assert_eq!(
-                out.first().map(|r| r.provider_id.as_str()),
-                Some("actions"),
-                "the action is the strongest match here and must lead: {:?}",
-                out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
-            );
-        }
-
-        // Phase `an_app_is_not_buried_by_a_note_of_the_same_name`.
-        // A note titled exactly like an installed app must not take the row
-        // Enter activates.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "notes".into(),
-                kinds: vec![ResourceKind::Note],
-                results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Notes", 110)],
-                max_score: Some(110),
-            }));
-            reg.register(Rc::new(FakeProvider {
-                id: "applications".into(),
-                kinds: vec![ResourceKind::Application],
-                results: vec![mk_result(
-                    ResourceKind::Application,
-                    "applications",
-                    "so.tilo.notes",
-                    "Open Notes",
+                    "so.tilo.app",
+                    needle,
                     100,
                 )],
                 max_score: None,
@@ -3266,7 +3138,7 @@ mod tests {
             let chrome = mk_chrome();
             let (doc, root) = mk_doc();
             let out = reg.query(&QueryArgs {
-                needle: "notes",
+                needle,
                 scope: SearchScope::Workspace,
                 active_provider_id: None,
                 wanted_kinds: &[],
@@ -3277,215 +3149,314 @@ mod tests {
             assert_eq!(
                 out.first().map(|r| r.provider_id.as_str()),
                 Some("applications"),
-                "both matched their own ceiling, so the fixed kind order \
-                 decides and applications sits above notes: {:?}",
+                "typing {needle:?} must offer the app first, not the \
+                 action that scored {action_score} on its subtitle: {:?}",
                 out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
             );
         }
     }
 
+    // The converse: this is a reordering, not a blanket demotion of actions.
     #[test]
-    fn result_groups_stay_contiguous_and_a_lone_group_is_never_trimmed() {
-        // Phase `reordering_groups_keeps_each_kind_contiguous`.
-        // Each kind renders as one contiguous block, not interleaved.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "files".into(),
-                kinds: vec![ResourceKind::File],
-                results: vec![
-                    mk_result(ResourceKind::File, "files", "f1", "a.rs", 120),
-                    mk_result(ResourceKind::File, "files", "f2", "b.rs", 80),
-                ],
-                max_score: Some(120),
-            }));
-            reg.register(Rc::new(FakeProvider {
-                id: "applications".into(),
-                kinds: vec![ResourceKind::Application],
-                results: vec![
-                    mk_result(
-                        ResourceKind::Application,
-                        "applications",
-                        "a1",
-                        "App One",
-                        100,
-                    ),
-                    mk_result(
-                        ResourceKind::Application,
-                        "applications",
-                        "a2",
-                        "App Two",
-                        25,
-                    ),
-                ],
-                max_score: None,
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let out = reg.query(&QueryArgs {
-                needle: "a",
+    fn an_action_still_leads_when_it_is_the_strongest_match() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: vec![mk_result(
+                ResourceKind::Action,
+                "actions",
+                "open-ws-settings",
+                "Workspace settings",
+                100,
+            )],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "applications",
+                "so.tilo.wp",
+                "Word Processor",
+                20,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "workspace",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+        assert_eq!(
+            out.first().map(|r| r.provider_id.as_str()),
+            Some("actions"),
+            "the action is the strongest match here and must lead: {:?}",
+            out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
+        );
+    }
+
+    // A note titled exactly like an installed app must not take the row
+    // Enter activates.
+    #[test]
+    fn an_app_is_not_buried_by_a_note_of_the_same_name() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Notes", 110)],
+            max_score: Some(110),
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "applications",
+                "so.tilo.notes",
+                "Open Notes",
+                100,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "notes",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+        assert_eq!(
+            out.first().map(|r| r.provider_id.as_str()),
+            Some("applications"),
+            "both matched their own ceiling, so the fixed kind order \
+             decides and applications sits above notes: {:?}",
+            out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
+        );
+    }
+
+    // Each kind renders as one contiguous block, not interleaved.
+    #[test]
+    fn reordering_groups_keeps_each_kind_contiguous() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: vec![
+                mk_result(ResourceKind::File, "files", "f1", "a.rs", 120),
+                mk_result(ResourceKind::File, "files", "f2", "b.rs", 80),
+            ],
+            max_score: Some(120),
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![
+                mk_result(
+                    ResourceKind::Application,
+                    "applications",
+                    "a1",
+                    "App One",
+                    100,
+                ),
+                mk_result(
+                    ResourceKind::Application,
+                    "applications",
+                    "a2",
+                    "App Two",
+                    25,
+                ),
+            ],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(&QueryArgs {
+            needle: "a",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        });
+        let kinds: Vec<&ResourceKind> = out.iter().map(|r| &r.kind).collect();
+        let mut seen: Vec<&ResourceKind> = Vec::new();
+        for k in &kinds {
+            if seen.last() != Some(k) {
+                assert!(
+                    !seen.contains(k),
+                    "kind {k:?} appears in two separate runs: {kinds:?}"
+                );
+                seen.push(k);
+            }
+        }
+    }
+
+    // Narrowing to a single kind means "show me all of these" and must not be trimmed.
+    #[test]
+    fn a_lone_group_is_never_trimmed() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: (0..30)
+                .map(|i| mk_result(ResourceKind::File, "files", &format!("f{i}"), "x.rs", 80))
+                .collect(),
+            max_score: Some(120),
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let groups = reg.query_grouped(
+            &QueryArgs {
+                needle: "x",
                 scope: SearchScope::Workspace,
+                active_provider_id: None,
+                wanted_kinds: &[ResourceKind::File],
+                chrome: &chrome.borrow(),
+                doc: &doc,
+                doc_root: &root,
+            },
+            12,
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].results.len(),
+            30,
+            "one kind on its own gets the whole budget"
+        );
+    }
+
+    // Driven through the applications provider against an installed-app
+    // registry on disk rather than the fixtures above.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn typing_an_installed_apps_name_offers_the_app_first() {
+        use crate::shell::search::providers::applications::ApplicationsProvider;
+        let tmp = tempfile::tempdir().expect("temp app registry");
+        install_fake_app(tmp.path(), "so.tilo.calculator", "Calculator");
+        install_fake_app(tmp.path(), "so.tilo.notes", "Notes");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        crate::shell::launcher::invalidate_app_cache();
+
+        let mut reg = SearchRegistry::new();
+        // Registered after files, so winning cannot be an artefact of order.
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: (0..30)
+                .map(|i| {
+                    mk_result(
+                        ResourceKind::File,
+                        "files",
+                        &format!("f{i}"),
+                        &format!("calculator_{i}.rs"),
+                        120,
+                    )
+                })
+                .collect(),
+            max_score: Some(120),
+        }));
+        reg.register(Rc::new(ApplicationsProvider::new()));
+
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let refresh_args = QueryArgs {
+            needle: "calculator",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+        refresh_until_ready(&reg, &refresh_args);
+        for scope in [SearchScope::All, SearchScope::Workspace] {
+            let out = reg.query(&QueryArgs {
+                needle: "calculator",
+                scope,
                 active_provider_id: None,
                 wanted_kinds: &[],
                 chrome: &chrome.borrow(),
                 doc: &doc,
                 doc_root: &root,
             });
-            let kinds: Vec<&ResourceKind> = out.iter().map(|r| &r.kind).collect();
-            let mut seen: Vec<&ResourceKind> = Vec::new();
-            for k in &kinds {
-                if seen.last() != Some(k) {
-                    assert!(
-                        !seen.contains(k),
-                        "kind {k:?} appears in two separate runs: {kinds:?}"
-                    );
-                    seen.push(k);
-                }
-            }
-        }
-
-        // Phase `a_lone_group_is_never_trimmed`.
-        // Narrowing to a single kind means "show me all of these" and must not be trimmed.
-        {
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "files".into(),
-                kinds: vec![ResourceKind::File],
-                results: (0..30)
-                    .map(|i| mk_result(ResourceKind::File, "files", &format!("f{i}"), "x.rs", 80))
-                    .collect(),
-                max_score: Some(120),
-            }));
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let groups = reg.query_grouped(
-                &QueryArgs {
-                    needle: "x",
-                    scope: SearchScope::Workspace,
-                    active_provider_id: None,
-                    wanted_kinds: &[ResourceKind::File],
-                    chrome: &chrome.borrow(),
-                    doc: &doc,
-                    doc_root: &root,
-                },
-                12,
-            );
-            assert_eq!(groups.len(), 1);
+            let first = out
+                .first()
+                .unwrap_or_else(|| panic!("some result in {scope:?}"));
             assert_eq!(
-                groups[0].results.len(),
-                30,
-                "one kind on its own gets the whole budget"
+                first.provider_id,
+                "applications",
+                "in {scope:?} the row Enter activates must be the installed \
+                 app, not one of the {} file hits: {:?}",
+                out.iter().filter(|r| r.kind == ResourceKind::File).count(),
+                out.iter().take(3).map(|r| &r.title).collect::<Vec<_>>()
             );
+            assert_eq!(first.id, "so.tilo.calculator");
         }
+        env.remove("TILO_APPS_DATA_DIR");
+        crate::shell::launcher::invalidate_app_cache();
     }
 
+    // The app group must survive the trim that keeps a forty-hit file
+    // group from filling the card.
     #[test]
     #[serial_test::serial(process_env)]
-    fn an_installed_apps_name_offers_the_app_first_even_in_a_capped_palette() {
-        // Phase `typing_an_installed_apps_name_offers_the_app_first`.
-        // Driven through the applications provider against an installed-app
-        // registry on disk rather than the fixtures above.
-        {
-            use crate::shell::search::providers::applications::ApplicationsProvider;
-            let tmp = tempfile::tempdir().expect("temp app registry");
-            install_fake_app(tmp.path(), "so.tilo.calculator", "Calculator");
-            install_fake_app(tmp.path(), "so.tilo.notes", "Notes");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_APPS_DATA_DIR", tmp.path());
-            crate::shell::launcher::invalidate_app_cache();
+    fn a_capped_palette_still_leads_with_the_app() {
+        use crate::shell::search::providers::applications::ApplicationsProvider;
+        let tmp = tempfile::tempdir().expect("temp app registry");
+        install_fake_app(tmp.path(), "so.tilo.hex-editor", "Hex Editor");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_DATA_DIR", tmp.path());
+        crate::shell::launcher::invalidate_app_cache();
 
-            let mut reg = SearchRegistry::new();
-            // Registered after files, so winning cannot be an artefact of order.
-            reg.register(Rc::new(FakeProvider {
-                id: "files".into(),
-                kinds: vec![ResourceKind::File],
-                results: (0..30)
-                    .map(|i| {
-                        mk_result(
-                            ResourceKind::File,
-                            "files",
-                            &format!("f{i}"),
-                            &format!("calculator_{i}.rs"),
-                            120,
-                        )
-                    })
-                    .collect(),
-                max_score: Some(120),
-            }));
-            reg.register(Rc::new(ApplicationsProvider::new()));
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: (0..40)
+                .map(|i| {
+                    mk_result(
+                        ResourceKind::File,
+                        "files",
+                        &format!("f{i}"),
+                        &format!("editor_{i:02}.rs"),
+                        120,
+                    )
+                })
+                .collect(),
+            max_score: Some(120),
+        }));
+        reg.register(Rc::new(ApplicationsProvider::new()));
 
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let refresh_args = QueryArgs {
-                needle: "calculator",
-                scope: SearchScope::All,
-                active_provider_id: None,
-                wanted_kinds: &[],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &root,
-            };
-            refresh_until_ready(&reg, &refresh_args);
-            for scope in [SearchScope::All, SearchScope::Workspace] {
-                let out = reg.query(&QueryArgs {
-                    needle: "calculator",
-                    scope,
-                    active_provider_id: None,
-                    wanted_kinds: &[],
-                    chrome: &chrome.borrow(),
-                    doc: &doc,
-                    doc_root: &root,
-                });
-                let first = out
-                    .first()
-                    .unwrap_or_else(|| panic!("some result in {scope:?}"));
-                assert_eq!(
-                    first.provider_id,
-                    "applications",
-                    "in {scope:?} the row Enter activates must be the installed \
-                     app, not one of the {} file hits: {:?}",
-                    out.iter().filter(|r| r.kind == ResourceKind::File).count(),
-                    out.iter().take(3).map(|r| &r.title).collect::<Vec<_>>()
-                );
-                assert_eq!(first.id, "so.tilo.calculator");
-            }
-            env.remove("TILO_APPS_DATA_DIR");
-            crate::shell::launcher::invalidate_app_cache();
-        }
-
-        // Phase `a_capped_palette_still_leads_with_the_app`.
-        // The app group must survive the trim that keeps a forty-hit file
-        // group from filling the card.
-        {
-            use crate::shell::search::providers::applications::ApplicationsProvider;
-            let tmp = tempfile::tempdir().expect("temp app registry");
-            install_fake_app(tmp.path(), "so.tilo.hex-editor", "Hex Editor");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_APPS_DATA_DIR", tmp.path());
-            crate::shell::launcher::invalidate_app_cache();
-
-            let mut reg = SearchRegistry::new();
-            reg.register(Rc::new(FakeProvider {
-                id: "files".into(),
-                kinds: vec![ResourceKind::File],
-                results: (0..40)
-                    .map(|i| {
-                        mk_result(
-                            ResourceKind::File,
-                            "files",
-                            &format!("f{i}"),
-                            &format!("editor_{i:02}.rs"),
-                            120,
-                        )
-                    })
-                    .collect(),
-                max_score: Some(120),
-            }));
-            reg.register(Rc::new(ApplicationsProvider::new()));
-
-            let chrome = mk_chrome();
-            let (doc, root) = mk_doc();
-            let refresh_args = QueryArgs {
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let refresh_args = QueryArgs {
+            needle: "editor",
+            scope: SearchScope::Workspace,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &root,
+        };
+        refresh_until_ready(&reg, &refresh_args);
+        // "editor" is a leaf-name prefix for all forty files but only a
+        // substring of "Hex Editor", so Files legitimately outranks it.
+        let groups = reg.query_grouped(
+            &QueryArgs {
                 needle: "editor",
                 scope: SearchScope::Workspace,
                 active_provider_id: None,
@@ -3493,51 +3464,37 @@ mod tests {
                 chrome: &chrome.borrow(),
                 doc: &doc,
                 doc_root: &root,
-            };
-            refresh_until_ready(&reg, &refresh_args);
-            // "editor" is a leaf-name prefix for all forty files but only a
-            // substring of "Hex Editor", so Files legitimately outranks it.
-            let groups = reg.query_grouped(
-                &QueryArgs {
-                    needle: "editor",
-                    scope: SearchScope::Workspace,
-                    active_provider_id: None,
-                    wanted_kinds: &[],
-                    chrome: &chrome.borrow(),
-                    doc: &doc,
-                    doc_root: &root,
-                },
-                12,
-            );
-            let files = groups
-                .iter()
-                .find(|g| g.kind == ResourceKind::File)
-                .expect("a files group");
-            assert_eq!(files.total, 40, "the count must report the untrimmed truth");
-            assert!(
-                files.results.len() < files.total,
-                "the files group must be trimmed, not shown whole"
-            );
-            let apps = groups
-                .iter()
-                .find(|g| g.kind == ResourceKind::Application)
-                .expect("the app must still be in the result set at all");
-            assert_eq!(apps.results.len(), 1);
+            },
+            12,
+        );
+        let files = groups
+            .iter()
+            .find(|g| g.kind == ResourceKind::File)
+            .expect("a files group");
+        assert_eq!(files.total, 40, "the count must report the untrimmed truth");
+        assert!(
+            files.results.len() < files.total,
+            "the files group must be trimmed, not shown whole"
+        );
+        let apps = groups
+            .iter()
+            .find(|g| g.kind == ResourceKind::Application)
+            .expect("the app must still be in the result set at all");
+        assert_eq!(apps.results.len(), 1);
 
-            // Must be reachable, not merely present: within the flattened rows.
-            let flat: Vec<&SearchResult> = groups.iter().flat_map(|g| g.results.iter()).collect();
-            let app_row = flat
-                .iter()
-                .position(|r| r.kind == ResourceKind::Application)
-                .expect("the app is in the flattened list");
-            assert!(
-                app_row < 8,
-                "the app landed at row {app_row}, past the visible list: {:?}",
-                flat.iter().take(10).map(|r| &r.title).collect::<Vec<_>>()
-            );
-            env.remove("TILO_APPS_DATA_DIR");
-            crate::shell::launcher::invalidate_app_cache();
-        }
+        // Must be reachable, not merely present: within the flattened rows.
+        let flat: Vec<&SearchResult> = groups.iter().flat_map(|g| g.results.iter()).collect();
+        let app_row = flat
+            .iter()
+            .position(|r| r.kind == ResourceKind::Application)
+            .expect("the app is in the flattened list");
+        assert!(
+            app_row < 8,
+            "the app landed at row {app_row}, past the visible list: {:?}",
+            flat.iter().take(10).map(|r| &r.title).collect::<Vec<_>>()
+        );
+        env.remove("TILO_APPS_DATA_DIR");
+        crate::shell::launcher::invalidate_app_cache();
     }
 
     fn ask(

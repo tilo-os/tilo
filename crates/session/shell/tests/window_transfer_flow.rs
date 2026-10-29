@@ -897,12 +897,15 @@ fn an_app_without_records_carries_the_document_it_keeps_in_the_room() {
     let root = profile_root(f.data.path(), f.home_room);
     std::fs::create_dir_all(&root).unwrap();
     let home = NativeProfile::open(&root, Some(&f.home_room.to_string())).unwrap();
-    let (mut state, mut old) = ui::persist::open_in(Rc::clone(home.store()), APP).unwrap();
-    state
-        .doc
-        .put(ROOT, "body", "Scratch: call the plumber")
-        .unwrap();
-    old.request(&mut state.doc);
+    let mut store = app_state::DocStore::shared(
+        Rc::clone(home.store()),
+        durable_store::StorageKey::package(APP),
+    )
+    .unwrap();
+    let mut doc = store.load_or_new();
+    let mut old = store.writer();
+    doc.put(ROOT, "body", "Scratch: call the plumber").unwrap();
+    old.request(&mut doc);
     old.flush();
     global_registry()
         .lock()
@@ -936,7 +939,7 @@ fn an_app_without_records_carries_the_document_it_keeps_in_the_room() {
         f.chrome.borrow().window_transfers.is_busy(),
         "the app document is not retired while its writer still runs"
     );
-    drop((state, old));
+    drop((doc, old));
     tick(&mut f.chrome.borrow_mut());
     assert!(!f.chrome.borrow().window_transfers.is_pending());
     let origin = transfer::Origin::AppDocument(RecordKind::new(transfer::APP_DOCUMENT_KIND));

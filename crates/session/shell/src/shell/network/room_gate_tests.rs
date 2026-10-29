@@ -245,6 +245,7 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
                         added: Vec::new(),
                         commit: Vec::new(),
                         joining: None,
+                        history: None,
                     },
                     signed_by: Ed25519PublicKey::from_bytes([9; 32]),
                     signature: Signature::from_bytes([0xAB; 64]),

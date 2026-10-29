@@ -111,7 +111,8 @@ pub(crate) fn find_text(
     text: &str,
     page: Option<PageId>,
 ) -> Result<serde_json::Value, String> {
-    let pages = crate::read::list_pages(doc);
+    // A notebook that does not read is not one without matches.
+    let pages = crate::read::project(doc)?.data.pages;
     let mut matches = Vec::new();
     for meta in pages
         .iter()
@@ -551,4 +552,24 @@ pub fn page_markdown(workspace: &crate::Workspace, page: PageId) -> String {
         })
         .collect::<Vec<_>>();
     crate::markdown::serialize(&crate::markdown::blocks_to_specs(&blocks))
+}
+
+#[cfg(test)]
+mod tests {
+    use automerge::transaction::Transactable as _;
+
+    #[test]
+    fn a_notebook_that_does_not_read_is_not_searched_as_an_empty_one() {
+        let mut doc = automerge::AutoCommit::new();
+        crate::read::initialize(&mut doc);
+        assert!(super::find_text(&doc, "anything", None).is_ok());
+
+        doc.put(automerge::ROOT, "pages", "not a collection of notes")
+            .expect("the field is written");
+        assert!(crate::read::validate(&doc).is_err());
+        assert!(
+            super::find_text(&doc, "anything", None).is_err(),
+            "the search says it could not look, not that nothing matched"
+        );
+    }
 }

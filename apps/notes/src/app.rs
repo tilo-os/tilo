@@ -45,6 +45,7 @@ use crate::status_bar::{SaveStatus, StatusBarState, StatusModel};
 
 mod asset_reads;
 mod effects;
+pub(crate) use effects::navigation_statuses;
 mod window_bar;
 
 thread_local! {
@@ -486,7 +487,25 @@ pub struct NotesApp {
     /// Who the participants are, by name, once hosted: whom the header's
     /// reactions name, and whether anyone else shares the notebook.
     people: Option<ui::framework::People>,
+    /// The framework's live notebook the window shows, and what of it the
+    /// window last showed ([`ui::framework::Live::changed_since`]). A window
+    /// a test drives over a document of its own follows none.
+    follows: Option<(LiveNotebook, Option<(u64, u64)>)>,
+    /// What effects' completions left for the window, done on its next sync.
+    completions: effects::Completions,
+    /// Whether Back and Forward lead anywhere, as the effects' statuses say.
+    steps: Rc<std::cell::Cell<(bool, bool)>>,
+    /// A capture's scenario, staged on the window's next sync.
+    #[cfg(feature = "samples")]
+    staged: Rc<std::cell::RefCell<Option<Staged>>>,
 }
+
+/// The framework's live notebook.
+type LiveNotebook = ui::framework::Live<crate::resource::Notebook>;
+
+/// The scenario a capture stages (`None` for a plain capture).
+#[cfg(feature = "samples")]
+struct Staged(Option<String>);
 
 /// What the framework's opener and the window share: the notes there are,
 /// and the ones asked to be shown.
@@ -775,6 +794,11 @@ impl NotesApp {
             save_status: None,
             open_when_present: None,
             opened: Rc::default(),
+            follows: None,
+            completions: effects::Completions::default(),
+            steps: Rc::default(),
+            #[cfg(feature = "samples")]
+            staged: Rc::default(),
         };
         app.opened.borrow_mut().known = app.workspace.pages().iter().map(|page| page.id).collect();
         app.unindexed = app.workspace.pages().iter().map(|page| page.id).collect();
@@ -1149,8 +1173,10 @@ impl NotesApp {
         let Some(page) = self.main.page_id() else {
             return;
         };
-        let inserted = fit_image_asset(bytes)
-            .and_then(|bytes| self.submit_now(edits, self.image_insertion(page, alt, bytes)));
+        let inserted = fit_image_asset(bytes).and_then(|bytes| {
+            let insertion = effects::image_insertion(page, self.image_anchor(page), alt, bytes);
+            self.submit_now(edits, insertion)
+        });
         match inserted {
             Ok(()) => {
                 self.bound_page = None;
@@ -1502,8 +1528,8 @@ impl NotesApp {
         }
     }
 
-    /// Empty surface for the framework host; [`Self::adopt_resource_state`]
-    /// installs the live workspace before the first frame.
+    /// Empty window for the framework's view; it shows the notebook it
+    /// follows from its first sync ([`Self::follow`]).
     pub(crate) fn empty_surface(
         author: &ui::permissions::UserId,
         save_status: ui::LocalState<ui::record::RecordSaveStatus>,
@@ -1621,12 +1647,62 @@ impl NotesApp {
         self.asset_reads.wake_through(wake);
     }
 
+    /// Show the notebook as `live` holds it from the next sync on, and each
+    /// state of it after.
+    pub(crate) fn follow(&mut self, live: LiveNotebook) {
+        self.follows = Some((live, None));
+    }
+
+    /// Whether Back and Forward lead anywhere, as the window last saw.
+    pub(crate) fn steps(&self) -> Rc<std::cell::Cell<(bool, bool)>> {
+        Rc::clone(&self.steps)
+    }
+
+    /// What stages a capture's scenario on the window's next sync.
+    #[cfg(feature = "samples")]
+    pub(crate) fn stager(&self) -> impl FnMut(Option<&str>) + 'static {
+        let staged = Rc::clone(&self.staged);
+        move |scenario| *staged.borrow_mut() = Some(Staged(scenario.map(str::to_owned)))
+    }
+
+    /// Show the notebook's state when it changed since the window last
+    /// showed it, then what completions left and a staged scenario.
+    fn follow_notebook(&mut self) {
+        let changed = self
+            .follows
+            .as_mut()
+            .and_then(|(live, seen)| live.changed_since(seen));
+        if let Some(state) = changed {
+            self.adopt_resource_state(&state);
+        }
+        let completed = self.completions.take();
+        self.complete(completed);
+        #[cfg(feature = "samples")]
+        {
+            let staged = self.staged.borrow_mut().take();
+            if let Some(Staged(scenario)) = staged {
+                self.stage_scenario(scenario.as_deref());
+            }
+        }
+    }
+
+    /// Whether the window has nothing to take up on its next sync.
+    fn settled(&self) -> bool {
+        #[cfg(feature = "samples")]
+        if self.staged.borrow().is_some() {
+            return false;
+        }
+        self.follows
+            .as_ref()
+            .is_none_or(|(live, seen)| *seen == Some((live.revision(), live.loads())))
+    }
+
     /// Name the participants through `people` from now on.
     pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
         self.people = Some(people);
     }
 
-    /// Attach the framework dispatcher when hosted as a surface.
+    /// Attach the framework dispatcher when built by the view.
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
@@ -2650,6 +2726,7 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_notebook();
         if self.link_copy.failed() {
             self.notify(
                 ui::i18n!("notes-copy-link-failed"),
@@ -2748,6 +2825,7 @@ impl Widget for NotesApp {
         self.main.set_backlinks(self.selected_backlink_chips());
         self.finish_block_reveal();
         refresh_outline(self);
+        self.note_steps();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -3020,6 +3098,7 @@ impl Widget for NotesApp {
 
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         matches!(event, WindowEvent::MouseWheel { .. })
+            && self.settled()
             && self.main.view_only_scroll(event)
             && !self.note_menu.is_open()
             && !self.shortcuts.is_visible()
@@ -3032,6 +3111,14 @@ impl Widget for NotesApp {
 
     fn name(&self) -> &'static str {
         "NotesApp"
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn perform_semantic_action(

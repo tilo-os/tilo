@@ -4697,8 +4697,8 @@ impl QuickFS {
     /// worker. Runs after the open is answered, so prediction never delays
     /// it.
     fn predict_after_open(&self, ino: u64) {
-        let candidates = self.predictive_candidates(ino);
-        self.heuristics.on_open(ino, candidates);
+        self.heuristics
+            .on_open(ino, || self.predictive_candidates(ino));
     }
 
     /// What an open of `ino` predicts, as `(content id, declared size)`
@@ -4755,14 +4755,10 @@ impl QuickFS {
             .collect();
         siblings.sort_by(|(_, a), (_, b)| natural_cmp(a.as_bytes(), b.as_bytes()));
         let order: Vec<u64> = siblings.into_iter().map(|(entry, _)| entry).collect();
-        // Nothing is learned while the person has turned prefetching off.
-        let learn = self.heuristics.prefetch_enabled();
         let (prediction, changed) = {
             let mut history = self.access_history.lock_recover();
             let before = history.revision();
-            if learn {
-                history.record(parent, ino, std::time::Instant::now());
-            }
+            history.record(parent, ino, std::time::Instant::now());
             (
                 history.predict(parent, ino, &order),
                 history.revision() != before,

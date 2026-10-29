@@ -141,8 +141,6 @@ mod tests {
             "tab-closed-toast",
             "tab-closed-group-toast",
             "tab-closed-undo",
-            "overview-windows-title",
-            "overview-windows-description",
             "overview-window-move-failed",
         ] {
             let s = t(key);

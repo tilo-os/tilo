@@ -15,8 +15,11 @@
 //! setting is a [`MobileEffect`]. PINs and PUKs are asked with the
 //! window's password prompt ([`codes`]) and handed to the change in zeroed
 //! buffers; they are never drawn and never reach a document.
+//!
+//! The card and the page are view code over the model ([`Page`]), built
+//! within Network's page.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -25,28 +28,26 @@ use os_actions::{
     ModemState, NetworkModes, Registration, SimCard, SimKind, SimLock, Technology, Traffic,
     UnlockRetries,
 };
-use serde::{Deserialize, Serialize};
+use provider_settings_ui::bound::{SettingRows as _, record_item};
 use tracing::warn;
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected};
-use ui::storage::{Scope, SettingsSchema};
+use ui::framework::{Actions, EffectAnswer, EffectCx, EffectStatus, Effected, ViewCx};
 use ui::tilo_resource::{self, ActionRef};
-use ui::widget::{
-    Button, ButtonRole, ListRow, Row, SignalLevel, Spacer, TextInput, TextInputKind, Widget,
-};
+use ui::widget::{Button, ButtonRole, ListRow, Row, SignalLevel, Spacer, TextInput, TextInputKind};
 use zeroize::Zeroizing;
 
+use super::Reach;
+use crate::area::AreaContext;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Shared};
+use crate::prefs::{DeviceVpnPrefs, MobileDataUsage, ResetDay};
 use crate::resource::Settings;
 use crate::scenarios::MobileSample;
 use crate::setting::{Follows, Read};
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
-    El, Item, SettingsSection, error_caption, field_row, note, page, row, rows, section,
-    section_with, value_row,
+use provider_settings_ui::widgets::{
+    El, Item, SettingsSection, error_caption, field_row, note, row, rows, section, section_with,
+    value_row,
 };
 
 crate::effects::effect_family!(MobileEffect => answer);
@@ -73,9 +74,6 @@ const METERED: &[(&str, &str)] = &[
     ("metered", "net-mobile-metered-yes"),
     ("unmetered", "net-mobile-metered-no"),
 ];
-
-/// The days of the month a data period can start on: every month has them.
-const RESET_DAYS: std::ops::RangeInclusive<u32> = 1..=28;
 
 /// Mobile data and the SIMs of this device's modems.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -115,15 +113,6 @@ pub enum MobileEffect {
         #[param("The network types, as listed: 4g-3g-2g, 5g-4g-prefer-5g, 4g …")]
         network: String,
     },
-    /// Choose the day of the month the data used starts counting again.
-    #[effect(idempotent, label = "Data period starts on")]
-    SetDataResetDay {
-        #[param("The day of the month, 1 to 28")]
-        day: u32,
-    },
-    /// Start counting the data used again from now.
-    #[effect(label = "Reset data used")]
-    ResetDataUsage,
     /// Unlock a SIM with its PIN; without it, the PIN is asked for.
     #[effect(job, label = "Unlock SIM")]
     UnlockSim {
@@ -181,23 +170,21 @@ pub enum MobileEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: MobileEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let area = area(app).ok_or_else(crate::area::missing)?;
     if effect == MobileEffect::InspectMobileState {
         return Ok(Effected::value(area.model().borrow().inspection()));
     }
     if effect == MobileEffect::RefreshMobile {
-        app.host().radios().look_again();
+        app.radios().look_again();
     }
     let begun = area.model().borrow_mut().begin(effect)?;
     Ok(match begun {
         Begun::Done => Effected::done(),
-        Begun::Work(work) => {
-            crate::device_read::job(cx, work, |app: &mut SettingsApp, landed, _| {
-                area_of(app)?.model().borrow_mut().land(landed)
-            })
-        }
+        Begun::Work(work) => app.job(cx, work, |app: &SettingsApp, landed, _| {
+            area_of(app)?.model().borrow_mut().land(landed)
+        }),
     })
 }
 
@@ -208,7 +195,7 @@ fn area_of(app: &SettingsApp) -> Result<&MobileArea, String> {
 /// Mobile data, as search shows it: a switch once the modem was read,
 /// "no modem" where there is none.
 pub(crate) fn mobile_data(app: &SettingsApp, _: &Follows) -> Read {
-    let listed = app.host().radios().now().map(|radios| radios.wwan);
+    let listed = app.radios().now().map(|radios| radios.wwan);
     let model = area(app).and_then(|area| area.model.get());
     match model.map(|model| {
         let model = model.borrow();
@@ -222,11 +209,12 @@ pub(crate) fn mobile_data(app: &SettingsApp, _: &Follows) -> Read {
 }
 
 /// The mobile data switch where search finds it.
-pub(crate) fn mobile_data_switch(cx: &PaneCx, on: bool) -> Item {
-    cx.row(t("net-mobile-data"))
+pub(crate) fn mobile_data_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
+    cx.setting(t("net-mobile-data"))
         .id("network.mobile")
         .toggle_effect(
             &LocalState::new(on),
+            &cx.actions(),
             effect(MobileEffect::SET_MOBILE_BROADBAND),
         )
 }
@@ -234,32 +222,50 @@ pub(crate) fn mobile_data_switch(cx: &PaneCx, on: bool) -> Item {
 /// What the Mobile section keeps for the window: the model, read when
 /// first needed.
 pub struct MobileArea {
-    cx: PaneCx,
-    model: OnceCell<Shared<MobileModel>>,
+    reach: Reach,
+    /// The modem a capture shows; `None` in a live window.
+    sample: Option<MobileSample>,
+    model: OnceCell<Rc<RefCell<MobileModel>>>,
 }
 
 impl MobileArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            reach: Reach::of(cx),
+            sample: cx.scene().and_then(|scene| scene.mobile),
             model: OnceCell::new(),
         }
     }
 
+    /// The area over `service` in place of the device's modems.
+    #[cfg(test)]
+    pub(crate) fn over(cx: &AreaContext, service: Arc<dyn MobileService>) -> Self {
+        let area = Self::new(cx);
+        let _ = area
+            .model
+            .set(Rc::new(RefCell::new(MobileModel::loaded_from(
+                Reach::of(cx),
+                service,
+            ))));
+        area
+    }
+
     /// The model over this device's modems, or over a scripted one for a
     /// capture.
-    pub fn model(&self) -> &Shared<MobileModel> {
+    pub fn model(&self) -> &Rc<RefCell<MobileModel>> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                MobileModel::of_device(self.cx.clone())
+            let model = if self.reach.devices {
+                MobileModel::of_device(self.reach.clone())
             } else {
-                let sample = self.cx.scene().and_then(|scene| scene.mobile);
-                let mut model =
-                    MobileModel::loaded_from(self.cx.clone(), Arc::new(ScriptedModem::new(sample)));
+                let sample = self.sample;
+                let mut model = MobileModel::loaded_from(
+                    self.reach.clone(),
+                    Arc::new(ScriptedModem::new(sample)),
+                );
                 model.stage(sample);
                 model
             };
-            Rc::new(std::cell::RefCell::new(model))
+            Rc::new(RefCell::new(model))
         })
     }
 
@@ -279,8 +285,8 @@ impl MobileArea {
         {
             return Some(model.present());
         }
-        self.cx
-            .radios()
+        self.reach
+            .radios
             .now()
             .map(|radios| radios.wwan)
             .filter(|wwan| !wwan)
@@ -309,8 +315,6 @@ impl MobileArea {
                     MobileEffect::SET_MOBILE_APN.id,
                     MobileEffect::SET_MOBILE_METERED.id,
                     MobileEffect::SET_PREFERRED_NETWORK.id,
-                    MobileEffect::SET_DATA_RESET_DAY.id,
-                    MobileEffect::RESET_DATA_USAGE.id,
                     MobileEffect::UNLOCK_SIM.id,
                     MobileEffect::UNBLOCK_SIM.id,
                     MobileEffect::SET_SIM_PIN_LOCK.id,
@@ -351,98 +355,6 @@ impl MobileArea {
     }
 }
 
-/// The data used on this device, counted from `ModemManager`'s traffic
-/// totals. Kept on this device only: another device's modem counts its own.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "the app's device-local settings share one namespace, so each field names its area"
-)]
-pub struct MobileDataUsage {
-    /// The day of the month the count starts again; 0 for the 1st.
-    pub mobile_reset_day: u32,
-    /// The month the period being counted started in, as `year * 12 +
-    /// month - 1`; 0 before the first count.
-    pub mobile_period: u32,
-    /// Bytes used in the period.
-    pub mobile_used: u64,
-    /// The traffic total last read, to count what came after it.
-    pub mobile_counter: Option<u64>,
-    /// The boot the total was read in: totals start again at boot.
-    pub mobile_boot: Option<String>,
-}
-
-impl SettingsSchema for MobileDataUsage {
-    const SCOPE: Scope = Scope::DeviceLocal;
-}
-
-/// The civil date (year, month, day) of `days` since 1970-01-01.
-fn civil(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = u32::try_from(doy - (153 * mp + 2) / 5 + 1).unwrap_or(1);
-    let month = u32::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).unwrap_or(1);
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month, day)
-}
-
-impl MobileDataUsage {
-    /// The day of the month the period starts on.
-    fn reset_day(&self) -> u32 {
-        self.mobile_reset_day
-            .clamp(*RESET_DAYS.start(), *RESET_DAYS.end())
-    }
-
-    /// The period `now` (seconds since the epoch, UTC) falls in, as
-    /// `year * 12 + month - 1` of its first day.
-    fn period_at(&self, now: i64) -> u32 {
-        let (year, month, day) = civil(now.div_euclid(86_400));
-        let mut index = year * 12 + i64::from(month) - 1;
-        if day < self.reset_day() {
-            index -= 1;
-        }
-        u32::try_from(index).unwrap_or(0)
-    }
-
-    /// The first day of the current period, as (month, day).
-    fn period_start(&self) -> (u32, u32) {
-        (self.mobile_period % 12 + 1, self.reset_day())
-    }
-
-    /// Take in a traffic total read at `now`: what was used since the last
-    /// total counts toward the period, which starts again on its day. A
-    /// total lower than the last, or from another boot, started again from
-    /// zero. The first total ever read only starts the count. Whether
-    /// anything changed.
-    fn account(&mut self, total: Option<u64>, boot: Option<&str>, now: i64) -> bool {
-        let before = self.clone();
-        let period = self.period_at(now);
-        if self.mobile_period != period {
-            self.mobile_period = period;
-            self.mobile_used = 0;
-        }
-        if let Some(total) = total {
-            let rebooted = matches!((boot, self.mobile_boot.as_deref()), (Some(now), Some(then)) if now != then);
-            let used = match self.mobile_counter {
-                Some(seen) if !rebooted && total >= seen => total - seen,
-                Some(_) => total,
-                None => 0,
-            };
-            self.mobile_used = self.mobile_used.saturating_add(used);
-            self.mobile_counter = Some(total);
-            if boot.is_some() {
-                self.mobile_boot = boot.map(str::to_owned);
-            }
-        }
-        *self != before
-    }
-}
-
 /// Everything the section shows, read in one pass off the UI thread.
 pub(crate) struct MobileSnapshot {
     modems: Result<MobileReading, ModemError>,
@@ -450,8 +362,6 @@ pub(crate) struct MobileSnapshot {
     /// `NetworkManager`'s radios: whether it lists a modem, and its WWAN
     /// switch.
     radios: Result<os_actions::RadioState, String>,
-    /// This boot's id, which tells a traffic total that started again.
-    boot: Option<String>,
 }
 
 /// A change carried out off the UI thread. Codes are zeroed when it is
@@ -531,9 +441,6 @@ impl MobileService for DeviceModem {
             modems: os_actions::read_mobile(),
             profile: os_actions::read_mobile_profile(),
             radios: os_actions::get_radio_state(),
-            boot: std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-                .ok()
-                .map(|id| id.trim().to_owned()),
         }
     }
 
@@ -824,7 +731,6 @@ impl MobileService for ScriptedModem {
                 wwan_enabled: state.wwan_enabled,
                 ..os_actions::RadioState::default()
             }),
-            boot: Some("scripted".into()),
         }
     }
 
@@ -891,7 +797,7 @@ pub(crate) enum Landed {
     reason = "independent facts: read yet, listed, switched on, editor open, changed"
 )]
 pub struct MobileModel {
-    cx: PaneCx,
+    reach: Reach,
     service: Arc<dyn MobileService>,
     /// False until the first snapshot arrives.
     loaded: bool,
@@ -904,8 +810,6 @@ pub struct MobileModel {
     wwan_listed: bool,
     /// `NetworkManager`'s WWAN switch: whether mobile data may be used.
     wwan_enabled: bool,
-    boot: Option<String>,
-    usage: MobileDataUsage,
     in_flight: usize,
     notice: Option<String>,
     /// The SIM code the password prompt asks for.
@@ -923,24 +827,23 @@ pub struct MobileModel {
 }
 
 impl MobileModel {
-    fn of_device(cx: PaneCx) -> Self {
-        let mut model = Self::with_service(cx, Arc::new(DeviceModem));
+    fn of_device(reach: Reach) -> Self {
+        let mut model = Self::with_service(reach, Arc::new(DeviceModem));
         model.start_snapshot();
         model
     }
 
     /// A model over `service`, its first snapshot read at once.
-    pub(crate) fn loaded_from(cx: PaneCx, service: Arc<dyn MobileService>) -> Self {
-        let mut model = Self::with_service(cx, service);
+    pub(crate) fn loaded_from(reach: Reach, service: Arc<dyn MobileService>) -> Self {
+        let mut model = Self::with_service(reach, service);
         let snapshot = model.service.snapshot();
         model.adopt(snapshot);
         model
     }
 
-    fn with_service(cx: PaneCx, service: Arc<dyn MobileService>) -> Self {
-        let usage = cx.settings::<MobileDataUsage>().get();
+    fn with_service(reach: Reach, service: Arc<dyn MobileService>) -> Self {
         Self {
-            cx,
+            reach,
             service,
             loaded: false,
             snapshot: None,
@@ -950,8 +853,6 @@ impl MobileModel {
             profile_error: None,
             wwan_listed: false,
             wwan_enabled: false,
-            boot: None,
-            usage,
             in_flight: 0,
             notice: None,
             asking: None,
@@ -971,7 +872,7 @@ impl MobileModel {
         let Some(sample) = sample.filter(|sample| *sample != MobileSample::Registered) else {
             return;
         };
-        self.cx.pages().open(
+        self.reach.pages.open(
             crate::categories::Category::Network,
             super::PAGE_MOBILE,
             t("net-mobile"),
@@ -990,7 +891,7 @@ impl MobileModel {
     fn present(&self) -> bool {
         !self.modems.is_empty()
             || (self.modems_error.is_some()
-                && (self.wwan_listed || self.cx.radios().now().is_some_and(|radios| radios.wwan)))
+                && (self.wwan_listed || self.reach.radios.now().is_some_and(|radios| radios.wwan)))
     }
 
     /// The modem the section shows: the one with a SIM in use, else the
@@ -1064,28 +965,8 @@ impl MobileModel {
             self.wwan_listed = radios.wwan_available;
             self.wwan_enabled = radios.wwan_enabled;
         }
-        self.boot = snapshot.boot;
-        self.count_usage();
         self.loaded = true;
         self.follow_lock();
-    }
-
-    /// Count the traffic just read toward the period, and keep the count.
-    fn count_usage(&mut self) {
-        let total = self
-            .modems
-            .iter()
-            .filter_map(|modem| modem.traffic)
-            .map(Traffic::total)
-            .reduce(u64::saturating_add);
-        let now = tilo_clock::unix_now_i64();
-        let mut usage = self.usage.clone();
-        if usage.account(total, self.boot.as_deref(), now) {
-            self.usage = usage.clone();
-            if let Err(error) = self.cx.update::<MobileDataUsage>(|stored| *stored = usage) {
-                warn!(target: "tilo::settings", %error, "the mobile data count could not be kept");
-            }
-        }
     }
 
     /// Start `change` on a worker.
@@ -1212,25 +1093,6 @@ impl MobileModel {
                     modes: chosen,
                 }))
             }
-            MobileEffect::SetDataResetDay { day } => {
-                if !RESET_DAYS.contains(&day) {
-                    return Err(t("net-mobile-reset-day-range"));
-                }
-                let now = tilo_clock::unix_now_i64();
-                let mut usage = self.usage.clone();
-                usage.mobile_reset_day = day;
-                // The count so far stays; the period it belongs to follows
-                // the new day.
-                usage.mobile_period = usage.period_at(now);
-                self.store_usage(usage)?;
-                Begun::Done
-            }
-            MobileEffect::ResetDataUsage => {
-                let mut usage = self.usage.clone();
-                usage.mobile_used = 0;
-                self.store_usage(usage)?;
-                Begun::Done
-            }
             MobileEffect::UnlockSim { sim, pin } => {
                 let Some(pin) = pin.map(Zeroizing::new) else {
                     self.require_modem()?;
@@ -1316,13 +1178,6 @@ impl MobileModel {
                 Begun::Done
             }
         })
-    }
-
-    fn store_usage(&mut self, usage: MobileDataUsage) -> Result<(), String> {
-        self.cx
-            .update::<MobileDataUsage>(|stored| *stored = usage.clone())?;
-        self.usage = usage;
-        Ok(())
     }
 
     /// Take in work that landed; what the effect answers.
@@ -1489,15 +1344,16 @@ impl MobileModel {
                 })
             })
             .collect();
+        let usage = self.reach.storage.settings::<MobileDataUsage>().get();
         serde_json::json!({
-            "source": if self.cx.reaches_devices() { "device" } else { "preview" },
+            "source": if self.reach.devices { "device" } else { "preview" },
             "loaded": self.loaded, "present": self.loaded.then(|| self.present()),
             "data": self.loaded.then(|| self.data_on()),
             "roaming": self.profile.as_ref().map(|profile| profile.roaming),
             "apn": self.profile.as_ref().map(|profile| profile.apn.clone().unwrap_or_else(|| "automatic".into())),
             "metered": self.profile.as_ref().map(|profile| metered_key(profile.metered)),
-            "data_used_bytes": self.usage.mobile_used,
-            "data_period_starts_on_day": self.usage.reset_day(),
+            "data_used_bytes": usage.used,
+            "data_period_starts_on_day": usage.reset_day.get(),
             "modems": modems,
             "errors": { "modems": self.modems_error.as_ref().map(ToString::to_string), "profile": self.profile_error },
             "changes_pending": self.in_flight,
@@ -1616,9 +1472,37 @@ fn situation(modem: &ModemInfo, data_on: bool) -> String {
     }
 }
 
-impl MobileModel {
+/// The modem's card or page as the view builds it: the model as it is now,
+/// and the view its controls bind through. It reads the model's state
+/// through [`std::ops::Deref`].
+pub(crate) struct Page<'a> {
+    model: &'a MobileModel,
+    cx: &'a ViewCx<DeviceVpnPrefs>,
+    actions: &'a Actions<Settings>,
+}
+
+impl std::ops::Deref for Page<'_> {
+    type Target = MobileModel;
+
+    fn deref(&self) -> &MobileModel {
+        self.model
+    }
+}
+
+impl<'a> Page<'a> {
+    /// The card or page over `model`, built in the view `cx` of Network's
+    /// page, its controls bound through the app's `actions`.
+    pub(crate) fn new(
+        model: &'a MobileModel,
+        cx: &'a ViewCx<DeviceVpnPrefs>,
+        actions: &'a Actions<Settings>,
+    ) -> Self {
+        Self { model, cx, actions }
+    }
+
     fn button(&self, id: &str, label: &str, effect: MobileEffect) -> Button {
-        self.cx.bind_invocation(Button::new(id, label), effect)
+        self.actions
+            .bind_effect_invocation(Button::new(id, label), &SettingsEffect::from(effect))
     }
 
     fn buttons(buttons: Vec<Button>) -> Item {
@@ -1706,23 +1590,25 @@ impl MobileModel {
         let profile = self.profile.as_ref();
         items.push(
             self.cx
-                .row(t("net-mobile-roaming-setting"))
+                .setting(t("net-mobile-roaming-setting"))
                 .id("network.mobile.roaming")
                 .described(t("net-mobile-roaming-caption"))
                 .toggle_effect(
                     &LocalState::new(profile.is_some_and(|profile| profile.roaming)),
+                    self.actions,
                     effect(MobileEffect::SET_DATA_ROAMING),
                 ),
         );
         let metered = profile.map_or(MeteredPolicy::Automatic, |profile| profile.metered);
         items.push(
             self.cx
-                .row(t("net-mobile-metered"))
+                .setting(t("net-mobile-metered"))
                 .id("network.mobile.metered")
                 .described(t("net-mobile-metered-caption"))
                 .choice_effect(
                     METERED.iter().map(|(_, words)| t(words)),
                     &LocalState::new(metered_shown(metered)),
+                    self.actions,
                     effect(MobileEffect::SET_MOBILE_METERED),
                 ),
         );
@@ -1730,11 +1616,12 @@ impl MobileModel {
             let current = modem.modes.map(modes_shown).unwrap_or_default();
             items.push(
                 self.cx
-                    .row(t("net-mobile-network-type"))
+                    .setting(t("net-mobile-network-type"))
                     .id("network.mobile.network-type")
                     .choice_effect(
                         modem.supported_modes.iter().copied().map(modes_shown),
                         &LocalState::new(current),
+                        self.actions,
                         effect(MobileEffect::SET_PREFERRED_NETWORK),
                     ),
             );
@@ -1762,7 +1649,7 @@ impl MobileModel {
         if self.apn_open {
             items.push(
                 self.cx
-                    .row(t("net-mobile-apn-auto"))
+                    .setting(t("net-mobile-apn-auto"))
                     .id("network.mobile.apn.automatic")
                     .described(t("net-mobile-apn-auto-caption"))
                     .control(Box::new(
@@ -1801,36 +1688,17 @@ impl MobileModel {
         items
     }
 
+    /// The data used this period and the day the period starts on: this
+    /// device's count, each row a part of the view over it.
     fn usage_rows(&self) -> Vec<Item> {
-        let (month, day) = self.usage.period_start();
-        let used = t_args(
-            "net-mobile-used",
-            &[
-                ("used", ui::format::size(self.usage.mobile_used).into()),
-                ("month", ui::format::month_short(month).into()),
-                ("day", day.into()),
-            ],
-        );
-        vec![
-            row(Box::new(
-                ListRow::new("settings.network.mobile.used", t("net-mobile-data-used"))
-                    .secondary(used)
-                    .trailing(Box::new(self.button(
-                        "settings.network.mobile.used.reset",
-                        &t("net-mobile-used-reset"),
-                        MobileEffect::ResetDataUsage,
-                    ))),
-            )),
-            self.cx
-                .row(t("net-mobile-reset-day"))
-                .id("network.mobile.reset-day")
-                .choice_effect(
-                    RESET_DAYS.map(|day| day.to_string()),
-                    &LocalState::new(self.usage.reset_day().to_string()),
-                    effect(MobileEffect::SET_DATA_RESET_DAY)
-                        .map(|day: String| day.parse::<u32>().unwrap_or(1)),
-                ),
+        let usage = self.cx.settings::<MobileDataUsage>();
+        [
+            record_item(self.cx, &usage, used_row),
+            record_item(self.cx, &usage, reset_day_row),
         ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     /// The SIMs, the number, the PIN lock and changing the PIN.
@@ -1896,11 +1764,12 @@ impl MobileModel {
             };
             items.push(
                 self.cx
-                    .row(t("net-mobile-pin-lock"))
+                    .setting(t("net-mobile-pin-lock"))
                     .id("network.mobile.pin-lock")
                     .described(t("net-mobile-pin-lock-caption"))
                     .toggle_effect(
                         &LocalState::new(shown),
+                        self.actions,
                         effect(MobileEffect::SET_SIM_PIN_LOCK)
                             .map(|on: bool| (None::<String>, on, None::<String>)),
                     ),
@@ -1926,7 +1795,7 @@ impl MobileModel {
     /// The mobile data switch, which a modem that cannot connect holds off.
     fn data_switch(&self, modem: &ModemInfo) -> El {
         Box::new(
-            self.cx.bind(
+            self.actions.bind_effect(
                 ui::widget::Toggle::from_state(&LocalState::new(self.data_on()))
                     .with_id("network.mobile")
                     .with_enabled(modem.usable()),
@@ -1946,7 +1815,10 @@ impl MobileModel {
             return self.page_sections();
         };
         let mut status = self.status_row(modem).disclosure();
-        status = match self.cx.invocation_binding(super::NetworkEffect::ShowMobile) {
+        status = match self
+            .actions
+            .effect(&SettingsEffect::from(super::NetworkEffect::ShowMobile))
+        {
             Some(binding) => status.on_action(binding),
             None => status.with_enabled(false),
         };
@@ -2009,35 +1881,71 @@ impl MobileModel {
     }
 }
 
-impl PaneModel for MobileModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        page(self.page_sections())
-    }
+/// The data used this period, since the day it started on, and the way to
+/// start counting again (the section's `reset-data-used`).
+fn used_row(cx: &ViewCx<MobileDataUsage>) -> Item {
+    let said = cx.value(|usage: &MobileDataUsage| {
+        let (month, day) = usage.period_start(tilo_clock::unix_now_i64());
+        t_args(
+            "net-mobile-used",
+            &[
+                ("used", ui::format::size(usage.used).into()),
+                ("month", ui::format::month_short(month).into()),
+                ("day", day.into()),
+            ],
+        )
+    });
+    provider_settings_ui::widgets::row(cx.switch(&said, |cx, said| {
+        let reset = cx.actions().bind_invocation(
+            Button::new(
+                "settings.network.mobile.used.reset",
+                &t("net-mobile-used-reset"),
+            ),
+            MobileDataUsage::RESET_DATA_USED.with(()),
+        );
+        Box::new(
+            ListRow::new("settings.network.mobile.used", t("net-mobile-data-used"))
+                .secondary(said.clone())
+                .trailing(Box::new(reset)),
+        )
+    }))
+}
 
-    fn poll(&mut self) -> bool {
+/// The day of the month the data used starts counting again.
+fn reset_day_row(cx: &ViewCx<MobileDataUsage>) -> Item {
+    cx.setting(t("net-mobile-reset-day"))
+        .id("network.mobile.reset-day")
+        .among(
+            MobileDataUsage::paths().reset_day,
+            ResetDay::all(),
+            |day: &ResetDay| day.get().to_string(),
+        )
+}
+
+impl MobileModel {
+    /// Take in what arrived, the codes answered and what the modems
+    /// reported; whether what the page shows changed.
+    pub(super) fn poll(&mut self) -> bool {
         self.poll_background();
         self.poll_codes();
         self.read_reported_changes();
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "MobilePane"
-    }
-
-    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+    /// Follow the modems for a page that shows the model, for as long as
+    /// the answer is held; pages share one follow.
+    pub(super) fn follow(&mut self) -> Rc<crate::watch::Counted> {
         if let Some(held) = self.following.upgrade() {
-            return Some(held);
+            return held;
         }
         // Nothing was followed while no pane showed the model: a model
         // already read reads the modems again once; a first read on its way
         // covers it.
         self.changes_seen = if self.loaded { u64::MAX } else { 0 };
         let service = Arc::clone(&self.service);
-        let following = crate::watch::shared(&mut self.following, move || {
+        crate::watch::shared(&mut self.following, move || {
             crate::watch::Counted::start(|changed| service.follow(changed))
-        });
-        Some(following)
+        })
     }
 }
 

@@ -9,9 +9,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::panels::BranchAction;
 
-use super::{Confirm, Field, GitClientApp, Screen};
+use super::{Confirm, Field, GitClientState, Screen};
 
-impl GitClientApp {
+impl GitClientState {
     /// The letters that do the screen's work, so a file can be staged, a
     /// message written, a branch checked out and a conflict settled without
     /// the pointer. Each is one key with no chord: the same letter does the

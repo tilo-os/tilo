@@ -9,7 +9,8 @@
 //!
 //! The steps are [`SpeakerFlow`] views; what reaches the compositor is a
 //! [`SpeakerEffect`], run through [`SpeakerService`] on a worker thread,
-//! so agents and automation use the same door as the buttons.
+//! so agents and automation use the same door as the buttons. The page is
+//! view code over what the area keeps of the flow and the sets ([`view`]).
 
 mod room_canvas;
 
@@ -20,24 +21,24 @@ use ui::collaboration::{
     CalibrationMemberState, CalibrationMicrophoneState, CalibrationPhaseInfo, SpeakerCommand,
     SpeakerMemberSpec, SpeakerReply, SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
 };
-use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
+use ui::framework::{Actions, EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, Dropdown, TextInput, Toggle, Widget};
+use ui::widget::{Button, Dropdown, Element, TextInput, Toggle, Widget};
 
 use room_canvas::{RoomCanvas, RoomGesture};
 
+use crate::area::AreaContext;
 use crate::channel::{Receiver, Sender, channel};
 use crate::effects::SettingsEffect;
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Replies, Shared};
+use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::speaker_setup::{
     Arrangement, BrokerSpeakers, SpeakerService, SpeakerSetup, Step, member_status_text,
     playback_text, role_answer, role_text,
 };
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, block, note, page, row, rows, section, semantic_status_pill,
     setting_row, setting_row_described, thing_row, value_row,
 };
@@ -52,7 +53,13 @@ crate::area::pane_area! {
         SpeakersArea::poll(self);
     }
 
-    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+    fn busy(&self) -> bool {
+        self.model
+            .get()
+            .is_some_and(|model| model.borrow().in_flight > 0)
+    }
+
+    fn handle_collab_event(&self, event: &ui::collaboration::CollabEvent) {
         if let Some(model) = self.model.get() {
             model.borrow_mut().handle_collab_event(event);
         }
@@ -195,7 +202,7 @@ pub enum SpeakerFlow {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: SpeakerEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     if !effect.command().valid() {
         return Err(
@@ -216,7 +223,7 @@ pub(crate) fn answer(
 pub(crate) fn answer_flow(
     app: &SettingsApp,
     step: SpeakerFlow,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &EffectCx<Settings>,
 ) -> EffectAnswer {
     let job = crate::panes::speakers::area(app)
         .ok_or_else(crate::area::missing)?
@@ -224,7 +231,7 @@ pub(crate) fn answer_flow(
         .borrow_mut()
         .flow(step)?;
     if let Some(job) = job {
-        app.host().invoke(job);
+        cx.dispatcher().effect(&SettingsEffect::from(job));
     }
     Ok(Effected::done())
 }
@@ -339,40 +346,51 @@ struct Finished {
 /// What the speakers area keeps for the window: the model, asked for the
 /// sets when first needed.
 pub struct SpeakersArea {
-    cx: PaneCx,
-    model: std::cell::OnceCell<Shared<SpeakersModel>>,
+    /// Whether the model talks to this device's compositor.
+    devices: bool,
+    /// The layout a capture stages; `None` in a live window.
+    staged: Option<crate::scenarios::SpeakersSample>,
+    model: std::cell::OnceCell<Rc<std::cell::RefCell<SpeakersModel>>>,
+    /// Moves whenever what the page shows does: a step taken, a control
+    /// changed, an answer of the compositor.
+    shown: ui::LocalState<u64>,
 }
 
 impl SpeakersArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            staged: cx.scene().and_then(|scene| scene.speakers),
             model: std::cell::OnceCell::new(),
+            shown: ui::LocalState::new(0),
         }
     }
 
     /// The model, over the compositor, or over sample sets for a
     /// screenshot.
-    pub fn model(&self) -> &Shared<SpeakersModel> {
+    pub fn model(&self) -> &Rc<std::cell::RefCell<SpeakersModel>> {
         self.model.get_or_init(|| {
-            let service: Arc<dyn SpeakerService> = if self.cx.reaches_devices() {
+            let service: Arc<dyn SpeakerService> = if self.devices {
                 Arc::new(BrokerSpeakers)
             } else {
                 Arc::new(SampleSpeakers)
             };
             Rc::new(std::cell::RefCell::new(SpeakersModel::new(
-                self.cx.clone(),
                 service,
-                !self.cx.reaches_devices(),
+                !self.devices,
+                self.staged,
             )))
         })
     }
 
-    /// Take in finished calls, if the model exists. Only an open pane
-    /// keeps asking for the sets again.
+    /// Take in finished calls and what the controls changed, if the model
+    /// exists; the page is built again when what it shows moved. Only an
+    /// open page keeps asking for the sets again.
     pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().poll_finished();
+        if let Some(model) = self.model.get()
+            && model.borrow_mut().poll()
+        {
+            self.shown.set(self.shown.get().wrapping_add(1));
         }
     }
 
@@ -410,7 +428,6 @@ impl SpeakersArea {
 }
 
 pub struct SpeakersModel {
-    cx: PaneCx,
     setup: SpeakerSetup,
     service: Arc<dyn SpeakerService>,
     sample: bool,
@@ -441,10 +458,15 @@ pub struct SpeakersModel {
 }
 
 impl SpeakersModel {
-    fn new(cx: PaneCx, service: Arc<dyn SpeakerService>, sample: bool) -> Self {
+    /// The model over `service`; a `sample` stages the layout capture
+    /// `staged`, if any.
+    fn new(
+        service: Arc<dyn SpeakerService>,
+        sample: bool,
+        staged: Option<crate::scenarios::SpeakersSample>,
+    ) -> Self {
         let (finished_tx, finished_rx) = channel();
         let mut model = Self {
-            cx,
             setup: SpeakerSetup::default(),
             service,
             sample,
@@ -470,16 +492,16 @@ impl SpeakersModel {
         model.refresh();
         if sample {
             model.poll_finished();
-            model.stage_capture();
+            model.stage_capture(staged);
         }
         model
     }
 
     /// A capture of the room layout step: four speakers chosen as a room,
     /// each told apart, and the selection or drag the scenario shows.
-    fn stage_capture(&mut self) {
+    fn stage_capture(&mut self, staged: Option<crate::scenarios::SpeakersSample>) {
         use crate::scenarios::SpeakersSample;
-        let Some(sample) = self.cx.scene().and_then(|scene| scene.speakers) else {
+        let Some(sample) = staged else {
             return;
         };
         self.setup.begin();
@@ -977,10 +999,15 @@ impl SpeakersModel {
         body
     }
 
-    fn nav_buttons(&self, back: bool, next: Option<(&str, &str, bool)>) -> Item {
+    fn nav_buttons(
+        actions: &Actions<Settings>,
+        back: bool,
+        next: Option<(&str, &str, bool)>,
+    ) -> Item {
         let mut buttons = ui::widget::Row::new();
         if back {
-            buttons = buttons.push(Box::new(self.cx.bind_invocation(
+            buttons = buttons.push(Box::new(invoking(
+                actions,
                 Button::new("speakers.back", &t("speakers-back")),
                 SpeakerFlow::SpeakerSetupBack,
             )));
@@ -991,14 +1018,13 @@ impl SpeakersModel {
                 "speakers.save" => SpeakerFlow::SaveSpeakerSet,
                 _ => SpeakerFlow::ContinueSpeakerSetup,
             };
-            buttons = buttons.push(Box::new(
-                self.cx.bind_invocation(
-                    Button::new(id, label)
-                        .role(ui::widget::ButtonRole::Primary)
-                        .with_enabled(enabled),
-                    step,
-                ),
-            ));
+            buttons = buttons.push(Box::new(invoking(
+                actions,
+                Button::new(id, label)
+                    .role(ui::widget::ButtonRole::Primary)
+                    .with_enabled(enabled),
+                step,
+            )));
         }
         row(Box::new(buttons))
     }
@@ -1010,24 +1036,26 @@ impl SpeakersModel {
     /// One saved set: its members, readiness, playback and actions.
     /// The controls of a set led here: calibrate it from its row; deleting
     /// it is in its menu.
-    fn led_set_controls(&self, group: &ui::collaboration::SpeakerGroupInfo) -> Box<dyn Widget> {
+    fn led_set_controls(
+        actions: &Actions<Settings>,
+        group: &ui::collaboration::SpeakerGroupInfo,
+    ) -> Box<dyn Widget> {
         Box::new(
             ui::widget::Row::new()
                 .no_wrap()
                 .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_align_items(ui::taffy::AlignItems::Center)
-                .push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            &format!("speakers.group.{}.calibrate", group.id),
-                            &t("speakers-calibrate-button"),
-                        )
-                        .control_size(ui::widget::ControlSize::Small),
-                        SpeakerFlow::OpenCalibration {
-                            group: group.id.clone(),
-                        },
-                    ),
-                ))
+                .push(Box::new(invoking(
+                    actions,
+                    Button::new(
+                        &format!("speakers.group.{}.calibrate", group.id),
+                        &t("speakers-calibrate-button"),
+                    )
+                    .control_size(ui::widget::ControlSize::Small),
+                    SpeakerFlow::OpenCalibration {
+                        group: group.id.clone(),
+                    },
+                )))
                 .push(Box::new(
                     ui::widget::RowMenu::new(
                         format!("speakers.group.{}.more", group.id),
@@ -1035,15 +1063,18 @@ impl SpeakersModel {
                     )
                     .destructive(
                         t("speakers-delete"),
-                        self.cx.invocation_binding(SpeakerEffect::DeleteSpeakerSet {
-                            group: group.id.clone(),
-                        }),
+                        invocation(
+                            actions,
+                            SpeakerEffect::DeleteSpeakerSet {
+                                group: group.id.clone(),
+                            },
+                        ),
                     ),
                 )),
         )
     }
 
-    fn group_row(&self, group: &ui::collaboration::SpeakerGroupInfo) -> Item {
+    fn group_row(actions: &Actions<Settings>, group: &ui::collaboration::SpeakerGroupInfo) -> Item {
         let ready = group
             .members
             .iter()
@@ -1090,7 +1121,9 @@ impl SpeakersModel {
                 },
             ));
         }
-        let trailing = group.led_here.then(|| self.led_set_controls(group));
+        let trailing = group
+            .led_here
+            .then(|| Self::led_set_controls(actions, group));
         let mut description = if group.led_here {
             summary
         } else {
@@ -1129,7 +1162,7 @@ impl SpeakersModel {
         ))
     }
 
-    fn build_overview(&self) -> Vec<SettingsSection> {
+    fn build_overview(&self, actions: &Actions<Settings>) -> Vec<SettingsSection> {
         let mut sections = Vec::new();
         let group_rows = if self.setup.groups().is_empty() {
             vec![note(&t("speakers-overview-empty"))]
@@ -1137,23 +1170,22 @@ impl SpeakersModel {
             self.setup
                 .groups()
                 .iter()
-                .map(|group| self.group_row(group))
+                .map(|group| Self::group_row(actions, group))
                 .collect()
         };
         let mut body = group_rows;
         body.extend(self.message_rows());
-        body.push(row(Box::new(
-            self.cx.bind_invocation(
-                Button::new("speakers.begin", &t("speakers-begin"))
-                    .role(ui::widget::ButtonRole::Primary),
-                SpeakerFlow::BeginSpeakerSetup,
-            ),
-        )));
+        body.push(row(Box::new(invoking(
+            actions,
+            Button::new("speakers.begin", &t("speakers-begin"))
+                .role(ui::widget::ButtonRole::Primary),
+            SpeakerFlow::BeginSpeakerSetup,
+        ))));
         sections.push(section(&t("speakers-overview-title"), rows(body)));
         sections
     }
 
-    fn build_choose(&self) -> Vec<SettingsSection> {
+    fn build_choose(&self, actions: &Actions<Settings>) -> Vec<SettingsSection> {
         let arrangement = Dropdown::from_state(
             Arrangement::ALL
                 .iter()
@@ -1197,7 +1229,8 @@ impl SpeakersModel {
             body.push(note(&problem));
         }
         body.extend(self.message_rows());
-        body.push(self.nav_buttons(
+        body.push(Self::nav_buttons(
+            actions,
             true,
             Some((
                 "speakers.next",
@@ -1208,7 +1241,12 @@ impl SpeakersModel {
         vec![section(&t("speakers-choose-title"), rows(body))]
     }
 
-    fn build_identify(&self, index: usize, played: bool) -> Vec<SettingsSection> {
+    fn build_identify(
+        &self,
+        actions: &Actions<Settings>,
+        index: usize,
+        played: bool,
+    ) -> Vec<SettingsSection> {
         let count = self.setup.chosen().len();
         let mut body = vec![note(&t_args(
             "speakers-identify-intro",
@@ -1218,47 +1256,44 @@ impl SpeakersModel {
             ],
         ))];
         body.push(row(Box::new(
-            ui::widget::Row::new().push(Box::new(
-                self.cx.bind_invocation(
-                    Button::new("speakers.play", &t("speakers-play-sound"))
-                        .with_icon(ui::icons::Icon::Volume2),
-                    SpeakerFlow::PlayIdentifySound,
-                ),
-            )),
+            ui::widget::Row::new().push(Box::new(invoking(
+                actions,
+                Button::new("speakers.play", &t("speakers-play-sound"))
+                    .with_icon(ui::icons::Icon::Volume2),
+                SpeakerFlow::PlayIdentifySound,
+            ))),
         )));
         if self.setup.arrangement() == Arrangement::Room {
             body.push(note(&t("speakers-identify-room-next")));
-            body.push(self.nav_buttons(true, None));
+            body.push(Self::nav_buttons(actions, true, None));
             body.push(row(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(ui::widget::Spacer::new()))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new("speakers.skip", &t("speakers-next-speaker"))
-                                .role(ui::widget::ButtonRole::Primary),
-                            SpeakerFlow::SkipSpeaker,
-                        ),
-                    )),
+                    .push(Box::new(invoking(
+                        actions,
+                        Button::new("speakers.skip", &t("speakers-next-speaker"))
+                            .role(ui::widget::ButtonRole::Primary),
+                        SpeakerFlow::SkipSpeaker,
+                    ))),
             )));
         } else {
             let mut answers = ui::widget::Row::new();
             for role in self.setup.remaining_roles() {
-                answers = answers.push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            &format!("speakers.role.{}", role_slug(role)),
-                            &role_answer(role),
-                        )
-                        .with_enabled(played)
-                        .with_accessible_name(&t_args(
-                            "speakers-identify-answer",
-                            &[("role", role_text(role).into())],
-                        )),
-                        SpeakerFlow::AssignSpeakerRole {
-                            role: role_slug(role).to_owned(),
-                        },
-                    ),
-                ));
+                answers = answers.push(Box::new(invoking(
+                    actions,
+                    Button::new(
+                        &format!("speakers.role.{}", role_slug(role)),
+                        &role_answer(role),
+                    )
+                    .with_enabled(played)
+                    .with_accessible_name(&t_args(
+                        "speakers-identify-answer",
+                        &[("role", role_text(role).into())],
+                    )),
+                    SpeakerFlow::AssignSpeakerRole {
+                        role: role_slug(role).to_owned(),
+                    },
+                )));
             }
             body.push(setting_row(
                 &t("speakers-identify-title"),
@@ -1268,7 +1303,7 @@ impl SpeakersModel {
                 body.push(note(&t("speakers-identify-play-first")));
             }
             body.extend(self.message_rows());
-            body.push(self.nav_buttons(true, None));
+            body.push(Self::nav_buttons(actions, true, None));
         }
         vec![section(&t("speakers-identify-title"), rows(body))]
     }
@@ -1276,7 +1311,7 @@ impl SpeakersModel {
     /// The room layout: the canvas, directly under it the speaker picker
     /// (one selection for both), then the selected speaker's settings and
     /// nothing else of any other speaker.
-    fn build_layout(&self) -> Vec<SettingsSection> {
+    fn build_layout(&self, actions: &Actions<Settings>) -> Vec<SettingsSection> {
         let chosen = self.setup.chosen();
         let labels = chosen
             .iter()
@@ -1317,25 +1352,25 @@ impl SpeakersModel {
                 .unwrap_or_default();
             body.push(setting_row(
                 &t("speakers-layout-identify"),
-                Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            "speakers.layout.play",
-                            &t_args(
-                                "speakers-layout-play-on",
-                                &[("label", label.as_str().into())],
-                            ),
-                        )
-                        .with_icon(ui::icons::Icon::Volume2),
-                        SpeakerFlow::PlaySpeaker { speaker: index },
-                    ),
-                ),
+                Box::new(invoking(
+                    actions,
+                    Button::new(
+                        "speakers.layout.play",
+                        &t_args(
+                            "speakers-layout-play-on",
+                            &[("label", label.as_str().into())],
+                        ),
+                    )
+                    .with_icon(ui::icons::Icon::Volume2),
+                    SpeakerFlow::PlaySpeaker { speaker: index },
+                )),
             ));
         }
         if let Some(problem) = self.setup.layout_problem() {
             body.push(note(&problem));
         }
-        body.push(self.nav_buttons(
+        body.push(Self::nav_buttons(
+            actions,
             true,
             Some((
                 "speakers.next",
@@ -1346,7 +1381,7 @@ impl SpeakersModel {
         vec![section(&t("speakers-layout-title"), rows(body))]
     }
 
-    fn build_name(&self) -> Vec<SettingsSection> {
+    fn build_name(&self, actions: &Actions<Settings>) -> Vec<SettingsSection> {
         let name = TextInput::from_state(&self.name_state)
             .with_id("speakers.name")
             .with_placeholder(t("speakers-name-placeholder"))
@@ -1364,7 +1399,8 @@ impl SpeakersModel {
         }
         body.push(note(&t("speakers-name-join-note")));
         body.extend(self.message_rows());
-        body.push(self.nav_buttons(
+        body.push(Self::nav_buttons(
+            actions,
             true,
             Some(("speakers.save", &t("speakers-save"), self.in_flight == 0)),
         ));
@@ -1375,14 +1411,15 @@ impl SpeakersModel {
         clippy::too_many_lines,
         reason = "one card lists members, measurement progress and the proposal actions together"
     )]
-    fn build_calibrate(&self, group: &str) -> Vec<SettingsSection> {
+    fn build_calibrate(&self, actions: &Actions<Settings>, group: &str) -> Vec<SettingsSection> {
         let Some(known) = self.setup.group(group) else {
             let mut body = self.message_rows();
             body.push(note(&t("speakers-saving")));
             body.push(row(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(ui::widget::Spacer::new()))
-                    .push(Box::new(self.cx.bind_invocation(
+                    .push(Box::new(invoking(
+                        actions,
                         Button::new("speakers.done", &t("speakers-done")),
                         SpeakerFlow::CloseSpeakerSetup,
                     ))),
@@ -1474,33 +1511,35 @@ impl SpeakersModel {
             }
         }
         body.extend(self.message_rows());
-        let mut actions = ui::widget::Row::new()
-            .push(Box::new(self.cx.bind_invocation(
+        let mut buttons = ui::widget::Row::new()
+            .push(Box::new(invoking(
+                actions,
                 Button::new("speakers.done", &t("speakers-done")),
                 SpeakerFlow::CloseSpeakerSetup,
             )))
             .push(Box::new(ui::widget::Spacer::new()));
         match phase {
             Some(CalibrationPhaseInfo::Proposed) => {
-                actions = actions
-                    .push(Box::new(self.cx.bind_invocation(
+                buttons = buttons
+                    .push(Box::new(invoking(
+                        actions,
                         Button::new("speakers.dismiss", &t("speakers-discard")),
                         SpeakerEffect::DismissCalibration {
                             group: group.to_owned(),
                         },
                     )))
-                    .push(Box::new(
-                        self.cx.bind_invocation(
-                            Button::new("speakers.apply", &t("speakers-apply"))
-                                .role(ui::widget::ButtonRole::Primary),
-                            SpeakerEffect::ApplyCalibration {
-                                group: group.to_owned(),
-                            },
-                        ),
-                    ));
+                    .push(Box::new(invoking(
+                        actions,
+                        Button::new("speakers.apply", &t("speakers-apply"))
+                            .role(ui::widget::ButtonRole::Primary),
+                        SpeakerEffect::ApplyCalibration {
+                            group: group.to_owned(),
+                        },
+                    )));
             }
             Some(CalibrationPhaseInfo::Applied) => {
-                actions = actions.push(Box::new(self.cx.bind_invocation(
+                buttons = buttons.push(Box::new(invoking(
+                    actions,
                     Button::new("speakers.revert", &t("speakers-revert")),
                     SpeakerEffect::RevertCalibration {
                         group: group.to_owned(),
@@ -1508,7 +1547,8 @@ impl SpeakersModel {
                 )));
             }
             Some(CalibrationPhaseInfo::Measuring | CalibrationPhaseInfo::WaitingForMicrophones) => {
-                actions = actions.push(Box::new(self.cx.bind_invocation(
+                buttons = buttons.push(Box::new(invoking(
+                    actions,
                     Button::new("speakers.cancel", &t("speakers-calibration-cancel")),
                     SpeakerEffect::CancelCalibration {
                         group: group.to_owned(),
@@ -1520,24 +1560,23 @@ impl SpeakersModel {
                 if let Some(problem) = &problem {
                     body.push(note(problem));
                 }
-                actions = actions.push(Box::new(
-                    self.cx.bind_invocation(
-                        Button::new(
-                            "speakers.calibrate",
-                            &t(if phase.is_some() {
-                                "speakers-try-again"
-                            } else {
-                                "speakers-calibrate-button"
-                            }),
-                        )
-                        .role(ui::widget::ButtonRole::Primary)
-                        .with_enabled(problem.is_none()),
-                        SpeakerFlow::StartCalibration,
-                    ),
-                ));
+                buttons = buttons.push(Box::new(invoking(
+                    actions,
+                    Button::new(
+                        "speakers.calibrate",
+                        &t(if phase.is_some() {
+                            "speakers-try-again"
+                        } else {
+                            "speakers-calibrate-button"
+                        }),
+                    )
+                    .role(ui::widget::ButtonRole::Primary)
+                    .with_enabled(problem.is_none()),
+                    SpeakerFlow::StartCalibration,
+                )));
             }
         }
-        body.push(row(Box::new(actions)));
+        body.push(row(Box::new(buttons)));
         vec![section(
             &t_args(
                 "speakers-calibrate-title",
@@ -1547,7 +1586,7 @@ impl SpeakersModel {
         )]
     }
 
-    fn build_composition(&self) -> Box<dyn Widget> {
+    fn build_composition(&self, actions: &Actions<Settings>) -> Element {
         if !self.setup.snapshot().media_enabled && self.refresh == Refresh::Idle {
             return page(vec![section(
                 &t("speakers-overview-title"),
@@ -1555,12 +1594,12 @@ impl SpeakersModel {
             )]);
         }
         page(match self.setup.step().clone() {
-            Step::Overview => self.build_overview(),
-            Step::ChooseOutputs => self.build_choose(),
-            Step::Identify { index, played } => self.build_identify(index, played),
-            Step::Layout => self.build_layout(),
-            Step::Name => self.build_name(),
-            Step::Calibrate { group } => self.build_calibrate(&group),
+            Step::Overview => self.build_overview(actions),
+            Step::ChooseOutputs => self.build_choose(actions),
+            Step::Identify { index, played } => self.build_identify(actions, index, played),
+            Step::Layout => self.build_layout(actions),
+            Step::Name => self.build_name(actions),
+            Step::Calibrate { group } => self.build_calibrate(actions, &group),
         })
     }
 }
@@ -1616,11 +1655,9 @@ fn position_text((x_mm, y_mm): (i32, i32)) -> String {
     )
 }
 
-impl PaneModel for SpeakersModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        self.build_composition()
-    }
-
+impl SpeakersModel {
+    /// Take in finished calls and what the controls changed; whether what
+    /// the page shows changed since the last call.
     fn poll(&mut self) -> bool {
         self.poll_finished();
         self.read_controls();
@@ -1628,23 +1665,58 @@ impl PaneModel for SpeakersModel {
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "SpeakersPane"
-    }
-
-    fn busy(&self) -> bool {
-        self.in_flight > 0
-    }
-
-    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+    /// What a page showing the model holds: while one does, the
+    /// compositor's changes are asked for. A page shown anew asks at once.
+    fn follow(&mut self) -> Rc<()> {
         let anew = self.shown.upgrade().is_none();
         let shown = crate::watch::shared(&mut self.shown, || ());
         if anew {
-            // Changes while no pane showed the model were not asked for.
+            // Changes while no page showed the model were not asked for.
             self.refresh();
         }
-        Some(shown)
+        shown
     }
+}
+
+/// `control` (a button), bound to `effect`.
+fn invoking<C: ui::framework::ActionControl<()>>(
+    actions: &Actions<Settings>,
+    control: C,
+    effect: impl Into<SettingsEffect>,
+) -> C {
+    actions.bind_effect_invocation(control, &effect.into())
+}
+
+/// The binding of a menu entry running `effect`.
+fn invocation(
+    actions: &Actions<Settings>,
+    effect: impl Into<SettingsEffect>,
+) -> Option<ui::tilo_actions::ActionBinding<()>> {
+    actions.effect(&effect.into())
+}
+
+/// The Speakers page as view code over what the area keeps: the step of
+/// the flow, the sets and the compositor's answers. It is built again when
+/// any of those moves; the compositor's changes are asked for while it is
+/// shown.
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    let held = area(app)?;
+    let following = held.model().borrow_mut().follow();
+    let shown = held.shown.clone();
+    let actions = cx.actions();
+    let app = Rc::clone(app);
+    Some(cx.switch(&shown, move |_, _| {
+        // The part keeps the sets followed while it is shown.
+        #[allow(
+            clippy::no_effect_underscore_binding,
+            reason = "the part holds the follow token while it is shown"
+        )]
+        let _followed = &following;
+        area(&app).map_or_else(
+            || page(Vec::new()),
+            |area| area.model().borrow().build_composition(&actions),
+        )
+    }))
 }
 
 /// The speaker sets a screenshot and the crate's tests show: one stereo
@@ -1729,7 +1801,9 @@ mod tests {
     #[test]
     fn sample_area_rows_do_not_wait_for_workers() {
         let profile = tempfile::tempdir().unwrap();
-        let area = SpeakersArea::new(&PaneCx::in_profile(profile.path().to_path_buf()));
+        let area = SpeakersArea::new(&crate::area::AreaContext::in_profile(
+            profile.path().to_path_buf(),
+        ));
         assert_eq!(
             area.rows().len(),
             1,
@@ -1817,12 +1891,7 @@ mod tests {
     }
 
     fn model(service: Arc<FakeService>) -> SpeakersModel {
-        let profile = tempfile::tempdir().unwrap();
-        SpeakersModel::new(
-            PaneCx::in_profile(profile.path().to_path_buf()),
-            service,
-            false,
-        )
+        SpeakersModel::new(service, false, None)
     }
 
     /// Run passes until the model has no call in flight.
@@ -1870,17 +1939,13 @@ mod tests {
         let shown = pane.follow();
         settle(&mut pane);
         let first = asked();
-        assert_eq!(
-            pane.next_wake(),
-            None,
-            "a device yet to answer sets no wake"
-        );
+        // A device yet to answer, or an open setup flow, asks nothing by
+        // itself.
         press(&mut pane, SpeakerFlow::BeginSpeakerSetup);
-        assert_eq!(pane.next_wake(), None, "nor does an open setup flow");
         for _ in 0..3 {
             let _ = pane.poll();
         }
-        assert_eq!(asked(), first, "and nothing is asked meanwhile");
+        assert_eq!(asked(), first, "nothing is asked meanwhile");
 
         pane.handle_collab_event(&CollabEvent::SpeakersChanged);
         settle(&mut pane);
@@ -1895,7 +1960,6 @@ mod tests {
             first + 3,
             "a burst asks once, and once more for what came during that ask"
         );
-        assert_eq!(pane.next_wake(), None, "after which nothing is due");
 
         drop(shown);
         pane.handle_collab_event(&CollabEvent::SpeakersChanged);
@@ -2150,24 +2214,68 @@ mod tests {
         );
     }
 
-    /// The pane walked to the room layout of every offered speaker.
-    fn at_room_layout(service: Arc<FakeService>) -> SpeakersModel {
-        let mut pane = model(service);
-        settle(&mut pane);
-        press(&mut pane, SpeakerFlow::BeginSpeakerSetup);
-        pane.arrangement_state.set(Arrangement::Room.label());
-        settle(&mut pane);
-        for (_, _, state) in &pane.chosen_states {
-            state.set(true);
+    type App = ui::prelude::TestApp<crate::resource::SettingsShell>;
+
+    /// Change the window's Speakers model as `change` does.
+    fn change_model(app: &mut App, change: impl FnOnce(&mut SpeakersModel) + 'static) {
+        app.with_widget::<crate::window::Inspected, _>(move |settings| {
+            change(&mut area(settings).unwrap().model().borrow_mut());
+        })
+        .expect("the Settings window is mounted");
+        settle_window(app);
+    }
+
+    fn settle_window(app: &mut App) {
+        for _ in 0..4 {
+            app.settle();
+            let _ = app.harness().poll_frame();
         }
-        settle(&mut pane);
-        press(&mut pane, SpeakerFlow::ContinueSpeakerSetup);
-        while matches!(pane.setup().step(), Step::Identify { .. }) {
-            press(&mut pane, SpeakerFlow::SkipSpeaker);
+    }
+
+    /// Take `step` as its button does.
+    fn take(app: &mut App, step: SpeakerFlow) {
+        app.effect(&SettingsEffect::from(step))
+            .expect("the step is taken");
+        settle_window(app);
+    }
+
+    /// The step the window's flow is at.
+    fn step(app: &mut App) -> Step {
+        app.with_widget::<crate::window::Inspected, _>(|settings| {
+            area(settings)
+                .unwrap()
+                .model()
+                .borrow()
+                .setup()
+                .step()
+                .clone()
+        })
+        .unwrap()
+    }
+
+    /// The window on Speakers, walked to the room layout of every offered
+    /// speaker.
+    fn at_room_layout() -> App {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = App::new().unwrap();
+        app.harness().resize((1200, 4000)).unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Speakers);
+        settle_window(&mut app);
+        take(&mut app, SpeakerFlow::BeginSpeakerSetup);
+        change_model(&mut app, |pane| {
+            pane.arrangement_state.set(Arrangement::Room.label());
+        });
+        change_model(&mut app, |pane| {
+            for (_, _, state) in &pane.chosen_states {
+                state.set(true);
+            }
+        });
+        take(&mut app, SpeakerFlow::ContinueSpeakerSetup);
+        while matches!(step(&mut app), Step::Identify { .. }) {
+            take(&mut app, SpeakerFlow::SkipSpeaker);
         }
-        assert_eq!(pane.setup().step(), &Step::Layout);
-        settle(&mut pane);
-        pane
+        assert_eq!(step(&mut app), Step::Layout);
+        app
     }
 
     #[test]
@@ -2180,16 +2288,20 @@ mod tests {
                     .map(|child| named(child, name))
                     .sum::<usize>()
         }
-        let mut pane = at_room_layout(fake());
-        let said = |pane: &SpeakersModel| {
-            crate::widgets::announced_text(pane.build_composition().as_ref())
+        let mut app = at_room_layout();
+        let said = |app: &mut App| {
+            provider_settings_ui::widgets::announced_text(app.harness().root_widget())
         };
-        let text = said(&pane);
-        let count = |text: &[String], needle: &str| {
-            text.iter().filter(|line| line.contains(needle)).count()
+        let text = said(&mut app);
+        let lines = |text: &[String], needle: &str| -> Vec<String> {
+            text.iter()
+                .filter(|line| line.contains(needle))
+                .cloned()
+                .collect()
         };
-        assert_eq!(count(&text, "Play a sound on "), 1, "{text:#?}");
-        assert_eq!(count(&text, "Play a sound on desk"), 1, "{text:#?}");
+        let count = |text: &[String], needle: &str| lines(text, needle).len();
+        let played = lines(&text, "Play a sound on ");
+        assert_eq!(played.len(), 1, "{text:#?}");
         assert_eq!(count(&text, "Position"), 1, "{text:#?}");
         assert_eq!(count(&text, "left to right"), 0, "no X/Y rows: {text:#?}");
         assert_eq!(count(&text, "behind to in front"), 0, "{text:#?}");
@@ -2198,16 +2310,16 @@ mod tests {
             1,
             "one canvas: {text:#?}"
         );
-        let tree = pane.build_composition();
-        assert_eq!(named(tree.as_ref(), "Slider"), 0, "no slider on the step");
-        assert_eq!(named(tree.as_ref(), "RoomCanvas"), 1, "one canvas");
+        let root = app.harness().root_widget();
+        assert_eq!(named(root, "Slider"), 0, "no slider on the step");
+        assert_eq!(named(root, "RoomCanvas"), 1, "one canvas");
         // The picker and the canvas hold the same selection: choosing the
         // other speaker shows its settings, and only its.
-        pane.room_selected.set("1".into());
-        assert!(pane.poll(), "a new choice shows that speaker");
-        let text = said(&pane);
-        assert_eq!(count(&text, "Play a sound on "), 1, "{text:#?}");
-        assert_eq!(count(&text, "Play a sound on shelf"), 1, "{text:#?}");
+        change_model(&mut app, |pane| pane.room_selected.set("1".into()));
+        let text = said(&mut app);
+        let now = lines(&text, "Play a sound on ");
+        assert_eq!(now.len(), 1, "{text:#?}");
+        assert_ne!(now, played, "a new choice shows that speaker");
     }
 
     #[test]

@@ -18,18 +18,13 @@ media = { package = "tilo-media", path = "../../platform/tilo-media" }
 parking_lot.workspace = true
 serde.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
-tilo-desktop = { path = "../desktop" }
 tilo-power-mgmt = { path = "../../system/power" }
 tracing.workspace = true
 # A framework app: the panel's resource, effects and views.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
-vello.workspace = true
-winit.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# The panel's pixel tests rasterise a page on the CPU.
-tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 
 [lints]

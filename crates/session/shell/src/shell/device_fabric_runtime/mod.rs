@@ -8866,7 +8866,7 @@ mod tests {
         for (wifi, displays) in [(false, false), (true, false), (false, true), (true, true)] {
             let policy = roaming_test_policy(wifi, displays);
             let document = serde_json::json!({
-                "display": { "arrangement": { "displays": [] } },
+                "display_person": { "arrangement": { "displays": [] } },
                 "appearance": { "mode": true }
             });
             let records = permitted_roaming_setting_values(document.as_object().unwrap(), policy);
@@ -9783,10 +9783,8 @@ mod tests {
             let sibling_endpoint = iroh::SecretKey::from_bytes(&[0x92; 32]).public();
             let old_epoch = tilo_network_actor::MembershipEpoch::for_test(7);
             let sibling_epoch = tilo_network_actor::MembershipEpoch::for_test(8);
-            let route =
-                network.install_personal_route_for_test(77, endpoint, old_epoch, [0x93; 32]);
+            let route = network.install_personal_route_for_test(endpoint, old_epoch, [0x93; 32]);
             let sibling_route = network.install_personal_route_for_test(
-                77,
                 sibling_endpoint,
                 sibling_epoch,
                 [0x93; 32],
@@ -9809,7 +9807,7 @@ mod tests {
                 .try_send(tilo_network_actor::NetEvent::PeerLeft {
                     ws: 78,
                     peer: endpoint,
-                    cause: tilo_network_actor::PeerDepartureCause::LivenessTimedOut,
+                    cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
                     membership_epoch: Some(old_epoch),
                 })
                 .unwrap();
@@ -9823,11 +9821,9 @@ mod tests {
 
             network
                 .event_tx
-                .try_send(tilo_network_actor::NetEvent::PeerLeft {
-                    ws: 77,
+                .try_send(tilo_network_actor::NetEvent::SiblingLeft {
                     peer: endpoint,
-                    cause: tilo_network_actor::PeerDepartureCause::LivenessTimedOut,
-                    membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(6)),
+                    membership_epoch: tilo_network_actor::MembershipEpoch::for_test(6),
                 })
                 .unwrap();
             network.tick();
@@ -9840,11 +9836,9 @@ mod tests {
 
             network
                 .event_tx
-                .try_send(tilo_network_actor::NetEvent::PeerLeft {
-                    ws: 77,
+                .try_send(tilo_network_actor::NetEvent::SiblingLeft {
                     peer: endpoint,
-                    cause: tilo_network_actor::PeerDepartureCause::LivenessTimedOut,
-                    membership_epoch: Some(old_epoch),
+                    membership_epoch: old_epoch,
                 })
                 .unwrap();
             network.tick();
@@ -10764,7 +10758,7 @@ mod tests {
                 membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(1)),
                 session_handle: 1,
                 route: crate::shell::collab_broker::CrdtRoute::cluster("personal"),
-                cause: crate::shell::network::PeerDepartureCause::LivenessTimedOut,
+                cause: crate::shell::network::PeerDepartureCause::HostSessionClosed,
                 user_public_key: Some([3; 32]),
                 participant_name: None,
                 observed_at: std::time::SystemTime::now(),

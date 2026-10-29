@@ -21,8 +21,8 @@ use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_session::rooms::{
     ATTACH_HOST, ActionInvitation, CREATE_ROOM, CreatedRoom, DETACH_HOST, ENTER_ROOM, EnteredRoom,
-    GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest, HOST_ACTIONS_PROVIDER, HOST_ROOM,
-    HOST_ROOMS_RESOURCE, HostedRoom, LIST_ROOMS, RoomListing, UNHOST_ROOM,
+    HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, LIST_ROOMS, RoomListing,
+    UNHOST_ROOM,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -49,7 +49,7 @@ const OWN_INVITATION_SECONDS: u64 = 600;
 
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 8] = [
+const HOST_VERBS: [(Verb, HostOperation); 7] = [
     (
         Verb {
             id: CREATE_ROOM,
@@ -79,16 +79,6 @@ const HOST_VERBS: [(Verb, HostOperation); 8] = [
             params: enter_params,
         },
         HostOperation::EnterRoom,
-    ),
-    (
-        Verb {
-            id: GRANT_APP_AUTHORSHIP,
-            label: "Let an app author a room",
-            gate: GRANT_APP_AUTHORSHIP,
-            kind: roles::GOVERNANCE_KIND,
-            params: grant_params,
-        },
-        HostOperation::GrantAppAuthorship,
     ),
     (
         Verb {
@@ -252,21 +242,6 @@ fn enter_params() -> Vec<ActionParam> {
     ]
 }
 
-fn grant_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required(
-            "room",
-            ParamType::Text,
-            "The room, as listing rooms names it.",
-        ),
-        ActionParam::required(
-            "app",
-            ParamType::Text,
-            "The exact registered application identifier.",
-        ),
-    ]
-}
-
 /// `summary`, as the host's actions answer a room.
 fn listing(summary: &RoomSummary) -> RoomListing {
     RoomListing {
@@ -398,17 +373,6 @@ impl Rooms {
                     changed,
                     invitation: ActionInvitation::of(&issued),
                 })
-            }
-            HostOperation::GrantAppAuthorship => {
-                let request = GrantAppAuthorshipRequest {
-                    request_id,
-                    app: args.required_text("app")?.to_owned(),
-                };
-                let done = self
-                    .grant_app_authorship(args.required_text("room")?, device, request)
-                    .await
-                    .map_err(|error| refused(&error))?;
-                Ok(serde_json::json!({ "generation": done.generation }))
             }
             HostOperation::AttachHost
             | HostOperation::DetachHost

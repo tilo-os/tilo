@@ -1,9 +1,6 @@
 use crate::{NativeCommittedView, NativeWorkspaceOwner, RoomId, SharedOwner, enrollment, record};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use std::{
-    sync::{Arc, Weak},
-    time::SystemTime,
-};
+use std::sync::{Arc, Weak};
 use tilo_delivery_protocol::{
     auth::Carrier,
     bootstrap,
@@ -11,6 +8,7 @@ use tilo_delivery_protocol::{
 };
 use tilo_peer_state::join::TransportHint;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
+use web_time::SystemTime;
 
 /// One actual owner and continuity retain the exact typed request across HTTP.
 pub struct NativeBootstrap {

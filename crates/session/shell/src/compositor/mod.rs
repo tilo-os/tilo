@@ -224,8 +224,8 @@ pub fn parse_peer_sync_disabled(args: &[&str]) -> bool {
 }
 
 /// Run-mode flags that were removed, each with the reason `main` gives when
-/// refusing it. The argument parser is otherwise permissive, so without this a
-/// stale unit passing one would silently start a full compositor instead.
+/// refusing it, more specific than [`usage_request`]'s answer for a flag it
+/// does not know.
 const REMOVED_RUN_MODES: &[(&str, &str)] = &[(
     "--portal-server-only",
     "--portal-server-only was removed; the compositor serves the xdg-desktop-portal \
@@ -247,6 +247,82 @@ pub fn removed_run_mode_refusal(args: &[&str]) -> Option<&'static str> {
         .find(|(flag, _)| args.contains(flag))
         .map(|(_, refusal)| *refusal)
         .or_else(|| (flag_value(args, "--mode") == Some("hosted")).then_some(REMOVED_HOSTED_MODE))
+}
+
+/// Flags the compositor reads on its own command line that take no value.
+/// `--enable-portals` and `--enable-peer-sync` are still accepted, and
+/// ignored, for existing units and scripts.
+const SWITCHES: &[&str] = &[
+    "--host-desktop-session",
+    "--firstboot",
+    "--firstboot-only",
+    "--provision-identity",
+    "--verify-collaboration-identity",
+    "--disable-peer-sync",
+    "--enable-peer-sync",
+    "--enable-portals",
+    "--headless-owner-control",
+];
+
+/// Flags that take a value, as `<flag> <value>` or `<flag>=<value>`.
+const VALUED: &[&str] = &["--backend", "--mode", "--approved-checks"];
+
+/// What `tilo-shell --help` prints.
+pub const USAGE: &str = "\
+usage: tilo-shell [--backend winit|drm|headless] [OPTIONS]
+
+The Tilo compositor. A display manager starts it through the session
+wrapper (/usr/libexec/tilo-session); run it by hand only to develop Tilo.
+
+  --backend winit|drm|headless   where to draw: a window in this desktop
+                                 (the default), the seat's displays, or none
+  --host-desktop-session         a Tilo session added to another Linux
+                                 desktop, keeping identity in this login
+  --firstboot                    prepare this login before starting
+  --firstboot-only               prepare this login and exit
+  --provision-identity           run the identity ceremony and exit
+  --verify-collaboration-identity
+                                 check the identity chain and exit
+  --disable-peer-sync            start without syncing with other devices
+  --approved-checks PATH         load approved project checks from PATH
+  -V, --version                  print the version and exit
+  -h, --help                     print this help and exit
+";
+
+/// Why the command line asks for usage instead of a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsageRequest {
+    /// `--help` or `-h`: print [`USAGE`] and exit 0.
+    Help,
+    /// A flag the compositor does not know: say so, print [`USAGE`], exit 2.
+    Unknown(String),
+}
+
+/// Pure, testable check, made before anything starts: `--help`/`-h`, or the
+/// first flag the compositor does not read. Without it an unknown flag, or
+/// a request for help, booted a whole session.
+pub fn usage_request(args: &[&str]) -> Option<UsageRequest> {
+    let mut iter = args.iter().copied();
+    while let Some(arg) = iter.next() {
+        if matches!(arg, "--help" | "-h") {
+            return Some(UsageRequest::Help);
+        }
+        if !arg.starts_with('-') || SWITCHES.contains(&arg) {
+            continue;
+        }
+        if VALUED.contains(&arg) {
+            iter.next();
+            continue;
+        }
+        let valued_inline = arg
+            .split_once('=')
+            .is_some_and(|(flag, _)| VALUED.contains(&flag));
+        let removed = REMOVED_RUN_MODES.iter().any(|(flag, _)| *flag == arg);
+        if !valued_inline && !removed {
+            return Some(UsageRequest::Unknown(arg.to_owned()));
+        }
+    }
+    None
 }
 
 /// Pure, testable `--firstboot` flag parser (mirrors [`parse_peer_sync`]) — a "make sure dirs exist before we proceed" hook, not a separate entry point.
@@ -470,6 +546,54 @@ mod tests {
                 assert!(parse(args), "case {flag} must be on for {args:?}");
             }
         }
+    }
+
+    /// `tilo-shell --help` booted a session (spawner, identity checks)
+    /// instead of answering. Help and unknown flags are answered before
+    /// anything starts; every flag a unit, wrapper or harness passes still
+    /// starts the session.
+    #[test]
+    fn help_and_unknown_flags_are_answered_before_a_session_starts() {
+        for args in [&["--help"][..], &["-h"], &["--backend", "drm", "--help"]] {
+            assert_eq!(usage_request(args), Some(UsageRequest::Help), "{args:?}");
+        }
+        assert_eq!(
+            usage_request(&["--backend", "drm", "--frobnicate"]),
+            Some(UsageRequest::Unknown("--frobnicate".into()))
+        );
+        assert_eq!(
+            usage_request(&["-x"]),
+            Some(UsageRequest::Unknown("-x".into()))
+        );
+        assert_eq!(
+            usage_request(&["--version", "--backend", "drm"]),
+            Some(UsageRequest::Unknown("--version".into())),
+            "--version is answered alone; with a session's flags it is a mistake"
+        );
+        let starts: [&[&str]; 12] = [
+            &[],
+            &["--backend", "drm"],
+            &["--backend=headless"],
+            &["--mode", "native", "--backend", "headless"],
+            &["--host-desktop-session", "--firstboot", "--backend", "drm"],
+            &["--host-desktop-session", "--provision-identity"],
+            &["--host-desktop-session", "--verify-collaboration-identity"],
+            &["--firstboot-only"],
+            &[
+                "--enable-portals",
+                "--enable-peer-sync",
+                "--disable-peer-sync",
+            ],
+            &["--headless-owner-control", "--backend", "headless"],
+            &["--approved-checks", "/etc/tilo/checks.toml"],
+            &["--approved-checks=/etc/tilo/checks.toml"],
+        ];
+        for args in starts {
+            assert_eq!(usage_request(args), None, "{args:?} must start a session");
+        }
+        // A removed run mode keeps its own, more specific refusal.
+        assert_eq!(usage_request(&["--portal-server-only"]), None);
+        assert!(USAGE.contains("--backend") && USAGE.contains("--help"));
     }
 
     #[test]

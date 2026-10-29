@@ -46,7 +46,7 @@ pub struct HistoryEntry {
     pub entry_kind: EntryKind,
     pub artifact_kind: ArtifactKind,
     pub timestamp: SystemTime,
-    /// e.g. "+12 -3 chars", "Moved to Done". Producer should keep it
+    /// e.g. "Renamed the card", "Moved to Done". Producer should keep it
     /// short — the row is ~40 px tall.
     pub summary: String,
     /// `None` means "not a text edit, or not countable" — never `(0, 0)`,

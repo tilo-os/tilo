@@ -29,12 +29,12 @@ impl NavShell {
                 .get(column.index())
                 .map(|header| &header.more as &dyn Widget),
             Part::Controls => self.controls.as_deref(),
-            Part::Filter => self.filter.as_ref().map(|f| f as &dyn Widget),
-            Part::Toggle => Some(&self.toggle),
-            Part::Back => Some(&self.back),
-            Part::InspectorToggle => Some(&self.inspector_toggle),
-            Part::History(false) => Some(&self.history_open),
-            Part::History(true) => Some(&self.history_close),
+            Part::Filter => self.filter.as_deref().map(|f| f as &dyn Widget),
+            Part::Toggle => Some(&*self.toggle),
+            Part::Back => Some(&*self.back),
+            Part::InspectorToggle => Some(&*self.inspector_toggle),
+            Part::History(false) => Some(&*self.history_open),
+            Part::History(true) => Some(&*self.history_close),
             Part::StatusAction => self.status_action.as_ref().map(|b| b as &dyn Widget),
             Part::Band => self.band.as_deref(),
         }
@@ -65,12 +65,12 @@ impl NavShell {
                 .get_mut(column.index())
                 .map(|header| &mut header.more as &mut dyn Widget),
             Part::Controls => self.controls.as_deref_mut(),
-            Part::Filter => self.filter.as_mut().map(|f| f as &mut dyn Widget),
-            Part::Toggle => Some(&mut self.toggle),
-            Part::Back => Some(&mut self.back),
-            Part::InspectorToggle => Some(&mut self.inspector_toggle),
-            Part::History(false) => Some(&mut self.history_open),
-            Part::History(true) => Some(&mut self.history_close),
+            Part::Filter => self.filter.as_deref_mut().map(|f| f as &mut dyn Widget),
+            Part::Toggle => Some(&mut *self.toggle),
+            Part::Back => Some(&mut *self.back),
+            Part::InspectorToggle => Some(&mut *self.inspector_toggle),
+            Part::History(false) => Some(&mut *self.history_open),
+            Part::History(true) => Some(&mut *self.history_close),
             Part::StatusAction => self
                 .status_action
                 .as_mut()

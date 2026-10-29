@@ -4,11 +4,12 @@ use crate::setup::staging;
 use imager_backend::prepared_setup::PublicInstallProfile;
 use imager_backend::setup::migration_intent::MigrationIntent;
 use std::sync::Arc;
-use ui::framework::SurfaceCx;
+use ui::framework::Mounts;
 use ui::widget::{ButtonRole, Row};
 
 pub(super) struct Direct {
-    pub context: Option<SurfaceCx<Imager>>,
+    /// Mounts the setup window the review hands over to, in a live window.
+    pub context: Option<Mounts<Imager>>,
     pub pending: Option<Snapshot>,
     pub belongings_pending: bool,
     pub belongings_continue: bool,
@@ -590,7 +591,7 @@ impl InstallerPreview {
             .context
             .as_ref()
             .ok_or("installer-preview-storage-unavailable")?;
-        let child = context.surface(child)?;
+        let child = context.mount(|cx| crate::setup::view::setup_window(cx, child))?;
         let back = self
             .button(
                 "installer.back",

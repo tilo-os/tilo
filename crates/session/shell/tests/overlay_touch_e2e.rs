@@ -188,10 +188,7 @@ fn open_quick_settings(compositor: &Compositor) {
         "quick_settings",
         "Super+Q did not open Quick Settings",
     );
-    compositor.wait_for_layout_to_settle(
-        |name| name.starts_with("quick_settings_"),
-        "Quick Settings opening",
-    );
+    compositor.wait_for_layout_to_settle(|name| name.starts_with("qs-"), "Quick Settings opening");
 }
 
 /// Print opens the capture tool; a tap on Selection picks drawing one.
@@ -278,7 +275,7 @@ fn a_finger_on_a_quick_settings_slider_moves_it_and_never_the_window_behind() {
 
     let [x, y, w, h] = wait_for_target(
         &compositor,
-        |name| name == "quick_settings_volume",
+        |name| name == "qs-volume",
         true,
         "Quick Settings never showed its volume slider",
     )
@@ -293,11 +290,12 @@ fn a_finger_on_a_quick_settings_slider_moves_it_and_never_the_window_behind() {
     );
     finger_down(&compositor, from);
     finger_move(&compositor, from, to, 6);
+    finger_up(&compositor, to);
+    // The slider sets the level where the finger lets go.
     let volume = chrome_state(&compositor)["quick_settings_volume"]
         .as_f64()
         .expect("the state dump reports the volume level");
-    assert!(volume > 0.9, "the slider follows the finger: {volume}");
-    finger_up(&compositor, to);
+    assert!(volume > 0.9, "the slider followed the finger: {volume}");
 
     assert_eq!(
         chrome_state(&compositor)["overlays"]["quick_settings"].as_bool(),
@@ -314,7 +312,7 @@ fn a_tap_outside_quick_settings_closes_it_like_a_click() {
     client.clear_touch_and_pointer_trace();
 
     // The panel's extent: every control it lays out, with a margin.
-    let controls = compositor.target_rects(|name| name.starts_with("quick_settings_"));
+    let controls = compositor.target_rects(|name| name.starts_with("qs-"));
     assert!(!controls.is_empty(), "Quick Settings lays out its controls");
     let (px0, py0, px1, py1) = controls.iter().fold(
         (f64::MAX, f64::MAX, f64::MIN, f64::MIN),

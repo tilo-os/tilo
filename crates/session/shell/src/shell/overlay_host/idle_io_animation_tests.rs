@@ -194,10 +194,7 @@ fn wifi_radio_dispatch_does_not_wait_for_the_native_network_operation() {
     host.set_quick_settings_wake(Arc::new(move || {
         let _ = wake_tx.send(());
     }));
-    host.dispatch_quick_settings_toggle_actions(tilo_quick_settings::root::PendingRootActions {
-        wifi: Some(true),
-        ..Default::default()
-    });
+    host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::SetWifi { on: true });
     // The dispatch returned while the radio operation is still held.
     assert_eq!(
         tilo_test_env::recv("the native radio operation to start", &fixture.entered),
@@ -251,20 +248,8 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
     host.set_quick_settings_wake(Arc::new(move || {
         let _ = wake_tx.send(());
     }));
-    host.force_quick_settings_settled();
-    // Lay the page out where a frame would, so its targets are where a
-    // click lands.
-    let panel = host.quick_settings_rect();
-    let _ = host.qs_root.handle_click(
-        Point::new(-10.0, -10.0),
-        panel,
-        &mut chrome.borrow_mut().quick_settings,
-    );
-    let target =
-        |host: &ShellOverlayHost| host.quick_settings_target("quick_settings_section_turn_on");
-    let turn_on = target(&host).expect("the section offers to turn Wi-Fi on");
-    let mut handled = false;
-    host.handle_shell_quick_settings_click(turn_on.center(), &mut handled);
+    // The section's Turn on is the panel's Set Wi-Fi.
+    host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::SetWifi { on: true });
     assert_eq!(
         tilo_test_env::recv("the native radio operation to start", &fixture.entered),
         os_actions::RadioChange::Wifi(true)
@@ -276,8 +261,12 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
     );
     assert!(!host.needs_animation_frame());
     assert!(
-        target(&host).is_none(),
-        "while it turns on there is nothing to press"
+        !tilo_quick_settings::subline(
+            settings_store::hardware::QuickSettingsControl::Wifi,
+            &chrome.borrow().quick_settings
+        )
+        .is_empty(),
+        "while it turns on the tile says so"
     );
     let doc = automerge::AutoCommit::new();
     // The radio is still held: an update that waited on it would never return.
@@ -355,8 +344,34 @@ fn retired_radio_receipt_stays_pending_until_its_actual_worker_finishes() {
 #[test]
 fn successful_radio_reading_refreshes_the_recovered_public_action_availability() {
     use crate::shell::quick_settings_refresh::{FastReading, QsReading};
-    use crate::shell::search::{SearchContext, SearchProvider};
     use tilo_quick_settings::radio::fixture::Fixture;
+    /// Whether the panel offers both radio effects to this device's
+    /// catalogue as available.
+    fn radios_available(host: &mut ShellOverlayHost) -> bool {
+        host.settle_quick_settings();
+        let published = tilo_actions::door::survey(
+            &host
+                .quick_settings_device_local_resources()
+                .expect("the panel publishes to this device"),
+        );
+        let radios: Vec<_> = published
+            .into_iter()
+            .filter(|descriptor| {
+                matches!(
+                    descriptor.address.action.as_str(),
+                    "set-wifi" | "set-airplane-mode"
+                )
+            })
+            .collect();
+        assert_eq!(
+            radios.len(),
+            2,
+            "both declared radio effects must be observable"
+        );
+        radios
+            .into_iter()
+            .all(|descriptor| descriptor.contract.availability.is_available())
+    }
     let fixture = Fixture::new();
     let chrome = crate::shell::chrome_state::ChromeState::new(
         crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -367,44 +382,9 @@ fn successful_radio_reading_refreshes_the_recovered_public_action_availability()
         std::rc::Rc::new(fixture.dispatcher),
         tilo_quick_settings::actions::QsActionAvailability::default(),
     );
-    let provider =
-        crate::shell::search::providers::actions::ActionsProvider::with_shared_qs_actions(
-            host.qs_action_slot.clone(),
-        );
     let doc = automerge::AutoCommit::new();
-    let available = || {
-        let rows = provider
-            .query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "quick-settings.",
-                wanted: &[crate::shell::search::ResourceKind::Action],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            })
-            .into_iter()
-            .filter(|row| {
-                matches!(
-                    row.id.as_str(),
-                    "quick-settings.wifi.set-enabled" | "quick-settings.airplane-mode.set-enabled"
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            rows.len(),
-            2,
-            "both declared radio actions must be observable"
-        );
-        rows.into_iter().all(|row| {
-            matches!(
-                row.contract.unwrap().availability,
-                tilo_actions::Availability::Available
-            )
-        })
-    };
     assert!(
-        !available(),
+        !radios_available(&mut host),
         "startup has not observed a working radio backend"
     );
     let (wake_tx, wake_rx) = std::sync::mpsc::channel();
@@ -425,8 +405,8 @@ fn successful_radio_reading_refreshes_the_recovered_public_action_availability()
     assert!(host.update(&doc, &automerge::ROOT));
     assert!(chrome.borrow().quick_settings.radios.wifi_available);
     assert!(
-        available(),
-        "actual recovered radio metadata must refresh both public actions"
+        radios_available(&mut host),
+        "actual recovered radio metadata must refresh both public effects"
     );
 }
 

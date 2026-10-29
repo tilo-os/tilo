@@ -335,7 +335,6 @@ pub(crate) mod signed_test_support {
     struct NativeOwnerReceipts {
         owner: Arc<tilo_joined_room::NativeWorkspaceOwner>,
         key: ed25519_dalek::SigningKey,
-        certificate: tilo_user_identity::DeviceCert,
     }
 
     impl tilo_owner_commit::OwnerCommitService for NativeOwnerReceipts {
@@ -350,14 +349,8 @@ pub(crate) mod signed_test_support {
         ) -> tilo_owner_commit::CommitFuture {
             let owner = self.owner.clone();
             let key = self.key.clone();
-            let certificate = self.certificate.clone();
             Box::pin(async move {
-                owner.commit_effect_receipt(
-                    &request,
-                    &certificate,
-                    &key,
-                    std::time::SystemTime::now(),
-                )
+                owner.commit_effect_receipt(&request, &key, std::time::SystemTime::now())
             })
         }
     }
@@ -456,7 +449,6 @@ pub(crate) mod signed_test_support {
                 Arc::new(NativeOwnerReceipts {
                     owner,
                     key: key.clone(),
-                    certificate: certificate.clone(),
                 }),
             );
             let person = principal_id_for_root(certificate.user_public_key);

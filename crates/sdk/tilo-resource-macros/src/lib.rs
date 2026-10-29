@@ -28,13 +28,16 @@ fn krate() -> Tokens {
 /// * an enum of unit variants is a string naming the variant; the variant
 ///   marked `#[default]` is the value of an absent slot;
 /// * an enum whose variants carry fields is a map: the variant's name under
-///   `$variant` and each field under its own key (a tuple variant's as `0`,
-///   `1`, …), so edits of one variant merge field by field and a change of
-///   variant is last writer wins.
+///   `$variant` and each field under a key of its variant
+///   (`$field/<variant>/<field>`, a tuple variant's fields named `0`, `1`,
+///   …), so edits of one variant merge field by field, a change of variant is
+///   last writer wins, and no variant reads a field another one wrote.
 ///
 /// Field attributes: `#[model(rename = "key")]`, `#[model(skip)]` (not
 /// stored; the containing type's `Default` on read), `#[model(atom)]` on a
-/// `String` (written whole, last writer wins, as `Atom` is),
+/// `String`, an `Id`, a `Vec` or an `Option` of one (written whole, last writer
+/// wins, as `Atom` is: a colour or a list of points two people set at once
+/// is one of theirs, never a mix),
 /// `#[model(whole)]` (read every part of a value that loads on demand,
 /// rich text's paragraphs), `#[model(resource)]` on a field whose type is a
 /// resource with its own operations (rich text: published beneath the
@@ -890,6 +893,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label_fields.push((label_part, descs.len()));
         }
         let quiet_remove = options.quiet_remove;
+        let atom = options.atom;
         let trust = options.trust(&krate)?;
         if is_label {
             if label.is_some() {
@@ -901,7 +905,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label = Some(descs.len());
         }
         let field_table = if options.atom {
-            quote!(&#table::ATOM_STRING)
+            quote!(<#ty as #table::Atomic>::ATOM)
         } else {
             quote!(<#ty as #krate::Model>::TABLE)
         };
@@ -996,6 +1000,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             shape: <#ty as #krate::Model>::SHAPE,
             unit: #unit,
             readonly: #readonly,
+            atom: #atom,
             label: #is_label,
             label_part: #label_part,
             quiet_remove: #quiet_remove,

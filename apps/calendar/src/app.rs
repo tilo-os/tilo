@@ -751,10 +751,11 @@ impl CalendarApp {
         clippy::too_many_lines,
         reason = "sync orchestration keeps worker admission and failure contracts together"
     )]
-    fn start_sync(&mut self, doc: &mut ui::widget::Edits<'_>) {
+    fn start_sync(&mut self, doc: &mut ui::widget::Edits<'_>) -> Result<(), String> {
         if self.syncing() {
-            return;
+            return Ok(());
         }
+        let current = self.synchronizable(doc.doc())?;
         let inputs: Vec<_> = self
             .accounts
             .accounts
@@ -770,8 +771,7 @@ impl CalendarApp {
 
         if self.sample_accounts {
             let (result, outcome) = caldav::sample_pull_all(&inputs, self.today);
-            self.apply_sync_result(result, &outcome, doc);
-            return;
+            return self.apply_sync_result(result, &outcome, doc);
         }
 
         // No account configured: answer instantly rather than spinning up a
@@ -782,7 +782,7 @@ impl CalendarApp {
                 ToastKind::Warning,
                 &[status::StatusAction::OpenSettings],
             );
-            return;
+            return Ok(());
         }
 
         // A live pull as a task on the app runtime; the result lands via
@@ -791,16 +791,8 @@ impl CalendarApp {
         // overwritten or removed by what the server sends meanwhile.
         let runtime = match ui::rt::try_app() {
             Ok(runtime) => runtime,
-            Err(error) => {
-                self.status.failed(crate::resource::t_args(
-                    "calendar-sync-unavailable",
-                    &[("reason", ui::i18n::ArgValue::Text(error.to_string()))],
-                ));
-                self.dirty = true;
-                return;
-            }
+            Err(error) => return Err(self.sync_unavailable(&error.to_string())),
         };
-        let current = Calendar::read_whole(doc.doc()).unwrap_or_default();
         let protected_hrefs: Vec<(String, String)> = crate::outbox::pending_copies(&current)
             .into_iter()
             .map(|copy| (copy.calendar.clone(), copy.href.clone()))
@@ -912,6 +904,27 @@ impl CalendarApp {
         self.status
             .show_progress(crate::resource::t("calendar-sync-running-short"));
         self.dirty = true;
+        Ok(())
+    }
+
+    /// The calendar `doc` holds, read to plan or fold in a pull. One that
+    /// does not read is not an empty calendar: a pull planned from nothing
+    /// drops the protection of every edit still waiting for its upload, and
+    /// its answer folded into nothing gives every item the server holds a
+    /// new identity. So the pull is refused, and the bar says why.
+    fn synchronizable(&mut self, doc: &AutoCommit) -> Result<Calendar, String> {
+        Calendar::read_whole(doc).map_err(|error| self.sync_unavailable(&error.to_string()))
+    }
+
+    /// Say that a pull cannot be made because of `reason`; what is said.
+    fn sync_unavailable(&mut self, reason: &str) -> String {
+        let text = crate::resource::t_args(
+            "calendar-sync-unavailable",
+            &[("reason", ui::i18n::ArgValue::Text(reason.to_owned()))],
+        );
+        self.status.failed(text.clone());
+        self.dirty = true;
+        text
     }
 
     /// Drain a finished background sync, if any. Called every `sync` pass; a
@@ -930,12 +943,13 @@ impl CalendarApp {
                     SyncOutcome::Offline => Some("calendar service is offline".to_string()),
                     SyncOutcome::Synced { .. } => None,
                 };
-                self.apply_sync_result(result, &outcome, doc);
+                let applied = self.apply_sync_result(result, &outcome, doc);
                 let reply = self.state().sync_reply.take();
                 if let Some(reply) = reply {
-                    reply.finish(
-                        failure.map_or_else(|| Ok(tilo_actions::ActionOutput::default()), Err),
-                    );
+                    reply.finish(match (applied, failure) {
+                        (Err(reason), _) | (Ok(()), Some(reason)) => Err(reason),
+                        (Ok(()), None) => Ok(tilo_actions::ActionOutput::default()),
+                    });
                 }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
@@ -971,10 +985,10 @@ impl CalendarApp {
         result: caldav::SyncResult,
         outcome: &SyncOutcome,
         doc: &mut ui::widget::Edits<'_>,
-    ) {
+    ) -> Result<(), String> {
         // The counts the outcome reports are the server's; what this pass
         // takes in is the events themselves.
-        let current = Calendar::read_whole(doc.doc()).unwrap_or_default();
+        let current = self.synchronizable(doc.doc())?;
         // Where each item a server holds lives there, as the calendar knows
         // it and as this pull adds to it.
         let mut known: Vec<(Id, String, String)> = current
@@ -1159,6 +1173,7 @@ impl CalendarApp {
             ),
         };
         self.show_status_with(text, kind, actions);
+        Ok(())
     }
 
     /// Write `event` as its server holds it, at `at`.
@@ -1362,6 +1377,20 @@ impl CalendarApp {
             ToastKind::Info,
         );
         self.dirty = true;
+    }
+
+    /// Take what `state` holds as the calendar. A document that does not
+    /// read keeps the calendar that last read whole: the framework shows why
+    /// in place of the view, and what is derived from the model (the
+    /// reminders scheduled with the system, the selection) does not empty.
+    fn reread(&mut self, state: &AutoCommit) {
+        match Calendar::read_whole(state) {
+            Ok(model) => {
+                self.model = model;
+                self.revalidate_selection();
+            }
+            Err(error) => tracing::warn!(%error, "calendar: the document does not read"),
+        }
     }
 
     /// Drop the current selection if the item it points at is no longer in the
@@ -2873,7 +2902,7 @@ impl CalendarApp {
             Action::ToggleAccountCollapsed(id) => {
                 self.toggle_account_collapsed(&id);
             }
-            Action::Sync => self.start_sync(doc),
+            Action::Sync => drop(self.start_sync(doc)),
             Action::Export => self.invoke_effect(&crate::resource::CalendarEffect::ExportIcs),
             Action::Import => self.invoke_effect(&crate::resource::CalendarEffect::ImportIcs),
             Action::NewEvent => self.new_event(doc),
@@ -3876,8 +3905,7 @@ impl Widget for CalendarApp {
         self.adopt_person_accounts();
         if !self.seeded {
             // Whatever the document holds is now authoritative for the UI.
-            self.model = Calendar::read_whole(state).unwrap_or_default();
-            self.revalidate_selection();
+            self.reread(state);
             self.model_heads = (state.base_heads(), state.pending_ops());
             self.seeded = true;
         }
@@ -3891,8 +3919,7 @@ impl Widget for CalendarApp {
         // and are read by the editor directly, so this never disturbs them.)
         let heads = (state.base_heads(), state.pending_ops());
         if heads != self.model_heads {
-            self.model = Calendar::read_whole(state).unwrap_or_default();
-            self.revalidate_selection();
+            self.reread(state);
             self.model_heads.clone_from(&heads);
         }
         self.roll_today();
@@ -3930,7 +3957,7 @@ impl Widget for CalendarApp {
         self.take_shell_events(edits);
         let sync_requested = std::mem::take(&mut self.state().sync_requested);
         if sync_requested {
-            self.start_sync(edits);
+            let started = self.start_sync(edits);
             let reply = {
                 let mut state = self.state();
                 if state.syncing {
@@ -3940,7 +3967,7 @@ impl Widget for CalendarApp {
                 }
             };
             if let Some(reply) = reply {
-                reply.finish(Ok(tilo_actions::ActionOutput::default()));
+                reply.finish(started.map(|()| tilo_actions::ActionOutput::default()));
             }
         }
         // Drain a finished background CalDAV pull, if one landed since the last

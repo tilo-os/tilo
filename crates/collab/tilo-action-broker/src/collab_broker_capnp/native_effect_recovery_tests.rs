@@ -12,7 +12,6 @@ use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
 struct NativeEffects {
     owner: Arc<tilo_joined_room::NativeWorkspaceOwner>,
     key: SigningKey,
-    certificate: tilo_user_identity::DeviceCert,
     held: Arc<tokio::sync::Semaphore>,
     submitted: Arc<tokio::sync::Notify>,
 }
@@ -27,7 +26,6 @@ impl OwnerCommitService for NativeEffects {
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         let owner = self.owner.clone();
         let key = self.key.clone();
-        let certificate = self.certificate.clone();
         let held = self.held.clone();
         let submitted = self.submitted.clone();
         Box::pin(async move {
@@ -36,8 +34,7 @@ impl OwnerCommitService for NativeEffects {
                 .acquire()
                 .await
                 .map_err(|_| "native owner test retired")?;
-            let receipt =
-                owner.commit_effect_receipt(&request, &certificate, &key, SystemTime::now());
+            let receipt = owner.commit_effect_receipt(&request, &key, SystemTime::now());
             drop(permit);
             receipt
         })
@@ -99,7 +96,6 @@ fn fixture() -> Fixture {
         Arc::new(NativeEffects {
             owner: owner.clone(),
             key: key.clone(),
-            certificate: certificate.clone(),
             held: held.clone(),
             submitted: submitted.clone(),
         }),

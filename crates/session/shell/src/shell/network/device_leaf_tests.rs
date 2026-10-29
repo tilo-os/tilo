@@ -17,7 +17,7 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use super::{HostIdentity, NetCmd, Reach, ShellNetwork};
+use super::{HostIdentity, Reach, ShellNetwork};
 use crate::shell::channel_encryption::{
     ChannelAccess, ChannelEncryption, ChannelEncryptionConfig, GovernanceTransport,
     InboundChannelGovernance,
@@ -227,11 +227,6 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
         DeviceCapabilities::member(),
     );
     assert!(member.join_default_workspace());
-    let owner_addr = until("the owner's device to listen", || owner.dial_addr());
-    member
-        .cmd_tx
-        .try_send(NetCmd::Connect { addr: owner_addr })
-        .unwrap();
     let invitation = owner.issue_invite(workspace, 3600).unwrap();
     let PeerSyncResponse::EnrollmentPending { id } =
         member.accept_peer_invitation(&invitation).unwrap()
@@ -256,7 +251,8 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
             .then_some(())
     });
 
-    let channel = document_channel_id(NOTES, &room.to_string(), "plan");
+    let route = collab_types::ChannelRoute::new(NOTES, "plan");
+    let channel = route.channel(&room.to_string());
     let mut owner_channels = channels(&owner, &owner_tree, &dir.path().join("owner"), &owner_key);
     let mut member_channels = channels(
         &member,
@@ -273,7 +269,7 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
             Instant::now(),
             tilo_clock::try_unix_now().unwrap(),
         );
-        channels.access(room, channel, Instant::now())
+        channels.access_record(room, &route, Instant::now()).1
     };
     let ready = |access: ChannelAccess, who: &str| match access {
         ChannelAccess::Ready(keys) => Some(keys),
@@ -314,11 +310,13 @@ fn a_room_hosted_on_a_device_has_one_leaf_for_the_device() {
             "timed out waiting for both devices to open the channel; owner ready {}, \
              collaborator ready {}, (broker signed, the host signed) {:?}",
             matches!(
-                owner_channels.access(room, channel, Instant::now()),
+                owner_channels.access_record(room, &route, Instant::now()).1,
                 ChannelAccess::Ready(_)
             ),
             matches!(
-                member_channels.access(room, channel, Instant::now()),
+                member_channels
+                    .access_record(room, &route, Instant::now())
+                    .1,
                 ChannelAccess::Ready(_)
             ),
             signers()

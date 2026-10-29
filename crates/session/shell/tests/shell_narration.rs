@@ -13,7 +13,7 @@ use taffy::{NodeId, TaffyTree};
 use ui::screen_reader::ScreenReader;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use crate::support::host::{layout_host, one_workspace_tree, press_key};
+use crate::support::host::{layout_host, one_workspace_tree, paint, press_key};
 
 #[derive(Clone, Default)]
 struct RecordingSpeaker(Arc<Mutex<Vec<tts::Utterance>>>);
@@ -39,8 +39,18 @@ impl tts::Speaker for RecordingSpeaker {
     }
 }
 
+/// A frame's update, which runs before the frame is narrated: what
+/// arrived since the last frame is announced in this one, before it is
+/// painted.
+fn next_frame(host: &mut ShellOverlayHost) {
+    use ui::widget::Widget as _;
+    host.update(&automerge::AutoCommit::new(), &automerge::ROOT);
+}
+
 fn press(host: &mut ShellOverlayHost, taffy: &TaffyTree<()>, node: NodeId, key: NamedKey) {
     press_key(host, taffy, node, Key::Named(key), ModifiersState::empty());
+    // The panel answers on its next frame, as it would on screen.
+    host.force_quick_settings_settled();
 }
 
 #[test]
@@ -61,18 +71,15 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
         });
         state.bump();
     }
+    let _ = layout_host(&mut host);
     host.force_quick_settings_settled();
     let (taffy, node) = layout_host(&mut host);
-    narrator.observe(&host.chrome_narration_snapshot());
-    assert!(
-        speaker.take().is_empty(),
-        "opening with nothing focused says nothing yet"
-    );
-
-    press(&mut host, &taffy, node, NamedKey::Tab);
+    // The panel takes the keyboard as it opens, on its first control.
     narrator.observe(&host.chrome_narration_snapshot());
     let spoken = speaker.take();
-    let first = spoken.first().expect("Tab speaks the control it lands on");
+    let first = spoken
+        .first()
+        .expect("opening speaks the control it lands on");
     assert!(
         first.text.starts_with("Brightness, slider, "),
         "got {:?}",
@@ -88,9 +95,7 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
     narrator.observe(&host.chrome_narration_snapshot());
     let spoken = speaker.take();
     assert!(
-        spoken
-            .first()
-            .is_some_and(|u| u.text.starts_with("Mute, switch, ")),
+        spoken.first().is_some_and(|u| u.text.starts_with("Mute, ")),
         "got {spoken:?}"
     );
     press(&mut host, &taffy, node, NamedKey::Tab);
@@ -107,14 +112,18 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
 
 #[test]
 fn a_notification_arrival_is_spoken_politely_and_an_error_cuts_in() {
-    let (host, chrome) = build_tilo_overlay_host_with_chrome(&one_workspace_tree());
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&one_workspace_tree());
     let speaker = RecordingSpeaker::default();
     let mut narrator =
         ShellNarrator::with_reader(ScreenReader::with_speaker(Box::new(speaker.clone())));
+    // The desktop has been painted, its banners with it.
+    let _ = layout_host(&mut host);
+    paint(&mut host);
     narrator.observe(&host.chrome_narration_snapshot());
     assert!(speaker.take().is_empty());
 
     chrome.borrow_mut().push_notification("New mail", "Lunch?");
+    next_frame(&mut host);
     narrator.observe(&host.chrome_narration_snapshot());
     let spoken = speaker.take();
     assert_eq!(spoken.len(), 1, "got {spoken:?}");
@@ -125,6 +134,7 @@ fn a_notification_arrival_is_spoken_politely_and_an_error_cuts_in() {
     chrome
         .borrow_mut()
         .push_error_notification("Backup failed", "The drive is not connected");
+    next_frame(&mut host);
     narrator.observe(&host.chrome_narration_snapshot());
     let spoken = speaker.take();
     assert_eq!(

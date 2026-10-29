@@ -2186,6 +2186,7 @@ fn route_keyboard_input(
         let configured_shortcut = fb.host().owns_configured_chord(&key.logical_key, modifiers);
         let shell_owns = captured
             || fb.host().banner_owns_key(&key.logical_key)
+            || fb.host().topbar_owns_keyboard()
             || fb.host().desk_owns_key(&key.logical_key)
             || fb.host().dictation_owns_key(&key.logical_key)
             || (!shortcuts_inhibited(state)
@@ -2259,6 +2260,8 @@ fn route_keyboard_input(
         || shell_chord
         || granted
         || banner_owns
+        // Keyboard focus in the top bar, or a menu it opened, takes the keys.
+        || fb.host().topbar_owns_keyboard()
         || desk_owns
         || opens_chat
         || fb.host().dictation_owns_key(&key.logical_key);

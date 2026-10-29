@@ -673,71 +673,68 @@ mod tests {
     }
 
     #[test]
-    fn host_app_matching_lists_offers_or_returns_nothing() {
-        // Phase `a_matching_host_app_offers_an_open_row`.
-        {
-            let p = HostApplicationsProvider::new();
-            let out = p.results_against("spot", &[app("com.spotify.Client", "Spotify")], &[]);
-            assert_eq!(out.len(), 1);
-            assert_eq!(out[0].title, "Spotify");
-            assert_eq!(out[0].id, "com.spotify.Client");
-            assert_eq!(out[0].kind, ResourceKind::Application);
-        }
+    fn a_matching_host_app_offers_an_open_row() {
+        let p = HostApplicationsProvider::new();
+        let out = p.results_against("spot", &[app("com.spotify.Client", "Spotify")], &[]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].title, "Spotify");
+        assert_eq!(out[0].id, "com.spotify.Client");
+        assert_eq!(out[0].kind, ResourceKind::Application);
+    }
 
-        // Phase `keywords_and_categories_are_matchable`.
-        {
-            let p = HostApplicationsProvider::new();
-            let mut firefox = app("org.mozilla.firefox", "Firefox");
-            firefox.keywords = vec!["Internet".into(), "WWW".into()];
-            firefox.categories = vec!["Network".into(), "WebBrowser".into()];
-            let by_keyword = p.results_against("internet", &[firefox.clone()], &[]);
-            assert_eq!(by_keyword.len(), 1, "{by_keyword:?}");
-            let by_category = p.results_against("webbrowser", &[firefox], &[]);
-            assert_eq!(by_category.len(), 1, "{by_category:?}");
-            assert!(
-                by_keyword[0].score > by_category[0].score,
-                "a declared keyword is a stronger signal than a category bucket"
-            );
-        }
+    #[test]
+    fn keywords_and_categories_are_matchable() {
+        let p = HostApplicationsProvider::new();
+        let mut firefox = app("org.mozilla.firefox", "Firefox");
+        firefox.keywords = vec!["Internet".into(), "WWW".into()];
+        firefox.categories = vec!["Network".into(), "WebBrowser".into()];
+        let by_keyword = p.results_against("internet", &[firefox.clone()], &[]);
+        assert_eq!(by_keyword.len(), 1, "{by_keyword:?}");
+        let by_category = p.results_against("webbrowser", &[firefox], &[]);
+        assert_eq!(by_category.len(), 1, "{by_category:?}");
+        assert!(
+            by_keyword[0].score > by_category[0].score,
+            "a declared keyword is a stronger signal than a category bucket"
+        );
+    }
 
-        // Phase `an_empty_needle_lists_every_host_app`.
-        {
-            let p = HostApplicationsProvider::new();
-            let out = p.results_against("", &[app("a.b.One", "One"), app("a.b.Two", "Two")], &[]);
-            assert_eq!(out.len(), 2);
-            assert!(out.iter().all(|r| r.score == 0));
-        }
+    #[test]
+    fn an_empty_needle_lists_every_host_app() {
+        let p = HostApplicationsProvider::new();
+        let out = p.results_against("", &[app("a.b.One", "One"), app("a.b.Two", "Two")], &[]);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|r| r.score == 0));
+    }
 
-        // Phase `a_non_matching_needle_returns_nothing`.
-        {
-            let p = HostApplicationsProvider::new();
-            assert!(
-                p.results_against("zzzqqq", &[app("com.spotify.Client", "Spotify")], &[])
-                    .is_empty()
-            );
-        }
+    #[test]
+    fn a_non_matching_needle_returns_nothing() {
+        let p = HostApplicationsProvider::new();
+        assert!(
+            p.results_against("zzzqqq", &[app("com.spotify.Client", "Spotify")], &[])
+                .is_empty()
+        );
+    }
 
-        // Phase `unrequested_kind_returns_empty`.
-        {
-            let p = HostApplicationsProvider::new();
-            let c = chrome_rc();
-            let cs = c.borrow();
-            let doc = AutoCommit::new();
-            let out = p.query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "spotify",
-                wanted: &[ResourceKind::Application],
-                chrome: &cs,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            assert!(
-                out.is_empty(),
-                "the Applications chip must not pull in host apps — that is \
-                 the distinction the separate kind exists to draw"
-            );
-        }
+    #[test]
+    fn unrequested_kind_returns_empty() {
+        let p = HostApplicationsProvider::new();
+        let c = chrome_rc();
+        let cs = c.borrow();
+        let doc = AutoCommit::new();
+        let out = p.query(SearchContext {
+            query_scope: None,
+            include_programmatic: false,
+            needle: "spotify",
+            wanted: &[ResourceKind::Application],
+            chrome: &cs,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        assert!(
+            out.is_empty(),
+            "the Applications chip must not pull in host apps — that is \
+             the distinction the separate kind exists to draw"
+        );
     }
 
     #[test]
@@ -1018,77 +1015,72 @@ mod tests {
         assert_eq!(page.results[0].title, "unique-source-tail");
     }
 
+    // Ids are not row text; the id stays searchable.
     #[test]
-    fn host_app_rows_are_apps_that_say_which_kind_of_app_they_are() {
-        // Phase `the_row_is_the_app_name_and_its_kind`.
-        // Ids are not row text; the id stays searchable.
-        {
-            let p = HostApplicationsProvider::new();
-            let out = p.results_against("spot", &[app("com.spotify.Client", "Spotify")], &[]);
-            assert_eq!(out[0].title, "Spotify");
-            assert_eq!(out[0].subtitle, None);
-            assert_eq!(out[0].facts, ["Flatpak"]);
-            let by_id =
-                p.results_against("com.spotify", &[app("com.spotify.Client", "Spotify")], &[]);
-            assert_eq!(by_id.len(), 1, "the id is still searchable");
-        }
+    fn the_row_is_the_app_name_and_its_kind() {
+        let p = HostApplicationsProvider::new();
+        let out = p.results_against("spot", &[app("com.spotify.Client", "Spotify")], &[]);
+        assert_eq!(out[0].title, "Spotify");
+        assert_eq!(out[0].subtitle, None);
+        assert_eq!(out[0].facts, ["Flatpak"]);
+        let by_id = p.results_against("com.spotify", &[app("com.spotify.Client", "Spotify")], &[]);
+        assert_eq!(by_id.len(), 1, "the id is still searchable");
+    }
 
-        // Phase `two_apps_of_one_name_say_which_is_which`.
-        {
-            let p = HostApplicationsProvider::new();
-            let system = HostApp {
-                kind: desktop_entry::EntryKind::System,
-                ..app("org.gnome.Console", "Terminal")
-            };
-            let flatpak = app("org.example.Terminal", "Terminal");
-            let out = p.results_against("terminal", &[system, flatpak], &[]);
-            let mut kinds: Vec<_> = out.iter().map(|row| row.facts.clone()).collect();
-            kinds.sort();
-            assert_eq!(kinds, [["Flatpak"], ["System"]]);
-        }
+    #[test]
+    fn two_apps_of_one_name_say_which_is_which() {
+        let p = HostApplicationsProvider::new();
+        let system = HostApp {
+            kind: desktop_entry::EntryKind::System,
+            ..app("org.gnome.Console", "Terminal")
+        };
+        let flatpak = app("org.example.Terminal", "Terminal");
+        let out = p.results_against("terminal", &[system, flatpak], &[]);
+        let mut kinds: Vec<_> = out.iter().map(|row| row.facts.clone()).collect();
+        kinds.sort();
+        assert_eq!(kinds, [["Flatpak"], ["System"]]);
+    }
 
-        // Phase `host_apps_are_apps`.
-        {
-            let p = HostApplicationsProvider::new();
-            assert_eq!(p.resource_kinds(), &[ResourceKind::Application]);
-            assert_eq!(ResourceKind::Application.label(), "Apps");
-        }
+    #[test]
+    fn host_apps_are_apps() {
+        let p = HostApplicationsProvider::new();
+        assert_eq!(p.resource_kinds(), &[ResourceKind::Application]);
+        assert_eq!(ResourceKind::Application.label(), "Apps");
+    }
 
-        // Phase `a_host_app_scores_below_an_equally_good_tilo_match`.
-        // Equal-quality matches rank the confined app first — Enter takes the top row.
-        {
-            use crate::shell::search::providers::applications::ApplicationsProvider;
-            let host = HostApplicationsProvider::new();
-            let tilo = ApplicationsProvider::new();
-            // Different name/id tail, so this measures the scale, not shadowing.
-            let host_rows =
-                host.results_against("term", &[app("org.x.Terminator", "Terminator")], &[]);
-            let tilo_rows = tilo.results_for(
-                "term",
-                vec![crate::shell::launcher::InstalledApp {
-                    package_id: "so.tilo.terminal".into(),
-                    display_name: "Terminal".into(),
-                    localized_names: BTreeMap::default(),
-                    keywords: Vec::new(),
-                    category: None,
-                    version: "1".into(),
-                    manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
-                    payload_root: std::path::PathBuf::from("/x"),
-                    has_gui: true,
-                    opens_extensions: Vec::new(),
-                    opens_mime_types: Vec::new(),
-                    opens_uri_schemes: Vec::new(),
-                    opens_secondary: false,
-                    offers: Vec::new(),
-                }],
-            );
-            assert!(
-                tilo_rows[0].score > host_rows[0].score,
-                "tilo {} must outrank host {}",
-                tilo_rows[0].score,
-                host_rows[0].score
-            );
-        }
+    // Equal-quality matches rank the confined app first — Enter takes the top row.
+    #[test]
+    fn a_host_app_scores_below_an_equally_good_tilo_match() {
+        use crate::shell::search::providers::applications::ApplicationsProvider;
+        let host = HostApplicationsProvider::new();
+        let tilo = ApplicationsProvider::new();
+        // Different name/id tail, so this measures the scale, not shadowing.
+        let host_rows = host.results_against("term", &[app("org.x.Terminator", "Terminator")], &[]);
+        let tilo_rows = tilo.results_for(
+            "term",
+            vec![crate::shell::launcher::InstalledApp {
+                package_id: "so.tilo.terminal".into(),
+                display_name: "Terminal".into(),
+                localized_names: BTreeMap::default(),
+                keywords: Vec::new(),
+                category: None,
+                version: "1".into(),
+                manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
+                payload_root: std::path::PathBuf::from("/x"),
+                has_gui: true,
+                opens_extensions: Vec::new(),
+                opens_mime_types: Vec::new(),
+                opens_uri_schemes: Vec::new(),
+                opens_secondary: false,
+                offers: Vec::new(),
+            }],
+        );
+        assert!(
+            tilo_rows[0].score > host_rows[0].score,
+            "tilo {} must outrank host {}",
+            tilo_rows[0].score,
+            host_rows[0].score
+        );
     }
 
     /// Must surface a visible error, not fail silently. Drives the
@@ -1138,41 +1130,38 @@ mod tests {
     }
 
     #[test]
-    fn only_an_exact_tilo_package_identity_hides_a_host_row() {
-        // Phase `only_an_exact_tilo_package_identity_hides_the_host_row`.
-        {
-            let installed = vec![installed("so.tilo.terminal", "Terminal")];
-            assert!(shadowed_by_a_tilo_package(
-                &app("so.tilo.terminal", "Terminal"),
-                &installed
-            ));
-        }
+    fn only_an_exact_tilo_package_identity_hides_the_host_row() {
+        let installed = vec![installed("so.tilo.terminal", "Terminal")];
+        assert!(shadowed_by_a_tilo_package(
+            &app("so.tilo.terminal", "Terminal"),
+            &installed
+        ));
+    }
 
-        // Phase `tilo_terminal_does_not_hide_a_distinct_host_terminal`.
-        {
-            let installed = vec![installed("so.tilo.terminal", "Terminal")];
-            assert!(!shadowed_by_a_tilo_package(
-                &app("org.gnome.Console", "Terminal"),
-                &installed
-            ));
-        }
+    #[test]
+    fn tilo_terminal_does_not_hide_a_distinct_host_terminal() {
+        let installed = vec![installed("so.tilo.terminal", "Terminal")];
+        assert!(!shadowed_by_a_tilo_package(
+            &app("org.gnome.Console", "Terminal"),
+            &installed
+        ));
+    }
 
-        // Phase `tilo_calendar_does_not_hide_gnome_calendar`.
-        {
-            let installed = vec![installed("so.tilo.calendar", "Calendar")];
-            assert!(!shadowed_by_a_tilo_package(
-                &app("org.gnome.Calendar", "Calendar"),
-                &installed
-            ));
-        }
+    #[test]
+    fn tilo_calendar_does_not_hide_gnome_calendar() {
+        let installed = vec![installed("so.tilo.calendar", "Calendar")];
+        assert!(!shadowed_by_a_tilo_package(
+            &app("org.gnome.Calendar", "Calendar"),
+            &installed
+        ));
+    }
 
-        // Phase `a_generic_shared_name_does_not_hide_a_host_app`.
-        {
-            let installed = vec![installed("so.tilo.notes", "Notes")];
-            assert!(!shadowed_by_a_tilo_package(
-                &app("org.example.PrivateNotes", "Notes"),
-                &installed
-            ));
-        }
+    #[test]
+    fn a_generic_shared_name_does_not_hide_a_host_app() {
+        let installed = vec![installed("so.tilo.notes", "Notes")];
+        assert!(!shadowed_by_a_tilo_package(
+            &app("org.example.PrivateNotes", "Notes"),
+            &installed
+        ));
     }
 }

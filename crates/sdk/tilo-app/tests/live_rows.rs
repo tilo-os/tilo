@@ -155,6 +155,7 @@ impl ResourceApp for TallyApp {
                 move |_, _| Ok(TallyAction::Add { by }),
             )]
         });
+        cx.bind_declarations(|count| selection_edits(*count));
         Box::new(
             Column::new()
                 .push(Box::new(
@@ -166,11 +167,36 @@ impl ResourceApp for TallyApp {
     }
 }
 
-/// A surface showing jobs that run outside the document, with one selected.
+/// Edits bound to the selection, which is the count shown.
+fn selection_edits(count: i64) -> Vec<ActionDecl<Tally>> {
+    let by = count.max(1);
+    vec![
+        ActionDecl::new(
+            "add-selected",
+            "Add the selected amount",
+            vec![ActionParam::optional(
+                "times",
+                ParamType::Integer,
+                "How many times",
+            )],
+            move |args, _| {
+                let times = args.integer("times").unwrap_or(1);
+                Ok(TallyAction::Add {
+                    by: by.saturating_mul(times),
+                })
+            },
+        ),
+        // The resource already publishes `double`; its own stays.
+        ActionDecl::new("double", "Shadowed", Vec::new(), |_, _| {
+            Ok(TallyAction::Add { by: 1000 })
+        }),
+    ]
+}
+
+/// A surface showing jobs that run outside the document.
 #[derive(Default)]
 struct Jobs {
     rect: Rect,
-    selected: i64,
     effects: Effects,
 }
 
@@ -224,12 +250,9 @@ impl tilo_app::resources::PublishesResources for Jobs {
 }
 
 impl ResourceSurface<Tally, JobEffect> for Jobs {
-    fn present(&mut self, count: &Rc<i64>) {
-        self.selected = **count;
-    }
+    fn present(&mut self, _: &Rc<i64>) {}
 
     fn attach(&mut self, _: SurfaceCx<Tally>) {
-        self.selected = 3;
         EFFECTS.with(|effects| *effects.borrow_mut() = Some(self.effects.clone()));
     }
 
@@ -239,31 +262,6 @@ impl ResourceSurface<Tally, JobEffect> for Jobs {
             JobEffect::Stop { job } => Effected::value(json!({ "stopped": job })),
             JobEffect::Inspect { .. } | JobEffect::Reveal { .. } => Effected::done(),
         })
-    }
-
-    fn bound_declarations(&self) -> Vec<ActionDecl<Tally>> {
-        let by = self.selected.max(1);
-        vec![
-            ActionDecl::new(
-                "add-selected",
-                "Add the selected amount",
-                vec![ActionParam::optional(
-                    "times",
-                    ParamType::Integer,
-                    "How many times",
-                )],
-                move |args, _| {
-                    let times = args.integer("times").unwrap_or(1);
-                    Ok(TallyAction::Add {
-                        by: by.saturating_mul(times),
-                    })
-                },
-            ),
-            // The resource already publishes `double`; its own stays.
-            ActionDecl::new("double", "Shadowed", Vec::new(), |_, _| {
-                Ok(TallyAction::Add { by: 1000 })
-            }),
-        ]
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
@@ -385,14 +383,14 @@ fn live_rows_and_bound_edits_join_the_resource_tree() {
     assert_eq!(app.state(), 4);
 
     // Edits bound to where the user is are typed actions of the resource:
-    // the surface's selection, the view's step; the resource's own wins.
+    // the selection, the view's step; the resource's own wins.
     let root = find(&resources, Tally::KIND).unwrap().clone();
     for id in ["add-selected", "add-step", "double"] {
         let spec = root.actions.iter().find(|action| action.id == id).unwrap();
         assert_eq!(spec.kind, OperationKind::Document, "{id}");
     }
     app.call("add-selected", json!({ "times": 2 })).unwrap();
-    assert_eq!(app.state(), 12, "the surface was presented 4: twice that");
+    assert_eq!(app.state(), 12, "the selection was 4: twice that");
     app.call("double", json!({})).unwrap();
     assert_eq!(app.state(), 24, "the resource's own `double` wins");
     app.harness().click_named("step-up").unwrap();

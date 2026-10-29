@@ -107,7 +107,6 @@ async fn test_stream_gated(
         streaming: true,
         api: None,
         target: crate::openai::Target::Standard,
-        authenticated: true,
         budget: tilo_test_env::hang_bound(),
         body: legacy.then(|| json!({"model":"checked-model", "messages":[]})),
         retry_refusals: false,

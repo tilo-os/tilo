@@ -100,13 +100,9 @@ fn toggle_reconciles_only_its_field() {
         "opening the panel reads everything once"
     );
 
-    host.apply_quick_settings_root_action(
-        RootAction::Changed(tilo_quick_settings::root::PendingRootActions {
-            bluetooth: Some(false),
-            ..Default::default()
-        }),
-        &chrome,
-    );
+    host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::SetBluetooth {
+        on: false,
+    });
     assert_eq!(actions.calls(), ["bluetooth=false"]);
     assert_eq!(
         host.qs_refresh.take_kicks(),
@@ -114,13 +110,9 @@ fn toggle_reconciles_only_its_field() {
         "a Bluetooth toggle reads back Bluetooth, not every daemon on the machine"
     );
 
-    host.apply_quick_settings_root_action(
-        RootAction::Changed(tilo_quick_settings::root::PendingRootActions {
-            power: Some(tilo_quick_settings::PowerProfile::Saver),
-            ..Default::default()
-        }),
-        &chrome,
-    );
+    host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::SetPowerMode {
+        mode: tilo_quick_settings::PowerProfile::Saver,
+    });
     assert_eq!(host.qs_refresh.take_kicks(), [Kick::Field(QsField::Power)]);
 
     host.reconcile_quick_settings_open_edge(true);
@@ -136,7 +128,7 @@ fn slider_and_media_key_share_commit_volume() {
     let slider_actions = Recorder::default();
     let slider_bridge = bridge_at(0.5, true);
     let (mut host, chrome) = host_with(&slider_actions, Some(slider_bridge.clone()));
-    host.commit_quick_settings_slider(SliderCommit::Volume(55.0));
+    host.commit_quick_settings_level(super::quick_settings::QsLevelChange::Volume(0.55));
     let slider_osd = chrome.borrow().osd.expect("the slider raised a readout");
     assert_eq!(
         host.qs_refresh.take_kicks(),
@@ -271,7 +263,7 @@ fn wifi_tile_names_the_observed_link_not_a_stale_scan() {
         st.quick_settings.wifi_scan_error = Some("scan failed".into());
     }
     let subline = |chrome: &crate::shell::chrome_state::Chrome| {
-        QuickSettingsRoot::subline(QuickSettingsControl::Wifi, &chrome.borrow().quick_settings)
+        tilo_quick_settings::subline(QuickSettingsControl::Wifi, &chrome.borrow().quick_settings)
     };
     let doc = automerge::AutoCommit::new();
     let mut observe = |kind, name: Option<&str>| {
@@ -297,9 +289,7 @@ fn wifi_tile_names_the_observed_link_not_a_stale_scan() {
 
 /// What the top bar draws from chrome, through its production source.
 fn bar_status(chrome: &crate::shell::chrome_state::Chrome) -> tilo_desktop::chrome::SystemStatus {
-    crate::shell::topbar_chrome::native_source(chrome.clone())
-        .snapshot()
-        .status
+    crate::shell::topbar_chrome::system_status(&chrome.borrow().quick_settings.status)
 }
 
 #[test]
@@ -341,7 +331,7 @@ fn the_volume_icon_mutes_and_unmutes_in_the_bar_and_the_panel() {
     host.update(&doc, &automerge::ROOT);
 
     for muted in [true, false] {
-        host.apply_quick_settings_root_action(RootAction::ToggleMute, &chrome);
+        host.run_quick_settings_effect_for_test(tilo_quick_settings::QsEffect::SetMuted { muted });
         let expected = media::audio::default_node::VolumeState { level: 0.4, muted };
         assert_eq!(bridge.snapshot().volume, Some(expected));
         assert_eq!(chrome.borrow().quick_settings.status.volume, Some(expected));

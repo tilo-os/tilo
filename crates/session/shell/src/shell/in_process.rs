@@ -51,7 +51,7 @@ pub struct InProcessApps {
     broker: Option<SessionBroker>,
     /// The person's messaging accounts, in their own service.
     #[cfg(target_os = "linux")]
-    messaging: Option<messaging::MessagingService>,
+    messaging: Option<Box<dyn messaging::Service>>,
     /// Where the messaging service keeps the accounts' private state.
     #[cfg(target_os = "linux")]
     messaging_profile: Option<std::path::PathBuf>,
@@ -188,7 +188,7 @@ impl InProcessApps {
         #[cfg(target_os = "linux")]
         if let (Some(profile), Some(socket)) = (&self.messaging_profile, &self.native_broker_socket)
         {
-            self.messaging = messaging::MessagingService::start(
+            self.messaging = messaging::start(
                 &self.author.0,
                 &self.device_id,
                 profile,

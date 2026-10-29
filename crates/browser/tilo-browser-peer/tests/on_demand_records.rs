@@ -17,6 +17,9 @@
 mod participant;
 mod support;
 
+// Placing the room has the host build its governance in an automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 use std::collections::BTreeMap;
 
 use collab_types::DocumentMutation;
@@ -123,7 +126,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
         )
     };
     let author = peer(author);
-    author.join(workspace()).unwrap();
+    author.join_placed(support::ROOM, "Workspace").unwrap();
     ready(&[&author]).await;
     let note = route();
     let archive = record(neighbour_wire::on_demand_record("uuid:archive"));
@@ -136,8 +139,8 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     // Two pages join: each is replayed the note and the chain's head only.
     let early = peer(early);
     let reader = peer(reader);
-    early.join(workspace()).unwrap();
-    reader.join(workspace()).unwrap();
+    early.join_placed(support::ROOM, "Workspace").unwrap();
+    reader.join_placed(support::ROOM, "Workspace").unwrap();
     let (mut at_early, mut at_reader) = (Received::default(), Received::default());
     for (page, received) in [(&early, &mut at_early), (&reader, &mut at_reader)] {
         until("the eager records", page, received, |received| {
@@ -202,7 +205,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
 
     // A page joining now is replayed the new head, not the part before it.
     let late = peer(late);
-    late.join(workspace()).unwrap();
+    late.join_placed(support::ROOM, "Workspace").unwrap();
     let mut at_late = Received::default();
     until("the new head", &late, &mut at_late, |received| {
         received.of(&note).len() == 2 && !received.of(&part(2)).is_empty()

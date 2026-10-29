@@ -140,25 +140,17 @@ impl Session {
 
     /// Learn the session's apps and their declarations, for completion.
     fn survey(&mut self) -> Result<(), String> {
-        let listed = self.door.call("tilo_ls", &json!({}))?;
-        for line in listed.text.lines().skip(1) {
-            if !line.trim_end().ends_with("running") {
-                continue;
-            }
-            let Some(name) = line.split_whitespace().next() else {
-                continue;
-            };
-            let catalogue = self.door.call(
-                "tilo_do",
-                &json!({"path": format!("{name}/tilolang#catalogue")}),
-            )?;
-            if catalogue.failed {
-                continue;
-            }
-            if let Some(json) = answer_json(&catalogue.text) {
-                self.catalogue.learn(name, &json);
-            }
-            self.catalogue.apps.push(name.to_owned());
+        // Every installed app, from the packages the task's host holds: whether a window of it
+        // is open does not matter.
+        let listed = self.door.call("tilo", &json!({"program": "catalogue"}))?;
+        if listed.failed {
+            return Err(format!("the door did not list its apps: {}", listed.text));
+        }
+        let catalogue: Json = serde_json::from_str(listed.text.trim())
+            .map_err(|error| format!("the door's catalogue is not JSON: {error}"))?;
+        for (alias, app) in catalogue.as_object().into_iter().flatten() {
+            self.catalogue.learn(alias, &app["signatures"]);
+            self.catalogue.apps.push(alias.clone());
         }
         Ok(())
     }
@@ -224,12 +216,6 @@ tilolang, run by the session as this REPL's task:
   undo                         take back the last step
   undo task / history task     take back / list every step of this session
   :apps  :help  :quit";
-
-/// The JSON an `ok` answer carries after its first line.
-fn answer_json(text: &str) -> Option<Json> {
-    let body = text.strip_prefix("ok")?.trim();
-    serde_json::from_str(body).ok()
-}
 
 impl Complete for Session {
     fn complete(&self, line: &str, cursor: usize) -> (usize, Vec<String>) {
