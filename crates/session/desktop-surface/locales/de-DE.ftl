@@ -1167,6 +1167,8 @@ notification-alarm-action-failed = Dieser Wecker konnte nicht geändert werden
 notification-alarm-action-title = { $action }: { $title }
 notification-alarm-action-subtitle = Für dieses Weckereignis
 notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
+notification-sender-claims = App sagt: { $name }
+notification-open = Öffnen
 
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen

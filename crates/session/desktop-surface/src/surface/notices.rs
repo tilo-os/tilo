@@ -60,7 +60,14 @@ struct NoticeState {
     /// Notifications posted since the person last looked at the centre, by
     /// id: what the bell counts.
     unread: RefCell<std::collections::BTreeSet<u64>>,
+    /// The host shows the banners elsewhere (an app of their own); the
+    /// surface shows only the centre.
+    banners_elsewhere: Cell<bool>,
+    /// Told of each outcome as it happens.
+    taps: RefCell<Vec<OutcomeTap>>,
 }
+
+type OutcomeTap = Rc<dyn Fn(&NotificationOutcome)>;
 
 impl NoticeState {
     fn touch(&self) {
@@ -76,12 +83,19 @@ impl NoticeState {
 
     fn activated(&self, notification: Notification) {
         let action = notification.default_action_key();
-        self.outcomes
-            .borrow_mut()
-            .push(NotificationOutcome::Activated {
-                notification: Box::new(notification),
-                action,
-            });
+        self.outcome(NotificationOutcome::Activated {
+            notification: Box::new(notification),
+            action,
+        });
+    }
+
+    /// Hand `outcome` to the host: its taps now, its queue for later.
+    fn outcome(&self, outcome: NotificationOutcome) {
+        let taps = self.taps.borrow().clone();
+        for tap in &taps {
+            tap(&outcome);
+        }
+        self.outcomes.borrow_mut().push(outcome);
     }
 }
 
@@ -122,9 +136,7 @@ impl NotificationHost for NoticeState {
     }
     fn dismiss_history(&self, id: u64) {
         if self.log.borrow_mut().take_history(id).is_some() {
-            self.outcomes
-                .borrow_mut()
-                .push(NotificationOutcome::Dismissed { id });
+            self.outcome(NotificationOutcome::Dismissed { id });
             self.touch();
         }
     }
@@ -159,12 +171,10 @@ impl NotificationHost for NoticeState {
             return;
         }
         if let Some(notification) = self.retire_active(id) {
-            self.outcomes
-                .borrow_mut()
-                .push(NotificationOutcome::Activated {
-                    notification: Box::new(notification),
-                    action: Some(key.to_owned()),
-                });
+            self.outcome(NotificationOutcome::Activated {
+                notification: Box::new(notification),
+                action: Some(key.to_owned()),
+            });
         }
     }
 }
@@ -248,6 +258,37 @@ impl DesktopNotifications {
     pub fn restore_history(&self, history: Vec<Notification>) {
         self.log.log.borrow_mut().restore_history(history);
         self.log.touch();
+    }
+
+    /// Also tell `tap` of each outcome as it happens: for a host that
+    /// answers a notification's sender the moment the person chose, while
+    /// the surface carries out its own part (opening the app).
+    pub fn on_outcome(&self, tap: impl Fn(&NotificationOutcome) + 'static) {
+        self.log.taps.borrow_mut().push(Rc::new(tap));
+    }
+
+    /// The host shows the banners in a surface of their own
+    /// ([`Self::feed`], [`Self::answer`]); the desktop surface shows only
+    /// the centre.
+    pub fn show_banners_elsewhere(&self) {
+        self.log.banners_elsewhere.set(true);
+        self.log.touch();
+    }
+
+    /// The banners shown now, for a banner surface of the host's own.
+    #[must_use]
+    pub fn feed(&self) -> BannerFeed {
+        BannerFeed::of(self.host())
+    }
+
+    /// Carry out what the person did on a banner surface of the host's own.
+    pub fn answer(&self, ask: crate::notifications::BannerAsk) {
+        ask.answer(self.host());
+    }
+
+    /// Open the notification centre at the desktop surface's next update.
+    pub fn open_center(&self) {
+        self.host().open_center();
     }
 
     /// What the person chose since the last call, oldest first.
@@ -556,9 +597,14 @@ impl NotificationLayer {
         &self.notifications
     }
 
-    /// Hand the stack the banners shown now.
+    /// Hand the stack the banners shown now: none while the host shows
+    /// them elsewhere.
     fn feed_stack(&mut self) {
-        let feed = BannerFeed::of(self.notifications.host());
+        let feed = if self.notifications.log.banners_elsewhere.get() {
+            BannerFeed::default()
+        } else {
+            BannerFeed::of(self.notifications.host())
+        };
         self.stack.set_feed(feed);
     }
 
@@ -760,7 +806,9 @@ impl NotificationLayer {
 
     /// Whether the layer shows anything at all.
     pub fn visible(&self) -> bool {
-        self.center.is_some() || !self.notifications.log().active().is_empty()
+        self.center.is_some()
+            || (!self.notifications.log.banners_elsewhere.get()
+                && !self.notifications.log().active().is_empty())
     }
 }
 
@@ -781,6 +829,9 @@ impl Widget for NotificationLayer {
     /// The reading page glides on after a flick, repainted as a wheel's
     /// scroll is; that changes no model.
     fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        if self.notifications.log.centre_requested.take() {
+            self.set_center_open(true);
+        }
         self.feed_stack();
         self.adopt_centre();
         if let Some(center) = self.centre_mut() {
@@ -1022,6 +1073,32 @@ mod tests {
             notifications.take_outcomes().is_empty(),
             "closing a banner answers nobody"
         );
+    }
+
+    /// A host showing the banners in a surface of its own feeds it and
+    /// answers it through the notifications; the layer shows only the
+    /// centre, and the host hears each outcome as it happens.
+    #[test]
+    fn banners_shown_elsewhere_leave_the_layer_only_the_centre() {
+        let (mut layer, notifications) = layer_with(2);
+        notifications.show_banners_elsewhere();
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let tap = Rc::clone(&heard);
+        notifications.on_outcome(move |outcome| {
+            if let NotificationOutcome::Activated { action, .. } = outcome {
+                tap.borrow_mut().push(action.clone());
+            }
+        });
+        assert!(!layer.visible(), "no banners on the surface");
+        let feed = notifications.feed();
+        assert_eq!(feed.banners.len(), 2, "the host's own surface gets them");
+        let chosen = feed.banners[0].notification.id;
+        notifications.answer(crate::notifications::BannerAsk::Activate(chosen));
+        assert_eq!(*heard.borrow(), [Some("default".to_owned())]);
+        assert_eq!(notifications.take_outcomes().len(), 1, "and still queued");
+        notifications.open_center();
+        Widget::update(&mut layer, &(), &());
+        assert!(layer.center_open(), "the centre opens on the host's word");
     }
 
     #[test]

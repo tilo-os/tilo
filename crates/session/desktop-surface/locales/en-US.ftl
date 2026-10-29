@@ -1148,6 +1148,8 @@ notification-alarm-action-failed = Could not change this alarm
 notification-alarm-action-title = { $action }: { $title }
 notification-alarm-action-subtitle = For this alarm occurrence
 notification-alarm-action-retry = Keep this notification and try again.
+notification-sender-claims = App says: { $name }
+notification-open = Open
 
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source

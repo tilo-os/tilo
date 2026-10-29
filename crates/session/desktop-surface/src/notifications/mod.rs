@@ -120,6 +120,32 @@ pub trait NotificationHost {
     fn changed(&self) {}
 }
 
+/// What a sender that nobody vouched for says it is, shown as its claim:
+/// one short line, never as an app's verified name. `None` when it claims
+/// nothing.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn sender_claim(app_name: &str) -> Option<String> {
+    let claim = app_name
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(64)
+        .collect::<String>();
+    let claim = claim.trim();
+    (!claim.is_empty()).then(|| {
+        crate::i18n::t_args(
+            "notification-sender-claims",
+            &[("name", claim.to_owned().into())],
+        )
+    })
+}
+
+/// What a notification's default action is labelled, in the desktop's
+/// language.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn open_action_label() -> String {
+    crate::i18n::t("notification-open")
+}
+
 /// Host calendar-alarm actions, in the desktop's language.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn alarm_action_labels() -> Vec<(String, String)> {
