@@ -54,6 +54,9 @@ pub mod reply;
 pub mod screenshot;
 pub mod settings;
 
+#[cfg(test)]
+mod dbus_tests;
+
 pub use auth::{AuthenticatedCall, PortalAuthenticator};
 pub use consent::Consents;
 pub use inhibit::{Inhibition, Inhibitions};
