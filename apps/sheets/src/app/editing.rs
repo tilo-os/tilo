@@ -1,8 +1,8 @@
 //! The commands the chrome hands back: the name box, the formula entry, bold and formula view, a tab's rename, the find bar and the menu rows each action names.
 
 use super::{
-    Addr, Atom, Cell, EditOutcome, EditableLabel, Edits, Invoke, MenuItem, Point, SheetsApp,
-    TabAction, TabRename, TextInput, TextRole, Widget, Workbook, actions, parse_ref_target,
+    Addr, Cell, EditOutcome, EditableLabel, Edits, Invoke, MenuItem, Point, SheetsApp, TabAction,
+    TabRename, TextInput, TextRole, Widget, Workbook, actions, parse_ref_target,
     reference_box_char, verbs,
 };
 
@@ -120,11 +120,14 @@ impl SheetsApp {
                     .get(rename.idx)
                     .is_some_and(|current| current == trimmed);
                 if !trimmed.is_empty() && !unchanged {
-                    if let Some(id) = self.sheet_ids.get(rename.idx).cloned() {
-                        let name = Workbook::paths().sheets.item(&id).name;
-                        if let Ok(invoke) = Invoke::edit(&name.set(Atom(trimmed.to_owned()))) {
-                            self.submit(doc, invoke);
-                        }
+                    if let Some(sheet) = self.sheet_ids.get(rename.idx).cloned() {
+                        self.submit(
+                            doc,
+                            Workbook::RENAME_SHEET.with(verbs::RenameSheet {
+                                sheet,
+                                name: trimmed.to_owned(),
+                            }),
+                        );
                     }
                     self.reload();
                     self.status = format!("Renamed sheet to {trimmed}");
