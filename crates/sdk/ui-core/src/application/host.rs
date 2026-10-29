@@ -1481,6 +1481,93 @@ mod native_process_tests {
         assert!(prepared.context.record().id.is_package_primary());
     }
 
+    /// A window that shows before the room's record (a tilolang app) opens
+    /// the record this device holds off the frame. Launched again while its
+    /// workspace joins (after a session restart, or closed and opened once
+    /// more), its component is admitted on the room's route while the record
+    /// is still decoding, every time, and shows the record once taken in.
+    #[test]
+    #[cfg(all(unix, feature = "broker-transport"))]
+    fn a_window_opening_its_room_record_off_the_frame_is_admitted_on_every_launch() {
+        use crate::application_test_support as probe;
+        use crate::collaboration::native_initial::NativeConstruction;
+        use automerge::{ReadDoc, transaction::Transactable};
+        let temp = tempfile::tempdir().unwrap();
+        let room = "3f2b1c00-0000-4000-8000-00000000000d";
+        let mut definition = definition(probe::APP);
+        definition.room_record = true;
+        definition.opens_before_record = true;
+        let launch = |instance: u64| {
+            NativeProcessHost::open_with(
+                &definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some(instance.to_string()),
+                    ..environment(temp.path())
+                },
+                probe::author(),
+            )
+            .unwrap()
+        };
+        // The first launch creates the room's record on this device.
+        let mut host = launch(61);
+        let mut created = host
+            .prepare_launch(&definition, None, probe::runner_inputs())
+            .unwrap();
+        created
+            .context
+            .initialize_new_record(|doc| {
+                doc.put(automerge::ROOT, "note", "kept")
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap();
+        drop(created);
+        drop(host);
+
+        for instance in [61, 61, 62] {
+            let mut host = launch(instance);
+            let scope = crate::wake::WakeScope::new();
+            let (manager, _broker) = {
+                let _entry = scope.enter();
+                crate::collaboration::CollaborationManager::native_joining_fixture_for_test(
+                    crate::collaboration::RouteSpec::app(probe::APP, room.parse().unwrap()),
+                    definition.record_kind.as_str(),
+                    automerge::AutoCommit::new().save(),
+                    runtime_collab::RoomStatus::Ready,
+                )
+            };
+            let construction = NativeConstruction::enter_component(manager, scope).unwrap();
+            let prepared = host
+                .prepare_launch(&definition, None, probe::runner_inputs())
+                .unwrap();
+            assert!(matches!(prepared.target, LaunchTarget::Record { .. }));
+            let opening = prepared
+                .context
+                .record_opening()
+                .expect("the record this device holds opens off the frame");
+            construction
+                .bind_component(&prepared.context.callback_binding())
+                .expect("the relaunched component is admitted on the room's route");
+            assert!(opening.take_in(true).unwrap());
+            prepared
+                .context
+                .read_record(|doc| {
+                    assert_eq!(
+                        doc.get(automerge::ROOT, "note")
+                            .unwrap()
+                            .and_then(|(value, _)| value.into_string().ok())
+                            .as_deref(),
+                        Some("kept")
+                    );
+                })
+                .unwrap();
+            drop(prepared);
+            drop(construction);
+            drop(host);
+        }
+    }
+
     #[test]
     fn room_record_windows_share_one_record_and_see_the_per_window_ones() {
         use crate::application_test_support as probe;
