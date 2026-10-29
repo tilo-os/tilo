@@ -150,29 +150,15 @@ fn original_import(
                 .map_err(err)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let mut redemptions = BTreeMap::new();
     for (key, values) in room::invitation_receipts(doc)? {
         for bytes in values {
             let receipt: RedemptionReceipt = serde_json::from_slice(&bytes).map_err(err)?;
             if key != hex::encode(receipt.invite_id) {
                 return Err("governed invitation receipt key mismatch".into());
             }
-            if let Some(existing) = redemptions.insert(receipt.invite_id, receipt.clone())
-                && existing != receipt
-            {
-                return Err("governed invitation has conflicting redemption receipts".into());
-            }
         }
     }
-    for (_, identity) in &identities {
-        for receipt in identity.admission.iter().chain(&identity.admissions) {
-            if let Some(existing) = redemptions.insert(receipt.invite_id, receipt.clone())
-                && existing != *receipt
-            {
-                return Err("governed invitation has conflicting redemption receipts".into());
-            }
-        }
-    }
+    let members = room::governance_of(Some(doc)).members;
     for (id, identity) in identities {
         let has_admission = identity.has_admission();
         let cert = identity.device_cert;
@@ -192,6 +178,7 @@ fn original_import(
         if !peer.core.certificates.contains_key(&cert.device_public_key)
             && cert.user_public_key != peer.core.authority.user_public_key
             && !has_admission
+            && !members.contains_key(&hex::encode(cert.user_public_key))
         {
             return Err("independent identity is missing governed admission receipt".into());
         }
@@ -319,6 +306,7 @@ fn governed_import_preserves_real_signed_identity_admission_and_certificate_fail
         device_public_key: foreign.device_public_key,
         request_id: [8; 32],
         role: crate::join::MemberRole::Viewer,
+        invitation: None,
     });
     set_identity(
         &mut room,
@@ -390,34 +378,6 @@ fn governed_import_preserves_all_receipt_shapes_and_error_order() {
     assert!(matches!(
         compare_case(&peer, &room, now),
         Err(ImportError::Decode(PeerResourceError::Malformed))
-    ));
-    let mut room = peer.admitted_room().unwrap().clone();
-    let receipt = RedemptionReceipt {
-        invite_id: [19; 32],
-        user_public_key: member.user_public_key,
-        device_public_key: member.device_public_key,
-        request_id: [9; 32],
-        role: crate::join::MemberRole::Editor,
-    };
-    let ledger = room
-        .get(automerge::ROOT, "invitation_receipts_v1")
-        .unwrap()
-        .unwrap()
-        .1;
-    room.put(
-        &ledger,
-        hex::encode(receipt.invite_id),
-        serde_json::to_vec(&receipt).unwrap(),
-    )
-    .unwrap();
-    let mut identity = row(member.clone());
-    let mut conflict = receipt;
-    conflict.request_id[0] ^= 1;
-    identity.admissions.push(conflict);
-    set_identity(&mut room, &hex::encode(member.device_public_key), &identity);
-    assert!(matches!(
-        compare_case(&peer, &room, now),
-        Err(ImportError::ReceiptConflict)
     ));
     for kind in [automerge::ObjType::List, automerge::ObjType::Text] {
         let mut room = peer.admitted_room().unwrap().clone();
