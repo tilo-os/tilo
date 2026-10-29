@@ -93,6 +93,8 @@ imports! {
     SetRemove = "set_remove" ([H, H, H] -> []);
     MapPut = "map_put" ([H, H, H, H] -> []);
     MapRemove = "map_remove" ([H, H, H] -> []);
+    MapSetAdd = "map_set_add" ([H, H, H, H] -> []);
+    MapSetRemove = "map_set_remove" ([H, H, H, H] -> []);
     MapGetH = "map_get_h" ([H, H, H] -> [H]);
     MapKeys = "map_keys" ([H, H] -> [H]);
     RecNew = "rec_new" ([H] -> [H]);

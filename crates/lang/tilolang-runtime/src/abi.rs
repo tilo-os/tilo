@@ -78,6 +78,8 @@ imports! {
     (SetRemove, "set_remove", "iii", ""),
     (MapPut, "map_put", "iiii", ""),
     (MapRemove, "map_remove", "iii", ""),
+    (MapSetAdd, "map_set_add", "iiii", ""),
+    (MapSetRemove, "map_set_remove", "iiii", ""),
     (MapGetH, "map_get_h", "iii", "i"),
     (MapKeys, "map_keys", "ii", "i"),
     (RecNew, "rec_new", "i", "i"),

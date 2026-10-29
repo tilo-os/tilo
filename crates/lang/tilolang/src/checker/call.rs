@@ -1031,7 +1031,7 @@ impl Checker<'_> {
                 "insert" | "remove" | "move" | "remove_where"
             ) | (Ty::Set(_), "add" | "remove")
                 | (Ty::Map(_), "put" | "remove")
-        );
+        ) || (m == "add" && matches!(&f.ty, Ty::Map(v) if matches!(**v, Ty::Set(_))));
         if !valid
             && !matches!(
                 m,
@@ -1060,6 +1060,9 @@ impl Checker<'_> {
                     "insert, remove, remove_where, move, len, matching and the list methods"
                 }
                 Ty::Set(_) => "add, remove, len and the list methods",
+                Ty::Map(v) if matches!(**v, Ty::Set(_)) => {
+                    "add(key, element), remove(key, element), remove(key), get (an Option of the set) and keys"
+                }
                 _ => "put, remove, get (an Option of the value) and keys",
             };
             let methods = [
@@ -1167,6 +1170,37 @@ impl Checker<'_> {
                     Imp::SetRemove
                 };
                 Ex::host(imp, vec![b, fid, v], Ty::Unit)
+            }
+            // A map of sets: an element added to or taken from one key's set, each element
+            // stored on its own so concurrent additions all stay.
+            (Ty::Map(t), "add" | "remove")
+                if matches!(**t, Ty::Set(_)) && (m == "add" || args.len() == 2) =>
+            {
+                if !self.arity(name, args, 2, span) {
+                    return Ex::error();
+                }
+                let (Some(k), Some(e), Ty::Set(element)) = (args.first(), args.get(1), &**t) else {
+                    return Ex::error();
+                };
+                let k = self.expr_as(&k.value, &Ty::Text);
+                let e = Self::handle_of(self.expr_as(&e.value, element));
+                let imp = if m == "add" {
+                    Imp::MapSetAdd
+                } else {
+                    Imp::MapSetRemove
+                };
+                Ex::host(imp, vec![b, fid, k, e], Ty::Unit)
+            }
+            (Ty::Map(t), "put") if matches!(**t, Ty::Set(_)) => {
+                self.err(
+                    "E027",
+                    name.span,
+                    format!(
+                        "`{}` is a map of sets: add and remove its elements (`.add(key, element)`), so changes made at once all stay",
+                        f.name
+                    ),
+                );
+                Ex::error()
             }
             (Ty::Map(t), "put") => {
                 if !self.arity(name, args, 2, span) {
@@ -1310,7 +1344,12 @@ impl Checker<'_> {
             return Ex::error();
         };
         let key = self.expr_as(&k.value, &Ty::Text);
-        let ty = Ty::Option(Box::new(value.clone()));
+        // A key's set reads as the list of its elements, a value to pass around.
+        let value = match value {
+            Ty::Set(element) => Ty::List(element.clone()),
+            other => other.clone(),
+        };
+        let ty = Ty::Option(Box::new(value));
         Ex::host(Imp::MapGetH, vec![b, fid, key], ty)
     }
 
