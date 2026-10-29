@@ -105,3 +105,93 @@ fn trees_an_image_cannot_carry_are_refused() {
         Some(runtime)
     );
 }
+
+/// `packed`'s image as it was written at `format`: the same manifest and
+/// payload under a root of that format, signed by `identity`.
+fn at_format(
+    packed: &tilo_app_package::Packed,
+    format: u32,
+    identity: &SigningIdentity,
+) -> tilo_app_package::PackageMeta {
+    let mut root = tilo_app_package::SignedRoot {
+        format,
+        signature: Some([0; 64]),
+        ..packed.meta.root.clone()
+    };
+    root.signature = Some(identity.sign_signed_root(&root).unwrap());
+    tilo_app_package::PackageMeta::from_root(
+        root,
+        packed.meta.manifest_bytes.clone(),
+        packed.meta.collection_bytes.clone(),
+    )
+    .unwrap()
+}
+
+/// Environments name their images by id, and the id hashes the format the
+/// image was written at, so an image of every format that shipped is read
+/// as it is: archived, read back and unpacked under the same id.
+#[test]
+fn an_image_of_every_shipped_format_reads_under_its_own_id() {
+    let src = tempfile::tempdir().unwrap();
+    userland(src.path());
+    let identity = SigningIdentity::generate();
+    let packed = seal_image(src.path(), &spec(Kind::EnvRuntime, None), &identity).unwrap();
+    assert_eq!(tapp::READABLE_FORMATS, [1, tapp::TAPP_FORMAT_VERSION]);
+    for format in tapp::READABLE_FORMATS {
+        let meta = at_format(&packed, format, &identity);
+        let bytes = tapp::to_bytes(&meta, Some(&packed)).unwrap();
+        let read = tapp::read(bytes.as_slice(), &mut DiscardBlobs).unwrap();
+        assert_eq!(read.meta.id, meta.id, "format {format}");
+        assert_eq!(read.meta.root.format, format);
+        assert_eq!(read.meta.signed_root_bytes(), meta.signed_root_bytes());
+        assert!(
+            matches!(
+                tilo_app_package::verify(&read.meta, &[identity.public_key_bytes()]),
+                tilo_app_package::Verification::Trusted { .. }
+            ),
+            "format {format}"
+        );
+        let out = tempfile::tempdir().unwrap();
+        unpack(&read.meta, &packed, &out.path().join("tree")).unwrap();
+        assert!(out.path().join("tree/usr/bin/bash").is_file());
+    }
+}
+
+/// The env-runtime Tilo OS shipped at package format 1 (44.1.0, in the
+/// system store of every device installed before format 2), byte for byte:
+/// its root decodes, re-encodes to the same bytes and so the same id, its
+/// signature holds, and it commits to the manifest it shipped with.
+#[test]
+fn the_shipped_format_1_env_runtime_root_reads() {
+    let dir =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/shipped/env-runtime-44.1.0-format-1");
+    // The 173 bytes, hex-encoded: the repository holds text only.
+    let bytes = hex::decode(
+        std::fs::read_to_string(dir.join("signed-root.hex"))
+            .unwrap()
+            .trim(),
+    )
+    .unwrap();
+    let manifest = std::fs::read(dir.join("manifest.toml")).unwrap();
+    let root = tilo_app_package::SignedRoot::decode(&bytes).unwrap();
+    assert_eq!(root.format, 1);
+    assert_eq!(root.encode().as_slice(), bytes.as_slice());
+    assert_eq!(
+        root.package_id().to_hex(),
+        "6dbc169b5f606a9db2527dbf17620b653497f772400220b379f68b0b53ed612f"
+    );
+    assert_eq!(
+        tilo_app_package::BlobHash::of(&manifest),
+        root.manifest_hash
+    );
+    let publisher = ed25519_dalek::VerifyingKey::from_bytes(&root.publisher_identity).unwrap();
+    publisher
+        .verify_strict(
+            &root.signing_bytes(),
+            &ed25519_dalek::Signature::from_bytes(&root.signature.unwrap()),
+        )
+        .unwrap();
+    let manifest =
+        tilo_app_package::Manifest::from_toml_str(std::str::from_utf8(&manifest).unwrap()).unwrap();
+    assert_eq!(manifest.package.kind, Kind::EnvRuntime);
+}

@@ -528,6 +528,89 @@ mod tests {
         assert_eq!(builds.0.load(Ordering::Relaxed), 1, "built here instead");
     }
 
+    /// `packed` as it was written at package `format`, signed by `signer`.
+    fn at_format(
+        packed: &Packed,
+        format: u32,
+        signer: &SigningIdentity,
+    ) -> tilo_app_package::PackageMeta {
+        let mut root = tilo_app_package::SignedRoot {
+            format,
+            signature: Some([0; 64]),
+            ..packed.meta.root.clone()
+        };
+        root.signature = Some(signer.sign_signed_root(&root).unwrap());
+        tilo_app_package::PackageMeta::from_root(
+            root,
+            packed.meta.manifest_bytes.clone(),
+            packed.meta.collection_bytes.clone(),
+        )
+        .unwrap()
+    }
+
+    /// A device keeps the images it was installed with across package
+    /// format changes: a runtime the OS shipped at any format that shipped
+    /// is the current one and opens, and a tool built on it at that format
+    /// travels through the shelf to the user's other devices as it is.
+    #[test]
+    fn images_of_every_shipped_package_format_open() {
+        for format in tilo_app_package::tapp::READABLE_FORMATS {
+            let dir = tempfile::tempdir().unwrap();
+            let ci = SigningIdentity::generate();
+            let runtime = seal(&dir.path().join("runtime"), Kind::EnvRuntime, None, &ci);
+            let runtime_meta = at_format(&runtime, format, &ci);
+            let system = dir.path().join("system");
+            PackageStore::at(&system)
+                .install_image(
+                    tilo_app_package::tapp::to_bytes(&runtime_meta, Some(&runtime))
+                        .unwrap()
+                        .as_slice(),
+                    |_| Ok(Admission::default()),
+                    None,
+                )
+                .unwrap();
+            let shelf = ImageShelf::at(dir.path().join("synced").join(SHELF_DIR));
+            let images = StoreImages::new(
+                Store::new(PackageStore::at(dir.path().join("laptop")))
+                    .with_system(package_store::Layout::new(&system)),
+            )
+            .with_shelf(shelf.clone());
+            let (release, current) = images.current_runtime().unwrap();
+            assert_eq!((release.as_str(), current), ("44.1.0", runtime_meta.id));
+            let tree = images.tree(&current).unwrap();
+            assert!(tree.join("usr/bin/bash").is_file(), "format {format}");
+
+            let tool = seal(
+                &dir.path().join("tool"),
+                Kind::Tool,
+                Some(runtime_meta.id),
+                &ci,
+            );
+            let tool_meta = at_format(&tool, format, &ci);
+            images
+                .store
+                .user()
+                .install_image(
+                    tilo_app_package::tapp::to_bytes(&tool_meta, Some(&tool))
+                        .unwrap()
+                        .as_slice(),
+                    |_| Ok(Admission::default()),
+                    None,
+                )
+                .unwrap();
+            images.share(&tool_meta.id).unwrap();
+            let other = StoreImages::new(
+                Store::new(PackageStore::at(dir.path().join("desktop")))
+                    .with_system(package_store::Layout::new(&system))
+                    .with_trust(ImageTrust::new().with_publisher(ci.public_key_bytes())),
+            )
+            .with_shelf(shelf);
+            let fetched = other.tree(&tool_meta.id).unwrap();
+            assert!(fetched.join("usr/bin/pandoc").is_file(), "format {format}");
+            other.check_tool(&tool_meta.id, &runtime_meta.id).unwrap();
+        }
+    }
+
     /// The runtime the OS ships is imported into the user's store on its
     /// first use, which is the wait a session announces; afterwards the
     /// user's own copy answers.
