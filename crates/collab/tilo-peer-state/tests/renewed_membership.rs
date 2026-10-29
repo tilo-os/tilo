@@ -12,6 +12,7 @@ use ed25519_dalek::SigningKey;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+use tilo_desktop_model::RoomId;
 use tilo_governor::{Governor, GovernorStore, RoomTxn};
 use tilo_peer_state::join::invitations::{IssueInvitationRequest, IssuedInvitation};
 use tilo_peer_state::join::{
@@ -19,7 +20,7 @@ use tilo_peer_state::join::{
 };
 use tilo_peer_state::join_ledger::{GovernanceMessages, Governed, JoinError, JoinLedger, Signer};
 use tilo_peer_state::owner::testing::{self, ROOM};
-use tilo_peer_state::owner::{RoomId, VerifiedNativeEnrollmentIntent, open_file};
+use tilo_peer_state::owner::{VerifiedNativeEnrollmentIntent, open_file};
 use tilo_peer_state::{SeedState, StatePeer, seed_room};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 

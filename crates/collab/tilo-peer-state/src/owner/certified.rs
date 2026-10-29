@@ -175,7 +175,7 @@ impl VerifiedNativeEnrollmentIntent {
     /// # Errors
     /// `hint` was not appointed by the invitation, or the proof does not
     /// verify for it.
-    pub(crate) fn from_proof(
+    pub fn from_proof(
         join: VerifiedJoin,
         complete: join::JoinCompleteRequest,
         local_device: DeviceCert,

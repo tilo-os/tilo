@@ -35,7 +35,7 @@ use tilo_sort::CompactSort as _;
 use channel_crypto::{Access, ChannelContentKeys, ChannelPeer, PeerEvent, VaultKey};
 use collab_types::{ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceFrame};
 
-use tilo_peer_state::document_frame::{ContentCipher, DocumentRoute, KeysCipher};
+use tilo_peer_state::document_frame::DocumentRoute;
 
 /// First and longest wait before a waiting device asks again. An answer
 /// takes the request's turn in the host's order and then a participant's
