@@ -41,6 +41,7 @@ mod lock;
 pub mod output;
 mod output_management;
 mod output_power;
+mod pacing;
 pub mod policy;
 mod power;
 mod present;

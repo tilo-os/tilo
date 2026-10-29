@@ -18260,6 +18260,7 @@ dependencies = [
  "rustix 1.1.4",
  "smithay",
  "tempfile",
+ "tilo-frame-metrics",
  "tracing",
  "wayland-client",
  "wayland-protocols",
