@@ -292,6 +292,16 @@ def quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
+CLOCK = re.compile(r"\b([01]?\d|2[0-3])[:.]([0-5]\d)\b")
+
+
+def clock_minutes(text: str) -> int | None:
+    """The first time of day the screen's text shows, as minutes on a 12-hour dial, so that a
+    24-hour and a 12-hour clock read alike; differences are taken modulo 12 hours."""
+    match = CLOCK.search(text)
+    return int(match.group(1)) % 12 * 60 + int(match.group(2)) if match else None
+
+
 def sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as f:
@@ -1061,6 +1071,28 @@ cryptsetup close e2e-target
         self.lockout_before = self.lockout()
         self.power_off(label)
 
+    def clock_advances(self, label: str, text: str) -> None:
+        """Item 14: the boot sign-in's clock moves on by itself. Read now, then again after 70 s
+        with no input; the time shown must have advanced by a minute or two."""
+        first = clock_minutes(text)
+        time.sleep(70)
+        path, later_text = self.cycle.screen()
+        self.cycle.keep_screen(f"{label}-clock-later", path, later_text)
+        later = clock_minutes(later_text)
+        evidence = {"first": first, "later": later, "waited_s": 70}
+        if first is None or later is None:
+            self.item("14", "failed", "the boot sign-in's clock could not be read "
+                      f"(first {first}, 70 s later {later})", **evidence)
+            return
+        advanced = (later - first) % (12 * 60)
+        evidence["advanced_min"] = advanced
+        if 1 <= advanced <= 2:
+            self.item("14", "passed", f"the boot sign-in's clock moved on by {advanced} min in 70 s "
+                      "with no input", **evidence)
+        else:
+            self.item("14", "failed", f"the boot sign-in's clock moved by {advanced} min in 70 s "
+                      "with no input, not by one", **evidence)
+
     def boot_sign_in(self) -> None:
         """Item 3: the boot sign-in screen instead of the disk prompt, then the session without
         the greeter asking."""
@@ -1075,6 +1107,7 @@ cryptsetup close e2e-target
             self.recover_boot(label, kind)
             return
         self.cycle.keep_screen("boot-sign-in", path, text)
+        self.clock_advances(label, text)
         self.cycle.type(self.account)
         self.cycle.keys("ret")
         time.sleep(1)
@@ -1617,7 +1650,7 @@ cryptsetup close e2e-target
             steps = [("install", self.install, ("1", "2", "3", "4", "5", "8")),
                      ("first boot", self.first_boot, ("1",)),
                      ("migration", self.migrate, ("2", "3", "4", "5")),
-                     ("boot sign-in", self.boot_sign_in, ("3", "13")),
+                     ("boot sign-in", self.boot_sign_in, ("3", "13", "14")),
                      ("wrong entry", self.wrong_entry, ("4", "5")),
                      ("speech and touch", self.comforts_and_touch, ("10", "11", "12"))]
         else:
@@ -1791,6 +1824,7 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "11": "With a touch screen and no keyboard, the secret is tapped on the on-screen keyboard",
         "12": "The boot sign-in and the greeter after switch-root show the same card",
         "13": "The boot sign-in's first frame comes within 300 ms of knowing who may sign in",
+        "14": "The boot sign-in's clock moves on by itself, with no input",
     }
     if any(r.variant == "rollback" for r in runs):
         names["9"] = "Rollback to an image from before pam_tilo still signs in with the old password"
