@@ -161,6 +161,7 @@ impl NativeLaunch {
             workspace,
             app_id: self.app.clone(),
             record: self.record.clone(),
+            resource: None,
         })
     }
 

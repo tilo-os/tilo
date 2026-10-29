@@ -15,7 +15,7 @@ use crate::fixtures::{Replica, field_id};
 
 const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const APP: &str = "so.tilo.lang.todo";
+const APP: &str = "so.tilo.lang.tasks";
 
 /// Ada's replica holding a list with one item, Grace's fork of it, the package, and the item's
 /// resource id.

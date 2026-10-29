@@ -20,6 +20,17 @@ pub fn unnamed(id: &str) -> String {
     if let Some(name) = id.strip_prefix("scenario:") {
         return name.to_owned();
     }
+    // A package updating its own records: "Board, updating to version 1a2b3c4d".
+    if let Some((app, module)) = crate::authority::migration_of(id) {
+        let app = app.rsplit('.').next().unwrap_or(app);
+        let mut chars = app.chars();
+        let app: String = chars
+            .next()
+            .map(|first| first.to_uppercase().chain(chars).collect())
+            .unwrap_or_default();
+        let version: String = module.chars().take(KEPT).collect();
+        return format!("{app}, updating to version {version}");
+    }
     if let Some(kind) = id.strip_prefix("agent:") {
         let mut chars = kind.chars();
         let kind: String = chars

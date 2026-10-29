@@ -1,4 +1,4 @@
-//! Agents' programs: a session over Notes and Todo that finds, reads, acts, keeps its `let`s
+//! Agents' programs: a session over Notes and Tasks that finds, reads, acts, keeps its `let`s
 //! between programs, asks where the agent's code is not trusted, and teaches on errors.
 
 #[cfg(test)]
@@ -188,7 +188,7 @@ mod cases {
         let reply = session.run(
             &w.rt,
             &agent(),
-            "let all = find(\"launch\")\nprint(all.of(Note).len(), all.of(Todo).len())",
+            "let all = find(\"launch\")\nprint(all.of(Note).len(), all.of(Task).len())",
         );
         assert_eq!(done(&reply), "2 0");
         assert_eq!(w.notes.len(), 3);
@@ -241,18 +241,66 @@ mod cases {
     }
 
     #[test]
-    fn a_program_changes_nothing_itself() {
+    fn a_programs_assignment_is_its_apps_field_edit() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+
+        struct Sent(Rc<RefCell<Vec<Invocation>>>);
+        impl Invoker for Sent {
+            fn invoke(&self, invocation: &Invocation) -> Invoked {
+                self.0.borrow_mut().push(invocation.clone());
+                Invoked::Done(Value::Unit)
+            }
+        }
+
         let w = world();
-        let mut session = Session::new();
-        let reply = session.run(
+        let note = &w.notes[0];
+        let assign = format!(
+            "let n = @notes.Note:{}\nn.title = \"Mine\"",
+            note.id_string()
+        );
+        // A runtime that runs its apps' code itself has nowhere to send it: the program never
+        // writes the record.
+        let reply = Session::new().run(&w.rt, &agent(), &assign);
+        let ProgramOutcome::Failed(why) = &reply.outcome else {
+            panic!("an edit with nowhere to go ran: {:?}", reply.outcome);
+        };
+        assert!(why.contains("through its app"), "{why}");
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        w.rt.set_invoker(Sent(Rc::clone(&sent)));
+        let reply = Session::new().run(&w.rt, &agent(), &assign);
+        done(&reply);
+        let sent = sent.borrow();
+        let [
+            Invocation::Edit {
+                field,
+                value,
+                target,
+                ..
+            },
+        ] = sent.as_slice()
+        else {
+            panic!("one field edit: {sent:?}");
+        };
+        assert_eq!((field.as_str(), value), ("title", &Value::text("Mine")));
+        assert_eq!(target.id_string(), note.id_string());
+        assert_ne!(
+            w.rt.read(note, "title").unwrap(),
+            Value::text("Mine"),
+            "the program wrote nothing itself"
+        );
+    }
+
+    #[test]
+    fn a_collection_changes_through_its_apps_actions() {
+        let w = world();
+        let reply = Session::new().run(
             &w.rt,
             &agent(),
-            &format!(
-                "let l = {}\nfor t in l.items {{\n    t.title = \"Mine\"\n}}",
-                w.list_literal()
-            ),
+            &format!("let l = {}\nl.items = l.items", w.list_literal()),
         );
         let lines = rejected(&reply);
-        assert!(lines.contains("only an action"), "{lines}");
+        assert!(lines.contains("'s actions"), "{lines}");
     }
 }

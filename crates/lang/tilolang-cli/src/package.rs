@@ -6,12 +6,11 @@
 //! and the entrypoint is the tilolang runtime bundle's binary (`[entrypoint] runtime`), which
 //! the launcher points at the payload.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use tilo_app_package::manifest::Manifest;
 use tilo_app_package::pack::SigningIdentity;
-use tilolang::source::{BuiltPackage, compile_dirs, dependency_order, write_ids};
+use tilolang::source::{compile_dirs, dependency_order, write_ids};
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
@@ -197,22 +196,6 @@ ext = []
     )
 }
 
-/// The app ids `built` declares `use` of.
-fn uses(built: &BuiltPackage) -> BTreeSet<String> {
-    tilolang::parse_package(&built.source)
-        .map(|module| {
-            module
-                .items
-                .iter()
-                .filter_map(|item| match item {
-                    tilolang::ast::Item::Use(decl) => Some(decl.app.clone()),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// The directory name of the app `app` in a build's output: its last id segment.
 fn short_name(app: &str) -> &str {
     app.rsplit('.').next().unwrap_or(app)
@@ -239,7 +222,7 @@ pub fn build(options: &BuildOptions, identity: &SigningIdentity) -> Result<Vec<B
     let mut apps = Vec::new();
     for (index, package) in built.iter().enumerate() {
         let meta = &package.compiled.meta;
-        let used = uses(package);
+        let used = &meta.uses;
         let imports = built
             .iter()
             .take(index)

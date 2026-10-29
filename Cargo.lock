@@ -19353,6 +19353,7 @@ dependencies = [
  "desktop-policy",
  "package-store",
  "tempfile",
+ "tilo-action-policy",
  "tilo-app-package",
  "workspace-hack",
 ]

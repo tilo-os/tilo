@@ -280,12 +280,90 @@ impl ShellNetwork {
         let caller = owner
             .with_current(room, |view| Ok(view.device().clone()))
             .map_err(HostAskError::Unreachable)?;
+        if self.own_host_governs(room, &caller) {
+            // Its host may not be open yet: asked again once it is.
+            let host = self.local_host().map_err(HostAskError::Unreachable)?;
+            return self
+                .commit_membership_at_own_host(&host, room, caller, command)
+                .map(drop)
+                .map_err(HostAskError::Refused);
+        }
         self.commit_membership_here(&owner, room, caller, command)
             .map_err(HostAskError::Refused)
     }
 
+    /// Whether this device's own host governs `room`, as seen by `caller`,
+    /// this device: the room's governor is then this device's key, which
+    /// that host signs the room's history with. A change this device makes
+    /// to the room's governance is committed there, never in this device's
+    /// own replica as well: two replicas writing under one key number their
+    /// changes alike, and each refuses the other's history from then on.
+    pub(crate) fn own_host_governs(
+        &self,
+        room: RoomId,
+        caller: &tilo_user_identity::DeviceCert,
+    ) -> bool {
+        matches!(
+            self.governing_host(room, caller),
+            Ok(Some(host)) if self.local_host_governs(room, host)
+        )
+    }
+
+    /// Commit `command`, a membership change of `caller`, this device, at
+    /// this device's own `host`, which governs `room`
+    /// ([`Self::own_host_governs`]), and take what the host wrote into this
+    /// device's replica at once ([`Self::take_own_host_write`]). Blocks on
+    /// the host: for a worker, never the frame loop.
+    pub(crate) fn commit_membership_at_own_host(
+        &self,
+        host: &std::sync::Arc<tilo_network_actor::local_host::room_host::RoomHost>,
+        room: RoomId,
+        caller: tilo_user_identity::DeviceCert,
+        command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+    ) -> Result<(), String> {
+        let host = std::sync::Arc::clone(host);
+        let governor = caller.device_public_key;
+        let (completion, added) = self
+            .wait_on(async move {
+                host.rooms()
+                    .commit_own_membership(&room.to_string(), &caller, command)
+                    .await
+            })?
+            .map_err(|error| error.to_string())?;
+        tracing::debug!(%room, generation = completion.generation, "this device's host committed its membership change");
+        self.take_own_host_write(room, governor, added)
+    }
+
+    /// Take `added`, what this device's own host just wrote to `room` as its
+    /// governor `governor`, into this device's replica, as the host's
+    /// publication would bring it: in process, so the change is in force
+    /// here when the call that made it returns.
+    pub(crate) fn take_own_host_write(
+        &self,
+        room: RoomId,
+        governor: [u8; 32],
+        added: Vec<Vec<u8>>,
+    ) -> Result<(), String> {
+        if added.is_empty() {
+            return Ok(());
+        }
+        let owner = self.native_owner()?;
+        owner.receive(
+            room,
+            tilo_peer_state::TransportOrigin::RelayDelta(governor),
+            neighbour_wire::NeighbourMsg::SyncResp {
+                changes: added,
+                room: room.to_string(),
+            },
+            std::time::SystemTime::now(),
+        )?;
+        self.schedule_native_owner_publication(room);
+        Ok(())
+    }
+
     /// Commit `command` in `room` as `caller`, this device, signed with its
-    /// own key, and publish it.
+    /// own key, and publish it. In a room this device's own host governs,
+    /// that host commits it ([`Self::own_host_governs`]).
     pub(crate) fn commit_membership_here(
         &self,
         owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
@@ -293,6 +371,12 @@ impl ShellNetwork {
         caller: tilo_user_identity::DeviceCert,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
     ) -> Result<(), String> {
+        if self.own_host_governs(room, &caller) {
+            let host = self.local_host()?;
+            return self
+                .commit_membership_at_own_host(&host, room, caller, command)
+                .map(drop);
+        }
         let request = tilo_owner_commit::OwnerCommitRequest {
             room: room.to_string(),
             operation: tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {

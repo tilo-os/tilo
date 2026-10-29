@@ -1383,9 +1383,22 @@ pub fn edit_action(
             module: meta.module_hash.clone(),
             ..crate::action::Authorship::default()
         },
-        edits: vec![crate::action::DynEdit::Edit {
-            id: id.to_owned(),
-            edit: Edit::new(vec![Segment::Field(field.to_owned())], op),
+        // An item (`<record>/<item>`) is edited in its record, by its id there.
+        edits: vec![match id.split_once('/') {
+            Some((record, item)) => crate::action::DynEdit::Edit {
+                id: record.to_owned(),
+                edit: Edit::new(
+                    vec![
+                        Segment::Item(tilo_resource::Id::from_raw(item)),
+                        Segment::Field(field.to_owned()),
+                    ],
+                    op,
+                ),
+            },
+            None => crate::action::DynEdit::Edit {
+                id: id.to_owned(),
+                edit: Edit::new(vec![Segment::Field(field.to_owned())], op),
+            },
         }],
     })
 }

@@ -19,7 +19,7 @@ macro_rules! app {
 fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         ("so.tilo.lang.counter", vec![app!("counter")]),
-        ("so.tilo.lang.todo", vec![app!("tasks")]),
+        ("so.tilo.lang.tasks", vec![app!("tasks")]),
         ("so.tilo.lang.notes", vec![app!("notes")]),
         ("so.tilo.lang.mail", vec![app!("mail")]),
         ("so.tilo.lang.chat", vec![app!("chat")]),

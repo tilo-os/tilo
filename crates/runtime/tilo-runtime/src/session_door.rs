@@ -328,7 +328,7 @@ pub fn serve<H>(
 where
     H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
 {
-    serve_after(stream, None, host, ask)
+    serve_after(stream, None, host, None, ask)
 }
 
 /// [`serve`] a connection whose first line, `first`, was already read
@@ -338,6 +338,7 @@ pub fn serve_after<H>(
     mut stream: std::os::unix::net::UnixStream,
     mut first: Option<Vec<u8>>,
     host: H,
+    tasks: Option<std::sync::Arc<dyn crate::mcp::TaskHosts>>,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
 where
@@ -391,7 +392,14 @@ where
             return Ok(());
         }
     };
-    let server = std::sync::Arc::new(crate::mcp::McpServer::for_agent(host, room, &agent));
+    // The connection is one task of the agent: its run, whose programs run in a tilolang host
+    // of the task's own (docs/designs/app-language/agents.md, "How a program runs").
+    let run = format!("door-{}", uuid::Uuid::new_v4().simple());
+    let server = std::sync::Arc::new(
+        crate::mcp::McpServer::for_agent(host, room, &agent)
+            .with_agent_run(run, agent.clone())
+            .with_task_hosts(tasks),
+    );
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     if let Some(reply) = runtime
         .block_on(server.handle(hello.request))

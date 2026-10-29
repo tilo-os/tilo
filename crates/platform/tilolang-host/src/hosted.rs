@@ -78,6 +78,10 @@ pub struct Spec {
     pub person: String,
 }
 
+/// What a [`Surface`]'s resources are built from: the published records' revision and the
+/// loaded packages.
+type SurfaceInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>);
+
 /// What the instance publishes on its connection: the room's records with their actions, kept up
 /// to date change by change.
 struct Surface {
@@ -120,7 +124,7 @@ impl Surface {
 
     /// What [`Self::resources`] is built from, besides what never changes for this surface: the
     /// published records' revision and the loaded packages.
-    fn inputs(&self) -> (u64, Vec<tilolang_tilo::runtime::PackageId>) {
+    fn inputs(&self) -> SurfaceInputs {
         (
             self.publications.borrow().revision(),
             self.host
@@ -256,7 +260,7 @@ pub struct Hosted {
     directory: PublishedDirectory,
     /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
     /// they are the same, a turn publishes without building anything.
-    published_from: Option<(Rc<Surface>, (u64, Vec<tilolang_tilo::runtime::PackageId>))>,
+    published_from: Option<(Rc<Surface>, SurfaceInputs)>,
     registry: ActionRegistry,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
@@ -311,7 +315,7 @@ impl Hosted {
             wake,
             surface: Rc::clone(&surface),
         };
-        let instance = Instance::new(
+        let mut instance = Instance::new(
             Config {
                 app: spec.app.clone(),
                 me: spec.person.clone(),
@@ -332,6 +336,9 @@ impl Hosted {
             Rc::new(tilolang_tilo::names::Unnamed),
             window,
         );
+        // The device that governs the room is its records' origin: the package's migrations
+        // run there, once.
+        instance.set_origin(record.governs());
         let registry = ActionRegistry::with(tilolang_tilo::instance::room::register);
         Self {
             spec,
@@ -550,7 +557,7 @@ impl Hosted {
             self.record
                 .apply_invoked(&mut self.instance, &action, invoker, ambient)
                 .map_err(|error| Refused::new("action_failed", error.to_string()))?;
-            return Ok(tilo_actions::ActionOutput::default());
+            return Ok(returned(&host, &action));
         }
         if address.resource == HOST_RESOURCE
             && encoded.type_id == <HostEffect as tilo_resource::Effect>::OPERATION
@@ -776,5 +783,17 @@ fn door_code(error: &tilo_actions::DoorError) -> &'static str {
         tilo_actions::DoorError::Unknown(_) => "action_unknown",
         tilo_actions::DoorError::Unavailable { .. } => "action_unavailable",
         _ => "action_invalid_arguments",
+    }
+}
+
+/// What the action `action` answers: the resource it returned, by its published id, which a
+/// task's program goes on with.
+fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_actions::ActionOutput {
+    let returned = host
+        .take_returned(&action.action_id)
+        .map(|made| tilolang_tilo::publish::resource_id(&action.app, &made.id_string()));
+    tilo_actions::ActionOutput {
+        value: None,
+        resources: returned.into_iter().collect(),
     }
 }

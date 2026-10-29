@@ -903,7 +903,7 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
         .address
         .clone();
     for id in 1..held {
-        deliver(&inbox, 100 + id as u64, &new_note, "ada");
+        deliver(&inbox, (id as u64).saturating_add(100), &new_note, "ada");
     }
     settle(&mut host, &mut window);
     let input = node_with(
@@ -922,7 +922,7 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
             window.send(&[ToApp::Splice {
                 lane: Lane::Detail,
                 key: input.clone(),
-                seq: seq as u64 + 1,
+                seq: (seq as u64).saturating_add(1),
                 at: u32::try_from(shown.len()).unwrap(),
                 delete: 0,
                 insert: key.to_string(),
@@ -930,7 +930,7 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
             settle(&mut host, &mut window);
         });
         shown.push(key);
-        built += publications(&phases);
+        built = publications(&phases).saturating_add(built);
     }
     assert!(
         documents_sent(&sent) > documents,
