@@ -93,8 +93,8 @@ fn publish_laptop_with_monitor() {
     );
 }
 
-/// Route a pressed logical key through the host dispatcher, laid out as it
-/// stands, then run the frame that carries out what it asked.
+/// Route a pressed logical key through the host dispatcher, then run the
+/// frame that carries out what it asked.
 pub(crate) fn press(
     host: &mut ShellOverlayHost,
     layout: &(TaffyTree<()>, NodeId),
