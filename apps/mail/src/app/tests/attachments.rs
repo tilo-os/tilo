@@ -29,12 +29,14 @@ fn attachment_save_offers_only_the_downloaded_bytes_and_reports_truthfully() {
     // What the host is asked to save is exactly the downloaded bytes,
     // under a name that cannot reach outside the chosen folder.
     let (name, offered) = app
+        .state()
         .attachment_to_save(&message_id.to_string(), index)
         .expect("a downloaded attachment can be saved");
     assert_eq!(offered, bytes);
     assert_eq!(name, MailApp::attachment_save_name(&filename));
     assert!(
-        app.attachment_to_save(&message_id.to_string(), index + 100)
+        app.state()
+            .attachment_to_save(&message_id.to_string(), index + 100)
             .is_err(),
         "an attachment that is not loaded cannot be saved"
     );
@@ -47,12 +49,14 @@ fn attachment_save_offers_only_the_downloaded_bytes_and_reports_truthfully() {
             }),
         )
         .is_err(),
-        "only the surface, with the host's chooser, saves an attachment"
+        "only the view, with the host's chooser, saves an attachment"
     );
 
     // A save is reported only once the host wrote it.
     let resource = format!("mail.attachment:{message_id}:{index}");
-    let saved = app.finish_attachment_save(true, &name, resource.clone());
+    let saved = app
+        .state()
+        .finish_attachment_save(true, &name, resource.clone());
     assert!(matches!(
         saved,
         ui::framework::Effected::Done(output) if output.resources == vec![resource.clone()]
@@ -61,7 +65,7 @@ fn attachment_save_offers_only_the_downloaded_bytes_and_reports_truthfully() {
         app.shared.borrow().status.as_deref(),
         Some(format!("Saved a copy as {name}").as_str())
     );
-    let cancelled = app.finish_attachment_save(false, &name, resource);
+    let cancelled = app.state().finish_attachment_save(false, &name, resource);
     assert!(matches!(
         cancelled,
         ui::framework::Effected::Done(output) if output.resources.is_empty()
