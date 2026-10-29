@@ -1961,7 +1961,16 @@ impl ui::storage::SettingsSchema for DisplayPrefs {
     version = 2,
     migrate = crate::leaves_moved_out
 )]
-impl DisplayPrefs {}
+impl DisplayPrefs {
+    /// Let the built-in panel's brightness follow the ambient light, or
+    /// not. Settings offers it where a light sensor can drive the panel; the
+    /// field is changed only here.
+    #[action(id = "set-automatic-brightness")]
+    pub fn set_automatic_brightness(&mut self, on: bool) -> Result<(), tilo_resource::Refusal> {
+        self.auto_brightness = on;
+        Ok(())
+    }
+}
 
 impl ui::storage::SettingsSchema for NightLightPrefs {
     const SCOPE: ui::storage::Scope =

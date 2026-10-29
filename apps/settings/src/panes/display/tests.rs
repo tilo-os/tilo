@@ -1,5 +1,47 @@
 use super::*;
 use crate::dispatcher::testing::RecordingDispatcher;
+use ui::widget::Widget;
+
+/// The window, mounted headlessly.
+pub(super) type App = ui::framework::testing::TestApp<crate::SettingsShell>;
+
+/// The window, on the Displays page.
+pub(super) fn on_displays() -> App {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = App::new().unwrap();
+    app.harness().resize((1200, 6000)).unwrap();
+    crate::effects::show_pane(&mut app, crate::categories::Category::Displays);
+    app
+}
+
+/// Change the window's display model as the displays or an effect would.
+pub(super) fn change_model(app: &mut App, change: impl FnOnce(&mut DisplayModel) + 'static) {
+    app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        let mut model = area(settings).unwrap().model().borrow_mut();
+        change(&mut model);
+        model.changed = true;
+    })
+    .expect("the Settings window is mounted");
+}
+
+/// Read the window's display model.
+pub(super) fn read_model<V: 'static>(
+    app: &mut App,
+    read: impl FnOnce(&DisplayModel) -> V + 'static,
+) -> V {
+    app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+        read(&area(settings).unwrap().model().borrow())
+    })
+    .expect("the Settings window is mounted")
+}
+
+/// Let the window take in what changed and draw it.
+pub(super) fn frame(app: &mut App) {
+    for _ in 0..4 {
+        app.settle();
+        let _ = app.harness().poll_frame();
+    }
+}
 
 /// The compositor's exact output is the shared control and automation target.
 #[test]
@@ -631,9 +673,10 @@ fn followed_displays_are_read_on_a_change_not_on_a_timer() {
         "snapshots that cannot be watched are read on the old timer"
     );
     drop(unwatchable);
-    assert!(
-        pane.next_wake().is_some(),
-        "a pane nobody shows keeps its timer for reads an effect asks for"
+    assert_eq!(
+        pane.next_wake(),
+        None,
+        "displays no page shows are not looked at"
     );
 }
 
@@ -650,7 +693,12 @@ fn the_brightness_probe_lands_once_and_a_failure_is_shown() {
         .expect("probe receiver is alive");
     assert!(model.poll(), "the landed probe requests a rebuild");
     assert!(!model.poll(), "and reports it once");
-    let text = crate::widgets::announced_text(model.build_composition().as_ref());
+    let mut app = on_displays();
+    change_model(&mut app, |model| {
+        model.brightness_error = Some("no backlight device".into());
+    });
+    frame(&mut app);
+    let text = crate::widgets::announced_text(app.harness().root_widget());
     assert!(
         text.iter()
             .any(|line| line == "Can't read the brightness: no backlight device"),
@@ -1353,16 +1401,16 @@ fn a_trusted_display_tool_is_listed_and_can_be_asked_again() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let mut pane = laptop_with_monitor();
     pane.of_device = true;
-    assert!(pane.build_trusted_tools_card().is_none());
+    assert!(pane.trusted_tools().is_empty());
     let kanshi = DisplayTool::new("/usr/bin/kanshi");
     TrustedDisplayTools::trust(kanshi.clone()).expect("trust");
-    assert!(pane.build_trusted_tools_card().is_some());
+    assert!(pane.trusted_tools().contains(&kanshi));
     pane.apply(&DisplayEffect::ForgetDisplayTool {
         tool: kanshi.executable.clone(),
     })
     .unwrap();
     assert!(!TrustedDisplayTools::load().contains(&kanshi));
-    assert!(pane.build_trusted_tools_card().is_none());
+    assert!(pane.trusted_tools().is_empty());
 }
 #[test]
 fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
@@ -1435,10 +1483,26 @@ fn test_ids(widget: &dyn Widget, ids: &mut Vec<String>) {
     }
 }
 
-fn page_ids(pane: &DisplayModel) -> Vec<String> {
+/// Every control id the window shows once it took in what changed.
+fn page_ids(app: &mut App) -> Vec<String> {
+    frame(app);
     let mut ids = Vec::new();
-    test_ids(pane.compose().as_ref(), &mut ids);
+    test_ids(app.harness().root_widget(), &mut ids);
     ids
+}
+
+/// The window on the Displays page over the laptop and its monitor.
+fn laptop_on_displays() -> App {
+    let mut app = on_displays();
+    change_model(&mut app, |model| {
+        let laptop = laptop_with_monitor();
+        model.outputs = laptop.outputs;
+        model.output_config = laptop.output_config;
+        model.output_brightness.clear();
+        model.pending_candidate = None;
+        model.normalize_selection();
+    });
+    app
 }
 
 /// Where the tile named `name` is drawn on the mounted canvas.
@@ -1520,19 +1584,12 @@ fn the_canvas_is_the_one_display_selection() {
             .map(|output| output.connector.as_str()),
         Some("eDP-1")
     );
-    let ids = page_ids(&pane);
-    assert!(
-        !ids.iter().any(|id| id == "display.picker"),
-        "no second place to choose: {ids:?}"
-    );
 }
 
 #[test]
 fn only_the_selected_displays_settings_show() {
-    let _guard = crate::prefs::test_env::ConfigGuard::new();
-    let mut pane = laptop_with_monitor();
-    pane.normalize_selection();
-    let ids = page_ids(&pane);
+    let mut app = laptop_on_displays();
+    let ids = page_ids(&mut app);
     let of = |ids: &[String], display: &str| {
         ids.iter()
             .filter(|id| id.starts_with(&format!("display.output.{display}.")))
@@ -1546,11 +1603,14 @@ fn only_the_selected_displays_settings_show() {
         "the panel's brightness, once, in its settings"
     );
     assert!(ids.iter().any(|id| id == "display.arrangement"));
+    assert!(
+        !ids.iter().any(|id| id == "display.picker"),
+        "no second place to choose than the canvas: {ids:?}"
+    );
 
     // The monitor has no brightness control: no slider at all.
-    pane.selected.set("HDMI-A-1".into());
-    pane.poll();
-    let ids = page_ids(&pane);
+    change_model(&mut app, |model| model.selected.set("HDMI-A-1".into()));
+    let ids = page_ids(&mut app);
     assert!(of(&ids, "HDMI-A-1") > 0);
     assert_eq!(of(&ids, "eDP-1"), 0);
     assert!(
@@ -1560,8 +1620,10 @@ fn only_the_selected_displays_settings_show() {
     );
 
     // With a control it gets its own, still only in its settings.
-    pane.output_brightness.insert("HDMI-A-1".into(), 0.4);
-    let ids = page_ids(&pane);
+    change_model(&mut app, |model| {
+        model.output_brightness.insert("HDMI-A-1".into(), 0.4);
+    });
+    let ids = page_ids(&mut app);
     assert_eq!(
         ids.iter()
             .filter(|id| id.ends_with("brightness") && !id.contains("sdr"))
@@ -1608,7 +1670,14 @@ fn a_virtual_or_disconnected_connector_appears_nowhere() {
         Some("HDMI-A-2"),
         "a disconnected port is never selected"
     );
-    let ids = page_ids(&pane);
+    let mut app = laptop_on_displays();
+    change_model(&mut app, |model| {
+        model
+            .outputs
+            .push(classify_connector("card0-HDMI-A-2", "disconnected"));
+        model.selected.set("HDMI-A-2".into());
+    });
+    let ids = page_ids(&mut app);
     assert!(
         !ids.iter()
             .any(|id| id.contains("HDMI-A-2") || id.contains("Virtual")),
@@ -1795,6 +1864,7 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
     // card, so it has no notice, and the page says it no more often than it
     // says one notice.
     let mut times_said = Vec::new();
+    let mut app = laptop_on_displays();
     for (state, said, notice) in [
         (
             DisplayTransactionState::Confirmed,
@@ -1824,8 +1894,20 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
         .unwrap();
         assert!(pane.poll(), "the page follows the document");
         assert_eq!(pane.notice, notice.then(|| t(said)), "{state:?}");
+        // The window's page, over the change as the compositor answered it.
+        let answered = transaction.clone();
+        change_model(&mut app, move |model| {
+            model.host_state = Some(settings_store::display_control::DisplayReply {
+                identify: None,
+                observed: DisplayHardwareSnapshot::default(),
+                transaction: Some(answered.clone()),
+                committed: DisplayConfig::default(),
+            });
+            model.settle(&answered);
+        });
+        frame(&mut app);
         let mut words = Vec::new();
-        page_words(pane.compose().as_ref(), &mut words);
+        page_words(app.harness().root_widget(), &mut words);
         assert!(
             words.iter().all(|word| !word.contains(diagnostic)),
             "{state:?}: the page repeats the compositor's diagnostic: {words:?}"

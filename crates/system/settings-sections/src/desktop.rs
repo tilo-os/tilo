@@ -121,13 +121,28 @@ impl ui::storage::SettingsSchema for SharedDisplayPrefs {
 }
 
 #[ui::tilo_resource::resource(kind = "settings.display-arrangement", label = "Display arrangement")]
-impl SharedDisplayPrefs {}
+impl SharedDisplayPrefs {
+    /// Arrange the person's displays: each display entry given takes the
+    /// place of the stored one where it differs, at a revision above every
+    /// stored one, so edits made elsewhere to other displays are kept.
+    #[action(id = "arrange-displays")]
+    pub fn arrange_displays(
+        &mut self,
+        #[param("The arrangement, as its display entries")] arrangement: serde_json::Value,
+    ) -> Result<(), tilo_resource::Refusal> {
+        let arrangement = Arrangement::from_value(&arrangement).ok_or_else(|| {
+            tilo_resource::Refusal::new("the arrangement is malformed or out of bounds")
+        })?;
+        self.arrangement = self.arrangement.with_changes(arrangement.displays);
+        Ok(())
+    }
+}
 
 /// Whether a display nearby offers itself as this device's input.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(default)]
 pub struct AutomaticDisplayPrefs {
-    /// A device administrator's choice: changed only through its effect.
+    /// A device administrator's choice: changed only through its verb.
     #[model(readonly)]
     pub automatic_display_input: bool,
 }
@@ -148,4 +163,13 @@ impl ui::storage::SettingsSchema for AutomaticDisplayPrefs {
     kind = "settings.automatic-display",
     label = "Automatic display input"
 )]
-impl AutomaticDisplayPrefs {}
+impl AutomaticDisplayPrefs {
+    /// Opt this device into automatic grants to its enrolled online input
+    /// devices, or out. The separate Continuity master and Display/input
+    /// switches must also be on.
+    #[action(id = "set-automatic-display-input")]
+    pub fn set_automatic_display_input(&mut self, on: bool) -> Result<(), tilo_resource::Refusal> {
+        self.automatic_display_input = on;
+        Ok(())
+    }
+}

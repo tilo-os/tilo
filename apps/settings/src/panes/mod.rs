@@ -87,6 +87,7 @@ pub(crate) fn view(
         crate::categories::Category::Storage => storage::view(cx, app),
         crate::categories::Category::Updates => updates::view(cx, app),
         crate::categories::Category::Permissions => permissions::view(cx, app),
+        crate::categories::Category::Displays => display::view(cx, app),
         _ => None,
     }
 }

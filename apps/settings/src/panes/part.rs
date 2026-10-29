@@ -429,10 +429,6 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
 /// Every pane, by the categories it shows.
 pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
-        categories: &[Category::Displays],
-        build: |app, _| model_pane(display::area(app).map(display::DisplayArea::model)),
-    },
-    crate::area::PaneEntry {
         categories: &[Category::DefaultApps],
         build: |app, _| {
             personal_apps::area(app).map_or_else(
@@ -507,7 +503,7 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_row!("spelling.autocorrect", ui::text_assistance::TextAssistancePrefs => mouse_keyboard::auto_correct),
     crate::setting::setting_row!("power.auto_suspend", crate::prefs::PowerPrefs => power::auto_suspend),
     crate::setting::setting_row!("power.lock_on_sleep", crate::prefs::PowerPrefs => power::lock_on_sleep),
-    crate::setting::setting_entry!("display.night_light", crate::prefs::NightLightPrefs => display::night_light),
+    crate::setting::setting_row!("display.night_light", crate::prefs::NightLightPrefs => display::night_light),
     crate::setting::setting_row!("shortcuts.vim", keyboard_shortcuts::DesktopControls => keyboard_shortcuts::vim_mode),
     crate::setting::setting_view_switch!("network.wifi" => network::values::wifi, network::values::wifi_switch),
     crate::setting::setting_view_switch!("network.wired" => network::values::wired, network::values::wired_switch),
@@ -517,7 +513,7 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_view_switch!("bluetooth.enabled" => bluetooth::enabled, bluetooth::enabled_switch),
     crate::setting::setting_value!("display.arrangement" => display::values::arrangement),
     crate::setting::setting_value!("display.brightness" => display::values::brightness),
-    crate::setting::setting_switch!("display.auto_brightness" => display::values::auto_brightness, display::automatic_brightness),
+    crate::setting::setting_bound_switch!("display.auto_brightness" => display::values::auto_brightness, crate::prefs::DisplayPrefs => display::automatic_brightness),
     crate::setting::setting_value!("display.night_light_warmth" => known display::values::night_light_warmth),
     crate::setting::setting_value!("display.scale" => display::values::scale),
     crate::setting::setting_value!("display.resolution" => display::values::resolution),
