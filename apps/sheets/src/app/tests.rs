@@ -1073,7 +1073,7 @@ fn imported_tables_restore_formulas_and_replace_a_blank_workbook() {
         assert_eq!(doc_cell_raw(&doc2, 0, (4, 1)), "=SUM(B2:D2)");
         // …and it recomputes to the original result.
         let snap = doc_snapshot(&doc2, 0, Currency::USD);
-        let values = formula::recalculate(&snap.raw);
+        let values = crate::calc::recalculate(&snap.raw);
         assert_eq!(values.get(&(4, 1)), Some(&CellValue::Number(3600.0)));
         assert_eq!(doc_cell_raw(&doc2, 0, (1, 1)), "1200");
     }
@@ -1203,17 +1203,20 @@ fn fill_commands_and_handle_extend_series_and_formulas() {
     // formula layer's `offset_refs`; prove the wiring on the shapes the paste
     // path relies on (the full matrix lives in `formula`'s own tests).
     {
-        assert_eq!(formula::offset_refs("=A1+$B$2", 1, 1), "=B2+$B$2");
-        assert_eq!(formula::offset_refs("=SUM(A1:A3)*2", 2, 0), "=SUM(C1:C3)*2");
-        // Mixed anchors: `$A1` shifts row only, `A$1` shifts column only.
-        assert_eq!(formula::offset_refs("=$A1+A$1", 1, 1), "=$A2+B$1");
-        // Scientific-notation literals are not references.
-        assert_eq!(formula::offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
+        assert_eq!(crate::refs::offset_refs("=A1+$B$2", 1, 1), "=B2+$B$2");
         assert_eq!(
-            formula::offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
+            crate::refs::offset_refs("=SUM(A1:A3)*2", 2, 0),
+            "=SUM(C1:C3)*2"
+        );
+        // Mixed anchors: `$A1` shifts row only, `A$1` shifts column only.
+        assert_eq!(crate::refs::offset_refs("=$A1+A$1", 1, 1), "=$A2+B$1");
+        // Scientific-notation literals are not references.
+        assert_eq!(crate::refs::offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
+        assert_eq!(
+            crate::refs::offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
             "=IF(A2>0,\"A1\",B3)"
         );
-        assert_eq!(formula::offset_refs("1200", 3, 3), "1200");
+        assert_eq!(crate::refs::offset_refs("1200", 3, 3), "1200");
     }
 
     // Case `fill_right_copies_and_shifts_formulas`.
@@ -1987,11 +1990,11 @@ fn annotation_edits_ask_for_the_published_actions() {
 
     let state = doc_workbook(&doc);
     let thread = state.comments.get(&comment).unwrap();
-    assert_eq!(thread.body, "Checked");
+    assert_eq!(thread.text, "Checked");
     let replies: Vec<&str> = thread
         .replies
         .values()
-        .map(|reply| reply.body.as_str())
+        .map(|reply| reply.text.as_str())
         .collect();
     assert_eq!(replies, ["Done"]);
 }
@@ -2165,7 +2168,7 @@ fn an_agent_edits_charts_and_comments_in_one_call_each() {
         .unwrap();
     assert_eq!((snapshot.start, snapshot.end), ((1, 1), (2, 4)));
     let thread = state.comments.get(&comment).unwrap();
-    assert_eq!(thread.body, "Checked");
+    assert_eq!(thread.text, "Checked");
     assert_eq!(thread.replies.len(), 1);
 }
 

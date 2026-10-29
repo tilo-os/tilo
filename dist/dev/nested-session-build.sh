@@ -10,14 +10,9 @@
 # env-runtime image Terminal's environments start from, and a dbus-daemon for
 # hosts that have none.
 #
-# It runs where the builds are warm, never on the machine that runs the
-# session: nested-session.sh has t.toml's `nested-session` check run it on a t
-# node and downloads its output with `t outputs nested-session`, or has rcargo
-# run it on an rcargo builder (`rcargo --fetch nested-session exec`) and fetch
-# the target directory's nested-session. The thin apps and libruntime_dylib.so
-# must come from one Cargo graph (a Rust dylib's symbols carry crate hashes),
-# so they travel together as one build's output rather than through `t cargo
-# build` or `rcargo build`, which copy back programs only.
+# The thin apps and libruntime_dylib.so must come from one Cargo graph (a
+# Rust dylib's symbols carry crate hashes), so one run of this script builds
+# them together.
 #
 # Usage:
 #   dist/dev/nested-session-build.sh [OUT]      build into OUT (replaced), by
@@ -28,8 +23,8 @@
 # The env-runtime is sealed from the tree t.toml's image-env-runtime-dev-tree-ARCH
 # check builds from the tree's own RPM package set, as a run's dev images get
 # theirs: TILO_ENV_RUNTIME_TREES names the directory holding
-# env-runtime-tree-ARCH.tar. A builder without those trees (the rcargo
-# builder has no RPM snapshot) builds everything else, and the session it
+# env-runtime-tree-ARCH.tar. A builder without those trees (one with no RPM
+# snapshot) builds everything else, and the session it
 # runs has no env-runtime: Terminal has no environment to start a shell in.
 set -euo pipefail
 

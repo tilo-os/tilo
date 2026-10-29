@@ -1,6 +1,7 @@
 //! Installed-copy durable intent, never media or verified/adopted output authority.
 //! Incomplete and unknown launches remain quarantined. Terminal material removal
 //! requires the actual private completed importer and verifier custody.
+use super::attempt::{NamespaceFacts, Phase, Route};
 use super::*;
 mod cleanup;
 pub(in crate::setup::home_capture) use cleanup::CompletedCleanup;
@@ -50,21 +51,6 @@ impl Binding {
             reservation: scope.reservation,
         })
     }
-}
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-enum Phase {
-    Intended,
-    ScratchReady,
-    Launching,
-    Exported,
-    Verifying,
-    Sealing,
-    RecoveryPrepared,
-    RecoveryVerifying,
-    ReceiverPending,
-    Cancelled,
-    Complete,
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -138,10 +124,7 @@ impl Scratch {
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Namespace {
-    init_pid: u32,
-    start_ticks: u64,
-    namespace_dev: u64,
-    namespace_ino: u64,
+    facts: NamespaceFacts,
     custody: super::super::process::Custody,
 }
 impl Namespace {
@@ -171,10 +154,12 @@ impl Namespace {
             return Err(failure("Installed copy namespace changed"));
         }
         Ok(Self {
-            init_pid: a.init_pid,
-            start_ticks: a.start_ticks,
-            namespace_dev: a.namespace_dev,
-            namespace_ino: a.namespace_ino,
+            facts: NamespaceFacts {
+                init_pid: a.init_pid,
+                start_ticks: a.start_ticks,
+                namespace_dev: a.namespace_dev,
+                namespace_ino: a.namespace_ino,
+            },
             custody,
         })
     }
@@ -251,6 +236,7 @@ impl Record {
     fn validate(&self) -> io::Result<()> {
         operation(&self.binding.operation)?;
         if self.schema != 1
+            || !Route::InstalledCopy.admits(self.phase)
             || !crate::is_operation_id(&self.attempt)
             || self.binding.declaration == [0; 32]
             || self.binding.person == [0; 32]
@@ -326,15 +312,13 @@ impl Record {
         .flatten()
         {
             let expected = super::super::host_runner::Namespace {
-                init_pid: n.init_pid,
-                start_ticks: n.start_ticks,
-                namespace_dev: n.namespace_dev,
-                namespace_ino: n.namespace_ino,
+                init_pid: n.facts.init_pid,
+                start_ticks: n.facts.start_ticks,
+                namespace_dev: n.facts.namespace_dev,
+                namespace_ino: n.facts.namespace_ino,
             };
-            if n.init_pid <= 1
-                || n.start_ticks == 0
-                || n.namespace_ino == 0
-                || n.custody.host.pid != n.init_pid
+            if !n.facts.plausible()
+                || n.custody.host.pid != n.facts.init_pid
                 || n.custody.namespace != Some(expected)
                 || !n.custody.launch_acknowledged
                 || n.custody.projection.is_some()
@@ -344,7 +328,7 @@ impl Record {
             }
         }
         let shape = match self.phase {
-            Phase::Intended => {
+            Phase::Prepared => {
                 self.scratch.is_none()
                     && self.read_claim.is_none()
                     && self.export_namespace.is_none()
@@ -399,7 +383,7 @@ impl Record {
             }
             Phase::Cancelled => self.scratch.is_some() && self.receiver.is_some(),
             // A serialized phase or claimed Complete message cannot mint success.
-            Phase::Complete => {
+            Phase::Verified => {
                 self.scratch.is_some() && self.verified.is_some() && self.receiver.is_some()
             }
         };
@@ -439,17 +423,17 @@ impl Record {
                 | Phase::RecoveryVerifying
                 | Phase::ReceiverPending
                 | Phase::Cancelled
-                | Phase::Complete
+                | Phase::Verified
         ) && (self.sealing.is_some()
             || self.verified.is_some()
             || self.recovery_namespace.is_some())
         {
             return Err(failure("Installed artifact phase checkpoint shape invalid"));
         }
-        if self.receiver.is_some() && matches!(self.phase, Phase::Intended | Phase::ScratchReady) {
+        if self.receiver.is_some() && matches!(self.phase, Phase::Prepared | Phase::ScratchReady) {
             return Err(failure("Installed importer before launch intent"));
         }
-        if (self.material_retired && self.phase != Phase::Complete)
+        if (self.material_retired && self.phase != Phase::Verified)
             || (self.metadata_quarantined && !self.material_retired)
         {
             return Err(failure("Installed material retirement before completion"));
@@ -613,7 +597,7 @@ impl InstalledCopyAttempt {
             attempt: attempt.clone(),
             secret: secret_identity.clone(),
             target_storage: target_storage.clone(),
-            phase: Phase::Intended,
+            phase: Phase::Prepared,
             scratch: None,
             read_claim: None,
             export_namespace: None,
@@ -672,7 +656,7 @@ impl InstalledCopyAttempt {
         let record = load(&store)?.ok_or_else(|| failure("Installed copy intent missing"))?;
         if record.attempt != self.attempt
             || record.binding != self.binding
-            || record.phase != Phase::Intended
+            || record.phase != Phase::Prepared
         {
             return Err(failure(
                 "Installed copy scratch requires the durable prepared intent",
@@ -716,7 +700,7 @@ impl InstalledCopyAttempt {
         {
             return Err(failure("Installed copy durable secret changed"));
         }
-        if matches!(record.phase, Phase::Cancelled | Phase::Complete) {
+        if matches!(record.phase, Phase::Cancelled | Phase::Verified) {
             return Err(failure("Installed copy attempt retired"));
         }
         let read_claim = record.read_claim;
@@ -752,7 +736,7 @@ impl InstalledCopyAttempt {
             .lock()
             .map_err(|_| failure("Installed Store lock poisoned"))?;
         let mut record = load(&store)?.ok_or_else(|| failure("Installed copy intent missing"))?;
-        if record.phase != Phase::Intended
+        if record.phase != Phase::Prepared
             || record.scratch.is_some()
             || record.attempt != self.attempt
             || record.binding != self.binding
@@ -760,7 +744,9 @@ impl InstalledCopyAttempt {
             return Err(failure("Installed scratch checkpoint state differs"));
         }
         record.scratch = Some(facts);
-        record.phase = Phase::ScratchReady;
+        record
+            .phase
+            .advance(Route::InstalledCopy, Phase::ScratchReady)?;
         save(&store, &record, PublishMode::Replace)?;
         drop(store);
         self.check(cancel)
@@ -784,7 +770,9 @@ impl InstalledCopyAttempt {
         {
             return Err(failure("Installed copy launch checkpoint differs"));
         }
-        record.phase = Phase::Launching;
+        record
+            .phase
+            .advance(Route::InstalledCopy, Phase::Launching)?;
         record.read_claim = Some(digest);
         save(&store, &record, PublishMode::Replace)?;
         drop(store);
@@ -891,7 +879,9 @@ impl InstalledCopyAttempt {
             return Err(failure("Installed copy export checkpoint differs"));
         }
         record.exported_response_sha256 = Some(hash);
-        record.phase = Phase::Exported;
+        record
+            .phase
+            .advance(Route::InstalledCopy, Phase::Exported)?;
         save(&store, &record, PublishMode::Replace)?;
         drop(store);
         self.check(cancel)
@@ -916,7 +906,9 @@ impl InstalledCopyAttempt {
         {
             return Err(failure("Installed copy verify checkpoint differs"));
         }
-        record.phase = Phase::Verifying;
+        record
+            .phase
+            .advance(Route::InstalledCopy, Phase::Verifying)?;
         save(&store, &record, PublishMode::Replace)?;
         drop(store);
         self.check(cancel)?;
@@ -1054,7 +1046,7 @@ mod tests {
                 disk_rdev: 7,
                 volume_sha256: [8; 32],
             },
-            phase: Phase::Intended,
+            phase: Phase::Prepared,
             scratch: None,
             read_claim: None,
             export_namespace: None,
@@ -1109,7 +1101,7 @@ mod tests {
             Phase::RecoveryPrepared,
             Phase::RecoveryVerifying,
             Phase::ReceiverPending,
-            Phase::Complete,
+            Phase::Verified,
         ] {
             let mut record = fixture();
             record.phase = phase;

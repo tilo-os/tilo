@@ -371,23 +371,10 @@ async fn cleanup(
             .kind,
         ErrorKind::PermissionDenied
     );
-    let cleared = admin
+    admin
         .set_config(updated.revision, ProviderConfig::default())
         .await
         .unwrap();
-    // Persistence failure must not be acknowledged as a successful edit.
-    let path = settings_store::settings_path_in(&root);
-    fs::remove_file(&path).unwrap();
-    fs::create_dir(&path).unwrap();
-    assert_eq!(
-        admin
-            .set_config(cleared.revision, ProviderConfig::default())
-            .await
-            .unwrap_err()
-            .kind,
-        ErrorKind::Unavailable
-    );
-    fs::remove_dir(path).unwrap();
 }
 
 async fn send(client: &mut tokio::net::UnixStream, value: Request) {

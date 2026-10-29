@@ -1,6 +1,7 @@
 use super::*;
 use crate::shell::build_tilo_overlay_host_with_chrome;
 use crate::shell::state::WorkspaceTree;
+use crate::shell::test_support::lay_out_as_root;
 use automerge::{ReadDoc as _, ScalarValue, Value, transaction::Transactable as _};
 use taffy::AvailableSpace;
 
@@ -92,26 +93,7 @@ impl crate::shell::search::SearchProvider for FakeApplications {
 }
 
 fn lay_out(host: &mut ShellOverlayHost, width: f32, height: f32) {
-    let mut taffy = TaffyTree::<()>::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = host.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-    let measure_map = node_map.clone();
-    let mut text = TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            node,
-            Size {
-                width: AvailableSpace::Definite(width),
-                height: AvailableSpace::Definite(height),
-            },
-            |known, available, node_id, _, _| {
-                measure_map.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
-                    (*ptr).measure(known, available, &mut text)
-                })
-            },
-        )
-        .expect("empty workspace layout");
-    host.apply_layout(&taffy, node, Point::ZERO);
+    lay_out_as_root(host, width, height, &Theme::dark());
 }
 
 #[test]

@@ -311,7 +311,12 @@ fn authenticated_applications_only_plan_never_authorizes_original_documents() {
     .unwrap();
     plan.flatpak_inventory = Some(serde_json::from_slice(&inventory.bytes().unwrap()).unwrap());
     let mut manifest = Manifest::new("apps-only".into(), [0; 32], vec![]).unwrap();
-    manifest.retained_home = Some(RetainedHomePlan::new(plan.clone()).unwrap());
+    manifest
+        .units
+        .insert(crate::setup::prepared_setup::Unit::RetainedHome {
+            plan: RetainedHomePlan::new(plan.clone()).unwrap(),
+            caller: None,
+        });
     let staging = root.join("staging");
     private(&staging);
     let identity = PreparedIdentity::create(
@@ -338,14 +343,14 @@ fn authenticated_applications_only_plan_never_authorizes_original_documents() {
     )
     .unwrap();
     assert_eq!(
-        review.manifest().retained_home.as_ref().unwrap().as_plan(),
+        review.manifest().units.retained_home().unwrap().as_plan(),
         &plan
     );
     assert!(
         !review
             .manifest()
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .unwrap()
             .as_plan()
             .categories
@@ -355,7 +360,7 @@ fn authenticated_applications_only_plan_never_authorizes_original_documents() {
         plan.home_policy,
         crate::setup::migration_handoff::HomePolicy::Copy
     );
-    assert!(review.manifest().portable_home.is_none());
+    assert!(review.manifest().units.portable_home().is_none());
     assert_eq!(fs::read(home.join("document")).unwrap(), b"not selected");
     assert_eq!(
         fs::read(home.join(".var/app/example.app/state")).unwrap(),
@@ -483,7 +488,12 @@ fn authenticated_large_manifest_preserves_actual_retained_home_metadata() {
     .unwrap();
     let mut manifest =
         Manifest::new("large-retained-plan".into(), identity.public_key(), vec![]).unwrap();
-    manifest.retained_home = Some(RetainedHomePlan::new(plan).unwrap());
+    manifest
+        .units
+        .insert(crate::setup::prepared_setup::Unit::RetainedHome {
+            plan: RetainedHomePlan::new(plan).unwrap(),
+            caller: None,
+        });
     let staging = root.join("staging");
     private(&staging);
     identity
@@ -513,8 +523,8 @@ fn authenticated_large_manifest_preserves_actual_retained_home_metadata() {
     assert_eq!(
         review
             .manifest()
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .unwrap()
             .as_plan()
             .flatpak_inventory,
@@ -523,8 +533,8 @@ fn authenticated_large_manifest_preserves_actual_retained_home_metadata() {
     assert_eq!(
         review
             .manifest()
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .unwrap()
             .as_plan()
             .home_exclusion_paths()
@@ -680,7 +690,11 @@ fn prepared_setup_authenticates_separate_selected_session_before_any_adoption() 
     .unwrap();
     let mut manifest =
         Manifest::new("selected-operation".into(), identity.public_key(), vec![]).unwrap();
-    manifest.service_sessions = Some(declaration.clone());
+    manifest
+        .units
+        .insert(crate::setup::prepared_setup::Unit::ServiceSessions(
+            declaration.clone(),
+        ));
     manifest.write(&staging).unwrap();
     let sealed_package = package(root.path(), &staging, "selected-setup.sealed");
     let review = PreparedSetupReview::open(
@@ -715,7 +729,7 @@ fn prepared_setup_authenticates_separate_selected_session_before_any_adoption() 
         malformed.join(SERVICE_SESSIONS_FILE),
     )
     .unwrap();
-    manifest.service_sessions.as_mut().unwrap().sessions[0].service = Service::Discord;
+    manifest.units.service_sessions_mut().unwrap().sessions[0].service = Service::Discord;
     manifest.write(&malformed).unwrap();
     let sealed_package = package(root.path(), &malformed, "wrong-service.sealed");
     assert!(
@@ -776,7 +790,7 @@ fn offline_home_fixture(root: &Path) -> (Manifest, PathBuf, PathBuf, AccountId) 
         vec![account.as_str().into()],
     )
     .unwrap();
-    manifest.portable_home = Some(PortableHomePlan {
+    manifest.units.plan_home(PortableHomePlan {
         schema: 1,
         selection: PortableHomeSelection::FullHome,
         applications: false,
@@ -812,7 +826,12 @@ fn offline_home_fixture(root: &Path) -> (Manifest, PathBuf, PathBuf, AccountId) 
         1024 * 1024,
     )
     .unwrap();
-    manifest.offline_home = Some(declaration);
+    manifest
+        .units
+        .carry_home(crate::setup::prepared_setup::HomeCarriage::Offline(
+            declaration,
+        ))
+        .unwrap();
     let staging = root.join("staging");
     private(&staging);
     identity
@@ -893,15 +912,25 @@ fn assert_pending_native_consumers_refuse(root: &Path, ciphertext: &Path, origin
     assert!(!refused_identity.exists());
     assert!(!refused_accounts.exists());
 }
+/// The pending offline declaration inside a manifest's JSON.
+fn offline_json(manifest: &mut serde_json::Value) -> &mut serde_json::Value {
+    let unit = manifest["units"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|unit| unit.get("medium-home").is_some())
+        .unwrap();
+    &mut unit["medium-home"]["carriage"]["offline"]
+}
 fn assert_offline_declaration_cannot_split(manifest: &Manifest, staging: &Path) {
     let mut missing_caller = serde_json::to_value(manifest).unwrap();
-    missing_caller["offline_home"]
+    offline_json(&mut missing_caller)
         .as_object_mut()
         .unwrap()
         .remove("caller");
     assert!(serde_json::from_value::<Manifest>(missing_caller).is_err());
     let mut wrong_caller = serde_json::to_value(manifest).unwrap();
-    wrong_caller["offline_home"]["caller"]["uid"] = serde_json::json!(u32::MAX);
+    offline_json(&mut wrong_caller)["caller"]["uid"] = serde_json::json!(u32::MAX);
     assert!(
         serde_json::from_value::<Manifest>(wrong_caller)
             .unwrap()
@@ -909,19 +938,16 @@ fn assert_offline_declaration_cannot_split(manifest: &Manifest, staging: &Path) 
             .is_err()
     );
     let mut split = manifest.clone();
-    split.portable_home = None;
+    split.units.offline_home_mut().unwrap().identity_public_key = [9; 32];
     assert!(split.write(staging).is_err());
     let mut split = manifest.clone();
-    split.offline_home.as_mut().unwrap().identity_public_key = [9; 32];
+    split.units.offline_home_mut().unwrap().setup_binding = "another-setup".into();
     assert!(split.write(staging).is_err());
     let mut split = manifest.clone();
-    split.offline_home.as_mut().unwrap().setup_binding = "another-setup".into();
+    split.units.portable_home_mut().unwrap().applications = true;
     assert!(split.write(staging).is_err());
     let mut split = manifest.clone();
-    split.portable_home.as_mut().unwrap().applications = true;
-    assert!(split.write(staging).is_err());
-    let mut split = manifest.clone();
-    split.offline_home.as_mut().unwrap().source.operation_id = uuid::Uuid::new_v4().to_string();
+    split.units.offline_home_mut().unwrap().source.operation_id = uuid::Uuid::new_v4().to_string();
     assert!(split.write(staging).is_err());
 }
 #[test]
@@ -940,7 +966,7 @@ fn offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declar
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let _facts = crate::setup::discovery_fixture::source_fixture(&root);
     let (manifest, ciphertext, staging, account) = offline_home_fixture(&root);
-    let declaration = manifest.offline_home.as_ref().unwrap().clone();
+    let declaration = manifest.units.offline_home().unwrap().clone();
     let home = root.join("home");
     let original = fs::read(&ciphertext).unwrap();
     let review = PreparedSetupReview::open(
@@ -951,7 +977,7 @@ fn offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declar
     )
     .unwrap();
     assert_eq!(review.manifest(), &manifest);
-    assert_eq!(review.manifest().offline_home.as_ref(), Some(&declaration));
+    assert_eq!(review.manifest().units.offline_home(), Some(&declaration));
     assert_eq!(
         review.pending_offline_declaration().unwrap_err().kind(),
         io::ErrorKind::Unsupported,
@@ -1002,7 +1028,10 @@ fn offline_home_crypto_reopen_preserves_exact_selection_and_refuses_split_declar
     );
     assert_eq!(fs::read(&ciphertext).unwrap(), changed);
     let mut legacy = manifest;
-    legacy.offline_home = None;
+    legacy
+        .units
+        .carry_home(crate::setup::prepared_setup::HomeCarriage::Planned)
+        .unwrap();
     let value = serde_json::to_value(&legacy).unwrap();
     assert!(value.get("offline_home").is_none());
     assert!(
@@ -1045,11 +1074,15 @@ fn pending_home_without_account_consent_refuses_selected_service_sessions() {
     )
     .unwrap();
     let (_, declaration) = selected.seal(PASSWORD).unwrap();
-    manifest.service_sessions = Some(declaration);
+    manifest
+        .units
+        .insert(crate::setup::prepared_setup::Unit::ServiceSessions(
+            declaration,
+        ));
     manifest.validate().unwrap();
     manifest
-        .offline_home
-        .as_mut()
+        .units
+        .offline_home_mut()
         .unwrap()
         .source
         .categories
@@ -1244,12 +1277,12 @@ user_pref("calendar.registry.personal.filename", "calendar-data.local.sqlite");
     .unwrap();
     let mut manifest =
         Manifest::new("mail-operation".into(), identity.public_key(), vec![]).unwrap();
-    manifest.mail.push(MailHandoff {
+    manifest.units.insert(Unit::Mail(vec![MailHandoff {
         filename: filename.into(),
         selection,
         sealed_bytes: artifact.as_bytes().len() as u64,
         ciphertext_sha256: Sha256::digest(artifact.as_bytes()).into(),
-    });
+    }]));
     manifest.write(&staging).unwrap();
     let sealed_package = package(root, &staging, "selected-mail.sealed");
     let review = PreparedSetupReview::open(

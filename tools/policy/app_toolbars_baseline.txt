@@ -4,6 +4,9 @@ history-in-row 1 apps/maps/src/app.rs
 # Search and find entries of an app's own, and a subpage Back of its own; the
 # window bar's search and navigation take them over batch by batch.
 own-search 1 apps/maps/src/offline_panel.rs
+# The launcher is the desktop's search: its field is the search the window
+# bar's search opens, not a second one beside it.
+own-search 2 apps/launcher/src/surface.rs
 # The composer's formatting strip, inside the New message sheet over the mailbox.
 toolbar-row 1 apps/mail/src/compose.rs
 # The browser's address row; the hairline under it is the page's edge.

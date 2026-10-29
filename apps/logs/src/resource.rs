@@ -1,16 +1,12 @@
 //! Logs as a resource: the journal filter follows the person and syncs to
 //! collaborators; the journal itself is this device's, shown and offered as
-//! live rows by [`LogsApp`].
+//! live rows by the window's view.
 //!
 //! Refresh, live tail, export and showing an entry are effects with no
-//! document delta ([`JournalEffect`]), answered by the surface.
-
-use std::rc::Rc;
+//! document delta ([`crate::actions::JournalEffect`]), answered by the view.
 
 use ui::prelude::*;
 
-use crate::actions::JournalEffect;
-use crate::app::LogsApp;
 use crate::journal::{JournalLoadError, sample_entries};
 use crate::model::{Filter, LogEntry, Priority};
 
@@ -76,7 +72,7 @@ impl ResourceApp for LogsShell {
     const ICON: Option<&'static str> = Some("logs");
 
     fn view(cx: &mut ViewCx<Logs>) -> Element {
-        cx.surface(LogsApp::new())
+        crate::window::window(cx)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -113,40 +109,6 @@ impl ResourceApp for LogsShell {
                 .collect(),
             _ => Vec::new(),
         }
-    }
-}
-
-impl ResourceSurface<Logs, JournalEffect> for LogsApp {
-    fn present(&mut self, state: &Rc<Logs>) {
-        self.adopt_filter(state.filter());
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Logs>) {
-        self.attach_framework(&cx);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: JournalEffect,
-        cx: &mut EffectCx<Logs, Self>,
-    ) -> Result<Effected, String> {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.entry_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.entry_row(id)
     }
 }
 

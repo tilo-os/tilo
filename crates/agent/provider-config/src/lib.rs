@@ -9,7 +9,6 @@
 //! non-secret device intent, or hand to a sandboxed agent.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -870,12 +869,9 @@ impl ProviderConfig {
         Self::from_section(&section)
     }
 
-    pub fn load_at(path: &Path) -> Self {
-        let section = settings_store::load_at(path)
-            .remove(SETTINGS_SECTION)
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default();
-        Self::from_section(&section)
+    /// The configuration in `source`: another profile's settings.
+    pub fn load_in(source: &dyn settings_store::SettingsSource) -> Self {
+        Self::from_section(&settings_store::load_section_in(source, SETTINGS_SECTION))
     }
 
     fn from_section(section: &Map<String, Value>) -> Self {
@@ -958,8 +954,7 @@ impl ProviderConfig {
     }
 
     /// Atomically save only if the currently stored descriptions still equal
-    /// `expected`. Unlike ordinary UI edits, conditional writes are durable on
-    /// return even when a deferred settings source is installed.
+    /// `expected`.
     ///
     /// # Errors
     /// Returns persistence or unsupported-source errors; `false` is a conflict.
@@ -969,40 +964,23 @@ impl ProviderConfig {
             return Ok(false);
         }
         let values = self.section()?;
-        if let Some(source) = settings_store::installed_source() {
-            let result = source.compare_update_section(SETTINGS_SECTION, &section, values)?;
-            return Ok(!matches!(
-                result,
-                settings_store::ConditionalUpdate::Superseded
-            ));
-        }
-        // The file CAS API requires an already-present section. The atomic
-        // read/merge API also handles the very first provider configuration.
-        let mut matched = false;
-        let mut values = Some(values);
-        settings_store::update_section_with_at(
-            &settings_store::file_write_path()?,
-            SETTINGS_SECTION,
-            &mut |current| {
-                matched = current == &section;
-                if matched {
-                    values.take().unwrap_or_default()
-                } else {
-                    Map::new()
-                }
-            },
-        )?;
-        Ok(matched)
+        let source = settings_store::source()
+            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
+        let result = source.compare_update_section(SETTINGS_SECTION, &section, values)?;
+        Ok(!matches!(
+            result,
+            settings_store::ConditionalUpdate::Superseded
+        ))
     }
 
-    /// Save this configuration to the shared settings document at `path`.
+    /// Save this configuration to `source`: another profile's settings.
     ///
     /// # Errors
     ///
-    /// Returns an error if the configuration cannot be serialised or the
-    /// settings document at `path` cannot be updated.
-    pub fn save_at(&self, path: &Path) -> std::io::Result<()> {
-        settings_store::update_section_at(path, SETTINGS_SECTION, self.section()?)
+    /// Returns an error if the configuration cannot be serialised or
+    /// `source` cannot be updated.
+    pub fn save_in(&self, source: &dyn settings_store::SettingsSource) -> std::io::Result<()> {
+        source.update_section(SETTINGS_SECTION, self.section()?)
     }
 
     /// Validate storage and runtime-safe invariants, returning user-facing
@@ -1759,10 +1737,10 @@ mod tests {
     #[test]
     fn save_round_trip_preserves_other_settings_and_never_needs_a_secret() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
+        let path = settings_store::profile(dir.path());
         let mut existing = Map::new();
         existing.insert("appearance".into(), serde_json::json!({"theme": "dark"}));
-        settings_store::update_section_at(
+        settings_store::SettingsSource::update_section(
             &path,
             "appearance",
             existing
@@ -1779,9 +1757,10 @@ mod tests {
             profiles: vec![profile],
             ..Default::default()
         };
-        config.save_at(&path).unwrap();
-        assert_eq!(ProviderConfig::load_at(&path), config);
-        let body = std::fs::read_to_string(&path).unwrap();
+        config.save_in(&path).unwrap();
+        assert_eq!(ProviderConfig::load_in(&path), config);
+        let body =
+            serde_json::Value::Object(settings_store::SettingsSource::load(&path)).to_string();
         assert!(body.contains("appearance"));
         assert!(!body.contains("sk-live-secret"));
     }
@@ -1791,7 +1770,7 @@ mod tests {
     #[test]
     fn hosted_providers_are_stored_apart_from_this_devices() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
+        let path = settings_store::profile(dir.path());
         let hosted = ProviderProfile::hosted(ProviderProtocol::Anthropic);
         let local = ProviderProfile::local_vllm();
         let config = ProviderConfig {
@@ -1799,9 +1778,9 @@ mod tests {
             profiles: vec![local.clone(), hosted.clone()],
             ..Default::default()
         };
-        config.save_at(&path).unwrap();
-        assert_eq!(ProviderConfig::load_at(&path), config);
-        let document = settings_store::load_at(&path);
+        config.save_in(&path).unwrap();
+        assert_eq!(ProviderConfig::load_in(&path), config);
+        let document = settings_store::SettingsSource::load(&path);
         let section = document[SETTINGS_SECTION].as_object().unwrap();
         let stored: ProviderConfig = serde_json::from_value(section[CONFIG_KEY].clone()).unwrap();
         let roaming: HostedProfiles = serde_json::from_value(section[HOSTED_KEY].clone()).unwrap();

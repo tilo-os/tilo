@@ -78,7 +78,7 @@ use crate::input_controls::{
 };
 use crate::local_library::LocalLibrary;
 use crate::model::{
-    AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HiColor,
+    AnnoKind, Annotation, Book, ColorScheme, CompositionStyle, FontEntry, FontKind, HighlightColor,
     ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice};
@@ -539,7 +539,7 @@ struct LineSpans {
 struct PaneBands {
     sel_anchor: SelAnchor,
     comment_box: CommentBoxBounds,
-    group_top: HashMap<Uuid, (f64, HiColor)>,
+    group_top: HashMap<Uuid, (f64, HighlightColor)>,
 }
 
 /// An in-flight page-turn slide for the paged / two-up modes: the incoming
@@ -610,7 +610,7 @@ enum Action {
     SetMode(ReadMode),
     SetComposition(CompositionStyle),
     /// Apply/toggle/replace a highlight colour over the current text selection.
-    SetColor(HiColor),
+    SetColor(HighlightColor),
     AddNote,
     CopySelection,
     JumpTo(Uuid),
@@ -712,12 +712,12 @@ impl BooksApp {
                     end: 0,
                     excerpt: String::new(),
                 },
-                color: HiColor::Yellow,
+                color: HighlightColor::Yellow,
                 text: String::new(),
             },
-            selection_highlight: self
-                .sel
-                .and_then(|selection| self.resolve_highlight_plan(selection, HiColor::Yellow)),
+            selection_highlight: self.sel.and_then(|selection| {
+                self.resolve_highlight_plan(selection, HighlightColor::Yellow)
+            }),
             selection_note: self.selection_note_draft(String::new()),
         })
     }
@@ -965,7 +965,7 @@ pub struct BooksApp {
     /// First / last doc position visible on the current page (for edge grow).
     page_first_doc: Option<DocPos>,
     page_last_doc: Option<DocPos>,
-    hi_color: HiColor,
+    hi_color: HighlightColor,
     /// Vertical scroll offset of the library shelf, clamped each frame to
     /// `shelf_max_scroll`.
     shelf_scroll: f64,
@@ -1297,7 +1297,7 @@ impl BooksApp {
             reader_body: (0.0, 0.0),
             page_first_doc: None,
             page_last_doc: None,
-            hi_color: HiColor::Yellow,
+            hi_color: HighlightColor::Yellow,
             shelf_scroll: 0.0,
             shelf_max_scroll: 0.0,
             shelf_cursor: 0,
@@ -2573,7 +2573,7 @@ impl BooksApp {
         }
     }
 
-    fn on_set_color(&mut self, c: HiColor, doc: &mut ui::widget::Edits<'_>) {
+    fn on_set_color(&mut self, c: HighlightColor, doc: &mut ui::widget::Edits<'_>) {
         self.hi_color = c;
         // Picking the same colour again clears it; a different colour
         // replaces it. Resolves to the same action the palette's
@@ -3320,7 +3320,11 @@ impl BooksApp {
     /// clears it, a different colour replaces it — any highlight the
     /// selection overlaps is dropped first. Returns `None` when there is no
     /// laid-out page, or the gesture resolves to nothing.
-    fn resolve_highlight_plan(&self, sel: TextSel, color: HiColor) -> Option<books::Highlight> {
+    fn resolve_highlight_plan(
+        &self,
+        sel: TextSel,
+        color: HighlightColor,
+    ) -> Option<books::Highlight> {
         let (start, end) = sel.ordered();
         // Read from the book, not the layout: a select-passage View publishes
         // highlight-selection before the worker has set the chapter.
@@ -3343,7 +3347,7 @@ impl BooksApp {
         // Distinct highlight *groups* the selection overlaps (a group is one
         // logical highlight, possibly several per-block rows). Toggling works on
         // whole highlights, never half of a multi-paragraph one.
-        let mut overlapping: Vec<(Uuid, HiColor)> = Vec::new();
+        let mut overlapping: Vec<(Uuid, HighlightColor)> = Vec::new();
         for a in &self.annotations {
             if a.kind != AnnoKind::Highlight
                 || a.chapter != self.chapter
@@ -8064,7 +8068,7 @@ impl BooksApp {
         ctx: &mut PaintCtx<'_>,
         palette: &ReaderPalette,
         content_x: f64,
-        group_top: &HashMap<Uuid, (f64, HiColor)>,
+        group_top: &HashMap<Uuid, (f64, HighlightColor)>,
     ) {
         for (group, (gy, color)) in group_top {
             let mx0 = content_x - 15.0;
@@ -8276,7 +8280,7 @@ impl BooksApp {
         let del_group = self.selection_highlight_group();
         // The HUD is app chrome: it reads the window's theme end to end and
         // the reading palette stays on the page.
-        let swatches: Vec<ui::HudSwatch> = HiColor::ALL
+        let swatches: Vec<ui::HudSwatch> = HighlightColor::ALL
             .iter()
             .map(|&col| {
                 ui::HudSwatch::new(
@@ -8313,10 +8317,10 @@ impl BooksApp {
                 ui::HudAction::Copy => Action::CopySelection,
                 ui::HudAction::Note => Action::AddNote,
                 ui::HudAction::Highlight(i) => Action::SetColor(
-                    HiColor::ALL
-                        .get(i.min(HiColor::ALL.len() - 1))
+                    HighlightColor::ALL
+                        .get(i.min(HighlightColor::ALL.len() - 1))
                         .copied()
-                        .unwrap_or(HiColor::ALL[0]),
+                        .unwrap_or(HighlightColor::ALL[0]),
                 ),
                 ui::HudAction::Delete => match del_group {
                     Some(g) => Action::DeleteHighlight(g),

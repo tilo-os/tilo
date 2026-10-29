@@ -124,7 +124,6 @@ impl Widget for ShellOverlayHost {
             self.person_quick_composer.pump(person_source)
         };
         let (doc, path) = ui::doc::document_ref(doc, path);
-        self.import_room_tasks();
         let tracker = self
             .tracker
             .as_deref()

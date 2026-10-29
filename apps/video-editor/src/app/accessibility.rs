@@ -330,8 +330,9 @@ impl VideoEditorApp {
             .filter_map(|(i, mid)| {
                 let m = self.project.media(*mid)?;
                 let projected = self.projected_media.contains(mid);
-                let mut value =
-                    format!("{}, {}", m.kind.label(), crate::timecode::clock(m.duration));
+                // The length the row shows: one the file never stated is
+                // said to be unknown, not read out as 0:00.
+                let mut value = format!("{}, {}", m.kind.label(), Self::bin_length(m));
                 if projected {
                     // A source whose bytes are not here yet is a real, visible
                     // state; saying so is the difference between "empty" and
@@ -1046,7 +1047,7 @@ impl VideoEditorApp {
         let Some(pending) = &self.pending_open else {
             return AccessNode::new(Role::Dialog).with_name("Save first?");
         };
-        let opening = crate::project_file::recents::label(&pending.path);
+        let opening = crate::project_file::label(&pending.path);
         let kids = vec![
             AccessNode::new(Role::StaticText)
                 .with_name("What happens")
@@ -1228,7 +1229,8 @@ impl VideoEditorApp {
                 kids.push(
                     AccessNode::new(Role::StaticText)
                         .with_name(*what)
-                        .with_value(*combo)
+                        // Spelled for this platform, as the sheet paints it.
+                        .with_value(ui::spell_shortcut(combo))
                         .with_key(key),
                 );
                 key += 1;
@@ -1921,7 +1923,14 @@ impl VideoEditorApp {
             // they did.
             self.dispatch_selected_track();
         } else if let Some(id) = self.selected() {
-            self.dispatch_clip(id);
+            // Rate re-times the whole link group, so it commits the group,
+            // as the drag does; the selected clip alone would leave its
+            // sound at the old rate.
+            if f == NumField::Speed {
+                self.dispatch_clip_linked(id);
+            } else {
+                self.dispatch_clip(id);
+            }
         }
         true
     }

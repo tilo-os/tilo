@@ -5394,6 +5394,7 @@ mod tests {
                     boost: 0,
                     fields: Vec::new(),
                     secret: false,
+                    references: Vec::new(),
                 }],
                 ..IndexDelta::default()
             },

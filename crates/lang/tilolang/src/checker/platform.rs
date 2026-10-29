@@ -73,14 +73,14 @@ impl Checker<'_> {
             return Ex::error();
         };
         let version = host_ty("Version");
-        let list = Ex::host(Imp::Versions, vec![r], Ty::List(Box::new(version.clone())));
         match which {
-            "history" => list,
+            "history" => Ex::host(Imp::Versions, vec![r], Ty::List(Box::new(version))),
+            // The ends alone, which a store with an index keeps per resource: no history read.
             _ => {
                 let last = Ex::new(Ek::I32(i32::from(which == "updated")), Ty::Bool);
                 Ex::host(
-                    Imp::ListEnd,
-                    vec![list, last],
+                    Imp::VersionEnd,
+                    vec![r, last],
                     Ty::Option(Box::new(version)),
                 )
             }

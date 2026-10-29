@@ -41,7 +41,7 @@ fn highlight(id: &str, page_id: &str, y: f64) -> Invoke<PdfMarkup> {
                 style: MarkupStyle::Highlight,
                 quads: vec![PtRect::new(72.0, y, 200.0, 12.0)],
             },
-            Swatch::Yellow,
+            HighlightColor::Yellow,
             "Ada",
         )
     };
@@ -594,7 +594,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
                     style: MarkupStyle::Highlight,
                     quads,
                 },
-                Swatch::Yellow,
+                HighlightColor::Yellow,
                 "Ada",
             )
         };

@@ -16,7 +16,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
-use notify::{Event, RecommendedWatcher};
 
 use super::room::SharedRoom;
 use super::{Project, TargetRequest, web};
@@ -149,15 +148,10 @@ fn watch(
     server: &Server,
 ) -> Result<()> {
     let roots = crate::dev_watch_roots(&project.app_dir, true)?;
-    let (event_tx, event_rx) = mpsc::channel::<notify::Result<Event>>();
-    let watcher: RecommendedWatcher = notify::recommended_watcher(move |event| {
-        let _ = event_tx.send(event);
-    })
-    .context("creating the source watcher")?;
-    let mut watcher = crate::DevWatcher::new(watcher);
-    for root in &roots {
-        watcher.watch_tree(root)?;
-    }
+    let (event_tx, event_rx) = mpsc::channel();
+    let _watches = crate::watch_dev_roots(&roots, move |event| {
+        let _ = event_tx.send(event.clone());
+    })?;
     let _signals = crate::DevSignalGuard::install()?;
     eprintln!(
         "[tilo-app] watching {}; the page reloads after each successful build",
@@ -169,18 +163,11 @@ fn watch(
     );
     while !crate::DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
         match event_rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Ok(event)) => {
-                watcher.observe(&event);
-                // The build links fonts and page modules out of the watched
-                // SDK tree; that changes their metadata, not their contents.
-                let metadata_only = matches!(
-                    event.kind,
-                    notify::EventKind::Modify(notify::event::ModifyKind::Metadata(_))
-                );
-                if metadata_only || !crate::event_requires_restart(&event, &roots) {
+            Ok(event) => {
+                if !crate::event_requires_restart(&event, &roots) {
                     continue;
                 }
-                crate::drain_until_quiet(&event_rx, &roots, options.debounce, &mut watcher);
+                crate::drain_until_quiet(&event_rx, &roots, options.debounce);
                 eprintln!("[tilo-app] change detected; rebuilding the web bundle");
                 let built = if server.room.is_some() {
                     refresh_surface(project).and_then(|()| web::build(project, request))
@@ -201,7 +188,6 @@ fn watch(
                     }
                 }
             }
-            Ok(Err(error)) => eprintln!("[tilo-app] watch error: {error}"),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => bail!("the source watcher stopped"),
         }

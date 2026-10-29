@@ -467,9 +467,9 @@ pub(super) fn complete(
     let mut completed = setup
         .reseal_completed_home(&verified, Zeroizing::new(PASSWORD.to_vec()), &cancel)
         .unwrap();
-    assert!(completed.manifest().offline_home.is_none());
+    assert!(completed.manifest().units.offline_home().is_none());
     assert_eq!(
-        completed.manifest().portable_flatpak.as_ref(),
+        completed.manifest().units.portable_flatpak(),
         Some(&applications)
     );
     assert_eq!(
@@ -535,8 +535,8 @@ pub(super) fn reopen_and_receive(
             capsule
                 .authenticated_setup()
                 .manifest()
-                .portable_flatpak
-                .as_ref(),
+                .units
+                .portable_flatpak(),
             Some(&committed.applications)
         );
         assert_eq!(
@@ -551,8 +551,8 @@ pub(super) fn reopen_and_receive(
             capsule
                 .authenticated_setup()
                 .manifest()
-                .completed_home
-                .as_ref(),
+                .units
+                .completed_home(),
             Some(&committed.home)
         );
         review.adopt_install_generation(&cancel)?;
@@ -653,11 +653,11 @@ fn restore_child() {
     let applications: crate::setup::flatpak_transfer::portable::Expectation =
         serde_json::from_value(expected["applications"].clone()).unwrap();
     assert_eq!(
-        setup.manifest().completed_home.as_ref(),
+        setup.manifest().units.completed_home(),
         Some(&home_expected)
     );
     assert_eq!(
-        setup.manifest().portable_flatpak.as_ref(),
+        setup.manifest().units.portable_flatpak(),
         Some(&applications)
     );
     let home = root.join("home");

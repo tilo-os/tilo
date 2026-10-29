@@ -1,7 +1,5 @@
 //! Real Wayland SHM pools through both guarded readback and worker capture.
 
-use std::io::Write;
-use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -15,10 +13,9 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::{Client, Display, protocol::wl_buffer};
 use wayland_client::protocol::{
     wl_buffer as client_buffer, wl_callback, wl_compositor, wl_registry, wl_shm, wl_shm_pool,
-    wl_surface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
 #[derive(Default)]
 struct Peer {
@@ -64,14 +61,9 @@ impl Dispatch<wl_callback::WlCallback, ()> for Peer {
     }
 }
 
-delegate_noop!(Peer: ignore wl_shm::WlShm);
-delegate_noop!(Peer: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(Peer: ignore client_buffer::WlBuffer);
-delegate_noop!(Peer: ignore wl_compositor::WlCompositor);
-delegate_noop!(Peer: ignore wl_surface::WlSurface);
-delegate_noop!(Peer: ignore xdg_toplevel::XdgToplevel);
 
-crate::support::wayland::test_client!(Peer: ping, configure);
+crate::support::wayland::test_client!(Peer: ping, configure, surface, toplevel, shm);
 
 struct Harness {
     display: Display<State>,
@@ -163,15 +155,9 @@ fn wire_buffer_in(
     bytes: &[u8],
     format: wl_shm::Format,
 ) -> (wl_shm_pool::WlShmPool, client_buffer::WlBuffer) {
-    let mut file = tempfile::tempfile().expect("SHM buffer backing file");
-    file.write_all(bytes).unwrap();
+    assert_eq!(bytes.len(), 16_384, "64×64 four-byte texels");
     let qh = h.queue.handle();
-    let pool = h
-        .peer
-        .shm
-        .as_ref()
-        .unwrap()
-        .create_pool(file.as_fd(), 16_384, &qh, ());
+    let (pool, _file) = crate::support::wayland::shm_pool(h.peer.shm.as_ref().unwrap(), &qh, bytes);
     let buffer = pool.create_buffer(0, 64, 64, 256, format, &qh, ());
     h.roundtrip();
     (pool, buffer)
@@ -456,9 +442,7 @@ fn padded_wayland_shm_buffers_reach_streaming_and_worker_capture_without_pixel_c
                 ]);
             }
         }
-        let mut file = tempfile::tempfile().expect("SHM pool backing file");
-        file.write_all(&bytes).expect("write SHM fixture");
-        let pool = shm.create_pool(file.as_fd(), 247, &qh, ());
+        let (pool, _file) = crate::support::wayland::shm_pool(&shm, &qh, &bytes);
         let buffer = pool.create_buffer(7, 17, 3, 80, format, &qh, ());
         h.roundtrip();
         let server_buffer = h

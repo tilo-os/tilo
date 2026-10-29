@@ -565,6 +565,7 @@ doc = false
 "kurbo-0_13_1" = { package = "kurbo", version = "^0.13.1", default-features = false, features = ["default", "std"] }
 "landlock-0_4_5" = { package = "landlock", version = "^0.4.5", default-features = false, features = [] }
 "launcher" = { path = "../../../crates/packaging/launcher", default-features = false, features = [] }
+"launcher-app" = { path = "../../../apps/launcher", default-features = false, features = [] }
 "launcher-macos" = { path = "../../../crates/packaging/launcher-macos", default-features = false, features = [] }
 "lazy_static-1_5_0" = { package = "lazy_static", version = "^1.5.0", default-features = false, features = ["spin", "spin_no_std"] }
 "leb128-0_2_5" = { package = "leb128", version = "^0.2.5", default-features = false, features = [] }
@@ -967,7 +968,7 @@ doc = false
 "serial_test-3_4_0" = { package = "serial_test", version = "^3.4.0", default-features = false, features = ["async", "default", "logging"] }
 "settings" = { path = "../../../apps/settings", default-features = false, features = [] }
 "settings-sections" = { path = "../../../crates/system/settings-sections", default-features = false, features = [] }
-"settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "test-support", "watch"] }
+"settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["model", "watch"] }
 "sevenz-rust2-0_24_1" = { package = "sevenz-rust2", version = "^0.24.1", default-features = false, features = ["bzip2"] }
 "sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }
 "sha-crypt-0_6_0" = { package = "sha-crypt", version = "^0.6.0", default-features = false, features = ["alloc", "default", "getrandom", "password-hash"] }
@@ -982,7 +983,7 @@ doc = false
 "shannon-0_2_0" = { package = "shannon", version = "^0.2.0", default-features = false, features = [] }
 "sharded-slab-0_1_7" = { package = "sharded-slab", version = "^0.1.7", default-features = false, features = [] }
 "sheets" = { path = "../../../apps/sheets", default-features = false, features = ["samples"] }
-"shell" = { path = "../../../crates/session/shell", default-features = false, features = ["default", "hosted-test-control", "test-support"] }
+"shell" = { path = "../../../crates/session/shell", default-features = false, features = ["default", "hosted-test-control", "in-process-apps", "test-support"] }
 "shell-words-1_1_1" = { package = "shell-words", version = "^1.1.1", default-features = false, features = ["default", "std"] }
 "shlex-1_3_0" = { package = "shlex", version = "^1.3.0", default-features = false, features = ["default", "std"] }
 "shortcuts" = { path = "../../../apps/shortcuts", default-features = false, features = ["samples"] }
@@ -1345,7 +1346,7 @@ doc = false
 "trash-5_2_6" = { package = "trash", version = "^5.2.6", default-features = false, features = ["chrono", "coinit_apartmentthreaded", "default"] }
 "try-lock-0_2_5" = { package = "try-lock", version = "^0.2.5", default-features = false, features = [] }
 "ttf-parser-0_25_1" = { package = "ttf-parser", version = "^0.25.1", default-features = false, features = ["apple-layout", "core_maths", "default", "glyph-names", "gvar-alloc", "no-std-float", "opentype-layout", "std", "variable-fonts"] }
-"tube" = { path = "../../../apps/tube", default-features = false, features = ["default", "grayjay-sync", "live", "media"] }
+"tube" = { path = "../../../apps/tube", default-features = false, features = ["default", "grayjay-sync", "live", "media", "samples"] }
 "tungstenite-0_28_0" = { package = "tungstenite", version = "^0.28.0", default-features = false, features = ["__rustls-tls", "data-encoding", "handshake", "http", "httparse", "rustls", "rustls-pki-types", "sha1"] }
 "twilight-http-ratelimiting-0_17_1" = { package = "twilight-http-ratelimiting", path = "../../../vendor/twilight-http-ratelimiting", default-features = false, features = [] }
 "two-face-0_4_5" = { package = "two-face", version = "^0.4.5", default-features = false, features = ["syntect-fancy"] }
@@ -1411,7 +1412,7 @@ doc = false
 "vello_common-0_3_0" = { package = "vello_common", version = "^0.3.0", default-features = false, features = ["multithreading", "std"] }
 "vello_cpu-0_0_8" = { package = "vello_cpu", version = "^0.0.8", default-features = false, features = ["png", "std", "u8_pipeline"] }
 "vello_cpu-0_3_0" = { package = "vello_cpu", version = "^0.3.0", default-features = false, features = ["multithreading", "std", "u8_pipeline"] }
-"video-editor" = { path = "../../../apps/video-editor", default-features = false, features = ["decode", "default", "gst"] }
+"video-editor" = { path = "../../../apps/video-editor", default-features = false, features = ["decode", "default", "gst", "samples"] }
 "video-player" = { path = "../../../apps/video-player", default-features = false, features = ["decode", "default"] }
 "vte-0_15_0" = { package = "vte", version = "^0.15.0", default-features = false, features = ["ansi", "bitflags", "cursor-icon", "default", "log", "serde", "std"] }
 "wacore-0_7_0" = { package = "wacore", version = "^0.7.0", default-features = false, features = [] }
@@ -2961,6 +2962,7 @@ doc = false
 "kurbo-0_13_1" = { package = "kurbo", version = "^0.13.1", default-features = false, features = ["default", "std"] }
 "landlock-0_4_5" = { package = "landlock", version = "^0.4.5", default-features = false, features = [] }
 "launcher" = { path = "../../../crates/packaging/launcher", default-features = false, features = [] }
+"launcher-app" = { path = "../../../apps/launcher", default-features = false, features = [] }
 "launcher-macos" = { path = "../../../crates/packaging/launcher-macos", default-features = false, features = [] }
 "lazy_static-1_5_0" = { package = "lazy_static", version = "^1.5.0", default-features = false, features = ["spin", "spin_no_std"] }
 "leb128-0_2_5" = { package = "leb128", version = "^0.2.5", default-features = false, features = [] }
@@ -3372,7 +3374,7 @@ doc = false
 "shannon-0_2_0" = { package = "shannon", version = "^0.2.0", default-features = false, features = [] }
 "sharded-slab-0_1_7" = { package = "sharded-slab", version = "^0.1.7", default-features = false, features = [] }
 "sheets" = { path = "../../../apps/sheets", default-features = false, features = [] }
-"shell" = { path = "../../../crates/session/shell", default-features = false, features = ["default", "hosted-test-control", "test-support"] }
+"shell" = { path = "../../../crates/session/shell", default-features = false, features = ["default", "hosted-test-control", "in-process-apps", "test-support"] }
 "shell-words-1_1_1" = { package = "shell-words", version = "^1.1.1", default-features = false, features = ["default", "std"] }
 "shlex-1_3_0" = { package = "shlex", version = "^1.3.0", default-features = false, features = ["default", "std"] }
 "shortcuts" = { path = "../../../apps/shortcuts", default-features = false, features = [] }

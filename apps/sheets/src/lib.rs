@@ -54,10 +54,10 @@
 
 pub mod actions;
 pub mod app;
+pub mod calc;
 pub mod cell_actions;
 pub mod csv;
 pub mod fill;
-pub mod formula;
 pub mod grid;
 pub mod infer;
 #[cfg(test)]
@@ -66,6 +66,7 @@ pub mod model;
 pub mod notion;
 pub mod ods;
 pub mod records;
+pub mod refs;
 pub mod resource;
 #[cfg(feature = "samples")]
 pub mod sample;

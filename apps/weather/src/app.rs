@@ -88,6 +88,8 @@ pub struct WeatherApp {
     presented: bool,
     /// The refresh an invocation waits for, if any.
     refresh: Option<PendingRefresh>,
+    /// The window bar's entries.
+    bar: ui::framework::BarCommands<window_bar::Command>,
 }
 
 impl WeatherApp {
@@ -339,6 +341,7 @@ impl WeatherApp {
             initial_fetch_done: false,
             presented: false,
             refresh: None,
+            bar: ui::framework::BarCommands::new(),
         }
     }
 
@@ -744,10 +747,11 @@ mod interaction_tests {
             self.app.core.borrow().row_rect_for_test(0).center().x
         }
 
-        /// Press one of the app's actions in the window bar.
-        fn press_bar(&mut self, id: &str) {
+        /// Press the app's action named `name` in the window bar.
+        fn press_bar(&mut self, name: &str) {
             Framed::harness_mut(&mut self.app)
-                .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+                .press_window_action(name)
+                .unwrap();
             self.redraw();
         }
 
@@ -1025,7 +1029,7 @@ mod interaction_tests {
             let mut h = Harness::new(1280.0, 720.0);
             h.redraw();
             h.app.core.borrow_mut().take_outbox(); // drain startup
-            h.press_bar(window_bar::REFRESH);
+            h.press_bar("Refresh forecast");
             let queued = h
                 .app
                 .core
@@ -1176,7 +1180,7 @@ mod interaction_tests {
         {
             let mut h = Harness::new(1280.0, 720.0);
             assert!(!h.app.core.borrow().search_is_focused());
-            h.press_bar(window_bar::ADD_PLACE);
+            h.press_bar("Add place");
             assert!(
                 h.app.core.borrow().search_is_focused(),
                 "Add place shows and focuses the field"

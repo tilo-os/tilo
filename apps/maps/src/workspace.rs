@@ -19,6 +19,19 @@ use crate::model::{LatLon, MapModel, Place, Route, TransitJourney, TransitTime, 
 /// How many recent searches the map remembers.
 pub const MAX_RECENTS: usize = 8;
 
+/// The searches made lately, newest first, each once whatever its case.
+pub type RecentSearches = tilo_resource::Recents<String, MAX_RECENTS>;
+
+/// Put `query` first in `recents`; a blank one is no search.
+pub fn remember_search(recents: &mut RecentSearches, query: &str) {
+    let query = query.trim();
+    if !query.is_empty() {
+        recents.remember_by(query.to_owned(), |kept, query| {
+            kept.eq_ignore_ascii_case(query)
+        });
+    }
+}
+
 /// One accepted plan with the endpoints that give it meaning. Stored whole,
 /// so when two people accept different planner replies at once one complete
 /// plan wins rather than a route to one place labelled as a route to
@@ -55,7 +68,7 @@ pub struct Workspace {
     pub places: Keyed<Place>,
     /// Recent searches, newest first.
     #[model(readonly)]
-    pub recents: Vec<String>,
+    pub recents: RecentSearches,
     /// Travel mode
     pub mode: TravelMode,
     /// Transit time
@@ -96,14 +109,7 @@ impl Workspace {
     /// on its own.
     #[action]
     pub fn commit_search(&mut self, #[param("What was searched")] query: String) {
-        let query = query.trim();
-        if query.is_empty() {
-            return;
-        }
-        self.recents
-            .retain(|recent| !recent.eq_ignore_ascii_case(query));
-        self.recents.insert(0, query.to_owned());
-        self.recents.truncate(MAX_RECENTS);
+        remember_search(&mut self.recents, &query);
     }
 
     /// Clear recent searches.

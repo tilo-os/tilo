@@ -162,6 +162,12 @@ impl<T: Clone> LocalBinding<T> {
         )
     }
 
+    /// Whether the state moved since this binding last observed it: what
+    /// the next [`Self::poll`] would return, without taking it.
+    pub(crate) fn changed(&self) -> bool {
+        self.state.revision() != self.observed_revision
+    }
+
     pub(crate) fn poll(&mut self) -> Option<T> {
         let revision = self.state.revision();
         if revision == self.observed_revision {

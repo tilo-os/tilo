@@ -450,7 +450,7 @@ pub fn original_pipeline_with_receiver(
         )
         .unwrap();
         assert_eq!(parent.manifest().account_ids.len(), 2);
-        assert!(parent.manifest().offline_home.is_none());
+        assert!(parent.manifest().units.offline_home().is_none());
         let manifest = parent.manifest().clone();
         drop(parent);
         fs::rename(scratch.path().join("guided-parent/home"), &staging).unwrap();
@@ -490,22 +490,26 @@ pub fn original_pipeline_with_receiver(
             Some(crate::setup::prepared_setup::PublicInstallProfile::from_draft(&draft).unwrap());
     }
     if applications_only {
-        manifest.offline_applications = Some(
-            crate::setup::prepared_setup::OfflineApplicationsPlan::new(
-                plan,
-                manifest.setup_binding.clone(),
-                manifest.identity_public_key,
-                binding.clone(),
-                caller,
-                reservation,
-            )
-            .unwrap()
-            .with_source_witness(witness)
-            .unwrap(),
-        );
+        manifest
+            .units
+            .insert(crate::setup::prepared_setup::Unit::MediumApplications(
+                crate::setup::prepared_setup::ApplicationsCarriage::Offline(
+                    crate::setup::prepared_setup::OfflineApplicationsPlan::new(
+                        plan,
+                        manifest.setup_binding.clone(),
+                        manifest.identity_public_key,
+                        binding.clone(),
+                        caller,
+                        reservation,
+                    )
+                    .unwrap()
+                    .with_source_witness(witness)
+                    .unwrap(),
+                ),
+            ));
         assert!(mounted_witness.is_none());
     } else {
-        manifest.portable_home = Some(PortableHomePlan {
+        manifest.units.plan_home(PortableHomePlan {
             schema: 1,
             selection: PortableHomeSelection::FullHome,
             applications: flatpak,
@@ -524,7 +528,10 @@ pub fn original_pipeline_with_receiver(
         if let Some(mounted) = mounted_witness {
             offline = offline.with_mounted_witness(mounted).unwrap();
         }
-        manifest.offline_home = Some(offline);
+        manifest
+            .units
+            .carry_home(crate::setup::prepared_setup::HomeCarriage::Offline(offline))
+            .unwrap();
     }
     manifest.write(&staging).unwrap();
     let package = scratch.path().join("setup.sealed");

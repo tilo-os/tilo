@@ -150,33 +150,29 @@ impl Core {
             }
             Imp::Versions => {
                 let target = self.ref_arg(a.h(0)?)?;
-                let id = target.target.id_string();
                 let versions = self
                     .store
                     .borrow()
                     .versions(&target.target)
                     .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-                // The view runs again when any field of the resource changes: a new version.
-                let fields: Vec<String> = self
-                    .type_of_ref(&target.target.ty)
-                    .map(|(_, info)| info.fields.iter().map(|f| f.id.clone()).collect())
-                    .unwrap_or_default();
-                if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
-                    for field in fields {
-                        vs.reads.push((id.clone(), field));
-                    }
-                }
+                self.read_versions_of(&target.target)?;
                 let list = versions
                     .into_iter()
-                    .map(|v| {
-                        Value::Tuple(vec![
-                            Value::Principal(Principal(v.who)),
-                            Value::Text(v.at),
-                            Value::Text(self.action_label(&v.action)),
-                        ])
-                    })
+                    .map(|v| self.version_value(v))
                     .collect();
                 self.ret_h(Value::List(list))
+            }
+            Imp::VersionEnd => {
+                let target = self.ref_arg(a.h(0)?)?;
+                let last = a.h(1)? != 0;
+                let end = self
+                    .store
+                    .borrow()
+                    .version_end(&target.target, last)
+                    .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+                self.read_versions_of(&target.target)?;
+                let value = end.map_or_else(Value::none, |v| Value::some(self.version_value(v)));
+                self.ret_h(value)
             }
             Imp::MetaOf => {
                 let subject = self.val(a.h(0)?)?;
@@ -217,6 +213,31 @@ impl Core {
             }
             _ => trap("not a platform import"),
         }
+    }
+
+    /// A version as the language holds it: who, when, by which action.
+    fn version_value(&self, v: crate::store::Version) -> Value {
+        Value::Tuple(vec![
+            Value::Principal(Principal(v.who)),
+            Value::Text(v.at),
+            Value::Text(self.action_label(&v.action)),
+        ])
+    }
+
+    /// Record, in a view's frame, that it read the versions of `target`: it runs again when any
+    /// field of the resource changes, which is a new version.
+    fn read_versions_of(&self, target: &crate::value::ResourceRef) -> HResult<()> {
+        let id = target.id_string();
+        let fields: Vec<String> = self
+            .type_of_ref(&target.ty)
+            .map(|(_, info)| info.fields.iter().map(|f| f.id.clone()).collect())
+            .unwrap_or_default();
+        if let FrameKind::View(vs) = &mut self.frames.borrow_mut().top_mut()?.kind {
+            for field in fields {
+                vs.reads.push((id.clone(), field));
+            }
+        }
+        Ok(())
     }
 
     /// What an action is called where history names it: its label, or what the host did.

@@ -51,12 +51,19 @@ impl CodecCompletion {
 }
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a snapshot of independent facts about the onboarding view, compared field by field"
+)]
 pub(super) struct Snapshot {
     pub(super) revision: u64,
     pub(super) phase: &'static str,
     pub(super) operations: Vec<(&'static str, &'static str)>,
     acknowledgements: Acknowledgements,
     pub(super) failed: bool,
+    /// A journal write or identity work the last step started has not
+    /// reported yet, so that step's effect is still to come.
+    busy: bool,
     tour_page: Option<TourPage>,
     nearby_active: bool,
     codec_completion: CodecCompletion,
@@ -136,6 +143,7 @@ impl Snapshot {
                 skip_backup: view.backup_skip_acknowledged,
             },
             failed: view.error.is_some() || view.progress_error.is_some(),
+            busy: !view.journal_idle() || !view.identity_idle(),
             tour_page: view.tour_page,
             nearby_active: view.nearby_active(),
             codec_completion: CodecCompletion::from_view(view),
@@ -773,6 +781,11 @@ fn poll(
     if (state.failed && checked.is_none()) || state.phase == "closed" {
         return Err(ActionError::Explained(t("onboarding-semantic-failed")));
     }
+    // Creating the identity writes the journal, mints on the identity worker
+    // and writes the journal again: frames go by before the phase moves on.
+    if state.busy {
+        return Ok(None);
+    }
     if operation == KEY_CODECS_INSTALL {
         if matches!(state.codec_completion, CodecCompletion::Running) {
             return Ok(None);
@@ -1050,6 +1063,32 @@ mod tests {
         .expect("secret bound by canonical binder");
         assert_eq!(args.text("password"), Some("private words"));
         assert!(!snapshot.value().to_string().contains("private words"));
+    }
+
+    #[test]
+    fn create_waits_for_the_mint_instead_of_calling_its_own_step_stale() {
+        let snapshot = |revision, phase, busy| {
+            RefCell::new(Snapshot {
+                revision,
+                phase,
+                busy,
+                ..Default::default()
+            })
+        };
+        // Frames while the journal is written and the identity is minted.
+        let minting = snapshot(2, "protection", true);
+        assert!(matches!(
+            poll(&minting, 1, KEY_CREATE, None, None),
+            Ok(None)
+        ));
+        let created = snapshot(3, "backup", false);
+        assert!(matches!(
+            poll(&created, 1, KEY_CREATE, None, None),
+            Ok(Some(_))
+        ));
+        // A create the reducer did not take is still refused.
+        let ignored = snapshot(2, "protection", false);
+        assert!(poll(&ignored, 1, KEY_CREATE, None, None).is_err());
     }
 
     #[test]

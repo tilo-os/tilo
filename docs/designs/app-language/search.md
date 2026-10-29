@@ -109,6 +109,17 @@ and three rules cover everything:
 - **The list index** (each list's order and filter columns, so a list opens by reading one
   page) is still kept next to the record, because most workspaces' records aren't yet held by the
   system's storage service. It moves there when they are.
+- **Lanes are runs.** A filter may compare a field with a value the code holds
+  (`b.cards.filter(c -> c.column == col)`, `col` a local): the value is bound when the filter
+  is asked, and the index answers it as the run of that value in the field's column. A board
+  showing each column's cards and count reads, per lane, the run's bounds and the page it
+  starts on, never every card; no separate grouping syntax is needed.
+- **Versions are indexed too.** Per resource the list index keeps its first and last version
+  (who, when, which action: `created(r)`, `updated(r)`), taken change by change from the log,
+  and per collection a column of each by time. `items.sort_by(x -> updated(x), desc)` then
+  opens by reading one page, and a view showing "edited when, by whom" reads no history. The
+  first and last are the earliest and latest by recorded time (then by change), so every
+  replica holding the same changes agrees whatever order they arrived in.
 - Published entries gain typed facets, so the system can filter, sort and count across
   everything without anything running.
 

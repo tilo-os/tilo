@@ -135,6 +135,7 @@ pub mod path;
 pub mod reactions;
 pub mod read;
 pub mod reader;
+mod recents;
 pub mod recording;
 pub mod replica;
 pub mod resource;
@@ -182,6 +183,7 @@ pub use reactions::{
     valid_custom_emoji_name,
 };
 pub use reader::{Demand, Reader, heads_of};
+pub use recents::Recents;
 pub use replica::Replica;
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, EDIT_PARAM, FIELD_EDIT, HeadInputs, NoAction,

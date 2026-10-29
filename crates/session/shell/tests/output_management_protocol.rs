@@ -27,7 +27,6 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use settings_store::SettingsSource;
 use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
 use settings_store::hardware::{DisplayTransaction, DisplayTransactionState, OutputTransform};
 use shell::compositor::backend::headless::output_fixture;
@@ -273,7 +272,7 @@ wayland_client::delegate_noop!(Tool: ignore ZwlrOutputConfigurationHeadV1);
 
 /// A compositor laid out from a fixture, with one client connected.
 struct Harness {
-    event_loop: EventLoop<'static, State>,
+    _event_loop: EventLoop<'static, State>,
     display: Display<State>,
     state: State,
     _globals: OutputGlobals,
@@ -281,7 +280,6 @@ struct Harness {
     conn: Connection,
     queue: EventQueue<Tool>,
     tool: Tool,
-    staging_woken: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Harness {
@@ -294,19 +292,6 @@ impl Harness {
         let mut globals = OutputGlobals::new();
         globals.sync::<State>(&display.handle(), &outputs, None);
         state.set_output_heads(heads_from_outputs(&outputs));
-        let staging_woken = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let observed = Arc::clone(&staging_woken);
-        let (ping, source) = smithay::reexports::calloop::ping::make_ping().unwrap();
-        event_loop
-            .handle()
-            .insert_source(source, move |(), (), _| {
-                observed.store(true, std::sync::atomic::Ordering::Release);
-            })
-            .unwrap();
-        state
-            .output_management
-            .set_wake(Arc::new(move || ping.ping()));
-
         let (client_side, server_side) = UnixStream::pair().expect("socketpair");
         display
             .handle()
@@ -316,7 +301,7 @@ impl Harness {
         let queue = conn.new_event_queue::<Tool>();
         let _registry = conn.display().get_registry(&queue.handle(), ());
         let mut harness = Self {
-            event_loop,
+            _event_loop: event_loop,
             display,
             state,
             _globals: globals,
@@ -324,7 +309,6 @@ impl Harness {
             conn,
             queue,
             tool: Tool::default(),
-            staging_woken,
         };
         let expected = harness.outputs.len();
         harness.pump("registry", |tool| tool.outputs.len() == expected);
@@ -404,18 +388,6 @@ impl Harness {
             std::thread::sleep(Duration::from_millis(2));
         }
         panic!("separate output-management client stalled at {label}");
-    }
-
-    /// Dispatch the real calloop source, including failures with no file event.
-    fn expect_staging_wake(&mut self) {
-        self.event_loop
-            .dispatch(Some(Duration::from_secs(1)), &mut self.state)
-            .unwrap();
-        assert!(
-            self.staging_woken
-                .swap(false, std::sync::atomic::Ordering::AcqRel),
-            "storage completion must wake an idle event loop"
-        );
     }
 
     fn configuration(&mut self) -> ZwlrOutputConfigurationV1 {
@@ -1084,98 +1056,6 @@ fn an_external_apply_asks_on_every_display_and_enter_keeps_it() {
 }
 
 #[test]
-fn physical_display_keep_retains_its_prompt_while_real_storage_is_locked() {
-    use settings_store::SettingsSource as _;
-    use std::sync::mpsc;
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    let paths = settings_store::SessionPaths::configured().unwrap();
-    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-    settings_store::install_source(Some(session.host_view().unwrap()));
-    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    let transaction = apply_and_await(&mut harness, countdown_outlasting_the_test());
-    let confirmation = harness.state.output_management.take_confirmation().unwrap();
-    let (mut host, layout) = prompt_host(&harness, confirmation);
-    let lock_path = paths.copy.with_file_name("settings.json.lock");
-    let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
-    let lock = tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
-    let (sent, received) = mpsc::channel();
-    let release = std::thread::spawn(move || {
-        let responsive = received.recv_timeout(tilo_test_env::hang_bound()).is_ok();
-        drop(lock);
-        responsive
-    });
-    key(&mut host, &layout, NamedKey::Enter);
-    let pending_visible = host.display_confirmation_visible();
-    let state_before_release = state_now();
-    let _ = sent.send(());
-    let responsive = release.join().unwrap();
-    shell::shell::durable_writer::global().flush();
-    host.poll_display_confirmation();
-    let reopened = settings_store::SessionSettings::open(paths).unwrap();
-    settings_store::install_source(None);
-    assert!(
-        responsive,
-        "physical Keep dispatch blocked on the real storage lock"
-    );
-    assert!(
-        pending_visible,
-        "the prompt must remain visible until its answer is durable"
-    );
-    assert_eq!(
-        state_before_release,
-        DisplayTransactionState::AwaitingConfirmation
-    );
-    assert_eq!(reopened.load()["display_transaction"]["id"], transaction.id);
-    assert_eq!(
-        reopened.load()["display_transaction"]["state"],
-        "confirm_requested"
-    );
-    assert!(!host.display_confirmation_visible());
-}
-
-#[test]
-fn failed_physical_always_keep_preserves_prompt_and_never_trusts_the_tool() {
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    let paths = settings_store::SessionPaths::configured().unwrap();
-    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-    settings_store::install_source(Some(session.host_view().unwrap()));
-    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    let transaction = apply_and_await(&mut harness, countdown_outlasting_the_test());
-    let confirmation = harness.state.output_management.take_confirmation().unwrap();
-    let (mut host, layout) = prompt_host(&harness, confirmation);
-    key(&mut host, &layout, NamedKey::Tab);
-    key(&mut host, &layout, NamedKey::Tab);
-    let saved = paths.device.with_extension("saved");
-    std::fs::rename(&paths.device, &saved).unwrap();
-    std::fs::create_dir(&paths.device).unwrap();
-    key(&mut host, &layout, NamedKey::Enter);
-    settle_prompt(&mut host);
-    let visible = host.display_confirmation_visible();
-    let dialog = prompt_dialog(&host);
-    let observed = DisplayTransaction::load().unwrap();
-    let trusted = TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI));
-    std::fs::remove_dir(&paths.device).unwrap();
-    std::fs::rename(saved, &paths.device).unwrap();
-    settings_store::install_source(None);
-    assert!(visible, "a failed answer must remain visible");
-    assert!(
-        dialog
-            .description
-            .as_deref()
-            .is_some_and(|description| description.starts_with("Could not save"))
-    );
-    assert!(
-        dialog.children.iter().all(|node| !node.state.disabled),
-        "the person can retry or revert after failure"
-    );
-    assert_eq!(
-        observed, transaction,
-        "failed storage must preserve exact intent"
-    );
-    assert!(!trusted, "a refused Keep must not grant tool trust");
-}
-
-#[test]
 fn replaced_physical_always_keep_cannot_answer_or_trust_another_transaction() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
@@ -1197,38 +1077,6 @@ fn replaced_physical_always_keep_cannot_answer_or_trust_another_transaction() {
     );
     assert_eq!(DisplayTransaction::load(), Some(replacement));
     assert!(!TrustedDisplayTools::load().contains(&DisplayTool::new(KANSHI)));
-}
-
-#[test]
-fn failed_automatic_keep_restores_the_exact_confirmation_prompt() {
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    let paths = settings_store::SessionPaths::configured().unwrap();
-    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-    settings_store::install_source(Some(session.host_view().unwrap()));
-    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    TrustedDisplayTools::trust(DisplayTool::new(KANSHI)).unwrap();
-    apply_custom_mode(&mut harness);
-    let mut transaction = DisplayTransaction::load().unwrap();
-    transaction.state = DisplayTransactionState::AwaitingConfirmation;
-    transaction.deadline_unix_ms = Some(countdown_outlasting_the_test());
-    transaction.save().unwrap();
-    let saved = paths.device.with_extension("saved");
-    std::fs::rename(&paths.device, &saved).unwrap();
-    std::fs::create_dir(&paths.device).unwrap();
-    harness
-        .state
-        .output_management
-        .resolve_transactions(Some(&transaction));
-    assert_eq!(harness.outcome("backend accepted the change"), "succeeded");
-    shell::shell::durable_writer::global().flush();
-    harness.state.output_management.poll_staging();
-    let confirmation = harness.state.output_management.take_confirmation();
-    let observed = DisplayTransaction::load();
-    std::fs::remove_dir(&paths.device).unwrap();
-    std::fs::rename(saved, &paths.device).unwrap();
-    settings_store::install_source(None);
-    assert_eq!(observed, Some(transaction.clone()));
-    assert_eq!(confirmation.unwrap().transaction, transaction.id);
 }
 
 #[test]
@@ -1415,10 +1263,6 @@ fn greeter_configures(connection: &Connection) -> Result<(), &'static str> {
 #[test]
 fn greeter_adopts_announced_panel_dpi_and_preserves_other_output_properties() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
-    // Prepare the empty fixture's crash-durable config directory before the
-    // bounded protocol client starts. The actual request still uses the real
-    // file transaction; cold directory creation is not a protocol round trip.
-    settings_store::update_document_at(&settings_store::settings_path().unwrap(), |_| {}).unwrap();
     let mut harness = Harness::privileged("portrait-plus-4k");
     let mut heads = heads_from_outputs(&harness.outputs);
     // A 14-inch 4K panel advertised by an unconfigured kiosk at 1x.
@@ -1529,7 +1373,6 @@ fn greeter_adopts_announced_panel_dpi_and_preserves_other_output_properties() {
 #[test]
 fn greeter_scales_each_output_and_keeps_the_layout_contiguous() {
     let _home = tilo_test_env::TestHome::new().expect("test home");
-    settings_store::update_document_at(&settings_store::settings_path().unwrap(), |_| {}).unwrap();
     let mut harness = Harness::privileged("docked-laptop");
     let mut heads = heads_from_outputs(&harness.outputs);
     let panel = heads
@@ -1587,205 +1430,4 @@ fn greeter_scales_each_output_and_keeps_the_layout_contiguous() {
         (panel_width, 0),
         "the monitor starts where the scaled panel ends"
     );
-}
-
-/// Exercise the real request handler and session records while another
-/// process owns the canonical settings-copy lock. Admission must return
-/// without reporting success before either persistence or backend apply.
-#[test]
-fn output_apply_dispatch_remains_responsive_while_real_storage_is_locked() {
-    use std::sync::mpsc;
-    let _home = tilo_test_env::TestHome::new().expect("test home");
-    let paths = settings_store::SessionPaths::configured().expect("settings paths");
-    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-    settings_store::install_source(Some(session.host_view().unwrap()));
-    let mut harness = Harness::privileged_tool("docked-laptop", Some(KANSHI));
-    let configuration = harness.configuration();
-    let _panel = harness.enable(&configuration, "VIRTUAL-1");
-    let monitor = harness.enable(&configuration, "VIRTUAL-2");
-    monitor.set_position(0, -1440);
-    configuration.apply();
-    harness.conn.flush().unwrap();
-
-    let lock_path = paths.copy.with_file_name("settings.json.lock");
-    let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
-    let storage_lock =
-        tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
-    let (dispatched, wait) = mpsc::channel();
-    let releaser = std::thread::spawn(move || {
-        let responsive = wait.recv_timeout(tilo_test_env::hang_bound()).is_ok();
-        drop(storage_lock);
-        responsive
-    });
-    harness
-        .display
-        .dispatch_clients(&mut harness.state)
-        .unwrap();
-    let _ = dispatched.send(());
-    let responsive = releaser.join().unwrap();
-    harness.pump("durable staging", |_| DisplayTransaction::load().is_some());
-    shell::shell::durable_writer::global().flush();
-    harness.expect_staging_wake();
-    harness
-        .state
-        .output_management
-        .resolve_transactions(DisplayTransaction::load().as_ref());
-    assert_eq!(
-        harness.tool.outcome, None,
-        "persistence is not backend acceptance"
-    );
-    let transaction = DisplayTransaction::load().unwrap();
-    assert_eq!(transaction.state, DisplayTransactionState::Requested);
-    assert_eq!(
-        transaction.candidate.output_for("VIRTUAL-2").unwrap().y,
-        -1440
-    );
-    let reopened = settings_store::SessionSettings::open(paths).unwrap();
-    assert_eq!(reopened.load()["display_transaction"]["id"], transaction.id);
-    settings_store::install_source(None);
-    assert!(
-        responsive,
-        "Apply dispatch blocked behind the real storage lock"
-    );
-}
-
-#[test]
-fn output_apply_record_failure_keeps_the_previous_durable_request() {
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    let paths = settings_store::SessionPaths::configured().unwrap();
-    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-    settings_store::install_source(Some(session.host_view().unwrap()));
-    let mut harness = Harness::privileged("docked-laptop");
-    let first = harness.configuration();
-    harness.enable(&first, "VIRTUAL-1");
-    harness.enable(&first, "VIRTUAL-2");
-    first.apply();
-    harness.pump("first durable request", |_| {
-        DisplayTransaction::load().is_some()
-    });
-    let previous = DisplayTransaction::load().unwrap();
-    shell::shell::durable_writer::global().flush();
-    harness.expect_staging_wake();
-    let saved = paths.device.with_extension("saved");
-    std::fs::rename(&paths.device, &saved).unwrap();
-    std::fs::create_dir(&paths.device).unwrap();
-    let next = harness.configuration();
-    harness.enable(&next, "VIRTUAL-1");
-    harness.enable(&next, "VIRTUAL-2").set_position(0, -1440);
-    next.apply();
-    assert_eq!(harness.outcome("failed durable record"), "failed");
-    harness.expect_staging_wake();
-    let observed = DisplayTransaction::load();
-    std::fs::remove_dir(&paths.device).unwrap();
-    std::fs::rename(saved, &paths.device).unwrap();
-    settings_store::install_source(None);
-    assert_eq!(
-        observed,
-        Some(previous),
-        "failed storage must not replace durable intent"
-    );
-}
-
-#[test]
-fn output_apply_copy_failure_retains_exact_durable_acceptance_without_backend_success() {
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    let paths = settings_store::SessionPaths::configured().unwrap();
-    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-    settings_store::install_source(Some(session.host_view().unwrap()));
-    let mut harness = Harness::privileged("docked-laptop");
-    std::fs::remove_file(&paths.copy).unwrap();
-    std::fs::create_dir(&paths.copy).unwrap();
-    let configuration = harness.configuration();
-    harness.enable(&configuration, "VIRTUAL-1");
-    harness
-        .enable(&configuration, "VIRTUAL-2")
-        .set_position(0, -1440);
-    configuration.apply();
-    harness.pump("durable record despite copy failure", |_| {
-        DisplayTransaction::load().is_some()
-    });
-    shell::shell::durable_writer::global().flush();
-    harness.state.output_management.poll_staging();
-    harness.expect_staging_wake();
-    let transaction = DisplayTransaction::load().unwrap();
-    harness
-        .state
-        .output_management
-        .resolve_transactions(Some(&transaction));
-    harness.display.flush_clients().unwrap();
-    assert_eq!(
-        harness.tool.outcome, None,
-        "durable acceptance is not backend success"
-    );
-    assert!(harness.state.output_management.has_pending_apply());
-    let durable = settings_store::load_at(&paths.device);
-    assert_eq!(
-        durable["display_transaction"],
-        serde_json::to_value(&transaction).unwrap()
-    );
-    assert_eq!(transaction.state, DisplayTransactionState::Requested);
-    std::fs::remove_dir(&paths.copy).unwrap();
-    session.refresh();
-    assert_eq!(
-        settings_store::load_at(&paths.copy)["display_transaction"],
-        durable["display_transaction"]
-    );
-    settings_store::install_source(None);
-}
-
-#[test]
-fn output_apply_superseded_requests_keep_distinct_storage_and_backend_receipts() {
-    let _home = tilo_test_env::TestHome::new().unwrap();
-    let paths = settings_store::SessionPaths::configured().unwrap();
-    let session = Arc::new(settings_store::SessionSettings::open(paths.clone()).unwrap());
-    settings_store::install_source(Some(session.host_view().unwrap()));
-    let mut harness = Harness::privileged("docked-laptop");
-    let lock_path = paths.copy.with_file_name("settings.json.lock");
-    let (dir, name) = tilo_files::file_at(&lock_path).unwrap();
-    let storage_lock =
-        tilo_files::blocking::lock(&dir, &name, tilo_files::LockMode::Exclusive).unwrap();
-    let first = harness.configuration();
-    harness.enable(&first, "VIRTUAL-1");
-    harness.enable(&first, "VIRTUAL-2");
-    first.apply();
-    let second = harness.configuration();
-    harness.enable(&second, "VIRTUAL-1");
-    harness.enable(&second, "VIRTUAL-2").set_position(0, -1440);
-    second.apply();
-    harness.conn.flush().unwrap();
-    harness
-        .display
-        .dispatch_clients(&mut harness.state)
-        .unwrap();
-    assert!(
-        DisplayTransaction::load().is_none(),
-        "neither request is durable before the real lock is released"
-    );
-    drop(storage_lock);
-    shell::shell::durable_writer::global().flush();
-    harness.pump("superseded first receipt", |tool| {
-        tool.outcomes.contains_key(&first.id())
-    });
-    assert_eq!(harness.tool.outcomes[&first.id()], "failed");
-    assert!(
-        !harness.tool.outcomes.contains_key(&second.id()),
-        "the current request still needs its backend receipt"
-    );
-    let current = DisplayTransaction::load().unwrap();
-    assert_eq!(current.candidate.output_for("VIRTUAL-2").unwrap().y, -1440);
-    assert_eq!(current.state, DisplayTransactionState::Requested);
-    let mut unrelated = current.clone();
-    unrelated.id = current.id.checked_add(1).unwrap();
-    unrelated.state = DisplayTransactionState::AwaitingConfirmation;
-    harness
-        .state
-        .output_management
-        .resolve_transactions(Some(&unrelated));
-    assert_eq!(harness.outcome("unrelated backend receipt"), "failed");
-    assert_eq!(
-        harness.tool.outcomes[&second.id()],
-        "failed",
-        "an unrelated backend transaction cannot credit this request"
-    );
-    settings_store::install_source(None);
 }

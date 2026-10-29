@@ -11,7 +11,7 @@
 
 use vello::peniko::Color;
 
-use crate::model::{ColorScheme, HiColor, ReadTheme};
+use crate::model::{ColorScheme, HighlightColor, ReadTheme};
 use ui::theme::Theme;
 
 fn page_is_dark(page: Color) -> bool {
@@ -145,14 +145,14 @@ impl ReaderPalette {
     }
 
     /// Translucent fill for a highlight band of `color` over this page.
-    pub fn highlight_fill(&self, color: HiColor) -> Color {
+    pub fn highlight_fill(&self, color: HighlightColor) -> Color {
         let (r, g, b) = color.rgb();
         let a = if self.dark { 110 } else { 150 };
         Color::from_rgba8(r, g, b, a)
     }
 
     /// Opaque swatch (for sidebar dots / picker chips).
-    pub fn highlight_swatch(color: HiColor) -> Color {
+    pub fn highlight_swatch(color: HighlightColor) -> Color {
         let (r, g, b) = color.rgb();
         Color::from_rgb8(r, g, b)
     }

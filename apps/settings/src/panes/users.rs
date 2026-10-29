@@ -1279,7 +1279,7 @@ mod tests {
     #[test]
     fn unreadable_accounts_are_shown_as_errors() {
         let profile = tempfile::tempdir().unwrap();
-        let mut pane = UsersModel::sample(PaneCx::in_file(profile.path().join("settings.json")));
+        let mut pane = UsersModel::sample(PaneCx::in_profile(profile.path().to_path_buf()));
         pane.users.clear();
         pane.users_error = Some("/etc/passwd: No such file or directory (os error 2)".into());
         let text = crate::widgets::announced_text(pane.build_composition().as_ref());
@@ -1359,7 +1359,7 @@ mod tests {
             carry_out(&backends, &people, &effect, none()).unwrap();
         }
         let profile = tempfile::tempdir().unwrap();
-        let mut pane = UsersModel::sample(PaneCx::in_file(profile.path().join("settings.json")));
+        let mut pane = UsersModel::sample(PaneCx::in_profile(profile.path().to_path_buf()));
         pane.identity_admin = Some(Rc::clone(&ids) as Rc<dyn IdentityAdmin>);
         for effect in [
             UsersEffect::UseIdentity {
@@ -1500,7 +1500,7 @@ mod tests {
         );
         let profile = tempfile::tempdir().unwrap();
         let mut pane = UsersModel::from_read(
-            PaneCx::in_file(profile.path().join("settings.json")),
+            PaneCx::in_profile(profile.path().to_path_buf()),
             UsersRead {
                 users: Ok(Vec::new()),
             },

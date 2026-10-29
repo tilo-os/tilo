@@ -5,11 +5,7 @@
 //! control socket's state dump read it.
 #![allow(clippy::expect_used, reason = "test harness failures are assertions")]
 
-use std::os::fd::{AsFd, FromRawFd, OwnedFd};
-
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_pointer, wl_seat, wl_shm, wl_shm_pool, wl_surface,
-};
+use wayland_client::protocol::{wl_compositor, wl_pointer, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::cursor_shape::v1::client::{
     wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1,
@@ -20,13 +16,15 @@ use shell::compositor::client_input::sync_pointer_image;
 use shell::compositor::state::State;
 use shell::shell::frame::FrameBuilder;
 
+use crate::support::wayland::{self, Toplevel, create_toplevel};
+
 #[derive(Default)]
 struct Client {
     globals: Vec<(u32, String, u32)>,
     enter_serial: Option<u32>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel, shm, buffer, seat);
 
 impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     fn event(
@@ -45,13 +43,6 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
-delegate_noop!(Client: ignore wl_shm::WlShm);
-delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore wp_cursor_shape_manager_v1::WpCursorShapeManagerV1);
 delegate_noop!(Client: ignore wp_cursor_shape_device_v1::WpCursorShapeDeviceV1);
 
@@ -94,10 +85,11 @@ fn open_app(h: &mut Harness, app_id: &str) -> App {
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let qh = h.queue.handle();
     let pointer = seat.get_pointer(&qh, ());
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id(app_id.into());
+    let Toplevel {
+        surface,
+        xdg: _,
+        toplevel,
+    } = create_toplevel(&compositor, &wm, &qh, app_id);
     h.pump();
     let surface_id = h.foreign_id(app_id);
     App {
@@ -177,33 +169,7 @@ fn a_client_cursor_surface_is_shown_with_its_hotspot() {
     let qh = h.queue.handle();
 
     let (width, height) = (16_i32, 16_i32);
-    let len = usize::try_from(width * height * 4).unwrap();
-    // SAFETY: a null-terminated name and a valid flag word are the whole
-    // contract of `memfd_create`.
-    let raw = unsafe { libc::memfd_create(c"tilo-cursor-test".as_ptr(), 0) };
-    assert!(
-        raw >= 0,
-        "memfd_create: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: `memfd_create` just handed us this descriptor.
-    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-    file.set_len(len as u64).unwrap();
-    {
-        use std::os::unix::fs::FileExt;
-        file.write_at(&vec![0xff; len], 0).unwrap();
-    }
-    let shm = h.bind::<wl_shm::WlShm>("wl_shm", 1);
-    let pool = shm.create_pool(file.as_fd(), i32::try_from(len).unwrap(), &qh, ());
-    let buffer = pool.create_buffer(
-        0,
-        width,
-        height,
-        width * 4,
-        wl_shm::Format::Argb8888,
-        &qh,
-        (),
-    );
+    let buffer = h.shm_buffer(width, height, &wayland::solid(width, height, [0xff; 4]));
     let cursor = app.compositor.create_surface(&qh, ());
     app.pointer.set_cursor(serial, Some(&cursor), 3, 5);
     cursor.attach(Some(&buffer), 0, 0);

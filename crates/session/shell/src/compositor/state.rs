@@ -9824,11 +9824,11 @@ mod keycap_layout_tests {
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::wayland_server::Display;
 
-    fn write_input(settings: &std::path::Path, active: &str) {
-        let document = serde_json::json!({
-            "input": {"keyboard_layout": active, "keyboard_layouts": ["us", "de"]},
-        });
-        std::fs::write(settings, document.to_string()).expect("settings");
+    fn write_input(active: &str) {
+        let input =
+            serde_json::json!({"keyboard_layout": active, "keyboard_layouts": ["us", "de"]});
+        settings_store::update_section("input", input.as_object().expect("input").clone())
+            .expect("settings");
     }
 
     #[test]
@@ -9836,9 +9836,7 @@ mod keycap_layout_tests {
         let temp = tempfile::tempdir().expect("temp");
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("XDG_CONFIG_HOME", temp.path());
-        let settings = settings_store::settings_path().expect("settings path");
-        std::fs::create_dir_all(settings.parent().expect("config dir")).expect("config dir");
-        write_input(&settings, "us");
+        write_input("us");
         let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
         let display: Display<State> = Display::new().expect("wayland display");
         let mut state = State::new(event_loop.handle(), display.handle());
@@ -9867,9 +9865,7 @@ mod keycap_layout_tests {
         let temp = tempfile::tempdir().expect("temp");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_CONFIG_HOME", temp.path());
-        let settings = settings_store::settings_path().expect("settings path");
-        std::fs::create_dir_all(settings.parent().expect("config dir")).expect("config dir");
-        write_input(&settings, "us");
+        write_input("us");
 
         let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
         let display: Display<State> = Display::new().expect("wayland display");
@@ -9887,10 +9883,10 @@ mod keycap_layout_tests {
         );
 
         // A choice made in Settings arrives through the settings reload.
-        write_input(&settings, "us");
+        write_input("us");
         state.reload_keyboard_settings();
         assert_eq!(label(), "Ctrl+Alt+Delete");
-        write_input(&settings, "de");
+        write_input("de");
         state.reload_keyboard_settings();
         assert_eq!(label(), "Strg+Alt+Entf");
         // The stored chord never changed.

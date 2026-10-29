@@ -20,8 +20,8 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use notify::event::{ModifyKind, RenameMode};
-use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+use tilo_files::ChangeKind;
+use tilo_files::native::{ChangeWatch, WatchEvent, Watcher};
 
 use crate::shell::automation_triggers::{FileChange, FolderChange, WatchedFolder};
 
@@ -33,7 +33,7 @@ pub const SETTLE: Duration = Duration::from_millis(1500);
 #[derive(Default)]
 pub struct FolderWatch {
     folders: Vec<WatchedFolder>,
-    watcher: Option<(RecommendedWatcher, mpsc::Receiver<notify::Event>)>,
+    watcher: Option<(Vec<ChangeWatch>, mpsc::Receiver<WatchEvent>)>,
     /// Changes seen but not yet reported, and when each file was last seen
     /// changing.
     settling: BTreeMap<FolderChange, Instant>,
@@ -54,24 +54,22 @@ impl FolderWatch {
             return;
         }
         let (sender, receiver) = mpsc::channel();
-        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            if let Ok(event) = event {
-                let _ = sender.send(event);
-            }
-        });
-        let mut watcher = match watcher {
-            Ok(watcher) => watcher,
-            Err(error) => {
-                tracing::warn!(%error, "shortcut folders cannot be watched");
-                return;
-            }
-        };
+        let mut watches = Vec::new();
         for path in paths {
-            if let Err(error) = watcher.watch(path, RecursiveMode::Recursive) {
-                tracing::info!(%error, path = %path.display(), "a shortcut folder is not watched");
+            let sender = sender.clone();
+            let started = Watcher::tree(path).start(move |events| {
+                for event in events {
+                    let _ = sender.send(event.clone());
+                }
+            });
+            match started {
+                Ok(watch) => watches.push(watch),
+                Err(error) => {
+                    tracing::info!(%error, path = %path.display(), "a shortcut folder is not watched");
+                }
             }
         }
-        self.watcher = Some((watcher, receiver));
+        self.watcher = Some((watches, receiver));
     }
 
     /// Every file that changed inside a watched folder and has since
@@ -89,11 +87,9 @@ impl FolderWatch {
                 let Some(change) = file_change(event.kind) else {
                     continue;
                 };
-                for path in &event.paths {
-                    for folder in &self.folders {
-                        if let Some(found) = FolderChange::inside(folder, path, change) {
-                            seen.push(found);
-                        }
+                for folder in &self.folders {
+                    if let Some(found) = FolderChange::inside(folder, &event.path, change) {
+                        seen.push(found);
                     }
                 }
             }
@@ -129,21 +125,14 @@ impl FolderWatch {
     }
 }
 
-/// What a filesystem event means for the files it names, when it changes
-/// them.
-fn file_change(kind: EventKind) -> Option<FileChange> {
+/// What a change means for the file it names. A rescan names the folder
+/// itself, which is no file of it.
+fn file_change(kind: ChangeKind) -> Option<FileChange> {
     match kind {
-        EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(RenameMode::To)) => {
-            Some(FileChange::Created)
-        }
-        EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
-            Some(FileChange::Removed)
-        }
-        EventKind::Modify(ModifyKind::Metadata(_))
-        | EventKind::Access(_)
-        | EventKind::Any
-        | EventKind::Other => None,
-        EventKind::Modify(_) => Some(FileChange::Modified),
+        ChangeKind::Created => Some(FileChange::Created),
+        ChangeKind::Removed => Some(FileChange::Removed),
+        ChangeKind::Changed => Some(FileChange::Modified),
+        _ => None,
     }
 }
 

@@ -355,6 +355,92 @@ pub fn open_hosted_app(
     tab_id
 }
 
+/// The package a first-party app tab of `kind` is, when the session runs its
+/// apps as their own processes: every packaged built-in but feedback, which
+/// is the shell's own surface.
+pub(crate) fn own_process_package(kind: &AppKind) -> Option<String> {
+    if matches!(kind, AppKind::Other(label) if label.eq_ignore_ascii_case(tilo_desktop::feedback::KIND))
+    {
+        return None;
+    }
+    let package = kind.app_id();
+    tilo_desktop_model::first_party::is_first_party_app_id(&package).then_some(package)
+}
+
+/// Open the app `kind` names at `placement` as its own process: a tab that
+/// waits for the app's window, which the session's restore path launches
+/// and binds into it (`peer_windows::examine`), exactly as it reopens a
+/// saved window. `None` when `kind` is no packaged app.
+pub fn open_app_process(
+    tree: &mut WorkspaceTree,
+    kind: &AppKind,
+    title: impl Into<String>,
+    placement: Placement,
+) -> Option<TabId> {
+    let app_id = own_process_package(kind)?;
+    let title = title.into();
+    let new_tab = Tab {
+        id: tree.mint_id(),
+        title: title.clone(),
+        tile: TileContent::LocalApp {
+            app_id,
+            label: title,
+            note: String::new(),
+        },
+        app_title: None,
+    };
+    let tab_id = place_tab(tree, new_tab, placement);
+    tree.seed_doc_from_cache();
+    tree.queue_save();
+    Some(tab_id)
+}
+
+/// Turn every tab of a packaged first-party app that asks to be drawn by
+/// the session (a tree saved while the session drew those apps itself, or a
+/// tab a peer that draws its apps itself opened) into the app's own window
+/// to open here: this device's own tabs reopen as saved windows do, a
+/// peer's as its other windows do (`peer_windows::examine` launches both and
+/// binds the window into the tab). Whether anything changed.
+pub fn reopen_app_tabs_as_processes(tree: &mut WorkspaceTree) -> bool {
+    let local = tree.local_salt();
+    let mut changed = false;
+    for workspace in &mut tree.desktop.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                for tab in &mut group.tabs {
+                    let TileContent::AppPlaceholder { kind, label } = &tab.tile else {
+                        continue;
+                    };
+                    let Some(app_id) = own_process_package(kind) else {
+                        continue;
+                    };
+                    let label = label.clone();
+                    tab.tile = if crate::shell::state::peer_salt_of(tab.id) == local {
+                        TileContent::LocalApp {
+                            app_id,
+                            label,
+                            note: String::new(),
+                        }
+                    } else {
+                        TileContent::PeerWindow {
+                            app_id,
+                            label,
+                            note: String::new(),
+                            missing: None,
+                        }
+                    };
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        tree.seed_doc_from_cache();
+        tree.queue_save();
+    }
+    changed
+}
+
 /// Hold the place a launch will open in from the moment it is asked for: a
 /// tab at `placement` where the app's window arrives
 /// (`pending_window::PendingWindow`), which the window then binds into
@@ -3368,3 +3454,88 @@ mod location_tests {
 #[cfg(test)]
 #[path = "tab_binding_name_tests.rs"]
 mod host_tab_name_tests;
+
+#[cfg(test)]
+mod app_process_tests {
+    use super::*;
+
+    fn tabs(tree: &WorkspaceTree) -> Vec<&Tab> {
+        tree.desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .collect()
+    }
+
+    #[test]
+    fn a_packaged_app_opens_as_a_window_waiting_to_be_launched() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let tab = open_app_process(
+            &mut tree,
+            &AppKind::Other("Editor".into()),
+            "notes.txt",
+            Placement::NewGroup,
+        )
+        .expect("the editor is a package");
+        let opened = tabs(&tree).into_iter().find(|t| t.id == tab).unwrap();
+        assert_eq!(
+            opened.tile,
+            TileContent::LocalApp {
+                app_id: "so.tilo.code-editor".into(),
+                label: "notes.txt".into(),
+                note: String::new(),
+            },
+            "an empty note is what the restore path launches",
+        );
+        assert!(
+            open_app_process(
+                &mut tree,
+                &AppKind::Other(tilo_desktop::feedback::KIND.into()),
+                "Feedback",
+                Placement::NewGroup,
+            )
+            .is_none(),
+            "feedback is the shell's own surface",
+        );
+    }
+
+    #[test]
+    fn saved_app_tabs_reopen_as_their_apps_windows() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        assert!(reopen_app_tabs_as_processes(&mut tree));
+        let apps: Vec<_> = tabs(&tree)
+            .into_iter()
+            .filter_map(|tab| match &tab.tile {
+                TileContent::LocalApp { app_id, note, .. } if note.is_empty() => {
+                    assert_eq!(
+                        crate::shell::state::peer_salt_of(tab.id),
+                        tree.local_salt(),
+                        "only this device's own tabs reopen as saved windows",
+                    );
+                    Some(app_id.as_str())
+                }
+                TileContent::PeerWindow { app_id, note, .. } if note.is_empty() => {
+                    Some(app_id.as_str())
+                }
+                TileContent::AppPlaceholder { kind, .. } => {
+                    panic!("{kind:?} is still drawn by the shell")
+                }
+                _ => None,
+            })
+            .collect();
+        for app in [
+            "so.tilo.notes",
+            "so.tilo.file-explorer",
+            "so.tilo.terminal",
+            "so.tilo.word-processor",
+        ] {
+            assert!(apps.contains(&app), "{app} reopens: {apps:?}");
+        }
+        assert!(
+            !reopen_app_tabs_as_processes(&mut tree),
+            "nothing left to turn"
+        );
+    }
+}

@@ -408,14 +408,11 @@ pub struct Recent {
     pub thumbnail: Option<String>,
 }
 
-/// How many recent artworks are remembered.
-pub const RECENTS_KEPT: usize = 8;
-
-/// The artworks opened or saved lately, newest first. Their paths name
-/// files on this device, so the list is a device-local setting.
+/// The artworks opened or saved lately, newest first, one per path. Their
+/// paths name files on this device, so the list is a device-local setting.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct RecentArtworks {
-    pub artworks: Vec<Recent>,
+    pub artworks: ui::tilo_resource::Recents<Recent, 8>,
 }
 
 impl ui::storage::SettingsSchema for RecentArtworks {
@@ -423,12 +420,10 @@ impl ui::storage::SettingsSchema for RecentArtworks {
 }
 
 impl RecentArtworks {
-    /// `recent` first, then the others it was not, at most
-    /// [`RECENTS_KEPT`].
+    /// `recent` first, in place of an earlier visit to its path.
     pub fn remember(&mut self, recent: Recent) {
-        self.artworks.retain(|kept| kept.path != recent.path);
-        self.artworks.insert(0, recent);
-        self.artworks.truncate(RECENTS_KEPT);
+        self.artworks
+            .remember_by(recent, |kept, recent| kept.path == recent.path);
     }
 
     /// Forget the artwork at `path` (it moved or was removed).

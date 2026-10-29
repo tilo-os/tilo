@@ -9,6 +9,7 @@ use tilo_files::native::atomic::{
     lease::{FileLease, LeaseMode},
 };
 
+mod attempt;
 mod installed_copy_attempt;
 pub(in crate::setup::home_capture) use installed_copy_attempt::CompletedCleanup;
 pub(super) mod original;

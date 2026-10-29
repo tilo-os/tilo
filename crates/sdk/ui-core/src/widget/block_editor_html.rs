@@ -114,7 +114,7 @@ pub fn blocks_to_html(blocks: &[BlockContent]) -> String {
                 out.push_str("</p>");
             }
             BlockKind::Heading(level) => {
-                let level = (*level).clamp(1, 3);
+                let level = (*level).clamp(1, 6);
                 let _ = write!(out, "<h{level}>");
                 push_inline(&mut out, &block.text, &block.marks);
                 let _ = write!(out, "</h{level}>");
@@ -595,7 +595,7 @@ impl Builder {
                     .unwrap_or_default()
                     .parse::<u8>()
                     .unwrap_or(1)
-                    .clamp(1, 3);
+                    .clamp(1, 6);
                 self.heading = Some(level);
             }
             "br" => {

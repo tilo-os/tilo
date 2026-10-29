@@ -7,17 +7,15 @@
 //! real socket, since both defects live in what goes on the wire.
 
 use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
 
-use shell::shell::frame::FrameBuilder;
 use shell::shell::state::TileContent;
 use vello::kurbo::Rect;
 use wayland_client::protocol::{wl_compositor, wl_subcompositor, wl_subsurface, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
-use crate::support::wayland;
+use crate::support::wayland::{self, Toplevel, create_toplevel};
 
 const ACTIVATED: u32 = 4;
 const TILED: [u32; 4] = [5, 6, 7, 8];
@@ -31,7 +29,7 @@ struct Client {
     configures: Configures,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface);
 
 impl Dispatch<xdg_toplevel::XdgToplevel, &'static str> for Client {
     fn event(
@@ -63,36 +61,14 @@ impl Dispatch<xdg_toplevel::XdgToplevel, &'static str> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore wl_subcompositor::WlSubcompositor);
 delegate_noop!(Client: ignore wl_subsurface::WlSubsurface);
 
-struct Harness {
-    wl: wayland::Harness<Client>,
-    frame: FrameBuilder,
-}
+type Harness = wayland::Framed<Client>;
 
-impl Deref for Harness {
-    type Target = wayland::Harness<Client>;
-    fn deref(&self) -> &Self::Target {
-        &self.wl
-    }
-}
-
-impl DerefMut for Harness {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.wl
-    }
-}
+const VIEWPORT: (u32, u32) = (1600, 900);
 
 impl Harness {
-    fn new() -> Self {
-        let wl = wayland::Harness::new();
-        let frame = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1600, 900));
-        Self { wl, frame }
-    }
-
     /// Open a toplevel up to the point a toolkit waits for its configure.
     fn open(
         &mut self,
@@ -115,7 +91,7 @@ impl Harness {
     /// Make `surface`'s tile the focused one, as a click or keyboard
     /// navigation does, then run the per-tick focus reconciliation.
     fn focus(&mut self, surface: u64) {
-        self.frame.with_chrome(|chrome| {
+        self.fb.with_chrome(|chrome| {
             {
                 let mut tree = chrome.tree_mut();
                 let workspace = tree.desktop.active;
@@ -142,7 +118,7 @@ impl Harness {
             }
             chrome.bump();
         });
-        shell::compositor::client_input::sync_keyboard_focus(&mut self.wl.state, &self.frame);
+        shell::compositor::client_input::sync_keyboard_focus(&mut self.wl.state, &self.fb);
         self.pump();
     }
 
@@ -162,7 +138,7 @@ impl Harness {
 
 #[test]
 fn the_focused_tile_is_activated_and_every_tile_is_tiled() {
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
     let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
     h.pump();
@@ -228,7 +204,7 @@ fn the_focused_tile_is_activated_and_every_tile_is_tiled() {
 /// that applies it, and from there crops what the tile shows.
 #[test]
 fn committed_window_geometry_crops_the_tile_to_the_window() {
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
     let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
     h.pump();
@@ -266,7 +242,7 @@ fn committed_window_geometry_crops_the_tile_to_the_window() {
 /// buffer-pixel one.
 #[test]
 fn committed_buffer_scale_puts_the_window_and_input_in_logical_pixels() {
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
     let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
     h.pump();
@@ -371,7 +347,7 @@ impl Harness {
 
 #[test]
 fn a_page_subsurface_at_the_window_geometry_fills_the_tile_exactly() {
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     let browser = h.open_shadowed_browser();
     drop(h);
     let store = shell::shell::foreign::store();
@@ -431,7 +407,7 @@ fn a_page_subsurface_at_the_window_geometry_fills_the_tile_exactly() {
 /// holds: it froze the compositor until its watchdog ended the session.
 #[test]
 fn a_client_that_dies_with_a_subsurface_does_not_freeze_the_compositor() {
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     let browser = h.open_shadowed_browser();
     // The client goes away as a killed process does: its socket closes with
     // its surfaces still alive.
@@ -467,7 +443,7 @@ fn a_client_that_dies_with_a_subsurface_does_not_freeze_the_compositor() {
 #[test]
 fn a_fullscreen_client_keeps_the_output_size_over_its_tile() {
     const FULLSCREEN: u32 = 2;
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     h.state.output_size = (1280, 900);
     let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
     let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
@@ -542,7 +518,7 @@ fn a_fullscreen_client_keeps_the_output_size_over_its_tile() {
 #[test]
 fn a_page_fullscreen_request_takes_the_output_and_exit_gives_it_back() {
     const FULLSCREEN: u32 = 2;
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     h.state.output_size = (1280, 900);
     let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
     let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
@@ -586,7 +562,7 @@ fn a_page_fullscreen_request_takes_the_output_and_exit_gives_it_back() {
 #[test]
 fn opening_a_window_ends_a_full_screen_and_a_provisional_one_does_not() {
     const FULLSCREEN: u32 = 2;
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     h.state.output_size = (1280, 900);
     let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
     let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
@@ -657,7 +633,7 @@ fn opening_a_window_ends_a_full_screen_and_a_provisional_one_does_not() {
 /// moves the person, so the full screen stays.
 #[test]
 fn an_expanded_window_ends_its_full_screen_only_for_a_window_the_person_opened() {
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
     let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
     h.pump();
@@ -742,7 +718,7 @@ fn stub_tab(id: u64, title: &str) -> shell::shell::state::Tab {
 )]
 fn launching_from_full_screen_leaves_it_and_focuses_the_new_window() {
     const FULLSCREEN: u32 = 2;
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     h.state.output_size = (1280, 900);
     let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
     let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
@@ -909,10 +885,11 @@ fn an_app_that_stops_answering_shows_not_responding_until_it_answers() {
     let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
     h.pump();
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.Busy".into());
+    let Toplevel {
+        surface,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm_base, &qh, "org.example.Busy");
     surface.commit();
     h.pump();
     let id = h.foreign_id("org.example.Busy");
@@ -988,31 +965,31 @@ impl Harness {
     /// painted, and the keyboard reconciled.
     fn full_screen_tick(&mut self, surface: u64, output: Rect) -> FullScreenTick {
         let group = self.wl.state.client_fullscreen_group();
-        self.frame.set_client_fullscreen_group(group);
-        self.frame.set_client_fullscreen_surface(
+        self.fb.set_client_fullscreen_group(group);
+        self.fb.set_client_fullscreen_surface(
             group.map(|_| (surface, "Fullscreen".to_owned(), output)),
         );
         let mut scanout = None;
         for _ in 0..2 {
-            self.frame.relayout();
+            self.fb.relayout();
             scanout = self
-                .frame
+                .fb
                 .paint_with_damage()
                 .scanout_candidate()
                 .map(|candidate| candidate.surface);
         }
-        shell::compositor::client_input::sync_keyboard_focus(&mut self.wl.state, &self.frame);
+        shell::compositor::client_input::sync_keyboard_focus(&mut self.wl.state, &self.fb);
         self.pump();
-        let tile = self.frame.foreign_surface_rect(surface);
+        let tile = self.fb.foreign_surface_rect(surface);
         FullScreenTick {
-            overlay: self.frame.fullscreen_surface_rect(),
-            beneath_shell: self.frame.chrome().client_fullscreen_group(),
+            overlay: self.fb.fullscreen_surface_rect(),
+            beneath_shell: self.fb.chrome().client_fullscreen_group(),
             tile,
-            top_bar_aside: self.frame.chrome().fullscreen_covers_primary(),
+            top_bar_aside: self.fb.chrome().fullscreen_covers_primary(),
             scanout,
             keyboard: self.wl.state.client_input.keyboard_focus(),
             still_full_screen: self.wl.state.client_fullscreen_group().is_some(),
-            palette: self.frame.host().palette_visible(),
+            palette: self.fb.host().palette_visible(),
         }
     }
 }
@@ -1038,7 +1015,7 @@ impl Harness {
                 ),
                 is_synthetic: false,
             };
-            self.frame.dispatch_event(
+            self.fb.dispatch_event(
                 &event,
                 &winit::event::Modifiers::default(),
                 &mut ui::widget::Edits::lend(doc),
@@ -1071,7 +1048,7 @@ fn search_over_a_full_screen_window(super_f: bool) {
     const FULLSCREEN: u32 = 2;
     const SIZE: (u32, u32) = (1600, 900);
     let output = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
-    let mut h = Harness::new();
+    let mut h = Harness::with_viewport(VIEWPORT);
     h.state.output_size = (1600, 900);
     let compositor: wl_compositor::WlCompositor = h.bind("wl_compositor", 4);
     let wm_base: xdg_wm_base::XdgWmBase = h.bind("xdg_wm_base", 2);
@@ -1104,8 +1081,7 @@ fn search_over_a_full_screen_window(super_f: bool) {
             group
         };
         assert!(group.is_some(), "fixture: the window's group is focused");
-        h.frame
-            .with_chrome(|chrome| chrome.set_user_fullscreen_group(group));
+        h.fb.with_chrome(|chrome| chrome.set_user_fullscreen_group(group));
     }
     toplevel.set_fullscreen(None);
     h.pump();
@@ -1116,9 +1092,7 @@ fn search_over_a_full_screen_window(super_f: bool) {
 
     // Super+Space.
     let mut doc = automerge::AutoCommit::new();
-    h.frame
-        .host_mut()
-        .open_global_search(&doc, &automerge::ROOT);
+    h.fb.host_mut().open_global_search(&doc, &automerge::ROOT);
     let searching = h.full_screen_tick(id, output);
     let states_searching = h.last_states("org.tilo.Movie");
 

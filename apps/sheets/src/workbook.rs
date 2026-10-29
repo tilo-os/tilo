@@ -183,21 +183,9 @@ pub struct Chart {
     pub area: Area,
 }
 
-/// A reply to a comment thread.
-#[derive(Model, Clone, Debug, PartialEq)]
-pub struct Reply {
-    /// Author
-    ///
-    /// Who wrote it.
-    #[model(readonly)]
-    pub author: Atom,
-    /// Reply
-    pub body: String,
-}
-
-/// A comment thread anchored at a range of cells of one sheet.
-#[derive(Model, Clone, Debug, PartialEq)]
-pub struct Comment {
+/// The cells a comment thread is about, on one sheet.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct CommentCells {
     /// Sheet
     ///
     /// The sheet it is on.
@@ -208,18 +196,10 @@ pub struct Comment {
     /// The cells it is about.
     #[model(readonly)]
     pub area: Area,
-    /// Author
-    ///
-    /// Who started it.
-    #[model(readonly)]
-    pub author: Atom,
-    /// Comment
-    pub body: String,
-    /// Resolved
-    pub resolved: bool,
-    /// Replies
-    pub replies: Collection<Reply>,
 }
+
+/// A comment thread anchored at a range of cells of one sheet.
+pub type Comment = tilo_rich_text::annotation::Comment<CommentCells>;
 
 /// One sheet of the workbook.
 #[derive(Model, Clone, Debug, PartialEq)]
@@ -411,23 +391,23 @@ impl Sheet {
     ) -> Vec<CommentThread> {
         let mut out: Vec<CommentThread> = comments
             .iter()
-            .filter(|(_, comment)| comment.sheet == *id)
+            .filter(|(_, comment)| comment.anchor.sheet == *id)
             .filter_map(|(id, comment)| {
-                let (start, end) = Self::corners(layout, &comment.area)?;
+                let (start, end) = Self::corners(layout, &comment.anchor.area)?;
                 Some(CommentThread {
                     id: id.as_str().to_owned(),
                     start,
                     end,
-                    author: comment.author.0.clone(),
-                    body: comment.body.clone(),
+                    author: comment.author.clone(),
+                    body: comment.text.clone(),
                     resolved: comment.resolved,
                     replies: comment
                         .replies
                         .iter()
                         .map(|(id, reply)| CommentReply {
                             id: id.as_str().to_owned(),
-                            author: reply.author.0.clone(),
-                            body: reply.body.clone(),
+                            author: reply.author.clone(),
+                            body: reply.text.clone(),
                         })
                         .collect(),
                 })
@@ -673,7 +653,7 @@ impl Workbook {
     pub fn snapshot_of(&self, id: &Id) -> Option<SheetSnapshot> {
         let sheet = self.sheet(id)?;
         let mut snap = sheet.snapshot();
-        if crate::formula::Book::needed(&snap.raw) {
+        if crate::calc::Book::needed(&snap.raw) {
             let sheets = self
                 .sheets
                 .iter()
@@ -687,7 +667,7 @@ impl Workbook {
                 })
                 .collect();
             let own = self.sheets.position(id).unwrap_or_default();
-            snap.book = Some(std::sync::Arc::new(crate::formula::Book { sheets, own }));
+            snap.book = Some(std::sync::Arc::new(crate::calc::Book { sheets, own }));
         }
         Some(snap)
     }
@@ -756,7 +736,7 @@ pub struct SheetSnapshot {
     /// Whether the sheet is hidden.
     pub hidden: bool,
     /// The workbook's sheets, when formulas of this one read them.
-    pub book: Option<std::sync::Arc<crate::formula::Book>>,
+    pub book: Option<std::sync::Arc<crate::calc::Book>>,
 }
 
 /// A chart by position, as the sheet shows it.

@@ -8,6 +8,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/web"))
+sys.path.insert(0, str(ROOT / "tools/apps"))
+import generate_catalogue_fleet as catalogue
 import generate_web_desktop as registry
 
 
@@ -20,7 +22,7 @@ class ModelProviderHosts(unittest.TestCase):
         manifest = tomllib.loads((ROOT / "apps/model-providers/tilo-app.toml").read_text())
         self.assertEqual(manifest["sandbox"]["services"], {"model-gateway": "optional@11"})
         self.assertEqual(manifest["sandbox"]["net"]["mode"], "off")
-        self.assertTrue(providers["keywords"])
+        self.assertTrue(catalogue.search_keywords(ROOT / "apps/model-providers"))
         published = json.loads((ROOT / "crates/browser/tilo-web-desktop/apps.json").read_text())
         self.assertIn("so.tilo.model-providers", json.dumps(published))
         # The web desktop registers every app deferred from its own module

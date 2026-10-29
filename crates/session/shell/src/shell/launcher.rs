@@ -510,9 +510,16 @@ pub(crate) fn verified_package_for_descendant(pid: u32) -> Option<String> {
 /// app's cgroup (or stop its systemd scope, for a launcher that had to ask
 /// for one), then signal the process tree — including processes that share
 /// a session the app created.
+///
+/// It runs when the person closed the launch's last window, so the launch
+/// had opened: its signal exit is the close, not "crashed before opening".
+/// An X11 window says so no other way when it names no class (glxgears):
+/// it reaches the compositor through the workspace's `xwayland-satellite`,
+/// whose connection carries no launch identity.
 #[cfg(any(test, target_os = "linux"))]
 pub(crate) fn terminate_unconfined_launches(package_id: &str) {
     for pid in live_unconfined_launch_pids(package_id) {
+        note_launch_presented(package_id);
         request_stop_host_scope(package_id, pid);
         terminate_process_tree(pid);
     }
@@ -1551,6 +1558,16 @@ impl LaunchSession {
     /// Make this the session launches started on this thread belong to.
     fn adopt(self) {
         THREAD_SESSION.with(|slot| *slot.borrow_mut() = Some(self));
+    }
+
+    /// Let go of the session this thread adopted, before the thread ends:
+    /// dropped by the thread's own teardown instead, a session that was the
+    /// last to hold its workspace tree would drop the tree after the
+    /// thread-locals the tree's drop reads.
+    #[cfg(any(test, target_os = "linux"))]
+    fn disown() {
+        let adopted = THREAD_SESSION.with(|slot| slot.borrow_mut().take());
+        drop(adopted);
     }
 
     pub(crate) fn push(&self, event: LaunchEvent) {
@@ -6007,10 +6024,9 @@ pub(crate) fn attribute_unresolved_host_window(surface_id: u64, app_id: &str) {
 /// The compositor observed a toplevel. Record it against the launch that
 /// owns the window, including when the announced id is not the desktop id.
 pub(crate) fn record_host_window_open(surface_id: u64, app_id: &str) {
-    // A window that names no application (an X11 client without a class, such as
-    // glxgears, shows as `anon-<id>`) still proves its launch opened when the
-    // kernel-authenticated launch identity of its connection names the launch: its
-    // later exit is then not "crashed before opening".
+    // A window that names no application (`anon-<id>`) still proves its launch
+    // opened when the kernel-authenticated launch identity of its connection names
+    // the launch: its later exit is then not "crashed before opening".
     let attributed = lock(&LaunchSession::current().surfaces)
         .get(&surface_id)
         .cloned();

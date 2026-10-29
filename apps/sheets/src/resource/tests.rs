@@ -108,7 +108,7 @@ fn a_comment_is_signed_by_its_invoker() {
     let state = app.state();
     let comments: Vec<_> = state.comments.values().collect();
     assert_eq!(comments.len(), 1);
-    assert_eq!(comments[0].author.0, "test-author");
+    assert_eq!(comments[0].author, "test-author");
 
     let item = tilo_resource::items::item_resource_id::<Workbook>("sheets", &sheet);
     app.call_on(
@@ -281,6 +281,35 @@ fn rows_move_cells_formulas_and_anchors_and_targets_stay_put() {
     assert_eq!(raw(&book, &budget, "H8"), "on the intended sheet");
     let sales = Id::from_raw(crate::sample::SALES_SHEET_ID);
     assert_eq!(raw(&book, &sales, "H8"), "");
+}
+
+/// Renaming a sheet carries the formulas that read it, on every sheet, to
+/// its new name; text and other sheets' references stay as written.
+#[test]
+fn a_renamed_sheet_keeps_the_formulas_that_read_it() {
+    let mut book = sample();
+    let budget = budget();
+    let sales = Id::from_raw(crate::sample::SALES_SHEET_ID);
+    write(
+        &mut book,
+        &sales,
+        &[("H1", "=budget!E3+'Budget'!B2+\"Budget!A1\"&Sales!A1")],
+    );
+    write(&mut book, &budget, &[("H1", "=Budget!B2")]);
+    book.apply(Workbook::RENAME_SHEET.with(verbs::RenameSheet {
+        sheet: budget.clone(),
+        name: " Q3 budget ".into(),
+    }))
+    .unwrap();
+    assert_eq!(
+        raw(&book, &sales, "H1"),
+        "='Q3 budget'!E3+'Q3 budget'!B2+\"Budget!A1\"&Sales!A1"
+    );
+    assert_eq!(raw(&book, &budget, "H1"), "='Q3 budget'!B2");
+    assert_eq!(
+        sheet_of(&book.state().unwrap(), &budget).name.0,
+        "Q3 budget"
+    );
 }
 
 /// A workbook keeps one sheet; a duplicate is named after its original and

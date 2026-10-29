@@ -707,7 +707,7 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     let registries = host.join("registries.toml");
     let record = host.join("records/person.json");
     let state = host.join("state.json");
-    let settings = host.join("session/settings.json");
+    let settings = host.join("records/device.automerge");
     let accounts = host.join("accounts/store.json");
     let root_secret = host.join("identity/secrets/0123abcd.key");
     let active = host.join("identity/active");
@@ -730,13 +730,6 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     let config = appdir::SANDBOX_SESSION_CONFIG;
     let data = DataHome::new();
     let run = |argv: &[&str]| run_as_settings(&data, argv);
-
-    // Phase `settings_is_not_told_of_a_settings_file`: it reaches the
-    // session's settings through the shell's settings service.
-    assert_eq!(
-        run(&["env", "TILO_SESSION_SETTINGS"]),
-        "ENV TILO_SESSION_SETTINGS=<unset>"
-    );
 
     // Phase `the_trust_lists_registries_and_records_are_not_there`.
     for private in [
@@ -802,7 +795,7 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
     // Phase `the_settings_document_is_not_there`: Settings writes through
     // the shell's settings service, so a write where the session keeps the
     // document never reaches the host's.
-    let session = format!("{config}/session/settings.json");
+    let session = format!("{config}/records/device.automerge");
     let line = run(&["read", &session]);
     assert!(
         line.starts_with("ERR "),

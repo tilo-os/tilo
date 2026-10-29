@@ -1180,16 +1180,6 @@ impl ActionHostError {
 /// on the wire as an [`ActionHostError::InvalidRequest`].
 pub const STALE_REVISION_REASON: &str = "the target changed since that revision; list it again";
 
-/// The reasons hosts gave a stale revision before it had a variant: such a
-/// refusal from a peer that still sends one reads as
-/// [`ActionHostError::StaleRevision`].
-const UNTYPED_STALE_REVISION_REASONS: [&str; 4] = [
-    STALE_REVISION_REASON,
-    "the action changed since that revision; list it again",
-    "the room changed since that revision",
-    "the catalogue changed since that revision",
-];
-
 /// [`ActionHostError`] as it travels: only variants every peer decodes.
 #[derive(Serialize, Deserialize)]
 #[serde(rename = "ActionHostError")]
@@ -1227,9 +1217,7 @@ impl From<ActionHostError> for WireHostError {
 impl From<WireHostError> for ActionHostError {
     fn from(error: WireHostError) -> Self {
         match error {
-            WireHostError::InvalidRequest { reason } | WireHostError::Refused { reason }
-                if UNTYPED_STALE_REVISION_REASONS.contains(&reason.as_str()) =>
-            {
+            WireHostError::InvalidRequest { reason } if reason == STALE_REVISION_REASON => {
                 Self::StaleRevision
             }
             WireHostError::Unavailable { reason } => Self::Unavailable { reason },
@@ -1991,23 +1979,8 @@ mod tests {
             ActionHostError::StaleRevision
         );
         assert_eq!(ActionHostError::StaleRevision.code(), "stale_revision");
-        for (variant, reason) in [
-            (
-                "InvalidRequest",
-                "the action changed since that revision; list it again",
-            ),
-            ("Refused", "the room changed since that revision"),
-            ("Refused", "the catalogue changed since that revision"),
-        ] {
-            let sent = serde_json::json!({ variant: { "reason": reason } });
-            assert_eq!(
-                serde_json::from_value::<ActionHostError>(sent).unwrap(),
-                ActionHostError::StaleRevision,
-                "{variant}: {reason}"
-            );
-        }
-        // Only those exact reasons: a refusal that merely mentions a
-        // revision is the refusal it is.
+        // Only that exact reason: a refusal that merely mentions a revision
+        // is the refusal it is.
         let other = ActionHostError::Refused {
             reason: "the call changed since that revision, honestly".into(),
         };

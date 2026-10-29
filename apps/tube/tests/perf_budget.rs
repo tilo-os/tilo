@@ -71,7 +71,7 @@ fn feed() -> (Framed<TubeApp>, ui::ImageStore) {
     for (index, video) in model.videos.iter_mut().enumerate() {
         video.thumbnail_url = format!("http://test.local/thumb-{index}.png");
     }
-    let app = TubeApp::new()
+    let app = TubeApp::sample()
         .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
         .with_model_for_test(model)
         .with_image_store(store.clone());

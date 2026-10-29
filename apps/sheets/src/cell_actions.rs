@@ -29,14 +29,14 @@ pub struct SearchableCell {
 /// calculated, a formula without a format of its own shown in its
 /// operands' (a sum of amounts is an amount).
 pub fn shown_cells(snap: &SheetSnapshot) -> Vec<SearchableCell> {
-    let values = crate::formula::recalculate_snapshot(snap);
+    let values = crate::calc::recalculate_snapshot(snap);
     let mut cells = snap
         .raw
         .iter()
         .map(|(&(col, row), raw)| {
             let fmt = snap.fmt.get(&(col, row)).copied().unwrap_or_else(|| {
                 raw.strip_prefix('=')
-                    .and_then(|body| crate::formula::infer_result_format(body, &snap.fmt))
+                    .and_then(|body| crate::calc::infer_result_format(body, &snap.fmt))
                     .unwrap_or(CellFormat::General)
             });
             let display = values
@@ -129,7 +129,7 @@ pub fn sort_writes(
             let raw = at.get(&(col, from)).map_or_else(String::new, |cell| {
                 let shift = i64::from(to) - i64::from(from);
                 if cell.raw.starts_with('=') && shift != 0 {
-                    crate::formula::offset_refs(&cell.raw, 0, shift)
+                    crate::refs::offset_refs(&cell.raw, 0, shift)
                 } else {
                     cell.raw.clone()
                 }
@@ -216,7 +216,7 @@ fn shown_format(snap: &SheetSnapshot, addr: Addr) -> CellFormat {
         snap.raw
             .get(&addr)
             .and_then(|raw| raw.strip_prefix('='))
-            .and_then(|body| crate::formula::infer_result_format(body, &snap.fmt))
+            .and_then(|body| crate::calc::infer_result_format(body, &snap.fmt))
             .unwrap_or(CellFormat::General)
     })
 }
@@ -224,7 +224,7 @@ fn shown_format(snap: &SheetSnapshot, addr: Addr) -> CellFormat {
 /// `start..=end` of `snap` as `read-cells` answers it: computed rows,
 /// formulas, bold cells and the number formats cells have of their own.
 fn range_content(snap: &SheetSnapshot, start: Addr, end: Addr) -> serde_json::Value {
-    let values = crate::formula::recalculate_snapshot(snap);
+    let values = crate::calc::recalculate_snapshot(snap);
     let mut rows = Vec::new();
     let mut formulas = serde_json::Map::new();
     let mut formats = serde_json::Map::new();
@@ -421,7 +421,7 @@ fn formula_errors(snap: &SheetSnapshot, start: Addr, end: Addr) -> Vec<serde_jso
     cells
         .into_iter()
         .filter_map(|((col, row), raw)| {
-            let error = crate::formula::parse_error(raw)?;
+            let error = crate::calc::parse_error(raw)?;
             Some(serde_json::json!({
                 "cell": addr_to_a1(col, row),
                 "shows": error.error.text(),

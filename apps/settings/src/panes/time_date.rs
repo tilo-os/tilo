@@ -1178,7 +1178,7 @@ mod tests {
     #[test]
     fn the_shown_page_reads_the_clock_again_when_timedated_reports_a_change() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let clock = Arc::new(FollowedClock::default());
         let area = TimeDateArea::over(Arc::clone(&clock) as Arc<dyn Clock>);
         let mut pane = TimeDatePane::new(cx, &area);
@@ -1212,7 +1212,7 @@ mod tests {
     fn the_clock_and_the_date_show_in_the_region_formats_with_no_switch_of_their_own() {
         ui::i18n::I18nManager::init("en-US");
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let mut pane = read_pane(&cx);
         let composition = pane.build_composition();
         let mut ids = Vec::new();
@@ -1256,7 +1256,7 @@ mod tests {
     fn the_time_zone_is_one_searchable_picker_led_by_automatic_with_the_globe_as_its_visual() {
         ui::i18n::I18nManager::init("en-US");
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let pane = read_pane(&cx);
         let choices = pane.zone_choices();
         assert_eq!(
@@ -1351,7 +1351,7 @@ mod tests {
     #[test]
     fn unreadable_time_settings_are_shown_as_errors() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let area = TimeDateArea::over(Arc::new(UnreadableClock));
         let mut pane = TimeDatePane::new(cx, &area);
         // The reading may land before the pane notes the revision it saw,

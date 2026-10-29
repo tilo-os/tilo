@@ -193,14 +193,15 @@ impl PaneCx {
         self
     }
 
-    /// A detached pane over the settings document at `path`, for a test.
+    /// A detached pane over the settings of the profile at `root`, for a
+    /// test.
     #[cfg(test)]
-    pub fn in_file(path: std::path::PathBuf) -> Self {
+    pub fn in_profile(root: std::path::PathBuf) -> Self {
         let id = <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID;
         Self::detached(AppStorage::new(
             id,
             ui::storage::secrets(id),
-            ui::storage::SettingsDocument::File(path),
+            ui::storage::SettingsDocument::Profile(root),
         ))
     }
 

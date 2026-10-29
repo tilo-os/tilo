@@ -36,7 +36,7 @@ block-buffer = { version = "0.12", default-features = false, features = ["zeroiz
 bon = { version = "3" }
 buffa = { version = "0.9", default-features = false, features = ["fast-utf8", "json", "std"] }
 bumpalo = { version = "3", features = ["boxed", "collections"] }
-bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "derive", "extern_crate_alloc", "min_const_generics"] }
+bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "derive", "extern_crate_alloc", "min_const_generics", "must_cast"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
 cbc = { version = "0.2", features = ["alloc", "zeroize"] }
@@ -283,7 +283,7 @@ block-buffer = { version = "0.12", default-features = false, features = ["zeroiz
 bon = { version = "3" }
 buffa = { version = "0.9", default-features = false, features = ["fast-utf8", "json", "std"] }
 bumpalo = { version = "3", features = ["boxed", "collections"] }
-bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "derive", "extern_crate_alloc", "min_const_generics"] }
+bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "derive", "extern_crate_alloc", "min_const_generics", "must_cast"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
 cbc = { version = "0.2", features = ["alloc", "zeroize"] }

@@ -1,4 +1,3 @@
-use std::fs;
 use std::sync::Mutex;
 
 use super::*;
@@ -545,7 +544,7 @@ pub(super) fn forgotten(pane: &mut AgentModelsModel) {
 
 pub(super) fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_file(profile.path().join("settings.json"));
+    let cx = PaneCx::in_profile(profile.path().to_path_buf());
     let mut model = AgentModelsModel::new(cx, control);
     model.follow_local_profile = false;
     model
@@ -715,7 +714,8 @@ fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
 fn model_request_limits_use_the_published_settings_effects() {
     use ui::framework::testing::TestApp;
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("settings.json");
+    let path = directory.path().to_path_buf();
+    let settings = settings_store::profile(&path);
     let mut profile = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
     profile.models = vec![
         ModelDescriptor::new("test-model"),
@@ -728,11 +728,11 @@ fn model_request_limits_use_the_published_settings_effects() {
         default_profile: None,
         ..Default::default()
     }
-    .save_at(&path)
+    .save_in(&settings)
     .unwrap();
     let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
     app.surface_mut::<SettingsApp>()
-        .attach_host(PaneCx::in_file(path.clone()), None);
+        .attach_host(PaneCx::in_profile(path), None);
     app.surface_mut::<SettingsApp>()
         .areas()
         .find::<crate::panes::agent_models::AgentModelsArea>()
@@ -789,7 +789,7 @@ fn model_request_limits_use_the_published_settings_effects() {
         .unwrap();
     assert!(other_value["request_limits"].is_null());
     assert_eq!(other_value["plan_timeout_ceiling_ms"], 60_000);
-    let saved = fs::read(&path).unwrap();
+    let saved = settings_store::SettingsSource::load(&settings);
     for invalid in [
         serde_json::json!({"max_output_tokens":4096,"runtime_context_tokens":4096}),
         serde_json::json!({"max_output_tokens":512,"plan_timeout_ms":0}),
@@ -801,12 +801,12 @@ fn model_request_limits_use_the_published_settings_effects() {
             app.call_on(&resource, "set-model-request-limits", invalid)
                 .is_err()
         );
-        assert_eq!(fs::read(&path).unwrap(), saved);
+        assert_eq!(settings_store::SettingsSource::load(&settings), saved);
     }
     app.call_on(&resource, "set-model-request-limits", serde_json::json!({}))
         .unwrap();
     assert!(
-        ProviderConfig::load_at(&path).profiles[0].models[0]
+        ProviderConfig::load_in(&settings).profiles[0].models[0]
             .request_limits
             .is_none()
     );
@@ -987,7 +987,7 @@ fn until_finished(finished: impl Fn() -> bool) {
 #[test]
 fn the_area_builds_its_model_from_the_read_it_started() {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_file(profile.path().join("settings.json"));
+    let cx = PaneCx::in_profile(profile.path().to_path_buf());
     let area = AgentModelsArea::new(&cx);
     assert!(area.start_read(), "the first read starts");
     assert!(!area.start_read(), "one read at a time");
@@ -1012,7 +1012,7 @@ fn the_area_builds_its_model_from_the_read_it_started() {
 #[test]
 fn a_model_shows_what_its_read_asked() {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_file(profile.path().join("settings.json"));
+    let cx = PaneCx::in_profile(profile.path().to_path_buf());
     let control = mock(snapshot(None));
     let read = AgentModelsRead::of(control.as_ref(), Vec::new());
     let model = AgentModelsModel::from_read(cx.clone(), control.clone(), read);

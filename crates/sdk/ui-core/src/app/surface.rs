@@ -2071,8 +2071,7 @@ mod tests {
         // The window opens, taking up the zoom its app had on this device.
         let dir = tempfile::tempdir().expect("a settings directory");
         app.accessibility.zoom.restore_from(
-            crate::storage::Settings::for_app("so.tilo.zoom-actions")
-                .in_file(dir.path().join("settings.json")),
+            crate::storage::Settings::for_app("so.tilo.zoom-actions").in_profile(dir.path()),
         );
 
         let local = app.history_local_resources();

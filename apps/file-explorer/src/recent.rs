@@ -14,9 +14,6 @@ use ui::storage::{Scope, SettingsSchema};
 /// write into.
 pub const RECENT_LOCATION: &str = "recent://";
 
-/// How many entries are kept.
-pub const MAX_RECENT: usize = 200;
-
 pub fn location() -> PathBuf {
     PathBuf::from(RECENT_LOCATION)
 }
@@ -45,7 +42,7 @@ pub struct RecentItem {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecentFiles {
     #[serde(default)]
-    items: Vec<RecentItem>,
+    items: ui::tilo_resource::Recents<RecentItem, 200>,
 }
 
 impl RecentFiles {
@@ -59,25 +56,20 @@ impl RecentFiles {
         if !path.is_absolute() {
             return;
         }
-        self.items.retain(|item| item.path != path);
-        self.items.insert(
-            0,
-            RecentItem {
-                path: path.to_path_buf(),
-                at_ms,
-                last_use,
-            },
-        );
+        let item = RecentItem {
+            path: path.to_path_buf(),
+            at_ms,
+            last_use,
+        };
+        self.items
+            .remember_by(item, |kept, item| kept.path == item.path);
         // Keep newest first even if the clock stepped backwards.
         self.items.sort_by_key(|item| std::cmp::Reverse(item.at_ms));
-        self.items.truncate(MAX_RECENT);
     }
 
     /// Drop `path` from the list. Returns whether it was there.
     pub fn forget(&mut self, path: &Path) -> bool {
-        let before = self.items.len();
-        self.items.retain(|item| item.path != path);
-        self.items.len() != before
+        self.items.retain(|item| item.path != path)
     }
 
     /// Follow a rename or move so the entry keeps its place.
@@ -133,19 +125,6 @@ mod tests {
         recent.note(&location(), RecentUse::Opened, 1);
         recent.note(Path::new("notes.txt"), RecentUse::Opened, 2);
         assert!(recent.items().is_empty());
-    }
-
-    #[test]
-    fn the_list_is_bounded() {
-        let mut recent = RecentFiles::default();
-        for i in 0..(MAX_RECENT as u64 + 5) {
-            recent.note(&PathBuf::from(format!("/f/{i}")), RecentUse::Opened, i);
-        }
-        assert_eq!(recent.items().len(), MAX_RECENT);
-        assert_eq!(
-            recent.items()[0].path,
-            PathBuf::from(format!("/f/{}", MAX_RECENT as u64 + 4))
-        );
     }
 
     #[test]

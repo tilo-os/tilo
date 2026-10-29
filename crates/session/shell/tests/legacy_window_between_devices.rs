@@ -22,8 +22,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use iroh::address_lookup::memory::MemoryLookup;
-use iroh::endpoint::presets;
 use shell::network::NeighbourMsg;
 use shell::shell::peer_view::{PeerView, PushOutcome};
 use tilo_network_actor::Actor;
@@ -61,12 +59,7 @@ async fn spawn_device() -> (
     mpsc::Receiver<NetEvent>,
     iroh::EndpointAddr,
 ) {
-    let lookup = MemoryLookup::new();
-    let endpoint = iroh::Endpoint::builder(presets::N0)
-        .address_lookup(lookup.clone())
-        .bind()
-        .await
-        .expect("bind Iroh endpoint");
+    let (endpoint, lookup) = tilo_network_actor::loopback_endpoint(None).await;
     let addr = endpoint.addr();
     let (cmd_tx, _join) = Actor::spawn(endpoint, lookup);
     let (ev_tx, ev_rx) = mpsc::channel(256);

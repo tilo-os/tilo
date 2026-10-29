@@ -1,6 +1,7 @@
 """Native verification must compile gateway server tests, not only its clients."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,6 +15,10 @@ sys.path.insert(0, str(ROOT / "tools" / "ci"))
 SPEC = importlib.util.spec_from_file_location("package_features", ROOT / "tools/ci/package_features.py")
 features = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(features)
+
+
+# t runs its tests with CI set; only then does the wrapper add workspace-unify.
+CI_ENV = {**os.environ, "CI": "true"}
 
 
 class GatewayFeaturesTests(unittest.TestCase):
@@ -46,7 +51,7 @@ class GatewayFeaturesTests(unittest.TestCase):
                     result = subprocess.run(
                         ["bash", str(ci / "t-nextest.sh"), "cargo", "nextest", "run",
                          "--locked", "-p", package, "-E", "all()"],
-                        capture_output=True, text=True, check=True)
+                        capture_output=True, text=True, check=True, env=CI_ENV)
                     argv = json.loads(result.stdout)
                     self.assertEqual(argv[:5], ["cargo", "nextest", "run", "--locked", "-p"])
                     self.assertEqual(argv[5], package)
@@ -58,7 +63,7 @@ class GatewayFeaturesTests(unittest.TestCase):
                        "--package", "tilo-model-gateway", "-E", "all()"]
             result = subprocess.run(
                 ["bash", str(ci / "t-nextest.sh"), *command],
-                capture_output=True, text=True, check=True)
+                capture_output=True, text=True, check=True, env=CI_ENV)
             self.assertEqual(json.loads(result.stdout)[:len(command) + 2],
                              command + ["-p", "workspace-unify"])
             anchor = tomllib.loads((ROOT / "crates/dev/workspace-unify/Cargo.toml").read_text())
@@ -70,7 +75,7 @@ class GatewayFeaturesTests(unittest.TestCase):
             command = ["cargo", "check", "--locked", "-p", "tilo-model-gateway"]
             result = subprocess.run(
                 ["bash", str(ci / "t-nextest.sh"), *command],
-                capture_output=True, text=True, check=True)
+                capture_output=True, text=True, check=True, env=CI_ENV)
             self.assertEqual(json.loads(result.stdout), command)
 
 

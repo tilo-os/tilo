@@ -631,17 +631,15 @@ fn a_drag_held_at_the_canvas_edge_scrolls_and_keeps_selecting() {
     assert_eq!(at_bottom, 3, "the hold scrolled the third page under it");
     // Still held, with the clock still, until that page's text is read:
     // the selection reaches it as it arrives.
-    let deadline = tilo_test_env::hang_deadline();
-    while !app.raster_text.contains_key(&at_bottom) {
-        assert!(
-            ui::time::now() < deadline,
-            "page {at_bottom}'s text never arrived"
-        );
-        std::thread::sleep(Duration::from_millis(5));
+    tilo_test_env::wait_until(format_args!("page {at_bottom}'s text"), || {
+        if app.raster_text.contains_key(&at_bottom) {
+            return true;
+        }
         ui::time::testing::with_monotonic_time(frame_clock, || {
             Framed::harness_mut(&mut app).relayout();
         });
-    }
+        false
+    });
     let still = app.scroll_y() - before;
     assert!(
         (still - scrolled).abs() < 1e-9,

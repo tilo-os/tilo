@@ -171,10 +171,20 @@ pub fn values(
             if holds.unwrap_or(false) { "1" } else { "0" }.to_owned(),
         ]);
     }
-    let Some(field) = column.field.as_deref().and_then(|id| schema.field(id)) else {
+    let Some(field) = column
+        .field
+        .as_deref()
+        .and_then(|id| schema.field(id).or_else(|| super::reflect::field(id)))
+    else {
         return Ok(vec![String::new()]);
     };
-    Ok(match lit(field, value(field)?) {
+    let held = value(field)?;
+    let lit = if super::reflect::is_reflected(&field.id) {
+        super::reflect::at_lit(&held)
+    } else {
+        lit(field, held)
+    };
+    Ok(match lit {
         Lit::Set(members) => {
             let mut out: Vec<String> = members
                 .iter()

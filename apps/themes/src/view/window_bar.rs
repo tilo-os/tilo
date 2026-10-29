@@ -8,30 +8,44 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ui::framework::{BarActions, BarCommands};
 use ui::prelude::*;
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
 
 use super::{Editing, Page, Ui, t};
 use crate::effects::ThemesEffect;
 use crate::studio::Studio;
 
-pub(crate) const APPLY: &str = "theme-apply";
-pub(crate) const EXPORT: &str = "theme-export";
-pub(crate) const DUPLICATE: &str = "theme-duplicate";
-pub(crate) const RESET: &str = "theme-reset";
-pub(crate) const DELETE: &str = "theme-delete";
-pub(crate) const IMPORT: &str = "theme-import";
+/// What the bar's entries do that is no effect of the studio: they act on
+/// the theme the editor shows when pressed.
+#[derive(Clone, Copy, PartialEq)]
+enum Command {
+    Duplicate,
+    Reset,
+    Delete,
+}
 
 /// The theme the editor shows, for the bar's commands; none in the gallery.
 pub(super) type Shown = Rc<RefCell<Option<Editing>>>;
 
 /// The navigation shell, with the studio's slots in the window's bar.
 pub(super) struct StudioWindow {
-    pub(super) shell: NavShell,
-    pub(super) ui: Ui,
+    shell: NavShell,
+    ui: Ui,
+    actions: BarActions<Studio>,
+    commands: BarCommands<Command>,
 }
 
 impl StudioWindow {
+    pub(super) fn new(shell: NavShell, ui: Ui) -> Self {
+        Self {
+            shell,
+            actions: BarActions::new(ui.dispatcher.clone()),
+            commands: BarCommands::new(),
+            ui,
+        }
+    }
+
     fn editing(&self) -> Option<Editing> {
         self.ui.shown.borrow().clone()
     }
@@ -59,7 +73,16 @@ impl StudioWindow {
             label,
             ..ToolbarLocation::default()
         });
-        let mut actions = vec![ToolbarAction::new(IMPORT, "upload", t("themes-import")).in_menu()];
+        let bar = &self.actions;
+        let commands = &self.commands;
+        let mut actions = vec![
+            ToolbarAction {
+                name: t("themes-import"),
+                icon: "upload".into(),
+                ..bar.effect(&ThemesEffect::Import)
+            }
+            .in_menu(),
+        ];
         if let Some(editing) = editing {
             let raw = editing.id.as_str().to_owned();
             let legible = self
@@ -67,14 +90,44 @@ impl StudioWindow {
                 .live
                 .with(|studio| editing.read(studio, |theme| theme.findings(&raw).is_empty()))
                 .unwrap_or(false);
-            actions.push(ToolbarAction::new(APPLY, "check", t("themes-apply")).enabled(legible));
-            actions
-                .push(ToolbarAction::new(EXPORT, "download", t("themes-export")).enabled(legible));
-            actions.push(ToolbarAction::new(DUPLICATE, "copy", t("themes-duplicate")).in_menu());
-            actions
-                .push(ToolbarAction::new(RESET, "rotate-ccw", t("themes-reset-button")).in_menu());
-            actions
-                .push(ToolbarAction::new(DELETE, "trash-2", t("themes-delete-button")).in_menu());
+            let theme = editing.reference();
+            let apply = bar.effect(&ThemesEffect::ApplyTheme {
+                theme: theme.clone(),
+            });
+            let enabled = apply.enabled && legible;
+            actions.push(
+                ToolbarAction {
+                    name: t("themes-apply"),
+                    icon: "check".into(),
+                    ..apply
+                }
+                .enabled(enabled),
+            );
+            let export = bar.effect(&ThemesEffect::Export { theme });
+            let enabled = export.enabled && legible;
+            actions.push(
+                ToolbarAction {
+                    name: t("themes-export"),
+                    icon: "download".into(),
+                    ..export
+                }
+                .enabled(enabled),
+            );
+            actions.push(
+                commands
+                    .entry("copy", t("themes-duplicate"), Command::Duplicate)
+                    .in_menu(),
+            );
+            actions.push(
+                commands
+                    .entry("rotate-ccw", t("themes-reset-button"), Command::Reset)
+                    .in_menu(),
+            );
+            actions.push(
+                commands
+                    .entry("trash-2", t("themes-delete-button"), Command::Delete)
+                    .in_menu(),
+            );
         }
         NavShell::push_window_actions(&mut toolbar, actions);
         toolbar
@@ -89,38 +142,28 @@ impl StudioWindow {
             if self.shell.window_toolbar_event(&event) {
                 continue;
             }
-            if let ToolbarEvent::Action { id } = event {
-                if id == IMPORT {
-                    self.ui.dispatcher.effect(&ThemesEffect::Import);
-                } else if let Some(editing) = self.editing() {
-                    self.run(&id, &editing);
-                }
+            if self.actions.press(&event) {
+                continue;
+            }
+            if let Some(command) = self.commands.pressed(&event)
+                && let Some(editing) = self.editing()
+            {
+                self.run(command, &editing);
             }
         }
         asked
     }
 
     /// One of the theme's commands, as its control in the editor ran it.
-    fn run(&self, id: &str, editing: &Editing) {
+    fn run(&self, command: Command, editing: &Editing) {
         let ui = &self.ui;
-        let legible = || {
-            let raw = editing.id.as_str().to_owned();
-            ui.live
-                .with(|studio| editing.read(studio, |theme| theme.findings(&raw).is_empty()))
-                .unwrap_or(false)
-        };
-        match id {
-            IMPORT => {
-                ui.dispatcher.effect(&ThemesEffect::Import);
-            }
-            APPLY if legible() => ui.apply(editing.reference()),
-            EXPORT if legible() => ui.export(editing.reference()),
-            DUPLICATE => ui.start_from(&editing.reference()),
-            RESET => {
+        match command {
+            Command::Duplicate => ui.start_from(&editing.reference()),
+            Command::Reset => {
                 ui.dispatcher
                     .submit(editing.invoke(Studio::RESET.with(editing.id.clone())));
             }
-            DELETE => {
+            Command::Delete => {
                 // A draft never sent has nothing to delete: leaving it is
                 // enough.
                 if editing.sent() {
@@ -129,7 +172,6 @@ impl StudioWindow {
                 }
                 ui.open(Page::Gallery);
             }
-            _ => {}
         }
     }
 }

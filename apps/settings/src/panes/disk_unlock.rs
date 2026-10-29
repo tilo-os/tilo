@@ -822,7 +822,7 @@ mod tests {
     }
 
     fn test_cx() -> PaneCx {
-        PaneCx::in_file(std::env::temp_dir().join("tilo-disk-unlock-test-settings.json"))
+        PaneCx::in_profile(std::env::temp_dir().join("tilo-disk-unlock-test-settings"))
     }
 
     fn laid_out(card: &DiskUnlockModel) -> Vec<String> {

@@ -308,7 +308,7 @@ fn sheets_workbook() -> Vec<SheetTable> {
     raw.insert((1, 5), "=B2*(1+B3)".into());
     raw.insert((2, 5), "=IF(B6>1000,\"high\",\"low\")".into());
     raw.insert((3, 7), "far".into());
-    let values: HashMap<Addr, CellValue> = crate::formula::recalculate(&raw);
+    let values: HashMap<Addr, CellValue> = crate::calc::recalculate(&raw);
     vec![
         SheetTable::from_cells(
             "Budget 2026",

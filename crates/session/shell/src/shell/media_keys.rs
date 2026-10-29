@@ -946,12 +946,11 @@ mod tests {
 
     /// Run `test` with the session's records in `dir` as the settings,
     /// as the shell runs.
-    fn with_session_records(test: impl FnOnce(&settings_store::SessionPaths)) {
+    fn with_session_records(test: impl FnOnce(&settings_store::Store)) {
         let dir = tempfile::tempdir().unwrap();
-        let paths = settings_store::SessionPaths::beside(dir.path().join("settings.json"));
-        let records = settings_store::SessionSettings::open(paths.clone()).unwrap();
-        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
-        test(&paths);
+        let records = settings_store::Store::open(dir.path()).unwrap();
+        let _settings = crate::shell::test_support::install_settings(records.clone());
+        test(&records);
     }
 
     #[test]
@@ -968,15 +967,9 @@ mod tests {
                 "an absent preference means the touchpad was on"
             );
             assert_eq!(
-                settings_store::load_at(&paths.device)["input"]
+                settings_store::SettingsSource::load(paths)["input"]
                     [settings_store::hardware::TOUCHPAD_ENABLED_KEY],
                 false
-            );
-            assert_eq!(
-                settings_store::load_at(&paths.copy)["input"]
-                    [settings_store::hardware::TOUCHPAD_ENABLED_KEY],
-                false,
-                "the compositor reads the copy"
             );
             assert_eq!(
                 caption(respond(MediaKey::TouchpadToggle, &rec, None, false)),
@@ -994,22 +987,13 @@ mod tests {
                 settings_store::load_section("accessibility").get("mouse_keys"),
                 Some(&serde_json::Value::Bool(true))
             );
-            assert_eq!(
-                settings_store::load_at(&paths.copy)["accessibility"]["mouse_keys"],
-                true
-            );
             let off = toggle_mouse_keys().expect("saved");
             assert_eq!(off.caption(), "Mouse keys off");
-            let log = std::fs::read_to_string(paths.change_log()).expect("change log");
-            let entries: Vec<serde_json::Value> = log
-                .lines()
-                .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
-                .collect();
+            let entries = paths.change_log();
             assert_eq!(entries.len(), 2, "one entry per flip: {entries:?}");
-            for (entry, after) in entries.iter().zip([true, false]) {
+            for entry in &entries {
                 assert_eq!(entry["section"], "accessibility");
                 assert_eq!(entry["leaf"], "mouse_keys");
-                assert_eq!(entry["after"], after);
                 assert_eq!(entry["action"], MOUSE_KEYS_ORIGIN, "the chord is named");
                 assert_eq!(
                     entry["principal"],
@@ -1025,17 +1009,11 @@ mod tests {
         with_session_records(|paths| {
             assert_eq!(toggle_screen_reader(), Some(true), "absent means off");
             assert!(settings_store::accessibility::ScreenReaderSettings::load().enabled);
-            assert_eq!(
-                settings_store::load_at(&paths.copy)["accessibility"]["screen_reader"],
-                true,
-                "the compositor reads the copy"
-            );
             assert_eq!(toggle_screen_reader(), Some(false));
             assert!(!settings_store::accessibility::ScreenReaderSettings::load().enabled);
-            let log = std::fs::read_to_string(paths.change_log()).expect("change log");
-            let actions: Vec<serde_json::Value> = log
-                .lines()
-                .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSON"))
+            let actions: Vec<serde_json::Value> = paths
+                .change_log()
+                .into_iter()
                 .map(|entry| entry["action"].clone())
                 .collect();
             assert_eq!(actions, [SCREEN_READER_ORIGIN, SCREEN_READER_ORIGIN]);

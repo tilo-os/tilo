@@ -187,7 +187,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             .unwrap();
         assert_eq!(
             highlight.color,
-            Swatch::from_rgb(10, 200, 90),
+            HighlightColor::from_rgb(10, 200, 90),
             "exact colour kept"
         );
         let free = annotations
@@ -341,7 +341,12 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
             Annotation {
                 id: crate::adopt::imported_id(&hash, 0, 3),
                 space: crate::model::GeomSpace::User,
-                ..Annotation::new(1, AnnoKind::Note { x: 1.0, y: 2.0 }, Swatch::Yellow, "Ada")
+                ..Annotation::new(
+                    1,
+                    AnnoKind::Note { x: 1.0, y: 2.0 },
+                    HighlightColor::Yellow,
+                    "Ada",
+                )
             },
             "source-1".into(),
         ));

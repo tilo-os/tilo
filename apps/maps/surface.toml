@@ -14,7 +14,7 @@ fields = [
   { path = "places.*.pos.lat", type = "f64" },
   { path = "places.*.pos.lon", type = "f64" },
   { path = "places.*.saved", type = "bool" },
-  { path = "recents", type = "Vec<String>", readonly = true },
+  { path = "recents", type = "RecentSearches", readonly = true },
   { path = "mode", type = "TravelMode" },
   { path = "transit_time", type = "TransitTime" },
   { path = "route_plan", type = "ActivePlan", readonly = true },

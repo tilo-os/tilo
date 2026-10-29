@@ -21,13 +21,7 @@ impl Session {
 
     async fn new(root: &ed25519_dalek::SigningKey, tag: u8, tree: WorkspaceTree) -> Self {
         let device = iroh::SecretKey::from_bytes(&[tag; 32]);
-        let lookup = MemoryLookup::new();
-        let endpoint = iroh::Endpoint::builder(presets::N0)
-            .secret_key(device.clone())
-            .address_lookup(lookup.clone())
-            .bind()
-            .await
-            .unwrap();
+        let (endpoint, lookup) = tilo_network_actor::loopback_endpoint(Some(device.clone())).await;
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: *device.public().as_bytes(),
@@ -249,10 +243,8 @@ async fn paired_continuity_clipboard_requires_activation_and_filters_private_sel
         "DBUS_SESSION_BUS_ADDRESS",
         "unix:path=/nonexistent/tilo-continuity-test",
     );
-    let paths = settings_store::SessionPaths::beside(home.config().join("settings.json"));
-    let _settings = crate::shell::test_support::install_settings(Arc::new(
-        settings_store::SessionSettings::open(paths).unwrap(),
-    ));
+    let paths = home.config().to_path_buf();
+    let _settings = crate::shell::test_support::install_settings(settings_store::profile(&paths));
     settings_store::update_section(
         "continuity",
         serde_json::json!({
@@ -902,10 +894,9 @@ impl NativeEditorPair {
             home.env().set("TILO_HOME_PEERS_PATH", &peers);
             install_editor_package(&mut home);
             let (source, mut target) = mounted_editors(&home);
-            let paths = settings_store::SessionPaths::beside(home.config().join("settings.json"));
-            let settings = crate::shell::test_support::install_settings(Arc::new(
-                settings_store::SessionSettings::open(paths).unwrap(),
-            ));
+            let paths = home.config().to_path_buf();
+            let settings =
+                crate::shell::test_support::install_settings(settings_store::profile(&paths));
             settings_store::update_section(
                 "continuity",
                 serde_json::json!({

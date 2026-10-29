@@ -362,8 +362,8 @@ pub(super) fn validate_payload_scope(
 ) -> io::Result<()> {
     let home_applications = prepared
         .manifest
-        .portable_home
-        .as_ref()
+        .units
+        .portable_home()
         .is_some_and(|home| home.applications);
     if home_applications && (prepared.home.is_none() || !plan.categories.home) {
         return Err(io::Error::other(
@@ -373,7 +373,8 @@ pub(super) fn validate_payload_scope(
     if prepared.retained.is_some()
         || plan.categories.flatpak != (home_applications || prepared.applications.is_some())
         || (!plan.categories.accounts
-            && (!prepared.account_ids.is_empty() || prepared.manifest.service_sessions.is_some()))
+            && (!prepared.account_ids.is_empty()
+                || prepared.manifest.units.service_sessions().is_some()))
     {
         return Err(io::Error::other(
             "Pending source categories differ from prepared selection",
@@ -516,21 +517,29 @@ fn reseal_amendment(
     }
     let mut manifest = parent.manifest().clone();
     match declaration {
-        Amendment::Offline(prepared_setup::OriginalSelectionPlan::Home(plan)) => {
-            manifest.offline_home = Some(plan)
-        }
-        Amendment::Offline(prepared_setup::OriginalSelectionPlan::Applications(plan)) => {
-            manifest.offline_applications = Some(plan)
-        }
+        Amendment::Offline(prepared_setup::OriginalSelectionPlan::Home(plan)) => manifest
+            .units
+            .carry_home(prepared_setup::HomeCarriage::Offline(plan))?,
+        Amendment::Offline(prepared_setup::OriginalSelectionPlan::Applications(plan)) => manifest
+            .units
+            .insert(prepared_setup::Unit::MediumApplications(
+                prepared_setup::ApplicationsCarriage::Offline(plan),
+            )),
         #[cfg(target_os = "linux")]
         Amendment::StagingCopy(plan) => {
-            manifest.retained_home = None;
-            manifest.original_copy = Some(plan);
+            manifest
+                .units
+                .remove(prepared_setup::UnitKey::RETAINED_HOME);
+            manifest
+                .units
+                .insert(prepared_setup::Unit::InstalledCopyHome(plan));
         }
         #[cfg(target_os = "linux")]
         Amendment::ComputerApplications(plan) => {
             manifest.planned_btrfs_resize = plan.planned_resize(&manifest)?;
-            manifest.computer_applications = Some(plan);
+            manifest
+                .units
+                .insert(prepared_setup::Unit::InstalledCopyApplications(plan));
         }
     }
     drop(parent);
@@ -562,10 +571,11 @@ fn reseal_amendment(
             cancel,
         )?;
     }
-    let home = if manifest.offline_applications.is_some() || {
+    let home = if manifest.units.offline_applications().is_some() || {
         #[cfg(target_os = "linux")]
         {
-            manifest.original_copy.is_some() || manifest.computer_applications.is_some()
+            manifest.units.original_copy().is_some()
+                || manifest.units.computer_applications().is_some()
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -618,7 +628,9 @@ fn reseal_amendment(
         retained: {
             #[cfg(target_os = "linux")]
             {
-                if manifest.original_copy.is_some() || manifest.computer_applications.is_some() {
+                if manifest.units.original_copy().is_some()
+                    || manifest.units.computer_applications().is_some()
+                {
                     original.retained.clone()
                 } else {
                     None
@@ -947,11 +959,11 @@ mod tests {
         )
         .unwrap();
         let manifest = review.manifest();
-        assert!(manifest.offline_home.is_none());
-        assert!(manifest.portable_home.is_none());
-        assert!(manifest.completed_home.is_none());
-        assert!(manifest.portable_flatpak.is_none());
-        let pending_apps = manifest.offline_applications.as_ref().unwrap();
+        assert!(manifest.units.offline_home().is_none());
+        assert!(manifest.units.portable_home().is_none());
+        assert!(manifest.units.completed_home().is_none());
+        assert!(manifest.units.portable_flatpak().is_none());
+        let pending_apps = manifest.units.offline_applications().unwrap();
         assert_eq!(
             pending_apps.applications_operation().unwrap(),
             expected_operation
@@ -990,8 +1002,8 @@ mod tests {
         assert!(
             prepared
                 .manifest
-                .portable_home
-                .as_ref()
+                .units
+                .portable_home()
                 .unwrap()
                 .applications
         );
@@ -1164,8 +1176,8 @@ mod tests {
         assert_eq!(actual_parent_bytes, pending.expectation.sealed_bytes);
         let selected_home_bytes = pending
             .manifest
-            .offline_home
-            .as_ref()
+            .units
+            .offline_home()
             .unwrap()
             .sealed_reservation();
         let selected_sidecars = pending.browser.as_ref().unwrap().expectation.sealed_bytes
@@ -1221,10 +1233,13 @@ mod tests {
         .unwrap();
         assert_eq!(review.manifest(), &pending.manifest);
         assert_eq!(
-            review.manifest().portable_flatpak,
-            original.manifest.portable_flatpak
+            review.manifest().units.portable_flatpak(),
+            original.manifest.units.portable_flatpak()
         );
-        assert_eq!(review.manifest().browser, original.manifest.browser);
+        assert_eq!(
+            review.manifest().units.browser(),
+            original.manifest.units.browser()
+        );
         assert_eq!(review.manifest().account_ids, original.manifest.account_ids);
         assert!(review.require_completed_export().is_err());
         assert_eq!(fs::read(original.package()).unwrap(), original_bytes);

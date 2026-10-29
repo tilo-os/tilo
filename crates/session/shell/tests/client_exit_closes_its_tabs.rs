@@ -11,22 +11,18 @@ use std::sync::Arc;
 use shell::shell::state::WorkspaceTree;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
-use wayland_client::protocol::{wl_compositor, wl_surface};
-use wayland_client::{Connection, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_client::Connection;
+use wayland_client::protocol::wl_compositor;
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
-use crate::support::wayland::{Globals as _, foreign_tabs};
+use crate::support::wayland::{Globals as _, Toplevel, create_toplevel, foreign_tabs};
 
 #[derive(Default)]
 struct Client {
     globals: Vec<(u32, String, u32)>,
 }
 
-crate::support::wayland::test_client!(Client);
-
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel);
 
 #[test]
 fn a_client_that_exits_without_destroying_its_window_loses_its_tab() {
@@ -85,10 +81,11 @@ fn a_client_that_exits_without_destroying_its_window_loses_its_tab() {
     let compositor: wl_compositor::WlCompositor = registry.bind(name, version, &qh, ());
     let (name, version) = bind("xdg_wm_base", 2);
     let wm_base: xdg_wm_base::XdgWmBase = registry.bind(name, version, &qh, ());
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.Crashes".into());
+    let Toplevel {
+        surface,
+        xdg,
+        toplevel,
+    } = create_toplevel(&compositor, &wm_base, &qh, "org.example.Crashes");
     surface.commit();
     pump(&mut state, &mut client);
     let tabs = foreign_tabs(&state);

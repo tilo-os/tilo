@@ -179,3 +179,258 @@ fn a_scenario_records_each_block_as_its_person_at_its_time() {
         "{shown}"
     );
 }
+
+#[test]
+fn the_last_version_is_the_latest_on_every_replica_whichever_order_they_arrive_in() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+    let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+    ada.commit();
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+    let line = call(
+        &ada,
+        "ada",
+        "say",
+        vec![Value::resource(&talk), Value::text("hello")],
+    );
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    // Each changes the line apart: Ada later than Ben, though Ben's change reaches Ada after
+    // her own, and Ada's reaches Ben after his.
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T10:00:00Z".to_owned());
+    call(
+        &ada,
+        "ada",
+        "reword",
+        vec![line.clone(), Value::text("hi all")],
+    );
+    ada.commit();
+    ben.host
+        .runtime()
+        .set_clock(|| "2026-10-28T09:30:00Z".to_owned());
+    call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
+    ben.commit();
+    ada.sync_with(&mut ben);
+    let want = "ada 2026-10-28T09:00:00Z ada 2026-10-28T10:00:00Z Reword 3";
+    assert_eq!(
+        text(call(&ada, "ada", "describe", vec![line.clone()])),
+        want
+    );
+    assert_eq!(text(call(&ben, "ben", "describe", vec![line])), want);
+}
+
+/// Topics, each with its notes, listed by when each last changed, the latest first.
+const TOPICS: &str = r#"app so.tilo.lang.topics "Topics"
+
+type Note {
+    said: Text
+}
+
+type Topic {
+    title: Text
+    notes: Collection<Note>
+}
+
+type Topics {
+    topics: Collection<Topic>
+}
+
+root Topics
+
+default view board for Topics
+
+action open_topic(b: Topics, title: Text) -> Topic {
+    b.topics.insert(Topic(title: title))
+}
+
+action post(t: Topic, said: Text) -> Note {
+    t.notes.insert(Note(said: said))
+}
+
+row view topic_row for Topic
+
+view board(b: Topics) {
+    std.list(b, b.topics.sort_by(t -> updated(t), desc))
+}
+
+view topic_row(t: Topic) {
+    row(t.title)
+}
+"#;
+
+fn shown(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
+    out.extend(node.props.values().filter_map(|value| match value {
+        Value::Text(text) => Some(text.clone()),
+        _ => None,
+    }));
+    for child in &node.children {
+        shown(child, out);
+    }
+}
+
+fn list_key(node: &tilolang_runtime::UiNode) -> Option<String> {
+    if node.kind == "ui.VirtualList" {
+        return Some(node.key.clone());
+    }
+    node.children.iter().find_map(list_key)
+}
+
+/// The topics the first `n` rows of a view's list show, in order, as a virtual list asks for
+/// them.
+fn rows(view: &mut tilolang_runtime::ViewInstance, n: usize) -> Vec<String> {
+    let list = list_key(view.tree()).expect("a list");
+    let mut out = Vec::new();
+    for i in 0..n {
+        if let Some(row) = view.row(&list, i).unwrap() {
+            shown(row, &mut out);
+        }
+    }
+    out.retain(|t| t.starts_with("topic "));
+    out
+}
+
+/// A room of `n` topics, opened one a minute from 08:00, and the root.
+fn topics(n: usize) -> (Replica, tilolang_runtime::value::ResourceRef, Vec<Value>) {
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TOPICS, "")]);
+    let root = ada.host.root_of("so.tilo.lang.topics").unwrap();
+    ada.commit();
+    let mut made = Vec::new();
+    for i in 0..n {
+        let at = format!(
+            "2026-10-28T{:02}:{:02}:00Z",
+            (i / 60).saturating_add(8),
+            i % 60
+        );
+        ada.host.runtime().set_clock(move || at.clone());
+        made.push(call_in(
+            &ada,
+            "so.tilo.lang.topics",
+            "open_topic",
+            vec![Value::resource(&root), Value::text(format!("topic {i}"))],
+        ));
+        ada.commit();
+    }
+    (ada, root, made)
+}
+
+fn call_in(r: &Replica, app: &str, action: &str, args: Vec<Value>) -> Value {
+    let meta = r.host.package(app).unwrap().meta;
+    let id = meta
+        .actions
+        .iter()
+        .find(|a| a.name == action)
+        .unwrap()
+        .id
+        .clone();
+    match r
+        .host
+        .runtime()
+        .invoke_action(&Principal::new(&r.name), (id.as_str(), args))
+        .unwrap()
+    {
+        InvokeOutcome::Done(v) => v,
+        other => panic!("{action}: {other:?}"),
+    }
+}
+
+#[test]
+fn a_list_sorted_by_when_each_last_changed_reads_its_order_from_the_index() {
+    let (mut ada, _, made) = topics(3);
+    let mut view = ada.view("so.tilo.lang.topics");
+    assert_eq!(rows(&mut view, 3), ["topic 2", "topic 1", "topic 0"]);
+    // A note posted in the oldest topic is its latest change: it comes first.
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T12:00:00Z".to_owned());
+    call_in(
+        &ada,
+        "so.tilo.lang.topics",
+        "post",
+        vec![made[0].clone(), Value::text("news")],
+    );
+    ada.commit();
+    view.poll_patches().unwrap();
+    assert_eq!(rows(&mut view, 3), ["topic 0", "topic 2", "topic 1"]);
+}
+
+#[test]
+fn opening_a_list_sorted_by_versions_reads_what_it_shows_whatever_the_size() {
+    let work = |n: usize| {
+        let (ada, _, _) = topics(n);
+        let before = ada.host.store().read_stats();
+        let mut view = ada.view("so.tilo.lang.topics");
+        let first = rows(&mut view, 10).first().cloned();
+        let after = ada.host.store().read_stats();
+        (
+            first,
+            after.doc.entries - before.doc.entries,
+            after.evaluated - before.evaluated,
+            after.index.pages - before.index.pages,
+        )
+    };
+    let (small_first, small_entries, small_evaluated, small_pages) = work(40);
+    let (large_first, large_entries, large_evaluated, large_pages) = work(400);
+    assert_eq!(small_first.as_deref(), Some("topic 39"));
+    assert_eq!(large_first.as_deref(), Some("topic 399"));
+    // Nothing of the record, no item checked one by one, and the pages of the rows shown.
+    assert_eq!((small_entries, large_entries), (0, 0));
+    assert_eq!((small_evaluated, large_evaluated), (0, 0));
+    assert!(
+        large_pages <= small_pages + 2,
+        "{large_pages} pages at 400, {small_pages} at 40"
+    );
+}
+
+const BOARD: &str = include_str!("../../../../apps/tl/board/app.tl");
+const BOARD_IDS: &str = include_str!("../../../../apps/tl/board/app.ids");
+const BOARD_APP: &str = "so.tilo.lang.board";
+
+#[test]
+fn a_document_says_when_it_was_last_edited_and_by_whom_on_every_replica() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(BOARD, BOARD_IDS)]);
+    let board = Value::resource(&ada.host.root_of(BOARD_APP).unwrap());
+    ada.commit();
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+    let todo = call_in(&ada, BOARD_APP, "new_column", vec![board.clone()]);
+    ada.commit();
+    let done = call_in(&ada, BOARD_APP, "new_column", vec![board.clone()]);
+    ada.commit();
+    let card = call_in(&ada, BOARD_APP, "new_card", vec![board.clone(), todo]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(BOARD, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    ben.host
+        .runtime()
+        .set_clock(|| "2026-10-28T09:30:00Z".to_owned());
+    call_in(&ben, BOARD_APP, "move_to", vec![board, card.clone(), done]);
+    ben.commit();
+    ada.sync_with(&mut ben);
+    let Value::Ref(target) = &card else {
+        panic!("a card: {card:?}");
+    };
+    // The card's own page, on each replica: its foot says Ben changed it last, and when.
+    for replica in [&ada, &ben] {
+        let view = replica.host.open_resource(&target.target, None).unwrap();
+        let mut texts = Vec::new();
+        shown(view.tree(), &mut texts);
+        // The labels are the platform's phrases, which this host leaves unsaid.
+        for want in [
+            "tilolang-edited",
+            "2026-10-28T09:30:00Z",
+            "tilolang-edited-by",
+            "ben",
+        ] {
+            assert!(
+                texts.contains(&want.to_owned()),
+                "{}: {want} in {texts:?}",
+                replica.name
+            );
+        }
+    }
+}

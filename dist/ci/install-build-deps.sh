@@ -106,7 +106,39 @@ install_test_runtime_fedora() {
     glib-compile-schemas /usr/share/glib-2.0/schemas
     test -s /usr/share/glib-2.0/schemas/gschemas.compiled
     install_nextest
+    install_cargo_hakari
     install_iai_callgrind_runner
+}
+
+# The workspace-hack checker, so a dependency change can be checked with
+# `cargo hakari generate --diff` wherever the workspace builds, not only in
+# the CI fast image. Same version as os/Containerfile.ci-fast; the upstream
+# release binary, checksum-verified like cargo-nextest.
+install_cargo_hakari() {
+    local version=0.9.39 target sha archive
+    case "$(uname -m)" in
+    x86_64)
+        target=x86_64-unknown-linux-gnu
+        sha=699a3193a9bd1a8d914b970d3f50f3385f24fbd8b1294d0c0ff31fbe7c2c9f48
+        ;;
+    aarch64)
+        target=aarch64-unknown-linux-gnu
+        sha=c92f6c556e84f00da1ea0a26217eea5be3d701f1ee9d24a04066a46b65886fbc
+        ;;
+    *)
+        echo "unsupported cargo-hakari architecture: $(uname -m)" >&2
+        exit 1
+        ;;
+    esac
+    archive=$(mktemp)
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://github.com/guppy-rs/guppy/releases/download/cargo-hakari-$version/cargo-hakari-$version-$target.tar.gz" \
+        -o "$archive"
+    printf '%s  %s\n' "$sha" "$archive" | sha256sum --check --status
+    tar -xzf "$archive" -C /usr/local/bin cargo-hakari
+    rm -f -- "$archive"
+    chmod 0755 /usr/local/bin/cargo-hakari
+    /usr/local/bin/cargo-hakari hakari --version
 }
 
 # The test runner, pinned and checksum-verified. It goes to /usr/local/bin, not

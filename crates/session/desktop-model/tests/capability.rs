@@ -164,13 +164,16 @@ fn app_kind_app_id_is_reverse_dns_or_the_verbatim_label() {
         assert_eq!(AppKind::Browser.app_id(), "so.tilo.browser");
         assert_eq!(AppKind::Settings.app_id(), "so.tilo.settings");
         // A bare `Other` label no package answers to keeps its built-in id.
-        assert_eq!(AppKind::Other("Editor".into()).app_id(), "org.tilo.Editor");
+        assert_eq!(
+            AppKind::Other("Scratch".into()).app_id(),
+            "org.tilo.Scratch"
+        );
         for kind in [
             AppKind::FileExplorer,
             AppKind::Terminal,
             AppKind::Browser,
             AppKind::Settings,
-            AppKind::Other("Editor".into()),
+            AppKind::Other("Scratch".into()),
         ] {
             assert_ne!(
                 kind.app_id(),

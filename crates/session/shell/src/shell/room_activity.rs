@@ -630,7 +630,7 @@ impl ShortcutRunRecorder {
 
 /// `$XDG_STATE_HOME/tilo/activity-history.json`: what this device has seen of
 /// each workspace and when it last left one. Private viewer state rewritten on
-/// every workspace switch, so it stays out of `settings.json`, whose writes
+/// every workspace switch, so it stays out of the settings, whose writes
 /// every settings reader treats as a preference change to re-apply.
 fn history_path() -> Option<std::path::PathBuf> {
     tilo_paths::state_dir().map(|root| root.join("tilo/activity-history.json"))
@@ -1538,7 +1538,7 @@ mod tests {
     }
 
     /// Leaving a workspace rewrites the history file and nothing else: a
-    /// write to `settings.json` would make every settings reader re-apply
+    /// write to the settings would make every settings reader re-apply
     /// its preferences on each workspace switch.
     #[test]
     fn morning_sources_private_persistence_preserves_review_boundaries_and_room_identity() {
@@ -1689,8 +1689,11 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
         assert!(
-            history_path().is_none_or(|history| Some(history) != settings_store::settings_path()),
-            "history must not live in settings.json"
+            history_path().is_none_or(|history| {
+                settings_store::config_root()
+                    .is_none_or(|root| !history.starts_with(root.join(settings_store::RECORDS_DIR)))
+            }),
+            "history must not live in the settings records"
         );
         let missing: HashMap<u64, WorkspaceDeparture> =
             load_history_map_at(Some(&dir.path().join("absent.json")), "departures");

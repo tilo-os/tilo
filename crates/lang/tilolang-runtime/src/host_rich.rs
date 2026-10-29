@@ -1,5 +1,5 @@
-//! The `RichText` imports: `RichText(...)`, `r.excerpt`, `r.text`, `r.references`,
-//! `r.people` and `r.is_empty()` (see [`crate::rich`]).
+//! The `RichText` imports: `RichText(...)` (with a time as a part, `rich_time`), `r.excerpt`,
+//! `r.text`, `r.references`, `r.people` and `r.is_empty()` (see [`crate::rich`]).
 
 use std::rc::Rc;
 
@@ -58,6 +58,20 @@ impl Core {
                 self.ret_h(part)
             }
             Imp::RichEmpty => ret_i32(i32::from(self.rich_arg(a.h(0)?)?.is_empty())),
+            Imp::RichTime => {
+                let at = match self.val(a.h(0)?)? {
+                    Value::Text(at) => at,
+                    other => {
+                        return trap(format!(
+                            "rich_time: expected a time, got {}",
+                            other.kind_name()
+                        ));
+                    }
+                };
+                let mut out = RichValue::default();
+                out.push_time(&at);
+                self.ret_h(Value::Rich(out))
+            }
             _ => trap("not a rich text import"),
         }
     }

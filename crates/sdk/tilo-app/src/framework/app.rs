@@ -1722,14 +1722,12 @@ fn prepare_named(
             prepared.context.provide_capture(capture);
             // The theme the capture draws in is the stored choice its
             // controls show.
-            ui_core::storage::SettingsDocument::File(super::headless::profile_settings(
-                &profile_root,
-            ))
-            .update_section(
-                ui_core::theme::APPEARANCE_SECTION,
-                ui_core::launch::capture_appearance(args),
-            )
-            .map_err(super::headless::operation)?;
+            ui_core::storage::SettingsDocument::Profile(profile_root.clone())
+                .update_section(
+                    ui_core::theme::APPEARANCE_SECTION,
+                    ui_core::launch::capture_appearance(args),
+                )
+                .map_err(super::headless::operation)?;
         }
         if private {
             prepared.context.provide_private();

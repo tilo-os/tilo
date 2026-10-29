@@ -21,7 +21,7 @@
 //! machine has no KMS plane to probe, and without one every surface keeps
 //! the default — a phase below checks exactly that.
 
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -32,12 +32,14 @@ use shell::shell::frame::FrameBuilder;
 use smithay::backend::allocator::{Format, Fourcc, Modifier};
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use vello::kurbo::Rect;
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_region, wl_surface};
+use wayland_client::protocol::{wl_compositor, wl_region, wl_surface};
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_buffer_params_v1, zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_v1,
 };
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+
+use crate::support::wayland::{Toplevel, create_toplevel, memfd};
 
 const WIDTH: i32 = 64;
 const HEIGHT: i32 = 48;
@@ -84,7 +86,7 @@ struct Client {
     batches: Vec<Batch>,
 }
 
-crate::support::wayland::test_client!(Client: registry, ping, configured);
+crate::support::wayland::test_client!(Client: registry, ping, configured, surface, toplevel, buffer);
 
 fn dev_t(bytes: &[u8]) -> u64 {
     let mut buf = [0_u8; 8];
@@ -161,33 +163,11 @@ impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for Cl
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
 delegate_noop!(Client: ignore wl_region::WlRegion);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1);
 delegate_noop!(Client: ignore zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1);
 
 type Harness = crate::support::wayland::Harness<Client>;
-
-/// A linear single-plane buffer of opaque grey, as a memfd the compositor's
-/// CPU importer reads like a linear PRIME buffer.
-fn grey_memfd() -> OwnedFd {
-    use std::io::Write as _;
-    // SAFETY: memfd_create with a static nul-terminated name and MFD_CLOEXEC.
-    let raw = unsafe { libc::memfd_create(c"dmabuf-scanout-feedback".as_ptr(), libc::MFD_CLOEXEC) };
-    assert!(
-        raw >= 0,
-        "memfd_create failed: {}",
-        std::io::Error::last_os_error()
-    );
-    // SAFETY: memfd_create returned a new descriptor that nothing else owns.
-    let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-    file.write_all(&[0x40, 0x40, 0x40, 0xFF].repeat((BUFFER_LEN / 4) as usize))
-        .expect("fill memfd");
-    OwnedFd::from(file)
-}
 
 /// What a commit does to the surface's opaque region.
 #[derive(Clone, Copy)]
@@ -221,7 +201,9 @@ struct Fixture {
     surface: wl_surface::WlSurface,
     toplevel: xdg_toplevel::XdgToplevel,
     surface_id: u64,
-    memfd: OwnedFd,
+    /// A linear single-plane buffer of opaque grey, which the compositor's
+    /// CPU importer reads like a linear PRIME buffer.
+    memfd: std::fs::File,
     frames: FrameBuilder,
     outputs: Vec<Output>,
     plane: Arc<ScanoutPlane>,
@@ -272,10 +254,11 @@ impl Fixture {
         h.pump();
 
         let qh = h.queue.handle();
-        let surface = compositor.create_surface(&qh, ());
-        let xdg_surface = wm_base.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg_surface.get_toplevel(&qh, ());
-        toplevel.set_app_id(APP_ID.into());
+        let Toplevel {
+            surface,
+            xdg: xdg_surface,
+            toplevel,
+        } = create_toplevel(&compositor, &wm_base, &qh, APP_ID);
         let feedback = dmabuf.get_surface_feedback(&surface, &qh, ());
         surface.commit();
         h.pump();
@@ -314,7 +297,7 @@ impl Fixture {
             surface,
             toplevel,
             surface_id,
-            memfd: grey_memfd(),
+            memfd: memfd(&[0x40, 0x40, 0x40, 0xFF].repeat((BUFFER_LEN / 4) as usize)),
             frames,
             outputs: vec![Output::new(OutputId(0), size, 1.0)],
             plane: stand_in_plane(),

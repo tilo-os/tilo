@@ -410,8 +410,12 @@ fn authenticated_retained_plan_preserves_consent_and_refuses_unattested_source()
     });
     let plan =
         crate::setup::migration_handoff::Plan::parse(&serde_json::to_vec(&value).unwrap()).unwrap();
-    manifest.retained_home =
-        Some(crate::setup::prepared_setup::RetainedHomePlan::new(plan).unwrap());
+    manifest
+        .units
+        .insert(crate::setup::prepared_setup::Unit::RetainedHome {
+            plan: crate::setup::prepared_setup::RetainedHomePlan::new(plan).unwrap(),
+            caller: None,
+        });
     fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
     let package = root.join("retained.sealed");
     ExportReview::review(&staging, &package, Purpose::PreparedSetup, LIMITS)
@@ -523,13 +527,27 @@ fn authenticate_completed_declaration_emits_exact_application_binding_without_im
             manifest_sha256: [9; 32],
         },
     };
-    manifest.portable_home = Some(crate::setup::prepared_setup::PortableHomePlan {
-        schema: 1,
-        selection: crate::setup::prepared_setup::PortableHomeSelection::FullHome,
-        applications: true,
-    });
-    manifest.completed_home = Some(home.clone());
-    manifest.portable_flatpak = Some(apps.clone());
+    manifest
+        .units
+        .plan_home(crate::setup::prepared_setup::PortableHomePlan {
+            schema: 1,
+            selection: crate::setup::prepared_setup::PortableHomeSelection::FullHome,
+            applications: true,
+        });
+    manifest
+        .units
+        .carry_home(crate::setup::prepared_setup::HomeCarriage::Sealed(
+            home.clone(),
+        ))
+        .unwrap();
+    manifest
+        .units
+        .insert(crate::setup::prepared_setup::Unit::MediumApplications(
+            crate::setup::prepared_setup::ApplicationsCarriage::Sealed {
+                expectation: apps.clone(),
+                alone: false,
+            },
+        ));
     fs::remove_file(staging.join(crate::setup::prepared_setup::MANIFEST_FILE)).unwrap();
     manifest.write(&staging).unwrap();
     let package = root.join("completed.sealed");

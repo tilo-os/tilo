@@ -32,11 +32,10 @@
 "apps/pdf-viewer/src/app.rs" = 10000
 "apps/pdf-viewer/src/source.rs" = 3500
 "apps/settings/src/panes/accounts.rs" = 5000
-"apps/settings/src/panes/device_mesh.rs" = 3500
 "apps/settings/src/panes/audio.rs" = 3500
+"apps/settings/src/panes/device_mesh.rs" = 3500
 "apps/settings/src/panes/display.rs" = 3500
 "apps/settings/src/panes/network.rs" = 4000
-"apps/sheets/src/formula.rs" = 3500
 "apps/sheets/src/grid.rs" = 3500
 "apps/slides/src/app.rs" = 5000
 "apps/store/src/app.rs" = 6500
@@ -50,6 +49,7 @@
 "crates/agent/model-gateway/src/service.rs" = 4000
 "crates/browser/tilo-browser-peer/src/session.rs" = 4000
 "crates/browser/tilo-browser-runtime/src/browser.rs" = 3500
+"crates/collab/collaboration/src/broker.rs" = 13500
 "crates/collab/tilo-action-broker/src/channel_encryption.rs" = 3500
 "crates/collab/tilo-action-broker/src/collab_broker_capnp.rs" = 21500
 "crates/collab/tilo-action-broker/src/collab_broker_capnp/action_host.rs" = 4000
@@ -71,7 +71,6 @@
 "crates/runtime/runtime-fs/src/operations.rs" = 5000
 "crates/runtime/runtime-identity/src/unix.rs" = 3500
 "crates/runtime/tilo-runtime/src/mcp.rs" = 3500
-"crates/sdk/tilo-app/src/framework/root.rs" = 3466
 "crates/sdk/tilo-resource/src/table.rs" = 4000
 "crates/sdk/ui-core/src/action_palette.rs" = 4500
 "crates/sdk/ui-core/src/app.rs" = 5500
@@ -80,7 +79,6 @@
 "crates/sdk/ui-core/src/app/history_tests.rs" = 8500
 "crates/sdk/ui-core/src/app/native_runner.rs" = 5500
 "crates/sdk/ui-core/src/bound_dispatch.rs" = 5500
-"crates/collab/collaboration/src/broker.rs" = 13500
 "crates/sdk/ui-core/src/headless.rs" = 15000
 "crates/sdk/ui-core/src/history_mode/integration_tests.rs" = 4000
 "crates/sdk/ui-core/src/launch.rs" = 3500
@@ -136,7 +134,6 @@
 "crates/session/shell/src/shell/frame.rs" = 11000
 "crates/session/shell/src/shell/frame_retained_tests.rs" = 4000
 "crates/session/shell/src/shell/launcher.rs" = 7000
-"crates/session/shell/src/shell/launcher/tests.rs" = 3500
 "crates/session/shell/src/shell/network.rs" = 14500
 "crates/session/shell/src/shell/overlay_host/overlay_event_absorb_tests.rs" = 4500
 "crates/session/shell/src/shell/overlay_host/overlay_host_tests.rs" = 4000
@@ -145,7 +142,7 @@
 "crates/session/shell/src/shell/projection_overlay.rs" = 3500
 "crates/session/shell/src/shell/remote_audio.rs" = 3500
 "crates/session/shell/src/shell/search/mod.rs" = 4000
-"crates/session/shell/src/shell/search/providers/actions.rs" = 9500
+"crates/session/shell/src/shell/search/providers/actions.rs" = 9000
 "crates/session/shell/src/shell/search/providers/files.rs" = 3500
 "crates/session/shell/src/shell/search/providers/live_app_actions.rs" = 6500
 "crates/session/shell/src/shell/state.rs" = 7000

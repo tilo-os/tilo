@@ -17,20 +17,16 @@
     reason = "in a test these are the assertion, not a hazard; the counters and a 5 s deadline are far from overflow"
 )]
 
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
 use std::time::Instant;
 
 use shell::compositor::input_method::TrustedInputMethod;
-use shell::compositor::state::{ClientState, State};
+
 use shell::compositor::text_commit::DeliveredText;
 use shell::shell::overlay_host::ShellOverlayHost;
-use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
 use taffy::{NodeId, TaffyTree};
 use ui::widget::Widget;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3, zwp_text_input_v3,
 };
@@ -45,14 +41,14 @@ use winit::platform::wayland::private_text_input_protocol::{
 };
 
 use crate::support::host::{Layout, lay_out, press_key};
-use crate::support::wayland::{Globals as _, foreign_id};
+use crate::support::wayland::{self, foreign_id};
 
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
 
 /// Everything a connection observed.
 #[derive(Default)]
-struct Peer {
+pub(crate) struct Peer {
     globals: Vec<(u32, String, u32)>,
     /// What the text field declares whenever it (re-)enables.
     content: Option<(
@@ -84,7 +80,7 @@ impl Dispatch<tilo_text_input_v1::TiloTextInputV1, ()> for Peer {
 }
 delegate_noop!(Peer: ignore tilo_text_input_manager_v1::TiloTextInputManagerV1);
 
-crate::support::wayland::test_client!(Peer);
+crate::support::wayland::test_client!(Peer: registry, ping, configure, surface, toplevel, seat);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Peer {
     fn event(
@@ -148,33 +144,8 @@ impl Dispatch<zwp_input_method_v2::ZwpInputMethodV2, ()> for Peer {
     }
 }
 
-delegate_noop!(Peer: ignore wl_compositor::WlCompositor);
-delegate_noop!(Peer: ignore wl_surface::WlSurface);
-delegate_noop!(Peer: ignore wl_seat::WlSeat);
-delegate_noop!(Peer: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Peer: ignore zwp_text_input_manager_v3::ZwpTextInputManagerV3);
 delegate_noop!(Peer: ignore zwp_input_method_manager_v2::ZwpInputMethodManagerV2);
-
-struct Connected {
-    server: smithay::reexports::wayland_server::Client,
-    conn: Connection,
-    queue: EventQueue<Peer>,
-    peer: Peer,
-}
-
-impl Connected {
-    fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> I
-    where
-        Peer: Dispatch<I, ()>,
-    {
-        let (name, version) = self
-            .peer
-            .global(interface, version)
-            .unwrap_or_else(|| panic!("{interface} is not advertised"));
-        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        registry.bind(name, version, &self.queue.handle(), ())
-    }
-}
 
 /// The objects a text field keeps alive.
 pub(crate) struct Field {
@@ -199,78 +170,38 @@ impl Field {
 /// A compositor with real Wayland clients and the shell's overlay host,
 /// driven as the native loop drives them.
 pub(crate) struct Harness {
-    display: Display<State>,
-    pub(crate) state: State,
-    clients: Vec<Connected>,
+    wl: wayland::Clients<Peer>,
     host: ShellOverlayHost,
     taffy: TaffyTree<()>,
     child: NodeId,
-    _event_loop: EventLoop<'static, State>,
+}
+
+impl std::ops::Deref for Harness {
+    type Target = wayland::Clients<Peer>;
+    fn deref(&self) -> &Self::Target {
+        &self.wl
+    }
+}
+
+impl std::ops::DerefMut for Harness {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.wl
+    }
 }
 
 impl Harness {
     pub(crate) fn new() -> Self {
-        let event_loop = EventLoop::try_new().expect("calloop");
-        let display = Display::new().expect("display");
-        let state = State::new(event_loop.handle(), display.handle());
+        let wl = wayland::Clients::new();
         let tree = shell::shell::state::WorkspaceTree::bootstrap_default();
         let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
         host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .expect("the built-in shortcut table is valid");
         let Layout { taffy, child_node } = lay_out(&mut host, W, H);
         Self {
-            display,
-            state,
-            clients: Vec::new(),
+            wl,
             host,
             taffy,
             child: child_node,
-            _event_loop: event_loop,
-        }
-    }
-
-    fn connect(&mut self, credential: Option<TrustedInputMethod>) -> usize {
-        let (server, client) = UnixStream::pair().expect("socket pair");
-        let data = credential.map_or_else(
-            || Arc::new(ClientState::default()),
-            ClientState::input_method_arc,
-        );
-        let inserted = self
-            .display
-            .handle()
-            .insert_client(server, data)
-            .expect("client insert");
-        if let Some(kind) = credential {
-            self.state
-                .register_trusted_input_method_client(&inserted, kind);
-        }
-        client.set_nonblocking(true).expect("nonblocking");
-        let conn = Connection::from_socket(client).expect("client connection");
-        let queue = conn.new_event_queue::<Peer>();
-        let _registry = conn.display().get_registry(&queue.handle(), ());
-        self.clients.push(Connected {
-            server: inserted,
-            conn,
-            queue,
-            peer: Peer::default(),
-        });
-        self.pump();
-        self.clients.len() - 1
-    }
-
-    pub(crate) fn pump(&mut self) {
-        for _ in 0..8 {
-            for client in &mut self.clients {
-                let _ = client.queue.flush();
-            }
-            let _ = self.display.dispatch_clients(&mut self.state);
-            let _ = self.display.flush_clients();
-            for client in &mut self.clients {
-                if let Some(guard) = client.conn.prepare_read() {
-                    let _ = guard.read();
-                }
-                let _ = client.queue.dispatch_pending(&mut client.peer);
-            }
         }
     }
 
@@ -279,8 +210,11 @@ impl Harness {
     fn tick(&mut self, field: &Field) -> Vec<DeliveredText> {
         let focus = (!self.host.emoji_picker_open()).then_some(field.surface_id);
         self.state.set_client_keyboard_focus(focus);
-        let delivered =
-            shell::compositor::text_commit::relay(&mut self.state, &mut self.host, Instant::now());
+        let delivered = shell::compositor::text_commit::relay(
+            &mut self.wl.state,
+            &mut self.host,
+            Instant::now(),
+        );
         self.pump();
         delivered
     }

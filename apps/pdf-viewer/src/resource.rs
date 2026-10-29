@@ -29,7 +29,7 @@ use crate::markup::{
     StoredComment, StoredReply, StoredSignature,
 };
 use crate::model::{
-    AnnoKind, FormEntry, GeomSpace, MARGIN, PAGE_H, PAGE_W, PtRect, SignatureInk, Swatch,
+    AnnoKind, FormEntry, GeomSpace, HighlightColor, MARGIN, PAGE_H, PAGE_W, PtRect, SignatureInk,
 };
 
 /// The most text one comment or reply holds.
@@ -44,7 +44,7 @@ pub struct NewAnnotation {
     pub page_id: String,
     /// What it marks, and where.
     pub mark: AnnoKind,
-    pub color: Swatch,
+    pub color: HighlightColor,
     /// The engine character range `[start, end)` text markup covers.
     pub chars: Option<[u32; 2]>,
     /// The space its geometry is in.
@@ -63,7 +63,7 @@ pub struct NewNote {
     pub page_id: String,
     pub x: f64,
     pub y: f64,
-    pub color: Swatch,
+    pub color: HighlightColor,
     /// What it says.
     pub text: String,
     /// The space `x` and `y` are in.
@@ -108,7 +108,7 @@ pub struct AdoptedAnnotation {
     pub id: String,
     pub page_id: String,
     pub mark: AnnoKind,
-    pub color: Swatch,
+    pub color: HighlightColor,
     pub author: String,
     pub created_ms: i64,
 }
@@ -553,7 +553,7 @@ impl PdfMarkup {
                 page_id,
                 x: MARGIN,
                 y: MARGIN,
-                color: Swatch::Yellow,
+                color: HighlightColor::Yellow,
                 text,
                 space: GeomSpace::Page,
             },

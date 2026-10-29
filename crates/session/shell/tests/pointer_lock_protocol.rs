@@ -3,9 +3,7 @@
 //! person presses the release chord, and does not hand it back until focus
 //! has moved on.
 
-use std::ops::{Deref, DerefMut};
-
-use wayland_client::protocol::{wl_compositor, wl_pointer, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_compositor, wl_pointer, wl_seat};
 use wayland_client::{Connection, Dispatch, QueueHandle, delegate_noop};
 use wayland_protocols::wp::pointer_constraints::zv1::client::{
     zwp_locked_pointer_v1, zwp_pointer_constraints_v1,
@@ -13,13 +11,12 @@ use wayland_protocols::wp::pointer_constraints::zv1::client::{
 use wayland_protocols::wp::relative_pointer::zv1::client::{
     zwp_relative_pointer_manager_v1, zwp_relative_pointer_v1,
 };
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
 use shell::compositor::backend::PointerConstraintRegion;
 use shell::compositor::client_input::sync_pointer_constraint;
-use shell::shell::frame::FrameBuilder;
 
-use crate::support::wayland;
+use crate::support::wayland::{self, Toplevel, create_toplevel};
 
 #[derive(Debug, PartialEq)]
 enum Wire {
@@ -35,7 +32,7 @@ struct Client {
     wire: Vec<Wire>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel, seat);
 
 impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     fn event(
@@ -96,38 +93,12 @@ impl Dispatch<zwp_relative_pointer_v1::ZwpRelativePointerV1, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore zwp_pointer_constraints_v1::ZwpPointerConstraintsV1);
 delegate_noop!(Client: ignore zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1);
 
-struct Harness {
-    wl: wayland::Harness<Client>,
-    fb: FrameBuilder,
-}
-
-impl Deref for Harness {
-    type Target = wayland::Harness<Client>;
-    fn deref(&self) -> &Self::Target {
-        &self.wl
-    }
-}
-
-impl DerefMut for Harness {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.wl
-    }
-}
+type Harness = wayland::Framed<Client>;
 
 impl Harness {
-    fn new() -> Self {
-        let wl = wayland::Harness::new();
-        let fb = FrameBuilder::with_handle(wl.state.workspace_tree.clone(), false, (1280, 800));
-        Self { wl, fb }
-    }
-
     /// One compositor tick's worth of constraint policy.
     fn tick(&mut self) -> Option<shell::compositor::pointer_lock::ConstraintChange> {
         let change = sync_pointer_constraint(&mut self.wl.state, &self.fb, false);
@@ -153,10 +124,11 @@ fn a_locked_game_gets_relative_motion_only_and_loses_the_lock_with_focus() {
     let qh = h.queue.handle();
     let pointer = seat.get_pointer(&qh, ());
     let _relative_pointer = relative.get_relative_pointer(&pointer, &qh, ());
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.Game".into());
+    let Toplevel {
+        surface,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.Game");
     h.pump();
     let _ = h.fb.paint_settled();
     let game = h.foreign_id("org.example.Game");

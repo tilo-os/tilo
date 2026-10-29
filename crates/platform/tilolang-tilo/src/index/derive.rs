@@ -16,6 +16,7 @@ use super::columns::{
     self, reversed, scope_entry, scope_list, scope_prefix, type_entry, type_list,
 };
 use super::lists::Entry;
+use super::reflect::{self, CREATED, Stamp, UPDATED};
 use super::{IndexError, KEY, TYPE, Writer};
 use crate::reads::{default_value, field_of_slot, locate_ref, map_at, type_at};
 use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup};
@@ -101,6 +102,15 @@ pub trait Sink {
     /// # Errors
     /// It cannot be written.
     fn remove(&mut self, resource: &str) -> Result<(), IndexError>;
+
+    /// Drop `resource` and everything inside it to derive it anew: as [`Sink::remove`], but
+    /// the versions kept of each ([`reflect`]) stay, as they are not in the record.
+    ///
+    /// # Errors
+    /// It cannot be written.
+    fn clear(&mut self, resource: &str) -> Result<(), IndexError> {
+        self.remove(resource)
+    }
 
     /// That the package's record `doc` is of the type `ty`, or (`None`) is gone.
     ///
@@ -209,6 +219,19 @@ impl Sink for Writer<'_> {
         }
         for prefix in lists_within(resource) {
             self.drop_lists(&prefix)?;
+        }
+        Ok(())
+    }
+
+    fn clear(&mut self, resource: &str) -> Result<(), IndexError> {
+        let kept: Vec<(String, String, Vec<u8>)> = self
+            .subtree(resource)?
+            .into_iter()
+            .filter(|(_, field, _)| reflect::is_reflected(field))
+            .collect();
+        Sink::remove(self, resource)?;
+        for (held, field, bytes) in kept {
+            Writer::put_field(self, &held, &field, &super::codec::get_value(&bytes)?)?;
         }
         Ok(())
     }
@@ -361,6 +384,93 @@ impl<'d> Derive<'d> {
         Ok(())
     }
 
+    /// Derive every record of `app` into `sink`, which holds none of them, with the versions
+    /// `ends` holds of its resources: the first and last of the record's whole log
+    /// ([`reflect::ends_of`]).
+    ///
+    /// # Errors
+    /// The sink cannot be written.
+    pub fn all_with_versions(
+        &mut self,
+        sink: &mut impl Sink,
+        app: &str,
+        ends: &BTreeMap<String, (Stamp, Stamp)>,
+    ) -> Result<(), IndexError> {
+        // Written first, so the columns of each resource are derived with its versions; those
+        // of resources the record no longer holds go again once the records are derived.
+        let of_app: Vec<(&String, &(Stamp, Stamp))> = ends
+            .iter()
+            .filter(|(resource, _)| self.of_app(resource, app))
+            .collect();
+        for (resource, (first, last)) in &of_app {
+            sink.put_field(resource, CREATED, &first.value())?;
+            sink.put_field(resource, UPDATED, &last.value())?;
+        }
+        self.all(sink, app)?;
+        for (resource, _) in of_app {
+            if sink.text(resource, TYPE)?.is_none() {
+                sink.remove(resource)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the resource at `path` is in a record of `app`.
+    fn of_app(&self, path: &str, app: &str) -> bool {
+        self.docs
+            .get(tilolang_runtime::store::doc_of(path))
+            .is_some_and(|(a, _)| a == app)
+    }
+
+    /// Take in the versions `ends` holds (the first and last versions of the resources new
+    /// changes changed, [`reflect::ends_of`]) of the resources of `app` the sink holds, after
+    /// the changes themselves were derived: each resource's first version stays unless one
+    /// came before it, its last is replaced by a later one, and the columns of the collection
+    /// it is in follow.
+    ///
+    /// # Errors
+    /// The sink cannot be read or written.
+    pub fn versions(
+        &mut self,
+        sink: &mut impl Sink,
+        app: &str,
+        ends: &BTreeMap<String, (Stamp, Stamp)>,
+    ) -> Result<(), IndexError> {
+        for (resource, (first, last)) in ends {
+            if !self.of_app(resource, app) {
+                continue;
+            }
+            let Some(schema) = sink.text(resource, TYPE)?.and_then(|ty| lookup(&ty)) else {
+                continue;
+            };
+            let held = |sink: &mut _, field| -> Result<Option<Stamp>, IndexError> {
+                Ok(Sink::field(sink, resource, field)?
+                    .as_ref()
+                    .and_then(Stamp::of_value))
+            };
+            let mut moved = Vec::new();
+            if held(sink, CREATED)?.is_none_or(|held| first.before(&held)) {
+                sink.put_field(resource, CREATED, &first.value())?;
+                moved.push(CREATED);
+            }
+            if held(sink, UPDATED)?.is_none_or(|held| held.before(last)) {
+                sink.put_field(resource, UPDATED, &last.value())?;
+                moved.push(UPDATED);
+            }
+            if moved.is_empty() || !sink.keeps_columns() {
+                continue;
+            }
+            let key = sink.text(resource, KEY)?;
+            let scope = item_of(resource)
+                .zip(key.as_deref())
+                .map(|((parent, coll, _), key)| (parent, coll, key));
+            for field in moved {
+                self.index_columns(sink, resource, schema, scope, Some(field))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Derive the record `doc` of `app` anew.
     fn record(
         &mut self,
@@ -369,7 +479,7 @@ impl<'d> Derive<'d> {
         doc: &str,
         ty: &str,
     ) -> Result<(), IndexError> {
-        sink.remove(doc)?;
+        sink.clear(doc)?;
         let obj = crate::reads::resource_obj(self.doc, app, doc);
         self.reads.located = self.reads.located.saturating_add(1);
         match (obj, lookup(ty)) {
@@ -817,7 +927,7 @@ impl<'d> Derive<'d> {
                 self.holder_columns(sink, resource, &field.id)?;
             }
             (None, Some((key, obj))) => {
-                sink.remove(&child)?;
+                sink.clear(&child)?;
                 sink.put_text(&child, KEY, &key)?;
                 if let Some(item_schema) = item_schema {
                     let values = self.tree(sink, &child, obj.as_ref(), item_schema)?;
@@ -906,7 +1016,7 @@ impl<'d> Derive<'d> {
                 Self::scope_columns(sink, (parent, coll), path, item_schema, (&key, false))?;
             }
             sink.remove_entry(&member_list(parent, coll), &(key, id.to_owned()))?;
-            sink.remove(path)?;
+            sink.clear(path)?;
         }
         self.item(sink, (parent, field), id, now)?;
         self.done.insert(path.to_owned());

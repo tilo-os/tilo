@@ -1054,16 +1054,8 @@ mod tests {
 
     #[test]
     fn configured_startup_reads_distribution_defaults() {
-        let dir = tempfile::tempdir().expect("temp config dir");
-        let settings = dir.path().join("settings.json");
-        std::fs::write(
-            &settings,
-            r#"{"appearance":{"distribution_defaults":{"theme":"light"}}}"#,
-        )
-        .expect("write settings");
-        assert_eq!(
-            Theme::configured_from(Some(&settings)).name,
-            Theme::light().name
-        );
+        let settings =
+            settings_store::parse(r#"{"appearance":{"distribution_defaults":{"theme":"light"}}}"#);
+        assert_eq!(Theme::configured_from(&settings).name, Theme::light().name);
     }
 }

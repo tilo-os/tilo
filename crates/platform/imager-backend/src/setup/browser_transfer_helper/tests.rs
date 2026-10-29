@@ -150,7 +150,9 @@ impl Fixture {
             .unwrap();
         let mut manifest =
             Manifest::new("prepared-binding".into(), identity.public_key(), vec![]).unwrap();
-        manifest.browser = Some(handoff.clone());
+        manifest
+            .units
+            .insert(crate::setup::prepared_setup::Unit::Browser(handoff.clone()));
         manifest.write(&stage).unwrap();
         let setup = root.join("setup.sealed");
         ExportReview::review(

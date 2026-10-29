@@ -512,7 +512,7 @@ struct QueryDelivery {
 }
 
 impl SearchQueries {
-    fn waking(wake: Option<WakeHandle>) -> Self {
+    pub(crate) fn waking(wake: Option<WakeHandle>) -> Self {
         Self(Rc::new(RefCell::new(QueryDelivery {
             wake,
             ..QueryDelivery::default()
@@ -532,8 +532,13 @@ impl SearchQueries {
     }
 
     /// What the surface says of its results for the latest query.
-    fn settle(&self, awaiting: bool) {
+    pub(crate) fn settle(&self, awaiting: bool) {
         self.0.borrow_mut().awaiting = awaiting;
+    }
+
+    /// Whether a query waits to be delivered.
+    pub(crate) fn has_pending(&self) -> bool {
+        self.0.borrow().pending.is_some()
     }
 
     pub(crate) fn submit(&self, query: &ui_core::search::SearchQuery) {
@@ -560,7 +565,7 @@ impl SearchQueries {
         }
     }
 
-    fn take(&self) -> Option<ui_core::search::SearchQuery> {
+    pub(crate) fn take(&self) -> Option<ui_core::search::SearchQuery> {
         self.0.borrow_mut().pending.take()
     }
 }
@@ -915,7 +920,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool {
         (self.live.revision(), self.live.loads()) == self.presented
             && self.staging.borrow().is_none()
-            && self.search_queries.0.borrow().pending.is_none()
+            && !self.search_queries.has_pending()
             && self.dispatch.read_only() == self.read_only
             && self.surface.view_only_scroll(event)
     }

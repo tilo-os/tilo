@@ -117,7 +117,7 @@ impl Preferences {
     /// scratch profile's.
     pub fn at(path: impl Into<std::path::PathBuf>) -> Self {
         Self {
-            settings: Some(ui::storage::Settings::for_app(TERMINAL_APP_ID).in_file(path)),
+            settings: Some(ui::storage::Settings::for_app(TERMINAL_APP_ID).in_profile(path)),
         }
     }
 
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn preferences_survive_a_new_terminal() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
+        let path = dir.path().to_path_buf();
         let first = Preferences::at(&path);
         assert_eq!(first.load(), PreferencesSetting::default());
         first.set_copy_on_select(true);

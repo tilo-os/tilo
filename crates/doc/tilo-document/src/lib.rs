@@ -13,6 +13,7 @@
 
 pub mod action;
 pub mod anchor;
+pub mod annotation;
 pub mod block_actions;
 pub mod block_edit;
 pub mod block_markdown;

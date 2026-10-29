@@ -62,6 +62,10 @@ pub(super) struct References {
     painted_for: Option<u64>,
     /// How the owner paints people's mentions (their colours).
     owner_paint: Option<MentionPaint>,
+    /// The rich text last given to show, read again as its times move on.
+    shown: Option<RichText>,
+    /// When the shown text's times next read differently.
+    wake_at: Option<crate::time::Instant>,
     /// Where each reference was painted in the last draw.
     hits: Vec<(Rect, String)>,
     /// What activating a reference does.
@@ -81,8 +85,29 @@ impl BlockEditor {
             self.references.views = Rc::new(views);
             self.references.painted_for = None;
         }
-        let changed = self.present_blocks(&crate::widget::rich_doc::blocks_of(rich));
+        if self.references.shown.as_ref() != Some(rich) {
+            self.references.shown = Some(rich.clone());
+        }
+        let changed = self.present_shown();
         changed || changed_views
+    }
+
+    /// Show the text last given again, as it reads now: its times move on.
+    fn present_shown(&mut self) -> bool {
+        let Some(rich) = self.references.shown.take() else {
+            return false;
+        };
+        let reading = crate::widget::rich_doc::reading_here();
+        let changed = self.present_blocks(&crate::widget::rich_doc::blocks_at(&rich, &reading));
+        self.references.wake_at = crate::widget::rich_doc::changes_in(&rich, reading.now)
+            .map(|soon| crate::time::now() + soon);
+        self.references.shown = Some(rich);
+        changed
+    }
+
+    /// When the shown text's times next read differently.
+    pub(super) fn references_wake(&self) -> Option<crate::time::Instant> {
+        self.references.wake_at
     }
 
     /// Run `open` with the reference activated, each time one is.
@@ -118,6 +143,13 @@ impl BlockEditor {
     /// paint changed since: a resource as a chip, one the reader cannot read as a quiet chip,
     /// a person in the owner's colours for them.
     pub(super) fn paint_references(&mut self, theme: &Theme) {
+        if self
+            .references
+            .wake_at
+            .is_some_and(|wake| wake <= crate::time::now())
+        {
+            self.present_shown();
+        }
         let fingerprint = theme_fingerprint(theme);
         if self.references.painted_for == Some(fingerprint) {
             return;
@@ -148,9 +180,8 @@ impl BlockEditor {
             match views.get(reference) {
                 Some(InlineView::Unreadable) => unreadable,
                 Some(InlineView::Resource { .. } | InlineView::Elsewhere) => resource,
-                Some(InlineView::Person { .. }) => of_person(reference),
                 None if tilo_reference::embed::names_resource(reference) => resource,
-                None => of_person(reference),
+                Some(InlineView::Person { .. }) | None => of_person(reference),
             }
         })));
     }
@@ -456,5 +487,37 @@ mod tests {
         assert_eq!(paint("tl:so.tilo.lang.board:d/f:t1"), chip);
         let hits = editor.reference_hits();
         assert_eq!(hits.len(), 3, "every reference can be pointed at: {hits:?}");
+    }
+
+    #[test]
+    fn shown_times_wake_the_editor_to_read_again() {
+        let mut editor = BlockEditor::new();
+        let mut rich = text(Vec::new());
+        assert!(editor.show_rich_text(&rich));
+        assert_eq!(
+            editor.references_wake(),
+            None,
+            "no time, nothing to wake for"
+        );
+        let soon = crate::widget::rich_doc::InlineTime {
+            at: crate::clock::local_now().with_timezone(&chrono::Utc) + chrono::Duration::hours(1),
+            show: crate::widget::rich_doc::TimeShow::Countdown,
+        };
+        rich.blocks[0].marks.push(RichMark {
+            start: 0,
+            end: 3,
+            name: crate::widget::rich_doc::TIME_MARK.into(),
+            value: Attr::Text(soon.mark_value()),
+        });
+        assert!(editor.show_rich_text(&rich));
+        assert!(
+            editor.references_wake().is_some(),
+            "a countdown asks to be read again as it ticks"
+        );
+        assert!(
+            !editor.blocks()[0].text().starts_with("Ask"),
+            "the time reads as it does now: {}",
+            editor.blocks()[0].text()
+        );
     }
 }

@@ -54,8 +54,8 @@ use ui::window_toolbar::ToolbarNotice;
 
 use crate::markup::{PagePlanEntry, PdfMarkup};
 use crate::model::{
-    self, AnnoKind, Annotation, Comment, Document, MARGIN, PAGE_H, PAGE_W, PtRect, SearchOptions,
-    Signature, SignatureInk, Swatch, Tool,
+    self, AnnoKind, Annotation, Comment, Document, HighlightColor, MARGIN, PAGE_H, PAGE_W, PtRect,
+    SearchOptions, Signature, SignatureInk, Tool,
 };
 use crate::render;
 use crate::source::{
@@ -535,7 +535,7 @@ pub struct PdfApp {
     #[cfg(test)]
     search_projection_refreshes: usize,
     tool: Tool,
-    swatch: Swatch,
+    swatch: HighlightColor,
     /// How the highlight tool marks text: highlight, underline or strike-out.
     markup_style: model::MarkupStyle,
     sidebar_tab: SidebarTab,
@@ -1127,7 +1127,7 @@ impl PdfApp {
             #[cfg(test)]
             search_projection_refreshes: 0,
             tool: Tool::Select,
-            swatch: Swatch::Yellow,
+            swatch: HighlightColor::Yellow,
             sidebar_tab: SidebarTab::Comments,
             show_sidebar: true,
             review: Self::review_drawer(),
@@ -3749,7 +3749,10 @@ impl PdfApp {
                 self.copy_selection();
             }
             ui::HudAction::Highlight(i) => {
-                let sw = Swatch::ALL.get(i).copied().unwrap_or(Swatch::Purple);
+                let sw = HighlightColor::ALL
+                    .get(i)
+                    .copied()
+                    .unwrap_or(HighlightColor::Purple);
                 self.highlight_selection(state, sw);
             }
             ui::HudAction::Note => {
@@ -6020,7 +6023,6 @@ pub(crate) mod tests {
     use ui::headless::{Framed, viewport};
 
     use tilo_automerge::ApplyIncoming;
-    use tilo_test_env::hang_bound;
 
     /// A note says so in the window's bar, not over the page, and leaves it
     /// when it goes.
@@ -6085,8 +6087,7 @@ pub(crate) mod tests {
     /// record holds what opening it adds: the PDF worker answers an open on
     /// its own time, and a further open waits for it.
     fn settle_document(app: &mut ui::framework::testing::TestApp<crate::PdfViewerShell>) {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
+        tilo_test_env::wait_until("the launched document to open", || {
             let shown = app
                 .with_surface::<PdfApp, _>(|pdf| {
                     pdf.has_document
@@ -6096,15 +6097,11 @@ pub(crate) mod tests {
                 })
                 .unwrap_or(false);
             if shown && app.state().imported_source().is_some() {
-                return;
+                return true;
             }
-            assert!(
-                ui::time::now() < deadline,
-                "the launched document never opened"
-            );
-            std::thread::sleep(Duration::from_millis(5));
             app.settle();
-        }
+            false
+        });
     }
 
     /// A caller with no screen reads the open PDF's text page by page, and
@@ -6269,7 +6266,7 @@ pub(crate) mod tests {
                 id: "launched-highlight".into(),
                 page: 1,
                 kind: AnnoKind::highlight(PtRect::new(70.0, 150.0, 290.0, 15.0)),
-                color: Swatch::Yellow,
+                color: HighlightColor::Yellow,
                 author: "Ada".into(),
                 chars: None,
                 created_ms: 0,
@@ -6421,12 +6418,10 @@ pub(crate) mod tests {
                 let state = AutoCommit::new();
                 app.queue_worker_open(&path);
                 assert!(app.pending_open.is_some(), "accepted request is loading");
-                let deadline = tilo_test_env::hang_deadline();
-                while app.pending_open.is_some() && ui::time::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(5));
+                tilo_test_env::wait_until("the worker failure to settle loading", || {
                     app.drain_raster_events(&state);
-                }
-                assert!(app.pending_open.is_none(), "worker failure settles loading");
+                    app.pending_open.is_none()
+                });
                 assert!(!app.has_document);
                 assert!(app.load_error.as_deref().is_some_and(|error| {
                     error.contains("Could not open") && error.contains(&path.display().to_string())
@@ -6444,15 +6439,10 @@ pub(crate) mod tests {
             let latest = std::path::Path::new("/definitely/not/a/tilo-pdf-b.pdf");
             app.queue_worker_open(first);
             app.queue_worker_open(latest);
-            let deadline = ui::time::now() + hang_bound();
-            while ui::time::now() < deadline {
-                std::thread::sleep(Duration::from_millis(5));
+            tilo_test_env::wait_until("the latest open to settle", || {
                 app.drain_raster_events(&state);
-                if app.pending_open.is_none() {
-                    break;
-                }
-            }
-            assert!(app.pending_open.is_none());
+                app.pending_open.is_none()
+            });
             assert!(
                 app.load_error
                     .as_deref()
@@ -7024,7 +7014,7 @@ pub(crate) mod tests {
                 id: "annotation-on-import".into(),
                 page: 2,
                 kind: AnnoKind::Note { x: 12.0, y: 24.0 },
-                color: Swatch::Yellow,
+                color: HighlightColor::Yellow,
                 author: "You".into(),
                 chars: None,
                 created_ms: 0,
@@ -7787,7 +7777,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 app.swatch,
-                Swatch::ALL[1],
+                HighlightColor::ALL[1],
                 "the armed swatch follows the HUD choice"
             );
         }
@@ -9167,11 +9157,13 @@ pub(crate) mod tests {
             );
 
             // The deferred work drains over the next frames and the reader settles.
-            let deadline = tilo_test_env::hang_deadline();
-            while app.pending_visuals && ui::time::now() < deadline {
-                std::thread::sleep(Duration::from_millis(5));
+            tilo_test_env::wait_until("the deferred page backlog to drain", || {
+                if !app.pending_visuals {
+                    return true;
+                }
                 frame(&mut app, &mut st, &mut tr);
-            }
+                false
+            });
             assert!(
                 !app.pending_visuals && app.raster_render_pending.is_empty(),
                 "the deferred page backlog drains and the reader settles back to idle"
@@ -9331,11 +9323,13 @@ pub(crate) mod tests {
             let mut app = PdfApp::empty();
             let mut st = crate::scenarios::record_state();
             app.queue_worker_open(std::path::Path::new(LATIN_PDF));
-            let deadline = tilo_test_env::hang_deadline();
-            while app.pending_open.is_some() && ui::time::now() < deadline {
+            tilo_test_env::wait_until("the fixture to open", || {
+                if app.pending_open.is_none() {
+                    return true;
+                }
                 app.sync_settled(&mut st.doc, &st.root);
-                std::thread::sleep(Duration::from_millis(5));
-            }
+                false
+            });
             if !app.has_document {
                 assert!(!require_pdfium(), "fixture must open: {:?}", app.load_error);
                 eprintln!("SKIPPING the worker tiled-zoom test: {NO_PDFIUM}");
@@ -9343,32 +9337,33 @@ pub(crate) mod tests {
             }
             // The page at 100 % arrives first; it is what shows under the tiles.
             let mut app = framed_at_zoom(app, st, 1.0, None);
-            while app.raster_images.is_empty() && ui::time::now() < deadline {
-                std::thread::sleep(Duration::from_millis(5));
+            tilo_test_env::wait_until("the page at 100 %", || {
+                if !app.raster_images.is_empty() {
+                    return true;
+                }
                 full_frame(&mut app, 1280.0, 800.0, None);
-            }
+                false
+            });
             app.fit = FitMode::Custom(8.0);
             app.viewport.set_zoom(8.0);
 
             let mut saw_placeholder_while_pending = false;
-            let placement = loop {
-                let (placeholders, _, tiles) = app.rasterize_visible();
-                let page = tiles.values().next().expect("the zoomed page is tiled");
-                let (covered, target) = tile_coverage(&app, page);
-                if app.pending_visuals && placeholders.contains_key(&(page.placement.page + 1)) {
-                    saw_placeholder_while_pending = true;
-                }
-                if !app.pending_visuals && (covered - target).abs() / target < 1e-6 {
-                    break Some(page.placement);
-                }
-                if ui::time::now() >= deadline {
-                    break None;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-                let (reader, st) = Framed::split(&mut app);
-                reader.sync_settled(&mut st.doc, &st.root);
-            };
-            let placement = placement.expect("the worker filled the viewport with tiles");
+            let placement =
+                tilo_test_env::wait_for("the worker to fill the viewport with tiles", || {
+                    let (placeholders, _, tiles) = app.rasterize_visible();
+                    let page = tiles.values().next().expect("the zoomed page is tiled");
+                    let (covered, target) = tile_coverage(&app, page);
+                    if app.pending_visuals && placeholders.contains_key(&(page.placement.page + 1))
+                    {
+                        saw_placeholder_while_pending = true;
+                    }
+                    if !app.pending_visuals && (covered - target).abs() / target < 1e-6 {
+                        return Some(page.placement);
+                    }
+                    let (reader, st) = Framed::split(&mut app);
+                    reader.sync_settled(&mut st.doc, &st.root);
+                    None
+                });
             assert!(
                 saw_placeholder_while_pending,
                 "the placeholder showed while tiles were on their way"

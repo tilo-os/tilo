@@ -60,6 +60,10 @@ fn terminate_unconfined_launches_stops_the_launcher_and_its_children() {
         "the unconfined host launch and its child exit after terminate",
         || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
     );
+    assert!(
+        take_launch_presented("wine-winefile"),
+        "the person closed its window: its signal exit is not a crash before opening"
+    );
 }
 
 #[test]
@@ -73,6 +77,7 @@ fn terminate_unconfined_launches_leaves_a_confined_launch_alone() {
         process_is_live(standin.pid()),
         "a sandboxed launch is asked to close, not signalled"
     );
+    assert!(!take_launch_presented("so.tilo.terminal"));
     unregister_launched_process(standin.pid());
 }
 

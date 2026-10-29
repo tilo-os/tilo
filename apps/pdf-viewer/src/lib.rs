@@ -55,7 +55,9 @@ pub mod text_layer;
 pub mod tiles;
 
 pub use app::PdfApp;
-pub use model::{AnnoKind, Annotation, Comment, Document, Signature, SignatureInk, Swatch, Tool};
+pub use model::{
+    AnnoKind, Annotation, Comment, Document, HighlightColor, Signature, SignatureInk, Tool,
+};
 
 #[cfg(feature = "samples")]
 pub mod scenarios;

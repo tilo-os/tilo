@@ -1,0 +1,7 @@
+# The launcher shows the rows its source answers a search with: the desktop's
+# results (apps, windows, files, published actions), which the source runs
+# through their own actions. The fixed desktop a capture searches builds the
+# same rows by hand, and the link's test answers with one.
+[ratchets.bespoke_command_entry]
+"apps/launcher/src/fixture.rs" = 4
+"apps/launcher/src/source.rs" = 1

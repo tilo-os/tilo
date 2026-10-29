@@ -555,7 +555,7 @@ fn desktop_control_card(cx: &PaneCx, tabs: &[TabGrantEntry]) -> SettingsSection 
     section(&t("perm-desktop-control-title"), rows(body))
 }
 
-/// The compositor's persisted workspace tree, beside `settings.json`.
+/// The compositor's persisted workspace tree.
 fn state_path() -> Option<PathBuf> {
     settings_store::config_path(std::path::Path::new("state.json"))
 }
@@ -1270,7 +1270,7 @@ mod tests {
     use crate::host::testing::{count_named, labels_of};
 
     fn cx() -> PaneCx {
-        PaneCx::in_file(std::env::temp_dir().join("tilo-settings-permissions-unused.json"))
+        PaneCx::in_profile(std::env::temp_dir().join("tilo-settings-permissions-unused"))
     }
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use std::collections::HashMap;

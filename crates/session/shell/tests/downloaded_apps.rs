@@ -15,7 +15,6 @@
     reason = "deadlines are seconds from now, and a test icon's few pixels cannot overflow"
 )]
 
-use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,10 +22,9 @@ use std::time::{Duration, Instant};
 use shell::shell::add_app_sheet::Answer;
 use shell::shell::app_list::AppSource;
 use shell::shell::downloaded_apps;
-use shell::shell::state::TileContent;
 use wayland_client::delegate_noop;
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_shm, wl_shm_pool, wl_surface};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_client::protocol::{wl_buffer, wl_compositor};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 use wayland_protocols::xdg::toplevel_icon::v1::client::{
     xdg_toplevel_icon_manager_v1, xdg_toplevel_icon_v1,
 };
@@ -36,14 +34,9 @@ struct Client {
     globals: Vec<(u32, String, u32)>,
 }
 
-crate::support::wayland::test_client!(Client);
-
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_shm::WlShm);
-delegate_noop!(Client: ignore wl_shm_pool::WlShmPool);
-delegate_noop!(Client: ignore wl_buffer::WlBuffer);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
+crate::support::wayland::test_client!(
+    Client: registry, ping, configure, surface, toplevel, shm, buffer
+);
 delegate_noop!(Client: ignore xdg_toplevel_icon_v1::XdgToplevelIconV1);
 delegate_noop!(Client: ignore xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1);
 
@@ -120,26 +113,11 @@ fn harness_for(process: &Running) -> Harness {
 }
 
 fn solid_buffer(h: &Harness, edge: i32) -> wl_buffer::WlBuffer {
-    let qh = h.queue.handle();
-    let stride = edge * 4;
-    let len = usize::try_from(stride * edge).unwrap();
-    // SAFETY: a null-terminated name and a valid flag word are the whole
-    // contract of `memfd_create`.
-    let raw = unsafe { libc::memfd_create(c"tilo-downloaded-app-icon".as_ptr(), 0) };
-    assert!(raw >= 0);
-    // SAFETY: `memfd_create` just handed us this descriptor.
-    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
-    file.set_len(u64::try_from(len).unwrap()).unwrap();
-    {
-        use std::os::unix::fs::FileExt;
-        let pixels: Vec<u8> = std::iter::repeat_n([0xc0, 0x80, 0x20, 0xff], len / 4)
-            .flatten()
-            .collect();
-        file.write_at(&pixels, 0).unwrap();
-    }
-    let shm = h.bind::<wl_shm::WlShm>("wl_shm", 1);
-    let pool = shm.create_pool(file.as_fd(), i32::try_from(len).unwrap(), &qh, ());
-    pool.create_buffer(0, edge, edge, stride, wl_shm::Format::Argb8888, &qh, ())
+    h.shm_buffer(
+        edge,
+        edge,
+        &crate::support::wayland::solid(edge, edge, [0xc0, 0x80, 0x20, 0xff]),
+    )
 }
 
 /// Open a window that sets its icon, then names itself `APP_ID`. Returns
@@ -162,21 +140,7 @@ fn open_window(h: &mut Harness) -> (u64, impl Sized + use<>) {
     toplevel.set_app_id(APP_ID.into());
     surface.commit();
     h.pump();
-    let surface_id = h
-        .state
-        .workspace_tree
-        .read()
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .find_map(|tab| match &tab.tile {
-            TileContent::Foreign { app_id, surface_id } if app_id == APP_ID => Some(*surface_id),
-            _ => None,
-        })
-        .expect("the window was adopted into a tab");
+    let surface_id = h.foreign_id(APP_ID);
     (surface_id, (surface, xdg, toplevel, icon, buffer))
 }
 

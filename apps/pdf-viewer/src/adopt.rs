@@ -28,7 +28,7 @@ use ui::tilo_resource;
 use tilo_pdf::{AnnotationInfo, AnnotationKind, FieldKind, FormField, PageGeometry};
 
 use crate::model::{
-    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, MarkupStyle, PtRect, Reply, Swatch,
+    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, HighlightColor, MarkupStyle, PtRect, Reply,
 };
 
 /// The most annotations one import takes over; a file beyond it keeps the
@@ -177,9 +177,9 @@ pub fn parse_pdf_date(date: &str) -> Option<i64> {
     Some(((days * 24 + hour) * 60 + minute) * 60_000 + second * 1000)
 }
 
-fn color_of(info: &AnnotationInfo, fallback: Swatch) -> Swatch {
+fn color_of(info: &AnnotationInfo, fallback: HighlightColor) -> HighlightColor {
     info.color
-        .map_or(fallback, |c| Swatch::from_rgb(c.r, c.g, c.b))
+        .map_or(fallback, |c| HighlightColor::from_rgb(c.r, c.g, c.b))
 }
 
 /// Turn one page's existing annotation into a record annotation (user
@@ -241,8 +241,10 @@ fn annotation_of(
         AnnotationKind::FreeText => info
             .text_color
             .or(info.color)
-            .map_or(Swatch::Custom(0), |c| Swatch::from_rgb(c.r, c.g, c.b)),
-        _ => color_of(info, Swatch::Yellow),
+            .map_or(HighlightColor::Custom(0), |c| {
+                HighlightColor::from_rgb(c.r, c.g, c.b)
+            }),
+        _ => color_of(info, HighlightColor::Yellow),
     };
     Some(Annotation {
         id: imported_id(source_hash, page.page, info.index),

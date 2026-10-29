@@ -42,6 +42,7 @@ fn reference_block_runs(block: &BlockView) -> BlockRuns {
             baseline,
             kind: None,
             workspace_emoji: false,
+            pill: false,
         });
         i = j;
     }
@@ -117,6 +118,7 @@ fn reference_block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRun
             baseline,
             kind: None,
             workspace_emoji: false,
+            pill: false,
         });
         i = j;
     }

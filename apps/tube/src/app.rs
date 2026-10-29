@@ -136,10 +136,6 @@ pub struct TubeApp {
     /// owns the canonical state per frame; this mirrors it so a navigation
     /// rebuild doesn't snap the flap back to its default.
     sidebar_open: Option<bool>,
-    /// `--shots` only: force the overlay flap open in the rendered still so a
-    /// narrow screenshot captures the summoned rail + scrim rather than an
-    /// empty closed flap. Never set by the live app.
-    force_sidebar_open_shot: bool,
     /// Whether this instance should reach out to the live data backend. Set by
     /// [`TubeApp::online`] — the live binary turns it on; the `--shots` /
     /// offscreen path leaves it off so every screenshot stays hermetic on the
@@ -225,12 +221,15 @@ impl Default for TubeApp {
 }
 
 impl TubeApp {
+    /// An instance with no catalogue and no network: Home renders its
+    /// "Nothing to show yet" empty state and nothing is fetched until
+    /// [`Self::online`]. A past version of the library is shown in this.
     pub fn new() -> Self {
         let bus = action::new_bus();
         let can_go_back = Rc::new(Cell::new(false));
         let shell = Self::new_shell(&bus, &can_go_back);
         Self {
-            model: crate::sample::model(),
+            model: TubeModel::default(),
             dispatcher: None,
             actions: None,
             history: None,
@@ -257,7 +256,6 @@ impl TubeApp {
             palette_query: String::new(),
             suggested: crate::suggest::Suggested::default(),
             sidebar_open: None,
-            force_sidebar_open_shot: false,
             online: false,
             kicked_off: false,
             playing_id: None,
@@ -666,18 +664,12 @@ impl TubeApp {
         library_changed || history_changed || preferences_changed
     }
 
-    /// An instance with no catalogue and no network.
-    ///
-    /// [`Self::new`] starts from the bundled `sample` catalogue, which is
-    /// review/`--shots` material — invented channels, invented view counts.
-    /// Anything that is not a shot or a test wants this instead: Home
-    /// renders its "Nothing to show yet" empty state rather than a
-    /// fabricated trending feed, and nothing is fetched.
-    ///
-    /// This is what a past version of the library is shown in.
-    pub fn empty() -> Self {
+    /// An offline instance over the bundled sample catalogue, which captures
+    /// and tests review: invented channels, invented view counts.
+    #[cfg(feature = "samples")]
+    pub fn sample() -> Self {
         Self {
-            model: TubeModel::default(),
+            model: crate::sample::model(),
             ..Self::new()
         }
     }
@@ -694,9 +686,7 @@ impl TubeApp {
         // store and paired-device settings rather than opening a second store.
         self.online = true;
         // The online app starts with an empty catalogue and populates it from
-        // live results. The bundled `sample` catalogue is reserved for the
-        // hermetic `--shots`/demo path; Home shows a loading skeleton first.
-        self.model = TubeModel::default();
+        // live results; Home shows a loading skeleton first.
         self.model.feed_loading = true;
         // Real thumbnails / avatars / banners: an async image store backed by a
         // network fetcher. Kept off the offline/`--shots` path (which never

@@ -564,15 +564,10 @@ mod tests {
             assert!(cache.has_pending(), "the request is in flight");
             assert_eq!(cache.state(id), WaveformState::Pending);
 
-            let deadline = tilo_test_env::hang_deadline();
-            while cache.has_pending() && ui::time::now() < deadline {
-                std::thread::sleep(Duration::from_millis(20));
+            tilo_test_env::wait_until("the worker's terminal answer", || {
                 cache.drain();
-            }
-            assert!(
-                !cache.has_pending(),
-                "the worker delivered a terminal answer"
-            );
+                !cache.has_pending()
+            });
             assert_eq!(cache.state(id), WaveformState::Ready);
             let peaks = cache.peaks(id).expect("real peaks");
             assert_eq!(peaks.len(), WAVE_BUCKETS);

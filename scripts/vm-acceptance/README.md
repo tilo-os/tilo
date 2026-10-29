@@ -43,51 +43,6 @@ unless `--out` says otherwise. The exit status is 0 only when every check passes
 The runner refuses to start while another VM is running or when the host lacks the
 guest's memory plus 1 GiB of headroom, and always stops the VM it used.
 
-### On the rcargo builder
-
-`tools/ci/builder-vm.sh` runs the whole thing on the rcargo builder from this worktree, with
-nothing heavy on this machine. The builder has no loop devices or root, so the disk is
-installed the way `os-dev-disk` installs it (`tools/ci/publish/os-dev-disk.sh`), but inside a
-worker VM booted from main's newest published dev disk, with a work disk beside it. The image
-has the Browser and Mail, as CI and releases build it (`TILO_WITH_BROWSER=0` leaves them out):
-
-```bash
-tools/ci/builder-vm.sh image        # the dev image, built with the worktree's rcargo build image
-tools/ci/builder-vm.sh disk         # that image installed onto a disk, in a worker VM
-tools/ci/builder-vm.sh acceptance   # every shard at once, one VM host container each
-tools/ci/builder-vm.sh acceptance --only A15,W16   # just these, in the shards that hold them
-tools/ci/builder-vm.sh all          # the three in a row
-tools/ci/builder-vm.sh clean        # this worktree's run containers and run scratch (--all:
-                                    # its image and disk too)
-```
-
-- **Where things live.** Everything stays under `/srv/rcargo/scratch/builder-vm` on the
-  builder: `stores/<worktree>` (the podman store the worktree's image builds write),
-  `store` (the shared one beneath them, read only, whose layers still count as build
-  cache), `out/<worktree>` (the OS build's output and caches), `images/<digest>` (the
-  image's OCI layout), `disks/<digest>` (its disk, with its install log), `base/<tag>` (the
-  published disk the worker boots), `worker-vm` (the worker's work disk) and `runs/<run>`
-  (each run's reports).
-- **What makes a re-run warm.** The image build runs in a container of its own (rcargo
-  stops idle worktree containers and prunes its shared store, which a long build does not
-  survive), with a podman store and the OS build's cargo and sccache caches that outlive
-  it. The base is rebuilt only when a file its build reads changed
-  (`os/dev/base-input-paths.py`), so a change to the harness, a CI script or a doc reuses it.
-  A disk is kept per image digest, and the VM host image per package list. The worker's work
-  disk keeps the last disk's image in its podman store and local registry, and the last disk
-  itself as the seed of the next (`disk-image.sh --seed-raw`): a new image moves and installs
-  only the layers the last one lacked. The worker VM (container `bvm-worker`) stays up between
-  disks and shuts down after 45 minutes without one, so a disk starts without a boot; one disk
-  step uses it at a time. The disk leaves it raw, through a virtual disk of its own, and
-  stays raw on the builder (`disk.raw`), with `disk.qcow2` a qcow2 over it: copy the two
-  together.
-- **The VM host containers.** They come from Fedora plus `tools/ci/packages/
-  vm-acceptance.txt`, with `/dev/kvm` passed through. Each shard runs
-  `tools/ci/vm-acceptance.sh` in a container of its own (`builder-vm-guest.sh`), with its
-  own libvirt session and network namespace.
-- **Reports.** They come back to `target/builder-vm/<run>/`, and the script ends with the
-  failed checks.
-
 ## Harness regression tests
 
 ```bash

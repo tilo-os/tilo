@@ -284,7 +284,7 @@ impl Drop for Remembering {
 fn the_chosen_width_is_remembered_for_the_next_window() {
     let dir = tempfile::tempdir().expect("a settings directory");
     let settings = crate::storage::Settings::<memory::NavShellMemory>::for_app("so.tilo.tube")
-        .in_file(dir.path().join("settings.json"));
+        .in_profile(dir.path());
     let _restore = Remembering(memory::install(Some(settings.clone())));
 
     let mut h = harness(shell_with(places()), W, H, Theme::dark());

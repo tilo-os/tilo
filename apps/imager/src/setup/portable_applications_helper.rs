@@ -152,7 +152,7 @@ fn verify_home(
     password: &[u8],
     cancel: &AtomicBool,
 ) -> io::Result<Option<PortableHomeReview>> {
-    if setup.manifest().portable_home.is_none() {
+    if setup.manifest().units.portable_home().is_none() {
         return Ok(None);
     }
     let delivered = home.join(".local/state/tilo/prepared-home");
@@ -235,7 +235,7 @@ fn run_with_admission(
     private_package(&setup_package)?;
     private(setup_quarantine.parent().ok_or_else(failure)?)?;
     let setup = PreparedSetupReview::open(&setup_package, &password, &setup_quarantine, &cancel)?;
-    if setup.manifest().portable_flatpak.as_ref() != Some(&expected) {
+    if setup.manifest().units.portable_flatpak() != Some(&expected) {
         return Err(failure());
     }
     if expected.kind.consumer_protocol == 2 {
