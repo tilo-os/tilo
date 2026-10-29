@@ -15,8 +15,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::{
-    LibraryDestination, PeopleControl, PeopleIntent, PeopleLayout, PeopleSelection, PhotosApp,
-    bound,
+    LibraryDestination, PeopleControl, PeopleIntent, PeopleLayout, PeopleSelection, Photos, bound,
 };
 
 impl PeopleControl {
@@ -29,7 +28,7 @@ impl PeopleControl {
     }
 }
 
-impl PhotosApp {
+impl Photos {
     /// Device-local People controller for a platform-specific face pipeline
     /// or the shared People management surface. It intentionally exposes no
     /// document reference: local clusters and their evidence never sync.

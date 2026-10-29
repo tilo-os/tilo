@@ -21,10 +21,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::paint::OFFLINE_WORLD_LANDMASSES;
 use super::{
-    AlbumEditorHit, LibraryDestination, MetadataEditorHit, MetadataEditorSection, PhotosApp, bound,
+    AlbumEditorHit, LibraryDestination, MetadataEditorHit, MetadataEditorSection, Photos, bound,
 };
 
-impl PhotosApp {
+impl Photos {
     /// Pose the ordinary library editor for deterministic offscreen coverage.
     /// The production entry point is the visible “Edit album” control; shot
     /// rendering has no window event stream to click it through.
