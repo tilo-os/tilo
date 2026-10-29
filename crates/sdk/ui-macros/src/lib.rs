@@ -49,6 +49,8 @@ struct Head {
     role: Option<String>,
     label: Option<String>,
     presents: Option<String>,
+    /// It draws nothing where it stands and attaches to the view it stands in.
+    attaches: bool,
 }
 
 /// What a field is.
@@ -117,9 +119,11 @@ fn head_of(attrs: &[Attribute]) -> syn::Result<Head> {
                 head.label = Some(value()?);
             } else if meta.path.is_ident("presents") {
                 head.presents = Some(value()?);
+            } else if meta.path.is_ident("attaches") {
+                head.attaches = true;
             } else {
                 return Err(meta.error(
-                    "a component takes `name = \"..\"`, `role = \"..\"`, `label = \"..\"` and `presents = \"..\"`",
+                    "a component takes `name = \"..\"`, `role = \"..\"`, `label = \"..\"`, `presents = \"..\"` and `attaches`",
                 ));
             }
             Ok(())
@@ -295,6 +299,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
     }
     let label = option_tokens(head.label.as_deref());
     let presents = option_tokens(head.presents.as_deref());
+    let attaches = head.attaches;
     // A component of no parts reads nothing into its props.
     let binding = if reads.is_empty() {
         quote!(let _ = source; let props)
@@ -319,6 +324,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
                         role: #role.into(),
                         label: #label,
                         presents: #presents,
+                        attaches: #attaches,
                     },
                 }
             }

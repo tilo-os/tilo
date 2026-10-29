@@ -237,7 +237,9 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
 /// `row`, built as they show, above the composer, which stays at the foot. Who wrote each item
 /// and when come from the log (`created`), and the list draws them as every conversation does:
 /// the author's avatar and name over each run of their messages, the time beside the name, and
-/// a divider where the day changes; the `row` then shows only what the item says.
+/// a divider where the day changes; the `row` then shows only what the item says. Each item's
+/// menu offers its actions, after whatever menu the `row` attaches (`ui.ContextMenu`), so every
+/// action stays reachable; the row's hover toolbar and swipe are its own.
 view transcript<R, T>(of: R, items: List<T>, composer: View, row: (T) -> View) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
@@ -253,7 +255,15 @@ view transcript<R, T>(of: R, items: List<T>, composer: View, row: (T) -> View) {
                 ui.VirtualList(transcript: true) {
                     for m in items {
                         let made = created(m)
+                        let offered = actions(m)
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {
+                            menu: {
+                                for a in offered {
+                                    ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                                        on choose: a.run
+                                    }
+                                }
+                            }
                             row(m)
                         }
                     }
