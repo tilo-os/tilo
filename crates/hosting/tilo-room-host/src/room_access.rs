@@ -631,15 +631,8 @@ pub(crate) fn decide_in(
     if listed(room, peer, op) {
         return Decision::Admit;
     }
-    // A person's own room ([`tilo_relay_protocol::own_room`]) is theirs by
-    // its id, which their root alone derives: any device of theirs is
-    // admitted to it as an owner's device is to the relay owner's rooms, and
-    // nobody else's.
-    let own_room = tilo_relay_protocol::own_room_workspace_id_matches(
-        &peer.user_public_key,
-        room.runtime.store.workspace_id(),
-    );
-    if ((room.runtime.admission == AdmissionMode::SameOwner && own_user) || own_room)
+    if room.runtime.admission == AdmissionMode::SameOwner
+        && own_user
         && room.within_ceiling(&peer.device_public_key)
     {
         match op.owner_device() {
