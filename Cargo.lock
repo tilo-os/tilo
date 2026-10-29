@@ -12334,6 +12334,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pixman"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cea217d496c19ac0a8e502b37078e1f683d16344adee9eb247a5d57c165e1edf"
+dependencies = [
+ "drm-fourcc",
+ "paste",
+ "pixman-sys",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "pixman-sys"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1a0483e89e81d7915defe83c51f23f6800594d64f6f4a21253ce87fd8444ada"
+
+[[package]]
 name = "pkcs1"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15988,6 +16006,7 @@ dependencies = [
  "libc",
  "libloading",
  "libseat",
+ "pixman",
  "pkg-config",
  "profiling",
  "rand 0.9.2",
@@ -18219,6 +18238,18 @@ dependencies = [
  "tilo-ui",
  "tilo-vello",
  "tilo-wayland-ext",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-compositor"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.4",
+ "smithay",
+ "tracing",
+ "wayland-client",
+ "wayland-protocols",
  "workspace-hack",
 ]
 

@@ -1,0 +1,27 @@
+[package]
+name = "tilo-compositor"
+description = "Tilo's Wayland compositor: outputs, input, the composited scene of client and hosted surfaces, and the Wayland protocols. Window policy and surface apps plug in through traits; no shell surface code lives here."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The protocol server, the desktop element model and the renderers: pixman
+# composites headless outputs on the CPU.
+smithay = { version = "0.7", default-features = false, features = [
+    "wayland_frontend",
+    "desktop",
+    "renderer_pixman",
+] }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rustix = { workspace = true, features = ["fs"] }
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "desktop", "renderer_pixman"] }
+wayland-client.workspace = true
+wayland-protocols = { version = "0.32.12", features = ["client"] }
+
+[lints]
+workspace = true
