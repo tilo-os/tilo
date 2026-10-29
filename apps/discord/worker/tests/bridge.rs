@@ -1483,7 +1483,7 @@ async fn opted_in_the_bridge_adds_its_own_roles_and_new_channels_only() {
     bridge
         .as_ada(
             chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                name: "ideas".into(),
+                name: "ideas".parse().unwrap(),
                 category: Some(channels),
                 kind: None,
                 topic: None,
@@ -1709,7 +1709,7 @@ async fn moving_channels_in_chat_rearranges_discord() {
     bridge
         .as_ada(
             chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                name: "ideas".into(),
+                name: "ideas".parse().unwrap(),
                 category: Some(category("Channels")),
                 kind: None,
                 topic: None,
@@ -1794,7 +1794,7 @@ fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<
             doc,
             owner,
             chat::Chat::CREATE_CATEGORY.with(chat::record::chat::CreateCategory {
-                name: category.into(),
+                name: category.parse().unwrap(),
             }),
         )
         .map_err(|error| error.to_string())?;
@@ -1808,7 +1808,7 @@ fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<
             doc,
             owner,
             chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                name: channel.into(),
+                name: channel.parse().unwrap(),
                 category: made,
                 kind: Some(kind),
                 topic: None,
@@ -1869,7 +1869,7 @@ fn seed_channels(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
             doc,
             owner,
             chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-                name: name.into(),
+                name: name.parse().unwrap(),
                 category: category.clone(),
                 kind: None,
                 topic: None,

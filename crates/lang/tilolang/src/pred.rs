@@ -261,17 +261,18 @@ impl<F> Pred<F> {
         })
     }
 
-    /// The same predicate with each [`Operand::Clock`] read at `now`, seconds since 1970 (UTC).
+    /// The same predicate with each [`Operand::Clock`] read at `now`, seconds since 1970 (UTC),
+    /// by someone whose clock is `zone` seconds ahead of UTC: whose today it is.
     #[must_use]
-    pub fn at(&self, now: i64) -> Self
+    pub fn at(&self, now: i64, zone: i64) -> Self
     where
         F: Clone,
     {
         match self {
-            Self::Not(p) => Self::Not(Box::new(p.at(now))),
-            Self::And(ps) => Self::And(ps.iter().map(|p| p.at(now)).collect()),
-            Self::Or(ps) => Self::Or(ps.iter().map(|p| p.at(now)).collect()),
-            Self::Cmp(op, a, b) => Self::Cmp(*op, a.at(now), b.at(now)),
+            Self::Not(p) => Self::Not(Box::new(p.at(now, zone))),
+            Self::And(ps) => Self::And(ps.iter().map(|p| p.at(now, zone)).collect()),
+            Self::Or(ps) => Self::Or(ps.iter().map(|p| p.at(now, zone)).collect()),
+            Self::Cmp(op, a, b) => Self::Cmp(*op, a.at(now, zone), b.at(now, zone)),
             other => other.clone(),
         }
     }
@@ -395,14 +396,14 @@ impl<F> Operand<F> {
         })
     }
 
-    fn at(&self, now: i64) -> Self
+    fn at(&self, now: i64, zone: i64) -> Self
     where
         F: Clone,
     {
         match self {
             Self::Clock { day: true, offset } => {
-                let days =
-                    now.div_euclid(crate::calendar::DAY) + offset.div_euclid(crate::calendar::DAY);
+                let days = now.saturating_add(zone).div_euclid(crate::calendar::DAY)
+                    + offset.div_euclid(crate::calendar::DAY);
                 Self::Lit(Lit::Date(crate::calendar::day_text(days)))
             }
             Self::Clock { day: false, offset } => Self::Lit(Lit::Time(crate::calendar::time_text(

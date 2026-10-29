@@ -1,13 +1,18 @@
-//! Device-local Video Player settings.
+//! Video Player's playback preferences and its recent videos.
 //!
-//! Playback preferences, the recent videos and where each of them left off
-//! live in the app's device-local settings rather than in the collaborative
-//! library. Two people reviewing the same clip may reasonably want different
-//! autoplay defaults and speeds, a resume point is what *this* person
-//! watched, and a recent video names a path on this device.
+//! Playback preferences live in the app's device-local settings rather than
+//! in the collaborative library: two people reviewing the same clip may
+//! reasonably want different autoplay defaults and speeds. The recent videos
+//! and where each of them left off are a record beside the library
+//! ([`RecentVideos`]), one list per device, since a recent video names a
+//! path on one device.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use ui::prelude::{Model, resource, tilo_resource};
+use ui::tilo_resource::Refusal;
 
 pub const RECENT_HISTORY_LIMIT: usize = 32;
 
@@ -24,9 +29,8 @@ pub const DEFAULT_RATE: f32 = 1.0;
 /// of these, so a restored player highlights a speed the menu can name.
 pub const PLAYBACK_RATES: [f32; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
 
-/// What Video Player keeps on this device. A missing, malformed or
-/// wrong-typed key falls back to its default alone, and a malformed recent
-/// row is dropped alone.
+/// How Video Player plays on this device. A missing, malformed or
+/// wrong-typed key falls back to its default alone.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlayerSettings {
@@ -42,8 +46,6 @@ pub struct PlayerSettings {
     /// The speed this device plays at: one of [`PLAYBACK_RATES`].
     #[serde(deserialize_with = "rate")]
     pub rate: f32,
-    /// The videos played on this device, newest first.
-    pub recent_history: RecentHistory,
 }
 
 impl Default for PlayerSettings {
@@ -53,13 +55,69 @@ impl Default for PlayerSettings {
             loop_enabled: false,
             volume: DEFAULT_VOLUME,
             rate: DEFAULT_RATE,
-            recent_history: RecentHistory::default(),
         }
     }
 }
 
 impl ui::storage::SettingsSchema for PlayerSettings {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
+
+/// The videos one device played lately, newest first. A malformed row is
+/// dropped alone.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeviceVideos {
+    #[serde(default)]
+    pub rows: RecentHistory,
+}
+
+tilo_resource::json_model!(DeviceVideos);
+
+/// The videos played lately and where each left off, by device: a record
+/// Video Player keeps beside the library in the workspace. A row names a
+/// source on one device, so each device reads and writes only its own list.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct RecentVideos {
+    pub devices: BTreeMap<String, DeviceVideos>,
+}
+
+#[resource(kind = "video-player.recent", label = "Recent videos")]
+impl RecentVideos {
+    /// `device`'s recent videos are now `rows`, newest first.
+    #[action(housekeeping)]
+    pub fn keep(
+        &mut self,
+        device: String,
+        #[param("The recent videos, as the device stores them")] rows: Value,
+    ) -> Result<(), Refusal> {
+        let rows = serde_json::from_value(rows)
+            .map_err(|error| Refusal::new(format!("not a list of recent videos: {error}")))?;
+        self.devices.insert(device, DeviceVideos { rows });
+        Ok(())
+    }
+
+    /// The recent video `id` on `device` stands at `position_ms`.
+    #[action(housekeeping)]
+    pub fn stood(&mut self, device: String, id: String, position_ms: u64) {
+        if let Some(row) = self
+            .devices
+            .get_mut(&device)
+            .and_then(|kept| kept.rows.iter_mut().find(|row| row.id == id))
+        {
+            row.position_ms = position_ms;
+        }
+    }
+}
+
+impl RecentVideos {
+    /// The videos `device` played lately, newest first.
+    #[must_use]
+    pub fn on(&self, device: &str) -> RecentHistory {
+        self.devices
+            .get(device)
+            .map(|kept| kept.rows.clone())
+            .unwrap_or_default()
+    }
 }
 
 fn autoplay<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
@@ -114,9 +172,9 @@ fn f32_of_rate(value: f64) -> f32 {
         .unwrap_or(DEFAULT_RATE)
 }
 
-/// A recent video on this device. `id` is opaque and stable across restart;
-/// `source` stays in this device's settings and is never written to the
-/// collaborative document or shown in a published label.
+/// A recent video on one device. `id` is opaque and stable across restart;
+/// `source` stays in that device's list and is never written to the
+/// collaborative library or shown in a published label.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecentMedia {
     pub id: String,
@@ -259,6 +317,12 @@ mod tests {
         serde_json::from_str(json).unwrap_or_default()
     }
 
+    fn read_rows(json: &str) -> RecentHistory {
+        serde_json::from_str::<DeviceVideos>(json)
+            .unwrap_or_default()
+            .rows
+    }
+
     #[allow(
         clippy::float_cmp,
         reason = "a fallback or clamp yields exactly the named constant, so equality is the assertion"
@@ -276,17 +340,20 @@ mod tests {
             loop_enabled: true,
             volume: 0.35,
             rate: 1.5,
-            recent_history: [entry].into_iter().collect(),
         };
         let json = serde_json::to_string(&stored).unwrap();
         assert_eq!(read(&json), stored, "every key survives a restart");
+        let rows = DeviceVideos {
+            rows: [entry].into_iter().collect(),
+        };
+        let json = serde_json::to_string(&rows).unwrap();
+        assert_eq!(read_rows(&json), rows.rows, "every row survives a restart");
 
         assert_eq!(
             read(r#"{"autoplay":"yes","loop_enabled":true}"#),
             PlayerSettings {
                 autoplay: true,
                 loop_enabled: true,
-                recent_history: RecentHistory::default(),
                 ..PlayerSettings::default()
             },
             "a wrong-typed key falls back alone"
@@ -314,15 +381,14 @@ mod tests {
             "a foreign speed restores to the nearest offered one: {foreign}"
         );
         assert!(
-            read(r#"{"recent_history":[{"id":"","title":"bad"}]}"#)
-                .recent_history
-                .is_empty(),
+            read_rows(r#"{"rows":[{"id":"","title":"bad"}]}"#).is_empty(),
             "a malformed row is dropped"
         );
         assert_eq!(
-            read(r#"{"recent_history":[{"id":"a","title":"Old","source_kind":"local","source":"/v/old.mp4"}]}"#)
-                .recent_history[0]
-                .position_ms,
+            read_rows(
+                r#"{"rows":[{"id":"a","title":"Old","source_kind":"local","source":"/v/old.mp4"}]}"#
+            )[0]
+            .position_ms,
             0,
             "a row written before positions were kept starts at the beginning"
         );
@@ -339,8 +405,8 @@ mod tests {
                 .to_value()
             })
             .collect();
-        let bounded = serde_json::json!({ "recent_history": rows }).to_string();
-        assert_eq!(read(&bounded).recent_history.len(), RECENT_HISTORY_LIMIT);
+        let bounded = serde_json::json!({ "rows": rows }).to_string();
+        assert_eq!(read_rows(&bounded).len(), RECENT_HISTORY_LIMIT);
     }
 
     #[test]

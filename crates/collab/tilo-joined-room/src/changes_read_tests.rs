@@ -66,21 +66,21 @@ fn topic(document: &AutoCommit) -> Option<String> {
 
 /// The changes since a held revision, applied to that revision, are the
 /// document a whole read hands out now, with its revision; and they are read
-/// without restoring the room.
+/// without capturing the document again.
 #[test]
 fn the_changes_since_a_held_revision_complete_it_to_the_current_read() {
     let joined = enrolled();
     let member = member().verifying_key().to_bytes();
     let held = full(&joined, member);
     commit(&joined, |chat| chat.put(ROOT, "topic", "edited").unwrap());
-    crate::document_read::reset_room_restores();
+    crate::document_read::reset_captures();
     let Ok(ChangesRead::Changes(read)) = changes(&joined, member, &held.heads, usize::MAX) else {
         panic!("the member is handed the changes since what it holds");
     };
     assert_eq!(
-        crate::document_read::room_restores(),
+        crate::document_read::captures(),
         0,
-        "the changes come from the committed document, not a restored room"
+        "the changes come from the committed document, not a whole capture"
     );
     let current = full(&joined, member);
     assert_eq!(read.revision, current.revision);
@@ -218,7 +218,7 @@ const LARGE_EDITS: usize = 100;
 /// One-edit change bytes a reader may be handed for a large document.
 const CHANGES_BYTES_BUDGET: usize = 1024;
 /// How many times cheaper the owner's changes read must be than the whole
-/// read it replaces (a room restore and a document save), on the large
+/// read it replaces (a capture of the whole document), on the large
 /// document.
 const OWNER_SPEEDUP_BUDGET: u32 = 10;
 /// How many times cheaper taking in the changes must be for the reader
@@ -239,8 +239,8 @@ fn fastest<T>(runs: usize, mut run: impl FnMut() -> T) -> (std::time::Duration, 
 }
 
 /// What one remote edit of a large shared document costs a reader that
-/// already holds it: before, a whole read (the owner restores the room and
-/// saves the document; the reader loads and merges all of it); now, the
+/// already holds it: before, a whole read (the owner captures the whole
+/// document; the reader loads and merges all of it); now, the
 /// changes since (the owner reads the edit's changes; the reader takes them
 /// in). Budgeted: bytes per edit, and the speedup on both sides.
 #[test]

@@ -1715,7 +1715,7 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
         }
         if let Some((network, room)) = governor.filter(|(_, room)| *room == workspace.room()) {
             drop(tree);
-            return govern_at_host(network, room, operation);
+            return write_governance_here(network, room, operation);
         }
         let workspace_id = workspace.id;
         super::workspace_governance::apply_governance_operation(
@@ -1747,15 +1747,15 @@ impl WorkspaceGovernanceServices for NativeWorkspaceGovernance {
     }
 }
 
-/// Have the governor of `room`, its host, apply a governance `operation`
-/// made at this device, and wait for its answer.
-fn govern_at_host(
+/// Write a governance `operation` made at this device into `room`, and wait
+/// for the room's admission.
+fn write_governance_here(
     network: &super::network::ShellNetwork,
     room: super::state::RoomId,
     operation: tilo_desktop::workspace_settings::GovernanceOperation,
 ) -> Result<(), String> {
     let request = super::workspace_governance::governance_request(room, operation)?;
-    network.ask_governor(room, request)
+    network.write_governance(room, request)
 }
 
 /// Find `id` in `resource`'s subtree.

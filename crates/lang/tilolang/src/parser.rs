@@ -193,6 +193,7 @@ struct AppOptions {
     icon: Option<String>,
     category: Option<String>,
     previously: Vec<String>,
+    own_records: bool,
 }
 
 /// The launcher categories an app declares (`category: .office`), as the platform's menu
@@ -371,10 +372,12 @@ impl<'a> Parser<'a> {
     }
 
     /// The options after the app's title: `(icon: .note, category: .office, previously:
-    /// so.tilo.old)`, each at most once. `previously:` takes an app id, or several in brackets.
+    /// so.tilo.old, records: .own)`, each at most once. `previously:` takes an app id, or several
+    /// in brackets.
     fn app_options(&mut self) -> PResult<AppOptions> {
         let mut out = AppOptions::default();
         let mut seen_previously = false;
+        let mut records: Option<String> = None;
         if !self.eat(&Tok::LParen) {
             return Ok(out);
         }
@@ -383,7 +386,7 @@ impl<'a> Parser<'a> {
             if self.eat(&Tok::RParen) {
                 break;
             }
-            let key = self.ident("`icon`, `category` or `previously`")?;
+            let key = self.ident("`icon`, `category`, `previously` or `records`")?;
             self.expect(&Tok::Colon)?;
             if key.name == "previously" {
                 if std::mem::replace(&mut seen_previously, true) {
@@ -428,11 +431,25 @@ impl<'a> Parser<'a> {
                         }
                         &mut out.category
                     }
+                    "records" => {
+                        if !matches!(value.name.as_str(), "own" | "shared") {
+                            return self.fail(
+                                value.span,
+                                format!(
+                                    "`.{}` is not where records are kept; an app's records are \
+                                     `.shared` with the workspace or each member's `.own`",
+                                    value.name
+                                ),
+                            );
+                        }
+                        &mut records
+                    }
                     other => {
                         return self.fail(
                             key.span,
                             format!(
-                                "an app has an `icon:`, a `category:` and `previously:`, not `{other}:`"
+                                "an app has an `icon:`, a `category:`, `previously:` and \
+                                 `records:`, not `{other}:`"
                             ),
                         );
                     }
@@ -448,6 +465,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
+        out.own_records = records.as_deref() == Some("own");
         Ok(out)
     }
 
@@ -579,6 +597,7 @@ impl<'a> Parser<'a> {
                 icon: options.icon,
                 category: options.category,
                 previously: options.previously,
+                own_records: options.own_records,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
         } else {
@@ -625,6 +644,7 @@ impl<'a> Parser<'a> {
                         icon: options.icon,
                         category: options.category,
                         previously: options.previously,
+                        own_records: options.own_records,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                 }

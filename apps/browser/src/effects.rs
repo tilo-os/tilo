@@ -77,19 +77,19 @@ pub enum BrowserEffect {
     /// Forget account on this device
     ///
     /// Fences and removes the selected website profile before revoking custody.
-    #[effect(row, returns, destructive)]
+    #[effect(row, job, returns, destructive)]
     ForgetServiceSession {
         #[param("Selected account")]
         session_id: String,
     },
     /// Retry account deletion and custody revocation without resolving credentials
-    #[effect(row, returns, destructive)]
+    #[effect(row, job, returns, destructive)]
     RetryForgetServiceSession {
         #[param("Selected account")]
         session_id: String,
     },
     /// List accounts through fresh private custody
-    #[effect(row, returns, kind = "read")]
+    #[effect(row, job, returns, kind = "read")]
     ListServiceSessions,
     /// Read account connection
     #[effect(row, returns, kind = "read")]

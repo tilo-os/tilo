@@ -17,7 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
-use ui::tilo_resource::{self, ActionCx, Atom, Collection, Id, Model, Refusal, resource};
+use ui::tilo_resource::{self, ActionCx, Atom, Collection, Id, Model, NonBlank, Refusal, resource};
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
 
@@ -525,8 +525,8 @@ impl Deck {
     pub fn set_text(
         &mut self,
         slide: &Id,
-        #[param("New title")] title: Option<String>,
-        #[param("New body, a paragraph per line")] body: Option<String>,
+        #[param("New title")] title: Option<NonBlank>,
+        #[param("New body, a paragraph per line")] body: Option<NonBlank>,
     ) -> Result<(), Refusal> {
         let slide = &self.slide_key(slide)?;
         let target = self.slides.get_mut(slide).ok_or("no such slide")?;
@@ -539,11 +539,6 @@ impl Deck {
         let mut writes = Vec::new();
         for (index, text) in [title, body].into_iter().enumerate() {
             let Some(text) = text else { continue };
-            if text.trim().is_empty() {
-                return Err(Refusal::new(
-                    "slide text is not blank; delete-element removes a text box",
-                ));
-            }
             let element = boxes.get(index).ok_or(if index == 0 {
                 "the slide has no text box for a title; add one with add-element"
             } else {
@@ -557,7 +552,7 @@ impl Deck {
         for (element, text) in writes {
             if let Some(element) = target.elements.get_mut(&element) {
                 element.body.perform(RichTextAction::ReplaceClips {
-                    blocks: crate::model::paragraphs_of(&text, false, false)
+                    blocks: crate::model::paragraphs_of(text.as_str(), false, false)
                         .iter()
                         .filter(|block| !block.text.trim().is_empty())
                         .map(tilo_rich_text::clip_of_content)

@@ -31,6 +31,10 @@ pub struct AppHeader {
     /// grants and windows under them are the app's (the platform checks that the same publisher
     /// signed both).
     pub previously: Vec<String>,
+    /// `(records: .own)`: each member of a workspace keeps the app's records in their own
+    /// record there, which only that person's devices read; `false` (`.shared`, the default)
+    /// keeps them in the workspace's record of the app, which every member reads.
+    pub own_records: bool,
     pub span: Span,
 }
 

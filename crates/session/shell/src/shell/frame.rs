@@ -1818,6 +1818,10 @@ impl FrameBuilder {
         if !self.host.palette_visible() || self.has_focus_trap() {
             return None;
         }
+        // The launcher app takes search's keys in the node it is shown in.
+        if let Some(node) = self.host.launcher_node() {
+            return Some(node);
+        }
         self.node_map.iter().find_map(|(&node, &widget)| {
             // SAFETY: the map belongs to this frame's current live tree.
             (unsafe { (*widget).test_id() } == Some("command_palette_input")).then_some(node)
@@ -3766,6 +3770,7 @@ impl FrameBuilder {
                 dest_w: x1.saturating_sub(x0).max(1),
                 dest_h: y1.saturating_sub(y0).max(1),
                 scroll_x: scene_px(shift.round()),
+                scroll_y: 0,
             });
             plan.ids.push(strip);
         }

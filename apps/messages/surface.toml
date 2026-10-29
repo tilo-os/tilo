@@ -21,9 +21,9 @@ fields = [
 id = "deliver-message"
 kind = "undoable"
 params = [
-  { name = "from", required = true, schema = { type = "string" } },
+  { name = "from", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "to", required = false, schema = { type = ["string", "null"] } },
-  { name = "body", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "date", required = false, schema = { type = ["string", "null"] } },
   { name = "conversation", required = false, schema = { type = ["string", "null"] } },
 ]
@@ -33,7 +33,7 @@ id = "send-message"
 kind = "undoable"
 params = [
   { name = "to", required = true, schema = { type = "string" } },
-  { name = "body", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "conversation", required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -42,7 +42,7 @@ id = "reply"
 kind = "undoable"
 params = [
   { name = "conversation", required = true, schema = { type = "string" } },
-  { name = "body", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources]]

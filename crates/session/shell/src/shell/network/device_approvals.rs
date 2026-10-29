@@ -128,7 +128,7 @@ impl ShellNetwork {
             .host_identity
             .as_ref()
             .ok_or("this computer has no identity yet")?
-            .current_native_material(0)?
+            .current_person_material()?
             .0
             .user_public_key;
         Ok(Arc::new(SessionRoot { user_public_key }))

@@ -85,6 +85,11 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # with 4100096 / 3887104 bytes dirtied per process (x86_64 / aarch64).
 # Native app-build checks also exercise the engine probes and loader traces;
 # the budgets below adopt their suggested one-percent headroom.
+#
+# [engines.<arch>] budgets each engine library's file (crates/runtime/engines/)
+# by name, with the same headroom, rounding and raise files
+# ([engines.<arch>] "lib<name>.so" = <bytes> in a raise). Release / apps and
+# t's runtime-size check fail when an engine is over its budget or has none.
 
 # The apps of apps_without_media that use an engine library
 # (crates/runtime/engines/), by library: they load it at exec. Release / apps
@@ -103,3 +108,45 @@ bytes = 135659520
 relocation_bytes = 262144
 relocated_bytes = 3932160
 symbol_relocations = 6592
+
+# Measured at 38a33e80d7f plus the engines' link through
+# runtime-dylib-lazy-link.py, which made Settings' engine export only its
+# entry points: libtilo_settings_engine.so 16251144 -> 10105200 bytes on
+# x86_64, the ad-block engine 2112792 -> 210328.
+[engines.x86_64]
+"libtilo_accounts_engine.so" = 2752512
+"libtilo_adblock_engine.so" = 262144
+"libtilo_app_host_engine.so" = 1245184
+"libtilo_archive_engine.so" = 1048576
+"libtilo_browser_import_engine.so" = 2818048
+"libtilo_contact_directory_engine.so" = 393216
+"libtilo_emoji_engine.so" = 65536
+"libtilo_fuse_engine.so" = 3145728
+"libtilo_highlight_engine.so" = 2818048
+"libtilo_mail_engine.so" = 851968
+"libtilo_paint_engine.so" = 917504
+"libtilo_pdf_engine.so" = 10551296
+"libtilo_settings_engine.so" = 10223616
+"libtilo_spotify_engine.so" = 11599872
+"libtilo_timezone_engine.so" = 1310720
+"libtilo_typst_engine.so" = 43581440
+"libtilo_youtube_engine.so" = 5898240
+
+[engines.aarch64]
+"libtilo_accounts_engine.so" = 2490368
+"libtilo_adblock_engine.so" = 262144
+"libtilo_app_host_engine.so" = 1179648
+"libtilo_archive_engine.so" = 983040
+"libtilo_browser_import_engine.so" = 2686976
+"libtilo_contact_directory_engine.so" = 393216
+"libtilo_emoji_engine.so" = 65536
+"libtilo_fuse_engine.so" = 2949120
+"libtilo_highlight_engine.so" = 2752512
+"libtilo_mail_engine.so" = 786432
+"libtilo_paint_engine.so" = 786432
+"libtilo_pdf_engine.so" = 9568256
+"libtilo_settings_engine.so" = 9240576
+"libtilo_spotify_engine.so" = 11337728
+"libtilo_timezone_engine.so" = 1376256
+"libtilo_typst_engine.so" = 41418752
+"libtilo_youtube_engine.so" = 5308416

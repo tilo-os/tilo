@@ -28,7 +28,7 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-use crate::host_core::HostCore as _;
+use crate::host_core::{ControlHost as _, HostCore as _, ResourceInvocation};
 use std::cell::Cell;
 
 #[cfg(feature = "native")]
@@ -65,7 +65,6 @@ mod retirement_lifecycle_tests;
 mod surface_route;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
-mod retained_layout;
 mod runtime;
 mod window_bar;
 use runtime::{
@@ -77,6 +76,7 @@ include!("app/continuation.rs");
 include!("app/dev_session.rs");
 include!("app/dev_library.rs");
 include!("app/actions.rs");
+include!("app/host_core.rs");
 include!("app/action_directory.rs");
 include!("app/control_availability.rs");
 include!("app/accessibility.rs");
@@ -152,10 +152,10 @@ mod room_record_launch_tests {
     }
 }
 
-const ACTION_DIRECTORY_MAX_RESULTS: usize = 128;
-const ACTION_DIRECTORY_MAX_WORK: usize = 512;
-const ACTION_DIRECTORY_MAX_BYTES: usize = 64 * 1024;
-const ACTION_DIRECTORY_MAX_DEPTH: u16 = 16;
+const ACTION_DIRECTORY_MAX_RESULTS: usize = ::collaboration::action_directory::MAX_RESULTS;
+const ACTION_DIRECTORY_MAX_WORK: usize = ::collaboration::action_directory::MAX_WORK;
+const ACTION_DIRECTORY_MAX_BYTES: usize = ::collaboration::action_directory::MAX_BYTES;
+const ACTION_DIRECTORY_MAX_DEPTH: u16 = ::collaboration::action_directory::MAX_DEPTH;
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
 const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
 
@@ -2292,7 +2292,6 @@ impl App {
 
     /// Lets integration tests drive the collab pump without a real winit
     /// event loop.
-    #[doc(hidden)]
 
     /// Apply a document envelope received on the unqualified room route.
     /// The broker authenticated the route; discovery still validates and
@@ -2304,10 +2303,6 @@ impl App {
 
     /// Shared by the per-frame tick and the headless test path. Returns
     /// `true` iff at least one event was processed.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered pump drains directory callbacks and applies every collaboration lifecycle event before the next frame"
-    )]
 
     fn collab_event_may_change_action_surface(event: &CollabEvent) -> bool {
         !matches!(
@@ -2386,10 +2381,6 @@ impl App {
     /// refusal; synthetic children additionally carry an opaque stable target
     /// produced by that widget. If a retained widget declines, `Action::Focus`
     /// moves keyboard focus and activation returns click coordinates.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered native accessibility door preserves existing resource, semantic and pointer fallback precedence"
-    )]
 
     /// Complete an accessibility activation for legacy hand-hit-tested
     /// controls that do not implement `perform_action` yet. The semantic
@@ -2538,76 +2529,6 @@ impl App {
     #[doc(hidden)]
     pub fn layout_tree_changes(&self) -> (u64, u64) {
         (self.layout.rebuilds, self.layout.remounts)
-    }
-
-    /// Carry out the change the root's widgets make in place
-    /// ([`crate::widget::StructureChange::Children`]) in the retained tree,
-    /// admitting what they mounted, and sync them. Returns `false` when it
-    /// could not be carried out in place, and the caller rebuilds the tree.
-    #[cfg(feature = "native")]
-    pub(crate) fn remount_in_place(&mut self) -> bool {
-        self.layout.remount = false;
-        if self.layout.structure_dirty
-            || self.layout.root_node.is_none()
-            || self.history.as_ref().is_some_and(|history| {
-                !history.live_interactive() || history.returning_live() || history.review_is_open()
-            })
-            || self.close_admission.dialog.is_some()
-        {
-            return false;
-        }
-        let _entry = self.enter_wake_scope();
-        // Components a widget replaced report their close here, as before a
-        // rebuild.
-        self.component_close_reports.extend(
-            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
-        );
-        let mut remount = crate::widget::Remount::new(
-            &mut self.layout.taffy,
-            &self.theme,
-            &mut self.layout.node_map,
-        );
-        let applied = self.root_widget.remount_children(&mut remount);
-        let (mounted, unmounted) = remount.finish();
-        // The rows it mounted are checked against the live tree at once, as
-        // a build's are, so the next structure check finds the maps live.
-        self.admit_layout_maps();
-        // A change no widget carried out, or any other beside it, needs the
-        // whole tree.
-        if !applied
-            || self.root_widget.take_structure_change() != crate::widget::StructureChange::None
-        {
-            return false;
-        }
-        self.bindings.forget(&unmounted);
-        for (parent, child) in mounted {
-            // SAFETY: App exclusively owns this tree, its maps and widgets;
-            // the remount above admitted `child` into both.
-            if !unsafe {
-                self.bindings.admit_mounted(
-                    parent,
-                    child,
-                    &self.layout.taffy,
-                    &self.layout.node_map,
-                )
-            } {
-                return false;
-            }
-        }
-        self.layout.remounts = self.layout.remounts.wrapping_add(1);
-        self.layout.layout_dirty = true;
-        // Fresh controls have not seen where the pointer is.
-        self.input.pointer_replay.mark_unsettled();
-        // The mounted widgets are synced before they are measured, as a
-        // rebuild syncs its fresh ones; a sync that replaces delegates
-        // needs the whole tree after all.
-        self.root_widget.sync(&self.state.doc, &self.state.root);
-        self.needs_sync = false;
-        if self.take_composition_dirty() {
-            return false;
-        }
-        self.invalidate_widget_resource_cache();
-        true
     }
 
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
@@ -3191,213 +3112,6 @@ mod render_retry_tests {
 }
 
 #[cfg(test)]
-mod legacy_owner_routing_tests {
-    use super::*;
-    use automerge::{ROOT, ReadDoc, transaction::Transactable};
-
-    struct OwnerProbe {
-        label: &'static str,
-        report: Option<crate::application::ComponentCloseReport>,
-    }
-
-    impl Widget for OwnerProbe {
-        crate::provides!(dyn crate::component_lifecycle::ComponentLifecycle);
-
-        crate::testing::inert_widget_methods!(leaf_layout, name = "LegacyOwnerProbe");
-        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-            use crate::a11y::{AccessNode, AccessState, Role};
-            Some(AccessNode::new(Role::Generic).with_children(vec![
-                AccessNode::new(Role::Button).with_key(1)
-                    .with_name(format!("{} named", self.label))
-                    .with_action_target("owner:named")
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button).with_key(7)
-                    .with_name(format!("{} keyed", self.label))
-                    .with_action_target("tilo.key-action:owner:7"),
-            ]))
-        }
-        fn perform_semantic_action(
-            &mut self,
-            target: &str,
-            action: &crate::a11y::Action,
-            doc: &mut crate::widget::Edits<'_>,
-            path: &crate::widget::ModelPath,
-        ) -> bool {
-            let (doc, _) = crate::doc::document(doc, path);
-            if target != "owner:named" {
-                return false;
-            }
-            match action {
-                crate::a11y::Action::Activate => {
-                    doc.document_mut()
-                        .put(ROOT, "selected", format!("{} named", self.label))
-                        .unwrap();
-                    true
-                }
-                crate::a11y::Action::Focus => true,
-                _ => false,
-            }
-        }
-        fn perform_action(
-            &mut self,
-            action: &crate::a11y::Action,
-            keys: &[u64],
-            doc: &mut crate::widget::Edits<'_>,
-            path: &crate::widget::ModelPath,
-        ) -> bool {
-            let (doc, _) = crate::doc::document(doc, path);
-            if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
-                return false;
-            }
-            doc.document_mut()
-                .put(ROOT, "selected", format!("{} keyed", self.label))
-                .unwrap();
-            true
-        }
-    }
-
-    impl crate::component_lifecycle::ComponentLifecycle for OwnerProbe {
-        fn take_component_close_reports(
-            &mut self,
-        ) -> Vec<crate::application::ComponentCloseReport> {
-            self.report.take().into_iter().collect()
-        }
-    }
-    impl crate::widget::AppWidget for OwnerProbe {
-        fn app_kind(&self) -> crate::widget::AppKind {
-            crate::widget::AppKind::Editor
-        }
-        fn app_title(&self) -> &str {
-            self.label
-        }
-        fn app_icon(&self) -> crate::widget::IconDescriptor {
-            crate::widget::IconDescriptor::Glyph("T")
-        }
-    }
-
-    fn tile(
-        store: &crate::record::RecordStore,
-        checkout: &crate::record::RecordCheckout,
-        label: &'static str,
-    ) -> crate::widget::TileHost {
-        let mut tile =
-            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(OwnerProbe {
-                label,
-                report: None,
-            })));
-        tile.bind_record(store.clone(), checkout.clone());
-        tile
-    }
-
-    #[test]
-    fn legacy_owner_routing_resolves_current_aliases_and_rejects_drained_errors() {
-        {
-            let store = crate::record::RecordStore::in_memory();
-            let first = crate::record::RecordCheckout::new(
-                crate::record::RecordId::for_tab(9901),
-                crate::record::RecordKind::new("note"),
-            );
-            let second = crate::record::RecordCheckout::new(
-                crate::record::RecordId::for_tab(9902),
-                crate::record::RecordKind::new("note"),
-            );
-            store.create_record(&first).unwrap();
-            store.create_record(&second).unwrap();
-            let root = crate::widget::Column::new()
-                .push(Box::new(tile(&store, &first, "first")))
-                .push(Box::new(tile(&store, &second, "second")));
-            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
-            app.enable_document_history_chrome();
-            app.init_layout();
-            app.refresh_semantic_tree();
-            let named = app
-                .semantic_tree()
-                .find_by_name("first named")
-                .unwrap()
-                .clone();
-            let keyed = app
-                .semantic_tree()
-                .find_by_name("second keyed")
-                .unwrap()
-                .id
-                .clone();
-            let alias = named.widget_taffy_id.unwrap();
-            assert!(
-                alias >= (1 << 47),
-                "fixture must exercise a legacy lifetime alias"
-            );
-            assert!(!app.layout.node_map.contains_key(&NodeId::from(alias)));
-            assert!(
-                app.invoke_semantic_action(&named.id, "activate", None)
-                    .unwrap()
-            );
-            assert!(
-                app.invoke_semantic_action(&named.id, "focus", None)
-                    .unwrap()
-            );
-            let focused = app
-                .focused_node
-                .expect("focus uses the actual admitted owner");
-            assert!(app.layout.node_map.contains_key(&focused));
-            assert_ne!(u64::from(focused), alias);
-            assert!(
-                app.invoke_semantic_action(&keyed, "activate", None)
-                    .unwrap()
-            );
-            for (checkout, expected) in [(&first, "first named"), (&second, "second keyed")] {
-                assert_eq!(
-                    store
-                        .read_checked(&checkout.id, |doc| {
-                            doc.get(ROOT, "selected")
-                                .unwrap()
-                                .unwrap()
-                                .0
-                                .as_str()
-                                .unwrap()
-                                .to_owned()
-                        })
-                        .unwrap(),
-                    expected
-                );
-            }
-            assert!(app.state.doc.get(ROOT, "selected").unwrap().is_none());
-
-            // Retain the old semantic tree while replacing the owners. Current
-            // admission must refuse both stale targets instead of retargeting them.
-            app.close_components();
-            app.root_widget = Box::new(tile(&store, &first, "replacement"));
-            app.init_layout();
-            assert!(
-                !app.invoke_semantic_action(&named.id, "activate", None)
-                    .unwrap()
-            );
-            assert!(
-                !app.invoke_semantic_action(&keyed, "activate", None)
-                    .unwrap()
-            );
-            assert_eq!(
-                store
-                    .read_checked(&first.id, |doc| {
-                        doc.get(ROOT, "selected")
-                            .unwrap()
-                            .unwrap()
-                            .0
-                            .as_str()
-                            .unwrap()
-                            .to_owned()
-                    })
-                    .unwrap(),
-                "first named"
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-#[path = "app/legacy_resource_tests.rs"]
-mod legacy_resource_tests;
-
-#[cfg(test)]
 mod private_continuity_route_tests {
     use super::*;
     use crate::collaboration::{CollabEvent, CollabRequest, PeerTransport, RouteSpec};
@@ -3864,40 +3578,23 @@ pub(crate) mod ordinary_confirmation_tests {
         (managed(Box::new(widget)), ledger, resources)
     }
     crate::testing::test_app_widget!(Fixture, "Confirmation fixture");
-    enum OwnerGuard {
-        Component {
-            binding: crate::bound_dispatch::CallbackBinding,
-            _host: crate::application_test_support::ProbeHost,
-        },
-        Legacy {
-            owner: crate::history_mode::HistoryOwner,
-            _directory: tempfile::TempDir,
-        },
+    struct OwnerGuard {
+        binding: crate::bound_dispatch::CallbackBinding,
+        _host: crate::application_test_support::ProbeHost,
     }
     impl OwnerGuard {
         fn close(&self) {
-            match self {
-                Self::Component { binding, .. } => binding.closing.set(true),
-                Self::Legacy { owner, .. } => {
-                    let crate::history_mode::owner::OwnerKind::Legacy { lifetime, .. } = &owner.0
-                    else {
-                        unreachable!()
-                    };
-                    lifetime.upgrade().unwrap().active.set(false);
-                }
-            }
+            self.binding.closing.set(true);
         }
         fn managed(&self, widget: Box<dyn Widget>) -> ManagedRoot {
             static COMPONENT_HISTORY: HistoryDefinition = HistoryDefinition {
                 app_id: crate::application_test_support::APP,
                 scopes: HISTORY.scopes,
             };
-            let (definition, owner) = match self {
-                Self::Component { binding, .. } => {
-                    (&COMPONENT_HISTORY, HistoryOwner::component(binding.clone()))
-                }
-                Self::Legacy { owner, .. } => (&HISTORY, owner.clone()),
-            };
+            let (definition, owner) = (
+                &COMPONENT_HISTORY,
+                HistoryOwner::component(self.binding.clone()),
+            );
             ManagedRoot::new(
                 widget,
                 HistoryRegistration::new(
@@ -3911,62 +3608,34 @@ pub(crate) mod ordinary_confirmation_tests {
             )
         }
         fn revoke(&self) {
-            if let Self::Component { binding, .. } = self {
-                binding
-                    .permissions
-                    .set(crate::permissions::PermissionContext::stranger("fixture"));
-            }
+            self.binding
+                .permissions
+                .set(crate::permissions::PermissionContext::stranger("fixture"));
         }
     }
-    fn owned(widget: Fixture, component: bool) -> (Box<dyn Widget>, OwnerGuard) {
+    fn owned(widget: Fixture) -> (Box<dyn Widget>, OwnerGuard) {
         use crate::application_test_support::*;
-        if component {
-            let host = ProbeHost::new();
-            let definition = runner_probe_definition();
-            let target = crate::application::LaunchTarget::New;
-            let mut instance = definition
-                .instantiate(
-                    host.prepare_with_permissions(definition, 991, &target, runner_permissions())
-                        .unwrap(),
-                    target,
-                    crate::application::RestoreInput::None,
-                )
-                .unwrap();
-            instance.root = Some(Box::new(widget));
-            instance.mount(|_| {}).unwrap();
-            let binding = instance.callback_binding();
-            (
-                Box::new(crate::widget::BoundAppWidget::new(instance)),
-                OwnerGuard::Component {
-                    binding,
-                    _host: host,
-                },
+        let host = ProbeHost::new();
+        let definition = runner_probe_definition();
+        let target = crate::application::LaunchTarget::New;
+        let mut instance = definition
+            .instantiate(
+                host.prepare_with_permissions(definition, 991, &target, runner_permissions())
+                    .unwrap(),
+                target,
+                crate::application::RestoreInput::None,
             )
-        } else {
-            let directory = tempfile::tempdir().unwrap();
-            let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
-            let store = owners.open(HISTORY.app_id, "legacy").unwrap();
-            let checkout = crate::RecordCheckout::new(
-                crate::RecordId::for_tab(991),
-                crate::RecordKind::new("note"),
-            );
-            store
-                .reserve_record(&checkout)
-                .unwrap()
-                .initialize(|_| Ok(()))
-                .unwrap();
-            let mut tile =
-                crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(widget)));
-            tile.bind_record(store, checkout);
-            let owner = tile.history_owner().unwrap();
-            (
-                Box::new(tile),
-                OwnerGuard::Legacy {
-                    owner,
-                    _directory: directory,
-                },
-            )
-        }
+            .unwrap();
+        instance.root = Some(Box::new(widget));
+        instance.mount(|_| {}).unwrap();
+        let binding = instance.callback_binding();
+        (
+            Box::new(crate::widget::BoundAppWidget::new(instance)),
+            OwnerGuard {
+                binding,
+                _host: host,
+            },
+        )
     }
     pub(crate) fn layout(app: &mut App) {
         // Match native redraw: capture the pending structural change before
@@ -4609,24 +4278,18 @@ pub(crate) mod ordinary_confirmation_tests {
         }
     }
     #[test]
-    fn ordinary_confirmation_component_legacy_owner_permission_and_duplicate_matrix() {
+    fn ordinary_confirmation_component_owner_permission_and_duplicate_matrix() {
         for native in [true, false] {
-            for component in [true, false] {
+            {
                 for case in ["positive", "closed", "revoked", "duplicate"] {
                     let (widget, ledger, resources) =
                         fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
-                    let (root, guard) = owned(widget, component);
+                    let (root, guard) = owned(widget);
                     let mut host = Host::new(native, guard.managed(root));
                     host.activate("Emit request");
                     match case {
                         "closed" => guard.close(),
-                        "revoked" => {
-                            if component {
-                                guard.revoke()
-                            } else {
-                                host.revoke()
-                            }
-                        }
+                        "revoked" => guard.revoke(),
                         "duplicate" => {
                             let duplicate = resources.borrow()[0].clone();
                             resources.borrow_mut().push(duplicate);
@@ -4637,7 +4300,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     assert_eq!(
                         ledger.borrow().len(),
                         usize::from(case == "positive"),
-                        "{native}:{component}:{case}"
+                        "{native}:{case}"
                     );
                 }
             }
@@ -4646,13 +4309,13 @@ pub(crate) mod ordinary_confirmation_tests {
     #[test]
     fn ordinary_confirmation_same_address_successor_cannot_receive_original_request() {
         for native in [true, false] {
-            for component in [true, false] {
+            {
                 let (widget, old_ledger, _) =
                     fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
-                let (old, old_guard) = owned(widget, component);
+                let (old, old_guard) = owned(widget);
                 let (widget, new_ledger, _) =
                     fixture_widget(tilo_actions::ConfirmationPolicy::Confirm, source());
-                let (new, new_guard) = owned(widget, component);
+                let (new, new_guard) = owned(widget);
                 let mut values = [Some(old), Some(new)];
                 let changed = Rc::new(std::cell::Cell::new(false));
                 let projection = changed.clone();
@@ -4952,7 +4615,7 @@ pub(crate) mod ordinary_confirmation_tests {
     fn ordinary_confirmation_history_preserves_e_suppresses_h_and_fresh_f_is_ordinary() {
         use tilo_actions::*;
         for native in [true, false] {
-            for owner in [0, 1, 2] {
+            for owner in [0, 1] {
                 let input = source();
                 let (widget, ledger, resources) =
                     fixture_widget(ConfirmationPolicy::Confirm, input.clone());
@@ -4969,7 +4632,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 let (root, guard) = if owner == 0 {
                     (managed(Box::new(widget)), None)
                 } else {
-                    let (root, guard) = owned(widget, owner == 1);
+                    let (root, guard) = owned(widget);
                     (guard.managed(root), Some(guard))
                 };
                 let mut host = Host::new(native, root);
@@ -5230,39 +4893,5 @@ pub(crate) mod ordinary_confirmation_tests {
         );
         assert!(driver.a11y_node_named("Run fixture").is_some());
         assert!(driver.a11y_node_named("Cancel").is_some());
-    }
-}
-
-#[cfg(test)]
-mod legacy_control_feedback_tests {
-    use super::*;
-    #[test]
-    fn native_queued_finalizer_feedback_stays_with_originating_legacy_owner() {
-        use crate::headless::legacy_control_feedback_tests::{owner, register};
-        for fail in [false, true] {
-            let (_nested_owner, nested, nested_seen) = owner(99051, false, None);
-            let (_owner, tile, seen) = owner(99050, fail, Some(nested));
-            let (_sibling_owner, sibling, sibling_seen) = owner(99052, false, None);
-            let root = crate::widget::Column::new()
-                .push(Box::new(tile))
-                .push(Box::new(sibling));
-            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
-            register(app.action_registry_mut());
-            seen.begin();
-            app.controlled_local_idle_for_test();
-            app.controlled_local_idle_for_test();
-            assert_eq!(
-                *seen.results.borrow(),
-                vec![("begin".into(), true), ("finalize".into(), !fail)]
-            );
-            assert!(
-                nested_seen.results.borrow().is_empty(),
-                "nested owner cannot inherit callback"
-            );
-            assert!(
-                sibling_seen.results.borrow().is_empty(),
-                "same-address sibling cannot inherit callback"
-            );
-        }
     }
 }

@@ -55,6 +55,8 @@ struct State {
     kinds: HashMap<String, String>,
     /// The principals the door admitted as software acting for a person, with that person.
     agents: HashMap<String, Option<String>>,
+    /// The packages whose records are each member's own (`records: .own`), by app id.
+    own: HashSet<String>,
 }
 
 /// The platform's authority. Clones share their state.
@@ -81,6 +83,9 @@ impl TiloAuthority {
         let mut state = self.state.borrow_mut();
         state.trusted.insert(module.clone());
         state.apps.insert(module.clone(), meta.app.clone());
+        if meta.own_records {
+            state.own.insert(meta.app.clone());
+        }
         for action in &meta.actions {
             let kind = meta
                 .subject_of(&action.params)
@@ -154,10 +159,18 @@ impl Authority for TiloAuthority {
             .get(&action.action)
             .cloned()
             .unwrap_or_else(|| format!("tl.{}", action.app));
-        let node = TreePath::room(room)
-            .app(&action.app)
-            .kind(kind)
-            .action(&action.action);
+        let node = TreePath::room(room).app(&action.app).kind(kind);
+        // An app whose records are each member's own acts on the record of the person at the
+        // window: whoever else invokes is decided as on anyone's own record, refused.
+        let own = standing
+            .as_ref()
+            .filter(|_| state.own.contains(&action.app))
+            .and_then(|standing| crate::member_record_of(&standing.person));
+        let node = match own {
+            Some(record) => node.resource(record),
+            None => node,
+        }
+        .action(&action.action);
         let agent = state.agents.get(&invoker.0);
         // Who the person is: the one an agent acts for, or the invoker; the person at the window
         // is the standing's person.
@@ -277,6 +290,41 @@ mod tests {
         state.apps.insert(module(), APP.to_owned());
         drop(state);
         authority
+    }
+
+    #[test]
+    fn a_package_whose_records_are_each_members_own_is_its_persons_alone() {
+        let ada = "ab".repeat(32);
+        let owner = "ef".repeat(32);
+        let mut policy = RoomPolicy::new(ROOM, owner.clone());
+        policy
+            .members
+            .insert(ada.clone(), tilo_action_policy::Role::Editor);
+        let standing = Standing::person(policy, ada.clone());
+        let authority =
+            TiloAuthority::new(Principal::new(ada.clone()), move || Some(standing.clone()));
+        {
+            let mut state = authority.state.borrow_mut();
+            state.trusted.insert(module());
+            state.apps.insert(module(), APP.to_owned());
+        }
+        let change = info(EffectClass::Undoable, true);
+        let room_owner = Principal::new(owner);
+        // Shared, the room's owner may change what the package holds.
+        assert_eq!(
+            authority.decide(&room_owner, &[module()], &change),
+            Decision::Allow
+        );
+        // Each member's own, it is Ada's record: only she acts on it, not even the room's owner.
+        authority.state.borrow_mut().own.insert(APP.to_owned());
+        assert_eq!(
+            authority.decide(&Principal::new(ada), &[module()], &change),
+            Decision::Allow
+        );
+        assert_eq!(
+            authority.decide(&room_owner, &[module()], &change),
+            Decision::Deny
+        );
     }
 
     #[test]

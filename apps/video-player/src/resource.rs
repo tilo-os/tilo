@@ -61,19 +61,23 @@ impl ResourceApp for VideoPlayerShell {
             return Vec::new();
         }
         let media_ref = crate::app::demo_media_ref();
-        vec![
-            Library::CREATE_PLAYLIST.with("Watch later"),
-            Library::ADD_ANNOTATION.with(library::AddAnnotation {
-                media_ref: media_ref.clone(),
-                time_ms: 8_000,
-                text: Some("Opening detail".into()),
-            }),
-            Library::ADD_ANNOTATION.with(library::AddAnnotation {
-                media_ref,
-                time_ms: 45_000,
-                text: None,
-            }),
-        ]
+        let playlist = ui::tilo_resource::NonBlank::parse("Watch later")
+            .map(|name| Library::CREATE_PLAYLIST.with(name));
+        playlist
+            .into_iter()
+            .chain([
+                Library::ADD_ANNOTATION.with(library::AddAnnotation {
+                    media_ref: media_ref.clone(),
+                    time_ms: 8_000,
+                    text: Some("Opening detail".into()),
+                }),
+                Library::ADD_ANNOTATION.with(library::AddAnnotation {
+                    media_ref,
+                    time_ms: 45_000,
+                    text: None,
+                }),
+            ])
+            .collect()
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -96,6 +100,10 @@ mod tests {
     use crate::actions::VideoEffect;
     use crate::app::PlayerState;
     use ui::framework::testing::TestApp;
+
+    fn trip_name() -> ui::tilo_resource::NonBlank {
+        "Trip".parse().unwrap()
+    }
 
     fn surface<T>(
         app: &mut TestApp<VideoPlayerShell>,
@@ -256,7 +264,8 @@ mod tests {
     #[test]
     fn the_shared_library_changes_through_the_door_as_one_step_each() {
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        app.invoke(Library::CREATE_PLAYLIST.with("Trip")).unwrap();
+        app.invoke(Library::CREATE_PLAYLIST.with(trip_name()))
+            .unwrap();
         assert_eq!(app.state().playlists.values().next().unwrap().name, "Trip");
         assert!(app.undo(), "creating a playlist is one undo step");
         assert!(app.state().playlists.is_empty());
@@ -280,7 +289,8 @@ mod tests {
     #[test]
     fn deleting_a_playlist_runs_at_once_and_one_undo_brings_it_back() {
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        app.invoke(Library::CREATE_PLAYLIST.with("Trip")).unwrap();
+        app.invoke(Library::CREATE_PLAYLIST.with(trip_name()))
+            .unwrap();
         let trip = app.state().playlists.ids().next().unwrap().clone();
         for (media_ref, title) in [("clip-1", "Harbour"), ("clip-2", "Lighthouse")] {
             app.invoke(Library::ADD_TO_PLAYLIST.with(library::AddToPlaylist {

@@ -1,10 +1,10 @@
-use super::{MusicApp, Track};
+use super::{Music, Track};
 #[cfg(test)]
 #[cfg(feature = "audio")]
 use ui::widget::Continuable as _;
 use ui::widget::toast::ToastKind;
 
-impl MusicApp {
+impl Music {
     /// The invocation of the library's Open audio file, as the window bar's
     /// slot runs it through the window's controls.
     pub(super) fn open_file_invocation() -> Option<tilo_actions::ControlInvocation> {
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn picker_failure_settles_the_at_most_once_effect_without_retry() {
         use ui::tilo_resource::Effect as _;
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         let mut doc = automerge::AutoCommit::new();
         app.sync(&doc, &automerge::ROOT);
         app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -402,7 +402,7 @@ mod tests {
     )]
     fn local_file_intents_are_canonical_and_uris_are_validated() {
         {
-            let mut app = MusicApp::without_profile();
+            let mut app = Music::without_profile();
             let _doc = automerge::AutoCommit::new();
             let payload = br#"{"OpenLocalFile":{"source":"private.wav"}}"#;
             assert!(
@@ -415,7 +415,7 @@ mod tests {
         }
 
         {
-            let mut app = MusicApp::without_profile();
+            let mut app = Music::without_profile();
             app.disconnect();
             let mut doc = automerge::AutoCommit::new();
             app.sync(&doc, &automerge::ROOT);
@@ -524,7 +524,7 @@ mod tests {
     #[cfg(feature = "audio")]
     fn picker_cancel_failure_and_single_pending_request_use_operation_receipts() {
         for cancelled in [true, false] {
-            let mut app = MusicApp::without_profile();
+            let mut app = Music::without_profile();
             let mut doc = automerge::AutoCommit::new();
             app.sync(&doc, &automerge::ROOT);
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -580,7 +580,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("finished local song.wav");
         wav(&path);
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.open_local_file(path.to_str().unwrap()).unwrap();
         wait_for_audio(&mut app);
         let duration = app.current_duration_ms();
@@ -622,7 +622,7 @@ mod tests {
         assert_eq!(status["rendered_counter_unit"], "sink_buffers");
         assert!(status["rendered_buffers"].as_u64().unwrap() > 0);
         let resource =
-            crate::app::MusicApp::publish_resource(&app, crate::actions::LOCAL_FILE_RESOURCE_ID)
+            crate::app::Music::publish_resource(&app, crate::actions::LOCAL_FILE_RESOURCE_ID)
                 .unwrap();
         let action = resource
             .actions
@@ -675,7 +675,7 @@ mod tests {
             bytes[4..8].copy_from_slice(&16036u32.to_le_bytes());
             bytes[40..44].copy_from_slice(&16000u32.to_le_bytes());
             std::fs::write(&path, bytes).unwrap();
-            let mut app = MusicApp::without_profile();
+            let mut app = Music::without_profile();
             let _doc = automerge::AutoCommit::new();
             app.open_local_file(path.to_str().unwrap()).unwrap();
             wait_for_audio(&mut app);
@@ -758,7 +758,7 @@ mod tests {
             wav(&path);
             let file = crate::local_file::LocalFile::open(path.to_str().unwrap(), None).unwrap();
             for route in ["row", "previous", "repeat-one", "canonical"] {
-                let mut app = MusicApp::without_profile();
+                let mut app = Music::without_profile();
                 let mut doc = automerge::AutoCommit::new();
                 app.sync(&doc, &automerge::ROOT);
                 app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -785,7 +785,7 @@ mod tests {
                     "canonical" => {
                         let resource_id = crate::actions::queue_item_resource_id(0, &id);
                         let resource =
-                            crate::app::MusicApp::publish_resource(&app, &resource_id).unwrap();
+                            crate::app::Music::publish_resource(&app, &resource_id).unwrap();
                         let action = resource
                             .actions
                             .iter()
@@ -832,7 +832,7 @@ mod tests {
         } else {
             b"Hash-valid cache content is not necessarily decodable audio".to_vec()
         };
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.disconnect();
         let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
@@ -848,7 +848,7 @@ mod tests {
         } else {
             crate::actions::track_resource_id(&id)
         };
-        let resource = crate::app::MusicApp::publish_resource(&app, &resource_id).unwrap();
+        let resource = crate::app::Music::publish_resource(&app, &resource_id).unwrap();
         let action = resource
             .actions
             .iter()
@@ -896,7 +896,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cached.wav");
         wav(&path);
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.disconnect();
         let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
@@ -953,7 +953,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("old-local.wav");
         wav(&path);
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.disconnect();
         let mut doc = crate::seed::sample_document();
         app.sync(&doc, &automerge::ROOT);
@@ -992,7 +992,7 @@ mod tests {
             paused.queue.push(next_id.clone());
             app.apply_resource_playback(paused).unwrap();
             let resource_id = crate::actions::queue_item_resource_id(0, &old_id);
-            let resource = crate::app::MusicApp::publish_resource(&app, &resource_id).unwrap();
+            let resource = crate::app::Music::publish_resource(&app, &resource_id).unwrap();
             let remove = resource
                 .actions
                 .iter()
@@ -1017,7 +1017,7 @@ mod tests {
         assert_eq!(app.pb.queue, vec![next_id.clone()]);
         assert_eq!(app.pb.queue_index, 0);
         assert_eq!(app.pb.position_ms, if continuation { 500 } else { 0 });
-        let player = crate::app::MusicApp::publish_resource(&app, "music.player:player").unwrap();
+        let player = crate::app::Music::publish_resource(&app, "music.player:player").unwrap();
         let play = player
             .actions
             .iter()
@@ -1079,7 +1079,7 @@ mod tests {
     /// the app is playing, the engine confirms it is playing and the sink
     /// keeps receiving it.
     #[cfg(feature = "audio")]
-    fn wait_for_audio(app: &mut MusicApp) {
+    fn wait_for_audio(app: &mut Music) {
         let until = tilo_test_env::hang_deadline();
         // First audio can arrive before the asynchronous Playing transition.
         // Keep driving production tick until the engine confirms it, within
@@ -1112,7 +1112,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("local song.wav");
             wav(&path);
-            let mut app = MusicApp::without_profile();
+            let mut app = Music::without_profile();
             let arguments = [path.to_str().unwrap().to_owned()];
             app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
             assert!(app.playback_error.is_none());
@@ -1135,11 +1135,8 @@ mod tests {
                 .unwrap();
             assert!(player.value.as_ref().unwrap().starts_with("local song;"));
             assert!(
-                crate::app::MusicApp::publish_resource(
-                    &app,
-                    crate::actions::LOCAL_FILE_RESOURCE_ID
-                )
-                .is_some()
+                crate::app::Music::publish_resource(&app, crate::actions::LOCAL_FILE_RESOURCE_ID)
+                    .is_some()
             );
             let json = serde_json::to_string(&automerge::AutoSerde::from(&doc)).unwrap();
             assert!(!json.contains("local song"));
@@ -1148,11 +1145,9 @@ mod tests {
             tilo_test_env::wait_until("the native source to pause", || {
                 !app.audio.is_playing_real()
             });
-            let resource = crate::app::MusicApp::publish_resource(
-                &app,
-                crate::actions::LOCAL_FILE_RESOURCE_ID,
-            )
-            .unwrap();
+            let resource =
+                crate::app::Music::publish_resource(&app, crate::actions::LOCAL_FILE_RESOURCE_ID)
+                    .unwrap();
             let action = resource
                 .actions
                 .iter()
@@ -1201,7 +1196,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("effect.wav");
             wav(&path);
-            let mut app = MusicApp::without_profile();
+            let mut app = Music::without_profile();
             let mut doc = automerge::AutoCommit::new();
             app.sync(&doc, &automerge::ROOT);
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -1278,14 +1273,14 @@ mod tests {
                     std::fs::remove_file(&path).unwrap();
                 }
                 let restored = crate::storage::load_device_profile_from(&profile_path);
-                let mut app = MusicApp::without_profile();
+                let mut app = Music::without_profile();
                 app.local_file = restored.local_file;
                 app.pb = restored.playback;
                 let mut doc = automerge::AutoCommit::new();
                 app.sync(&doc, &automerge::ROOT);
                 app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
                 app.sync(&doc, &automerge::ROOT);
-                let source = crate::app::MusicApp::publish_resource(
+                let source = crate::app::Music::publish_resource(
                     &app,
                     crate::actions::LOCAL_FILE_RESOURCE_ID,
                 )
@@ -1324,7 +1319,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("short.wav");
             wav(&path);
-            let mut app = MusicApp::without_profile();
+            let mut app = Music::without_profile();
             let mut doc = automerge::AutoCommit::new();
             app.sync(&doc, &automerge::ROOT);
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -1347,7 +1342,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("corrupt.wav");
             std::fs::write(&path, b"not a WAV stream").unwrap();
-            let mut app = MusicApp::without_profile();
+            let mut app = Music::without_profile();
             let mut doc = automerge::AutoCommit::new();
             app.sync(&doc, &automerge::ROOT);
             app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
@@ -1385,7 +1380,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("source.wav");
         wav(&path);
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         let arguments = [path.to_str().unwrap().to_owned()];
         app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
         assert!(app.playback_error.is_some());
@@ -1403,7 +1398,7 @@ mod tests {
 
     /// Deliver `outcome` as the answer to an Open audio file chooser that
     /// asked for contents, as a browser page's does.
-    fn answer_contents(app: &mut MusicApp, outcome: ui::portal::ContentsOutcome) {
+    fn answer_contents(app: &mut Music, outcome: ui::portal::ContentsOutcome) {
         let (sender, receiver) = std::sync::mpsc::channel();
         sender.send(outcome).unwrap();
         let invocation = tilo_actions::InvocationId::new();
@@ -1415,7 +1410,7 @@ mod tests {
     /// one chosen by path, and a refusal says why rather than nothing.
     #[test]
     fn a_file_chosen_by_contents_that_music_cannot_play_says_why() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         answer_contents(
             &mut app,
             ui::portal::ContentsOutcome::Picked(vec![picked("notes.txt", b"hello".to_vec())]),
@@ -1442,7 +1437,7 @@ mod tests {
     /// reopen: the copy is gone with the page.
     #[test]
     fn a_file_playing_from_a_page_copy_is_not_kept() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.local_file = Some(
             crate::local_file::LocalFile::from_page_url("Song.mp3", "blob:page/1".into()).unwrap(),
         );
@@ -1462,7 +1457,7 @@ mod tests {
         let path = dir.path().join("tone.wav");
         wav(&path);
         let bytes = std::fs::read(&path).unwrap();
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         answer_contents(
             &mut app,
             ui::portal::ContentsOutcome::Picked(vec![picked("Tone.wav", bytes)]),
@@ -1479,7 +1474,7 @@ mod tests {
         const CHILD: &str = "TILO_TEST_LOCAL_FILE_PROFILE_FAILURE";
         if let Some(path) = std::env::var_os(CHILD) {
             assert_eq!(unsafe { gstreamer::ffi::gst_is_initialized() }, 0);
-            let mut app = MusicApp::without_profile();
+            let mut app = Music::without_profile();
             app.persist_device_profile = true;
             assert!(app.open_local_file(path.to_str().unwrap()).is_err());
             assert!(app.local_file.is_none());
@@ -1517,7 +1512,7 @@ mod tests {
     }
 }
 
-impl MusicApp {
+impl Music {
     pub(super) fn make_source_buttons() -> Vec<ui::widget::Button> {
         use crate::actions::MusicEffect;
         use ui::tilo_resource::Effect as _;
@@ -1559,7 +1554,7 @@ mod spotify_tests {
             duration_s: 120,
             cover_url: String::new(),
         };
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.disconnect();
         app.ingest_search_results(
             "Song",
@@ -1609,7 +1604,7 @@ mod spotify_tests {
             .map(|theme| (width, theme))
         }) {
             for scale in [1.0, 2.0] {
-                let mut app = MusicApp::without_profile();
+                let mut app = Music::without_profile();
                 app.disconnect();
                 assert!(app.device_row("music.source:catalogue").is_some());
                 assert!(

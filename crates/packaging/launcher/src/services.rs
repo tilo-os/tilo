@@ -82,6 +82,11 @@ pub const SYSTEM_SERVICE: &str = "system";
 /// Settings credential operation by merely connecting to the socket.
 pub const MODEL_GATEWAY_SERVICE: &str = "model-gateway";
 pub const APP_HOST_SERVICE: &str = "app-host";
+/// The person's messaging accounts (`tilo-messaging`). Its connection is
+/// stamped with the app id before the app holds it, as the model gateway's
+/// is: the service serves Messages its accounts and Passwords the
+/// permission requests it makes, and nobody else.
+pub const MESSAGING_SERVICE: &str = "messaging";
 /// The shell runtime's supervisor. Its connection is stamped with the app id
 /// before the app holds it, so the supervisor knows which app is asking —
 /// the device's own shell is answered for Terminal and nobody else.
@@ -790,13 +795,13 @@ fn authenticate_service(
         };
     }
 
-    if name == MODEL_GATEWAY_SERVICE {
+    if name == MODEL_GATEWAY_SERVICE || name == MESSAGING_SERVICE {
         let Some(launch) = context else {
             let error = ServiceError::OpenFailed {
                 path: path.to_path_buf(),
-                source: std::io::Error::other("model gateway requires launcher context"),
+                source: std::io::Error::other(format!("{name} requires launcher context")),
             };
-            return handoff_failure(required, error, "optional model gateway skipped");
+            return handoff_failure(required, error, "optional app-named service skipped");
         };
         return match write_model_gateway_handoff(stream, launch.app_id) {
             Ok(()) => Ok(HandoffOutcome::Ready),
@@ -806,7 +811,7 @@ fn authenticate_service(
                     path: path.to_path_buf(),
                     source,
                 },
-                "optional model gateway rejected launch handoff",
+                "optional app-named service rejected launch handoff",
             ),
         };
     }

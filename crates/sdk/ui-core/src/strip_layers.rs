@@ -28,8 +28,14 @@ use vello::{FineDamageRect, Scene, wgpu};
 
 use crate::damage::{area, damage_union};
 
+mod present;
+mod recording;
+pub use present::{LayerPresenter, LayerRaster, QueuedRaster};
+pub use recording::{LayerRecording, draw_strip, put_under, take_panned, tiles};
+
 /// A strip drawn in canvas coordinates. The presenter shows the strips
-/// layer `scroll_x` pixels to the right of `dest_*`, in scene pixels.
+/// layer `scroll_x` pixels to the right of and `scroll_y` pixels below
+/// `dest_*`, in scene pixels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StripBlit {
     pub dest_x: u32,
@@ -37,6 +43,7 @@ pub struct StripBlit {
     pub dest_w: u32,
     pub dest_h: u32,
     pub scroll_x: u32,
+    pub scroll_y: u32,
 }
 
 /// A frame as layers a presenter retains between frames.
@@ -110,14 +117,17 @@ fn dest_rect(strip: &StripBlit) -> Rect {
 
 /// The strips layer as the screen shows it: what no strip carries in place,
 /// then each strip, top to bottom, inside its destination read `scroll_x`
-/// pixels to the right of it.
+/// pixels to the right of and `scroll_y` pixels below it.
 pub fn append_panned(scene: &mut Scene, layers: &FrameLayers, strips: &[StripBlit]) {
     scene.append(&layers.workspace, None);
     for (strip, drawn) in strips.iter().zip(&layers.strips) {
         scene.push_clip_layer(Fill::NonZero, Affine::IDENTITY, &dest_rect(strip));
         scene.append(
             drawn,
-            Some(Affine::translate((-f64::from(strip.scroll_x), 0.0))),
+            Some(Affine::translate((
+                -f64::from(strip.scroll_x),
+                -f64::from(strip.scroll_y),
+            ))),
         );
         scene.pop_layer();
     }
@@ -224,12 +234,13 @@ impl Shown {
 }
 
 /// Part of the strips layer that a pan moves: `width × height` pixels at
-/// `(src_x, y)` go to `(dst_x, y)`.
+/// `(src_x, src_y)` go to `(dst_x, dst_y)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BandCopy {
     pub src_x: u32,
+    pub src_y: u32,
     pub dst_x: u32,
-    pub y: u32,
+    pub dst_y: u32,
     pub width: u32,
     pub height: u32,
 }
@@ -238,14 +249,16 @@ impl BandCopy {
     /// The copy as a scroll within a retained target makes it.
     #[must_use]
     pub fn device_copy(self) -> crate::scroll_copy::DeviceCopy {
-        let dx = i64::from(self.dst_x).saturating_sub(i64::from(self.src_x));
+        let delta = |src: u32, dst: u32| {
+            i32::try_from(i64::from(dst).saturating_sub(i64::from(src))).unwrap_or(i32::MAX)
+        };
         crate::scroll_copy::DeviceCopy {
             x: self.src_x,
-            y: self.y,
+            y: self.src_y,
             width: self.width,
             height: self.height,
-            dx: i32::try_from(dx).unwrap_or(i32::MAX),
-            dy: 0,
+            dx: delta(self.src_x, self.dst_x),
+            dy: delta(self.src_y, self.dst_y),
         }
     }
 }
@@ -458,9 +471,9 @@ pub fn plan(
                 .iter()
                 .map(|copy| FineDamageRect {
                     x: copy.src_x.min(copy.dst_x),
-                    y: copy.y,
+                    y: copy.src_y.min(copy.dst_y),
                     width: copy.width.saturating_add(copy.src_x.abs_diff(copy.dst_x)),
-                    height: copy.height,
+                    height: copy.height.saturating_add(copy.src_y.abs_diff(copy.dst_y)),
                 })
                 .chain(uncovered.iter().copied())
                 .collect(),
@@ -479,12 +492,12 @@ pub fn plan(
 }
 
 /// One strip as the planner sees it: where it is shown, how far it moved
-/// since the shown frame (positive: its content moved left), and how its
-/// drawing changed.
+/// since the shown frame (positive: its content moved left, or up), and how
+/// its drawing changed.
 #[derive(Clone)]
 struct Piece {
     band: (u32, u32, u32, u32),
-    delta: i64,
+    delta: (i64, i64),
     change: Change,
 }
 
@@ -531,9 +544,10 @@ fn strip_change(
     };
     let (bx0, by0, bx1, by1) = band(blit, size);
     let scroll = f64::from(blit.scroll_x);
+    let scroll_y = f64::from(blit.scroll_y);
     let mut within = Vec::new();
     // The strip is drawn in canvas coordinates and shown `scroll_x` pixels to
-    // the left ([`append_panned`]), clipped to its band.
+    // the left and `scroll_y` up ([`append_panned`]), clipped to its band.
     let edge = f64::from(TILE_EDGE);
     let tile = |value: f64, round: fn(f64) -> f64| round(value / edge) * edge;
     let clamp = |value: f64, low: u32, high: u32| -> u32 {
@@ -542,8 +556,8 @@ fn strip_change(
     for rect in rects {
         let x0 = clamp(tile(rect.x0 - scroll, f64::floor), bx0, bx1);
         let x1 = clamp(tile(rect.x1 - scroll, f64::ceil), bx0, bx1);
-        let y0 = clamp(tile(rect.y0, f64::floor), by0, by1);
-        let y1 = clamp(tile(rect.y1, f64::ceil), by0, by1);
+        let y0 = clamp(tile(rect.y0 - scroll_y, f64::floor), by0, by1);
+        let y1 = clamp(tile(rect.y1 - scroll_y, f64::ceil), by0, by1);
         if x1 > x0 && y1 > y0 {
             within.push(FineDamageRect {
                 x: x0,
@@ -609,7 +623,10 @@ fn workspace_work(shown: &ShownStrips, cache: &FrameCache, size: (u32, u32)) -> 
             );
             Piece {
                 band: band(new, size),
-                delta: i64::from(new.scroll_x).saturating_sub(i64::from(old.scroll_x)),
+                delta: (
+                    i64::from(new.scroll_x).saturating_sub(i64::from(old.scroll_x)),
+                    i64::from(new.scroll_y).saturating_sub(i64::from(old.scroll_y)),
+                ),
                 change,
             }
         })
@@ -677,34 +694,49 @@ fn pan_work(
                 .flatten()
                 .filter_map(|rect| clipped(rect, (x0, y0, x1, y1)))
                 .collect();
-            let shift = u32::try_from(delta.unsigned_abs()).unwrap_or(u32::MAX);
-            if anywhere || !uniform || (delta != 0 && (in_place_drawn || shift >= width)) {
+            let (dx, dy) = delta;
+            let shift = u32::try_from(dx.unsigned_abs()).unwrap_or(u32::MAX);
+            let lift = u32::try_from(dy.unsigned_abs()).unwrap_or(u32::MAX);
+            let moved = delta != (0, 0);
+            if anywhere
+                || !uniform
+                || (moved && (in_place_drawn || shift >= width || lift >= height))
+            {
                 push_rect(&mut uncovered, x0, y0, width, height);
                 continue;
             }
             // A row the strips did not move in and did not change shows as it
             // shows: nothing to copy, nothing to draw.
-            if delta == 0 && within.is_empty() {
+            if !moved && within.is_empty() {
                 continue;
             }
-            let kept = width.saturating_sub(shift);
-            let (src_x, dst_x, gap_x) = if delta > 0 {
-                (x0.saturating_add(shift), x0, x0.saturating_add(kept))
+            // The pixels whose content was on screen in the run before stay,
+            // one delta away; the columns and rows the move uncovered are
+            // rasterised.
+            let (src_x, dst_x, gap_x) = if dx > 0 {
+                (x0.saturating_add(shift), x0, x1.saturating_sub(shift))
             } else {
                 (x0, x0.saturating_add(shift), x0)
             };
+            let (src_y, dst_y, gap_y) = if dy > 0 {
+                (y0.saturating_add(lift), y0, y1.saturating_sub(lift))
+            } else {
+                (y0, y0.saturating_add(lift), y0)
+            };
             let kept = BandCopy {
                 src_x,
+                src_y,
                 dst_x,
-                y: y0,
-                width: kept,
-                height,
+                dst_y,
+                width: width.saturating_sub(shift),
+                height: height.saturating_sub(lift),
             };
             // What a strip shows here and where the pan puts it are the same
-            // pixels, so the row is copied where it moves to; a change drawn
+            // pixels, so the run is copied where it moves to; a change drawn
             // on top of them is not moved with them, and is drawn again.
             push_copy(&mut copies, kept);
             push_rect(&mut uncovered, gap_x, y0, shift, height);
+            push_rect(&mut uncovered, dst_x, gap_y, kept.width, lift);
             for rect in &within {
                 push_rect(&mut uncovered, rect.x, rect.y, rect.width, rect.height);
             }
@@ -811,7 +843,8 @@ fn push_copy(copies: &mut Vec<BandCopy>, copy: BandCopy) {
         above.src_x == copy.src_x
             && above.dst_x == copy.dst_x
             && above.width == copy.width
-            && above.y.saturating_add(above.height) == copy.y
+            && above.src_y.saturating_add(above.height) == copy.src_y
+            && above.dst_y.saturating_add(above.height) == copy.dst_y
     }) {
         above.height = above.height.saturating_add(copy.height);
         return;

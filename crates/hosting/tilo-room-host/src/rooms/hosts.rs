@@ -12,16 +12,13 @@
 
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-    RemoteActionTarget,
-};
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_peer_state::join::{MemberRole, TransportHint};
 use tilo_relay_session::client::RelayClient;
 use tilo_relay_session::rooms::{
-    HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, UNHOST_ROOM,
+    HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, UNHOST_ROOM, ask_host,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -30,7 +27,6 @@ use super::{CollaborationError, Rooms};
 use crate::federation::{PeerRelayDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::host_authority::HostOperation;
-use crate::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
 use tilo_lock::RwLockRecover as _;
 
 /// This host's answer to the session a host serving one of its rooms opened
@@ -344,11 +340,8 @@ impl Rooms {
 
     /// `device`, a certified host of this host's person at `addr`, reached
     /// for its host operations: its certificate, as its handshake proves
-    /// it, and the session they are asked on. That is this device's own
-    /// session there when a network runs beside this host
-    /// ([`crate::host::PersonsHostSessions`]): the connection dialled here
-    /// then only proves the host and subscribes to nothing, so it takes no
-    /// session of the device's place.
+    /// it, and the session they are asked on. The session subscribes to
+    /// nothing, so it takes no session of the device's place there.
     async fn reach_host(
         &self,
         device: [u8; 32],
@@ -358,7 +351,7 @@ impl Rooms {
         let revocations = host.revocations.read_recover().clone();
         let client = RelayClient::connect_v2_to_enrolled_home_peer(
             host.endpoint.clone(),
-            addr.clone(),
+            addr,
             host.cert.user_public_key,
             device,
             host.cert.clone(),
@@ -367,23 +360,9 @@ impl Rooms {
         )
         .await
         .map_err(|error| error.to_string())?;
-        let certificate = client.relay_peer.cert.clone();
-        let session = match &host.persons_hosts {
-            Some(network) => {
-                // The endpoint is the host's own: the handle is let go,
-                // never closed.
-                drop(client);
-                HostSession::Device {
-                    network: std::sync::Arc::clone(network),
-                    addr,
-                }
-            }
-            None => HostSession::Own(Box::new(client)),
-        };
         Ok(PersonsHost {
-            device,
-            certificate,
-            session,
+            certificate: client.relay_peer.cert.clone(),
+            client,
         })
     }
 }
@@ -391,41 +370,17 @@ impl Rooms {
 /// A certified host of this host's person, reached for its host operations
 /// ([`Rooms::reach_host`]).
 struct PersonsHost {
-    device: [u8; 32],
     /// Its certificate, as its handshake proved it.
     certificate: DeviceCert,
-    session: HostSession,
-}
-
-/// The session a host's operations are asked on.
-enum HostSession {
-    /// This device's own session there, which its network keeps.
-    Device {
-        network: std::sync::Arc<dyn crate::host::PersonsHostSessions>,
-        addr: EndpointAddr,
-    },
-    /// A session of this host's own: a certified host has no network beside
-    /// it.
-    Own(Box<RelayClient>),
+    client: RelayClient,
 }
 
 impl PersonsHost {
     /// Ask the host the host operation `action` with `arguments`, and answer
     /// what it produced.
     async fn ask(&self, action: &str, arguments: Map<String, Value>) -> Result<Value, String> {
-        match &self.session {
-            HostSession::Device { network, addr } => {
-                let status = network
-                    .ask(
-                        self.device,
-                        addr.clone(),
-                        host_invocation(action, arguments),
-                    )
-                    .await?;
-                receipt_output(status)
-            }
-            HostSession::Own(client) => ask_host(client, self.device, action, arguments).await,
-        }
+        let status = ask_host(&self.client, host_invocation(action, arguments)).await?;
+        receipt_output(status)
     }
 }
 
@@ -460,75 +415,4 @@ fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
     postcard::to_stdvec(value)
         .map(hex::encode)
         .map_err(|error| error.to_string())
-}
-
-/// Ask `client`'s host, the device `host`, the host operation `action` with
-/// `arguments` on a session of this host's own, and answer what it
-/// produced. Host operations are asked on
-/// the person's continuity workspace, never on the room's: a host that
-/// stopped serving a room admits nobody to it, its own person included.
-async fn ask_host(
-    client: &RelayClient,
-    host: [u8; 32],
-    action: &str,
-    arguments: Map<String, Value>,
-) -> Result<Value, String> {
-    let workspace_id = tilo_relay_protocol::personal_continuity_workspace_id(
-        &client.relay_peer.cert.user_public_key,
-    );
-    client
-        .send(Envelope::Subscribe { workspace_id })
-        .map_err(|_| "the host's session closed".to_string())?;
-    loop {
-        match client.recv().await {
-            Some(Envelope::Ready {
-                workspace_id: ready,
-                ..
-            }) if ready == workspace_id => break,
-            Some(Envelope::NotAuthorised {
-                workspace_id: refused,
-                reason,
-            }) if refused == workspace_id => {
-                return Err(format!("the host refused the room's workspace: {reason}"));
-            }
-            Some(_) => {}
-            None => return Err("the host's session closed".into()),
-        }
-    }
-    let invoke = host_invocation(action, arguments);
-    let invocation = invoke.invocation;
-    let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(invoke))
-        .encode()
-        .map_err(|error| error.to_string())?;
-    client
-        .send(Envelope::RemoteAction {
-            workspace_id,
-            version: REMOTE_ACTION_ENVELOPE_VERSION,
-            to_device_public_key: host,
-            from_device_public_key: [0; 32],
-            from_user_public_key: [0; 32],
-            frame,
-        })
-        .map_err(|_| "the host's session closed".to_string())?;
-    loop {
-        match client.recv().await {
-            Some(Envelope::RemoteAction { frame, .. }) => {
-                let message = RemoteActionFrame::decode(&frame)
-                    .map_err(|error| error.to_string())?
-                    .message;
-                let RemoteActionMessage::Receipt(receipt) = message else {
-                    continue;
-                };
-                if receipt.invocation != invocation {
-                    continue;
-                }
-                return receipt_output(receipt.status);
-            }
-            Some(Envelope::RemoteActionUndeliverable { reason, .. }) => {
-                return Err(format!("the host did not take the action: {reason}"));
-            }
-            Some(_) => {}
-            None => return Err("the host's session closed".into()),
-        }
-    }
 }

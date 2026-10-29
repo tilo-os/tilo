@@ -42,6 +42,11 @@ path = "tests/mentions.rs"
 name = "board"
 path = "tests/board.rs"
 
+# A hosted app's window, as a person uses it, against the tilolang host running its instance.
+[[test]]
+name = "hosted"
+path = "tests/hosted.rs"
+
 [features]
 thin = ["dep:runtime-dylib"]
 
@@ -71,6 +76,11 @@ tilolang = { path = "../../crates/lang/tilolang" }
 mail = { path = "../mail", features = ["fake-servers"] }
 tokio = { workspace = true, features = ["rt"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`).
+tilolang-host = { path = "../../crates/platform/tilolang-host" }
+collaboration = { version = "0.1.0", path = "../../crates/collab/collaboration", features = ["test-support", "broker-transport", "native"] }
+automerge.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

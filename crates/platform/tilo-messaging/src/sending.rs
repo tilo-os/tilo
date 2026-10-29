@@ -4,12 +4,14 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use tilo_contact_directory::routing::Route;
 use zeroize::Zeroizing;
 
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct SendRequest {
     pub route: Route,
     pub operation: String,
     pub text: Zeroizing<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum SendError {
     Unavailable,
     Revoked,
@@ -17,6 +19,7 @@ pub enum SendError {
     AlreadyReserved,
     Uncertain,
 }
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct SendReceipt {
     pub route: Route,
     pub operation: String,

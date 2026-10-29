@@ -712,6 +712,28 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         &self,
         handle: impl FnMut(E, &mut EffectCx<R>) -> EffectAnswer + 'static,
     ) -> EffectsHandle {
+        self.answer_effects::<E>(|effects, alive| effects.handle(alive, handle))
+    }
+
+    /// Answer the effect vocabulary `E` on the window `W` the view laid
+    /// out, as [`Self::effects`] does: `handle` gets the window itself for
+    /// the call, so an effect answers at once from what the window shows
+    /// (the page, the caret). The window is found by its type in the view's
+    /// tree when the effect starts; an effect invoked while it is not open
+    /// is refused. What finishes later reaches state the window shares.
+    pub fn window_effects<E: Effect, W: ui_core::widget::Widget + 'static>(
+        &self,
+        handle: impl FnMut(&mut W, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) -> EffectsHandle {
+        self.answer_effects::<E>(|effects, alive| effects.handle_in_window(alive, handle))
+    }
+
+    /// Publish `E` while this part of the view lives, and `register` its
+    /// handler when the view runs live.
+    fn answer_effects<E: Effect>(
+        &self,
+        register: impl FnOnce(&Effects<R>, std::rc::Weak<()>),
+    ) -> EffectsHandle {
         let status: StatusSource = Rc::default();
         // The handler and the status the resource publishes read the scope's
         // local state, mounted row or not.
@@ -726,7 +748,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             current_specs(&source, &kept, E::specs)
         });
         if self.effects.env().is_some() {
-            self.effects.handle(self.alive.clone(), handle);
+            register(&self.effects, self.alive.clone());
         }
         EffectsHandle { status }
     }

@@ -21,7 +21,7 @@ aarch64 = "aarch64"
 optional = ["clipboard", "app-files", "files.open", "files.paths", "files.save"]
 
 [resources]
-kinds = ["canvas.artwork"]
+kinds = ["canvas.artwork", "canvas.recent-artworks"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -169,9 +169,12 @@ impl<'a> Validator<'a> {
 
     fn message(&self, message: &ToUi) -> Result<(), Refused> {
         match message {
-            ToUi::Loading | ToUi::Close | ToUi::Front(_) | ToUi::Ask(None) | ToUi::Activate => {
-                Ok(())
-            }
+            ToUi::Loading
+            | ToUi::Close
+            | ToUi::Front(_)
+            | ToUi::Ask(None)
+            | ToUi::Activate
+            | ToUi::Took { .. } => Ok(()),
             ToUi::Open { target, tree, .. } => {
                 self.key(&target.id)?;
                 self.key(&target.ty)?;
@@ -612,6 +615,19 @@ impl<'a> Validator<'a> {
                 ToApp::Focus { at } => {
                     if let Some((_, key)) = at {
                         self.key(key)?;
+                    }
+                }
+                ToApp::Names { me, others } => {
+                    self.string(me)?;
+                    if others.len() > self.limits.messages as usize {
+                        return Err(Refused::invalid(concat!(
+                            "over the limit of ",
+                            "names in a message"
+                        )));
+                    }
+                    for (id, name) in others {
+                        self.key(id)?;
+                        self.string(name)?;
                     }
                 }
                 ToApp::Back | ToApp::Answer(_) | ToApp::Undo | ToApp::Composing(_) => {}

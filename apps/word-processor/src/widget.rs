@@ -1849,13 +1849,18 @@ impl WordProcessorWidget {
         let Some((block, len)) = Self::first_text_block(state) else {
             return;
         };
+        let Some(text) =
+            ui::tilo_resource::NonBlank::parse("Could we make this opening more specific?")
+        else {
+            return;
+        };
         self.perform_verb_as(
             state,
             DocumentAction::AddComment(document::AddComment {
                 block: block.clone(),
                 start: 0,
                 end: len.min(12),
-                text: "Could we make this opening more specific?".into(),
+                text,
             }),
             Some("Maya Chen"),
         );
@@ -1884,11 +1889,14 @@ impl WordProcessorWidget {
             ("Jonas Weber", "I can revise the opening."),
             ("Maya Chen", "Thanks — please keep the decision clear."),
         ] {
+            let Some(text) = ui::tilo_resource::NonBlank::parse(text) else {
+                continue;
+            };
             self.perform_verb_as(
                 state,
                 DocumentAction::ReplyToComment(document::ReplyToComment {
                     comment: ui::tilo_resource::Id::from_raw(comment.clone()),
-                    text: text.into(),
+                    text,
                     body: None,
                 }),
                 Some(author),

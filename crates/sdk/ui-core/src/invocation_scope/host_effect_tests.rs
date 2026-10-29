@@ -14,14 +14,10 @@ use std::sync::{
 #[test]
 fn writer_scoped_picker_rechecks_expired_admitted_job_on_worker() {
     for expired in [false, true] {
-        let fixture = crate::bound_dispatch::legacy_document_tests::Fixture::in_room(
+        let fixture = crate::history_mode::owner::RecordOwnerFixture::in_room(
             1960 + u64::from(expired),
             "77777777-7777-4777-8777-777777777777",
         );
-        fixture
-            .store
-            .require_invocation_provenance(&fixture.checkout)
-            .unwrap();
         let time = Arc::new(AtomicU64::new(99));
         let sampled = time.clone();
         let lease = PublishedInvocationLease::new(
@@ -33,7 +29,7 @@ fn writer_scoped_picker_rechecks_expired_admitted_job_on_worker() {
                 actor: "original-caller".into(),
                 participant: None,
             },
-            fixture.target.owner.broker_route().unwrap(),
+            fixture.owner.broker_route().unwrap(),
             Arc::new(move || {
                 (sampled.load(Ordering::Acquire) < 100)
                     .then_some(())
@@ -42,8 +38,7 @@ fn writer_scoped_picker_rechecks_expired_admitted_job_on_worker() {
         )
         .with_owner_token(Arc::new("retained fixture caller"))
         .unwrap();
-        let scope =
-            ResourceInvocationScope::for_owner(fixture.target.owner.clone(), lease).unwrap();
+        let scope = ResourceInvocationScope::for_owner(fixture.owner.clone(), lease).unwrap();
         let effect = scope.effect_scope().unwrap();
         if expired {
             time.store(100, Ordering::Release);
@@ -70,14 +65,10 @@ fn writer_scoped_picker_rechecks_expired_admitted_job_on_worker() {
 }
 
 fn worker_case(expired: bool) {
-    let fixture = crate::bound_dispatch::legacy_document_tests::Fixture::in_room(
+    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_room(
         1970 + u64::from(expired),
         "77777777-7777-4777-8777-777777777777",
     );
-    fixture
-        .store
-        .require_invocation_provenance(&fixture.checkout)
-        .unwrap();
     let time = Arc::new(AtomicU64::new(99));
     let sampled = time.clone();
     let lease = PublishedInvocationLease::new(
@@ -89,7 +80,7 @@ fn worker_case(expired: bool) {
             actor: "original-caller".into(),
             participant: None,
         },
-        fixture.target.owner.broker_route().unwrap(),
+        fixture.owner.broker_route().unwrap(),
         Arc::new(move || {
             (sampled.load(Ordering::Acquire) < 100)
                 .then_some(())
@@ -98,7 +89,7 @@ fn worker_case(expired: bool) {
     )
     .with_owner_token(Arc::new("retained fixture URI caller"))
     .unwrap();
-    let scope = ResourceInvocationScope::for_owner(fixture.target.owner.clone(), lease).unwrap();
+    let scope = ResourceInvocationScope::for_owner(fixture.owner.clone(), lease).unwrap();
     let effect = scope.effect_scope().unwrap();
     if expired {
         time.store(100, Ordering::Release);

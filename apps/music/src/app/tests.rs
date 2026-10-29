@@ -3,7 +3,7 @@ use ui::search::SearchProvider as _;
 
 /// The library's search source as the framework builds it from the
 /// resource's entries.
-fn library_source(app: &MusicApp) -> impl ui::search::SearchProvider + use<> {
+fn library_source(app: &Music) -> impl ui::search::SearchProvider + use<> {
     ui::framework::testing::search_source::<crate::model::Library>(
         crate::search_type::library_entries(&app.lib),
     )
@@ -11,8 +11,8 @@ fn library_source(app: &MusicApp) -> impl ui::search::SearchProvider + use<> {
 use std::io::Cursor;
 use ui::widget::Continuable as _;
 
-fn app_with_doc() -> (MusicApp, AutoCommit) {
-    let mut app = MusicApp::new();
+fn app_with_doc() -> (Music, AutoCommit) {
+    let mut app = Music::new();
     // The behaviour tests exercise playback, queueing and playlists against
     // the bundled catalog, as the screenshot scenarios do. A new library
     // starts empty; see `default_startup_has_empty_library`.
@@ -142,7 +142,7 @@ fn private_queue_metadata_restores_unsaved_songs_before_resume() {
     let path = dir.path().join("profile.json");
     crate::storage::save_device_profile_to(&path, &profile).unwrap();
     let restored = crate::storage::load_device_profile_from(&path);
-    let mut app = MusicApp::from_device_profile(restored, false, String::new(), None);
+    let mut app = Music::from_device_profile(restored, false, String::new(), None);
     let mut doc = seed::empty_document();
     app.reload(&doc);
     let before = doc.get_heads();
@@ -322,7 +322,7 @@ fn track_context_menu_stays_in_bounds_and_dispatches_its_actions() {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
         draw_once(&mut app, &mut doc);
-        let table = app.track_tables.first().expect("the songs table");
+        let table = app.page.track_tables.first().expect("the songs table");
         assert_eq!(table.table.rows().len(), app.lib.tracks.len());
         assert!(
             table.table.row_rect(0).is_some(),
@@ -394,6 +394,7 @@ fn cover_cards_open_and_play_through_the_shared_grid() {
         .cloned()
         .expect("a sample album");
     let card = app
+        .page
         .media_grids
         .iter()
         .find_map(|grid| grid.card_rect(&album))
@@ -433,8 +434,8 @@ fn cover_cards_open_and_play_through_the_shared_grid() {
 fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
     // Phase `test_instances_keep_cache_mutations_in_separate_owned_directories`.
     {
-        let first = MusicApp::new();
-        let second = MusicApp::new();
+        let first = Music::new();
+        let second = Music::new();
         assert_ne!(first.media_cache_root, second.media_cache_root);
         assert!(!first.persist_device_profile);
         let root = first.media_cache_root.clone();
@@ -459,7 +460,7 @@ fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
 
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_MUSIC_PROFILE", &path);
-        let app = MusicApp::without_profile();
+        let app = Music::without_profile();
         drop(env);
         let _ = std::fs::remove_file(path);
 
@@ -486,7 +487,7 @@ fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
         // The live app receives its canonical document from the platform; with
         // a new record's empty library it must not fabricate a catalog, a
         // playlist, or an app-owned library store.
-        let mut app = MusicApp::new();
+        let mut app = Music::new();
         let doc = seed::empty_document();
         app.reload(&doc);
         assert_eq!(
@@ -597,8 +598,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::NamedKey;
 
 /// Where the row of track `id` stands in the page's track tables.
-fn track_row(app: &MusicApp, id: &str) -> Rect {
-    app.track_tables
+fn track_row(app: &Music, id: &str) -> Rect {
+    app.page
+        .track_tables
         .iter()
         .find_map(|slot| {
             let index = slot.table.rows().iter().position(|row| row.id == id)?;
@@ -610,11 +612,11 @@ fn track_row(app: &MusicApp, id: &str) -> Rect {
 /// Bring the pointer over the row of track `id` so it shows its actions,
 /// redraw with `draw`, and return where its control `name` stands.
 fn track_control(
-    app: &mut MusicApp,
+    app: &mut Music,
     doc: &mut AutoCommit,
     id: &str,
     name: &str,
-    draw: impl Fn(&mut MusicApp, &mut AutoCommit),
+    draw: impl Fn(&mut Music, &mut AutoCommit),
 ) -> Rect {
     let row = track_row(app, id);
     send(
@@ -623,7 +625,8 @@ fn track_control(
         doc,
     );
     draw(app, doc);
-    app.track_tables
+    app.page
+        .track_tables
         .iter()
         .find_map(|slot| {
             let index = slot.table.rows().iter().position(|row| row.id == id)?;
@@ -633,7 +636,7 @@ fn track_control(
 }
 
 /// Press and release the left button on the row of track `id`.
-fn click_track(app: &mut MusicApp, doc: &mut AutoCommit, id: &str) {
+fn click_track(app: &mut Music, doc: &mut AutoCommit, id: &str) {
     let row = track_row(app, id);
     send(
         app,
@@ -653,31 +656,31 @@ fn press(button: MouseButton) -> WindowEvent {
 /// Drive one event through the production `handle_event` path.
 /// Send a row-control click through the same custody and action runner as
 /// a live window, retaining the actual Music root and canonical document.
-pub(super) fn hosted_click(app: &mut MusicApp, doc: &mut AutoCommit, at: Point) {
+pub(super) fn hosted_click(app: &mut Music, doc: &mut AutoCommit, at: Point) {
     let mut state = ui::State::new();
     state.adopt_doc(std::mem::take(doc));
     let origin = app.get_rect().origin();
     let owned = std::mem::take(app);
     let mut frame = ui::headless::FrameHarness::for_root(state, owned, (1280, 800), Theme::dark());
-    let hosted_origin = frame.root::<MusicApp>().get_rect().origin();
+    let hosted_origin = frame.root::<Music>().get_rect().origin();
     frame.click_at(
         at.x + hosted_origin.x - origin.x,
         at.y + hosted_origin.y - origin.y,
     );
     frame.relayout();
-    let mut parts = frame.root_and_state_mut::<MusicApp>();
+    let mut parts = frame.root_and_state_mut::<Music>();
     let (owned, state) = parts.split();
     *app = std::mem::take(owned);
     *doc = std::mem::take(&mut state.doc);
 }
 
-fn send(app: &mut MusicApp, ev: &WindowEvent, doc: &mut AutoCommit) -> bool {
+fn send(app: &mut Music, ev: &WindowEvent, doc: &mut AutoCommit) -> bool {
     send_with(app, ev, winit::event::Modifiers::default(), doc)
 }
 
 /// Drive one event through `handle_event` with explicit modifiers held.
 fn send_with(
-    app: &mut MusicApp,
+    app: &mut Music,
     ev: &WindowEvent,
     mods: winit::event::Modifiers,
     doc: &mut AutoCommit,
@@ -733,12 +736,20 @@ fn home_source_picker_keyboard_activation_opens_choices_without_sign_in() {
         .perform_semantic_named("music-sources", None, &ui::a11y::Action::Focus)
         .unwrap();
     app.harness().key("Enter");
-    assert_eq!(app.surface_mut::<MusicApp>().menu_actions.len(), 2);
+    assert_eq!(app.surface_mut::<MusicApp>().state().menu_actions.len(), 2);
     assert!(
-        app.surface_mut::<MusicApp>().source_invocation.is_none(),
+        app.surface_mut::<MusicApp>()
+            .state()
+            .source_invocation
+            .is_none(),
         "opening the source menu never starts OAuth"
     );
-    assert!(app.surface_mut::<MusicApp>().spotify_jobs.is_empty());
+    assert!(
+        app.surface_mut::<MusicApp>()
+            .state()
+            .spotify_jobs
+            .is_empty()
+    );
     app.harness().key("Escape");
     assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);
 }
@@ -748,15 +759,22 @@ fn spotify_keyboard_creation_and_escape_use_accessible_shared_controls() {
     use ui::framework::testing::TestApp;
     for scale in [1.0, 2.0] {
         let mut app = TestApp::<crate::resource::MusicShell>::new().unwrap();
-        app.surface_mut::<MusicApp>().snap_spotify("spotify-home");
-        app.surface_mut::<MusicApp>().on_nav(View::Playlists);
+        app.surface_mut::<MusicApp>()
+            .state()
+            .snap_spotify("spotify-home");
+        app.surface_mut::<MusicApp>()
+            .state()
+            .on_nav(View::Playlists);
         app.harness()
             .relayout_themed(
                 (360, 900),
                 ui::Theme::high_contrast().with_text_scale(scale),
             )
             .unwrap();
-        assert_eq!(app.surface_mut::<MusicApp>().source_widget_mode(), 3);
+        assert_eq!(
+            app.surface_mut::<MusicApp>().state().source_widget_mode(),
+            3
+        );
         let accessible = app.harness().focus_access_nodes();
         let label = crate::i18n::t("music-spotify-create-playlist");
         assert!(
@@ -777,17 +795,22 @@ fn spotify_keyboard_creation_and_escape_use_accessible_shared_controls() {
             .unwrap();
         app.harness().key("Enter");
         assert!(
-            app.surface_mut::<MusicApp>().name_prompt.is_some(),
+            app.surface_mut::<MusicApp>().state().name_prompt.is_some(),
             "host keyboard activation invokes the published effect and opens the shared dialog"
         );
         app.harness().key("Escape");
-        assert!(app.surface_mut::<MusicApp>().name_prompt.is_none());
+        assert!(app.surface_mut::<MusicApp>().state().name_prompt.is_none());
         assert_eq!(
             app.read_document(|doc| doc.clone().get_heads()),
             before,
             "cancelling never creates a local or provider playlist"
         );
-        assert!(app.surface_mut::<MusicApp>().spotify_jobs.is_empty());
+        assert!(
+            app.surface_mut::<MusicApp>()
+                .state()
+                .spotify_jobs
+                .is_empty()
+        );
     }
 }
 
@@ -1030,7 +1053,7 @@ fn request_identities_keep_stale_responses_from_winning() {
     // the host's network, and it reported a working Home fetch as a failure.
     {
         // The real default startup: an empty library, network allowed.
-        let mut app = MusicApp::new();
+        let mut app = Music::new();
         let doc = seed::empty_document();
         app.reload(&doc);
         assert!(
@@ -1072,7 +1095,7 @@ fn home_fetches_nothing_until_a_source_is_connected() {
     use ui::a11y::Action as A11yAction;
     use ui::widget::Widget as _;
 
-    let mut app = MusicApp::new();
+    let mut app = Music::new();
     app.reload(&seed::empty_document());
     app.use_worker(crate::stream::StreamWorker::spawn_offline());
     app.catalogue_connected = false;
@@ -1162,7 +1185,7 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         use ui::a11y::Action as A11yAction;
         use ui::widget::Widget as _;
 
-        let mut app = MusicApp::new();
+        let mut app = Music::new();
         app.disconnect();
         // A catalogue is connected but has nothing to show: search it.
         app.catalogue_connected = true;
@@ -1625,6 +1648,7 @@ fn the_transport_steers_the_player_through_its_effects() {
     let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
     let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
     app.surface_mut::<MusicApp>()
+        .state()
         .absorb_album(&crate::backend::AlbumPage {
             id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
             tracks: vec![crate::backend::TrackHit {
@@ -1660,15 +1684,15 @@ fn the_transport_steers_the_player_through_its_effects() {
         app.harness().click_at(rect.center().x, rect.center().y);
         app.settle();
     }
-    let player = &app.surface_mut::<MusicApp>().pb;
+    let player = app.surface_mut::<MusicApp>().state().pb.clone();
     assert!(player.shuffle, "shuffle reached the player");
     assert_eq!(player.repeat, RepeatMode::All, "and repeat");
-    let shown = app.surface_mut::<MusicApp>().transport.shown();
+    let shown = app.surface_mut::<MusicApp>().state().transport.shown();
     assert_eq!(shown.shuffle, Some(true), "the transport shows it");
 
     // The heart likes the song that plays when it is pressed.
-    app.surface_mut::<MusicApp>().pb.current = Some(track.into());
-    app.surface_mut::<MusicApp>().dirty = true;
+    app.surface_mut::<MusicApp>().state().pb.current = Some(track.into());
+    app.surface_mut::<MusicApp>().state().dirty = true;
     app.settle();
     for _ in 0..3 {
         app.harness()
@@ -1680,7 +1704,7 @@ fn the_transport_steers_the_player_through_its_effects() {
     app.harness().click_at(heart.center().x, heart.center().y);
     app.settle();
     assert!(
-        app.surface_mut::<MusicApp>().lib.is_liked(track),
+        app.surface_mut::<MusicApp>().state().lib.is_liked(track),
         "the playing song is liked"
     );
 }
@@ -1747,12 +1771,12 @@ fn large_text_rows_elide_and_keep_one_identity() {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
         draw_at(&mut app, &mut doc, 1_280.0, 800.0);
-        let table = app.track_tables.first().expect("the songs table");
+        let table = app.page.track_tables.first().expect("the songs table");
         assert!(table.queue.len() > 1 && table.table.rows().len() == table.queue.len());
         let before = Arc::clone(&table.queue);
         draw_at(&mut app, &mut doc, 1_280.0, 800.0);
         assert!(
-            Arc::ptr_eq(&before, &app.track_tables[0].queue),
+            Arc::ptr_eq(&before, &app.page.track_tables[0].queue),
             "the rows share one queue, kept across frames while it is the same"
         );
     }
@@ -1763,6 +1787,7 @@ fn large_text_rows_elide_and_keep_one_identity() {
         app.snap_album_page();
         draw_once_large_text(&mut app, &mut doc);
         let queue = &app
+            .page
             .track_tables
             .first()
             .expect("album exposes playable rows")
@@ -1839,7 +1864,7 @@ fn browse_and_the_live_catalogue_answer_platform_search() {
         let (mut app, mut doc) = app_with_doc();
         app.playback_loaded = true;
         let query = ui::search::SearchQuery::new("daft punk");
-        ui::framework::ResourceSurface::<crate::model::Library, crate::actions::MusicEffect>::search_query(&mut app, &query);
+        app.queue_catalogue_query(query.text());
         assert_eq!(
             app.pending_catalogue_query.as_deref(),
             Some("daft punk"),
@@ -1886,7 +1911,8 @@ fn browse_and_the_live_catalogue_answer_platform_search() {
 #[test]
 fn a_live_catalogue_like_uses_the_admitted_effect_and_one_undo() {
     let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
-    app.with_widget(|surface: &mut MusicApp| {
+    app.with_widget(|window: &mut MusicApp| {
+        let mut surface = window.state();
         surface.disconnect();
         surface.search_query = "daft punk".into();
         surface.active_search_request = Some(41);
@@ -1927,14 +1953,14 @@ fn a_live_catalogue_like_uses_the_admitted_effect_and_one_undo() {
 
 /// Open a track's context menu, returning the action index for a label.
 /// Select a shared popup item through ordinary pointer handling.
-fn choose_menu(app: &mut MusicApp, doc: &mut AutoCommit, label: &str) {
+fn choose_menu(app: &mut Music, doc: &mut AutoCommit, label: &str) {
     let index = menu_index(app, label).expect("menu action");
     draw_once(app, doc);
     let rect = app.context.item_rect(index).expect("visible menu item");
     hosted_click(app, doc, rect.center());
 }
 
-fn menu_index(app: &MusicApp, label: &str) -> Option<usize> {
+fn menu_index(app: &Music, label: &str) -> Option<usize> {
     app.context.items().iter().enumerate().find_map(|(i, it)| {
         if it.label() == Some(label) {
             Some(i)
@@ -2494,7 +2520,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
             .expect("seed membership");
         let resource_id = crate::actions::playlist_track_resource_id(&playlist.id, &track);
         let resource =
-            MusicApp::publish_resource(&app, &resource_id).expect("membership resolves lazily");
+            Music::publish_resource(&app, &resource_id).expect("membership resolves lazily");
         assert!(
             resource
                 .actions
@@ -2534,7 +2560,7 @@ fn global_search_and_canonical_views_route_without_mutation() {
     {
         let (mut app, mut doc) = app_with_doc();
         let resource_id = crate::actions::view_resource_id("downloads");
-        let resource = MusicApp::publish_resource(&app, &resource_id)
+        let resource = Music::publish_resource(&app, &resource_id)
             .expect("published destination resolves at the authority door");
         let open = resource
             .actions
@@ -2566,11 +2592,11 @@ fn global_search_and_canonical_views_route_without_mutation() {
     {
         for &(id, _) in crate::actions::NAVIGATION_VIEWS {
             assert!(
-                MusicApp::top_level_view(id).is_some(),
+                Music::top_level_view(id).is_some(),
                 "published destination {id:?} must route locally"
             );
         }
-        assert!(MusicApp::top_level_view("not-a-view").is_none());
+        assert!(Music::top_level_view("not-a-view").is_none());
     }
 }
 
@@ -2871,7 +2897,7 @@ fn live_search_and_stream_resolve_through_the_app() {
 /// track. Returns its id. Part of
 /// [`live_search_and_stream_resolve_through_the_app`].
 #[cfg(feature = "live")]
-fn live_search_top_result(app: &mut MusicApp) -> String {
+fn live_search_top_result(app: &mut Music) -> String {
     use std::time::Duration;
 
     // Submit a real search (spawns the worker + sends the request).
@@ -2915,7 +2941,7 @@ fn live_search_top_result(app: &mut MusicApp) -> String {
 /// real rangeable audio URL into the engine. Returns the loaded URL.
 /// Part of [`live_search_and_stream_resolve_through_the_app`].
 #[cfg(feature = "live")]
-fn live_play_and_resolve_stream(app: &mut MusicApp, doc: &mut AutoCommit, first: &str) -> String {
+fn live_play_and_resolve_stream(app: &mut Music, doc: &mut AutoCommit, first: &str) -> String {
     use std::time::Duration;
 
     // Play it → the app requests a stream resolution on the worker.
@@ -2983,7 +3009,7 @@ fn live_play_and_resolve_stream(app: &mut MusicApp, doc: &mut AutoCommit, first:
 /// and the transport advances off the stream clock. Part of
 /// [`live_search_and_stream_resolve_through_the_app`].
 #[cfg(all(feature = "live", feature = "audio"))]
-fn live_audio_render_proof(app: &mut MusicApp) {
+fn live_audio_render_proof(app: &mut Music) {
     use std::time::Duration;
 
     if audio_server_present() && decode_plugins_present() {
@@ -3301,7 +3327,7 @@ fn lyrics_load_bundled_sync_and_balance_the_wide_layout() {
 
 /// Render one offscreen frame through the production draw path so hit
 /// lists + geometry are populated (no GPU; just the Vello scene encode).
-fn draw_once(app: &mut MusicApp, doc: &mut AutoCommit) {
+fn draw_once(app: &mut Music, doc: &mut AutoCommit) {
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     // Lay the root out to the test viewport first.
@@ -3316,7 +3342,7 @@ fn draw_once(app: &mut MusicApp, doc: &mut AutoCommit) {
     app.render_frame(&mut scene, Affine::IDENTITY, &mut tr, &theme);
 }
 
-fn draw_once_large_text(app: &mut MusicApp, doc: &mut AutoCommit) {
+fn draw_once_large_text(app: &mut Music, doc: &mut AutoCommit) {
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -3784,7 +3810,7 @@ fn queue_view_and_volume_controls_are_responsive() {
 /// library as certification opens it, and each page of a full one.
 #[test]
 fn every_view_passes_the_accessibility_audit() {
-    fn audit(app: MusicApp, doc: AutoCommit, what: &str) {
+    fn audit(app: Music, doc: AutoCommit, what: &str) {
         let mut state = ui::State::new();
         state.adopt_doc(doc);
         let mut frame =
@@ -3794,7 +3820,7 @@ fn every_view_passes_the_accessibility_audit() {
         assert!(issues.is_empty(), "{what}: {issues:?}");
     }
 
-    audit(MusicApp::new(), AutoCommit::new(), "a new library");
+    audit(Music::new(), AutoCommit::new(), "a new library");
     for view in [
         View::Home,
         View::Songs,
@@ -3881,7 +3907,7 @@ fn every_view_renders_and_now_playing_falls_back_to_album_art() {
 /// Render one full frame at a specific viewport size (drives the same
 /// passes the live app + `--shots` do), so responsive layout + captured
 /// interaction rects can be asserted.
-fn draw_at(app: &mut MusicApp, doc: &mut AutoCommit, w: f64, h: f64) {
+fn draw_at(app: &mut Music, doc: &mut AutoCommit, w: f64, h: f64) {
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     app.rect = Rect::new(0.0, 0.0, w, h);
@@ -3898,7 +3924,7 @@ fn draw_at(app: &mut MusicApp, doc: &mut AutoCommit, w: f64, h: f64) {
 /// An empty Home fits its view at any size: nothing to scroll, no scrollbar.
 #[test]
 fn an_empty_home_has_nothing_to_scroll() {
-    let mut app = MusicApp::new();
+    let mut app = Music::new();
     let mut doc = seed::empty_document();
     app.reload(&doc);
     app.home_failed = true;
@@ -3918,7 +3944,7 @@ fn playlist_numbers_follow_the_playlist_not_the_source_album() {
     let (mut app, mut doc) = app_with_doc();
     app.view = View::Playlist("pl_drive".into());
     draw_at(&mut app, &mut doc, 1440.0, 810.0);
-    let numbers: Vec<_> = app.track_tables[0]
+    let numbers: Vec<_> = app.page.track_tables[0]
         .table
         .rows()
         .iter()
@@ -3954,7 +3980,7 @@ fn scaled_player_and_detail_keep_content_above_the_fold() {
             ui::window_toolbar::declared().is_some_and(|toolbar| toolbar.location.is_some()),
             "the album's title is the window bar's location"
         );
-        let rows = app.track_tables.first().expect("album tracks");
+        let rows = app.page.track_tables.first().expect("album tracks");
         let first = rows.table.row_rect(0).expect("first track");
         let third = rows.table.row_rect(2).expect("third track");
         assert!(third.y1 <= foot, "three complete rows fit below the hero");
@@ -3968,7 +3994,8 @@ fn playlist_header_and_rows_keep_management_in_compact_menus() {
     app.view = View::Playlist("pl_drive".into());
     draw_once(&mut app, &mut doc);
     let button = app
-        .page_parts
+        .page
+        .parts
         .iter()
         .find_map(|part| {
             ui::widget::find_test_id(part.host.visible()?, "music.page.Playlist actions")
@@ -3998,7 +4025,7 @@ fn playlist_header_and_rows_keep_management_in_compact_menus() {
 
     let track = app.lib.playlist("pl_drive").unwrap().track_ids()[1].clone();
     let more = track_control(&mut app, &mut doc, &track, "more", draw_once);
-    for slot in &app.track_tables {
+    for slot in &app.page.track_tables {
         for name in ["up", "down", "remove", "offline"] {
             assert!(
                 slot.table.control_rect(1, name).is_none(),
@@ -4035,7 +4062,12 @@ fn scaled_playlist_shows_four_complete_rows_with_transport_padding() {
         for _ in 0..2 {
             app.render_frame(&mut scene, Affine::IDENTITY, &mut text, &theme);
         }
-        let table = &app.track_tables.first().expect("playlist tracks").table;
+        let table = &app
+            .page
+            .track_tables
+            .first()
+            .expect("playlist tracks")
+            .table;
         assert!(table.row_rect(3).is_some(), "four complete tracks fit");
         for i in 0..table.rows().len() {
             if let Some(rect) = table.row_rect(i) {
@@ -4212,7 +4244,7 @@ fn sample_bundle() -> SearchBundle {
 
 /// An app that has taken in a multi-type live search reply, offline (no
 /// worker, no network) so the render path is exercised hermetically.
-fn app_with_live_results() -> (MusicApp, AutoCommit) {
+fn app_with_live_results() -> (Music, AutoCommit) {
     let (mut app, doc) = app_with_doc();
     app.disconnect();
     app.playback_loaded = true;
@@ -4223,7 +4255,7 @@ fn app_with_live_results() -> (MusicApp, AutoCommit) {
 /// Invoke the published action search `hit` names, as the palette does: on
 /// the row a search provider resolves, else on the app's published tree.
 /// Open the row `hit` is anchored at, as the window's `open` does.
-fn invoke_hit(app: &mut MusicApp, hit: &ui::search::SearchResult, _doc: &mut AutoCommit) {
+fn invoke_hit(app: &mut Music, hit: &ui::search::SearchResult, _doc: &mut AutoCommit) {
     let anchor = hit.anchor();
     assert!(
         app.device_row(&anchor).is_some() || app.publish_resource(&anchor).is_some(),
@@ -4235,15 +4267,16 @@ fn invoke_hit(app: &mut MusicApp, hit: &ui::search::SearchResult, _doc: &mut Aut
 }
 
 /// Whether track `id` is a row of one of the page's track tables.
-fn has_play_of(app: &MusicApp, id: &str) -> bool {
-    app.track_tables.iter().any(|slot| {
+fn has_play_of(app: &Music, id: &str) -> bool {
+    app.page.track_tables.iter().any(|slot| {
         slot.queue.iter().any(|queued| queued == id)
             && slot.table.rows().iter().any(|row| row.id == id)
     })
 }
 /// Where the page's embedded widget with test id `id` stands.
-fn page_widget(app: &MusicApp, id: &str) -> Rect {
-    app.page_parts
+fn page_widget(app: &Music, id: &str) -> Rect {
+    app.page
+        .parts
         .iter()
         .find_map(|part| part.find(id))
         .unwrap_or_else(|| panic!("the page shows {id}"))
@@ -4286,10 +4319,10 @@ fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() 
     );
 }
 
-fn has_nav(app: &MusicApp, view: View) -> bool {
+fn has_nav(app: &Music, view: View) -> bool {
     let want = Action::Nav(view);
     app.hits.iter().any(|h| h.action == want)
-        || app.media_grids.iter().any(|grid| grid.offers(&want))
+        || app.page.media_grids.iter().any(|grid| grid.offers(&want))
 }
 
 #[test]
@@ -4442,21 +4475,22 @@ fn a_launch_link_plays_from_the_start_or_opens_its_page() {
 fn live_album_tracks_are_discoverable_and_queue_through_the_resource_door() {
     let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
     let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
-    let surface = app.surface_mut::<MusicApp>();
-    surface.absorb_album(&crate::backend::AlbumPage {
-        id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
-        tracks: vec![crate::backend::TrackHit {
-            video_id: track.into(),
-            title: "An admitted catalogue track".into(),
-            artist: "Catalogue artist".into(),
-            artist_id: None,
-            album: Some("Catalogue album".into()),
-            album_id: Some("spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into()),
-            duration_s: 213,
-            cover_url: String::new(),
-        }],
-        ..Default::default()
-    });
+    app.surface_mut::<MusicApp>()
+        .state()
+        .absorb_album(&crate::backend::AlbumPage {
+            id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
+            tracks: vec![crate::backend::TrackHit {
+                video_id: track.into(),
+                title: "An admitted catalogue track".into(),
+                artist: "Catalogue artist".into(),
+                artist_id: None,
+                album: Some("Catalogue album".into()),
+                album_id: Some("spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into()),
+                duration_s: 213,
+                cover_url: String::new(),
+            }],
+            ..Default::default()
+        });
     app.settle();
     let address = crate::actions::track_resource_id(track);
     let published = app.agent_surface().to_string();
@@ -4487,6 +4521,7 @@ fn playback_status_reports_observations_without_mutating_the_library() {
     let before = app.read_document(|doc| doc.clone().get_heads());
     let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
     app.surface_mut::<MusicApp>()
+        .state()
         .absorb_album(&crate::backend::AlbumPage {
             id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
             tracks: vec![crate::backend::TrackHit {

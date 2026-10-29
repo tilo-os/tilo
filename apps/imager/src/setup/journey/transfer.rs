@@ -203,7 +203,7 @@ impl Transfer {
             use journey_transfer::TransferEvent;
             changed = true;
             match event {
-                TransferEvent::CopyProgress(progress) => {
+                TransferEvent::Progress(progress) => {
                     self.result = progress;
                 }
                 TransferEvent::RestoringApplications => self.state = "restoring-applications",
@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn actual_transfer_projects_non_utf8_target_and_issue_paths_losslessly() {
+    fn actual_transfer_projects_non_utf8_target_losslessly_and_refuses_fifos() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let source = root.join("source");
@@ -356,16 +356,12 @@ mod tests {
             std::fs::create_dir(path).unwrap();
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
-        let name = OsStr::from_bytes(b"pipe-\xff");
-        let fifo = source.join(name);
-        let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
-        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
         std::fs::write(source.join(OsStr::from_bytes(b"notes-\xfe")), b"notes").unwrap();
         let target = root.join(OsStr::from_bytes(b"target-\xfd"));
         let mut transfer = Transfer::default();
         transfer
             .review(
-                source,
+                source.clone(),
                 target.clone(),
                 journals,
                 [true, false, false],
@@ -382,18 +378,37 @@ mod tests {
         transfer.start(false, [true, false, false]).unwrap();
         wait(&mut transfer);
         let finished = transfer.status();
-        assert_eq!(finished["state"], "incomplete", "{finished}");
-        let skipped = finished["result"]["copies"][0]["skipped"]
-            .as_array()
-            .unwrap();
-        assert_eq!(skipped.len(), 1, "{finished}");
-        let native: imager_backend::migration_store::NativePath =
-            serde_json::from_value(skipped[0]["path"]["native"].clone()).unwrap();
-        assert_eq!(native.decode().unwrap(), std::path::Path::new(name));
+        assert_eq!(finished["state"], "complete", "{finished}");
+        assert_eq!(finished["result"]["admitted"], true, "{finished}");
         assert_eq!(
             std::fs::read(target.join(OsStr::from_bytes(b"notes-\xfe"))).unwrap(),
             b"notes"
         );
+        // A FIFO cannot travel in a sealed Home unit; review refuses before
+        // anything is sealed or written.
+        let fifo = source.join(OsStr::from_bytes(b"pipe-\xff"));
+        let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a valid NUL-terminated path inside an isolated fixture.
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        let refused_journals = root.join("refused-journals");
+        std::fs::create_dir(&refused_journals).unwrap();
+        std::fs::set_permissions(&refused_journals, std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let refused_target = root.join("refused-target");
+        let mut refused = Transfer::default();
+        refused
+            .review(
+                source,
+                refused_target.clone(),
+                refused_journals,
+                [true, false, false],
+                vec![],
+                None,
+            )
+            .unwrap();
+        wait(&mut refused);
+        assert_eq!(refused.status()["state"], "failed", "{}", refused.status());
+        assert!(!refused_target.exists());
     }
 
     #[test]

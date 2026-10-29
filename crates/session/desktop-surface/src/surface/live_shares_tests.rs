@@ -84,9 +84,6 @@ impl Widget for Window {
 }
 
 impl AppWidget for Window {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }
@@ -150,9 +147,6 @@ impl Widget for View {
 }
 
 impl AppWidget for View {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn app_kind(&self) -> AppKind {
         AppKind::Editor
     }

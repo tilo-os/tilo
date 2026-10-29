@@ -7,7 +7,7 @@
 
 use tilo_actions::remote::home_relay_hosting::{HomeRelayHosting, HostedWorkspace};
 
-use super::{ShellNetwork, personal_continuity_topic_id, room_topic_id};
+use super::{ShellNetwork, room_topic_id};
 use crate::shell::state::RoomId;
 use std::sync::Arc;
 
@@ -43,7 +43,7 @@ impl ShellNetwork {
                 continue;
             };
             if relay.is_none() {
-                let Some((_, home)) = self.home_relay_of(room)? else {
+                let Some(home) = self.home_relay_of(room)? else {
                     return Ok(HomeRelayHosting::default());
                 };
                 relay = Some(home);
@@ -65,8 +65,7 @@ impl ShellNetwork {
         })
     }
 
-    /// The workspace this device's own host operations are asked on, and
-    /// the person's home relay, as this device acts in `room`; `None` when
+    /// The person's home relay, as this device acts in `room`; `None` when
     /// the person paired none.
     ///
     /// # Errors
@@ -76,7 +75,7 @@ impl ShellNetwork {
     pub(super) fn home_relay_of(
         &self,
         room: RoomId,
-    ) -> Result<Option<(u64, super::RegisteredHomePeer)>, String> {
+    ) -> Result<Option<super::RegisteredHomePeer>, String> {
         let identity = self
             .host_identity
             .as_ref()
@@ -86,8 +85,7 @@ impl ShellNetwork {
         let topics = super::relay_topics_for_home_peers(std::iter::empty(), Some(user));
         Ok(super::registered_home_peer_addrs(Some(user), &topics)?
             .into_iter()
-            .next()
-            .map(|relay| (personal_continuity_topic_id(&user), relay)))
+            .next())
     }
 
     /// Have the person's home relay host `room` as well, or no longer.

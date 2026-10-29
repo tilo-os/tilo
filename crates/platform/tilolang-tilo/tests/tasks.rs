@@ -148,6 +148,84 @@ fn a_quick_add_adds_what_was_typed_and_nothing_for_an_empty_entry() {
 }
 
 #[test]
+fn a_quick_add_reads_when_it_is_due_in_the_persons_zone() {
+    // 20:00 UTC on Thursday 2026-10-29 is 05:00 on Friday the 30th in Tokyo.
+    let (mut ada, root) = room();
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-29T20:00:00Z".to_owned());
+    ada.host.runtime().set_zone(|| 9 * 3600);
+    for entry in [
+        "Call the landlord tomorrow 9am",
+        "Pay rent fri",
+        "Plan the trip next week",
+        "Renew the passport in 3 days",
+        "Water the plants",
+    ] {
+        call(&ada, "quick_add", vec![root.clone(), Value::text(entry)]);
+    }
+    // On Today, what does not say when is due today.
+    call(
+        &ada,
+        "quick_add",
+        vec![
+            root.clone(),
+            Value::text("Buy oat milk"),
+            Value::none(),
+            Value::Bool(true),
+        ],
+    );
+    ada.commit();
+    let day = |d: &str| Value::some(Value::text(d));
+    let made: Vec<(Value, Value, Value)> = items(&ada)
+        .iter()
+        .map(|t| {
+            (
+                read(&ada, t, "title"),
+                read(&ada, t, "due"),
+                read(&ada, t, "at"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        made,
+        vec![
+            (
+                Value::text("Call the landlord"),
+                day("2026-10-31"),
+                day("2026-10-31T00:00:00Z"),
+            ),
+            (Value::text("Pay rent"), day("2026-11-06"), Value::none()),
+            (
+                Value::text("Plan the trip"),
+                day("2026-11-02"),
+                Value::none()
+            ),
+            (
+                Value::text("Renew the passport"),
+                day("2026-11-02"),
+                Value::none()
+            ),
+            (
+                Value::text("Water the plants"),
+                Value::none(),
+                Value::none()
+            ),
+            (
+                Value::text("Buy oat milk"),
+                day("2026-10-30"),
+                Value::none()
+            ),
+        ],
+        "Friday is today in Tokyo, so `fri` is the next one"
+    );
+    // Today is Tokyo's Friday, though it is still Thursday in UTC.
+    let view = ada.view(APP);
+    assert_eq!(count(&view, "Today"), 1, "{:?}", places(&view));
+    assert_eq!(count(&view, "Upcoming"), 4, "{:?}", places(&view));
+}
+
+#[test]
 fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     let (mut ada, root) = room();
     let project = call(&ada, "new_project", vec![root.clone()]);

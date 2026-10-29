@@ -816,7 +816,7 @@ mod tests {
         );
 
         app.effect(&GitClientEffect::CreateBranch {
-            name: "topic".into(),
+            name: "topic".parse().unwrap(),
         })
         .unwrap();
         assert_eq!(repo.head().unwrap().shorthand().unwrap(), "topic");

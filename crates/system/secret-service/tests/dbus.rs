@@ -59,10 +59,6 @@ impl KeySource for DeviceKey {
             byte => Ok(SymmetricKey::from_bytes([byte; 32])),
         }
     }
-
-    fn another(&self) -> Box<dyn KeySource> {
-        Box::new(self.clone())
-    }
 }
 
 struct World {

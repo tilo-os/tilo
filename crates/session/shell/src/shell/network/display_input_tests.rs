@@ -41,7 +41,7 @@ impl Fixture {
             &local_device,
             crate::shell::state::WorkspaceTree::default(),
         );
-        network.personal_continuity_device =
+        network.local_device =
             Some(DeviceId::new(hex::encode(local_device.public().as_bytes())).unwrap());
         network.device_fabric_path = Some(home.state().join("fabric.postcard"));
         network
@@ -51,7 +51,7 @@ impl Fixture {
             .insert(*peer.public().as_bytes());
         authenticate(&network, &root, &peer);
         let controller = DeviceId::new(hex::encode(peer.public().as_bytes())).unwrap();
-        let local = network.personal_continuity_device.clone().unwrap();
+        let local = network.local_device.clone().unwrap();
         for owner in [&local, &controller] {
             let (mut snapshot, output) = rich_display_network_snapshot(owner.clone());
             snapshot.presence.capabilities.pointer = true;
@@ -141,7 +141,7 @@ fn automatic_display_input_preserves_manual_grants_and_persisted_declines() {
     assert_eq!(automatic[0].controller, fixture.controller);
     assert_eq!(
         automatic[0].target,
-        fixture.network.personal_continuity_device.clone().unwrap()
+        fixture.network.local_device.clone().unwrap()
     );
     fixture.refresh();
     assert!(
@@ -329,7 +329,7 @@ fn automatic_display_input_decline_storage_is_private_bounded_and_root_specific(
         fixture.network.load_display_input_declines().unwrap(),
         declined
     );
-    fixture.network.personal_continuity_user = Some([0xB7; 32]);
+    fixture.network.local_person = Some([0xB7; 32]);
     let (other, _) = fixture.network.display_input_declines_path().unwrap();
     assert_ne!(path, other);
     assert!(
@@ -339,7 +339,7 @@ fn automatic_display_input_decline_storage_is_private_bounded_and_root_specific(
             .unwrap()
             .is_empty()
     );
-    fixture.network.personal_continuity_user = Some(original);
+    fixture.network.local_person = Some(original);
     assert_eq!(
         fixture.network.load_display_input_declines().unwrap(),
         declined

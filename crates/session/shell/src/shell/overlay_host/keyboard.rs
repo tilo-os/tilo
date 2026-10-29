@@ -70,19 +70,6 @@ impl ShellOverlayHost {
         if self.handle_agent_access_keyboard(logical_key, shift_down, handled) {
             return true;
         }
-        if self.overlay_flags().shortcut_help
-            && let Some(action) = self.shortcut_rebind
-        {
-            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-                self.shortcut_rebind = None;
-                self.shortcut_rebind_message = None;
-            } else {
-                self.capture_shortcut_chord(action, logical_key, modifiers);
-            }
-            self.bump_chrome();
-            *handled = true;
-            return true;
-        }
         if self.handle_collaborators_keyboard(logical_key, shift_down, handled) {
             return true;
         }
@@ -113,12 +100,6 @@ impl ShellOverlayHost {
                 }
                 self.shortcut_rebind = None;
                 self.shortcut_rebind_message = None;
-                self.shortcut_guide_focus =
-                    self.overlay_flags()
-                        .shortcut_help
-                        .then_some(ShortcutGuideFocus::Binding(
-                            settings_store::hardware::ShortcutAction::FocusPreviousWindow,
-                        ));
             }
             *handled = true;
             return true;
@@ -138,7 +119,6 @@ impl ShellOverlayHost {
                     }
                     self.shortcut_rebind = None;
                     self.shortcut_rebind_message = None;
-                    self.shortcut_guide_focus = None;
                     *handled = true;
                     return true;
                 }
@@ -146,48 +126,6 @@ impl ShellOverlayHost {
                     return true;
                 }
             }
-            *handled = true;
-            return true;
-        }
-        // The guide is modal: unfamiliar keys must not act on a window
-        // hidden behind it. Escape and F1 are its explicit exits.
-        if self.overlay_flags().shortcut_help {
-            match logical_key {
-                Key::Named(NamedKey::Tab) => {
-                    self.move_shortcut_guide_focus(shift_down);
-                }
-                Key::Named(NamedKey::Enter | NamedKey::Space) => match self.shortcut_guide_focus {
-                    Some(ShortcutGuideFocus::Binding(action)) => {
-                        self.shortcut_rebind = Some(action);
-                        self.shortcut_rebind_message = None;
-                    }
-                    Some(ShortcutGuideFocus::Reset(first, second)) => {
-                        self.reset_shortcut_pair(first, second);
-                        self.shortcut_guide_focus = Some(ShortcutGuideFocus::Binding(first));
-                    }
-                    Some(ShortcutGuideFocus::Done) => {
-                        if let Some(chrome) = self.chrome.clone() {
-                            let mut st = chrome.borrow_mut();
-                            st.overlays.shortcut_help = false;
-                            st.bump();
-                        }
-                        self.shortcut_guide_focus = None;
-                    }
-                    None => self.move_shortcut_guide_focus(false),
-                },
-                Key::Named(NamedKey::Escape) => {
-                    if let Some(chrome) = self.chrome.clone() {
-                        let mut st = chrome.borrow_mut();
-                        st.overlays.shortcut_help = false;
-                        st.bump();
-                        self.shortcut_rebind = None;
-                        self.shortcut_rebind_message = None;
-                        self.shortcut_guide_focus = None;
-                    }
-                }
-                _ => {}
-            }
-            self.bump_chrome();
             *handled = true;
             return true;
         }

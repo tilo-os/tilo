@@ -443,8 +443,17 @@ pub fn pending_compensations(doc: &AutoCommit) -> Vec<ChangeHash> {
 /// that are in effect, at most `limit` of them. The changes of one gesture
 /// (the keystrokes of a word) are one step.
 fn undo_targets(doc: &mut AutoCommit, scope: &Scope, limit: usize) -> Vec<Version> {
+    owned_undo_targets(doc, &|version| scope.owns(version), limit)
+}
+
+/// The last `limit` steps in effect that `owns` claims, newest first.
+fn owned_undo_targets(
+    doc: &mut AutoCommit,
+    owns: &dyn Fn(&Version) -> bool,
+    limit: usize,
+) -> Vec<Version> {
     doc.get_heads();
-    steps_in_effect(doc, &|version| scope.owns(version), limit)
+    steps_in_effect(doc, owns, limit)
         .into_iter()
         .flatten()
         .collect()
@@ -968,7 +977,31 @@ pub fn undo(
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let targets = undo_targets(doc, scope, limit);
-    take_back(doc, scope, targets, compensate, words)
+    if targets.is_empty() {
+        return Err(nothing_to_undo(doc, scope));
+    }
+    take_back(doc, targets, compensate, words)
+}
+
+/// [`undo`] of the steps `owns` claims, for a document whose changes name
+/// their makers in their own words rather than in an entry (a settings
+/// document's). Takes back nothing, and says so with an empty list, when
+/// `owns` claims no step in effect.
+///
+/// # Errors
+/// As [`undo`], but for there being nothing to undo.
+pub fn undo_where(
+    doc: &mut AutoCommit,
+    owns: &dyn Fn(&Version) -> bool,
+    limit: usize,
+    compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    words: &dyn HistoryWords,
+) -> Result<Vec<Version>, String> {
+    let targets = owned_undo_targets(doc, owns, limit);
+    if targets.is_empty() {
+        return Ok(targets);
+    }
+    take_back(doc, targets, compensate, words)
 }
 
 /// Take back every step of `scope`'s in effect made after the version
@@ -992,20 +1025,19 @@ pub fn undo_since(
     let targets = undo_targets(doc, scope, usize::MAX)
         .into_iter()
         .filter(|version| since.contains(&version.hash))
-        .collect();
-    take_back(doc, scope, targets, compensate, words)
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Err(nothing_to_undo(doc, scope));
+    }
+    take_back(doc, targets, compensate, words)
 }
 
 fn take_back(
     doc: &mut AutoCommit,
-    scope: &Scope,
     targets: Vec<Version>,
     mut compensate: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
-    if targets.is_empty() {
-        return Err(nothing_to_undo(doc, scope));
-    }
     // Preparing every inversion before writing preserves one open Undo
     // transaction. Reading history between writes would auto-commit a
     // partial Undo and make Redo restore only the final step.
@@ -1070,7 +1102,7 @@ pub fn redo(
     doc: &mut AutoCommit,
     scope: &Scope,
     limit: usize,
-    mut restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     let targets = redo_targets(doc, scope, limit);
@@ -1080,6 +1112,37 @@ pub fn redo(
             scope.subject(*scope == Scope::invoking(doc))
         ));
     }
+    bring_back(doc, targets, restore, words)
+}
+
+/// [`redo`] of the undos `owns` claims (see [`undo_where`]). Brings back
+/// nothing, and says so with an empty list, when `owns` claims no undo in
+/// effect.
+///
+/// # Errors
+/// As [`redo`], but for there being nothing to redo.
+pub fn redo_where(
+    doc: &mut AutoCommit,
+    owns: &dyn Fn(&Version) -> bool,
+    limit: usize,
+    restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    words: &dyn HistoryWords,
+) -> Result<Vec<Version>, String> {
+    doc.get_heads();
+    let targets = undos_in_effect(doc, owns, limit);
+    if targets.is_empty() {
+        return Ok(targets);
+    }
+    bring_back(doc, targets, restore, words)
+}
+
+/// Bring back the undos `targets`, newest first: [`redo`] once it has them.
+fn bring_back(
+    doc: &mut AutoCommit,
+    targets: Vec<Version>,
+    mut restore: impl FnMut(&Version) -> Result<Option<Inverse>, String>,
+    words: &dyn HistoryWords,
+) -> Result<Vec<Version>, String> {
     let versions = tilo_resource::history::versions(doc);
     let mut patches = Vec::new();
     let mut actions = Vec::new();

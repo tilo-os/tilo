@@ -9,7 +9,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-mod data;
 mod settings;
 pub use settings::AdministratorSettings;
 #[cfg(target_os = "linux")]
@@ -26,8 +25,6 @@ pub enum HandoffInventory {}
 mod native;
 mod repository;
 #[cfg(target_os = "linux")]
-pub(super) use data::review_subtree;
-pub use data::{DataSubtree, data_subtrees};
 pub use native::{CancellableNativeRunner, NativeRunner};
 pub use repository::extract_remote_definition;
 #[cfg(test)]

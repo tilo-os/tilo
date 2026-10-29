@@ -169,7 +169,7 @@ id = "set-title"
 kind = "undoable"
 params = [
   { name = "media", required = true, schema = { type = "string" } },
-  { name = "text", required = false, schema = { type = ["string", "null"] } },
+  { name = "text", required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
   { name = "colour", required = false, schema = { type = ["string", "null"] } },
   { name = "size", required = false, schema = { type = ["number", "null"] } },
   { name = "align", required = false, schema = { type = ["string", "null"] } },

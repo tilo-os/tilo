@@ -76,7 +76,7 @@ fn flooded_room() -> Replica {
         &mut doc,
         OWNER,
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".into(),
+            name: "general".parse().unwrap(),
             category: None,
             kind: None,
             topic: None,
@@ -125,7 +125,7 @@ fn flooded_room() -> Replica {
         chat::Chat::REPORT_MESSAGE.with(chat::record::chat::ReportMessage {
             message: spam,
             author: MALLORY.into(),
-            reason: "spam".into(),
+            reason: "spam".parse().unwrap(),
         }),
     )
     .unwrap();

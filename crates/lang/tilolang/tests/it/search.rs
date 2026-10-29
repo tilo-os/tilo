@@ -544,7 +544,7 @@ type Todos {
     // Read when it is asked: on 2026-10-29 at 10:00, the week ends on 2026-11-05.
     let at = tilolang::calendar::instant("2026-10-29T10:00:00Z").expect("a time");
     assert_eq!(
-        pred("this_week").at(at),
+        pred("this_week").at(at, 0),
         Pred::And(vec![
             Pred::Cmp(
                 CmpOp::Gt,
@@ -559,7 +559,7 @@ type Todos {
         ])
     );
     assert_eq!(
-        pred("seen_lately").at(at),
+        pred("seen_lately").at(at, 0),
         Pred::Cmp(
             CmpOp::Ge,
             Operand::Field(field_id(todo, "seen")),

@@ -510,7 +510,7 @@ fn two_participants_converge_on_messages_and_edits() {
             &mut doc_a,
             "u_alice",
             crate::resource::Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-                name: "planning".into(),
+                name: "planning".parse().unwrap(),
                 category: None,
                 kind: None,
                 topic: None,

@@ -429,10 +429,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .pointer("/update/output/value")
                 .cloned()
                 .unwrap_or(Value::Null);
-            if answer["state"] != "reads" {
+            if answer.get("state").and_then(Value::as_str) != Some("reads") {
                 return Ok(self.answered(&app, program, &answer));
             }
-            let asked: Vec<Value> = answer["requests"].as_array().cloned().unwrap_or_default();
+            let asked: Vec<Value> = answer
+                .get("requests")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             let fresh: Vec<Value> = asked
                 .into_iter()
                 .filter(|request| !reads.iter().any(|(known, _)| known == request))

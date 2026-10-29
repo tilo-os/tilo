@@ -108,6 +108,12 @@ pub trait Platform {
     /// The time now, as `now` reads it: ISO-8601 UTC text.
     fn now(&self) -> String;
 
+    /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
+    /// 9am" in. UTC unless the platform knows the person's.
+    fn zone(&self) -> i64 {
+        0
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -228,6 +234,8 @@ pub struct Instance {
     opening: bool,
     platform: Rc<dyn Platform>,
     names: Rc<dyn NameHost>,
+    /// What the window said it calls people, which `names` reads first.
+    told: Rc<crate::names::Told>,
     host: Rc<RefCell<Option<Host>>>,
     publication: Option<Box<dyn Publication>>,
     root: Option<Shown>,
@@ -274,6 +282,10 @@ pub struct Instance {
     /// The window's keyboard focus: the bound control it is in.
     focus: Option<(Lane, String)>,
     composing: bool,
+    /// How many presses the window sent (`ToApp::Fire`) the instance ran, and how many of
+    /// them it told the window it ran (`ToUi::Took`).
+    fired: u64,
+    fired_told: u64,
 }
 
 impl Instance {
@@ -286,6 +298,7 @@ impl Instance {
         transport: Box<dyn Transport>,
     ) -> Self {
         let people = crate::members::People::new(&config.me, []);
+        let told = Rc::new(crate::names::Told::new(&config.me, names));
         Self {
             app: config.app,
             me: config.me,
@@ -296,7 +309,8 @@ impl Instance {
             record_loader: config.record_loader,
             standing: Rc::default(),
             platform,
-            names,
+            names: Rc::clone(&told) as Rc<dyn NameHost>,
+            told,
             host: Rc::default(),
             publication: None,
             root: None,
@@ -332,6 +346,8 @@ impl Instance {
             taken_build: None,
             focus: None,
             composing: false,
+            fired: 0,
+            fired_told: 0,
         }
     }
 
@@ -602,6 +618,8 @@ impl Instance {
             .set_name_host(SharedNames(Rc::clone(&self.names)));
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
+        let platform = Rc::clone(&self.platform);
+        host.runtime().set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
         host.set_phrases(move |id, args| platform.phrase(id, args));
         if let Some(sink) = self.sink.take() {
@@ -1414,6 +1432,12 @@ impl Instance {
                 self.composing = composing;
                 Ok(())
             }
+            ToApp::Names { me, others } => {
+                if self.told.tell(me, others) {
+                    self.names_changed = true;
+                }
+                Ok(())
+            }
         };
         if let Err(words) = outcome {
             self.notice(words, ui::NoticeKind::Error);
@@ -1461,6 +1485,8 @@ impl Instance {
         value: Option<&ui::Value>,
         ran: &mut Option<(ActionRef, Value)>,
     ) -> Result<(), Words> {
+        // Counted whatever comes of it: the window waits for every press it sent.
+        self.fired = self.fired.saturating_add(1);
         let Some(view) = self.view(lane) else {
             return Ok(());
         };
@@ -1715,6 +1741,12 @@ impl Instance {
             for lane in [Lane::Root, Lane::Detail] {
                 self.resend(lane);
             }
+        }
+        // The presses ran and what they opened is sent: what the person typed after them can
+        // go to the field focused now.
+        if self.fired != self.fired_told {
+            self.fired_told = self.fired;
+            self.out.push(ToUi::Took { fired: self.fired });
         }
         self.flush();
         changed

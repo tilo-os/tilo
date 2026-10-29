@@ -34,6 +34,12 @@ fn item(id: &str) -> ui::tilo_resource::Id {
     ui::tilo_resource::Id::from_raw(id)
 }
 
+/// The plain reason the message menu files a report with; Ctrl+K's
+/// `Report message` and `Report person` ask for one.
+fn menu_report_reason() -> Option<ui::tilo_resource::NonBlank> {
+    ui::tilo_resource::NonBlank::parse("Reported from the message menu")
+}
+
 struct EventDispatch<'a, 'doc> {
     event: &'a WindowEvent,
     scale: f64,
@@ -1090,7 +1096,7 @@ impl ChatApp {
                 let Some(channel) = self.channel(id).cloned() else {
                     return;
                 };
-                if channel.name != answer.name {
+                if channel.name != answer.name.as_str() {
                     self.apply_now(
                         doc,
                         Chat::RENAME_CHANNEL.with(chat::RenameChannel {
@@ -1129,7 +1135,7 @@ impl ChatApp {
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
         category: &str,
-        name: &str,
+        name: ui::tilo_resource::NonBlank,
         kind: ChannelKind,
     ) -> String {
         let before: std::collections::HashSet<Id> =
@@ -1137,7 +1143,7 @@ impl ChatApp {
         self.apply_now(
             doc,
             Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-                name: name.to_owned(),
+                name,
                 category: (!category.is_empty()).then(|| item(category)),
                 kind: Some(kind),
                 topic: None,
@@ -1337,24 +1343,28 @@ impl ChatApp {
                 // The menu files a report with a plain reason; Ctrl+K's
                 // `Report message` and `Report person` ask for one.
                 MenuAction::ReportMessage => {
-                    if let Some(author) = self.message(&id).map(|m| m.author.clone()) {
+                    if let Some(author) = self.message(&id).map(|m| m.author.clone())
+                        && let Some(reason) = menu_report_reason()
+                    {
                         self.apply_now(
                             doc,
                             Chat::REPORT_MESSAGE.with(chat::ReportMessage {
                                 message: id.clone(),
                                 author,
-                                reason: "Reported from the message menu".to_owned(),
+                                reason,
                             }),
                         );
                     }
                 }
                 MenuAction::ReportAuthor => {
-                    if let Some(author) = self.message(&id).map(|m| m.author.clone()) {
+                    if let Some(author) = self.message(&id).map(|m| m.author.clone())
+                        && let Some(reason) = menu_report_reason()
+                    {
                         self.apply_now(
                             doc,
                             Chat::REPORT_PERSON.with(chat::ReportPerson {
                                 person: item(&author),
-                                reason: "Reported from the message menu".to_owned(),
+                                reason,
                             }),
                         );
                     }
@@ -1480,10 +1490,9 @@ impl ChatApp {
         name: &str,
         doc: &mut ui::widget::Edits<'_>,
     ) {
-        let name = name.trim().to_owned();
-        if name.is_empty() {
+        let Some(name) = ui::tilo_resource::NonBlank::parse(name) else {
             return;
-        }
+        };
         match target {
             MenuTarget::Channel(id) => {
                 self.apply_now(
