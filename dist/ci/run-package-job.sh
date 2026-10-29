@@ -69,7 +69,16 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     tool_container=
     rootfs=
     cleanup_container() {
-        local cleanup_paths=("$log_dir")
+        local status=$? cleanup_paths=("$log_dir")
+        # The lane shows only what reaches its log. A failure recorded in CI_FAILURE
+        # alone (a source copy or an engine that failed quietly) left the userspace
+        # failing with no reason given, so a failed job prints what it recorded.
+        if (( status != 0 )); then
+            printf '%s / %s failed with status %s\n' "$distro" "$arch" "$status" >&2
+            if [[ -s $output/CI_FAILURE ]]; then
+                sed 's/^/  /' "$output/CI_FAILURE" >&2
+            fi
+        fi
         if [[ -n $container ]]; then
             docker rm --force "$container" >/dev/null 2>&1 || true
         fi
@@ -143,7 +152,7 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
     # Each architecture runs five distros serially. Do not copy earlier distro
     # artifacts (or a local Cargo target) into every subsequent build container.
     bash "$repo_root/dist/ci/archive-package-source.sh" "$repo_root" \
-        2> "$copy_in_log" | docker cp - "$container:/" \
+        2> >(tee "$copy_in_log" >&2) | docker cp - "$container:/" \
         2> >(tee -a "$copy_in_log" >&2)
     copy_pipeline_status=("${PIPESTATUS[@]}")
     container_status=${copy_pipeline_status[0]}
@@ -301,12 +310,18 @@ execution_arch=${TILO_EXECUTION_ARCH:-$arch}
 emulated=${TILO_EMULATED:-0}
 export TILO_EXPECT_ARCH="$arch"
 
+# Each stage names itself as it starts, so a userspace that stalls or fails says
+# where in the lane's log.
+enter_stage() {
+    stage=$1
+    printf '==> %s / %s: %s\n' "$distro" "$arch" "$stage" >&2
+}
 stage=bootstrap
 record_failure() {
     local status=$?
     trap - ERR
     printf 'stage=%s status=%s line=%s\n' "$stage" "$status" "${BASH_LINENO[0]:-unknown}" \
-        > /artifacts/CI_FAILURE
+        | tee /artifacts/CI_FAILURE >&2
     exit "$status"
 }
 trap record_failure ERR
@@ -325,7 +340,7 @@ retain_failed_rpms() {
 }
 trap retain_failed_rpms EXIT
 
-stage=architecture-check
+enter_stage architecture-check
 dist/ci/assert-native-arch.sh "$execution_arch"
 
 case "$distro" in
@@ -333,22 +348,22 @@ ubuntu-24.04|debian-13)
     export CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup
     export PATH=$CARGO_HOME/bin:$PATH
     export TILO_DEB_REVISION=${TILO_DEB_REVISION:?missing TILO_DEB_REVISION}
-    stage=install-dependencies
+    enter_stage install-dependencies
     dist/ci/install-build-deps.sh debian
-    stage=install-compiler-cache
+    enter_stage install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
     source tools/ci/sccache.sh prepare-shell
-    stage=build-deb
+    enter_stage build-deb
     dist/debian/build-deb.sh
-    stage=inspect-deb
+    enter_stage inspect-deb
     for package in dist/debian/build/tilo-session*.deb; do
         dpkg-deb --info "$package"
     done
-    stage=install-test-deb
+    enter_stage install-test-deb
     dist/debian/test-package.sh \
         dist/debian/build/tilo-session_[0-9]*.deb \
         dist/debian/build/tilo-session-devel_*.deb
-    stage=collect-deb
+    enter_stage collect-deb
     cp dist/debian/build/tilo-session_[0-9]*_"$arch".deb /artifacts/
     if [[ $arch == amd64 ]]; then
         cp dist/debian/build/tilo-session-devel_*_all.deb /artifacts/
@@ -357,16 +372,16 @@ ubuntu-24.04|debian-13)
 fedora-44)
     export CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup
     export PATH=$CARGO_HOME/bin:$PATH
-    stage=install-dependencies
+    enter_stage install-dependencies
     dist/ci/install-build-deps.sh fedora
-    stage=install-compiler-cache
+    enter_stage install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
     source tools/ci/sccache.sh prepare-shell
-    stage=build-rpm
+    enter_stage build-rpm
     dist/rpm/build-rpm.sh
-    stage=inspect-rpm
+    enter_stage inspect-rpm
     rpm -qip dist/rpm/build/RPMS/*/tilo-session-*.rpm
-    stage=lint-rpm
+    enter_stage lint-rpm
     rpmlint_log=$(mktemp)
     set +e
     rpmlint -r dist/rpm/tilo-session.rpmlintrc \
@@ -386,11 +401,11 @@ fedora-44)
         echo "rpmlint could not complete" >&2
         exit "$rpmlint_status"
     fi
-    stage=install-test-rpm
+    enter_stage install-test-rpm
     dist/rpm/test-package.sh dist/rpm/build/RPMS/*/tilo-session-*.rpm
-    stage=collect-rpm
+    enter_stage collect-rpm
     cp dist/rpm/build/RPMS/*/*.rpm /artifacts/
-    stage=collect-os-desktop-payload
+    enter_stage collect-os-desktop-payload
     case "$arch" in amd64) payload_arch=x86_64 ;; arm64) payload_arch=aarch64 ;; esac
     dist/desktop/package-os-payload.sh target/release "$payload_arch" /artifacts
     ;;
@@ -407,8 +422,9 @@ arch)
             /var/cache/tilo-pacman
         test "$(pacman-conf DBPath)" = /var/lib/tilo-pacman
     fi
-    stage=install-dependencies
+    enter_stage install-dependencies
     dist/ci/install-build-deps.sh arch
+    enter_stage install-toolchain
     # Arch's rustup keeps toolchains per user, and the compiler cache turns
     # auto-install off and probes rustc outside this checkout: install the
     # pinned toolchain as the default for root and for the package builder.
@@ -416,7 +432,7 @@ arch)
     toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
     rustup default "$toolchain"
     su builder -c "cd /workspace && rustup toolchain install && rustup default '$toolchain'"
-    stage=install-compiler-cache
+    enter_stage install-compiler-cache
     dist/ci/install-sccache.sh "$arch"
     source tools/ci/sccache.sh prepare-shell
     # The probe above started the cache server as root; makepkg compiles as
@@ -431,22 +447,22 @@ arch)
     # the crash. BLAKE3's supported `pure` feature removes every native archive
     # in this userspace while retaining its portable Rust implementation.
     export TILO_BLAKE3_PURE=1
-    stage=prepare-arch-builder
+    enter_stage prepare-arch-builder
     chown -R builder:builder /workspace
-    stage=build-arch
+    enter_stage build-arch
     su builder -c 'cd /workspace && CARGO_FEATURE_PURE="$TILO_BLAKE3_PURE" dist/arch/build-arch.sh'
-    stage=inspect-arch
+    enter_stage inspect-arch
     pacman -Qip dist/arch/build/tilo-session-*.pkg.tar.*
-    stage=lint-arch
+    enter_stage lint-arch
     namcap_log=$(mktemp)
     namcap dist/arch/build/tilo-session-*.pkg.tar.* | tee "$namcap_log"
     if grep -q ' E: ' "$namcap_log"; then
         echo "namcap reported a package error" >&2
         exit 1
     fi
-    stage=install-test-arch
+    enter_stage install-test-arch
     dist/arch/test-package.sh dist/arch/build/tilo-session-*.pkg.tar.*
-    stage=collect-arch
+    enter_stage collect-arch
     cp dist/arch/build/*.pkg.tar.zst /artifacts/
     ;;
 nix)
@@ -463,12 +479,12 @@ nix)
         nix_config+=$'\nfilter-syscalls = false'
     fi
     export NIX_CONFIG=$nix_config
-    stage=build-nix
+    enter_stage build-nix
     nix build --print-build-logs .#tilo-session
-    stage=inspect-nix
+    enter_stage inspect-nix
     dist/ci/verify-nix-result.sh result "$arch"
     nix flake check --no-build --all-systems
-    stage=export-nix-closure
+    enter_stage export-nix-closure
     mapfile -t requisites < <(nix-store --query --requisites result)
     # Level 1 keeps the portable .nar.gz contract while avoiding a long,
     # single-core level-9 compression tail on large ARM closures.
@@ -481,7 +497,7 @@ nix)
     ;;
 esac
 
-stage=verify-artifacts
+enter_stage verify-artifacts
 find /artifacts -mindepth 1 -maxdepth 1 -type f -print
 test -n "$(find /artifacts -mindepth 1 -maxdepth 1 -type f -print -quit)"
 if command -v sccache >/dev/null 2>&1; then

@@ -65,6 +65,16 @@ for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD; 
     }
 done
 
+# The programs that exec the launcher pin /usr/libexec/tilo/tilo-launcher and check
+# its image there, so every FHS package installs it at that path, not only on PATH.
+grep -Fq '%{_libexecdir}/tilo/tilo-launcher' "$repo_root/dist/rpm/tilo-session.spec"
+grep -Fq '"$main/usr/libexec/tilo/"' "$repo_root/dist/debian/build-deb.sh"
+grep -Fq 'install -Dm755 bin/tilo-launcher -t "$pkgdir/usr/libexec/tilo"' \
+    "$repo_root/dist/arch/PKGBUILD" || {
+    echo "dist/arch/PKGBUILD does not install the launcher at its pinned path" >&2
+    exit 1
+}
+
 # A local Atomic trial must install only the runtime RPM unless the developer
 # entry is explicitly requested; a broad tilo-session*.rpm glob regresses that
 # contract by silently layering tilo-session-devel too.

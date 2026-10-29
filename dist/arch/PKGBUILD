@@ -46,7 +46,12 @@ package_tilo-session() {
   )
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD' 'greetd: display manager')
   cd "$srcdir/payload"
-  install -Dm755 bin/tilo-shell bin/tilo-launcher bin/tilo-import-folders -t "$pkgdir/usr/bin"
+  install -Dm755 bin/tilo-shell bin/tilo-import-folders -t "$pkgdir/usr/bin"
+  # The launcher's path is pinned in the programs that exec it and check its image
+  # (/usr/libexec/tilo/tilo-launcher, as in the RPM and the Debian package); the
+  # old name stays on PATH as a link.
+  install -Dm755 bin/tilo-launcher -t "$pkgdir/usr/libexec/tilo"
+  ln -s ../libexec/tilo/tilo-launcher "$pkgdir/usr/bin/tilo-launcher"
   install -Dm755 libexec/tilo-unlock-helper libexec/tilo-session \
     libexec/tilo-session-runner libexec/tilo-flight-recorder \
     libexec/tilo-session-report \
