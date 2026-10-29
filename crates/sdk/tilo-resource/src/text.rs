@@ -101,6 +101,26 @@ fn index(doc: &Doc, text: &str, chars: usize) -> usize {
     }
 }
 
+/// How long a run `a` and `b` share at their start, and how long a run they
+/// share at their end after it (the two never overlap).
+#[must_use]
+pub fn common_ends<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize) {
+    let prefix = a
+        .iter()
+        .zip(b)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let room = a.len().min(b.len()).saturating_sub(prefix);
+    let suffix = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(room)
+        .take_while(|(left, right)| left == right)
+        .count();
+    (prefix, suffix)
+}
+
 /// The smallest splice, in characters, that turns `before` into `after`:
 /// what the two share at their start and end is kept.
 #[must_use]
@@ -110,24 +130,12 @@ pub fn splice_between(before: &str, after: &str) -> Option<TextEdit> {
     }
     let before: Vec<char> = before.chars().collect();
     let after: Vec<char> = after.chars().collect();
-    let start = before
-        .iter()
-        .zip(&after)
-        .take_while(|(left, right)| left == right)
-        .count();
-    let before_rest = before.get(start..).unwrap_or_default();
-    let after_rest = after.get(start..).unwrap_or_default();
-    let end = before_rest
-        .iter()
-        .rev()
-        .zip(after_rest.iter().rev())
-        .take_while(|(left, right)| left == right)
-        .count();
+    let (start, end) = common_ends(&before, &after);
     Some(TextEdit::Splice {
         at: start,
-        delete: before_rest.len().saturating_sub(end),
-        insert: after_rest
-            .get(..after_rest.len().saturating_sub(end))
+        delete: before.len().saturating_sub(start).saturating_sub(end),
+        insert: after
+            .get(start..after.len().saturating_sub(end))
             .unwrap_or_default()
             .iter()
             .collect(),

@@ -84,29 +84,8 @@ pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> T
     }
     let cur_chars: Vec<char> = cur.chars().collect();
     let new_chars: Vec<char> = new.chars().collect();
-
-    let prefix_len = cur_chars
-        .iter()
-        .zip(new_chars.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-    // Suffix search bounds exclude the prefix so the two spans can't
-    // overlap. `prefix_len` is at most `min(cur_chars.len(),
-    // new_chars.len())` by construction above, so both tails are `Some`.
-    let cur_tail = cur_chars.get(prefix_len..).unwrap_or(&[]);
-    let new_tail = new_chars.get(prefix_len..).unwrap_or(&[]);
-    let suffix_len = cur_tail
-        .iter()
-        .rev()
-        .zip(new_tail.iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    // `suffix_len` never exceeds either tail's length, so none of these underflow.
-    let del = cur_chars
-        .len()
-        .saturating_sub(prefix_len)
-        .saturating_sub(suffix_len);
+    let (prefix_len, suffix_len) = tilo_resource::text::common_ends(&cur_chars, &new_chars);
+    let del = cur_chars.len().saturating_sub(prefix_len + suffix_len);
     let ins_end = new_chars.len().saturating_sub(suffix_len);
     let ins: String = new_chars
         .get(prefix_len..ins_end)
@@ -115,8 +94,7 @@ pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> T
         .collect();
     let ins_len = ins_end.saturating_sub(prefix_len);
     // `del` is bounded by `Vec<char>::len()`, which the global allocator
-    // already caps at `isize::MAX` bytes (4 bytes per `char`), so it always
-    // fits `isize` on every real target.
+    // already caps at `isize::MAX` bytes, so it always fits `isize`.
     #[allow(
         clippy::cast_possible_wrap,
         reason = "del is bounded by Vec<char>::len(), which the allocator already caps under isize::MAX"

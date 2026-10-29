@@ -383,27 +383,10 @@ fn replace_range(
 /// and the end are left alone, so what did not change keeps its marks,
 /// authorship and the carets inside it.
 fn splice_between(old: &str, new: &str) -> Option<(usize, usize, String)> {
-    let old: Vec<char> = old.chars().collect();
-    let new: Vec<char> = new.chars().collect();
-    let prefix = old
-        .iter()
-        .zip(&new)
-        .take_while(|(left, right)| left == right)
-        .count();
-    let suffix = old
-        .iter()
-        .rev()
-        .zip(new.iter().rev())
-        .take(old.len().min(new.len()).saturating_sub(prefix))
-        .take_while(|(left, right)| left == right)
-        .count();
-    let del = old.len().saturating_sub(prefix).saturating_sub(suffix);
-    let ins: String = new
-        .iter()
-        .skip(prefix)
-        .take(new.len().saturating_sub(prefix).saturating_sub(suffix))
-        .collect();
-    (del > 0 || !ins.is_empty()).then_some((prefix, del, ins))
+    match tilo_resource::text::splice_between(old, new)? {
+        tilo_resource::text::TextEdit::Splice { at, delete, insert } => Some((at, delete, insert)),
+        tilo_resource::text::TextEdit::ReplaceText { .. } => None,
+    }
 }
 
 /// Make the stored block `id` (as `view` shows it, `None` for a new one)

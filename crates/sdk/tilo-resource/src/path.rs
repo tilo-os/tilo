@@ -1418,20 +1418,9 @@ pub fn leaf<R, T>(path: Path<R, T>) -> Path<R, T> {
 /// follows), or erasing. A paste or any larger change is a step of its own,
 /// so undo takes it back alone.
 fn replace_continues(previous: &str, next: &str) -> bool {
-    let prefix = previous
-        .chars()
-        .zip(next.chars())
-        .take_while(|(a, b)| a == b)
-        .count();
-    let (before, after) = (previous.chars().count(), next.chars().count());
-    let room = before.min(after).saturating_sub(prefix);
-    let suffix = previous
-        .chars()
-        .rev()
-        .zip(next.chars().rev())
-        .take_while(|(a, b)| a == b)
-        .count()
-        .min(room);
+    let (was, now): (Vec<char>, Vec<char>) = (previous.chars().collect(), next.chars().collect());
+    let (prefix, suffix) = crate::text::common_ends(&was, &now);
+    let (before, after) = (was.len(), now.len());
     let kept = prefix.saturating_add(suffix);
     let deleted = before.saturating_sub(kept);
     let inserted = after.saturating_sub(kept);
@@ -1441,7 +1430,7 @@ fn replace_continues(previous: &str, next: &str) -> bool {
         // Typing one character on after a non-space.
         (0, 1) => prefix
             .checked_sub(1)
-            .and_then(|at| previous.chars().nth(at))
+            .and_then(|at| was.get(at))
             .is_some_and(|c| !c.is_whitespace()),
         _ => false,
     }
