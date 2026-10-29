@@ -105,6 +105,12 @@ enum Command {
         /// peer or a registry.
         #[arg(long)]
         thin: bool,
+        /// A build of a developer session, installed on its own machine and
+        /// never published: hold it to the local-build size ceiling, under
+        /// which a development store installs packages signed with the
+        /// session's own key, rather than the distribution limit.
+        #[arg(long)]
+        local_build: bool,
     },
     /// Pack the Linux, Windows or macOS build of an app: one self-contained
     /// executable with the toolkit linked in, shipped as `bin/<file name>`
@@ -392,7 +398,15 @@ fn main() -> Result<()> {
             output,
             identity,
             thin,
-        } => cmd_pack(&manifest, &payload, &output, identity.as_deref(), thin),
+            local_build,
+        } => cmd_pack(
+            &manifest,
+            &payload,
+            &output,
+            identity.as_deref(),
+            thin,
+            local_build,
+        ),
         Command::PackDesktop {
             manifest,
             executable,
@@ -511,6 +525,7 @@ fn cmd_pack(
     output: &Path,
     identity_path: Option<&Path>,
     thin: bool,
+    local_build: bool,
 ) -> Result<()> {
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("read manifest {}", manifest_path.display()))?;
@@ -533,7 +548,12 @@ fn cmd_pack(
     let packed =
         pack(payload_dir, &manifest, &identity).map_err(|e| anyhow!("pack failed: {e}"))?;
     let payload: Option<&dyn BlobSource> = if thin { None } else { Some(&packed) };
-    write_tapp(output, &packed.meta, payload)?;
+    let limit = if local_build {
+        tilo_app_package::local_build_size_limit(&packed.meta.manifest)
+    } else {
+        tilo_app_package::app_size_limit(&packed.meta.manifest)
+    };
+    write_tapp_within(output, &packed.meta, payload, limit)?;
     eprintln!(
         "packed {} ({} form, {} payload blobs)",
         packed.id(),
@@ -960,6 +980,22 @@ impl Drop for PendingTapp {
 /// Write `meta` (full when `payload` is given, thin otherwise) to `path`
 /// atomically, enforcing the application size ceiling on the result.
 fn write_tapp(path: &Path, meta: &PackageMeta, payload: Option<&dyn BlobSource>) -> Result<()> {
+    write_tapp_within(
+        path,
+        meta,
+        payload,
+        tilo_app_package::app_size_limit(&meta.manifest),
+    )
+}
+
+/// [`write_tapp`] against the size ceiling `limit` (none for a non-app
+/// bundle).
+fn write_tapp_within(
+    path: &Path,
+    meta: &PackageMeta,
+    payload: Option<&dyn BlobSource>,
+    limit: Option<u64>,
+) -> Result<()> {
     let temp = path.with_extension(format!("tapp.tmp.{}", std::process::id()));
     let file = File::options()
         .write(true)
@@ -974,7 +1010,7 @@ fn write_tapp(path: &Path, meta: &PackageMeta, payload: Option<&dyn BlobSource>)
     let archive_size = std::fs::metadata(&temp)
         .with_context(|| format!("stat temporary package {}", temp.display()))?
         .len();
-    if let Some(limit) = tilo_app_package::app_size_limit(&meta.manifest)
+    if let Some(limit) = limit
         && archive_size > limit
     {
         bail!("application tapp is {archive_size} bytes; limit is {limit} bytes");

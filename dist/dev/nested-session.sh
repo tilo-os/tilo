@@ -377,8 +377,11 @@ while IFS=$'\t' read -r name binary id version manifest; do
     fi
     say "packaging and installing $id"
     tapp=$work/$name.tapp
+    # A build for speed, larger than the distribution limit allows: the
+    # session's store installs it, signed with the session's key, under the
+    # local-build ceiling (package_store::size_limit).
     "$bin/tilo-app-package" pack --manifest "$staged" --payload "$work/payload" \
-        --identity "$identity" --output "$tapp" >/dev/null
+        --identity "$identity" --output "$tapp" --local-build >/dev/null
     # --force replaces the package of the same version; app data stays. The
     # main runtime is installed above; an optional one (Browser's Chromium
     # engine) is offered for download by the app itself.

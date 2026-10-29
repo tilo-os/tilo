@@ -782,7 +782,9 @@ fn check(candidate: &Candidate, trust: &TrustFlags) -> Result<Checked, Error> {
     let len = candidate.len()?;
     tilo_app_package::desktop::validate_native_host(&manifest)
         .map_err(|e| Error::Policy(e.to_string()))?;
-    if let Some(limit) = tilo_app_package::app_size_limit(&manifest)
+    // The store's limit for this package on this machine: a developer
+    // session's own builds install under the local-build ceiling.
+    if let Some(limit) = package_store::size_limit::app_size_limit(&meta)
         && len > limit
     {
         return Err(Error::Policy(format!(

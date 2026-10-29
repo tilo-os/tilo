@@ -1234,6 +1234,27 @@ codegen-units = 16
 [profile.thin-app.package.imager-backend]
 codegen-units = 16
 
+# The thin graph of a developer session (PROFILE=thin-dev to
+# os/scripts/build-thin-apps.sh, from dist/dev/nested-session-build.sh and
+# dist/dev/tilolang-runtime-build.sh together): built for build speed alone,
+# since it is never published. Incremental, in rustc's incremental unit count, without
+# debug information, and the app crates at these settings too rather than
+# size-optimised in one unit (build-thin-apps.sh). Its apps are larger than
+# the distribution limit allows; the session installs them, signed with its
+# own key, under the local-build ceiling (package_store::size_limit).
+[profile.thin-dev]
+inherits = "thin-app"
+opt-level = 1
+codegen-units = 256
+incremental = true
+debug = false
+
+[profile.thin-dev.package.tilo-ui]
+codegen-units = 256
+
+[profile.thin-dev.package.imager-backend]
+codegen-units = 256
+
 # The greeter's initramfs build (os/image/compile.sh, phase rust-boot-greeter):
 # release code without its symbol table, since every boot unpacks the
 # initramfs and nothing there reads symbols. The initramfs holds it to a size

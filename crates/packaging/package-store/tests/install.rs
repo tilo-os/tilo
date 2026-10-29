@@ -871,3 +871,80 @@ fn gc_refuses_when_a_collection_is_unreadable() {
     ));
     assert_eq!(content_files(root.path()).len(), stored);
 }
+
+#[test]
+fn only_the_developer_sessions_own_builds_install_above_the_distribution_limit() {
+    use package_store::size_limit::{
+        DEVELOPER_PUBLISHERS_FILE_ENV, app_size_limit_among, developer_publishers_from,
+    };
+    // An app one byte over the distribution limit, as a developer session's
+    // build for speed is, signed by the session's key and by another.
+    let developer = SigningIdentity::generate();
+    let stranger = SigningIdentity::generate();
+    let over = usize::try_from(tilo_app_package::MAX_APP_TAPP_BYTES).unwrap() + 1;
+    let files = BTreeMap::from([("bin/app", bytes(9, over))]);
+    let (_own_dir, own) = package(&developer, "so.tilo.big", "1.0.0", &files);
+    let (_other_dir, other) = package(&stranger, "so.tilo.big", "1.0.0", &files);
+    let root = scratch();
+    let list = root.path().join("publishers.txt");
+    std::fs::write(
+        &list,
+        format!("{}\n", hex::encode(developer.public_key_bytes())),
+    )
+    .unwrap();
+    let refused = |result: Result<package_store::Installed, StoreError>| matches!(result, Err(StoreError::Payload(reason)) if reason.contains("materializes"));
+    // phase: without_a_publisher_list_the_distribution_limit_holds
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove(DEVELOPER_PUBLISHERS_FILE_ENV);
+        let store = PackageStore::at(root.path().join("plain"));
+        assert!(refused(store.install(
+            full_tapp(&own).as_slice(),
+            admit_all,
+            None
+        )));
+    }
+    // phase: another_publishers_package_keeps_the_distribution_limit
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(DEVELOPER_PUBLISHERS_FILE_ENV, &list);
+        let store = PackageStore::at(root.path().join("session"));
+        assert!(refused(store.install(
+            full_tapp(&other).as_slice(),
+            admit_all,
+            None
+        )));
+    }
+    // phase: the_sessions_own_build_installs_under_the_local_build_ceiling
+    {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(DEVELOPER_PUBLISHERS_FILE_ENV, &list);
+        let store = PackageStore::at(root.path().join("session"));
+        let installed = store
+            .install(full_tapp(&own).as_slice(), admit_all, None)
+            .unwrap();
+        assert_eq!(installed.package.id, "so.tilo.big");
+    }
+    // phase: a_shipped_build_reads_no_publisher_list
+    {
+        let shipped = developer_publishers_from(package_store::dev_env::dev_override_from(
+            false,
+            DEVELOPER_PUBLISHERS_FILE_ENV,
+            Some(list.clone().into_os_string()),
+        ));
+        assert!(shipped.is_empty());
+        assert_eq!(
+            app_size_limit_among(&own.meta, &shipped),
+            Some(tilo_app_package::MAX_APP_TAPP_BYTES)
+        );
+        let session = developer_publishers_from(Some(list.into_os_string()));
+        assert_eq!(
+            app_size_limit_among(&own.meta, &session),
+            Some(tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES)
+        );
+        assert_eq!(
+            app_size_limit_among(&other.meta, &session),
+            Some(tilo_app_package::MAX_APP_TAPP_BYTES)
+        );
+    }
+}
