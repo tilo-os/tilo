@@ -647,7 +647,7 @@ impl ShellOverlayHost {
     /// `Pressed` — otherwise `Released`/`CursorMoved` fall through and
     /// light up affordances underneath.
     pub(crate) fn cursor_over_open_overlay(&self, p: Point) -> bool {
-        (self.palette_visible && self.palette.get_rect().contains(p))
+        (self.palette_visible && self.search_card().contains(p))
             || self.cursor_over_other_open_overlay(p)
     }
 

@@ -1,4 +1,4 @@
-//! Palette search filters, running results, parameter steps and secondary actions.
+//! Running search's rows: results, parameter steps and secondary actions.
 
 #[allow(
     clippy::wildcard_imports,
@@ -7,112 +7,23 @@
 use super::*;
 
 impl ShellOverlayHost {
-    /// Where the filter band sits among the palette's semantic children:
-    /// appended after whatever the palette itself publishes (its query
-    /// field and result list), and only while the palette is open —
-    /// a closed palette publishes no children and then neither does the
-    /// band. Computed from the palette's own tree rather than pinned to a
-    /// literal, so the two can never disagree if the palette grows a child.
-    pub(super) fn search_filters_child_index(&self) -> Option<usize> {
-        if !self.palette.filter_band_shown() || self.palette.shows_field_only() {
-            return None;
-        }
-        let palette = self.palette.accessibility()?;
-        (!palette.children.is_empty()).then_some(palette.children.len())
-    }
-
-    /// The band's inputs as this host shows them now: the registered kinds
-    /// with their labels, the chosen kinds, and the scopes with theirs.
-    pub(super) fn search_filter_inputs(&self) -> SearchFilterInputs {
-        // The kinds the results hold, most hits first, and any kind chosen
-        // already: never a kind with nothing to show. The scope is not a
-        // control here; it is the token at the start of the field.
+    /// The kinds search may be narrowed to now, with their labels: those
+    /// the results hold, most hits first, and any kind chosen already;
+    /// never a kind with nothing to show.
+    pub(super) fn search_kinds(&self) -> Vec<(crate::shell::search::ResourceKind, String)> {
         let mut present = self.present_kinds.clone();
         for kind in &self.active_kind_filter {
             if !present.contains(kind) {
                 present.push(kind.clone());
             }
         }
-        let kinds = present
+        present
             .into_iter()
             .map(|kind| {
                 let label = kind.localized_label();
                 (kind, label)
             })
-            .collect();
-        let scopes = Vec::new();
-        let active_scope = self
-            .chrome
-            .as_ref()
-            .map(|c| c.borrow().search_scope)
-            .unwrap_or_default();
-        SearchFilterInputs {
-            kinds,
-            selected: self.active_kind_filter.clone(),
-            scopes,
-            active_scope,
-        }
-    }
-
-    /// Hand `inputs` to `filters` with this host's accessible names.
-    pub(super) fn configure_search_filters(
-        filters: &mut SearchFilters,
-        inputs: &SearchFilterInputs,
-    ) {
-        let kinds = inputs
-            .kinds
-            .iter()
-            .map(|(kind, label)| KindChip {
-                kind: kind.clone(),
-                label: label.clone(),
-                name: t_args("host-a11y-filter-kind", &[("kind", label.as_str().into())]),
-            })
-            .collect();
-        let scopes = inputs
-            .scopes
-            .iter()
-            .map(|(scope, label)| ScopeSegment {
-                scope: *scope,
-                label: label.clone(),
-                name: t_args("host-a11y-scope", &[("scope", label.as_str().into())]),
-            })
-            .collect();
-        filters.configure(
-            kinds,
-            inputs.selected.clone(),
-            scopes,
-            inputs.active_scope,
-            FilterText {
-                all_label: t("search-filter-all"),
-                all_name: t("host-a11y-filter-all"),
-                more_label: t("search-filter-more"),
-                more_name: t("host-a11y-filter-more"),
-                filters_name: t("host-a11y-search-filters"),
-                kinds_name: t("host-a11y-result-kinds"),
-                scopes_name: t("host-a11y-search-scope"),
-            },
-        );
-    }
-
-    /// Reconfigure the band only when what it shows has changed.
-    pub(super) fn sync_search_filters(&mut self) {
-        let inputs = self.search_filter_inputs();
-        if self.search_filter_inputs.as_ref() != Some(&inputs) {
-            Self::configure_search_filters(&mut self.search_filters, &inputs);
-            self.search_filter_inputs = Some(inputs);
-        }
-    }
-
-    /// The filter band as semantics, reflecting the current selection even
-    /// before the next paint re-lays it out.
-    pub(super) fn search_filters_accessibility(&self) -> ui::a11y::AccessNode {
-        let inputs = self.search_filter_inputs();
-        if self.search_filter_inputs.as_ref() == Some(&inputs) {
-            return self.search_filters.accessibility();
-        }
-        let mut filters = self.search_filters.clone();
-        Self::configure_search_filters(&mut filters, &inputs);
-        filters.accessibility()
+            .collect()
     }
 
     /// [`Self::activate_selected_result_with`] with no modifier held.
@@ -138,7 +49,7 @@ impl ShellOverlayHost {
         modifier: Option<ui::widget::command_palette::ActivationModifier>,
     ) {
         let Some(id) = self
-            .palette
+            .search
             .selected_id()
             .map(std::string::ToString::to_string)
         else {
@@ -313,7 +224,7 @@ impl ShellOverlayHost {
                 "palette action did not run"
             );
             let detail = reported_detail.unwrap_or_else(|| err.user_message());
-            self.palette
+            self.search
                 .set_selected_status(t("host-action-failed-status"), detail);
             self.palette_layout_dirty = true;
             return;
@@ -324,8 +235,8 @@ impl ShellOverlayHost {
                 |scope| scope.label.clone(),
             );
 
-            self.palette.set_query("");
-            self.palette.set_query_placeholder(t_args(
+            self.search.set_query("");
+            self.search.set_query_placeholder(t_args(
                 "host-search-in",
                 &[("scope", label.as_str().into())],
             ));
@@ -336,7 +247,7 @@ impl ShellOverlayHost {
         }
         // What was typed for it, too: the same text leads with it next time.
         crate::shell::search::usage::record_choice(
-            self.palette.query(),
+            self.search.query(),
             &result.provider_id,
             &result.id,
         );
@@ -350,7 +261,7 @@ impl ShellOverlayHost {
             return;
         }
         self.palette_visible = false;
-        self.palette.close();
+        self.search.close();
     }
 
     /// A window operation this host runs itself is run now, so its outcome
@@ -378,7 +289,7 @@ impl ShellOverlayHost {
         doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) {
-        let query = self.palette.query().to_string();
+        let query = self.search.query().to_string();
         let mut values = serde_json::Map::new();
         let mut prefill = None;
         if let Some(inline) = palette_flow::inline_argument(&query, &result.title, &result.params) {
@@ -517,12 +428,12 @@ impl ShellOverlayHost {
                         }
                     })
                     .collect();
-                self.palette.cancel_argument();
+                self.search.cancel_argument();
                 // Typing narrows the values, as it narrows any list.
-                self.palette.set_bypass_fuzzy(false);
-                self.palette.set_query("");
-                self.palette.set_entries(entries);
-                self.palette
+                self.search.set_bypass_fuzzy(false);
+                self.search.set_query("");
+                self.search.set_entries(entries);
+                self.search
                     .set_query_placeholder(param.description.to_string());
             }
             palette_flow::Step::Field(mut spec) => {
@@ -533,12 +444,12 @@ impl ShellOverlayHost {
                 {
                     spec.prefill = Some(text);
                 }
-                self.palette.set_entries(Vec::new());
-                self.palette
+                self.search.set_entries(Vec::new());
+                self.search
                     .open_argument_step(format!("param:{}", param.name), spec);
             }
         }
-        self.palette.set_filter_band_shown(false);
+        self.search.set_filter_band_shown(false);
         self.palette_layout_dirty = true;
     }
 
@@ -619,7 +530,7 @@ impl ShellOverlayHost {
                 // to be corrected.
                 spec.prefill = (param.ty != crate::shell::search::action_api::ParamType::Secret)
                     .then_some(text);
-                self.palette
+                self.search
                     .open_argument_step(format!("param:{}", param.name), spec);
             }
         }
@@ -686,7 +597,7 @@ impl ShellOverlayHost {
                 // still on screen, and the failure is told on the row that
                 // ran, as a run that asks nothing tells it.
                 self.end_palette_steps();
-                self.palette
+                self.search
                     .set_selected_status(t("host-action-failed-status"), error.user_message());
                 self.palette_layout_dirty = true;
                 return;
@@ -707,7 +618,7 @@ impl ShellOverlayHost {
             return;
         }
         self.palette_visible = false;
-        self.palette.close();
+        self.search.close();
     }
 
     /// Say why a run was refused on the step on screen: as a field's
@@ -724,11 +635,11 @@ impl ShellOverlayHost {
         match palette_flow::step_for(&param, &title, &|pick| self.param_picks(pick)) {
             palette_flow::Step::Field(mut spec) => {
                 spec.prompt = message;
-                self.palette
+                self.search
                     .open_argument_step(format!("param:{}", param.name), spec);
             }
             palette_flow::Step::Choices(_) => {
-                self.palette
+                self.search
                     .set_selected_status(t("host-action-failed-status"), message);
             }
         }
@@ -759,8 +670,8 @@ impl ShellOverlayHost {
 
     /// Back on the results for `query`; the next frame lists them.
     pub(super) fn restore_results(&mut self, query: &str) {
-        self.palette.set_query(query);
-        self.palette
+        self.search.set_query(query);
+        self.search
             .set_query_placeholder(t("host-search-placeholder"));
         // Never equal to a real query: the next frame fans out again.
         self.last_search_query = "\0steps-ended\0".into();
@@ -771,8 +682,8 @@ impl ShellOverlayHost {
     pub(super) fn end_palette_steps(&mut self) {
         self.param_flow = None;
         self.secondary_flow = None;
-        self.palette.cancel_argument();
-        self.palette.set_bypass_fuzzy(true);
+        self.search.cancel_argument();
+        self.search.set_bypass_fuzzy(true);
     }
 
     /// Every app, as choosing the Apps chip lists them: the launcher's
@@ -781,7 +692,7 @@ impl ShellOverlayHost {
         self.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
         self.last_search_query.clear(); // force a refresh
         self.refresh_search_results(doc, root);
-        self.palette.set_cursor(0);
+        self.search.set_cursor(0);
     }
 
     /// Show every row of the group behind "Show all" row `more`, in place:
@@ -795,23 +706,23 @@ impl ShellOverlayHost {
         let Some(kind) = self.more_rows.get(more).cloned() else {
             return;
         };
-        let cursor = self.palette.cursor();
+        let cursor = self.search.cursor();
         if !self.expanded_kinds.contains(&kind) {
             self.expanded_kinds.push(kind);
         }
         self.last_search_revision.clear();
         // The same query keeps the expansion and the chosen row.
-        let query = self.palette.query().to_string();
+        let query = self.search.query().to_string();
         self.last_search_query.clone_from(&query);
         self.refresh_search_results(doc, root);
-        self.palette.set_cursor(cursor);
+        self.search.set_cursor(cursor);
     }
 
     /// List a row's other actions (Alt+Enter) in place of the results: a
     /// file's, or the ones its provider gives it
     /// ([`crate::shell::search::SearchProvider::secondary_actions`]).
     pub(super) fn show_secondary_actions(&mut self, result: crate::shell::search::SearchResult) {
-        let query = self.palette.query().to_string();
+        let query = self.search.query().to_string();
         let entries = if result.kind == crate::shell::search::ResourceKind::File {
             palette_flow::SecondaryAction::FOR_FILES
                 .into_iter()
@@ -841,11 +752,11 @@ impl ShellOverlayHost {
                 })
                 .collect()
         };
-        self.palette.set_bypass_fuzzy(false);
-        self.palette.set_query("");
-        self.palette.set_entries(entries);
-        self.palette.set_query_placeholder(result.title.clone());
-        self.palette.set_filter_band_shown(false);
+        self.search.set_bypass_fuzzy(false);
+        self.search.set_query("");
+        self.search.set_entries(entries);
+        self.search.set_query_placeholder(result.title.clone());
+        self.search.set_filter_band_shown(false);
         self.secondary_flow = Some((result, query));
         self.palette_layout_dirty = true;
     }
@@ -903,13 +814,13 @@ impl ShellOverlayHost {
                     self.run_result(folder, doc, root, None);
                 } else {
                     self.palette_visible = false;
-                    self.palette.close();
+                    self.search.close();
                 }
             }
             palette_flow::SecondaryAction::CopyPath => {
                 ui::text_selection::clipboard_copy(&result.id);
                 self.palette_visible = false;
-                self.palette.close();
+                self.search.close();
             }
         }
     }

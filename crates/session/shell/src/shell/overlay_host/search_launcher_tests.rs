@@ -61,7 +61,7 @@ fn press(host: &mut ShellOverlayHost, key: &Key, modifiers: ModifiersState) -> b
 /// The launcher sections the palette lists, in order, each once.
 fn sections(host: &ShellOverlayHost) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for entry in host.palette.visible_entries() {
+    for entry in host.search.visible_entries() {
         if let Some(section) = &entry.section
             && out.last() != Some(section)
         {
@@ -72,7 +72,7 @@ fn sections(host: &ShellOverlayHost) -> Vec<String> {
 }
 
 fn titles(host: &ShellOverlayHost) -> Vec<String> {
-    host.palette
+    host.search
         .visible_entries()
         .iter()
         .map(|entry| entry.label.clone())
@@ -104,7 +104,7 @@ fn super_space_opens_the_launcher_in_its_first_frame_scoped_to_the_workspace() {
         "Research is another workspace"
     );
     assert_eq!(
-        host.palette.scope_token_action(),
+        host.search.scope_token_action(),
         Some("Search every workspace"),
         "the field's scope token is the control that widens it"
     );
@@ -125,28 +125,12 @@ fn the_scope_token_widens_the_launcher_to_every_workspace() {
     host.open_global_search(&doc, &automerge::ROOT);
     host.refresh_open_palette(&doc, &automerge::ROOT);
     host.force_palette_settled();
-    // Backspace in the empty field takes the token away, as a click on it
-    // does.
-    let (taffy, root) = super::overlay_event_absorb_tests::lay_out_host_with_theme(
-        &mut host,
-        1600.0,
-        900.0,
-        &Theme::dark(),
-    );
-    let backspace = ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-        Key::Named(NamedKey::Backspace),
-        None,
-        winit::event::ElementState::Pressed,
-    ));
-    assert!(
-        ui::testing::Dispatch::new()
-            .layout(&taffy, root)
-            .send(&mut host, &backspace)
-            .handled
-    );
+    // Backspace in the launcher's empty field takes the token away, as a
+    // press on it does.
+    host.ask_as_launcher(launcher_app::source::Ask::Widen);
     host.refresh_open_palette(&doc, &automerge::ROOT);
     assert_eq!(chrome.borrow().search_scope, SearchScope::All);
-    assert_eq!(host.palette.scope_token(), None);
+    assert_eq!(host.search.scope_token(), None);
     let rows = titles(&host);
     let home = rows.iter().position(|title| title == "Home");
     let research = rows.iter().position(|title| title == "Research");
@@ -164,7 +148,7 @@ fn typing_replaces_the_launcher_and_clearing_brings_it_back() {
     let launcher = titles(&host);
     assert!(launcher.contains(&"Home".to_owned()));
 
-    host.palette.set_query("theme");
+    host.search.set_query("theme");
     host.refresh_search_results(&doc, &automerge::ROOT);
     assert!(
         !sections(&host).contains(&"Happening now".to_owned()),
@@ -173,7 +157,7 @@ fn typing_replaces_the_launcher_and_clearing_brings_it_back() {
     );
     assert!(!titles(&host).is_empty(), "results for what was typed");
 
-    host.palette.set_query("");
+    host.search.set_query("");
     host.refresh_search_results(&doc, &automerge::ROOT);
     assert_eq!(titles(&host), launcher, "clearing brings the launcher back");
 }
@@ -188,7 +172,7 @@ fn every_launcher_row_has_its_reason_as_its_description() {
     let doc = AutoCommit::new();
     host.open_global_search(&doc, &automerge::ROOT);
     assert_eq!(sections(&host), ["Happening now", "Waiting on you"]);
-    for entry in host.palette.visible_entries() {
+    for entry in host.search.visible_entries() {
         assert!(
             entry
                 .description
@@ -200,7 +184,7 @@ fn every_launcher_row_has_its_reason_as_its_description() {
         );
     }
     let home = host
-        .palette
+        .search
         .visible_entries()
         .into_iter()
         .find(|entry| entry.label == "Home")
@@ -213,7 +197,7 @@ fn every_launcher_row_has_its_reason_as_its_description() {
         "what choosing it does"
     );
     let alex = host
-        .palette
+        .search
         .visible_entries()
         .into_iter()
         .find(|entry| entry.label == "Alex")
@@ -306,7 +290,7 @@ fn continue_is_where_the_windows_were_as_their_bars_said() {
     host.open_global_search(&doc, &automerge::ROOT);
     assert_eq!(sections(&host), ["Happening now", "Continue"]);
     let continuing: Vec<String> = host
-        .palette
+        .search
         .visible_entries()
         .iter()
         .filter(|entry| entry.section.as_deref() == Some("Continue"))
@@ -351,8 +335,8 @@ fn all_apps_follows_the_listed_apps_and_lists_every_app() {
     let (mut host, _chrome) = host();
     let mut doc = AutoCommit::new();
     host.open_global_search(&doc, &automerge::ROOT);
-    host.palette.set_entries(vec![all]);
-    host.palette.set_cursor(0);
+    host.search.set_entries(vec![all]);
+    host.search.set_cursor(0);
     host.activate_selected_result(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
     assert_eq!(
         host.active_kind_filter,

@@ -1996,8 +1996,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         let mut h = build_harness();
         // Seed a stale query so the "clear on open" half of the spec
         // is observable too.
-        h.host.palette.set_query("stale residual");
-        assert!(!h.host.palette.is_focused(), "palette must start unfocused");
+        h.host.search.set_query("stale residual");
         assert!(!h.host.palette_visible(), "palette must start hidden");
 
         h.host
@@ -2011,17 +2010,12 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             h.host.palette_visible(),
             "Super+Space must open the global-search palette"
         );
-        assert!(
-            h.host.palette.is_focused(),
-            "opening the palette via Super+Space must focus its input \
-             (so the very first keystroke after open lands in the search box)"
-        );
         assert_eq!(
-            h.host.palette.query(),
+            h.host.search.query(),
             "",
             "opening the palette must clear any residual query — \
              {:?} should have been wiped",
-            h.host.palette.query()
+            h.host.search.query()
         );
     }
 
@@ -2054,7 +2048,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             SearchScope::Workspace,
             "Super+Space opens global search on the workspace in front, the launcher's scope"
         );
-        h.host.palette.set_query("zzyzx");
+        h.host.search.set_query("zzyzx");
         // Retained application indexes are built from the compositor update
         // pass, never synchronously by the keystroke/query path. Exercise the
         // real lifecycle here: the first update starts the worker and a later
@@ -2147,7 +2141,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         assert_eq!(h.chrome.borrow().search_scope, SearchScope::Workspace);
         // Scoped to the workspace, typing still reaches other rooms' records:
         // the scope ranks what is here first, it hides nothing.
-        h.host.palette.set_query("field-guide");
+        h.host.search.set_query("field-guide");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
 
         let listing = || {
@@ -2180,13 +2174,13 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         let subtitle = h.host.search_results[idx].subtitle.clone();
         assert!(
             h.host
-                .palette
+                .search
                 .visible_entries()
                 .iter()
                 .any(|e| e.label == title && e.description == subtitle),
             "the record must reach the palette's own rows: {:?}",
             h.host
-                .palette
+                .search
                 .visible_entries()
                 .iter()
                 .map(|e| (&e.label, &e.description))
@@ -2194,7 +2188,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         );
 
         // Enter on that row.
-        h.host.palette.set_cursor(idx);
+        h.host.search.set_cursor(idx);
         h.host
             .activate_selected_result(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
 
@@ -2246,7 +2240,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
             .iter()
             .map(crate::shell::search::ResourceKindText::localized_label)
             // The leading reset chip is painted separately from the
-            // registered kinds; see `draw_search_banner`.
+            // registered kinds, as the launcher's band paints it.
             .chain(std::iter::once("All".to_string()))
             .collect();
         for scope in h.host.search_scope_list() {

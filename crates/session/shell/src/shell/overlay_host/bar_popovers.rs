@@ -479,7 +479,7 @@ impl ShellOverlayHost {
                 // action takes it like any parameter.
                 drop(state);
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.palette.set_query(&t("search-action-workspace-report"));
+                self.search.set_query(&t("search-action-workspace-report"));
                 self.last_search_query = "\0workspace-report\0".to_string();
                 return;
             }

@@ -509,9 +509,6 @@ impl CommandEntry {
 struct ArgState {
     entry_id: String,
     kind: ArgumentKind,
-    /// What the step was opened with, as a host that shows it elsewhere
-    /// reads it back ([`CommandPalette::argument_step`]).
-    spec: ArgumentSpec,
     /// A step the host opened ([`CommandPalette::open_argument_step`]):
     /// Enter hands the value back through
     /// [`CommandPalette::take_submitted_argument`] and Escape reports
@@ -769,7 +766,6 @@ impl CommandPalette {
         if self.arg_state.is_none() {
             self.saved_query = self.field.value().to_owned();
         }
-        let kept = spec.clone();
         let value = prefill.or(spec.prefill).unwrap_or_default();
         let kind = match spec.kind {
             ArgumentKind::Number { .. } => TextInputKind::Number,
@@ -786,7 +782,6 @@ impl CommandPalette {
         self.arg_state = Some(ArgState {
             entry_id,
             kind: spec.kind,
-            spec: kept,
             host_step,
         });
     }
@@ -1033,40 +1028,6 @@ impl CommandPalette {
 
     pub fn in_argument_mode(&self) -> bool {
         self.arg_state.is_some()
-    }
-
-    /// The argument step on screen: its id and what it was opened with.
-    pub fn argument_step(&self) -> Option<(&str, &ArgumentSpec)> {
-        self.arg_state
-            .as_ref()
-            .map(|arg| (arg.entry_id.as_str(), &arg.spec))
-    }
-
-    /// Every entry, before any filter.
-    pub fn entries(&self) -> &[CommandEntry] {
-        &self.entries
-    }
-
-    /// Whether the entries show as given, unmatched against the query
-    /// ([`Self::set_bypass_fuzzy`]).
-    pub fn bypasses_fuzzy(&self) -> bool {
-        self.bypass_fuzzy
-    }
-
-    /// What the empty field says it searches.
-    pub fn query_placeholder(&self) -> &str {
-        &self.query_placeholder
-    }
-
-    /// Whether the host said more results are coming ([`Self::set_searching`]).
-    pub fn more_coming(&self) -> bool {
-        self.searching
-    }
-
-    /// Whether the field shows alone while nothing is typed
-    /// ([`Self::set_field_only_while_empty`]).
-    pub fn field_only_while_empty(&self) -> bool {
-        self.field_only_while_empty
     }
 
     pub fn argument_buffer(&self) -> Option<&str> {

@@ -623,7 +623,7 @@ impl ShellOverlayHost {
             // The palette owns hover before this guard isolates the app below.
             // Another covering overlay keeps its existing input priority.
             if self.palette_visible
-                && self.palette.get_rect().contains(p)
+                && self.search_card().contains(p)
                 && !self.cursor_over_other_open_overlay(p)
             {
                 let palette_child = ctx

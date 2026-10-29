@@ -2330,9 +2330,6 @@ impl ShellDriver {
 
     fn scene_palette(&mut self) {
         self.fb.host_mut().set_palette_visible(true);
-        // Production opens the palette focused (`open_palette_with_scope`);
-        // otherwise the focus ring is absent from the shot.
-        self.fb.host_mut().set_palette_focus(true);
         // Settle the rising-edge open animation: frame 0 (`alpha == 0`)
         // is indistinguishable from bare desktop.
         self.fb.host_mut().force_palette_settled();
@@ -2349,7 +2346,6 @@ impl ShellDriver {
     fn scene_palette_app_query(&mut self) {
         self.fb.host_mut().set_palette_visible(true);
         self.fb.host_mut().force_palette_settled();
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().set_palette_query("calculator");
         let root = self.root_obj.clone();
         self.fb
@@ -2367,7 +2363,6 @@ impl ShellDriver {
             st.search_scope = shell::shell::chrome_state::SearchScope::ActiveApp;
         });
         self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
         self.fb.host_mut().set_palette_query("tilo");
         self.fb
@@ -2463,7 +2458,6 @@ impl ShellDriver {
     fn scene_palette_records(&mut self) {
         self.seed_records_in_other_rooms();
         self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
         self.fb.host_mut().set_palette_query("dune");
         let root = self.root_obj.clone();
@@ -2476,7 +2470,6 @@ impl ShellDriver {
     /// one most likely to be left looking broken.
     fn scene_palette_no_results(&mut self) {
         self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
         self.fb
             .host_mut()
@@ -2529,7 +2522,6 @@ impl ShellDriver {
     /// and an open app's name.
     fn scene_palette_query(&mut self, query: &str) {
         self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
         self.fb.host_mut().set_palette_query(query);
         let root = self.root_obj.clone();
@@ -2540,7 +2532,6 @@ impl ShellDriver {
 
     fn scene_palette_typed(&mut self) {
         self.fb.host_mut().set_palette_visible(true);
-        self.fb.host_mut().set_palette_focus(true);
         self.fb.host_mut().force_palette_settled();
         self.fb.host_mut().set_palette_query("open");
         let root = self.root_obj.clone();

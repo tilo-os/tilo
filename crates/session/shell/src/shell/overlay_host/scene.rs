@@ -545,22 +545,24 @@ impl ShellOverlayHost {
         self.overlay_is_open(id, self.overlay_flags())
     }
 
-    /// Open the palette empty and focused, as its chord does.
+    /// Open search empty, as its chord does.
     #[cfg(test)]
     pub(crate) fn open_palette_for_test(&mut self) {
         self.palette_visible = true;
-        self.palette.set_focus(true);
-        self.palette.set_query("");
+        self.search.set_query("");
         self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
     }
 
     /// The open overlays, topmost first — the order the synthetic
-    /// accessibility tree publishes them in.
+    /// accessibility tree publishes them in. Search is the launcher's,
+    /// which publishes its own tree as this host's child.
     pub(super) fn accessible_overlay_order(&self) -> Vec<LayerId> {
         let flags = self.overlay_flags();
         LayerId::ALL
             .into_iter()
-            .filter(|&id| !id.is_app() && self.overlay_is_open(id, flags))
+            .filter(|&id| {
+                !id.is_app() && id != LayerId::CommandPalette && self.overlay_is_open(id, flags)
+            })
             .collect()
     }
 
@@ -576,11 +578,6 @@ impl ShellOverlayHost {
         }
         match id {
             LayerId::DisplayLayouts => flags.projection,
-            // The palette has a complete semantic tree (query, result list,
-            // and focused result).  It is drawn as a top overlay, so publish
-            // it from the same ordered synthetic tree as every other overlay
-            // rather than leaving screen readers with only the obscured
-            // workspace.
             LayerId::CommandPalette => self.palette_visible,
             LayerId::MemberSheet => self.workspace_settings_overlay.member_sheet_is_open(),
             LayerId::Directory => self.directory_sheet.is_open(),

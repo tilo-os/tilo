@@ -34,27 +34,8 @@ impl ShellOverlayHost {
                 | LayerId::TabContextMenu
                 | LayerId::PowerMenu
                 | LayerId::Dictation => {}
-                LayerId::CommandPalette => {
-                    // The launcher publishes its own card, as its own child.
-                    if !self.launcher_shown()
-                        && let Some(mut palette) = self.palette.accessibility()
-                    {
-                        // The query owns focus, not its synthetic parent dialog.
-                        palette.state.focused = false;
-                        // The filter band is the host's, painted over the
-                        // palette's reserved strip; it joins the palette's
-                        // tree after the palette's own children (query,
-                        // result list) so the dialog reads as one surface.
-                        // A palette that is visible but not open publishes
-                        // no children, and then neither does the band —
-                        // `search_filters_child_index` is the one answer
-                        // both this and `synthetic_accessibility_rect` use.
-                        if self.search_filters_child_index() == Some(palette.children.len()) {
-                            palette.children.push(self.search_filters_accessibility());
-                        }
-                        root.children.push(palette);
-                    }
-                }
+                // The launcher publishes its own card, as its own child.
+                LayerId::CommandPalette => {}
                 LayerId::MemberSheet => root.children.push(
                     AccessNode::new(Role::Dialog)
                         .with_name(t("a11y-member-sheet"))
@@ -352,14 +333,7 @@ impl ShellOverlayHost {
             return layer.accessibility_rect(self.layer_geometry(&outputs), child_path);
         }
         match overlay {
-            LayerId::CommandPalette => match child_path {
-                // The trailing child is the host's filter band (see
-                // `accessibility`); everything before it is the palette's.
-                [first, rest @ ..] if Some(*first) == self.search_filters_child_index() => {
-                    self.search_filters.rect_for_path(rest)
-                }
-                _ => self.palette.synthetic_accessibility_rect(child_path),
-            },
+            LayerId::CommandPalette => None,
             LayerId::Collaborators => self
                 .collaborators_overlay
                 .accessibility_rect_for_path(child_path),
@@ -441,9 +415,7 @@ impl ShellOverlayHost {
             return focused;
         }
         match overlay {
-            LayerId::CommandPalette => {
-                self.palette.focus_synthetic_accessibility(child_path)
-            }
+            LayerId::CommandPalette => false,
             LayerId::Collaborators => self
                 .collaborators_overlay
                 .focus_accessibility_path(child_path),

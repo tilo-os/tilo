@@ -372,14 +372,6 @@ impl ShellOverlayHost {
                 file_picker_overlay.actions(),
             ),
         ));
-        // Palette entries come from the search registry on every
-        // keystroke. New providers slot in via `SearchRegistry::register`;
-        // the palette picks up their resource-kind chips automatically.
-        let mut palette = CommandPalette::new();
-        palette.set_bypass_fuzzy(true);
-        // The shell paints scope + kind controls into the palette's own
-        // reserved filter band, inside the card.
-        palette.set_host_filter_strip(true);
         let collaboration_preferences = inputs.collaboration_preferences;
         Self {
             rect: Rect::ZERO,
@@ -407,7 +399,7 @@ impl ShellOverlayHost {
             control_hints_frame: tilo_desktop::control_hints::HintFrame::default(),
             strip_switcher_revision: None,
             outputs: Vec::new(),
-            palette,
+            search: search_state::SearchState::default(),
             app_actions: None,
             focused_window,
             palette_visible: false,
@@ -434,8 +426,6 @@ impl ShellOverlayHost {
             auto_selected_row: None,
             active_kind_filter: Vec::new(),
             app_chooser: None,
-            search_filters: SearchFilters::default(),
-            search_filter_inputs: None,
             room_records: inputs.room_records,
             palette_layout_dirty: false,
             palette_layout_host: None,

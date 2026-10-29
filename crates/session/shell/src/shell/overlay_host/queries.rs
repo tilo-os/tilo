@@ -406,11 +406,11 @@ impl ShellOverlayHost {
     pub fn palette_snapshot(&self) -> (bool, String, Option<String>, Vec<(String, String)>) {
         (
             self.palette_visible,
-            self.palette.query().to_string(),
-            self.palette
+            self.search.query().to_string(),
+            self.search
                 .selected_id()
                 .map(std::string::ToString::to_string),
-            self.palette
+            self.search
                 .visible_entries()
                 .into_iter()
                 .map(|e| (e.id.clone(), e.label.clone()))
@@ -522,30 +522,24 @@ impl ShellOverlayHost {
     /// carries labels only, not the badge/source-marker text a harness
     /// needs to tell "already have this" from "fetches this" apart.
     pub fn palette_rows_detailed(&self) -> Vec<(String, String, Option<String>)> {
-        self.palette
+        self.search
             .visible_entries()
             .into_iter()
             .map(|e| (e.id.clone(), e.label.clone(), e.description.clone()))
             .collect()
     }
 
-    /// Focus the palette's query field. `open_palette_with_scope` does
-    /// this; harnesses that force `palette_visible` need it too or they
-    /// capture the unfocused field.
-    pub fn set_palette_focus(&mut self, focused: bool) {
-        self.palette.set_focus(focused);
-    }
-
-    /// The palette owns text input while open, including when its host
-    /// routes keys directly without changing the native widget focus.
+    /// The launcher's field owns text input while search is open, including
+    /// when its host routes keys directly without changing the native
+    /// widget focus.
     pub fn palette_ime_field(&self) -> Option<ui::ime::ImeWindowState> {
-        (self.palette_visible && self.palette.is_focused())
-            .then(|| ui::ime::ImeWindowState::from_widget(&self.palette))
-            .flatten()
+        let launcher = self.launcher.as_ref().filter(|_| self.palette_visible)?;
+        let app: &dyn Widget = launcher.app.as_ref();
+        ui::ime::ImeWindowState::from_widget(app)
     }
 
     pub(crate) fn palette_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
-        self.palette.ime_edit_fingerprint(key)
+        self.launcher.as_ref()?.app.ime_edit_fingerprint(key)
     }
 
     /// Whether one of the shell's password prompts is up and takes the
@@ -569,8 +563,8 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Whether the input method serves an overlay's own field — the
-    /// palette's, or a password prompt's — rather than the focused node's.
+    /// Whether the input method serves an overlay's own field — search's,
+    /// or a password prompt's — rather than the focused node's.
     pub fn overlay_owns_ime(&self) -> bool {
         self.palette_visible || self.shell_prompt_up()
     }
@@ -862,13 +856,13 @@ impl ShellOverlayHost {
     /// The command-palette query buffer, for the `shots` harness to
     /// assert a synthetic `Type("…")` landed.
     pub fn palette_query(&self) -> &str {
-        self.palette.query()
+        self.search.query()
     }
 
     /// Force-set the query buffer, for `shots` to seed a query while the
     /// palette is closed without round-tripping synthetic key events.
     pub fn set_palette_query(&mut self, q: &str) {
-        self.palette.set_query(q);
+        self.search.set_query(q);
     }
 
     /// The rooms held through the web, which the overview offers to leave:

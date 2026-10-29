@@ -16,7 +16,7 @@ pub mod surface;
 
 pub use resource::{Launcher, LauncherEffect, LauncherShell};
 pub use source::{
-    Answer, Ask, LauncherService, LauncherSource, Link, ResourceKind, Search, SearchScope,
+    Answer, Ask, CardFit, LauncherService, LauncherSource, Link, ResourceKind, Search, SearchScope,
 };
 pub use surface::LauncherSurface;
 

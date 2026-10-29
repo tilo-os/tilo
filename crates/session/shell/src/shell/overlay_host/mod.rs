@@ -135,18 +135,15 @@ use shortcuts::{
 #[cfg(test)]
 use std::path::PathBuf;
 
+use ui::CommandEntry;
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::search::system::filters::{
-    FilterStripSlot, FilterText, KindChip, ScopeSegment, SearchFilters, draw_filter_chip,
-    toggle_kind,
-};
+use ui::search::system::filters::draw_filter_chip;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
     PermissionPrompt, PromptChoice, SecretPrompt, TextInput, Widget, WindowGroup as UiWindowGroup,
 };
-use ui::{CommandEntry, CommandPalette};
 
 #[cfg(test)]
 use crate::shell::capture_surface::CaptureSurfaceKind;
@@ -265,6 +262,7 @@ mod palette_routing;
 mod palette_run;
 mod palette_search;
 mod people_overlay;
+mod search_state;
 use palette_search::LaunchpadMark;
 mod directory_sheet_app;
 mod display_confirm_sheet;
@@ -524,13 +522,14 @@ pub struct ShellOverlayHost {
     /// before layout. Empty in a bare `ui::App` host, where
     /// [`Self::strip_output_spans`] treats the window as the one display.
     outputs: Vec<OutputGeometry>,
-    palette: CommandPalette,
+    /// What search shows; the launcher draws it.
+    search: search_state::SearchState,
     palette_visible: bool,
     /// Search as the launcher app shows it, once the session lends the apps
-    /// it mounts in its own process; until then (and in a host without
-    /// them) the palette above draws itself.
+    /// it mounts in its own process. A host without them (a bare test host)
+    /// keeps search's state and shows no card.
     launcher: Option<launcher_host::LauncherHost>,
-    /// The launcher cannot be mounted here: the palette draws itself.
+    /// The launcher cannot be mounted here.
     launcher_unavailable: bool,
     /// Search providers the palette fans out to. Built once at
     /// construction — providers are stateful (own background indexers),
@@ -614,12 +613,6 @@ pub struct ShellOverlayHost {
     active_kind_filter: Vec<crate::shell::search::ResourceKind>,
     /// The app chooser an app asked for, while the palette shows it.
     app_chooser: Option<app_chooser::PendingAppChooser>,
-    /// The palette's filter band: chips, scope switch, their pointer
-    /// targets and semantics, laid out and cached at draw.
-    search_filters: SearchFilters,
-    /// What [`Self::search_filters`] was last configured with, so an
-    /// unchanged band is not rebuilt every frame.
-    search_filter_inputs: Option<SearchFilterInputs>,
     /// Records each room holds, shared with the records search provider.
     room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     /// Set whenever [`Self::refresh_search_results`] rewrites the
@@ -1419,16 +1412,6 @@ const STRIP_TRAILING_GUTTER_PX: f64 = STRIP_EDGE_GUTTER_PX;
 /// desktop.
 pub use crate::shell::output_scene::OutputGeometry;
 
-/// What the palette's filter band shows: each registered kind with its
-/// label, the chosen kinds, and each scope with its label.
-#[derive(Clone, Debug, PartialEq)]
-struct SearchFilterInputs {
-    kinds: Vec<(crate::shell::search::ResourceKind, String)>,
-    selected: Vec<crate::shell::search::ResourceKind>,
-    scopes: Vec<(crate::shell::chrome_state::SearchScope, String)>,
-    active_scope: crate::shell::chrome_state::SearchScope,
-}
-
 /// `(strip_id, groups)` where each group is `(group_id, tab_ids)` — the
 /// per-strip snapshot [`ShellOverlayHost::groups_per_strip`] returns for
 /// tests.
@@ -1483,10 +1466,6 @@ fn is_plain_slash(event: &WindowEvent, modifiers: winit::keyboard::ModifiersStat
 
 // Overview layout constants. Module-level so the draw path,
 // `hit_test_overview` and the unit tests share one geometry oracle.
-
-/// The semantic target of the open palette's query field, as the palette
-/// widget publishes it.
-const PALETTE_QUERY_TARGET: &str = "command-palette:query";
 
 /// Where one `update` of the host spent its time, reported as
 /// `SLOW-HOST-UPDATE` when the whole of it took long enough to hold up input:
@@ -1747,16 +1726,6 @@ fn draw_check_row(
             &style,
         );
     }
-}
-
-/// Clones `theme` with `surfaces.raised` set to the panel ground, so the
-/// fields and wells `CommandPalette` paints from `surfaces.raised` sit on
-/// its panel rather than reading as raised cards. The palette's own body is
-/// the floating material.
-fn palette_surface_theme(theme: &Theme) -> Theme {
-    let mut themed = theme.clone();
-    themed.tokens.colors.surfaces.raised = ui::chrome::shell::panel_ground(theme);
-    themed
 }
 
 #[cfg(test)]

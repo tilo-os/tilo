@@ -60,13 +60,12 @@ impl ShellOverlayHost {
             let id = format!("file:{}", path.display());
             return Some(desktop_thing(desktop, id, kind, &name));
         }
-        if self.palette.is_open()
-            && let Some(result) = self
-                .palette
-                .id_at(at)
-                .and_then(|id| id.strip_prefix("result:"))
-                .and_then(|index| index.parse::<usize>().ok())
-                .and_then(|index| self.search_results.get(index))
+        if let Some(result) = self
+            .search_row_at(at)
+            .as_deref()
+            .and_then(|id| id.strip_prefix("result:"))
+            .and_then(|index| index.parse::<usize>().ok())
+            .and_then(|index| self.search_results.get(index))
         {
             let reference = SharedSelection::of_text(&result.title)
                 .at(tilo_actions::SelectionPlace::item(result.id.as_str()))

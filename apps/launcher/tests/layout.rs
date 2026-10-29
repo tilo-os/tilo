@@ -114,3 +114,76 @@ fn a_narrow_window_keeps_the_card_inside_it() {
     let card = target(&mut app, "launcher-card");
     assert!(card.x1 <= 420.0 + 0.5, "{card:?}");
 }
+
+/// Whether the launcher is open, and the row selected.
+fn state(app: &mut HeadlessApp<LauncherShell>) -> (bool, Option<String>) {
+    app.surface(|surface: &mut LauncherSurface| {
+        (
+            surface.is_open(),
+            surface.palette().selected_id().map(str::to_owned),
+        )
+    })
+    .unwrap()
+}
+
+fn query(app: &mut HeadlessApp<LauncherShell>) -> String {
+    app.surface(|surface: &mut LauncherSurface| surface.palette().query().to_owned())
+        .unwrap()
+}
+
+#[test]
+fn a_press_on_a_row_chooses_that_row_not_the_selected_one() {
+    let mut app = staged("results");
+    let (_, selected) = state(&mut app);
+    let other = rows(&mut app)
+        .into_iter()
+        .find(|row| Some(row) != selected.as_ref() && row.starts_with("file:"))
+        .expect("a second row to press");
+    let at = target(&mut app, &format!("launcher-row:{other}")).center();
+    app.harness().click_at(at.x, at.y);
+    assert_eq!(
+        state(&mut app),
+        (false, Some(other)),
+        "the pressed row ran and closed the launcher"
+    );
+}
+
+#[test]
+fn a_press_beside_the_card_only_puts_search_away() {
+    let mut app = staged("results");
+    let card = target(&mut app, "launcher-card");
+    app.harness().click_at(card.x0 + 4.0, card.y1 + 40.0);
+    assert!(!state(&mut app).0, "search closed");
+}
+
+#[test]
+fn escape_clears_what_was_typed_before_it_closes_search() {
+    let mut app = staged("results");
+    assert_eq!(query(&mut app), "notes");
+    app.harness().key("Escape");
+    assert!(state(&mut app).0, "the first Escape keeps search open");
+    assert_eq!(query(&mut app), "", "…and clears the query");
+    app.harness().key("Escape");
+    assert!(!state(&mut app).0, "Escape on an empty field closes");
+}
+
+#[test]
+fn typing_searches_and_enter_runs_the_selected_row() {
+    let mut app = staged("launcher");
+    app.harness().type_text("calendar");
+    assert_eq!(rows(&mut app), ["app:calendar"]);
+    app.harness().key("Enter");
+    assert_eq!(state(&mut app), (false, Some("app:calendar".to_owned())));
+}
+
+#[test]
+fn a_step_takes_its_value_in_the_field_and_escape_goes_back() {
+    let mut app = staged("step");
+    app.harness().key("Escape");
+    assert!(state(&mut app).0, "back to the results, still open");
+    assert!(!rows(&mut app).is_empty(), "the results are listed again");
+    let mut app = staged("step");
+    app.harness().type_text("Groceries");
+    app.harness().key("Enter");
+    assert!(!state(&mut app).0, "the action ran with its value");
+}

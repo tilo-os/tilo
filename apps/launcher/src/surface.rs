@@ -30,7 +30,9 @@ use ui::winit::keyboard::{Key, NamedKey};
 use crate::fixture::FixtureSource;
 use crate::i18n::{t, t_args};
 use crate::resource::{Launcher, LauncherEffect};
-use crate::source::{ActivationModifier, Answer, Ask, Link, ResourceKind, Search, SearchScope};
+use crate::source::{
+    ActivationModifier, Answer, Ask, CardFit, Link, ResourceKind, Search, SearchScope,
+};
 
 /// The card's width on its own: the desktop's search card at its widest.
 const CARD_WIDTH: f64 = 640.0; // allow-breakpoint: a size, not a layout decision
@@ -273,7 +275,9 @@ impl LauncherSurface {
             .filter(|id| Some(*id) != self.auto_selected.as_deref())
             .map(str::to_owned);
         self.palette.set_entries(answer.rows);
-        let select = kept.or(answer.select);
+        // The source's choice is the person's when it keeps it; else the
+        // row the person chose stays, as long as it is listed.
+        let select = answer.select.or(kept);
         let cursor = select.and_then(|id| {
             self.palette
                 .visible_entries()
@@ -342,6 +346,26 @@ impl LauncherSurface {
         }
     }
 
+    /// Tell the host what the card makes of its room.
+    fn tell_fit(&self) {
+        let shown = if self.open {
+            self.palette
+                .visible_entries()
+                .iter()
+                .enumerate()
+                .filter_map(|(at, entry)| Some((entry.id.clone(), self.palette.row_rect(at)?)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.link.set_fit(CardFit {
+            card: self.palette.get_rect(),
+            chrome_height: self.palette.chrome_height(),
+            rows: self.palette.entry_row_capacity(),
+            shown,
+        });
+    }
+
     fn shows_band(&self) -> bool {
         self.band && !self.palette.shows_field_only()
     }
@@ -408,7 +432,16 @@ impl LauncherSurface {
         let last = i64::try_from(count.saturating_sub(1)).unwrap_or(0);
         let to = at.saturating_add(by).clamp(0, last);
         self.palette.set_cursor(usize::try_from(to).unwrap_or(0));
+        self.selection_moved();
+    }
+
+    /// The person moved the selection: it is theirs now, and the source is
+    /// told, so rows changing under it keep it on the same result.
+    fn selection_moved(&mut self) {
         self.auto_selected = None;
+        if let Some(row) = self.palette.selected_id().map(str::to_owned) {
+            self.ask(Ask::Select { row });
+        }
     }
 
     /// Stage `scenario`, as the person would get there.
@@ -503,8 +536,12 @@ impl Decorator for LauncherSurface {
         }
         self.take_open_request();
         self.take_answer();
+        if self.palette.set_held_modifiers(self.link.held_modifiers()) {
+            self.structure_dirty = true;
+        }
         self.palette.sync(state, path);
         self.publish_rows();
+        self.tell_fit();
     }
 
     /// The card is as wide as the room the host gives it, or the
@@ -547,6 +584,7 @@ impl Decorator for LauncherSurface {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.tell_fit();
         if !self.open {
             return;
         }
@@ -646,7 +684,7 @@ impl Decorator for LauncherSurface {
         let cursor_before = self.palette.cursor();
         self.palette.handle_event(event, ctx);
         if self.palette.cursor() != cursor_before {
-            self.auto_selected = None;
+            self.selection_moved();
         }
         self.take_requests(&query_before);
     }

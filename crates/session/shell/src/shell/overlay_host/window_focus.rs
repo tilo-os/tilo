@@ -371,12 +371,6 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The modifiers held changed: the palette's selected row previews
-    /// what Enter would do with them. Whether that needs a new frame.
-    pub fn note_held_modifiers(&mut self, modifiers: winit::keyboard::ModifiersState) -> bool {
-        self.palette.set_held_modifiers(modifiers) && self.palette_visible
-    }
-
     /// The modifier state changed with no key event to carry it (the
     /// control socket's modifier command, a backend's `ModifiersChanged`).
     /// A switcher held open by Alt commits once Alt is up.

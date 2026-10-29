@@ -981,7 +981,7 @@ impl ShellOverlayHost {
         if !self.palette_visible || current != scope {
             self.open_palette_with_scope(scope);
         }
-        self.palette.set_query(&handoff.query);
+        self.search.set_query(&handoff.query);
         self.palette_visible = true;
     }
 
@@ -1077,8 +1077,7 @@ impl ShellOverlayHost {
         // closed on a same-scope repeat, wrong for a "+" click.
         if !self.palette_visible {
             self.palette_visible = true;
-            self.palette.set_focus(true);
-            self.palette.set_query("");
+            self.search.set_query("");
         }
         // Re-run the query even when the palette was already up: the rows
         // carry a placement hint that just changed.
@@ -1097,7 +1096,7 @@ impl ShellOverlayHost {
         }
         self.expanded_kinds.clear();
         self.present_kinds.clear();
-        self.palette
+        self.search
             .set_query_placeholder(t("host-search-placeholder"));
         self.active_kind_filter.clear();
         let Some(chrome) = self.chrome.clone() else {

@@ -80,7 +80,7 @@ fn super_tap_opens_the_surface_and_it_stays_until_closed() {
     assert_eq!(host.super_surface(), Some(SuperSurface::Pinned));
     assert!(host.palette_visible, "search is the surface's field");
     assert!(
-        !host.palette.shows_field_only(),
+        !host.search.shows_field_only(),
         "global search with the launcher under the field"
     );
     assert_eq!(
@@ -102,8 +102,8 @@ fn super_tap_opens_the_surface_and_it_stays_until_closed() {
     );
 
     // Typing searches as it always has.
-    host.palette.set_query("spo");
-    assert!(!host.palette.shows_field_only());
+    host.search.set_query("spo");
+    assert!(!host.search.shows_field_only());
 
     // Another tap closes it.
     host.super_gesture(SuperGesture::Tap, &doc, &automerge::ROOT);
@@ -118,7 +118,7 @@ fn super_tap_opens_the_surface_and_it_stays_until_closed() {
     host.update_desk(ms(now, 60_200));
     assert_eq!(host.super_surface(), None);
     assert!(
-        !host.palette.shows_field_only(),
+        !host.search.shows_field_only(),
         "plain search opens with its list again"
     );
 }
@@ -145,7 +145,7 @@ fn holding_super_peeks_and_release_closes_unless_it_was_used() {
     assert!(!host.palette_visible);
 
     grown_peek(&mut host, &doc);
-    host.palette.set_query("not");
+    host.search.set_query("not");
     host.super_gesture(SuperGesture::PeekReleased, &doc, &automerge::ROOT);
     assert_eq!(
         host.super_surface(),

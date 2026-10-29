@@ -72,7 +72,6 @@ impl Widget for ShellOverlayHost {
             return;
         }
         self.content.sync(s, p);
-        self.palette.sync(s, p);
         // Mounted before the first layout, so search's place in the tree
         // never changes under the keyboard focus that opens it.
         self.mount_launcher();
@@ -230,7 +229,7 @@ impl Widget for ShellOverlayHost {
         if self.palette_visible
             && let Some(chrome) = self.chrome.clone()
         {
-            let current_query = self.palette.query().to_string();
+            let current_query = self.search.query().to_string();
             let (scope, active_provider) = {
                 let state = chrome.borrow();
                 (
@@ -313,11 +312,10 @@ impl Widget for ShellOverlayHost {
         self.harvest_floating_surface_source_updates();
         self.harvest_capture_studio_requests();
         steps.mark("harvest-requests");
-        let palette_dirty = self.palette.update(doc, path)
-            | self.launcher.as_mut().is_some_and(|launcher| {
-                let woken = launcher.take_woken();
-                launcher.app.update(doc, path) | woken
-            });
+        let palette_dirty = self.launcher.as_mut().is_some_and(|launcher| {
+            let woken = launcher.take_woken();
+            launcher.app.update(doc, path) | woken
+        });
         if search_rows_stale {
             // A worker published an index, or artwork arrived, after the
             // rows were built. Force one normal fanout this frame so the
@@ -567,9 +565,6 @@ impl Widget for ShellOverlayHost {
         // (or of the window an app's search stands in), then scrolls; what
         // fits decides how many rows each group shows.
         let (palette_frame, palette_list_max) = self.palette_place(theme);
-        if self.overlay_area().height() > 0.0 {
-            self.palette.set_max_list_height(palette_list_max);
-        }
         let palette_node = self.build_search_layout(taffy, theme, node_map, palette_list_max);
         // Match children(): a closed composer has no live controls to measure
         // or query. Visibility changes retire/rebuild the map below.
@@ -816,17 +811,8 @@ impl Widget for ShellOverlayHost {
         }
         if let Some(&palette_child) = children.get(1) {
             let origin = Point::new(self.rect.x0, self.rect.y0);
-            match self.launcher.as_mut() {
-                Some(launcher) => {
-                    launcher.app.apply_layout(taffy, palette_child, origin);
-                    // Search's own state keeps the card's geometry, so a
-                    // press is told inside the card from one outside it.
-                    let card = launcher.app.get_rect();
-                    let height = self.palette.desired_size().1.min(card.height());
-                    self.palette
-                        .set_rect(Rect::new(card.x0, card.y0, card.x1, card.y0 + height));
-                }
-                None => self.palette.apply_layout(taffy, palette_child, origin),
+            if let Some(launcher) = self.launcher.as_mut() {
+                launcher.app.apply_layout(taffy, palette_child, origin);
             }
         }
         if let Some(capture_node) = self.capture_node {
@@ -1026,25 +1012,6 @@ impl Widget for ShellOverlayHost {
                 .agent_markers
                 .semantic_action(target, action, state, path);
         }
-        // The palette is published inside this host's tree (see
-        // `accessibility_represents_child`), so its query's semantic target
-        // arrives here, not at the palette widget. Setting it is typing it:
-        // the results are recomputed for the new text.
-        if target == PALETTE_QUERY_TARGET && self.palette_visible {
-            let before = self.palette.query().to_string();
-            let handled = self
-                .palette
-                .perform_semantic_action(target, action, state, path);
-            if handled
-                && self.palette.query() != before
-                && self.param_flow.is_none()
-                && self.secondary_flow.is_none()
-            {
-                let (doc, root) = ui::doc::document(state, path);
-                self.refresh_search_results(doc.doc(), root);
-            }
-            return handled;
-        }
         if let Some(handled) = self.perform_sheet_action(target, action, state, path) {
             // A sheet's target never falls back to a pointer click: a stale
             // one must not press whatever is now under its old bounds.
@@ -1070,18 +1037,6 @@ impl Widget for ShellOverlayHost {
         self.host_focus_synthetic_accessibility(path)
     }
 
-    /// Expose content + palette as direct children so trait walkers can
-    /// recurse into the live tree, in `build_layout`'s child-node order.
-    /// The open palette is published once, by [`Self::accessibility`] under the
-    /// command-palette layer with the host's filter band inside it; its widget
-    /// (the [`Self::children`] entry after the content) is not exported again.
-    fn accessibility_represents_child(&self, child_index: usize) -> bool {
-        self.onboarding.is_none()
-            && self.palette_visible
-            && child_index == 1
-            && !self.launcher_shown()
-    }
-
     fn test_rects(&self) -> Vec<(String, Rect)> {
         let mut targets = self
             .layers
@@ -1089,11 +1044,6 @@ impl Widget for ShellOverlayHost {
             .preview_target()
             .map(|rect| vec![("dictation.live-preview".into(), rect)])
             .unwrap_or_default();
-        if self.onboarding.is_none() && self.palette_visible && self.palette.is_open() {
-            // The legacy widget id covers the result card. A touch aimed at
-            // the query must use the same row as its editable semantic node.
-            targets.push((PALETTE_QUERY_TARGET.into(), self.palette.input_row_rect()));
-        }
         if self.onboarding.is_none() {
             targets.extend(self.desk_test_rects());
             targets.extend(self.strip_switcher_test_rects());
@@ -1123,11 +1073,10 @@ impl Widget for ShellOverlayHost {
         let mut out: Vec<&dyn Widget> =
             Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
         out.push(self.content.as_ref());
-        if self.palette_visible {
-            match self.launcher.as_ref() {
-                Some(launcher) => out.push(launcher.app.as_ref()),
-                None => out.push(&self.palette),
-            }
+        if self.palette_visible
+            && let Some(launcher) = self.launcher.as_ref()
+        {
+            out.push(launcher.app.as_ref());
         }
         out.push(&self.capture_studio);
         if let Some(markup) = self.screenshot_markup.as_ref() {
@@ -1175,11 +1124,10 @@ impl Widget for ShellOverlayHost {
         let mut out: Vec<&mut (dyn Widget + '_)> =
             Vec::with_capacity(5_usize.saturating_add(self.capture_mirrors.len()));
         out.push(self.content.as_mut());
-        if self.palette_visible {
-            match self.launcher.as_mut() {
-                Some(launcher) => out.push(launcher.app.as_mut()),
-                None => out.push(&mut self.palette),
-            }
+        if self.palette_visible
+            && let Some(launcher) = self.launcher.as_mut()
+        {
+            out.push(launcher.app.as_mut());
         }
         out.push(&mut self.capture_studio);
         if let Some(markup) = self.screenshot_markup.as_mut() {

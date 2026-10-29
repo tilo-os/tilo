@@ -1819,13 +1819,7 @@ impl FrameBuilder {
             return None;
         }
         // The launcher app takes search's keys in the node it is shown in.
-        if let Some(node) = self.host.launcher_node() {
-            return Some(node);
-        }
-        self.node_map.iter().find_map(|(&node, &widget)| {
-            // SAFETY: the map belongs to this frame's current live tree.
-            (unsafe { (*widget).test_id() } == Some("command_palette_input")).then_some(node)
-        })
+        self.host.launcher_node()
     }
 
     fn settle_palette_focus(&mut self, palette: NodeId) {
@@ -7289,21 +7283,18 @@ mod tests {
                 &automerge::ROOT,
                 &mut focus
             ));
-            native_type_literal(&mut frame, &mut doc, &mut focus, "h");
-            assert_eq!(frame.host.palette_query(), "h");
-            // Rebuild through the actual viewport path while search owns focus.
+            assert!(frame.host.palette_visible());
+            // Rebuild through the actual viewport path while search is open.
             frame.set_viewport(viewport);
             frame.relayout();
-            // The first Escape clears what was typed; the second closes.
-            for _ in 0..2 {
-                assert!(frame.dispatch_event(
-                    &key_press(Key::Named(NamedKey::Escape)),
-                    &Modifiers::default(),
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
-                    &mut focus
-                ));
-            }
+            // Escape on an empty field closes search.
+            assert!(frame.dispatch_event(
+                &key_press(Key::Named(NamedKey::Escape)),
+                &Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus
+            ));
             assert!(!frame.host.palette_visible());
             let _ = frame.paint_settled();
             frame.reconcile_native_focus(&mut focus);
@@ -8134,20 +8125,22 @@ mod tests {
         assert!(fb.focused_ime_field(None).is_none());
     }
 
-    fn query_bounds(node: &ui::a11y::AccessNode) -> Option<ui::a11y::AccessBounds> {
-        if node.action_target.as_deref() == Some("command-palette:query") {
-            return node.bounds;
-        }
-        node.children.iter().find_map(query_bounds)
-    }
-
     #[test]
-    fn search_query_target_is_the_editable_row_and_disappears_on_close() {
+    fn search_field_target_is_the_launchers_editable_row_and_disappears_on_close() {
+        // The launcher takes what the shell asks of it, and answers, as
+        // frames run.
+        fn run_frames(fb: &mut FrameBuilder, doc: &mut AutoCommit) {
+            for _ in 0..3 {
+                fb.pump_apps(doc, &automerge::ROOT);
+                fb.relayout();
+            }
+            let _ = fb.paint_settled();
+        }
         let mut fb = FrameBuilder::new((1920, 1080));
         let mut doc = AutoCommit::new();
         let mut focus = None;
         let _ = fb.paint_settled();
-        assert!(!fb.widget_registry().contains_key("command-palette:query"));
+        assert!(!fb.widget_registry().contains_key("launcher-field"));
         assert!(fb.dispatch_event(
             &key_press(Key::Named(NamedKey::Space)),
             &Modifiers::from(ModifiersState::SUPER),
@@ -8155,23 +8148,15 @@ mod tests {
             &automerge::ROOT,
             &mut focus,
         ));
-        let _ = fb.paint_settled();
+        run_frames(&mut fb, &mut doc);
         let targets = fb.widget_registry();
-        let mut names: Vec<_> = targets.keys().collect();
-        names.sort();
-        println!("open Search targets ({}): {names:?}", targets.len());
-        let query = *targets
-            .get("command-palette:query")
-            .expect("open Search must publish its editable query row, not just its card");
-        let tree = fb
-            .host()
-            .accessibility()
-            .expect("Search accessibility tree");
-        assert_eq!(query_bounds(&tree), Some(query.into()));
-        assert!(query.area() > 0.0, "the target is a visible editable row");
+        let field = *targets
+            .get("launcher-field")
+            .expect("open Search publishes its editable field row, not just its card");
+        assert!(field.area() > 0.0, "the target is a visible editable row");
         let card = fb.host().palette_rect_for_tests();
-        assert!(card.contains(query.center()));
-        assert!(query.height() < card.height());
+        assert!(card.contains(field.center()));
+        assert!(field.height() < card.height());
         assert!(fb.dispatch_event(
             &key_press(Key::Named(NamedKey::Escape)),
             &Modifiers::default(),
@@ -8179,8 +8164,8 @@ mod tests {
             &automerge::ROOT,
             &mut focus,
         ));
-        let _ = fb.paint_settled();
-        assert!(!fb.widget_registry().contains_key("command-palette:query"));
+        run_frames(&mut fb, &mut doc);
+        assert!(!fb.widget_registry().contains_key("launcher-field"));
     }
 
     fn focused_name(fb: &FrameBuilder, focus: Option<NodeId>) -> Option<String> {
@@ -8707,13 +8692,13 @@ mod tests {
 
     #[test]
     fn an_open_palette_reaches_assistive_technology_once() {
-        // The host publishes the palette (with its filter band) itself; the
-        // palette widget must not be exported a second time, or a screen
-        // reader sees two palettes and may type into the hidden one.
+        // The launcher publishes its card as the host's child; nothing of
+        // search is exported a second time, or a screen reader sees two
+        // palettes and may type into the hidden one.
         let mut fb = FrameBuilder::new((1280, 800));
         fb.host_mut().set_palette_visible(true);
-        fb.host_mut().set_palette_focus(true);
         fb.host_mut().force_palette_settled();
+        let _ = fb.paint_settled();
         fb.relayout();
         let update = fb.build_a11y_tree_update(None, 1.0);
         let named = |name: &str| {
@@ -8724,7 +8709,6 @@ mod tests {
                 .count()
         };
         assert_eq!(named("Command palette"), 1, "one palette");
-        assert_eq!(named("Search filters"), 1, "its filter band, once");
         let queries = update
             .nodes
             .iter()
@@ -8738,12 +8722,13 @@ mod tests {
 
     #[test]
     fn assistive_technology_sets_the_open_palettes_query() {
-        // The palette is published inside the host's tree, so setting its
-        // query from outside reaches the host first; it must still be typed.
+        // The launcher is published inside the host's tree, so setting its
+        // query from outside reaches the host first; it must still be typed,
+        // and search runs it.
         let mut fb = FrameBuilder::new((1280, 800));
         fb.host_mut().set_palette_visible(true);
-        fb.host_mut().set_palette_focus(true);
         fb.host_mut().force_palette_settled();
+        let _ = fb.paint_settled();
         fb.relayout();
         let update = fb.build_a11y_tree_update(None, 1.0);
         let (query_id, _) = update
@@ -8764,6 +8749,7 @@ mod tests {
             &automerge::ROOT,
             &mut focus,
         ));
+        let _ = fb.paint_settled();
         assert_eq!(fb.host().palette_query(), "photos");
     }
 

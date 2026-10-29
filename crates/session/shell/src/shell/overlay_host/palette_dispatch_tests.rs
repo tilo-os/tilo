@@ -2461,7 +2461,7 @@ fn an_apps_choose_identity_opens_the_palette_on_choosing_the_workspaces_identity
         chrome.borrow().search_scope,
         crate::shell::chrome_state::SearchScope::All
     );
-    let query = host.palette.query().to_string();
+    let query = host.search.query().to_string();
     assert_eq!(query, t("search-action-identity-select"));
     let document = AutoCommit::new();
     let state = chrome.borrow();

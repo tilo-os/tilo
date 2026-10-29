@@ -415,15 +415,15 @@ impl ShellOverlayHost {
             if state.search_resource_scope.take().is_some() {
                 state.bump();
                 drop(state);
-                self.palette.set_query("");
-                self.palette
+                self.search.set_query("");
+                self.search
                     .set_query_placeholder(t("host-search-placeholder"));
                 self.last_search_query = "\0resource-scope-back\0".into();
                 return;
             }
         }
-        if !self.palette.query().is_empty() {
-            self.palette.set_query("");
+        if !self.search.query().is_empty() {
+            self.search.set_query("");
             self.palette_layout_dirty = true;
             return;
         }
