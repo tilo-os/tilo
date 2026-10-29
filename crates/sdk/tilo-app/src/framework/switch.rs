@@ -169,6 +169,16 @@ impl Widget for Switch {
         self.part.paint_bounds()
     }
 
+    // The switch draws nothing of its own: what changed is what changed in
+    // its part, not the whole part's box.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.part.collect_damage(regions);
+    }
+
+    fn damage_covers_own_box(&self) -> bool {
+        self.part.damage_covers_own_box()
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         // The key may change between syncs (a selection made in this very
         // event), so the structure is re-checked here as well.
