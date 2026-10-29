@@ -485,14 +485,18 @@ def check_read(session: Session) -> dict:
     action = until("tilolang Notes' 'Read the content'",
                    lambda: app_action(session, app_id("notes"), "Read the content"))
     room = value_of(session.invoke("app-actions", action["id"]))
-    kind = f"tl.{app_id('notes')}.Notebook"
-    notebook = next((r for r in room.get("records", []) if r.get("kind") == kind), None)
+    # Notes' root record, whatever its type is called: the one record of the app's own kinds.
+    prefix = f"tl.{app_id('notes')}."
+    notebook = next((r for r in room.get("records", []) if r.get("kind", "").startswith(prefix)), None)
     if notebook is None:
-        raise Failed(f"the room's read lists no notebook: {json.dumps(room)[:2000]}")
+        raise Failed(f"the room's read lists no record of Notes: {json.dumps(room)[:2000]}")
+    kind = notebook["kind"]
     read = value_of(session.invoke("app-actions", action["id"], {"item": notebook["item"]}))
-    notes = read.get("fields", {}).get("notes", {})
+    # The collection of notes, whatever the root calls it: its field listing Notes' notes.
+    notes = next((f for f in read.get("fields", {}).values() if isinstance(f, dict)
+                  and any(i.get("type") == "Note" for i in f.get("items", []))), {})
     if read.get("kind") != kind or not notes.get("items"):
-        raise Failed(f"the notebook's read holds no notes: {json.dumps(read)[:2000]}")
+        raise Failed(f"Notes' root record's read holds no notes: {json.dumps(read)[:2000]}")
     native = until("native Notes' 'Read the content'", lambda: app_action(session, NATIVE, "Read the content"))
     return {
         "records": len(room["records"]),
@@ -595,11 +599,12 @@ def presented(session: Session, app: str) -> bool:
 
 
 def check_hosted_here(session: Session, windows: dict, out: Path) -> dict:
-    """The session's own workspace is hosted by this device: there is no host to wait for,
-    so its apps are told nothing about one, and each shows its own state at once."""
+    """The session's own workspace is hosted by this device: its apps wait on no other host
+    (the room syncs with nothing, or with this device's own workspace host, which is there
+    already), and each shows its own state at once."""
     room = session.active_room()
     told = session.room_sync(room)
-    if told["state"] is not None:
+    if told["state"] not in (None, "synced"):
         raise Failed(f"the session's own workspace waits on a host: {told}")
     return {"room": room, "state": told["state"],
             "snapshots": snapshots(session, windows, out, "first-")}
@@ -917,10 +922,13 @@ def probe_packages(state: Path, out: Path) -> list[Path]:
         shutil.copytree(out / "build" / name / "payload", staged / "payload")
         (staged / "payload/probe-routes").write_text("\n".join(routes) + "\n")
         manifest = (out / "build" / name / "manifest.toml").read_text()
+        # The probe runs as an app launched with that app's own custody, as any app's process
+        # is: its entrypoint names the probe's runtime, not tilolang's, so the session starts it
+        # as an app process rather than handing a tilolang host its instance.
         manifest, n = re.subn(r'(?m)^optional-runtimes = \["([^"]*)"\]',
-                              f'optional-runtimes = ["\\1", "tilolang/{PROBE_RUNTIME}"]', manifest)
+                              f'optional-runtimes = ["\\1", "probe/{PROBE_RUNTIME}"]', manifest)
         manifest, m = re.subn(r'(?ms)^\[entrypoint\]\nruntime = "[^"]*"\nbin = "[^"]*"',
-                              f'[entrypoint]\nruntime = "tilolang/{PROBE_RUNTIME}"\nbin = "bin/tilo-collab-probe"',
+                              f'[entrypoint]\nruntime = "probe/{PROBE_RUNTIME}"\nbin = "bin/tilo-collab-probe"',
                               manifest)
         if n != 1 or m != 1:
             raise Failed(f"cannot point {name}'s manifest at the probe")

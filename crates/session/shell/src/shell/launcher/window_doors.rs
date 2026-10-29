@@ -230,6 +230,19 @@ impl HeldDoor {
             door.launcher_pid = Some(launcher_pid);
             waiting = std::mem::take(&mut door.waiting);
             tilolang.clone_from(&door.tilolang);
+            // A window whose instance a tilolang host runs is presentation over its door by
+            // construction (`--tilolang-hosted` takes its patch connection there), so its
+            // process opens the app's later windows too, from now on: a later window never
+            // starts a process of its own, which would hold no instance. What is sent before
+            // it reads its door waits there.
+            if door.tilolang.is_some() {
+                door.serves = Serves::Yes;
+                for queued in std::mem::take(&mut door.queued) {
+                    if let Err(error) = send_window(door, &queued.app, queued.room, queued.token) {
+                        tracing::warn!(%error, "a window of a tilolang app was not opened");
+                    }
+                }
+            }
         }
         (self.theirs.take(), waiting, tilolang)
     }

@@ -11,10 +11,12 @@
 //!   the toolkit publishes an app's ([`tilo_actions::door::survey`], deltas through
 //!   [`SurfacePublication`]), and runs what the broker delivers: an action the broker admitted for
 //!   its invoker is built through the published spec and applied as that invoker's step.
-//! - **History:** the instance publishes the history verbs every app publishes (Undo, Redo,
-//!   History, ...: `collaboration::history_source::verbs`) on its app's resource and answers them
-//!   on its record, as a native app does. The person's Undo on a notice in the window is the
-//!   same `undo`, as theirs: there is one undo.
+//! - **What every app publishes:** on its app's resource the instance publishes the history
+//!   verbs (Undo, Redo, History, ...: `collaboration::history_source::verbs`), `read`
+//!   (`tilo_resource::read`) and "Show this window" (`tilo_actions::remote::activate_spec`), and
+//!   answers them as a framework app does: history on its record, `read` through the runtime,
+//!   and "Show this window" by asking its window to come forward. The person's Undo on a notice
+//!   in the window is the same `undo`, as theirs: there is one undo.
 //! - **The window:** the instance sends it patches and hears what the person did over the patch
 //!   connection.
 
@@ -77,8 +79,10 @@ pub struct Spec {
 /// What the instance publishes on its connection: the room's records with their actions, kept up
 /// to date change by change.
 struct Surface {
-    /// The instance's app: its resource carries the history verbs.
+    /// The instance's app: its resource carries what every app publishes.
     app: String,
+    /// "Show this window", in the person's language.
+    activate: tilo_actions::ActionSpec,
     host: Host,
     planner: Arc<dyn Planner>,
     committer: Arc<dyn Committer>,
@@ -86,7 +90,7 @@ struct Surface {
 }
 
 impl Surface {
-    fn new(app: &str, host: &Host, wake: Waker) -> Self {
+    fn new(app: &str, activate: tilo_actions::ActionSpec, host: &Host, wake: Waker) -> Self {
         let handle = Arc::new(
             host.handle()
                 .with_caller(|| CALLER.with(|caller| caller.borrow().clone())),
@@ -96,6 +100,7 @@ impl Surface {
         let planner: Arc<dyn Planner> = handle.clone();
         let surface = Self {
             app: app.to_owned(),
+            activate,
             host: host.clone(),
             planner,
             committer: handle,
@@ -112,16 +117,15 @@ impl Surface {
     }
 
     /// Every resource the room's packages hold, each with its actions; the host's own resource;
-    /// and each package's actions that take no record, the instance's own app's with the history
-    /// verbs of its record. Built now, so an invocation resolves against what the record holds
-    /// now.
+    /// and each package's actions that take no record, the instance's own app's with what every
+    /// app publishes. Built now, so an invocation resolves against what the record holds now.
     fn resources(&self) -> Vec<ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
         out.extend(self.publications.borrow().trees().values().cloned());
         for package in self.host.packages() {
             let mut resource = publish_package(&package.meta, &self.planner);
             if package.meta.app == self.app {
-                resource = with_history(resource);
+                resource = with_app_actions(resource, &self.activate);
             }
             if !resource.actions.is_empty() {
                 out.push(resource);
@@ -144,9 +148,16 @@ impl Publication for Held {
     }
 }
 
-/// `resource` with the history verbs every app's record answers, those it does not offer itself.
-fn with_history(mut resource: ResourceSpec) -> ResourceSpec {
-    for spec in verbs::specs() {
+/// `resource` with what every app publishes, those it does not offer itself: the history verbs
+/// of its record, `read` and "Show this window".
+fn with_app_actions(
+    mut resource: ResourceSpec,
+    activate: &tilo_actions::ActionSpec,
+) -> ResourceSpec {
+    let every = verbs::specs()
+        .into_iter()
+        .chain([tilo_resource::read::spec(None), activate.clone()]);
+    for spec in every {
         if !resource
             .actions
             .iter()
@@ -190,7 +201,11 @@ impl Platform for HostPlatform {
     }
 
     fn publish(&self, host: &Host, wake: Waker) -> Option<Box<dyn Publication>> {
-        let surface = Rc::new(Surface::new(&self.bundle.meta.app, host, wake));
+        let activate = tilo_actions::remote::activate_spec(
+            self.phrases.say("app-activate-window", &[]),
+            self.phrases.say("app-activate-window-description", &[]),
+        );
+        let surface = Rc::new(Surface::new(&self.bundle.meta.app, activate, host, wake));
         *self.surface.borrow_mut() = Some(Rc::clone(&surface));
         Some(Box::new(Held(surface)))
     }
@@ -215,6 +230,8 @@ pub struct Kept {
 /// One app instance. See the module docs.
 pub struct Hosted {
     spec: Spec,
+    /// The app's package: what a read of a past version runs.
+    bundle: Arc<Bundle>,
     /// The app's resource, by its id and kind: where its history verbs are published.
     resource: (String, String),
     instance: Instance,
@@ -271,7 +288,7 @@ impl Hosted {
         );
         let record = record.speaking(phrases.locale());
         let platform = HostPlatform {
-            bundle,
+            bundle: Arc::clone(&bundle),
             phrases,
             wake,
             surface: Rc::clone(&surface),
@@ -296,6 +313,7 @@ impl Hosted {
         let registry = ActionRegistry::with(tilolang_tilo::instance::room::register);
         Self {
             spec,
+            bundle,
             resource,
             instance,
             record,
@@ -460,6 +478,15 @@ impl Hosted {
                 .view_history(&encoded.payload)
                 .map_err(|error| Refused::new("action_failed", error));
         }
+        if encoded.type_id == tilo_resource::read::TYPE {
+            return self
+                .read(&encoded.payload)
+                .map_err(|error| Refused::new("action_failed", error));
+        }
+        if encoded.type_id == tilo_actions::remote::APPLICATION_ACTIVATE_TYPE {
+            self.instance.activate_window();
+            return Ok(tilo_actions::remote::activation_requested());
+        }
         if encoded.type_id == ACTION_TYPE {
             let action: DynAction = serde_json::from_slice(&encoded.payload)
                 .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
@@ -503,6 +530,51 @@ impl Hosted {
         ))
     }
 
+    /// Answer `read` (`tilo_resource::read`): what the record holds, through the runtime, now or
+    /// at a past version.
+    fn read(&self, payload: &[u8]) -> Result<tilo_actions::ActionOutput, String> {
+        let args: serde_json::Value = if payload.is_empty() {
+            serde_json::Value::Null
+        } else {
+            tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
+        };
+        let item = args.get("item").and_then(serde_json::Value::as_str);
+        let value = if let Some(version) = args.get("version").and_then(serde_json::Value::as_str) {
+            let doc = self.record.doc();
+            let heads = collaboration::history_source::steps::resolve(doc, version)?;
+            let frozen = doc
+                .clone()
+                .fork_at(&heads)
+                .map_err(|error| error.to_string())?;
+            // A runtime of its own over the frozen record, as a framework app reads a past
+            // version; a read runs no action.
+            let past = Host::new(
+                &frozen,
+                tilolang_tilo::runtime::Principal::new("reader"),
+                tilolang_tilo::authority::holding_nothing("reader"),
+            )
+            .map_err(|error| error.to_string())?;
+            past.load_bundle(&self.bundle)
+                .map_err(|error| error.to_string())?;
+            verbs::review::bounded(serde_json::json!({
+                "version": heads.iter().map(ToString::to_string).collect::<Vec<_>>().join("+"),
+                "heads": heads.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "content": past.read_content(item)?,
+            }))?
+        } else {
+            let host = self
+                .instance
+                .host()
+                .ok_or_else(|| "the app has not started yet".to_owned())?;
+            host.sync_from(self.record.doc());
+            host.read_content(item)?
+        };
+        Ok(tilo_actions::ActionOutput {
+            value: Some(value),
+            resources: Vec::new(),
+        })
+    }
+
     /// Publish what the instance offers, when it changed since the broker last took it.
     fn publish(&mut self) {
         let Some(surface) = self.surface.borrow().clone() else {
@@ -513,6 +585,8 @@ impl Hosted {
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
             <OpenEffect as tilo_resource::Effect>::OPERATION.to_owned(),
             VIEW_TYPE.to_owned(),
+            tilo_resource::read::TYPE.to_owned(),
+            tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.to_owned(),
         ]);
         let violations = tilo_actions::validate_surface(&resources, &self.registry, &handlers);
         if !violations.is_empty() {

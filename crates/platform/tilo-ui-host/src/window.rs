@@ -95,6 +95,8 @@ pub struct AppWindow {
     focus: Option<String>,
     /// Whether an input method composes in the focused control, as last sent.
     composing: bool,
+    /// The app asked for the window to come forward, and it has not yet.
+    activation: bool,
 }
 
 impl AppWindow {
@@ -150,7 +152,14 @@ impl AppWindow {
             input: false,
             focus: None,
             composing: false,
+            activation: false,
         }
+    }
+
+    /// Whether the app asked for the window to come forward since this was last asked
+    /// ([`ToUi::Activate`]).
+    pub fn take_activation(&mut self) -> bool {
+        std::mem::take(&mut self.activation)
     }
 
     // ----- what the app sends --------------------------------------------------------------
@@ -219,6 +228,7 @@ impl AppWindow {
             }
             match message {
                 ToUi::Loading => self.show_loading(),
+                ToUi::Activate => self.activation = true,
                 ToUi::Open {
                     lane,
                     target,

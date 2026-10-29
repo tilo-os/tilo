@@ -79,6 +79,8 @@ impl PeerTransport for Broker {
 struct Window {
     transport: ChannelTransport,
     root: Option<patch::Node>,
+    /// The instance asked the window to come forward.
+    activated: bool,
 }
 
 impl Window {
@@ -101,6 +103,7 @@ impl Window {
                             change.apply(root).expect("the patch applies");
                         }
                     }
+                    ToUi::Activate => self.activated = true,
                     _ => {}
                 }
             }
@@ -189,6 +192,7 @@ fn running(person: &str) -> (TilolangHost, Window, Sent, Inbox, RouteSpec) {
     let window = Window {
         transport: ChannelTransport::new(theirs).unwrap(),
         root: None,
+        activated: false,
     };
     (host, window, sent, inbox, route)
 }
@@ -458,6 +462,49 @@ fn the_instance_publishes_and_answers_the_history_verbs_every_app_does() {
 }
 
 #[test]
+fn the_instance_answers_read_and_show_this_window_as_every_app_does() {
+    let (mut host, mut window, sent, inbox, _route) = running("ada");
+    settle(&mut host, &mut window);
+    let hosted = host.instances().next().unwrap();
+    let find = |id: &str| {
+        hosted
+            .published()
+            .iter()
+            .find(|action| {
+                action.address.resource == format!("tl:{APP}") && action.address.action == id
+            })
+            .unwrap_or_else(|| panic!("{id} is published on the app's resource"))
+            .address
+            .clone()
+    };
+    let (read, activate) = (
+        find("read"),
+        find(tilo_actions::remote::APPLICATION_ACTIVATE_ACTION),
+    );
+
+    deliver(&inbox, 1, &read, "grace");
+    settle(&mut host, &mut window);
+    match answered(&sent, 1) {
+        Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+            let value = output.value.expect("read answers what the record holds");
+            assert!(value.get("records").is_some(), "{value}");
+        }
+        other => panic!("read was answered {other:?}"),
+    }
+
+    deliver(&inbox, 2, &activate, "grace");
+    settle(&mut host, &mut window);
+    assert!(
+        matches!(
+            answered(&sent, 2),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ),
+        "Show this window is answered"
+    );
+    assert!(window.activated, "the window was asked to come forward");
+}
+
+#[test]
 fn an_instance_ends_when_its_window_closes() {
     let (mut host, mut window, _sent, _inbox, _route) = running("ada");
     settle(&mut host, &mut window);
@@ -550,6 +597,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
     let mut second = Window {
         transport: ChannelTransport::new(theirs).unwrap(),
         root: None,
+        activated: false,
     };
 
     // The first instance's window presses +: its next frame comes at once, while the second

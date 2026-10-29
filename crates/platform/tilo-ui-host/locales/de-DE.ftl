@@ -30,3 +30,6 @@ tilolang-sort = Sortieren
 tilolang-more = Weitere Aktionen
 tilolang-undo = Rückgängig
 tilolang-did = { $action }: { $title }
+
+app-activate-window = Dieses Fenster anzeigen
+app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.

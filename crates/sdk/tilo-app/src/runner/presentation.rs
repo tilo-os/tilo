@@ -65,10 +65,7 @@ impl Presentation {
         match request.type_id {
             tilo_actions::remote::APPLICATION_ACTIVATE_TYPE => {
                 self.activation_requested.set(true);
-                Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({"activation_requested":true})),
-                    resources: Vec::new(),
-                }))
+                Ok(Some(tilo_actions::remote::activation_requested()))
             }
             RENDER_TYPE => self.render(request.payload, doc, content).map(Some),
             _ => Ok(None),
@@ -200,30 +197,10 @@ pub(crate) fn with_native_presentations(
 }
 
 fn activate_spec() -> tilo_actions::ActionSpec {
-    let label = ui_core::I18nManager::lookup_plain("app-activate-window");
-    let mut spec = tilo_actions::ActionSpec::typed_operation(
-        tilo_actions::remote::APPLICATION_ACTIVATE_ACTION,
-        label.clone(),
-        label,
-        tilo_actions::OperationKind::View,
-        tilo_actions::remote::APPLICATION_ACTIVATE_TYPE,
-        Vec::new(),
-        |_| tilo_actions::EncodedAction {
-            type_id: tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.into(),
-            payload: b"{}".to_vec(),
-        },
+    tilo_actions::remote::activate_spec(
+        ui_core::I18nManager::lookup_plain("app-activate-window"),
+        ui_core::I18nManager::lookup_plain("app-activate-window-description"),
     )
-    .of_kind(tilo_actions::ActionKind::Read)
-    .with_description(ui_core::I18nManager::lookup_plain(
-        "app-activate-window-description",
-    ))
-    // An agent brings the window forward; a person looking for it in the
-    // window's own palette already has it.
-    .for_audience(tilo_actions::Audience::Agents);
-    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    spec
 }
 
 fn render_spec() -> tilo_actions::ActionSpec {

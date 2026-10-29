@@ -451,6 +451,8 @@ pub enum ToUi {
     },
     /// The Ask bar, or none.
     Ask(Option<Ask>),
+    /// Someone asked to see the window ("Show this window"): it comes forward.
+    Activate,
 }
 
 /// What the person did, as the window tells its app.

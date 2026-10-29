@@ -30,3 +30,6 @@ tilolang-sort = Sort
 tilolang-more = More actions
 tilolang-undo = Undo
 tilolang-did = { $action }: { $title }
+
+app-activate-window = Show this window
+app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.

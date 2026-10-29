@@ -452,6 +452,7 @@ impl TilolangHost {
             .map(|(stage, after)| format!("{stage}={}", after.as_micros()))
             .collect();
         tracing::info!(
+            target: tilo_startup_metrics::LAUNCH_LATENCY_TARGET,
             app = opening.app,
             instance = opening.instance,
             stages_us = stages.join(","),

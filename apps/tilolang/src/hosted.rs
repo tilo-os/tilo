@@ -108,6 +108,8 @@ pub struct HostedWindow {
     tree_drawn: bool,
     /// Whether any frame was drawn yet.
     drawn: bool,
+    /// The instance asked for the window to come forward ("Show this window").
+    activation: std::cell::Cell<bool>,
     /// Shown until the patch connection arrives: the platform's loading state.
     waiting: ui::widget::Element,
 }
@@ -124,6 +126,7 @@ impl HostedWindow {
             connected: None,
             tree_drawn: false,
             drawn: false,
+            activation: std::cell::Cell::new(false),
             waiting: Box::new(ui::widget::Spinner::new()),
         };
         window.connect();
@@ -163,9 +166,13 @@ impl HostedWindow {
         }
     }
 
-    /// What arrived, shown; the watch resumed.
-    fn receive(connected: &mut Connected) -> bool {
+    /// What arrived, shown; the watch resumed. A request to come forward is kept for the
+    /// runner, which brings the window forward.
+    fn receive(connected: &mut Connected, activation: &std::cell::Cell<bool>) -> bool {
         let received = connected.view.receive();
+        if connected.view.take_activation() {
+            activation.set(true);
+        }
         if let Some(watch) = &connected.watch {
             watch.took();
         }
@@ -187,7 +194,15 @@ impl HostedWindow {
     }
 }
 
+impl ui::component_lifecycle::WindowActivation for HostedWindow {
+    fn take_window_activation_intent(&self) -> bool {
+        self.activation.replace(false)
+    }
+}
+
 impl Widget for HostedWindow {
+    ui::provides!(dyn ui::component_lifecycle::WindowActivation);
+
     fn name(&self) -> &'static str {
         "TilolangHostedWindow"
     }
@@ -202,7 +217,7 @@ impl Widget for HostedWindow {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(connected) = &mut self.connected {
-            Self::receive(connected);
+            Self::receive(connected, &self.activation);
         }
         self.content_mut().sync(state, path);
     }
@@ -212,7 +227,7 @@ impl Widget for HostedWindow {
         let received = match &mut self.connected {
             Some(connected) => {
                 connected.view.flush();
-                Self::receive(connected)
+                Self::receive(connected, &self.activation)
             }
             None => false,
         };

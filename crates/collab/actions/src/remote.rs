@@ -30,13 +30,10 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
-/// The shared view action that asks the platform to reveal a running window.
-pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
-/// Encoded operation of [`APPLICATION_ACTIVATE_ACTION`].
-pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
-/// Encoded operation of the shared view action that shows the item at an
-/// anchor, as picking that item's search hit does.
-pub const APPLICATION_OPEN_TYPE: &str = "tilo.app.open";
+pub use window_actions::{
+    APPLICATION_ACTIVATE_ACTION, APPLICATION_ACTIVATE_TYPE, APPLICATION_OPEN_TYPE, activate_spec,
+    activation_requested,
+};
 
 mod catalogue;
 mod confirmation;
@@ -52,6 +49,7 @@ mod search;
 #[cfg(any(test, feature = "test-support"))]
 mod test_host;
 mod wait;
+mod window_actions;
 mod within;
 pub mod workspace_activity;
 

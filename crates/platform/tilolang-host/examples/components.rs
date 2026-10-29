@@ -103,7 +103,7 @@ fn main() {
     let (ours, theirs) = Channel::pair().unwrap();
     let hosted = Hosted::with_record(
         Spec {
-            app: app.clone(),
+            app,
             room: route.cluster_id.to_string(),
             instance: 1,
             person: "person".to_owned(),
@@ -119,7 +119,7 @@ fn main() {
     let mut window = ChannelTransport::new(theirs).unwrap();
     let mut root: Option<patch::Node> = None;
     // Turn until the window's tree stops changing: the record's publication settles off the frame.
-    let mut quiet = 0;
+    let mut quiet: u32 = 0;
     while quiet < 40 {
         host.turn();
         let mut changed = false;
@@ -148,7 +148,7 @@ fn main() {
         quiet = if changed || root.is_none() {
             0
         } else {
-            quiet + 1
+            quiet.saturating_add(1)
         };
         std::thread::sleep(std::time::Duration::from_millis(5));
     }

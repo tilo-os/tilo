@@ -15,7 +15,10 @@ use tilolang_host::TilolangHost;
 
 fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        // RUST_LOG, with the launch timing lines kept, as the session's own log keeps them.
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            tilo_startup_metrics::log_directives(std::env::var("RUST_LOG").ok().as_deref()),
+        ))
         .with_writer(std::io::stderr)
         .init();
     let Some(door) = take_door() else {

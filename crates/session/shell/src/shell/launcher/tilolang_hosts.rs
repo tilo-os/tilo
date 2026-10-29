@@ -212,6 +212,7 @@ fn hand_over_now(
     };
     let started = send_to_host(&key, &request, &fds)?;
     tracing::info!(
+        target: tilo_startup_metrics::LAUNCH_LATENCY_TARGET,
         package_id = %app.package_id,
         instance,
         verified_us,

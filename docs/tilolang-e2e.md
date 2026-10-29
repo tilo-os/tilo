@@ -37,13 +37,15 @@ Today. The session installs them (`--install-tapp`) beside native Notes
 - **processes**: each app is its own `tilolang-app` process from the tilolang
   runtime bundle, in its own user, mount and pid namespaces. No process loads
   a Vulkan driver except lavapipe.
-- **actions**: each app publishes its actions. Invoking "New note", "New
+- **actions**: each app publishes its actions; a tilolang app's are its
+  host's instance's, with the history verbs, `read` and "Show this window"
+  every app publishes. Invoking "New note", "New
   chat" and "New item" each adds an entry to that app's history.
 - **hosted-here**: one PNG of the session per app as first opened, with that
   app in front (`first-*.png`). The session's own workspace is a room this
-  device governs and hosts itself, so the shell dials no host for it and
-  tells its apps nothing about one (`room_sync` in `state-dump` is `null`):
-  each shows its own state at once, as native Notes does.
+  device governs and hosts itself, so its apps wait on no other host
+  (`room_sync` in `state-dump` is `null`, or `synced` with this device's own
+  workspace host): each shows its own state at once, as native Notes does.
 - **snapshots**: one PNG of the session per app, with that app in front.
 - **native**: native Notes (`so.tilo.notes`) opens beside them, presents a
   frame and publishes its actions. Both apps are called Notes; they are told
@@ -61,7 +63,9 @@ Today. The session installs them (`--install-tapp`) beside native Notes
 - **routes**: a second start of the same session installs the collaboration
   probe in place of Today and Todo. Today's surface declares that it reads
   Notes' kinds; Todo's declares no read. The broker lets Today join Notes'
-  route read-only and refuses its write. Todo cannot join at all.
+  route read-only and refuses its write. Todo cannot join at all. The probe
+  runs as each app's own launched process (its entrypoint names the probe's
+  runtime, not tilolang's), with that app's launch custody.
 
 - **host-join**: a local site, as `dist/dev/nested-pair.sh` runs one (the
   room service in persistent mode and its workspace host, `tilo-relay`, with

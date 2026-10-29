@@ -22034,6 +22034,7 @@ dependencies = [
  "tilo-history",
  "tilo-render-protocol",
  "tilo-resource",
+ "tilo-startup-metrics",
  "tilo-wake",
  "tilolang",
  "tilolang-tilo",
