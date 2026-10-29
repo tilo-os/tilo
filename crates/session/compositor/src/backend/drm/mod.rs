@@ -56,23 +56,13 @@ use crate::present::{Presentation, Shown};
 use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 use crate::{Error, LoopData};
-use devices::{ModeInfo, RequestedMode, select_mode};
+use devices::{ModeInfo, select_mode};
 use wake_check::{LitState, WakeCheck, WakeStage, WakeVerdict};
 
 /// Formats tried for an output's primary plane, best first.
 const COLOR_FORMATS: [Fourcc; 2] = [Fourcc::Argb8888, Fourcc::Xrgb8888];
 
-/// What the person configured for the outputs, by connector name.
-#[derive(Clone, Debug, Default)]
-pub struct DisplayConfig {
-    /// A chosen mode per connector (`eDP-1`).
-    pub modes: HashMap<String, RequestedMode>,
-    /// A chosen scale per connector; unlisted outputs run at 1.
-    pub scales: HashMap<String, f64>,
-    /// A chosen top-left corner in the logical layout per connector;
-    /// unlisted outputs are packed left to right after the listed ones.
-    pub positions: HashMap<String, (i32, i32)>,
-}
+pub use crate::config::DisplayConfig;
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
@@ -363,6 +353,10 @@ impl Backend for DrmBackend {
             scan_connectors(&self.inner, state);
         }
         Ok(())
+    }
+
+    fn set_display_config(&mut self, config: &DisplayConfig) {
+        self.inner.borrow_mut().config = config.clone();
     }
 
     fn set_input_config(&mut self, state: &mut State, config: input_config::InputConfig) {
@@ -824,6 +818,15 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
         tracing::info!("{line}");
         if let Some(lit) = lit {
             used.insert(crtc);
+            if let Some(transform) = config.transforms.get(&name) {
+                lit.output
+                    .change_current_state(None, Some(*transform), None, None);
+            }
+            if config.disabled.contains(&name) {
+                // Turned off by the person: known, not shown; its panel
+                // goes dark at the next power sync.
+                state.disable_output(&name);
+            }
             gpu.outputs.insert(crtc, lit);
         }
     }
