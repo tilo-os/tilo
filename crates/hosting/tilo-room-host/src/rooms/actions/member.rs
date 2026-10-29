@@ -1,14 +1,12 @@
 //! A member's own business in a room this relay governs, as actions
-//! (provider [`MEMBER_ACTIONS_PROVIDER`]): recording their own effect
-//! receipt, having the host create the
+//! (provider [`MEMBER_ACTIONS_PROVIDER`]): having the host create the
 //! empty record of an app they open there first, sharing one record or item
 //! with the room and ending that share, and asking what they may do at a
 //! node.
 //!
 //! None is governance: each runs a room method that decides it for the
-//! person the room certified the calling device to (a receipt is only their
-//! own, and a record only for an app the room lets author and a record they
-//! may change). A share grants the room only
+//! person the room certified the calling device to (a record only for an
+//! app the room lets author and a record they may change). A share grants the room only
 //! what the sharer holds, on one record or one item of it, and only its
 //! sharer ends it (`crate::rooms::shares`). Every person the room admitted
 //! is offered all of them; an agent or a bot is offered none.
@@ -17,8 +15,8 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{ActionHostError, Caller, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_relay_session::rooms::{
-    MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD,
-    RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS, SHARE_RESOURCE, UNSHARE_RESOURCE, member_resource,
+    MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD, RESOURCE_PERMITS,
+    SHARE_RESOURCE, UNSHARE_RESOURCE, member_resource,
 };
 
 use super::{Args, Publisher, Verb, invalid, refused};
@@ -31,14 +29,7 @@ pub(super) const MEMBER: Publisher = Publisher {
 };
 
 /// What a member does for themselves, in catalogue order.
-const MEMBER_VERBS: [Verb; 5] = [
-    Verb {
-        id: RECORD_EFFECT_RECEIPT,
-        label: "Record effect receipt",
-        gate: RECORD_EFFECT_RECEIPT,
-        kind: ActionKind::Outside,
-        params: receipt_params,
-    },
+const MEMBER_VERBS: [Verb; 4] = [
     Verb {
         id: PREPARE_APPLICATION_RECORD,
         label: "Prepare application record",
@@ -110,21 +101,6 @@ fn node_of(args: &Args) -> Result<tilo_action_policy::TreePath, ActionHostError>
         .map_err(|_| invalid("`node` is not a node of the room's tree"))
 }
 
-fn receipt_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required(
-            "invocation",
-            ParamType::Text,
-            "The invocation the receipt ends, a UUID.",
-        ),
-        ActionParam::required(
-            "redacted",
-            ParamType::Text,
-            "The canonical redacted public receipt, as JSON text; never the action's arguments or results.",
-        ),
-    ]
-}
-
 fn record_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required(
@@ -174,24 +150,16 @@ impl Rooms {
             room.room().to_owned()
         };
         let args = Args::of(&request.argument)?;
-        let done = match address.action.as_str() {
-            RECORD_EFFECT_RECEIPT => {
-                let invocation = uuid::Uuid::parse_str(args.required_text("invocation")?)
-                    .map_err(|_| invalid("`invocation` must be a UUID"))?;
-                let redacted = args.required_text("redacted")?;
-                self.record_member_effect_receipt(&room, &device, invocation, redacted.as_bytes())
-                    .await
-            }
+        match address.action.as_str() {
             PREPARE_APPLICATION_RECORD => {
                 let request = crate::rooms::member_records::PrepareApplicationRecordRequest {
                     app: args.required_text("app")?.to_owned(),
                     record: args.text("record")?.unwrap_or_default().to_owned(),
                 };
-                return self
-                    .prepare_member_application_record(&room, &device, &request)
+                self.prepare_member_application_record(&room, &device, &request)
                     .await
                     .map(|done| json!({ "created": done.created, "generation": done.generation }))
-                    .map_err(|error| refused(&error));
+                    .map_err(|error| refused(&error))
             }
             SHARE_RESOURCE => {
                 let access = args
@@ -199,30 +167,23 @@ impl Rooms {
                     .parse()
                     .map_err(|_| invalid("`access` is `view` or `edit`"))?;
                 let share = args.required_text("share")?;
-                return self
-                    .share_resource(&room, &device, share, &node_of(&args)?, access)
+                self.share_resource(&room, &device, share, &node_of(&args)?, access)
                     .await
                     .map(|grants| json!({ "grants": grants }))
-                    .map_err(|error| refused(&error));
+                    .map_err(|error| refused(&error))
             }
-            UNSHARE_RESOURCE => {
-                return self
-                    .unshare_resource(&room, &device, args.required_text("share")?)
-                    .await
-                    .map(|revoked| json!({ "revoked": revoked }))
-                    .map_err(|error| refused(&error));
-            }
-            RESOURCE_PERMITS => {
-                return self
-                    .resource_permits(&room, &device, &node_of(&args)?)
-                    .await
-                    .map(|may| json!({ "read": may.read, "undoable": may.undoable }))
-                    .map_err(|error| refused(&error));
-            }
-            _ => return Err(ActionHostError::UnknownAction),
-        };
-        done.map(|done| json!({ "generation": done.generation }))
-            .map_err(|error| refused(&error))
+            UNSHARE_RESOURCE => self
+                .unshare_resource(&room, &device, args.required_text("share")?)
+                .await
+                .map(|revoked| json!({ "revoked": revoked }))
+                .map_err(|error| refused(&error)),
+            RESOURCE_PERMITS => self
+                .resource_permits(&room, &device, &node_of(&args)?)
+                .await
+                .map(|may| json!({ "read": may.read, "undoable": may.undoable }))
+                .map_err(|error| refused(&error)),
+            _ => Err(ActionHostError::UnknownAction),
+        }
     }
 }
 

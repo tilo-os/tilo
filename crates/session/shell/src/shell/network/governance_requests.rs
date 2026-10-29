@@ -84,39 +84,7 @@ fn settings_change(
     })
 }
 
-/// The room host this device runs, answering for the rooms placed on it
-/// through its in-process caller: a request for one of those rooms is
-/// asked there, with or without a running network.
-pub(crate) trait LocalGovernor: Send + Sync {
-    /// Whether this device's own host governs `room`.
-    fn governs(&self, room: RoomId) -> bool;
-    /// Have the host record `receipt` in `room`, this device's member
-    /// receipt, and wait for its answer.
-    ///
-    /// # Errors
-    /// The host refused it, or could not be asked; a governor that holds no
-    /// room's receipts says so.
-    fn record_receipt(
-        &self,
-        room: RoomId,
-        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
-    ) -> Result<(), String> {
-        let _ = (room, receipt);
-        Err("this governor records no receipts".into())
-    }
-}
-
 impl ShellNetwork {
-    /// Install the room host this device runs as the governor of the rooms
-    /// placed on it.
-    pub(crate) fn install_local_governor(&self, governor: std::sync::Arc<dyn LocalGovernor>) {
-        let _ = self.local_governor.set(governor);
-        // Changes waiting for a host out of reach may reach this one.
-        if let Ok(mut waiting) = self.outbox_waiting.lock() {
-            *waiting = None;
-        }
-    }
-
     /// Take what the tree's outbox holds to ask
     /// ([`crate::shell::state::Outgoing`]) to the rooms' hosts: on the
     /// peer-sync worker, each waiting for its host's answer. An entry stays

@@ -119,10 +119,6 @@ pub struct HostedRoom {
 /// room's workspace: what they do for themselves, never governance.
 pub const MEMBER_ACTIONS_PROVIDER: &str = "tilo.member";
 pub const MEMBER_RESOURCE_KIND: &str = "workspace.member";
-/// Record the caller's own terminal effect receipt: `invocation` (a UUID)
-/// and `redacted`, its canonical redacted public receipt as JSON text.
-/// Answers the room's `generation` that carries it.
-pub const RECORD_EFFECT_RECEIPT: &str = "effect-receipt.record";
 /// Have the host governing the room create the record `record` (`""` for
 /// the app's primary) of `app`, empty and signed by the host: what opening
 /// an app there for the first time asks when the room does not hold its

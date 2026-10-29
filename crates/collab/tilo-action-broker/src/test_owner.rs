@@ -9,7 +9,6 @@
     clippy::missing_panics_doc,
     reason = "test fixture: a failed step is the test failing"
 )]
-use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use serde::{Deserialize, Serialize};
@@ -307,20 +306,11 @@ impl SessionOwner {
                 doc.set_actor(automerge::ActorId::from(
                     self.key.verifying_key().to_bytes().to_vec(),
                 ));
-                let object = match doc
-                    .get(ROOT, "effect_receipts_v1")
-                    .map_err(|e| e.to_string())?
+                match tilo_desktop_model::projection::workspace_effect_receipts_of(&doc)
+                    .into_iter()
+                    .find(|held| held.invocation == receipt.invocation)
                 {
-                    Some((Value::Object(ObjType::Map), object)) => object,
-                    Some(_) => return Err("invalid canonical effect receipt map".into()),
-                    None => doc
-                        .put_object(ROOT, "effect_receipts_v1", ObjType::Map)
-                        .map_err(|e| e.to_string())?,
-                };
-                let id = invocation.to_string();
-                match doc.get(&object, &id).map_err(|e| e.to_string())? {
-                    Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Bytes(prior) if prior == redacted) =>
-                    {
+                    Some(held) if held == receipt => {
                         return Ok(OwnerCommitReceipt {
                             binding,
                             generation: self.generation,
@@ -328,10 +318,12 @@ impl SessionOwner {
                         });
                     }
                     Some(_) => return Err("effect receipt is immutable".into()),
-                    None => {
-                        doc.put(&object, &id, ScalarValue::Bytes(redacted.clone()))
-                            .map_err(|e| e.to_string())?;
-                    }
+                    None => tilo_desktop_model::projection::project_effect_receipts(
+                        &mut doc,
+                        &receipt.actor,
+                        std::slice::from_ref(&receipt),
+                    )
+                    .map_err(|e| e.to_string())?,
                 }
                 doc.commit();
                 let changes = doc

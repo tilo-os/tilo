@@ -952,6 +952,11 @@ fn validate_member_changes(
         .workspace_memberships
         .values()
         .any(|receipt| receipt.receipt.binding == entry.binding)
+        && !view
+            .record
+            .effect_receipts
+            .values()
+            .any(|receipt| receipt.receipt.binding == entry.binding)
         && view
             .record
             .shortcut_change

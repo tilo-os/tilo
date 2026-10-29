@@ -335,8 +335,8 @@ fn governance_made_while_the_host_is_away_applies_once_it_is_back() {
 }
 
 /// An effect a member device records in its own person's workspace while
-/// the workspace's host is away waits on that device, shown and never
-/// refused, and reaches the room's history once the host's session is
+/// the workspace's host is away is written on that device at once, shown and
+/// never refused, and reaches the room's history once the host's session is
 /// back: once, on both devices.
 #[test]
 #[serial_test::serial]
@@ -402,15 +402,16 @@ fn an_effect_recorded_while_the_host_is_away_reaches_the_room_once_it_is_back() 
         ),
     );
     assert!(recorded);
-    until(&[&second], "the effect to wait for the host", || {
-        let waiting = second.net().outbox_waiting.lock().unwrap().is_some();
-        (waiting && second.tree.read().room_outbox.len() == 1).then_some(())
+    // The laptop writes it into its own copy of the room at once: the
+    // receipt is its own, and needs no host.
+    until(&[&second], "the laptop to write the effect", || {
+        second.tree.read().room_outbox.is_empty().then_some(())
     });
-    assert_eq!(held_on(&second), 1, "the laptop shows it while it waits");
+    assert_eq!(held_on(&second), 1, "the laptop shows it");
     assert!(!refused_on(&second), "a host out of reach refused nothing");
 
-    // The desktop comes back: the laptop asks again, and the room's history
-    // holds the effect on both devices.
+    // The desktop comes back: the room's history holds the effect on both
+    // devices.
     first.come_back();
     second.reach(&first);
     until(

@@ -1037,47 +1037,6 @@ impl Rooms {
             .installation(id, now))
     }
 
-    /// Persist and publish an admitted person's own bounded terminal receipt.
-    /// All room administration commands keep their separate owner-only checks.
-    ///
-    /// # Errors
-    /// Rejects stale admission, impersonation, malformed or conflicting receipts,
-    /// and failed durable publication.
-    pub async fn record_member_effect_receipt(
-        &self,
-        room: &str,
-        caller: &DeviceCert,
-        invocation: uuid::Uuid,
-        redacted: &[u8],
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        tilo_user_identity::verify_device_cert_at(caller, now)
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
-        if self.revocations().is_revoked(&caller.device_public_key) {
-            return Err(CollaborationError::new("device revoked"));
-        }
-        let room = self.room(room).await?;
-        let mut room = room.lock().await;
-        let mut candidate = room.peer().clone();
-        let changed = candidate.workspace_mut().apply_member_effect_receipt(
-            caller,
-            invocation,
-            redacted,
-            &self.inner.host.key,
-            system_time(now),
-        )?;
-        let collaboration = room.collaboration().clone();
-        let generation = if changed {
-            room.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
-                Ok(collaboration)
-            })?
-        } else {
-            room.record.generation
-        };
-        self.settle(&mut room).await?;
-        Ok(GovernanceCompletion { generation })
-    }
-
     pub(super) async fn administer(
         &self,
         room: &mut GovernedRoom,

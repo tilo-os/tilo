@@ -110,8 +110,8 @@ pub use tilo_relay_session::rooms::{
     ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest,
     HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, IssueInvitationRequest,
     IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
-    PREPARE_APPLICATION_RECORD, PendingInvitation, RECORD_EFFECT_RECEIPT, RemoveMemberRequest,
-    RoomListing, RoomSummary, SetMemberRoleRequest, UNHOST_ROOM, ask_host, member_resource,
+    PREPARE_APPLICATION_RECORD, PendingInvitation, RemoveMemberRequest, RoomListing, RoomSummary,
+    SetMemberRoleRequest, UNHOST_ROOM, ask_host, member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;

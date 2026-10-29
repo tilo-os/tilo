@@ -279,33 +279,119 @@ fn durable_and_import_governance_count_as_governance() {
     );
 }
 
+/// A receipt `actor` recorded for invocation `invocation`, as a member's
+/// device records it.
+fn effect(invocation: u128, actor: &str) -> tilo_desktop_model::WorkspaceEffectReceipt {
+    tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+        tilo_actions::InvocationId(uuid::Uuid::from_u128(invocation)),
+        actor,
+        tilo_actions::ActionContext::for_resource("resource", "kind", "Resource"),
+        tilo_actions::EffectReceiptStatus::Succeeded,
+        1,
+    )
+}
+
+/// The changes recording `receipts` in `person`'s slice make on `before`.
+fn recording(
+    before: &AutoCommit,
+    person: [u8; 32],
+    receipts: &[tilo_desktop_model::WorkspaceEffectReceipt],
+) -> Vec<Vec<u8>> {
+    changes_after(before, |doc| {
+        tilo_desktop_model::projection::project_effect_receipts(doc, &person_id(person), receipts)
+            .unwrap();
+    })
+}
+
 #[test]
 fn effect_receipts_are_immutable_even_for_the_governor() {
     let mut before = governed();
-    let receipts = before
-        .put_object(ROOT, "effect_receipts_v1", ObjType::Map)
-        .unwrap();
-    before
-        .put(
-            &receipts,
-            "invocation",
-            ScalarValue::Bytes(br#"{"outcome":"done"}"#.to_vec()),
-        )
-        .unwrap();
+    tilo_desktop_model::projection::project_effect_receipts(
+        &mut before,
+        &person_id(OWNER),
+        &[effect(1, &person_id(OWNER))],
+    )
+    .unwrap();
     before.commit();
-    let rewrite = changes_after(&before, |doc| {
-        let (_, receipts) = doc.get(ROOT, "effect_receipts_v1").unwrap().unwrap();
-        doc.put(
-            &receipts,
-            "invocation",
-            ScalarValue::Bytes(br#"{"outcome":"undone"}"#.to_vec()),
-        )
-        .unwrap();
-    });
+    let mut rewritten = effect(1, &person_id(OWNER));
+    rewritten.status = tilo_actions::EffectReceiptStatus::Cancelled;
+    let rewrite = recording(&before, OWNER, &[rewritten]);
     let authority = key(0xA0);
     assert_eq!(
         admit(Some(&before), member(&authority, OWNER), &OWNER, &rewrite,).unwrap_err(),
         RoomRefusal::ReceiptImmutable
+    );
+}
+
+#[test]
+fn a_member_records_only_their_own_effect_receipts() {
+    let before = governed();
+    let editor = key(0x02);
+    let own = recording(
+        &before,
+        EDITOR,
+        &[effect(1, &person_id(EDITOR)), effect(2, "agent:scribe")],
+    );
+    assert!(
+        admit(Some(&before), member(&editor, EDITOR), &OWNER, &own).is_ok(),
+        "their own receipts and their agents', in their own slice"
+    );
+    for (slice, actor) in [(VIEWER, person_id(EDITOR)), (EDITOR, person_id(VIEWER))] {
+        let foreign = recording(&before, slice, &[effect(3, &actor)]);
+        assert_eq!(
+            admit(Some(&before), member(&editor, EDITOR), &OWNER, &foreign).unwrap_err(),
+            RoomRefusal::ReceiptWriter,
+            "another's slice, or another's actor"
+        );
+    }
+    let anchor = |person: [u8; 32]| {
+        changes_after(&before, |doc| {
+            let history = doc
+                .put_object(ROOT, "effect_history_root_v1", ObjType::Map)
+                .unwrap();
+            let slice = doc
+                .put_object(&history, person_id(person), ObjType::Map)
+                .unwrap();
+            doc.put(&slice, key(0x02), ScalarValue::Bytes(vec![7; 32]))
+                .unwrap();
+        })
+    };
+    assert!(
+        admit(
+            Some(&before),
+            member(&editor, EDITOR),
+            &OWNER,
+            &anchor(EDITOR)
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        admit(
+            Some(&before),
+            member(&editor, EDITOR),
+            &OWNER,
+            &anchor(VIEWER)
+        )
+        .unwrap_err(),
+        RoomRefusal::ReceiptWriter,
+        "only their own archive's anchor"
+    );
+    let viewer = key(0x03);
+    assert!(
+        admit(
+            Some(&before),
+            member(&viewer, VIEWER),
+            &OWNER,
+            &recording(&before, VIEWER, &[effect(5, &person_id(VIEWER))]),
+        )
+        .is_ok(),
+        "one who only reads the room records their own receipts"
+    );
+    let relayed = recording(&before, EDITOR, &[effect(4, &person_id(EDITOR))]);
+    let authority = key(0xA0);
+    assert!(
+        admit(Some(&before), member(&authority, OWNER), &OWNER, &relayed).is_ok(),
+        "the owner's devices relay what members recorded"
     );
 }
 
@@ -385,6 +471,10 @@ fn refusals_keep_the_peer_state_messages() {
             "governance writer is not the owner's device",
         ),
         (RoomRefusal::ReceiptImmutable, "effect receipt is immutable"),
+        (
+            RoomRefusal::ReceiptWriter,
+            "effect receipt is not its writer's own",
+        ),
     ] {
         assert_eq!(refusal.to_string(), message);
     }

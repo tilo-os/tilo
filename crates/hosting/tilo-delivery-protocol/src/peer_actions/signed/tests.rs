@@ -186,10 +186,6 @@ fn only_effect_free_reads_may_be_unsigned() {
     for message in [
         invoke(&key(1), "a").message,
         ActionMessage::Cancel { invocation },
-        ActionMessage::RecordEffectReceipt {
-            invocation,
-            redacted: "{}".into(),
-        },
     ] {
         assert!(message.requires_signature());
     }

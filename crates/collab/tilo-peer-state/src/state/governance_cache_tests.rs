@@ -102,11 +102,16 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
 /// does, and returns the room message that carries them.
 fn publish_receipts(governor: &mut StatePeer, receipts: &[(&str, &[u8])]) -> NeighbourMsg {
     let room = governor.core.room_doc.as_deref_mut().unwrap();
-    let object = match room.get(ROOT, "effect_receipts_v1").unwrap() {
+    let ledger = match room.get(ROOT, "effect_receipts_v1").unwrap() {
         Some((_, object)) => object,
         None => room
             .put_object(ROOT, "effect_receipts_v1", ObjType::Map)
             .unwrap(),
+    };
+    // The governor's own slice: who recorded them is not what is measured.
+    let object = match room.get(&ledger, "governor").unwrap() {
+        Some((_, object)) => object,
+        None => room.put_object(&ledger, "governor", ObjType::Map).unwrap(),
     };
     for (key, bytes) in receipts {
         room.put(&object, *key, automerge::ScalarValue::Bytes(bytes.to_vec()))

@@ -39,16 +39,6 @@ pub struct DirectedAction {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ActionMessage {
-    /// An admitted person's exact bounded redacted terminal audit. The
-    /// governor rechecks the certified transport caller and commits durably.
-    RecordEffectReceipt {
-        invocation: InvocationId,
-        redacted: String,
-    },
-    /// Governor commit completed; the caller still observes signed room state.
-    EffectReceiptCommitted {
-        invocation: InvocationId,
-    },
     CatalogueRefresh {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ExactActionRoute>,
@@ -196,9 +186,7 @@ impl ActionMessage {
 
     pub fn invocation(&self) -> Option<InvocationId> {
         match self {
-            Self::RecordEffectReceipt { invocation, .. }
-            | Self::EffectReceiptCommitted { invocation }
-            | Self::CommittedDesktop { invocation, .. }
+            Self::CommittedDesktop { invocation, .. }
             | Self::InvokeBound { invocation, .. }
             | Self::Observation { invocation, .. }
             | Self::Status { invocation }
@@ -227,10 +215,6 @@ impl ActionMessage {
         }
         let identifier = |value: &str| !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES;
         match self {
-            Self::RecordEffectReceipt {
-                invocation,
-                redacted,
-            } => !invocation.0.is_nil() && !redacted.is_empty() && redacted.len() <= 16 * 1024,
             Self::CommittedDesktop {
                 invocation,
                 packets,
@@ -398,37 +382,6 @@ mod catalogue_bounds_tests {
         assert_eq!(
             serde_json::from_slice::<ActionMessage>(&encoded).unwrap(),
             scoped
-        );
-    }
-
-    #[test]
-    fn member_terminal_receipt_wire_is_bounded_and_keeps_original_invocation() {
-        let invocation = InvocationId::new();
-        let message = ActionMessage::RecordEffectReceipt {
-            invocation,
-            redacted: "{}".into(),
-        };
-        assert!(message.validate());
-        assert_eq!(message.invocation(), Some(invocation));
-        assert_eq!(
-            serde_json::from_slice::<ActionMessage>(&serde_json::to_vec(&message).unwrap())
-                .unwrap(),
-            message
-        );
-        for redacted in [String::new(), "x".repeat(16 * 1024 + 1)] {
-            assert!(
-                !ActionMessage::RecordEffectReceipt {
-                    invocation,
-                    redacted
-                }
-                .validate()
-            );
-        }
-        assert!(
-            !ActionMessage::EffectReceiptCommitted {
-                invocation: InvocationId(Uuid::nil())
-            }
-            .validate()
         );
     }
 

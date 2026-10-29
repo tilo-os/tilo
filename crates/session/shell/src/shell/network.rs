@@ -1225,9 +1225,6 @@ pub struct ShellNetwork {
     joined_topics: Mutex<std::collections::HashSet<u64>>,
     /// The room rosters last told to the actor ([`Self::send_room_rosters`]).
     room_rosters_sent: Mutex<room_rosters::Sent>,
-    /// This device's own room host, governing the rooms placed on it
-    /// ([`governance_requests::LocalGovernor`]).
-    local_governor: std::sync::OnceLock<Arc<dyn governance_requests::LocalGovernor>>,
     /// Where the outbox stood when the drain last found nothing more to
     /// ask, or found the hosts of what is left out of reach
     /// ([`Self::send_outbox_off_loop`]): looked at again only once it moved
@@ -2052,7 +2049,6 @@ impl ShellNetwork {
             event_wake,
             joined_topics: Mutex::new(std::collections::HashSet::new()),
             room_rosters_sent: Mutex::default(),
-            local_governor: std::sync::OnceLock::new(),
             outbox_waiting: Mutex::default(),
             outbox_asked: Mutex::default(),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
@@ -7528,7 +7524,6 @@ pub(crate) fn shell_network_for_test(
         event_wake: Arc::default(),
         joined_topics: Mutex::new(joined_topics),
         room_rosters_sent: Mutex::default(),
-        local_governor: std::sync::OnceLock::new(),
         outbox_waiting: Mutex::default(),
         outbox_asked: Mutex::default(),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),

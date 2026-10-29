@@ -343,9 +343,6 @@ impl ShellNetwork {
         self.embedded_host
             .host_generation
             .fetch_add(1, Ordering::AcqRel);
-        if let Err(error) = self.install_own_governor(&host) {
-            tracing::warn!(%error, "the rooms hosted on this device are governed over the network only");
-        }
         self.mend_own_rooms(&host);
         // The rooms hosted here that the native owner holds join now.
         let _ = self.cmd_tx.try_send(NetCmd::LocalHostReady);
@@ -501,24 +498,6 @@ impl ShellNetwork {
         let pending = host_operation_pending(&host, identity, invoke)?;
         drop(host);
         receipt_of(pending.await)
-    }
-
-    /// Make this device's open `host` the governor of the rooms placed on
-    /// it, so a change to one of them is asked there in process, with or
-    /// without a running network.
-    fn install_own_governor(&self, host: &Arc<RoomHost>) -> Result<(), String> {
-        let identity = self
-            .host_identity
-            .clone()
-            .ok_or("native identity unavailable")?;
-        self.install_local_governor(Arc::new(OwnHostGovernor {
-            host: Arc::clone(host),
-            identity,
-            runtime: self.runtime_handle()?,
-            tree: self.tree.clone(),
-            device: *self.local_peer_id.as_bytes(),
-        }));
-        Ok(())
     }
 
     /// Whether this network places workspaces at all: it has a host of its
@@ -881,39 +860,6 @@ impl ShellNetwork {
 #[path = "embedded_host_tests.rs"]
 mod tests;
 
-/// Run `invoke` at this device's own `host` as this device on workspace
-/// `ws`, through the host's in-process caller, and answer its result.
-fn serve_in_process(
-    host: &RoomHost,
-    identity: &tilo_network_actor::HostIdentity,
-    runtime: &tokio::runtime::Handle,
-    ws: u64,
-    invoke: tilo_actions::remote::InvokeRequest,
-) -> Result<serde_json::Value, String> {
-    let pending = serve_in_process_pending(host, identity, ws, invoke)?;
-    receipt_of(super::native_enrollment::wait_on_runtime(runtime, pending)?)
-}
-
-/// Ask this device's open `host` `invoke` as this device, in process: the
-/// answer, to wait for.
-fn serve_in_process_pending(
-    host: &RoomHost,
-    identity: &tilo_network_actor::HostIdentity,
-    ws: u64,
-    invoke: tilo_actions::remote::InvokeRequest,
-) -> Result<tilo_actions::remote::Pending<RemoteActionMessage>, String> {
-    let (certificate, _) = identity.current_native_material(ws)?;
-    let caller = room_host::local_caller(&certificate);
-    host.actions()
-        .serve_certified(
-            ws,
-            &caller,
-            &certificate,
-            RemoteActionMessage::Invoke(invoke),
-        )
-        .ok_or_else(|| "this device's host does not answer its own operations".into())
-}
-
 /// Ask this device's open `host` its own operation `invoke` as this device,
 /// in process: the answer, to wait for.
 fn host_operation_pending(
@@ -934,46 +880,5 @@ fn receipt_of(answer: Option<RemoteActionMessage>) -> Result<serde_json::Value, 
         Some(RemoteActionMessage::Receipt(receipt)) => relay_rooms::receipt_value(receipt.status),
         Some(_) => Err("this device's host answered with something else".into()),
         None => Err("this device's host dropped the request".into()),
-    }
-}
-
-/// This device's room host as the governor of the rooms placed on it: a
-/// receipt for one of them is recorded there, through its in-process
-/// caller.
-struct OwnHostGovernor {
-    host: Arc<RoomHost>,
-    identity: tilo_network_actor::HostIdentity,
-    runtime: tokio::runtime::Handle,
-    tree: crate::shell::state::WorkspaceTreeHandle,
-    device: [u8; 32],
-}
-
-impl super::governance_requests::LocalGovernor for OwnHostGovernor {
-    fn governs(&self, room: RoomId) -> bool {
-        self.tree
-            .read()
-            .native_authority
-            .hosted_on(room, &self.device)
-    }
-
-    fn record_receipt(
-        &self,
-        room: RoomId,
-        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
-    ) -> Result<(), String> {
-        let invoke = relay_rooms::invocation(
-            tilo_relay_session::rooms::MEMBER_ACTIONS_PROVIDER,
-            tilo_relay_session::rooms::member_resource(&room.to_string()),
-            tilo_relay_session::rooms::RECORD_EFFECT_RECEIPT,
-            relay_rooms::receipt_arguments(receipt)?,
-        );
-        serve_in_process(
-            &self.host,
-            &self.identity,
-            &self.runtime,
-            room_topic_id(room),
-            invoke,
-        )
-        .map(drop)
     }
 }

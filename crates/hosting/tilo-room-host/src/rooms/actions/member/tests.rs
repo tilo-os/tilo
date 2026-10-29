@@ -9,8 +9,8 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_relay_session::rooms::{
-    MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS,
-    SHARE_RESOURCE, UNSHARE_RESOURCE, member_resource,
+    MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RESOURCE_PERMITS, SHARE_RESOURCE,
+    UNSHARE_RESOURCE, member_resource,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -59,32 +59,8 @@ async fn invoke(
     }
 }
 
-/// `person`'s own terminal receipt of `invocation`, redacted as the broker
-/// redacts it.
-fn terminal_audit(person: &[u8; 32], invocation: uuid::Uuid) -> String {
-    audit_by(&hex::encode(person), invocation)
-}
-
-/// The terminal receipt of `invocation` by `actor`, redacted as the broker
-/// redacts it.
-fn audit_by(actor: &str, invocation: uuid::Uuid) -> String {
-    let mut context =
-        tilo_actions::ActionContext::for_resource("workspace", "workspace", "Private fixture");
-    context.facets = vec![
-        tilo_actions::ActionFacet::new("tilo.receipt", "effect"),
-        tilo_actions::ActionFacet::new("tilo.invocation", invocation.to_string()),
-    ];
-    format!(
-        "{{\"invocation\":{},\"actor\":{},\"context\":{},\"status\":{},\"completed_at\":1}}",
-        serde_json::to_string(&invocation).unwrap(),
-        serde_json::to_string(actor).unwrap(),
-        serde_json::to_string(&context).unwrap(),
-        serde_json::to_string(&tilo_actions::EffectReceiptStatus::Succeeded).unwrap(),
-    )
-}
-
 #[tokio::test]
-async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() {
+async fn a_member_is_offered_their_own_business_as_actions() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
@@ -95,7 +71,6 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
     assert_eq!(
         offered(&host, workspace, &caller(&ada)).await,
         [
-            RECORD_EFFECT_RECEIPT,
             PREPARE_APPLICATION_RECORD,
             SHARE_RESOURCE,
             UNSHARE_RESOURCE,
@@ -111,52 +86,6 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
             json!({ "node": tilo_action_policy::TreePath::room(&room).to_string() }),
         )
     };
-
-    // Her own receipt is recorded; one claiming another actor is refused.
-    let invocation = uuid::Uuid::new_v4();
-    let receipt = member_request(
-        &room,
-        RECORD_EFFECT_RECEIPT,
-        json!({
-            "invocation": invocation.to_string(),
-            "redacted": terminal_audit(&ada.user_public_key, invocation),
-        }),
-    );
-    let recorded = invoke(&host, workspace, &ada, receipt).await.unwrap();
-    assert!(recorded["generation"].as_u64().is_some(), "{recorded}");
-    let spoof = uuid::Uuid::new_v4();
-    let impersonating = member_request(
-        &room,
-        RECORD_EFFECT_RECEIPT,
-        json!({
-            "invocation": spoof.to_string(),
-            "redacted": terminal_audit(&owner.user_public_key, spoof),
-        }),
-    );
-    assert!(matches!(
-        invoke(&host, workspace, &ada, impersonating).await,
-        Err(ActionHostError::Refused { .. })
-    ));
-    // An agent's receipt: the host's own device, the governor's, records
-    // what acts on it; a member records only what its own person did.
-    let by_agent = |invocation: uuid::Uuid| {
-        member_request(
-            &room,
-            RECORD_EFFECT_RECEIPT,
-            json!({
-                "invocation": invocation.to_string(),
-                "redacted": audit_by("agent:writer", invocation),
-            }),
-        )
-    };
-    let recorded = invoke(&host, workspace, &owner, by_agent(uuid::Uuid::new_v4()))
-        .await
-        .unwrap();
-    assert!(recorded["generation"].as_u64().is_some(), "{recorded}");
-    assert!(matches!(
-        invoke(&host, workspace, &ada, by_agent(uuid::Uuid::new_v4())).await,
-        Err(ActionHostError::Refused { .. })
-    ));
 
     // Someone the room never admitted is offered nothing and runs nothing,
     // and an agent holds no business of its own.
@@ -179,44 +108,6 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
     assert_eq!(
         invoke(&host, workspace, &ada, elsewhere).await,
         Err(ActionHostError::UnknownAction)
-    );
-    relay.shutdown().await;
-}
-
-#[tokio::test]
-async fn a_receipt_sent_again_after_a_restart_is_recorded_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let (room, workspace, host) = governed(relay.rooms()).await;
-    let ada = admit(relay.rooms(), &room, &owner, 1).await;
-    let invocation = uuid::Uuid::new_v4();
-    let receipt = || {
-        member_request(
-            &room,
-            RECORD_EFFECT_RECEIPT,
-            json!({
-                "invocation": invocation.to_string(),
-                "redacted": terminal_audit(&ada.user_public_key, invocation),
-            }),
-        )
-    };
-    let recorded = invoke(&host, workspace, &ada, receipt()).await.unwrap();
-    assert_eq!(
-        invoke(&host, workspace, &ada, receipt()).await.unwrap(),
-        recorded,
-        "a receipt asked again commits nothing new"
-    );
-    relay.shutdown().await;
-
-    // The member's device asks again after the host restarted.
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let host = HostRoomActions::new();
-    host.attach(relay.rooms().clone());
-    assert_eq!(
-        invoke(&host, workspace, &ada, receipt()).await.unwrap(),
-        recorded,
-        "nor after the host restarted"
     );
     relay.shutdown().await;
 }

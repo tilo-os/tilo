@@ -47,8 +47,8 @@ use tilo_network_actor::room_governance::Request;
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
     ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
-    IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD,
-    RECORD_EFFECT_RECEIPT, RoomListing, member_resource,
+    IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RoomListing,
+    member_resource,
 };
 
 /// How long one invocation on a room's own session may take.
@@ -229,7 +229,6 @@ pub(super) fn answer_of<T: serde::de::DeserializeOwned>(
         .map_err(|error| format!("the relay answered unexpectedly: {error}"))
 }
 
-/// What an invocation's receipt comes to.
 /// Why a host asked on a room's session gave no result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum HostAskError {
@@ -250,33 +249,7 @@ impl From<HostAskError> for String {
     }
 }
 
-/// What a host answered on `answer`, or that it could not be reached: the
-/// actor fails what waits on a workspace that has no session left.
-fn held_answer(
-    answer: &std::sync::mpsc::Receiver<Result<ReceiptStatus, String>>,
-) -> Result<serde_json::Value, HostAskError> {
-    let status = answer
-        .recv()
-        .map_err(|_| HostAskError::Unreachable(SESSIONS_CLOSED.into()))?
-        .map_err(HostAskError::Unreachable)?;
-    receipt_value(status).map_err(HostAskError::Refused)
-}
-
-/// Why a host's answer that was waited for never came.
-const SESSIONS_CLOSED: &str = "the connection to the room's host was lost";
-
-/// The arguments of the member's own `RECORD_EFFECT_RECEIPT` for `receipt`:
-/// its invocation and its exact encoding, which the host checks.
-pub(super) fn receipt_arguments(
-    receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let redacted = serde_json::to_string(receipt).map_err(|error| error.to_string())?;
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("invocation".into(), receipt.invocation.0.to_string().into());
-    arguments.insert("redacted".into(), redacted.into());
-    Ok(arguments)
-}
-
+/// What an invocation's receipt comes to.
 pub(super) fn receipt_value(status: ReceiptStatus) -> Result<serde_json::Value, String> {
     match status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
@@ -404,25 +377,6 @@ impl ShellNetwork {
             invoke,
             ADMIN_TIMEOUT,
         )
-    }
-
-    /// Have the host governing `room` record `receipt`, the member's own
-    /// terminal receipt, answered whenever the host answers: while the
-    /// room's sessions last. For a worker.
-    pub(super) fn record_receipt_held(
-        &self,
-        room: RoomId,
-        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
-    ) -> Result<(), HostAskError> {
-        let host = self
-            .host_governor(room)
-            .map_err(HostAskError::Refused)?
-            .ok_or_else(|| HostAskError::Refused("no host governs the room".into()))?;
-        let arguments = receipt_arguments(receipt).map_err(HostAskError::Refused)?;
-        let answer = self
-            .ask_as_member(room, host, RECORD_EFFECT_RECEIPT, arguments)
-            .map_err(HostAskError::Unreachable)?;
-        held_answer(&answer).map(drop)
     }
 
     /// Invoke the host operation `action` with `arguments` at `host`, as
@@ -605,31 +559,6 @@ impl ShellNetwork {
                     tracing::warn!(%room, tab, %error, "what a window shows stayed shared without it");
                 }
             })
-    }
-
-    /// Send a person's own bounded terminal audit to the exact signed governor.
-    /// Room administration retains its independent same-person owner checks.
-    pub(crate) async fn record_governed_effect_receipt(
-        &self,
-        room: RoomId,
-        invocation: uuid::Uuid,
-        redacted: Vec<u8>,
-    ) -> Result<(), String> {
-        let Some(host) = self.host_governor(room)? else {
-            return self
-                .record_effect_at_governor(room, invocation, redacted)
-                .await;
-        };
-        let redacted = String::from_utf8(redacted).map_err(|_| "invalid effect encoding")?;
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("invocation".into(), invocation.to_string().into());
-        arguments.insert("redacted".into(), redacted.into());
-        let answer = self.ask_as_member(room, host, RECORD_EFFECT_RECEIPT, arguments)?;
-        let status = tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
-            .await
-            .map_err(|_| "effect reply worker stopped")?
-            .map_err(|_| "effect governor did not answer in time; outcome unknown")??;
-        receipt_value(status).map(drop)
     }
 
     /// Whether `host`, the host governing `room`, is this device's own: the
@@ -1373,7 +1302,7 @@ mod tests {
         let member = invocation(
             MEMBER_ACTIONS_PROVIDER,
             member_resource("r"),
-            RECORD_EFFECT_RECEIPT,
+            tilo_relay_session::rooms::RESOURCE_PERMITS,
             serde_json::Map::new(),
         );
         assert_eq!(member.target.provider, "tilo.member");
