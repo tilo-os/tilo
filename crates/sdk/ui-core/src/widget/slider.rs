@@ -1448,7 +1448,9 @@ impl Widget for Slider {
             .map(|n| crate::i18n!(n))
             .filter(|n| !n.is_empty());
         let mut node = AccessNode::new(Role::Slider)
-            .with_semantic_key(&self.semantic_id)
+            // The id it was given names it, so two sliders under one
+            // parent are two nodes.
+            .with_semantic_key(self.identity().unwrap_or("slider"))
             .with_optional_name(name)
             .with_value(self.spoken_value())
             .with_state(

@@ -848,10 +848,14 @@ impl Widget for EmbeddedApp {
         let root = tree.node(tree.root())?;
         let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group);
         node.name = AppWidget::app_title(self).to_owned().into();
+        // The app's own focus is the reader's only while the host has
+        // given the app the keyboard: a host that moved it elsewhere has
+        // its own focus to show.
+        let focused = self.focused;
         node.children = root
             .children
             .iter()
-            .filter_map(|child| access_subtree(tree, child, offset))
+            .filter_map(|child| access_subtree(tree, child, offset, focused))
             .collect();
         Some(node)
     }
@@ -1060,6 +1064,7 @@ fn access_subtree(
     tree: &crate::a11y_tree::SemanticTree,
     id: &crate::a11y_tree::SemanticId,
     offset: vello::kurbo::Vec2,
+    focused: bool,
 ) -> Option<crate::a11y::AccessNode> {
     let node = tree.node(id)?;
     let bounds = node.bounds?;
@@ -1067,6 +1072,7 @@ fn access_subtree(
     access.name.clone_from(&node.name);
     access.value.clone_from(&node.value);
     access.state = node.state;
+    access.state.focused &= focused;
     access.key = Some(crate::a11y::hash_key(&id.as_str()));
     let placed = bounds + offset;
     access.bounds = Some(crate::a11y::AccessBounds {
@@ -1078,7 +1084,7 @@ fn access_subtree(
     access.children = node
         .children
         .iter()
-        .filter_map(|child| access_subtree(tree, child, offset))
+        .filter_map(|child| access_subtree(tree, child, offset, focused))
         .collect();
     // The app's tree marks both its focused widget and the part of it that
     // has the keyboard (a dialog and its field). Here every node is the
