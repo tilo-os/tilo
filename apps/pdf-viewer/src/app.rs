@@ -54,8 +54,8 @@ use ui::window_toolbar::ToolbarNotice;
 
 use crate::markup::{PagePlanEntry, PdfMarkup};
 use crate::model::{
-    self, AnnoKind, Annotation, Comment, Document, MARGIN, PAGE_H, PAGE_W, PtRect, SearchOptions,
-    Signature, SignatureInk, Swatch, Tool,
+    self, AnnoKind, Annotation, Comment, Document, HighlightColor, MARGIN, PAGE_H, PAGE_W, PtRect,
+    SearchOptions, Signature, SignatureInk, Tool,
 };
 use crate::render;
 use crate::source::{
@@ -535,7 +535,7 @@ pub struct PdfApp {
     #[cfg(test)]
     search_projection_refreshes: usize,
     tool: Tool,
-    swatch: Swatch,
+    swatch: HighlightColor,
     /// How the highlight tool marks text: highlight, underline or strike-out.
     markup_style: model::MarkupStyle,
     sidebar_tab: SidebarTab,
@@ -1127,7 +1127,7 @@ impl PdfApp {
             #[cfg(test)]
             search_projection_refreshes: 0,
             tool: Tool::Select,
-            swatch: Swatch::Yellow,
+            swatch: HighlightColor::Yellow,
             sidebar_tab: SidebarTab::Comments,
             show_sidebar: true,
             review: Self::review_drawer(),
@@ -3749,7 +3749,10 @@ impl PdfApp {
                 self.copy_selection();
             }
             ui::HudAction::Highlight(i) => {
-                let sw = Swatch::ALL.get(i).copied().unwrap_or(Swatch::Purple);
+                let sw = HighlightColor::ALL
+                    .get(i)
+                    .copied()
+                    .unwrap_or(HighlightColor::Purple);
                 self.highlight_selection(state, sw);
             }
             ui::HudAction::Note => {
@@ -6263,7 +6266,7 @@ pub(crate) mod tests {
                 id: "launched-highlight".into(),
                 page: 1,
                 kind: AnnoKind::highlight(PtRect::new(70.0, 150.0, 290.0, 15.0)),
-                color: Swatch::Yellow,
+                color: HighlightColor::Yellow,
                 author: "Ada".into(),
                 chars: None,
                 created_ms: 0,
@@ -7011,7 +7014,7 @@ pub(crate) mod tests {
                 id: "annotation-on-import".into(),
                 page: 2,
                 kind: AnnoKind::Note { x: 12.0, y: 24.0 },
-                color: Swatch::Yellow,
+                color: HighlightColor::Yellow,
                 author: "You".into(),
                 chars: None,
                 created_ms: 0,
@@ -7774,7 +7777,7 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 app.swatch,
-                Swatch::ALL[1],
+                HighlightColor::ALL[1],
                 "the armed swatch follows the HUD choice"
             );
         }

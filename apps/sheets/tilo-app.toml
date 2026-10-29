@@ -29,7 +29,7 @@ aarch64 = "aarch64"
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "settings", "threads"]
 
 [resources]
-kinds = ["sheets.workbook", "settings.locale"]
+kinds = ["sheets.workbook", "settings.locale", "tilo.rich-text"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

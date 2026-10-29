@@ -1194,7 +1194,7 @@ impl PdfApp {
             f64::midpoint(bounds_rect.x0, bounds_rect.x1),
             bounds_rect.y0,
         );
-        let swatches: Vec<ui::HudSwatch> = Swatch::ALL
+        let swatches: Vec<ui::HudSwatch> = HighlightColor::ALL
             .iter()
             .map(|&s| {
                 let (r, g, b) = s.rgb();
@@ -2567,17 +2567,6 @@ struct SignatureGeometry {
 // ----------------------------------------------------------------------
 // Free-standing helpers
 // ----------------------------------------------------------------------
-
-fn swatch_label(s: Swatch) -> &'static str {
-    match s {
-        Swatch::Yellow => "Yellow",
-        Swatch::Green => "Green",
-        Swatch::Pink => "Pink",
-        Swatch::Blue => "Blue",
-        Swatch::Purple => "Purple",
-        Swatch::Custom(_) => "Custom",
-    }
-}
 
 /// Position + draw the shared inline `TextInput` over `rect` (the box it
 /// edits), its text inset by the field's own padding so the first glyph sits

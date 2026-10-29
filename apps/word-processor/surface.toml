@@ -7,10 +7,12 @@ version = 2
 fields = [
   { path = "body", type = "RichText", ops = "sha256:b86bfc65e3faa1c9" },
   { path = "comments", type = "Collection<Comment>", stored = "collection", unit = true },
-  { path = "comments.*.anchor", type = "TextAnchor" },
+  { path = "comments.*.anchor", type = "Anchor" },
   { path = "comments.*.author", type = "String", readonly = true },
   { path = "comments.*.date", type = "String", readonly = true },
   { path = "comments.*.text", type = "String", label = true },
+  { path = "comments.*.body", type = "Vec<ClipBlock>" },
+  { path = "comments.*.resolved", type = "bool" },
   { path = "comments.*.replies", type = "Collection<Reply>", stored = "collection" },
   { path = "comments.*.replies.*.author", type = "String", readonly = true },
   { path = "comments.*.replies.*.date", type = "String", readonly = true },

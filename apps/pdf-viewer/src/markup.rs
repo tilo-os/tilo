@@ -43,8 +43,8 @@ use ui::tilo_resource::{
 
 use crate::adopt::AdoptedEntry;
 use crate::model::{
-    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, PtRect, Reply, Signature, SignatureInk,
-    Swatch,
+    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, HighlightColor, PtRect, Reply, Signature,
+    SignatureInk,
 };
 
 /// The most pages one import brings in.
@@ -78,7 +78,6 @@ impl ImportedPage {
 tilo_resource::json_model!(
     ImportedPage,
     AnnoKind,
-    Swatch,
     PtRect,
     SignatureInk,
     FormEntry,
@@ -140,7 +139,7 @@ pub struct StoredAnnotation {
     /// Mark: what it marks, and where.
     pub mark: AnnoKind,
     /// Colour
-    pub color: Swatch,
+    pub color: HighlightColor,
     /// Who made it.
     #[model(readonly)]
     pub author: String,

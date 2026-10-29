@@ -14,7 +14,7 @@ use ui::gesture::Granularity;
 use vello::kurbo::{Point, Rect};
 
 use super::{PanState, PdfApp};
-use crate::model::{AnnoKind, Annotation, PtRect, Swatch};
+use crate::model::{AnnoKind, Annotation, HighlightColor, PtRect};
 use crate::source::{TextBatch, TextRequest};
 use crate::text_layer::PageText;
 
@@ -936,7 +936,7 @@ impl PdfApp {
     pub(super) fn highlight_selection(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
-        swatch: Swatch,
+        swatch: HighlightColor,
     ) -> bool {
         let Some(sel) = self.selection.filter(TextSelection::is_active) else {
             return false;

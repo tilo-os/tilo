@@ -11,7 +11,7 @@ use super::super::selection_tests::text_pdf;
 use super::super::tests::launched;
 use crate::actions::PdfEffect;
 use crate::markup::PdfMarkup;
-use crate::model::{AnnoKind, Annotation, MarkupStyle, PtRect, Swatch, Tool};
+use crate::model::{AnnoKind, Annotation, HighlightColor, MarkupStyle, PtRect, Tool};
 use crate::{PdfApp, PdfViewerShell};
 
 /// The reader on a two-page text PDF, launched as a person opens it.
@@ -123,7 +123,7 @@ fn the_bar_holds_the_readers_controls() {
     assert_eq!(chosen(&toolbar, "Tools"), [Tool::Select.label()]);
     assert_eq!(
         items(&toolbar, "Marker colour", all),
-        Swatch::ALL.map(super::swatch_label)
+        HighlightColor::ALL.map(HighlightColor::name)
     );
     assert_eq!(
         items(&toolbar, "Zoom", all),
@@ -208,13 +208,19 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
 
     // The marker colour: an item of the bar's menu, and Marker colour.
     press_named(&mut app, "Blue");
-    assert_eq!(reader_state(&mut app, |pdf| pdf.swatch), Swatch::Blue);
+    assert_eq!(
+        reader_state(&mut app, |pdf| pdf.swatch),
+        HighlightColor::Blue
+    );
     assert_eq!(chosen(&bar(&mut app), "Marker colour"), ["Blue"]);
     app.effect(&PdfEffect::SetMarkerColour {
-        colour: Swatch::Pink,
+        colour: HighlightColor::Pink,
     })
     .expect("the marker colour is set");
-    assert_eq!(reader_state(&mut app, |pdf| pdf.swatch), Swatch::Pink);
+    assert_eq!(
+        reader_state(&mut app, |pdf| pdf.swatch),
+        HighlightColor::Pink
+    );
 
     // Save: offered while a PDF is open.
     assert!(slot(&bar(&mut app), "Save annotated PDF").enabled);
@@ -230,7 +236,7 @@ fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
             style: MarkupStyle::Highlight,
             quads: vec![PtRect::new(56.0, 40.0, 200.0, 14.0)],
         },
-        Swatch::Yellow,
+        HighlightColor::Yellow,
         "me",
     );
     app.invoke(crate::actions::add_annotation_on(&mark, "source-1"))
@@ -251,18 +257,18 @@ fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
     app.settle();
     assert_eq!(
         colour_of(&mut app),
-        Some(Swatch::Green),
+        Some(HighlightColor::Green),
         "the bar recolours it"
     );
 
     app.effect(&PdfEffect::SetMarkerColour {
-        colour: Swatch::Purple,
+        colour: HighlightColor::Purple,
     })
     .expect("the marker colour is set");
     app.settle();
     assert_eq!(
         colour_of(&mut app),
-        Some(Swatch::Purple),
+        Some(HighlightColor::Purple),
         "so does the published action"
     );
 }

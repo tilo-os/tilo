@@ -1,7 +1,7 @@
 //! Annotations every app shares: comment threads, whatever they are about,
 //! and the colours a passage is marked in.
 //!
-//! A [`Comment`]'s anchor `A` is the app's own (a
+//! A [`Comment`]'s `Anchor` is the app's own (a
 //! [`TextAnchor`](crate::TextAnchor) in rich text, cells of a sheet, a spot
 //! on a page); who wrote what, when, the answers and whether it is resolved
 //! are the same everywhere. A [`HighlightColor`] is one of a small named
@@ -14,9 +14,9 @@ use crate::ClipBlock;
 
 /// A comment thread about `anchor`.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Comment<A: Model> {
+pub struct Comment<Anchor: Model> {
     /// What the comment is about.
-    pub anchor: A,
+    pub anchor: Anchor,
     /// Who wrote it.
     #[model(readonly)]
     pub author: String,
@@ -35,10 +35,10 @@ pub struct Comment<A: Model> {
     pub replies: Collection<Reply>,
 }
 
-impl<A: Model> Comment<A> {
+impl<Anchor: Model> Comment<Anchor> {
     /// A new thread by `author` about `anchor`, saying `text`.
     #[must_use]
-    pub fn new(anchor: A, author: String, date: String, text: String) -> Self {
+    pub fn new(anchor: Anchor, author: String, date: String, text: String) -> Self {
         Self {
             anchor,
             author,
@@ -65,6 +65,7 @@ pub struct Reply {
     pub text: String,
     /// Its paragraphs as written, with their formatting; empty when it is
     /// plain text.
+    #[model(readonly)]
     pub body: Vec<ClipBlock>,
 }
 
