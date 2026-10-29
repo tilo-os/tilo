@@ -121,12 +121,23 @@ pub enum DynEdit {
         payload: Json,
         owner: String,
     },
-    /// Record how the owning device settled the entry `entry` of the resource `id`: `done`, or why
-    /// it failed.
+    /// Record how the owning device settled the entry `entry` of the resource `id`: `done`,
+    /// `rejected` (with the service's `reason`) or `unknown`.
     OutboxSettle {
         id: String,
         entry: String,
         outcome: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        reason: String,
+    },
+    /// Record where the owning device is with the entry `entry` of the resource `id` before it
+    /// settles: `sending` (handed over by the process whose token `detail` is) or `waiting` (to
+    /// go online, `detail` saying why).
+    OutboxMark {
+        id: String,
+        entry: String,
+        state: String,
+        detail: String,
     },
     /// An edit of a resource of another app than the action's: the host's own `Invocation`
     /// records, which an action's follow-up changes write beside the package's resources.
@@ -158,6 +169,7 @@ impl DynEdit {
             | Self::Place { .. }
             | Self::Remove { .. }
             | Self::OutboxSettle { .. }
+            | Self::OutboxMark { .. }
             | Self::Migrated { .. } => false,
         }
     }
@@ -263,6 +275,7 @@ impl DynAction {
                 DynEdit::Remove { .. }
                 | DynEdit::OutboxPush { .. }
                 | DynEdit::OutboxSettle { .. }
+                | DynEdit::OutboxMark { .. }
                 | DynEdit::Migrated { .. }
                 | DynEdit::In { .. } => {}
             }
@@ -286,6 +299,7 @@ impl DynAction {
             | DynEdit::Remove { id }
             | DynEdit::OutboxPush { id, .. }
             | DynEdit::OutboxSettle { id, .. }
+            | DynEdit::OutboxMark { id, .. }
             | DynEdit::Migrated { id, .. }) = edit
             else {
                 continue;
@@ -338,6 +352,7 @@ fn target_map(
         | DynEdit::Remove { id }
         | DynEdit::OutboxPush { id, .. }
         | DynEdit::OutboxSettle { id, .. }
+        | DynEdit::OutboxMark { id, .. }
         | DynEdit::Migrated { id, .. } => stored_map(doc, records, app, id),
     };
     match held {
@@ -436,15 +451,28 @@ fn apply_one(
                 doc.put(&held, "owner", owner.as_str())?;
             }
         }
-        DynEdit::OutboxSettle { id, entry, outcome } => {
-            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
-                return Ok(());
-            };
-            let Some((AmValue::Object(ObjType::Map), outbox)) = doc.get(&obj, OUTBOX_KEY)? else {
-                return Ok(());
-            };
-            if let Some((AmValue::Object(ObjType::Map), held)) = doc.get(&outbox, entry.as_str())? {
+        DynEdit::OutboxSettle {
+            id,
+            entry,
+            outcome,
+            reason,
+        } => {
+            if let Some(held) = outbox_entry(doc, &app, id, entry)? {
                 doc.put(&held, "settled", outcome.as_str())?;
+                if !reason.is_empty() {
+                    doc.put(&held, "reason", reason.as_str())?;
+                }
+            }
+        }
+        DynEdit::OutboxMark {
+            id,
+            entry,
+            state,
+            detail,
+        } => {
+            if let Some(held) = outbox_entry(doc, &app, id, entry)? {
+                doc.put(&held, "state", state.as_str())?;
+                doc.put(&held, "detail", detail.as_str())?;
             }
         }
         DynEdit::Migrated { id, migration } => mark_migrated(doc, &app, id, migration)?,
@@ -645,8 +673,61 @@ pub struct StoredEntry {
     pub payload: Json,
     /// The device that carries it out.
     pub owner: String,
-    /// `None` while it waits; `done`, or why it failed, once settled.
+    /// `None` while it waits; `done`, `rejected` or `unknown` once settled.
     pub settled: Option<String>,
+    /// Why it was rejected, as the service said.
+    pub reason: String,
+    /// Before it settles: empty (queued), `sending` or `waiting`.
+    pub state: String,
+    /// The token of the process handing it over, or why it waits.
+    pub detail: String,
+}
+
+impl StoredEntry {
+    /// Where it is on its way out, before it settles.
+    #[must_use]
+    pub fn outbox_state(&self) -> tilolang_runtime::store::OutboxState {
+        use tilolang_runtime::store::OutboxState;
+        match self.state.as_str() {
+            "sending" => OutboxState::Sending {
+                by: self.detail.clone(),
+            },
+            "waiting" => OutboxState::Waiting {
+                reason: self.detail.clone(),
+            },
+            _ => OutboxState::Queued,
+        }
+    }
+
+    /// How it stands, as `delivery(r)` reads it.
+    #[must_use]
+    pub fn delivery(&self) -> tilolang_runtime::store::DeliveryState {
+        tilolang_runtime::store::DeliveryState::of(
+            &self.outbox_state(),
+            self.settled
+                .as_deref()
+                .map(|outcome| (outcome, self.reason.as_str())),
+        )
+    }
+}
+
+/// The map of the entry `entry` queued on the resource `id` under the app's map `app`.
+fn outbox_entry(
+    doc: &Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    entry: &str,
+) -> Result<Option<automerge::ObjId>, automerge::AutomergeError> {
+    let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
+        return Ok(None);
+    };
+    let Some((AmValue::Object(ObjType::Map), outbox)) = doc.get(&obj, OUTBOX_KEY)? else {
+        return Ok(None);
+    };
+    Ok(match doc.get(&outbox, entry)? {
+        Some((AmValue::Object(ObjType::Map), held)) => Some(held),
+        _ => None,
+    })
 }
 
 /// The outside effects queued on the resource `id` of `app`, oldest key first.
@@ -680,6 +761,9 @@ pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
                 payload: serde_json::from_str(&text(&held, "payload")?).ok()?,
                 owner: text(&held, "owner")?,
                 settled: text(&held, "settled"),
+                reason: text(&held, "reason").unwrap_or_default(),
+                state: text(&held, "state").unwrap_or_default(),
+                detail: text(&held, "detail").unwrap_or_default(),
                 entry,
             })
         })
@@ -765,6 +849,7 @@ impl DynAction {
             DynEdit::Remove { id }
             | DynEdit::OutboxPush { id, .. }
             | DynEdit::OutboxSettle { id, .. }
+            | DynEdit::OutboxMark { id, .. }
             | DynEdit::Migrated { id, .. } => (id, None),
             DynEdit::In { .. } => return None,
         };
