@@ -3,7 +3,6 @@
 
 use crate::categories::Category;
 use crate::effects::AreaVocabulary as _;
-use crate::pane_model::model_pane;
 
 use crate::panes::{
     about, accessibility, accounts, agent_models, appearance, audio, bluetooth, device_mesh,
@@ -427,14 +426,7 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
 ];
 
 /// Every pane, by the categories it shows.
-pub(crate) const PANES: &[crate::area::PaneEntry] = &[
-    crate::area::PaneEntry {
-        categories: &[Category::AgentModels],
-        build: |app, _| {
-            model_pane(agent_models::area(app).map(agent_models::AgentModelsArea::model))
-        },
-    },
-];
+pub(crate) const PANES: &[crate::area::PaneEntry] = &[];
 
 /// The settings these panes show, as Settings' search shows them: a row
 /// built by the function its pane builds it with, or what it is set to.

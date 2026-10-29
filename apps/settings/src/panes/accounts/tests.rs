@@ -1,5 +1,6 @@
 use super::*;
 use crate::accounts::sample_directory;
+use crate::effects::page_of;
 use crate::host::testing::actions_of;
 use crate::resource::SettingsShell;
 use ui::framework::testing::TestApp;
@@ -135,26 +136,6 @@ pub(super) fn window_showing(pane: AccountsPane) -> TestApp<SettingsShell> {
     crate::effects::show_pane(&mut app, crate::categories::Category::ExternalAccounts);
     app.settle();
     app
-}
-
-/// The page in `root`, a Settings window: what its content scroller
-/// (the right-most one) holds.
-pub(super) fn page_of(root: &dyn Widget) -> &dyn Widget {
-    fn scrollers<'a>(widget: &'a dyn Widget, out: &mut Vec<&'a dyn Widget>) {
-        if widget.name() == "Scrollable" {
-            out.push(widget);
-            return;
-        }
-        for child in widget.children() {
-            scrollers(child, out);
-        }
-    }
-    let mut found = Vec::new();
-    scrollers(root, &mut found);
-    found
-        .into_iter()
-        .max_by(|a, b| a.get_rect().x0.total_cmp(&b.get_rect().x0))
-        .expect("the window's content scroller")
 }
 
 /// What `read` finds on the page of a Settings window showing `pane`.

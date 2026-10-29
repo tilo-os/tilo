@@ -93,6 +93,7 @@ pub(crate) fn view(
         crate::categories::Category::DeviceMesh => device_mesh::view(cx, app),
         crate::categories::Category::About => about::view(cx, app),
         crate::categories::Category::ExternalAccounts => accounts::view(cx, app),
+        crate::categories::Category::AgentModels => agent_models::view(cx, app),
         _ => None,
     }
 }

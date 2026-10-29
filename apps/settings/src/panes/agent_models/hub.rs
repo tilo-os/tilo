@@ -24,15 +24,15 @@ use agent_provider_config::local::hub::{
 };
 use agent_provider_config::local::snapshot::HardwareFit;
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, ButtonRole, ProgressBar, Row, Segment, Text, TextInput, ToggleGroup};
 
 use super::{
     AgentModelsEffect, AgentModelsModel, LocalModelControl, area, byte_size, fit_label, fit_tone,
+    invoking,
 };
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::panes::agent_sign_in::{self, SignInWait, Waited};
 use crate::resource::Settings;
@@ -280,11 +280,15 @@ impl HubBrowser {
     }
 
     /// Finding a model, the shown model, and the token.
-    pub(crate) fn sections(&self, cx: &PaneCx, available: bool) -> Vec<SettingsSection> {
-        let mut sections = vec![self.find_section(cx, available)];
+    pub(crate) fn sections(
+        &self,
+        actions: &Actions<Settings>,
+        available: bool,
+    ) -> Vec<SettingsSection> {
+        let mut sections = vec![self.find_section(actions, available)];
         if let Some(offer) = &self.offer {
             sections.push(match offer {
-                Ok(offer) => self.offer_section(cx, offer),
+                Ok(offer) => self.offer_section(actions, offer),
                 Err(error) => section(
                     &t("agent-hub-model-title"),
                     rows(vec![row(crate::widgets::error_caption(&t_args(
@@ -294,11 +298,11 @@ impl HubBrowser {
                 ),
             });
         }
-        sections.push(self.token_section(cx));
+        sections.push(self.token_section(actions));
         sections
     }
 
-    fn find_section(&self, cx: &PaneCx, available: bool) -> SettingsSection {
+    fn find_section(&self, actions: &Actions<Settings>, available: bool) -> SettingsSection {
         let formats = [HubFormat::Gguf, HubFormat::Safetensors];
         let choice = ToggleGroup::new(
             vec![
@@ -314,7 +318,7 @@ impl HubBrowser {
             note(&t("agent-hub-caption")),
             field_row(
                 &t("agent-hub-format"),
-                Box::new(cx.bind(
+                Box::new(actions.bind_effect(
                     choice,
                     effect(AgentModelsEffect::SET_HUB_FORMAT).map(move |index: usize| {
                         format_name(formats.get(index).copied().unwrap_or(HubFormat::Gguf))
@@ -324,7 +328,7 @@ impl HubBrowser {
             ),
         ];
         Self::push_field(
-            cx,
+            actions,
             &mut body,
             (
                 "reference",
@@ -341,13 +345,12 @@ impl HubBrowser {
         // The person chooses the file in the file chooser, which hands it
         // over open: neither Settings nor the model service takes a path.
         body.push(note(&t("agent-hub-file")));
-        body.push(row(Box::new(
-            cx.bind_invocation(
-                Button::new("agent-models-hub-file-go", &t("agent-hub-add-file"))
-                    .with_enabled(available),
-                AgentModelsEffect::AddModelFile,
-            ),
-        )));
+        body.push(row(Box::new(invoking(
+            actions,
+            Button::new("agent-models-hub-file-go", &t("agent-hub-add-file"))
+                .with_enabled(available),
+            AgentModelsEffect::AddModelFile,
+        ))));
         if self.working || self.searching > 0 {
             body.push(row(Box::new(
                 ProgressBar::indeterminate().with_label(t("agent-hub-working")),
@@ -362,7 +365,7 @@ impl HubBrowser {
             Some(Ok(results)) if results.is_empty() => body.push(note(&t("agent-hub-no-results"))),
             Some(Ok(results)) => {
                 for result in results {
-                    body.push(row(Box::new(result_row(cx, result, available))));
+                    body.push(row(Box::new(result_row(actions, result, available))));
                 }
             }
         }
@@ -372,7 +375,7 @@ impl HubBrowser {
     /// A field and the button that sends what it holds as `bound`'s one
     /// argument.
     fn push_field(
-        cx: &PaneCx,
+        actions: &Actions<Settings>,
         body: &mut Vec<Item>,
         (name, label, hint): (&str, &str, &str),
         (state, action, enabled): (&LocalState<String>, &str, bool),
@@ -388,13 +391,13 @@ impl HubBrowser {
             ),
         ));
         let state = state.clone();
-        body.push(row(Box::new(cx.bind(
+        body.push(row(Box::new(actions.bind_effect(
             Button::new(&format!("agent-models-hub-{name}-go"), &t(action)).with_enabled(enabled),
             effect(bound).map(move |()| state.with(|value| value.trim().to_owned())),
         ))));
     }
 
-    fn offer_section(&self, cx: &PaneCx, offer: &HubModelOffer) -> SettingsSection {
+    fn offer_section(&self, actions: &Actions<Settings>, offer: &HubModelOffer) -> SettingsSection {
         let short: String = offer.revision.chars().take(12).collect();
         let mut body = vec![
             value_row(&t("agent-revision"), &short),
@@ -406,7 +409,8 @@ impl HubBrowser {
             } else {
                 "agent-hub-gated-token-caption"
             })));
-            body.push(row(Box::new(cx.bind_invocation(
+            body.push(row(Box::new(invoking(
+                actions,
                 Button::new("agent-models-hub-open-page", &t("agent-hub-open-page")),
                 AgentModelsEffect::OpenHubModelPage {
                     repo: offer.repo.clone(),
@@ -419,7 +423,7 @@ impl HubBrowser {
         for variant in &offer.variants {
             let name = &variant.variant.name;
             if self.reviewing.as_deref() == Some(name.as_str()) {
-                push_confirm(cx, &mut body, offer, variant);
+                push_confirm(actions, &mut body, offer, variant);
                 continue;
             }
             let mut details = vec![
@@ -436,19 +440,18 @@ impl HubBrowser {
                     fit_tone(variant.fit.fit),
                 ))
                 .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
-                .push(Box::new(
-                    cx.bind_invocation(
-                        Button::new(
-                            &format!("agent-models-hub-download-{}", super::token(name)),
-                            &t("agent-hub-download"),
-                        )
-                        .with_enabled(variant.fit.fit != HardwareFit::Unsupported),
-                        AgentModelsEffect::ReviewHubVariant {
-                            variant: name.clone(),
-                            show: true,
-                        },
-                    ),
-                ));
+                .push(Box::new(invoking(
+                    actions,
+                    Button::new(
+                        &format!("agent-models-hub-download-{}", super::token(name)),
+                        &t("agent-hub-download"),
+                    )
+                    .with_enabled(variant.fit.fit != HardwareFit::Unsupported),
+                    AgentModelsEffect::ReviewHubVariant {
+                        variant: name.clone(),
+                        show: true,
+                    },
+                )));
             body.push(row(Box::new(thing_row(
                 &format!("agent-models.hub-variant:{name}"),
                 name,
@@ -463,7 +466,7 @@ impl HubBrowser {
         )
     }
 
-    fn token_section(&self, cx: &PaneCx) -> SettingsSection {
+    fn token_section(&self, actions: &Actions<Settings>) -> SettingsSection {
         let mut body = vec![note(&t("agent-hub-token-caption"))];
         let state = match &self.token_state {
             Ok(state) => state.clone(),
@@ -495,21 +498,22 @@ impl HubBrowser {
                 Some((code, page)) => agent_sign_in::device_code_note(code, page),
                 None => note(&t("agent-sign-in-waiting")),
             });
-            body.push(row(Box::new(cx.bind_invocation(
+            body.push(row(Box::new(invoking(
+                actions,
                 Button::new("agent-models-hub-sign-in-cancel", &t("agent-cancel")),
                 AgentModelsEffect::CancelHuggingFaceSignIn,
             ))));
         } else {
             let mut buttons = Row::new()
-                .push(Box::new(
-                    cx.bind_invocation(
-                        Button::new("agent-models-hub-sign-in", &t("agent-sign-in-huggingface"))
-                            .role(ButtonRole::Primary),
-                        AgentModelsEffect::SignInWithHuggingFace,
-                    ),
-                ))
+                .push(Box::new(invoking(
+                    actions,
+                    Button::new("agent-models-hub-sign-in", &t("agent-sign-in-huggingface"))
+                        .role(ButtonRole::Primary),
+                    AgentModelsEffect::SignInWithHuggingFace,
+                )))
                 .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
-                .push(Box::new(cx.bind_invocation(
+                .push(Box::new(invoking(
+                    actions,
                     Button::new(
                         "agent-models-hub-sign-in-code",
                         &t("agent-hub-sign-in-code"),
@@ -524,7 +528,8 @@ impl HubBrowser {
                 };
                 buttons = buttons
                     .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
-                    .push(Box::new(cx.bind_invocation(
+                    .push(Box::new(invoking(
+                        actions,
                         Button::new("agent-models-hub-token-remove", &t(remove)),
                         AgentModelsEffect::RemoveHubToken,
                     )));
@@ -542,7 +547,8 @@ impl HubBrowser {
                     .with_placeholder(t("agent-hub-token-hint")),
             ),
         ));
-        body.push(row(Box::new(cx.bind_invocation(
+        body.push(row(Box::new(invoking(
+            actions,
             Button::new("agent-models-hub-token-save", &t("agent-hub-token-save")),
             AgentModelsEffect::SaveHubToken { token: None },
         ))));
@@ -784,7 +790,7 @@ fn token_job(
 /// The licence confirmation of one variant: what downloads, from where, at
 /// which commit, under which licence, with accept and cancel.
 fn push_confirm(
-    cx: &PaneCx,
+    actions: &Actions<Settings>,
     body: &mut Vec<Item>,
     offer: &HubModelOffer,
     variant: &HubVariantOffer,
@@ -809,22 +815,22 @@ fn push_confirm(
     }
     body.push(row(Box::new(
         Row::new()
-            .push(Box::new(
-                cx.bind_invocation(
-                    Button::new(
-                        &format!("agent-models-hub-confirm-{widget}"),
-                        &t("agent-accept-download"),
-                    )
-                    .role(ButtonRole::Primary),
-                    AgentModelsEffect::InstallHubModel {
-                        repo: offer.repo.clone(),
-                        revision: offer.revision.clone(),
-                        variant: name.clone(),
-                    },
-                ),
-            ))
+            .push(Box::new(invoking(
+                actions,
+                Button::new(
+                    &format!("agent-models-hub-confirm-{widget}"),
+                    &t("agent-accept-download"),
+                )
+                .role(ButtonRole::Primary),
+                AgentModelsEffect::InstallHubModel {
+                    repo: offer.repo.clone(),
+                    revision: offer.revision.clone(),
+                    variant: name.clone(),
+                },
+            )))
             .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
-            .push(Box::new(cx.bind_invocation(
+            .push(Box::new(invoking(
+                actions,
                 Button::new(
                     &format!("agent-models-hub-cancel-{widget}"),
                     &t("agent-cancel"),
@@ -837,7 +843,11 @@ fn push_confirm(
     )));
 }
 
-fn result_row(cx: &PaneCx, result: &HubSearchResult, available: bool) -> ui::widget::ListRow {
+fn result_row(
+    actions: &Actions<Settings>,
+    result: &HubSearchResult,
+    available: bool,
+) -> ui::widget::ListRow {
     let mut details = vec![
         t_args(
             "agent-hub-result-downloads",
@@ -858,18 +868,17 @@ fn result_row(cx: &PaneCx, result: &HubSearchResult, available: bool) -> ui::wid
         &format!("agent-models.hub-result:{}", result.repo),
         &result.repo,
         &details,
-        Some(Box::new(
-            cx.bind_invocation(
-                Button::new(
-                    &format!("agent-models-hub-show-{}", super::token(&result.repo)),
-                    &t("agent-hub-show"),
-                )
-                .with_enabled(available),
-                AgentModelsEffect::ShowHubModel {
-                    model: result.repo.clone(),
-                },
-            ),
-        )),
+        Some(Box::new(invoking(
+            actions,
+            Button::new(
+                &format!("agent-models-hub-show-{}", super::token(&result.repo)),
+                &t("agent-hub-show"),
+            )
+            .with_enabled(available),
+            AgentModelsEffect::ShowHubModel {
+                model: result.repo.clone(),
+            },
+        ))),
     )
 }
 

@@ -551,6 +551,30 @@ pub fn show_pane(
         .expect("the pane opens");
 }
 
+/// The page a Settings window `root` shows: what its content scroller (the
+/// right-most one) holds.
+#[cfg(test)]
+pub fn page_of(root: &dyn ui::widget::Widget) -> &dyn ui::widget::Widget {
+    fn scrollers<'a>(
+        widget: &'a dyn ui::widget::Widget,
+        out: &mut Vec<&'a dyn ui::widget::Widget>,
+    ) {
+        if widget.name() == "Scrollable" {
+            out.push(widget);
+            return;
+        }
+        for child in widget.children() {
+            scrollers(child, out);
+        }
+    }
+    let mut found = Vec::new();
+    scrollers(root, &mut found);
+    found
+        .into_iter()
+        .max_by(|a, b| a.get_rect().x0.total_cmp(&b.get_rect().x0))
+        .expect("the window's content scroller")
+}
+
 /// The pane whose live row is `row` ([`pane_row_id`]).
 #[must_use]
 pub fn pane_of_row(row: &str) -> Option<Category> {

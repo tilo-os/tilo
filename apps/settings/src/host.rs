@@ -118,42 +118,6 @@ pub struct PaneCx {
     pub linked: ui::linked_accounts::LinkedAccounts,
 }
 
-/// Retype portable panel bindings without changing public Settings action ids.
-struct ProviderBinding<B>(B);
-impl<I, B: ui::tilo_resource::Binds<provider_settings_ui::ProviderEffect, I>>
-    ui::tilo_resource::Binds<SettingsEffect, I> for ProviderBinding<B>
-{
-    fn action_id(&self) -> &'static str {
-        self.0.action_id()
-    }
-    fn arguments(&self, input: I) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        self.0.arguments(input)
-    }
-}
-impl provider_settings_ui::PanelBindings for PaneCx {
-    fn offline_metadata(&self) -> bool {
-        true
-    }
-    fn bind<I: 'static, C: ActionControl<I>>(
-        &self,
-        control: C,
-        binding: impl ui::tilo_resource::Binds<provider_settings_ui::ProviderEffect, I>,
-    ) -> C {
-        self.bind(control, ProviderBinding(binding))
-    }
-    fn bind_invocation<C: ActionControl<()>>(
-        &self,
-        control: C,
-        effect: provider_settings_ui::ProviderEffect,
-    ) -> C {
-        use ui::tilo_resource::Effect;
-        match SettingsEffect::decode(effect.id(), &effect.arguments()) {
-            Ok(effect) => self.bind_invocation(control, effect),
-            Err(_) => control.unavailable(),
-        }
-    }
-}
-
 impl PaneCx {
     /// A pane on its own, outside any host, reading `storage`: its controls
     /// are drawn and laid out but go nowhere, and like a screenshot it

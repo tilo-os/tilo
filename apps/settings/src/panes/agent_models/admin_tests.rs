@@ -3,8 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use agent_provider_config::management::AdminFuture;
 use ui::framework::testing::TestApp;
 
-use super::{AgentModelsEffect, PaneCx, ProviderPanel, SettingsEffect};
-use crate::panes::model::PaneModel;
+use super::{AgentModelsEffect, PanelActions, ProviderPanel, SettingsEffect};
 use crate::{SettingsShell, effects::NavigationEffect};
 use agent_provider_config::management::{CredentialStatus, ProviderAdmin, ProviderSnapshot};
 use agent_provider_config::protocol::{ErrorKind, ModelError};
@@ -188,13 +187,14 @@ fn assert_private(app: &mut TestApp<SettingsShell>) {
         );
         let shared = serde_json::to_string(&model.providers.config()).unwrap();
         assert!(!shared.contains("private-key-draft"));
-        assert!(
-            !crate::widgets::announced_text(model.compose().as_ref())
-                .join(" ")
-                .contains("private-key-draft")
-        );
     })
     .unwrap();
+    app.settle();
+    assert!(
+        !crate::widgets::announced_text(crate::effects::page_of(app.harness().root_widget()))
+            .join(" ")
+            .contains("private-key-draft")
+    );
     let document = app
         .read_document(|doc| serde_json::to_string(&ui::automerge::AutoSerde::from(doc)).unwrap());
     assert!(!document.contains("private-key-draft"));
@@ -203,7 +203,7 @@ fn assert_private(app: &mut TestApp<SettingsShell>) {
 
 fn with_panel<T>(
     app: &mut TestApp<SettingsShell>,
-    f: impl FnOnce(&ProviderPanel<PaneCx>) -> T,
+    f: impl FnOnce(&ProviderPanel<PanelActions>) -> T,
 ) -> T {
     app.with_widget::<crate::window::SettingsWindow, _>(|app| {
         f(&crate::panes::agent_models::area(app)
