@@ -86,15 +86,15 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
 }
 
 /// A desktop's agent door serves each connection as the agent the person
-/// admitted, never as the person: every call reaches the host as that agent,
+/// admitted, acting for that person, never as the person: every call reaches the host as that agent,
 /// confined to the admitted room, in a fresh execution per connection, and
 /// an agent session is offered no pixel tools.
 #[test]
 fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
     let host = StubHost::default();
     let callers = host.callers.clone();
-    let first = McpServer::for_agent(host.clone(), "room".into(), "claude-terminal");
-    let second = McpServer::for_agent(host, "room".into(), "claude-terminal");
+    let first = McpServer::for_agent(host.clone(), "room".into(), "claude-terminal", "ada");
+    let second = McpServer::for_agent(host, "room".into(), "claude-terminal", "ada");
     let call = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"tilo_do","arguments":{"path":"test/Note#apply"}}});
     run(async {
         for server in [&first, &second] {
@@ -133,6 +133,10 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
         );
         assert_eq!(caller.room(), Some("room"));
         assert!(caller.execution_is_live());
+        // It acts for the person who admitted it, as a member: the agent stays
+        // the principal and carries no device delegation of the person's.
+        assert_eq!(caller.acting_for_person(), Some("ada"));
+        assert!(!caller.is_session_delegated());
     }
     assert_ne!(
         callers.first().map(Caller::execution_id),

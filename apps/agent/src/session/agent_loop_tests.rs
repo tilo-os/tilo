@@ -507,6 +507,13 @@ struct World {
     /// An action that asks its person first, and how many more asks the
     /// host answers with its draft waiting before the person confirms.
     awaiting: Option<(String, usize)>,
+    /// The room also runs tilolang Board and Views, whose hosts take programs,
+    /// and the Tasks tracker records the run's steps.
+    tilolang: bool,
+    /// What each `run-block` answers, by a word its source holds.
+    tl_blocks: Vec<(&'static str, Value)>,
+    /// What the door answers each task program, by a word the program holds.
+    tl_programs: Vec<(&'static str, Value)>,
 }
 
 /// How the fixture host treats a re-ask that asks to be held.
@@ -640,6 +647,9 @@ impl World {
                 }],
             },
         ];
+        if self.tilolang {
+            surfaces.extend(programs::surfaces());
+        }
         if let Some(record) = self.second_window {
             surfaces.push(BrokerActionSurface {
                 peer_id: SECOND_PEER,
@@ -713,6 +723,10 @@ impl World {
 
     /// Apply one step; the committed result, and whether the
     /// catalogue changed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the fixture world answers every published operation in one place"
+    )]
     fn apply(&mut self, action: &str, arguments: &serde_json::Map<String, Value>) -> (Value, bool) {
         let nth = self.steps.iter().filter(|(seen, _)| seen == action).count();
         self.steps.push((action.into(), arguments.clone()));
@@ -786,6 +800,44 @@ impl World {
                 (serde_json::json!({"succeeded": {}}), false)
             }
             "open" => (self.open_writer(), true),
+            "run-block" => {
+                let source = text("source");
+                let answer = self
+                    .tl_blocks
+                    .iter()
+                    .find(|(word, _)| source.contains(word))
+                    .map(|(_, answer)| answer.clone());
+                match answer {
+                    Some(Value::String(error)) => {
+                        (serde_json::json!({ "failed_with": error }), false)
+                    }
+                    Some(answer) => (serde_json::json!({"succeeded": {"value": answer}}), false),
+                    None => (serde_json::json!({"failed": "no block"}), false),
+                }
+            }
+            "run-program" => {
+                let program = text("program");
+                let answer = self
+                    .tl_programs
+                    .iter()
+                    .find(|(word, _)| program.contains(word))
+                    .map(|(_, answer)| answer.clone());
+                match answer {
+                    Some(answer) => (serde_json::json!({"succeeded": {"value": answer}}), false),
+                    None => (serde_json::json!({"failed": "no program"}), false),
+                }
+            }
+            "catalogue" => (
+                serde_json::json!({"succeeded": {"value": programs::catalogue()}}),
+                false,
+            ),
+            "answer" => (
+                serde_json::json!({"succeeded": {"value": {
+                    "type": "Answer", "id": "root/items:v1", "label": text("title")
+                }}}),
+                false,
+            ),
+            "record-step" | "record-answer" => (serde_json::json!({"succeeded": {}}), false),
             "type-text" => {
                 if self.blocks.is_empty() {
                     self.blocks.push(("p1".into(), String::new()));
@@ -952,7 +1004,11 @@ impl ui::collaboration::PeerTransport for Broker {
                         invocation: *invocation,
                         error: tilo_actions::ActionFailure {
                             code: "app.refused".into(),
-                            message: format!("{action} was refused"),
+                            // The host's own words, when it gave them.
+                            message: outcome
+                                .get("failed_with")
+                                .and_then(Value::as_str)
+                                .map_or_else(|| format!("{action} was refused"), str::to_owned),
                             details: None,
                             retryable: false,
                         },
@@ -1402,6 +1458,8 @@ fn finish(reply: &str, done: bool) -> (&'static str, Value) {
 mod native_pipeline;
 #[path = "agent_loop/tests/pictures.rs"]
 mod pictures;
+#[path = "agent_loop/tests/programs.rs"]
+mod programs;
 
 fn native_fixture(latest: u64) -> Fixture {
     let control = runtime_collab::TaskRunControl {
@@ -1719,6 +1777,7 @@ fn making_the_second_paragraph_bold_selects_it_then_toggles_the_mark() {
                 "describe_operation",
                 "invoke",
                 "read_result",
+                "tilo",
                 "plan"
             ],
             "only generic tools, never an application-specific one"
@@ -2446,7 +2505,10 @@ fn anthropic_tasks_share_the_cached_catalogue_block() {
     );
     assert!(!catalogue.contains("The request:"), "{catalogue}");
     assert!(first[1].get("cache_control").is_none());
-    assert_eq!(first[1]["text"], "The request:\n\npost hello");
+    // What the task is and where it is come after the catalogue, in the block that changes.
+    let task = first[1]["text"].as_str().unwrap();
+    assert!(task.starts_with("Limits: at most"), "{task}");
+    assert!(task.ends_with("The request:\n\npost hello"), "{task}");
     let task = second[1]["text"].as_str().unwrap();
     assert!(
         task.ends_with("The request:\n\nwhat did you just do?"),

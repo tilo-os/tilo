@@ -372,8 +372,30 @@ impl ShellOverlayHost {
 
     /// What goes back to the apps: their slots were used.
     pub fn take_toolbar_outbox(&mut self) -> Vec<(u64, ToolbarEvent)> {
+        self.take_placed_toolbar_outbox()
+            .into_iter()
+            .map(|(connection, event, _)| (connection, event))
+            .collect()
+    }
+
+    /// What goes back to the apps, each with the input serial minted when the person used
+    /// the bar ([`crate::compositor::input_order`]).
+    pub fn take_placed_toolbar_outbox(&mut self) -> Vec<(u64, ToolbarEvent, u32)> {
+        // A bar may report what a press did only on its next frame, after the keys that
+        // followed the press reached the app: it was done with the desktop's last input.
+        self.place_toolbar_events(self.chrome_input_clock);
+        std::mem::take(&mut self.placed_toolbar_events)
+    }
+
+    /// What the person did in the bars since this was last asked was done with the input up to
+    /// the serial `clock`, the desktop's own input that did it: it takes its place after that
+    /// input, before what comes later.
+    pub fn place_toolbar_events(&mut self, clock: u32) {
+        self.chrome_input_clock = clock;
         self.sync_window_toolbars();
-        self.window_toolbars.take_outbox()
+        for (connection, event) in self.window_toolbars.take_outbox() {
+            self.placed_toolbar_events.push((connection, event, clock));
+        }
     }
 
     /// While a window's location is edited in its bar, its field has the

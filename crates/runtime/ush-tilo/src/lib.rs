@@ -241,6 +241,12 @@ pub trait Place: Send + Sync {
         let _ = query;
         None
     }
+
+    /// The app showing the session, editing the line at the prompt as a
+    /// field ([`Host::field`]).
+    fn field(&self) -> Option<Arc<dyn ush_shell::field::Field>> {
+        None
+    }
 }
 
 /// A place that offers nothing beyond files and programs.
@@ -503,6 +509,10 @@ impl Host for TiloHost {
 
     fn programs(&self, path: &str) -> Vec<String> {
         self.0.programs.names(path)
+    }
+
+    fn field(&self) -> Option<Arc<dyn ush_shell::field::Field>> {
+        self.0.place.field()
     }
 }
 

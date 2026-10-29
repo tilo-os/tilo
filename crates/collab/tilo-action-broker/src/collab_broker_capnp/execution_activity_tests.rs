@@ -230,10 +230,10 @@ async fn an_untrusted_contract_marks_every_observation_of_its_invocation() {
 fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it() {
     let (state, person, mut app) = fixture_tagged(vec![tilo_actions::ATTENDED_TAG.to_owned()]);
     let room = person.room().unwrap().to_owned();
-    let agent = Caller::local_agent("scribe")
-        .acting_for("a1".repeat(32))
+    let agent = Caller::local_person("a1".repeat(32))
         .in_room(room)
-        .in_new_execution();
+        .in_new_execution()
+        .delegated_to("scribe");
     let asked = state
         .action_invoke(&agent, None, None, &request())
         .poll_ready();
@@ -289,10 +289,10 @@ async fn an_agents_ask_shows_its_person_the_draft_of_what_would_run() {
     );
     let (sheet, mut asked) = tokio::sync::mpsc::unbounded_channel();
     state.set_app_action_consent(Arc::new(Sheet(sheet)));
-    let agent = Caller::local_agent("scribe")
-        .acting_for("a1".repeat(32))
+    let agent = Caller::local_person("a1".repeat(32))
         .in_room(person.room().unwrap().to_owned())
-        .in_new_execution();
+        .in_new_execution()
+        .delegated_to("scribe");
     let mut invoke = request();
     let mut arguments = serde_json::Map::new();
     arguments.insert("text".into(), "Buy milk".into());
@@ -349,10 +349,10 @@ fn ask_to_update(
 ) {
     let (sheet, asked) = tokio::sync::mpsc::unbounded_channel();
     state.set_app_action_consent(Arc::new(Sheet(sheet)));
-    let agent = Caller::local_agent("scribe")
-        .acting_for("a1".repeat(32))
+    let agent = Caller::local_person("a1".repeat(32))
         .in_room(person.room().unwrap().to_owned())
-        .in_new_execution();
+        .in_new_execution()
+        .delegated_to("scribe");
     let mut invoke = request();
     invoke.argument = InvokeArgument::Json(
         serde_json::json!({"text": "Buy milk", "pin": false})
@@ -1462,9 +1462,10 @@ fn agent_answered(
     (answered, app.try_recv().is_ok())
 }
 
-/// The agents a person's answers bind: one the desktop's agent door admitted
-/// into the room, and one the person's own device handed its session.
-fn agent_doors() -> [fn(&str) -> Caller; 2] {
+/// The agents a person's answers bind: an enrolled agent acting on its own,
+/// one the desktop's agent door admitted as a member acting for the person
+/// who admitted it, and one the person's own device handed its session.
+fn agent_doors() -> [fn(&str) -> Caller; 3] {
     [
         |room| {
             Caller::local_agent("scribe")
@@ -1476,6 +1477,12 @@ fn agent_doors() -> [fn(&str) -> Caller; 2] {
                 .acting_for("a1".repeat(32))
                 .in_room(room.to_owned())
                 .in_new_execution()
+        },
+        |room| {
+            Caller::local_person("a1".repeat(32))
+                .in_room(room.to_owned())
+                .in_new_execution()
+                .delegated_to("scribe")
         },
     ]
 }
@@ -1525,6 +1532,55 @@ fn an_agents_change_the_person_allowed_runs() {
         );
         assert!(heard, "the app runs it");
     }
+}
+
+/// An agent the desktop's door admitted as an observer member acts for the
+/// person who admitted it, yet may do no more than the room grants it: the
+/// owner's authority does not widen it, and it carries none of the
+/// delegation the person's own device gives the agents it hands a session
+/// to. That device-handed session, with the same member grants, does carry
+/// it: its change is offered and asks first.
+#[test]
+fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
+    let owner = "a1".repeat(32);
+    let person = tilo_action_policy::Subject::person(owner.clone());
+    let (state, owner_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |room| {
+        tilo_action_policy::roles::AgentPreset::Observer.grants(room, "scribe", &person)
+    });
+    let room = owner_caller.room().expect("the fixture's room").to_owned();
+    let member = Caller::local_agent("scribe")
+        .acting_for(owner.clone())
+        .in_room(room.clone())
+        .in_new_execution();
+    assert_eq!(member.acting_for_person(), Some(owner.as_str()));
+    assert!(!member.is_session_delegated());
+    let answered = state
+        .action_invoke(&member, None, None, &request())
+        .poll_ready();
+    assert!(
+        matches!(
+            answered,
+            PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+        ),
+        "an observer member is not offered a change: {answered:?}"
+    );
+    assert!(app.try_recv().is_err(), "the app never hears of it");
+
+    let handed = Caller::local_person(owner)
+        .in_room(room)
+        .in_new_execution()
+        .delegated_to("scribe");
+    assert!(handed.is_session_delegated());
+    let answered = state
+        .action_invoke(&handed, None, None, &request())
+        .poll_ready();
+    assert!(
+        !matches!(
+            answered,
+            PendingPoll::Ready(Err(ActionHostError::UnknownAction))
+        ),
+        "the device-handed session carries the device's delegation: {answered:?}"
+    );
 }
 
 /// A Store disclosure whose `operation` does not decode is refused with

@@ -1100,6 +1100,12 @@ pub struct ShellOverlayHost {
     feedback_picker: crate::shell::feedback_pick::NativePicker,
     /// The slots Tilo apps declared for their windows' bars.
     window_toolbars: window_toolbars::WindowToolbars,
+    /// What the person did with apps' slots in their windows' bars, for the apps, each with
+    /// the input serial minted when it was done ([`crate::compositor::input_order`]).
+    placed_toolbar_events: Vec<(u64, ui::window_toolbar::ToolbarEvent, u32)>,
+    /// The input serial minted when the desktop last dispatched input of its own (a click, a
+    /// key, a touch): what a bar reports later was done with it.
+    chrome_input_clock: u32,
     /// Windows shared live into a conversation: the menus offering it, the
     /// sharing app's connections and the views windows embed.
     live_shares: live_shares::NativeLiveShares,

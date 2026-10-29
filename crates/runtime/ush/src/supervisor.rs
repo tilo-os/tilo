@@ -31,7 +31,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
-use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -67,6 +67,8 @@ pub struct SessionOptions {
     /// The key the shell marks its command runs with for Terminal
     /// ([`crate::runs`]); `None` marks nothing.
     pub runs: Option<String>,
+    /// Connected participant-private editing endpoint from this served session.
+    pub editor: Option<Arc<runtime_portal::editor::Socket>>,
     /// A served session's terminal ([`crate::setup`]): standard error is the
     /// supervisor's, and the guest's shell gets this as its own. `None` when
     /// `ush` runs on a terminal of its own.
@@ -84,6 +86,7 @@ impl Default for SessionOptions {
             runs: std::env::var(crate::runs::KEY_ENV)
                 .ok()
                 .filter(|key| crate::runs::valid_key(key)),
+            editor: None,
             terminal: None,
         }
     }
@@ -488,6 +491,9 @@ pub enum ServeRequest {
         /// ([`crate::runs`]), chosen by the app for this session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         runs: Option<String>,
+        /// Explicit opt-in; existing clients continue to receive exactly one FD.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        editor_protocol: Option<u8>,
         /// Explicit opt-in: before a session's lease closes, tell the app on
         /// it how the session ended (`EndReport`): its shell exited, its
         /// guest could not be set up, or, for a relay session, the
@@ -580,6 +586,9 @@ pub enum ServeResponse {
         /// request named. A shell other than `bash` writes no marks.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         runs: bool,
+        /// V1 bundles PTY first, private editor second, under this session's lifetime.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        editor_protocol: Option<u8>,
     },
     Denied {
         reason: String,
@@ -918,6 +927,7 @@ fn open_environment(
         term,
         command,
         runs,
+        editor_protocol,
         end_report,
         ..
     } = req
@@ -926,6 +936,11 @@ fn open_environment(
     };
     let runs = runs.filter(|key| command.is_empty() && crate::runs::valid_key(key));
     let (master, slave) = open_pty(cols, rows)?;
+    let editor = if editor_protocol == Some(runtime_portal::editor::VERSION) && command.is_empty() {
+        Some(runtime_portal::editor::Socket::pair()?)
+    } else {
+        None
+    };
 
     let id = uuid::Uuid::new_v4().simple().to_string();
     AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
@@ -941,6 +956,7 @@ fn open_environment(
         host_root,
         command: &command,
         runs: runs.as_deref(),
+        editor: editor.as_ref().map(|(_, supervisor)| supervisor),
     };
 
     // The guest gets the slave as its stdio; the app gets the master. A *child
@@ -965,9 +981,11 @@ fn open_environment(
             environment: record,
             relay_session: None,
             runs: runs.is_some(),
+            editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
         },
         master,
         child,
+        editor.map(|(app, _)| app),
         || {
             Some(EndWatch {
                 ended: watch_setup(diagnostics, session_id),
@@ -1004,6 +1022,7 @@ fn hand_off_session(
     response: &ServeResponse,
     master: std::fs::File,
     child: std::process::Child,
+    editor: Option<runtime_portal::editor::Socket>,
     on_started: impl FnOnce() -> Option<EndWatch>,
 ) -> anyhow::Result<()> {
     use std::os::fd::AsFd;
@@ -1045,8 +1064,21 @@ fn hand_off_session(
         error
     };
     if !transport.persistent {
-        // The legacy lease is the request connection itself: the PTY.
-        reply(writer, response, Some(master.as_fd())).map_err(undelivered)?;
+        // The legacy lease is the request connection itself: PTY first, then
+        // the editor capability when one was negotiated.
+        if let Some(app) = &editor {
+            let mut bytes = serde_json::to_vec(response)?;
+            bytes.push(b'\n');
+            runtime_portal::fd_transport::send_with_fds(
+                &*writer,
+                &bytes,
+                &[master.as_fd(), app.as_fd()],
+            )
+            .map_err(|error| undelivered(error.into()))?;
+        } else {
+            reply(writer, response, Some(master.as_fd())).map_err(undelivered)?;
+        }
+        drop(editor);
         drop(master);
         // The legacy lease carries no report: it only closes.
         let watch = on_started().map(|watch| EndWatch {
@@ -1065,10 +1097,15 @@ fn hand_off_session(
         protocol: SERVICE_PROTOCOL,
     })?;
     bytes.push(b'\n');
-    // Roles, in order: PTY master, then the private session lease.
-    let rights = [master.as_fd(), terminal_lease.as_fd()];
+    // Roles, in order: PTY master, private session lease, then the editor
+    // capability when `editor_protocol` was negotiated.
+    let mut rights = vec![master.as_fd(), terminal_lease.as_fd()];
+    if let Some(app) = &editor {
+        rights.push(app.as_fd());
+    }
     runtime_portal::fd_transport::send_with_fds(&*writer, &bytes, &rights)
         .map_err(|error| undelivered(error.into()))?;
+    drop(editor);
     drop(master);
     drop(terminal_lease);
     let watch = on_started();
@@ -1326,9 +1363,11 @@ fn serve_host(
             environment: "host".into(),
             relay_session: None,
             runs: runs.is_some(),
+            editor_protocol: None,
         },
         master,
         child,
+        None,
         || None,
     )?;
     Ok(Served::Done)
@@ -1495,9 +1534,11 @@ fn serve_relay(
             environment: key,
             relay_session: Some(session_id),
             runs: false,
+            editor_protocol: None,
         },
         master,
         child,
+        None,
         || {
             Some(EndWatch {
                 ended: watch_relay_bridge(status, store.records_root().to_path_buf()),
@@ -1726,6 +1767,7 @@ struct Launch<'a> {
     command: &'a [String],
     /// The key the session's shell marks its runs with.
     runs: Option<&'a str>,
+    editor: Option<&'a runtime_portal::editor::Socket>,
 }
 
 /// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
@@ -1746,6 +1788,30 @@ fn spawn_attached(
         cmd.arg("--environment").arg(record);
     }
     cmd.arg("--host-root").arg(launch.host_root);
+    // Held until the spawn: the editor endpoint, moved off the descriptor
+    // the terminal takes in the child.
+    let moved_editor = match launch.editor {
+        Some(editor) if editor.as_fd().as_raw_fd() == crate::setup::TERMINAL_FD => {
+            Some(editor.as_fd().try_clone_to_owned()?)
+        }
+        _ => None,
+    };
+    if let Some(editor) = launch.editor {
+        use std::os::unix::process::CommandExt;
+        let fd = moved_editor
+            .as_ref()
+            .map_or_else(|| editor.as_fd().as_raw_fd(), AsRawFd::as_raw_fd);
+        cmd.arg("--editor-fd").arg(fd.to_string());
+        // SAFETY: only this owned endpoint is inherited by the trusted runtime.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     if !launch.command.is_empty() {
         cmd.arg("--").args(launch.command);
     }
@@ -1765,6 +1831,7 @@ fn spawn_attached(
     };
     let (read, write) = crate::relay::status_pipe()?;
     let child = spawn_on_pty_with(cmd, slave, job, Some(write))?;
+    drop(moved_editor);
     Ok((child, read))
 }
 
@@ -2003,9 +2070,11 @@ mod tests {
                     environment: "default".into(),
                     relay_session: None,
                     runs: false,
+                    editor_protocol: None,
                 },
                 master,
                 child,
+                None,
                 || None,
             );
             if fails {
@@ -2069,9 +2138,11 @@ mod tests {
                     environment: environment.into(),
                     relay_session: None,
                     runs: false,
+                    editor_protocol: None,
                 },
                 master,
                 child,
+                None,
                 || None,
             )
             .unwrap();
@@ -2312,8 +2383,9 @@ mod tests {
                 environment: "default".into(),
                 relay_session: None,
                 runs: false,
+                editor_protocol: None,
             },
-            Some(std::os::fd::AsFd::as_fd(&master)),
+            Some(master.as_fd()),
         );
         assert!(
             handed.is_err(),
@@ -2346,6 +2418,7 @@ mod tests {
             environment: "default".into(),
             relay_session: None,
             runs: true,
+            editor_protocol: None,
         };
         assert_eq!(
             serde_json::to_string(&reply).unwrap(),
@@ -2363,6 +2436,7 @@ mod tests {
             requested_by: crate::host::RequestedBy::Person,
             relay_session: None,
             runs: None,
+            editor_protocol: None,
             end_report: false,
         }
     }
