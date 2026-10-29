@@ -28,8 +28,11 @@ usage:
       --runtime BIN runs the apps on a tilolang runtime binary of your own build, and a new
       build of it restarts them on it; --build-runtime builds it from the checkout and again
       on every change of its sources with cargo. See docs/tilolang-dev.md.
+  tilolang describe [DIR] [--search DIR]...
+      print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
+      a native app (its committed surface.toml) and a tilolang package alike
   tilolang check|fmt|ids ...
-      the compiler's commands (tilolangc --help)";
+      the compiler's commands (tilolangc --help); `use` also finds native apps in --path";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -38,11 +41,15 @@ fn main() -> ExitCode {
         Some("build") => build(rest),
         Some("run") => run_command(rest),
         Some("dev") => dev_command(rest),
+        Some("describe") => describe_command(rest),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
         }
-        Some(_) => return tilolang::cli::main(&args),
+        // A package may `use` a native app: its published types are found among --path too.
+        Some(_) => {
+            return tilolang::cli::main_with(&args, tilolang_tilo::catalogue::native_apps);
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -100,6 +107,21 @@ fn build(args: &[String]) -> Result<(), String> {
     for app in package::build(&options, &identity)? {
         println!("{} ({}): {}", app.app, app.title, app.tapp.display());
     }
+    Ok(())
+}
+
+fn describe_command(args: &[String]) -> Result<(), String> {
+    let mut dir = PathBuf::from(".");
+    let mut search = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--search" | "--path" => search.push(value(&mut iter, arg)?.into()),
+            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n{USAGE}")),
+            other => dir = other.into(),
+        }
+    }
+    print!("{}", tilolang_cli::describe::describe(&dir, &search)?);
     Ok(())
 }
 

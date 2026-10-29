@@ -586,6 +586,9 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                         fn value_schema() -> #krate::__private::serde_json::Value {
                             <#ty as #krate::Model>::value_schema()
                         }
+                        fn field_type(types: &mut #krate::TypeSet) -> #krate::FieldType {
+                            <#ty as #krate::Model>::field_type(types)
+                        }
                         fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
                             <#ty as #krate::Model>::missing().map(Self)
                         }
@@ -656,6 +659,8 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 idents.push(variant.ident.clone());
             }
             let table = quote!(#krate::table);
+            let type_name = name.to_string();
+            let type_doc = first_doc_line(&input.attrs);
             let positions: Vec<proc_macro2::Literal> = (0..idents.len())
                 .map(proc_macro2::Literal::usize_unsuffixed)
                 .collect();
@@ -720,6 +725,15 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     #krate::__table_functions!();
                     fn value_schema() -> #krate::__private::serde_json::Value {
                         #table::unit_schema(Self::__UNIT.names)
+                    }
+                    fn field_type(types: &mut #krate::TypeSet) -> #krate::FieldType {
+                        #krate::surface::enum_type(
+                            types,
+                            ::core::any::type_name::<Self>(),
+                            #type_name,
+                            #type_doc,
+                            &[#((#names, "", &[])),*],
+                        )
                     }
                     #[inline]
                     fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
@@ -820,6 +834,8 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
     // Each field's published value schema, narrowed by its declarations.
     let mut schema_fns = Vec::new();
     let owner = snake_case(&name.to_string()).replace('_', "-");
+    let type_name = name.to_string();
+    let type_doc = first_doc_line(&input.attrs);
     for field in &fields.named {
         let ident = field
             .ident
@@ -985,6 +1001,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             quiet_remove: #quiet_remove,
             trust: #trust,
             schema: Self::#schema_fn,
+            field_type: <#ty as #krate::Model>::field_type,
             text: #krate::stored_text::<#ty>,
             absent: #krate::absent_scalar::<#ty>,
             resource: #resource,
@@ -1391,6 +1408,16 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
                 #krate::__private::record_value_schema(<Self as #krate::Model>::SHAPE)
             }
 
+            fn field_type(types: &mut #krate::TypeSet) -> #krate::FieldType {
+                #krate::surface::record_type(
+                    types,
+                    ::core::any::type_name::<Self>(),
+                    #type_name,
+                    #type_doc,
+                    <Self as #krate::Model>::SHAPE,
+                )
+            }
+
             #[inline]
             fn missing() -> ::core::result::Result<Self, #krate::ModelError> {
                 let mut out = ::core::option::Option::None;
@@ -1544,6 +1571,23 @@ fn humanize(name: &str) -> String {
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
     })
+}
+
+/// The first sentence of the doc comment in `attrs`, its lines joined, or
+/// empty: what a published type says it is.
+fn first_doc_line(attrs: &[Attribute]) -> String {
+    let lines = doc_lines(attrs);
+    let paragraph: Vec<&str> = lines
+        .iter()
+        .map(String::as_str)
+        .skip_while(|line| line.is_empty())
+        .take_while(|line| !line.is_empty())
+        .collect();
+    let text = paragraph.join(" ");
+    match text.find(". ") {
+        Some(end) => text.get(..=end).unwrap_or_default().to_owned(),
+        None => text,
+    }
 }
 
 fn doc_lines(attrs: &[Attribute]) -> Vec<String> {

@@ -4,7 +4,10 @@
 //! rename or an incompatible storage change shows up in review, and it is
 //! what the OS knows about an app that is not running.
 
-pub use tilo_actions::surface::{FieldSurface, ParamSurface, Surface, VerbSurface};
+pub use tilo_actions::surface::{
+    FieldSurface, FieldType, NamedType, ParamSurface, Surface, TypeCase, TypeField, TypeSet,
+    VerbSurface,
+};
 
 use crate::resource::Resource;
 use crate::shape::Shape;
@@ -49,11 +52,11 @@ fn stored(shape: Shape) -> &'static str {
     }
 }
 
-fn fields_of(shape: Shape, prefix: &str, out: &mut Vec<FieldSurface>) {
+fn fields_of(shape: Shape, prefix: &str, types: &mut TypeSet, out: &mut Vec<FieldSurface>) {
     let (fields, item) = match shape {
         Shape::Record(fields) => (fields, false),
         Shape::Collection(item) | Shape::Keyed(item) => {
-            fields_of(*item, &format!("{prefix}*."), out);
+            fields_of(*item, &format!("{prefix}*."), types, out);
             return;
         }
         Shape::Value | Shape::Map(_) => return,
@@ -66,13 +69,13 @@ fn fields_of(shape: Shape, prefix: &str, out: &mut Vec<FieldSurface>) {
             owner: field.owner.to_owned(),
             title: field.title.to_owned(),
             stored: stored(field.shape).to_owned(),
-            ty: field.ty.to_owned(),
+            ty: (field.field_type)(types),
             readonly: field.readonly,
             unit: field.unit,
             label: field.label,
             ops: None,
         });
-        fields_of(field.shape, &format!("{path}."), out);
+        fields_of(field.shape, &format!("{path}."), types, out);
     }
 }
 
@@ -85,8 +88,9 @@ pub fn surface_of<R: Resource>() -> Surface {
 /// [`surface_of`] the resource `vocabulary`, stored at `version`.
 fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
     let mut fields = Vec::new();
+    let mut types = TypeSet::new();
     if let Some(shape) = (vocabulary.shape)() {
-        fields_of(shape, "", &mut fields);
+        fields_of(shape, "", &mut types, &mut fields);
     }
     for (path, schema) in (vocabulary.op_schemas)() {
         if let Some(field) = fields.iter_mut().find(|field| field.path == path) {
@@ -104,5 +108,79 @@ fn surface_in(vocabulary: &crate::Vocabulary, version: u32) -> Surface {
         person: false,
         verbs,
         fields,
+        types: types.into_types(),
     }
+}
+
+/// The type of a record of `shape` named `name` (the Rust type `identity`):
+/// what `#[derive(Model)]` publishes for a struct, its fields read from its
+/// shape.
+#[doc(hidden)]
+pub fn record_type(
+    types: &mut TypeSet,
+    identity: &str,
+    name: &str,
+    doc: &str,
+    shape: Shape,
+) -> FieldType {
+    types.named(identity, name, |types| NamedType {
+        name: name.to_owned(),
+        doc: doc.to_owned(),
+        fields: shape
+            .fields()
+            .iter()
+            .map(|field| TypeField {
+                name: field.key.to_owned(),
+                ty: (field.field_type)(types),
+                title: field.title.to_owned(),
+            })
+            .collect(),
+        cases: Vec::new(),
+    })
+}
+
+/// One case of an enum as a derive lists it: its stored name, how it reads
+/// (empty: its name in words), and its fields' keys with their types.
+#[doc(hidden)]
+pub type CaseOf<'a> = (
+    &'a str,
+    &'a str,
+    &'a [(&'a str, fn(&mut TypeSet) -> FieldType)],
+);
+
+/// The type of an enum named `name` (the Rust type `identity`) with the
+/// cases `cases`: what `#[derive(Model)]` and `#[derive(JsonSchema)]`
+/// publish for an enum.
+#[doc(hidden)]
+pub fn enum_type(
+    types: &mut TypeSet,
+    identity: &str,
+    name: &str,
+    doc: &str,
+    cases: &[CaseOf<'_>],
+) -> FieldType {
+    types.named(identity, name, |types| NamedType {
+        name: name.to_owned(),
+        doc: doc.to_owned(),
+        fields: Vec::new(),
+        cases: cases
+            .iter()
+            .map(|(case, label, fields)| TypeCase {
+                name: (*case).to_owned(),
+                label: if label.is_empty() {
+                    tilo_actions::field_type::label_of(case)
+                } else {
+                    (*label).trim_end_matches('.').to_owned()
+                },
+                fields: fields
+                    .iter()
+                    .map(|(field, ty)| TypeField {
+                        name: (*field).to_owned(),
+                        ty: ty(types),
+                        title: String::new(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    })
 }

@@ -55,6 +55,13 @@ opens through the type's default view (`default view counter for Counter`).
 directories (for `apps/tl/today`, the other directories of `apps/tl`); `--path <dir>` adds a
 package directory, or a directory of packages, to look in.
 
+A package may also `use` a native app: `use so.tilo.chat as chat` reads what Chat publishes, the
+resources, records and enums of its committed `surface.toml`, as types (`chat.Workspace`,
+`chat.Channel`, `chat.ChannelKind`) and its verbs as actions, and checks field reads and action
+signatures against them. The language's tool (`tilolang check`) finds native apps among the
+`--path` directories (`--path apps/chat`, or `--path apps`). Reading native records at runtime and
+invoking native actions come later; for now this is compile-time only.
+
 ## Syntax reference
 
 The full grammar is [grammar.md](grammar.md). In short:
@@ -317,6 +324,8 @@ tilolang build [dir] [--out DIR]          writes a signed Tilo app per package: 
 tilolang fmt [dir] [--check]              rewrites every file in canonical form
 tilolang ids [dir] [--rename old new]     prints or edits the ids lock
 tilolang run [dir] [--peers N] [--headless]  runs the package as an app in a nested Tilo session
+tilolang describe [dir] [--search DIR]    prints what an app publishes as tilolang: a native app
+                                          (its surface.toml) and a tilolang package alike
 ```
 
 `dir` defaults to the current directory. Errors print as `path:line:col: E0xx message`;
