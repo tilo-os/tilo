@@ -149,6 +149,11 @@ into an application unless the request asks for that too. A remark is answered t
 aside, as its `result` handle and a summary; `read_result` reads it again from `from` 0.
 - When the request is the same work for several items (each mail, each file), do one item at \
 a time and say where you are with `progress` on the invoke that finishes each item.
+- To look at a web page for the request (a site, a profile, a portfolio), open its address in \
+the browser and work there with the page's own operations: read the page for its text, capture \
+it to look at it when you can see pictures, and find, click, fill, scroll or press keys on its \
+elements by their names. The page then stays open for the person, beside the rest of the work. \
+A web search's fetch is only for a quick read of text nobody needs to see.
 - To attach, post or place a file, first invoke the operation that hands it over (its result \
 names `tilo.content:` content), then right after it the operation that takes content; that \
 parameter is filled in from the step before, so give only the others. One file per pair.

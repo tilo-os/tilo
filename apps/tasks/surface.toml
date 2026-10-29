@@ -47,6 +47,7 @@ fields = [
   { path = "issues.*.budget", type = { option = { named = "Budget" } }, readonly = true, stored = "record" },
   { path = "issues.*.budget.turn_ms", type = "int" },
   { path = "issues.*.budget.total_ms", type = "int" },
+  { path = "issues.*.budget.max_turns", type = { option = "int" } },
   { path = "issues.*.budget.max_tokens", type = { option = "int" } },
   { path = "issues.*.budget.max_priced_calls", type = { option = "int" } },
   { path = "issues.*.budget.max_cost_micros", type = { option = "int" } },
@@ -197,6 +198,7 @@ params = [
   { name = "model", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { model = { type = "string" }, profile = { type = "string" } }, required = ["profile", "model"] } },
   { name = "subject", required = false, schema = {} },
   { name = "quick", type = "bool", required = false, schema = { type = "boolean" } },
+  { name = "chat", type = "bool", required = false, schema = { type = "boolean" } },
 ]
 
 [[resources.verbs]]
@@ -327,6 +329,7 @@ params = [
   { name = "turn_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
   { name = "total_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
   { name = "limits", type = { option = { named = "SpendLimits" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { currency = { type = "string" }, max_cost_micros = { type = ["integer", "null"], minimum = 0 }, max_priced_calls = { type = ["integer", "null"], minimum = 0 }, max_tokens = { type = ["integer", "null"], minimum = 0 } }, required = ["currency"] } },
+  { name = "max_turns", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
 ]
 
 [[resources.verbs]]
@@ -468,6 +471,7 @@ name = "Budget"
 fields = [
   { name = "turn_ms", type = "int" },
   { name = "total_ms", type = "int" },
+  { name = "max_turns", type = { option = "int" } },
   { name = "max_tokens", type = { option = "int" } },
   { name = "max_priced_calls", type = { option = "int" } },
   { name = "max_cost_micros", type = { option = "int" } },

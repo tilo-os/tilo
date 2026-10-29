@@ -672,3 +672,95 @@ fn a_run_never_exceeds_a_starter_who_may_not_change_the_note() {
         .unwrap_err();
     assert!(refused.contains("starter"), "{refused}");
 }
+
+/// "Allow for the issue", given on a run's first read of a Browser page,
+/// answers its other reads of Browser pages too: the person is asked once,
+/// not on every page. It answers nothing outside the issue, nothing in
+/// another kind of resource, and never an action whose contract confirms,
+/// which keeps asking unless answered alone.
+#[test]
+fn allowing_one_page_read_for_the_issue_answers_the_runs_other_page_reads() {
+    use crate::collab_broker_capnp::run_question::issue_answer_scope;
+    let room = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    let (mut peer, starter, key, now) = admitted_fixture(
+        room,
+        collab_types::Role::Editor,
+        Some(AgentPreset::Operator),
+    );
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "starter-browses",
+                Subject::person(hex::encode(starter.user_public_key)),
+                TreePath::room(room).app("so.tilo.browser"),
+                KindSet::OUTSIDE,
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    let page = |action: &str| {
+        let mut read = approve_task(&starter);
+        read.app = "so.tilo.browser".into();
+        read.resource_kind = "browser.tab".into();
+        read.resource = "browser.tab:1".into();
+        read.action = action.into();
+        read.need.kind = tilo_action_policy::ActionKind::Outside;
+        read
+    };
+    let asks = |requirement: &NativeTaskActionRequirement, peer: &StatePeer| {
+        requirement
+            .check_run(peer, room, now)
+            .is_err_and(|error| NativeTaskActionRequirement::awaits_confirmation(&error))
+    };
+    let first = page("read-page");
+    assert!(asks(&first, &peer), "the first read asks");
+    // The one answer the sheet records for it.
+    peer.governance_mut()
+        .put_governed_grants(
+            &[tilo_action_policy::agent_answers::answer_grant(
+                room,
+                Subject::task(ISSUE),
+                (
+                    &issue_answer_scope("so.tilo.browser", ("browser.tab", "read-page"), false),
+                    tilo_action_policy::ActionKind::Outside,
+                ),
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    for _ in 0..8 {
+        for action in ["read-page", "capture-page", "find-page-element"] {
+            page(action).check_run(&peer, room, now).unwrap();
+        }
+    }
+    let mut elsewhere = page("read-page");
+    elsewhere.binding.task_id = "tasks.tracker/issues/2".into();
+    assert!(asks(&elsewhere, &peer), "another issue's run still asks");
+    let mut submit = page("submit-page");
+    submit.consequential = true;
+    assert!(
+        asks(&submit, &peer),
+        "an action whose contract confirms still asks"
+    );
+    let mut bookmarks = page("add-bookmark");
+    bookmarks.resource_kind = "browser.bookmarks".into();
+    assert!(
+        asks(&bookmarks, &peer),
+        "another kind of resource still asks"
+    );
+    assert_eq!(
+        issue_answer_scope("so.tilo.mail", ("mail.message", "send-message"), true),
+        tilo_action_policy::agent_answers::AnswerScope::action(
+            "so.tilo.mail",
+            "mail.message",
+            "send-message"
+        ),
+        "an action whose contract confirms is answered alone"
+    );
+}

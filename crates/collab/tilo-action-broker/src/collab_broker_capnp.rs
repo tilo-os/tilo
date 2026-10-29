@@ -1939,7 +1939,7 @@ mod launchable;
 mod live_views;
 mod local_action_host;
 mod remaining_workspace_actions;
-mod run_question;
+pub(crate) mod run_question;
 mod witness;
 use witness::requires_store_witness;
 mod workspace_open;

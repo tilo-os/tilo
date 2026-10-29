@@ -353,6 +353,10 @@ const PEER: u64 = 7;
 const CHAT_PEER: u64 = 8;
 const DESKTOP_PEER: u64 = 9;
 const SECOND_PEER: u64 = 10;
+const BROWSER_PEER: u64 = 11;
+const SEARCH_PEER: u64 = 12;
+/// The Browser tab the fixture's Browser publishes its page actions on.
+const BROWSER_TAB: &str = "browser.tab:1";
 const DOC: &str = "word-processor.document";
 
 /// The first run waits for a companion until it has published actions:
@@ -511,6 +515,10 @@ struct World {
     /// read whole by `read-letter` (a host-owned read, which no view
     /// settles after); zero publishes none.
     letters: usize,
+    /// A Browser and the web search beside it are published, and a capture
+    /// of the page answers with this content address; `None` publishes
+    /// neither.
+    browser: Option<String>,
 }
 
 /// How the fixture host treats a re-ask that asks to be held.
@@ -658,6 +666,59 @@ impl World {
                 vec![],
             ));
         }
+        if self.browser.is_some() {
+            let tab = |action: &str, label: &str, params: Vec<ActionParam>| ExportedAction {
+                resource: BROWSER_TAB.into(),
+                resource_kind: "browser.tab".into(),
+                resource_label: "Jane Doe".into(),
+                ..descriptor(
+                    action,
+                    label,
+                    tilo_actions::OperationKind::Effect,
+                    params,
+                    Availability::Available,
+                    vec![],
+                )
+            };
+            surfaces.push(BrokerActionSurface {
+                peer_id: BROWSER_PEER,
+                provider: None,
+                app_id: "so.tilo.browser".into(),
+                cluster_id: Uuid::from_u128(1).to_string(),
+                record_id: String::new(),
+                live: true,
+                actions: vec![
+                    tab(
+                        "navigate",
+                        "Go to an address",
+                        vec![ActionParam::required("url", ParamType::Text, "The address")],
+                    ),
+                    tab("read-page", "Read the page", vec![]),
+                    tab("capture-page", "Capture the page", vec![]),
+                ],
+            });
+            surfaces.push(BrokerActionSurface {
+                peer_id: SEARCH_PEER,
+                provider: None,
+                app_id: "so.tilo.web-search".into(),
+                cluster_id: Uuid::from_u128(1).to_string(),
+                record_id: String::new(),
+                live: true,
+                actions: vec![ExportedAction {
+                    resource: "web.search:default".into(),
+                    resource_kind: "web.search".into(),
+                    resource_label: "Web search".into(),
+                    ..descriptor(
+                        "fetch",
+                        "Fetch a page's text",
+                        tilo_actions::OperationKind::Effect,
+                        vec![ActionParam::required("url", ParamType::Text, "The address")],
+                        Availability::Available,
+                        vec![],
+                    )
+                }],
+            });
+        }
         if let Some(record) = self.second_window {
             surfaces.push(BrokerActionSurface {
                 peer_id: SECOND_PEER,
@@ -799,6 +860,25 @@ impl World {
                 }
                 (serde_json::json!({"succeeded": {}}), false)
             }
+            "navigate" => (
+                serde_json::json!({"succeeded": {"value": {"url": text("url"), "title": "Jane Doe"}}}),
+                false,
+            ),
+            "read-page" => (
+                serde_json::json!({"succeeded": {"value": {
+                    "title": "Jane Doe",
+                    "text": "Jane Doe. Projects: a CRDT text editor, a Rust tracing library."
+                }}}),
+                false,
+            ),
+            "capture-page" => (
+                serde_json::json!({"succeeded": {"resources": [self.browser.clone()]}}),
+                false,
+            ),
+            "fetch" => (
+                serde_json::json!({"succeeded": {"value": {"text": "Jane Doe."}}}),
+                false,
+            ),
             "read-letter" => {
                 let letter = arguments.get("letter").and_then(Value::as_u64).unwrap_or(0);
                 (
@@ -1437,6 +1517,8 @@ mod long_run;
 mod native_pipeline;
 #[path = "agent_loop/tests/pictures.rs"]
 mod pictures;
+#[path = "agent_loop/tests/web_pages.rs"]
+mod web_pages;
 
 fn native_fixture(latest: u64) -> Fixture {
     let control = runtime_collab::TaskRunControl {
