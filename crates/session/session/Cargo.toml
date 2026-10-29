@@ -23,6 +23,11 @@ tilo-notification-banners = { path = "../notification-banners" }
 tilo-onboarding-host = { path = "../onboarding-host" }
 tilo-sheets = { path = "../sheets" }
 os-actions = { path = "../../system/os-actions" }
+tilo-service = { path = "../service" }
+tilo-connectivity-service = { path = "../connectivity-service" }
+tilo-system-service = { path = "../system-service" }
+# The sound resource's specs, for the audio service the session starts.
+tilo-audio-service = { path = "../audio-service", default-features = false }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 serde_json.workspace = true
 tracing.workspace = true

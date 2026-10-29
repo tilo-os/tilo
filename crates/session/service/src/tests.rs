@@ -21,6 +21,9 @@ enum Lamp {
     /// Dim the lamp.
     #[effect(own_device, idempotent)]
     Dim,
+    /// Smash the lamp.
+    #[effect(own_device, destructive)]
+    Smash,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -96,7 +99,7 @@ impl Service for LampService {
                 });
                 Ok(Started::Accepted)
             }
-            Lamp::Dim => Ok(Started::Done(tilo_actions::ActionOutput::default())),
+            Lamp::Dim | Lamp::Smash => Ok(Started::Done(tilo_actions::ActionOutput::default())),
         }
     }
 
@@ -177,6 +180,21 @@ fn an_unavailable_action_is_refused() {
         matches!(&refused, Err(DoorError::Unavailable { code, .. }) if code == "not_dimmable"),
         "{refused:?}"
     );
+}
+
+/// An action asking for confirmation runs only once the person confirmed.
+#[test]
+fn a_destructive_action_waits_for_confirmation() {
+    let mut services = Services::default();
+    services.add(Box::new(LampService::new()));
+    assert_eq!(
+        services.invoke("lamp", "smash", &Map::new()),
+        Some(Err(DoorError::ConfirmationRequired))
+    );
+    assert!(matches!(
+        services.invoke_confirmed("lamp", "smash", &Map::new()),
+        Some(Ok(Started::Done(_)))
+    ));
 }
 
 /// A service in another process is the same service: its readings arrive

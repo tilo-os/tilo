@@ -592,6 +592,30 @@ impl Session {
         surface.borrow_mut().serve();
         let answered = answer.borrow_mut().take();
         answered.ok_or_else(|| DoorError::Unknown(address.clone()))
+    /// Invoke a service's action the person confirmed (restart, power
+    /// off): one [`Session::invoke`] refused with
+    /// [`DoorError::ConfirmationRequired`].
+    ///
+    /// # Errors
+    /// The door's refusal: no such resource or action, bad arguments, or
+    /// one the device cannot do now.
+    pub fn invoke_confirmed(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        match self
+            .shared
+            .services
+            .borrow_mut()
+            .invoke_confirmed(resource, action, arguments)
+        {
+            Some(Ok(Started::Done(output))) => Ok(ResourceOperationStart::Completed(output)),
+            Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
+            Some(Err(error)) => Err(error),
+            None => Err(DoorError::Unknown(ActionAddress::new(resource, action))),
+        }
     }
 
     /// The labels of the desktop's accessibility trees, the desk's and the

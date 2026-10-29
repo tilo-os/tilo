@@ -21372,6 +21372,7 @@ dependencies = [
  "tilo-quick-settings",
  "tilo-service",
  "tilo-surface-host",
+ "tilo-system-service",
  "tilo-ui",
  "tracing",
  "wayland-client",
@@ -21585,6 +21586,23 @@ dependencies = [
  "sysinfo",
  "tilo-paths",
  "tilo-system-stats",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-system-service"
+version = "0.1.0"
+dependencies = [
+ "bounded-command",
+ "os-actions",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "tilo-actions",
+ "tilo-location",
+ "tilo-resource",
+ "tilo-service",
  "tracing",
  "workspace-hack",
 ]

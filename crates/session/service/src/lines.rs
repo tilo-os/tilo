@@ -7,6 +7,11 @@
 //! service crate's own `publish` function, so the session checks an
 //! invocation's arguments and availability against the same specs the
 //! service does before it writes it.
+//!
+//! This is the one protocol a service process speaks to the session until
+//! the app-host wire carries invocations and readings for every process;
+//! then [`Remote`] and [`serve`] move onto it and these lines go. Services
+//! use this module rather than growing protocols of their own.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};

@@ -432,6 +432,7 @@ members = [
     "crates/session/audio-service",
     "crates/session/service",
     "crates/session/connectivity-service",
+    "crates/session/system-service",
     "crates/session/messaging-service",
     "crates/session/device-fabric",
     "crates/session/nearby-service",
