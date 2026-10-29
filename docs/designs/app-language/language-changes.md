@@ -6,7 +6,7 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
 ## Structural
 
 1. **Union types.** Types compose directly: `type Channel = TextChannel | VoiceChannel`, usable
-   wherever a type is (fields, parameters, `List<Category | Channel>`), and matched by type:
+   wherever a type is (fields, parameters, `Collection<Category | Channel>`), and matched by type:
    `match c { t: TextChannel => …, v: VoiceChannel => … }`. A union field merges as a register of
    the whole value. `enum` is only for plain named cases without data (`enum NoteOrder { created,
    title }`).
