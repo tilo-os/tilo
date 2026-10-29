@@ -69,7 +69,7 @@ fn a_bundle_draws_the_rows_of_the_packages_it_uses() {
             }
         }
     }
-    for text in ["Buy oat milk and eggs", "Weekend plans"] {
+    for text in ["Buy oat milk and eggs", "# general"] {
         assert!(
             shown.iter().any(|shown| shown.contains(text)),
             "Today draws `{text}` with the view of the package it belongs to: {shown:?}"

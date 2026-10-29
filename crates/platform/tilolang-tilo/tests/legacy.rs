@@ -88,7 +88,12 @@ fn nested(
                 id.clone(),
                 value.clone(),
             ));
-            let item_schema = field.record.as_deref().and_then(lookup);
+            // An item of a collection of a union's types is of the type it was stored as.
+            let item_schema = value
+                .as_ref()
+                .map(|value| type_of(doc, value))
+                .and_then(|ty| lookup(&ty))
+                .or_else(|| field.record.as_deref().and_then(lookup));
             if let (Some(value), Some(item_schema)) = (value, item_schema) {
                 nested(doc, (&value, item_schema), Some(&id), out);
             }
@@ -331,8 +336,20 @@ fn a_message_posted_to_an_older_conversation_follows_its_messages() {
     let mut replica = open(include_str!("legacy/chat.hex"), &packages);
     let app = "so.tilo.lang.chat";
     let all = root(&replica, app);
-    let (conversations, conversation_ty) = field(&replica, app, "Conversations", "items");
-    let (messages, _) = field(&replica, app, "Conversation", "messages");
+    // The Chat of channels reads an older conversation as a text channel.
+    let (conversations, _) = field(&replica, app, "Channels", "items");
+    let (messages, _) = field(&replica, app, "TextChannel", "messages");
+    let conversation_ty = replica
+        .host
+        .package(app)
+        .unwrap()
+        .meta
+        .types
+        .iter()
+        .find(|t| t.name == "TextChannel")
+        .unwrap()
+        .id
+        .clone();
     let first = listed(&replica, &all, &conversations)[0].clone();
     let conversation = all.item(&first, conversation_ty);
     let before = listed(&replica, &conversation, &messages);
@@ -340,11 +357,11 @@ fn a_message_posted_to_an_older_conversation_follows_its_messages() {
     call(
         &mut replica,
         app,
-        "post",
+        "send",
         vec![
             Value::resource(&conversation),
-            Value::text("still here"),
-            Value::text(""),
+            Value::Rich(tilolang_runtime::rich::RichValue::from_text("still here")),
+            Value::none(),
         ],
     );
     let after = listed(&replica, &conversation, &messages);

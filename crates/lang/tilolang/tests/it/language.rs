@@ -165,7 +165,7 @@ fn typing_in_a_composer_is_personal() {
 
 #[test]
 fn an_item_inserted_into_a_collection_of_a_union_is_of_its_own_type() {
-    let src = "app t.x \"X\"\ntype A {\n    a: Text\n}\ntype B {\n    b: Text\n}\ntype Both = Collection<A | B>\nroot both: Both\naction add_a(all: Both) -> A {\n    all.insert(A(a: \"x\"))\n}\naction named(all: Both) -> Text {\n    let b = all.insert(B(b: \"y\"))\n    b.b\n}\n";
+    let src = "app t.x \"X\"\ntype A {\n    a: Text\n}\ntype B {\n    b: Text\n}\ntype Both = Collection<A | B>\nroot both: Both\ndefault view shown for both\nview shown(all: Both) {\n    text(\"{all.len()}\")\n}\naction add_a(all: Both) -> A {\n    all.insert(A(a: \"x\"))\n}\naction named(all: Both) -> Text {\n    let b = all.insert(B(b: \"y\"))\n    b.b\n}\n";
     let compiled = crate::common::compile_with(src, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
     validate(&compiled.wasm);
 }

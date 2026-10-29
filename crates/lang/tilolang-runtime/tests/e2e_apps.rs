@@ -1,5 +1,5 @@
-//! Every app under `apps/tl`, compiled with its committed ids and run end to end: chat with
-//! embedded agent blocks, letters, Today's foreign views and flow, lists that open their
+//! Every app under `apps/tl`, compiled with its committed ids and run end to end: a chat with
+//! embedded agent blocks (the fixture `tests/block_chat`), letters, Today's foreign views and flow, lists that open their
 //! items in windows of their own, window and lens state, and every root's window at a compact
 //! and a wide space.
 
@@ -45,19 +45,30 @@ mod cases {
     struct Apps {
         notes: App,
         todo: App,
+        /// The chat of messages with blocks, a fixture.
         chat: App,
         letters: App,
         counter: App,
         today: App,
+        /// Chat: channels, replies and threads.
+        channels: App,
     }
 
     fn apps() -> Apps {
         let notes = build("notes", app_source!("notes"), &[]);
         let todo = build("todo", app_source!("todo"), &[]);
-        let chat = build("chat", app_source!("chat"), &[]);
+        let chat = build(
+            "block_chat",
+            (
+                include_str!("block_chat/app.tl"),
+                include_str!("block_chat/app.ids"),
+            ),
+            &[],
+        );
         let letters = build("letters", app_source!("letters"), &[]);
         let counter = build("counter", app_source!("counter"), &[]);
-        let today = build("today", app_source!("today"), &[&notes, &todo, &chat]);
+        let channels = build("chat", app_source!("chat"), &[]);
+        let today = build("today", app_source!("today"), &[&notes, &todo, &channels]);
         Apps {
             notes,
             todo,
@@ -65,6 +76,7 @@ mod cases {
             letters,
             counter,
             today,
+            channels,
         }
     }
 
@@ -87,6 +99,7 @@ mod cases {
             &apps.letters,
             &apps.counter,
             &apps.today,
+            &apps.channels,
         ]
         .iter()
         .map(|a| a.load(&rt))
@@ -301,8 +314,16 @@ mod cases {
     fn every_app_compiles_with_its_committed_ids_and_loads_together() {
         let a = apps();
         let w = world(&a, &AmStore::new());
-        assert_eq!(w.ids.len(), 6);
-        for app in [&a.notes, &a.todo, &a.chat, &a.letters, &a.counter, &a.today] {
+        assert_eq!(w.ids.len(), 7);
+        for app in [
+            &a.notes,
+            &a.todo,
+            &a.chat,
+            &a.letters,
+            &a.counter,
+            &a.today,
+            &a.channels,
+        ] {
             let meta = app.meta();
             let root = meta
                 .roots
@@ -1117,7 +1138,7 @@ mod cases {
         let today = w.create("Today");
         let notebook = w.rt.create_root("Notes").unwrap();
         let list = w.rt.create_root("TodoList").unwrap();
-        let chat = w.rt.create_root("Conversations").unwrap();
+        let chat = w.rt.create_root("Channels").unwrap();
         Morning {
             w,
             today,
