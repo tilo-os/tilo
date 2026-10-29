@@ -221,3 +221,151 @@ fn slots_and_events_print_back_as_written() {
         "printing is stable"
     );
 }
+
+const CHAT: &str = r#"type Message {
+    text: Text (title)
+    reactions: Map<List<Principal>>
+}
+
+type Conversation {
+    title: Text (title)
+    messages: Collection<Message>
+}
+
+action pin(m: Message) (label: "Pin", icon: .pin) {
+    m.text = "pinned"
+}
+"#;
+
+#[test]
+fn a_map_field_is_a_map_prop_whole_in_a_view() {
+    let c = compile_body(&format!(
+        "{CHAT}\nview reactions_of(m: Message) {{\n    ui.Reactions(reactions: m.reactions)\n}}"
+    ));
+    validate(&c.wasm);
+    let (code, message) = one_error(
+        "type Tally {\n    counts: Map<Int>\n}\nview tally(t: Tally) {\n    ui.Reactions(reactions: t.counts)\n}",
+    );
+    assert_eq!(code, "E020");
+    assert!(
+        message.contains("Map<Text, Set<Principal>>") && message.contains("Map<Int>"),
+        "{message}"
+    );
+    let (code, _) = one_error(&format!(
+        "{CHAT}\nfn whole(m: Message) -> Int {{\n    let r = m.reactions\n    1\n}}"
+    ));
+    assert_eq!(code, "E080", "outside a view a map is read by key");
+}
+
+#[test]
+fn the_older_reactions_form_still_compiles() {
+    let c = compile_body("view old() {\n    ui.Reactions([\"👍\"], can_react: false)\n}");
+    validate(&c.wasm);
+}
+
+const REACTED: &str = r"type Post {
+    text: Text (title)
+    reactions: Map<Set<Principal>>
+}
+";
+
+#[test]
+fn a_map_of_sets_takes_and_gives_back_elements_one_by_one() {
+    let c = compile_body(&format!(
+        "{REACTED}
+action react(p: Post, emoji: Text) {{
+    let mine = if let who = p.reactions.get(emoji) {{
+        who.any(x -> x == invoker)
+    }} else {{
+        false
+    }}
+    if mine {{
+        p.reactions.remove(emoji, invoker)
+    }} else {{
+        p.reactions.add(emoji, invoker)
+    }}
+}}
+
+action clear(p: Post, emoji: Text) {{
+    p.reactions.remove(emoji)
+}}
+
+view shown(p: Post) {{
+    ui.Reactions(reactions: p.reactions)
+}}"
+    ));
+    validate(&c.wasm);
+    let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+    assert!(strings.contains("map_set_add") && strings.contains("map_set_remove"));
+    let (code, message) = one_error(&format!(
+        "{REACTED}\naction all(p: Post) {{\n    p.reactions.put(\"x\", [invoker])\n}}"
+    ));
+    assert_eq!(code, "E027");
+    assert!(message.contains("map of sets"), "{message}");
+}
+
+#[test]
+fn an_action_list_is_an_action_prop_run_by_events_of_the_node() {
+    let c = compile_body(&format!(
+        "{CHAT}\nview more(m: Message) {{\n    ui.MenuButton(\"More\", actions: actions(m))\n}}"
+    ));
+    validate(&c.wasm);
+    let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+    assert!(
+        strings.contains("ui_actions"),
+        "the actions reach the host as offered"
+    );
+    let (code, message) = one_error(&format!(
+        "{CHAT}\nview more(m: Message) {{\n    ui.MenuButton(\"More\", actions: [m.text])\n}}"
+    ));
+    assert_eq!(code, "E020");
+    assert!(message.contains("List<Action>"), "{message}");
+}
+
+#[test]
+fn collections_and_maps_are_view_parameters() {
+    let c = compile_body(&format!(
+        "{CHAT}
+view lines(items: Collection<Message>) {{
+    for m in items {{
+        text(m.text)
+    }}
+}}
+
+view tally(r: Map<List<Principal>>) {{
+    ui.Reactions(reactions: r)
+}}
+
+view thread(c: Conversation) {{
+    lines(c.messages)
+    if let m = c.messages.last() {{
+        tally(m.reactions)
+    }}
+}}"
+    ));
+    validate(&c.wasm);
+    let (code, _) = one_error(&format!(
+        "{CHAT}\nfn count(items: Collection<Message>) -> Int {{\n    items.len()\n}}"
+    ));
+    assert_eq!(code, "E023", "only a view takes a collection as it is");
+}
+
+#[test]
+fn a_collection_is_no_component_prop_and_goes_to_a_view_instead() {
+    let (code, message) = one_error(&format!(
+        "{CHAT}\nview bar(c: Conversation) {{\n    ui.EmojiBar(c.messages)\n}}"
+    ));
+    assert_eq!(code, "E020");
+    assert!(
+        message.contains("List<Text>") && message.contains("Collection<T>"),
+        "{message}"
+    );
+}
+
+#[test]
+fn an_events_value_reaches_every_step_of_a_then_chain_that_uses_it() {
+    let body = "type Note {\n    title: Text (title)\n    read: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\naction read(n: Note) {\n    n.read = true\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n, front: false).then(read(n))\n    }\n}";
+    assert!(errors(body).is_empty(), "{:#?}", errors(body));
+    let reads_other = "type Note {\n    title: Text (title)\n}\ntype Notebook {\n    notes: Collection<Note>\n}\naction keep(nb: Notebook, title: Text) {\n    nb.notes.insert(Note(title: title))\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n).then(keep(nb, n.title))\n    }\n}";
+    assert_eq!(one_error(reads_other).0, "E063");
+}

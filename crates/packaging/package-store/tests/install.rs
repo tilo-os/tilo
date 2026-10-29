@@ -796,6 +796,89 @@ fn an_update_keeps_the_apps_last_use_for_eviction() {
     );
 }
 
+/// A package of `id` that declares it was published as `previously` before.
+fn renamed(identity: &SigningIdentity, id: &str, previously: &str) -> (tempfile::TempDir, Packed) {
+    let dir = scratch();
+    for (rel, content) in v2_files() {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+    let mut manifest = crate::support::manifest(identity, id, "2.0.0");
+    manifest.package.previously = vec![previously.to_owned()];
+    let packed = tilo_app_package::pack(dir.path(), &manifest, identity).unwrap();
+    (dir, packed)
+}
+
+#[test]
+fn an_app_takes_over_its_earlier_id_only_from_the_same_publisher() {
+    let publisher = SigningIdentity::generate();
+    let stranger = SigningIdentity::generate();
+    let (_old, todo) = package(&publisher, "so.tilo.todo", "1.0.0", &v1_files());
+
+    // Another publisher's app naming the id as its own earlier one is refused, and the app
+    // under that id stays.
+    let root = scratch();
+    let store = PackageStore::at(root.path());
+    store
+        .install(full_tapp(&todo).as_slice(), admit_all, None)
+        .unwrap();
+    let (_claim, claim) = renamed(&stranger, "so.tilo.tasks", "so.tilo.todo");
+    let refused = store
+        .install(full_tapp(&claim).as_slice(), admit_all, None)
+        .unwrap_err();
+    assert!(matches!(refused, StoreError::Refused(_)), "{refused:?}");
+    let registry = store.registry().unwrap();
+    assert!(registry.find("so.tilo.todo").is_some());
+    assert!(registry.find("so.tilo.tasks").is_none());
+
+    // The same publisher's renamed app takes its place: one app, under the new id.
+    let (_tasks, tasks) = renamed(&publisher, "so.tilo.tasks", "so.tilo.todo");
+    store
+        .install(full_tapp(&tasks).as_slice(), admit_all, None)
+        .unwrap();
+    let registry = store.registry().unwrap();
+    assert!(registry.find("so.tilo.todo").is_none());
+    assert_eq!(
+        registry.find("so.tilo.tasks").unwrap().publisher_key_hex,
+        hex::encode(publisher.public_key_bytes())
+    );
+    assert_eq!(
+        registry.taken_over_by("so.tilo.todo"),
+        Some("so.tilo.tasks")
+    );
+
+    // The earlier id is not installed again beside the app that took its place.
+    let again = store
+        .install(full_tapp(&todo).as_slice(), admit_all, None)
+        .unwrap_err();
+    assert!(matches!(again, StoreError::Refused(_)), "{again:?}");
+    assert!(store.registry().unwrap().find("so.tilo.todo").is_none());
+    // An update of the renamed app keeps what it took over.
+    store
+        .install(full_tapp(&tasks).as_slice(), admit_all, None)
+        .unwrap();
+    assert_eq!(
+        store.registry().unwrap().taken_over_by("so.tilo.todo"),
+        Some("so.tilo.tasks")
+    );
+
+    // Where the earlier id was never installed there is nothing to check against.
+    let fresh = scratch();
+    let store = PackageStore::at(fresh.path());
+    store
+        .install(full_tapp(&tasks).as_slice(), admit_all, None)
+        .unwrap();
+}
+
+#[test]
+fn a_manifest_cannot_name_its_own_id_as_an_earlier_one() {
+    let publisher = SigningIdentity::generate();
+    let mut manifest = crate::support::manifest(&publisher, "so.tilo.tasks", "1.0.0");
+    manifest.package.previously = vec!["so.tilo.tasks".to_owned()];
+    assert!(tilo_app_package::validate::validate_manifest(&manifest).is_err());
+}
+
 #[test]
 fn disk_usage_does_not_verify_signatures() {
     let identity = SigningIdentity::generate();

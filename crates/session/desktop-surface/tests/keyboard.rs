@@ -451,6 +451,7 @@ impl TileSource for Source {
             icon: IconDescriptor::Glyph("K"),
             record_kind: ui::record::RecordKind::new("keyboard-test"),
             room_record: false,
+            member_record: false,
             opens_before_record: false,
             required: vec![],
             optional: vec![],

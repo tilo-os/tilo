@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// Every described component of one toolkit version.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -248,6 +248,10 @@ pub struct Event {
     /// The value the event carries (the key a list selected), when it carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<Type>,
+    /// Where the value lands, when the event says: a drop's place among the other items of
+    /// what it was dropped on, counted from 0. An event with one carries `[value, at]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Type>,
 }
 
 /// A two-way binding to a resource field or view state.
@@ -328,6 +332,16 @@ pub enum Type {
     },
     Option(Box<Type>),
     List(Box<Type>),
+    /// Distinct values in no order the component relies on: who reacted with an emoji.
+    Set(Box<Type>),
+    /// Values by key: the people who reacted, by emoji.
+    Map {
+        key: Box<Type>,
+        value: Box<Type>,
+    },
+    /// An action offered to the person, as a control shows it: what it is called, its icon and
+    /// role, and what choosing it runs (an event of the instance, never a closure).
+    Action,
 }
 
 impl Type {
@@ -347,6 +361,9 @@ impl Type {
             Self::Choice { name, .. } => name.clone(),
             Self::Option(inner) => format!("Option<{}>", inner.show()),
             Self::List(inner) => format!("List<{}>", inner.show()),
+            Self::Set(inner) => format!("Set<{}>", inner.show()),
+            Self::Map { key, value } => format!("Map<{}, {}>", key.show(), value.show()),
+            Self::Action => "Action".into(),
         }
     }
 }
@@ -374,7 +391,32 @@ pub enum Value {
     Rich(crate::rich::RichText),
     /// An `Option` that holds nothing.
     None,
+    /// A list, or a set's values in the order they were given.
     List(Vec<Value>),
+    /// A map's entries, each key once, in key order.
+    Map(Vec<(Value, Value)>),
+    /// An action offered to the person.
+    Action(Offered),
+}
+
+/// An action offered to the person, as a component holds one: how a control shows it, and the
+/// event of the instance that choosing it fires. Every field is always written: the wire's
+/// encoding is not self-describing.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Offered {
+    /// What it does, as a button or a menu names it.
+    pub label: String,
+    /// Its icon's kebab-case name, when it has one.
+    pub icon: Option<String>,
+    /// Whether it is its resource's primary action.
+    pub primary: bool,
+    /// Whether it takes something away: undone, not confirmed.
+    pub destructive: bool,
+    /// Whether the state it toggles is on, when it toggles one.
+    pub on: Option<bool>,
+    /// The event of the instance choosing it fires.
+    pub event: String,
 }
 
 impl Value {
@@ -394,6 +436,8 @@ impl Value {
             Self::Rich(_) => "RichText",
             Self::None => "nothing",
             Self::List(_) => "List",
+            Self::Map(_) => "Map",
+            Self::Action(_) => "Action",
         }
     }
 }

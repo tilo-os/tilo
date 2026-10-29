@@ -181,6 +181,10 @@ impl Model for RichText {
     tilo_resource::leaf_paths!();
     tilo_resource::operations_model!();
 
+    fn field_type(_: &mut tilo_resource::TypeSet) -> tilo_resource::FieldType {
+        tilo_resource::FieldType::RichText
+    }
+
     fn to_json(&self) -> serde_json::Value {
         serde_json::Value::String(self.text())
     }

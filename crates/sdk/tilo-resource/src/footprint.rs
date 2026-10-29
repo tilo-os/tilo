@@ -144,10 +144,9 @@ fn is_outbox(shape: Shape, unit: &[Segment]) -> bool {
     let [Segment::Field(key)] = unit else {
         return false;
     };
-    shape
-        .fields()
-        .iter()
-        .any(|field| field.key == key && tilo_actions::surface::is_outbox_type(field.ty))
+    shape.fields().iter().any(|field| {
+        field.key == key && tilo_actions::surface::FieldType::from_rust_text(field.ty).is_outbox()
+    })
 }
 
 /// The footprint a verb declares, as the surface lists it: `record`, its

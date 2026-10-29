@@ -120,7 +120,6 @@ fn a_command_that_is_not_tier_one_says_which_tier_it_needs() {
 #[test]
 fn unsupported_features_are_refused_by_name() {
     for (script, name) in [
-        ("sleep 1 &", "background"),
         ("cat <(echo hi)", "process substitution"),
         ("coproc cat", "coproc"),
         ("time true", "time"),

@@ -101,6 +101,7 @@
     )
 )]
 
+pub mod action_directory;
 pub mod app_surface;
 pub mod document_routes;
 pub mod history_source;
@@ -1026,6 +1027,18 @@ impl PrimaryRouteState {
     }
 }
 
+/// The action directory on the primary route: an offer the connection makes,
+/// not traffic it must carry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectoryOffer {
+    /// Not offered on this route yet.
+    Unoffered,
+    /// Registered on this route.
+    Published,
+    /// The transport serves no directory; the connection carries everything else.
+    Unsupported,
+}
+
 pub struct CollaborationManager {
     backend: Backend,
     primary_route: PrimaryRouteState,
@@ -1040,9 +1053,9 @@ pub struct CollaborationManager {
     /// policy-envelope API is separate from document mutations, which the SDK
     /// signs with the certified launcher identity.
     identity: Option<SigningIdentity>,
-    /// Whether the action directory was registered on the current primary
-    /// route. A new `Hello` resets it.
-    action_directory_published: bool,
+    /// Where the action directory stands on the current primary route. A new
+    /// `Hello` resets it.
+    action_directory: DirectoryOffer,
     /// Whether this document was meant to sync: the manager was given a
     /// collaboration service to reach. Losing the service later keeps it
     /// set; a manager that never had one is a local document.
@@ -1072,7 +1085,7 @@ impl CollaborationManager {
             awaiting_primary: false,
             reported_state: None,
             identity: None,
-            action_directory_published: false,
+            action_directory: DirectoryOffer::Unoffered,
             sync_expected: true,
             join_refusal: None,
         };
@@ -1197,7 +1210,7 @@ impl CollaborationManager {
             primary_route: PrimaryRouteState::default(),
             awaiting_primary: false,
             identity: None,
-            action_directory_published: false,
+            action_directory: DirectoryOffer::Unoffered,
             sync_expected: false,
             join_refusal: None,
         }
@@ -1222,7 +1235,7 @@ impl CollaborationManager {
         self.backend = Backend::Disabled(reason);
         self.awaiting_primary = false;
         self.primary_route = PrimaryRouteState::default();
-        self.action_directory_published = false;
+        self.action_directory = DirectoryOffer::Unoffered;
     }
 
     /// Where the connection stands. Cheap; call it every frame.
@@ -1352,13 +1365,18 @@ impl CollaborationManager {
         if transport.committed_document_required(&witness.route.channel_id()) {
             return transport.private_window_binding(&witness.route);
         }
-        witness
+        let instance = witness
             .route
             .record
             .as_deref()?
-            .strip_prefix("continuation:")?
-            .parse::<u64>()
-            .ok()
+            .strip_prefix("continuation:")?;
+        match instance.parse::<u64>() {
+            Ok(instance) => Some(instance),
+            Err(error) => {
+                tracing::warn!(instance, %error, "collab: continuation record names no window instance");
+                None
+            }
+        }
     }
 
     /// Whether requests currently reach peers: [`Self::state`] is
@@ -1506,7 +1524,7 @@ impl CollaborationManager {
             cluster_id: *cluster_id,
             record: record.clone(),
         });
-        self.action_directory_published = false;
+        self.action_directory = DirectoryOffer::Unoffered;
         self.submit(TransportCommand::Primary(req))?;
         if self.awaiting_primary {
             // The pending acknowledgement answers the previous Hello; ask
@@ -1583,16 +1601,16 @@ impl CollaborationManager {
     pub fn publish_action_directory(&mut self, app_id: impl Into<String>) {
         // The directory rides the primary route, so it waits for the route's
         // acknowledgement; the owner publishes again once the manager is ready.
-        if !self.is_connected() || self.action_directory_published {
+        if !self.is_connected() || self.action_directory != DirectoryOffer::Unoffered {
             return;
         }
-        if self
-            .submit(TransportCommand::PublishActionDirectory {
-                app_id: app_id.into(),
-            })
-            .is_ok()
-        {
-            self.action_directory_published = true;
+        match self.submit(TransportCommand::PublishActionDirectory {
+            app_id: app_id.into(),
+        }) {
+            Ok(()) => self.action_directory = DirectoryOffer::Published,
+            // A transport that serves no directory is asked again only on a new route.
+            Err(TransportError::Unsupported) => self.action_directory = DirectoryOffer::Unsupported,
+            Err(_) => {}
         }
     }
 
@@ -1601,7 +1619,7 @@ impl CollaborationManager {
             Backend::Transport(transport) => transport.action_directory_publication_counts(),
             Backend::Disabled(_) => None,
         };
-        (self.action_directory_published, counts)
+        (self.action_directory == DirectoryOffer::Published, counts)
     }
 
     /// Drain requests issued by the transport's `ActionDirectory` server.
@@ -2130,11 +2148,16 @@ fn auto_hello_env_uncached() -> (String, Uuid) {
                 .clone()
         });
 
+    // No workspace named is the nil room; one named that does not parse
+    // is the same, and logged, since the app then reaches no workspace.
     let cluster_id = identity
         .workspace_id
-        .clone()
-        .and_then(|s| Uuid::parse_str(&s).ok())
-        .unwrap_or_else(Uuid::nil);
+        .as_deref()
+        .map_or(Ok(Uuid::nil()), Uuid::parse_str)
+        .unwrap_or_else(|error| {
+            tracing::warn!(workspace = ?identity.workspace_id, %error, "collab: launch workspace id does not parse");
+            Uuid::nil()
+        });
 
     (app_id, cluster_id)
 }

@@ -169,6 +169,9 @@ impl crate::JsonSchema for NonBlank {
     fn json_schema() -> Value {
         json!({"type": "string", "minLength": 1, "pattern": "\\S"})
     }
+    fn field_type(_: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Text
+    }
 }
 
 #[cfg(test)]

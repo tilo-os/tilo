@@ -519,6 +519,87 @@ fn actions_lenses_and_meta_are_values_a_view_reads() {
     assert!(!wrong.is_empty(), "a host value has the fields it declares");
 }
 
+/// The host imports `f` calls.
+fn host_imports(f: &Func) -> Vec<Imp> {
+    let mut imports = Vec::new();
+    visit(f, &mut |e| {
+        if let Ek::Host(imp, _) = &e.kind {
+            imports.push(*imp);
+        }
+    });
+    imports
+}
+
+#[test]
+fn workspace_members_and_members_of_a_resource_are_principals_with_kind_and_role() {
+    let (m, _) = lower(
+        "type Room {\n    topic: Text\n}\nfn agents(r: Room) -> Int {\n    members(r).count(p -> p.kind() == .agent)\n}\nfn roles() -> List<Text> {\n    workspace.members.map(p -> p.role() ?? p.name())\n}\nview room(r: Room) {\n    stack {\n        for p in workspace.members {\n            avatar(p)\n        }\n        text(\"{agents(r)}\")\n    }\n}",
+    );
+    let agents = host_imports(func(&m, "agents"));
+    for want in [Imp::Members, Imp::PrincipalKind] {
+        assert!(agents.contains(&want), "{want:?} in {agents:?}");
+    }
+    let roles = host_imports(func(&m, "roles"));
+    for want in [
+        Imp::WorkspaceMembers,
+        Imp::PrincipalRole,
+        Imp::PrincipalName,
+    ] {
+        assert!(roles.contains(&want), "{want:?} in {roles:?}");
+    }
+    assert!(host_imports(func(&m, "room")).contains(&Imp::WorkspaceMembers));
+    for (source, code) in [
+        (
+            "type Room {\n    topic: Text\n}\nfn f() -> Int {\n    workspace.people.len()\n}",
+            "E021",
+        ),
+        ("fn f() -> Int {\n    let w = workspace\n    0\n}", "E064"),
+        ("fn f() -> Int {\n    members(3).len()\n}", "E020"),
+        (
+            "fn f(p: Principal) -> Bool {\n    p.kind() == .robot\n}",
+            "",
+        ),
+    ] {
+        let found = diagnostics(source);
+        if code.is_empty() {
+            assert!(
+                !found.is_empty(),
+                "a principal is a person or an agent: {source}"
+            );
+        } else {
+            assert!(
+                found.iter().any(|d| d.code == code),
+                "{code} for {source}: {found:#?}"
+            );
+        }
+    }
+    // A variable of that name is the variable.
+    let local = diagnostics(
+        "type W {\n    members: Int\n}\nfn f(workspace: W) -> Int {\n    workspace.members\n}",
+    );
+    assert!(local.is_empty(), "{local:#?}");
+}
+
+#[test]
+fn every_rich_input_is_given_its_drawers_people_by_the_system() {
+    let (m, _) = lower(
+        "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    lens draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft)\n    }\n}\nview loose() {\n    lens draft: RichText = RichText(\"\")\n    rich_input(bind: draft)\n}",
+    );
+    let chat = host_imports(func(&m, "chat"));
+    for want in [Imp::Speakers, Imp::Members] {
+        assert!(chat.contains(&want), "{want:?} in {chat:?}");
+    }
+    assert!(
+        strings(func(&m, "chat")).iter().any(|s| s == "people")
+            && strings(func(&m, "chat")).iter().any(|s| s == "speakers")
+    );
+    let loose = host_imports(func(&m, "loose"));
+    assert!(
+        loose.contains(&Imp::WorkspaceMembers) && !loose.contains(&Imp::Speakers),
+        "without a resource, the workspace's members: {loose:?}"
+    );
+}
+
 #[test]
 fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
     let (m, _) = lower(

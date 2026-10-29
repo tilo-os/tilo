@@ -1,0 +1,26 @@
+# tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.
+Conversation = gq6e6hou
+Conversation.messages = axsezqjz
+Conversation.title = mtfko6rg
+Conversations = 5cq72eeu
+Conversations.items = dredwp3k
+Message = 64ddezxa
+Message.author = 3dcblzqc
+Message.parts = pm3jwwwh
+Part = ri3v2fj7
+Part.body = 4a5ffn3i
+Part.invocation = rxzzv3ai
+Part.kind = cbfcqbsf
+chats = skxonuks
+conversation_row = kodqpykk
+message = 2q5bdy7c
+new_chat = aifyvolx
+post = x3lsry4h
+said = zf7hv3b5
+scenario "a busy workspace" = rfxfpklg
+scenario "a sum worked out inline" = tisdb44z
+send = spnjxsdw
+start = vp5smptk
+thread = ztz5v4lh
+thread#send = qofibhhg
+thread.draft = iflvhj6d

@@ -1,11 +1,13 @@
-//! A footer action as the window's focus order and assistive technology
-//! meet it: a node of its own that holds focus and is a named button.
+//! A footer action's focus node: its place in the window's keyboard focus
+//! order and its button in the accessibility tree.
 
-#[allow(
-    clippy::wildcard_imports,
-    reason = "the dialog's private footer node shares its enclosing types"
-)]
-use super::*;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use super::{
+    DialogAction, ModelPath, NodeId, Rect, Slot, Style, TaffyTree, TaffyTreeExt, Theme, Widget,
+};
 
 /// A footer action's place in the window's keyboard focus order and its
 /// button in the accessibility tree. The dialog paints the action and runs

@@ -165,7 +165,15 @@ pub enum Value {
     Rich(rich::RichText),
     /// What a failed or refused part of a view shows.
     Error(String),
+    /// A map's entries, each key once, in key order.
+    Map(Vec<(Value, Value)>),
+    /// An action offered to the person: how a control shows it, and the event of its node
+    /// that choosing it fires.
+    Action(Offered),
 }
+
+/// An action a node offers ([`Value::Action`]), as the toolkit holds one.
+pub use tilo_ui_graph::component::Offered;
 
 impl Value {
     #[must_use]
@@ -248,6 +256,16 @@ pub enum Patch {
         path: Vec<String>,
         anchor: Option<String>,
     },
+    /// Part of a list prop replaced in place: `remove` items from `at` on taken out and
+    /// `insert` put there. A long list (a collection's items) changes by what changed, never
+    /// sent whole again.
+    SpliceProp {
+        path: Vec<String>,
+        name: String,
+        at: u32,
+        remove: u32,
+        insert: Vec<Value>,
+    },
 }
 
 /// Why `apply` could not take a patch: it names a node the tree does not have.
@@ -327,6 +345,24 @@ impl Patch {
             }
             Self::SetAnchor { path, anchor } => {
                 root.at_mut(&path).ok_or(Unapplied)?.anchor = anchor;
+            }
+            Self::SpliceProp {
+                path,
+                name,
+                at,
+                remove,
+                insert,
+            } => {
+                let node = root.at_mut(&path).ok_or(Unapplied)?;
+                let Some(Value::List(items)) = node.props.get_mut(&name) else {
+                    return Err(Unapplied);
+                };
+                let at = usize::try_from(at).map_err(|_| Unapplied)?;
+                let end = at
+                    .checked_add(usize::try_from(remove).map_err(|_| Unapplied)?)
+                    .filter(|end| *end <= items.len())
+                    .ok_or(Unapplied)?;
+                items.splice(at..end, insert);
             }
         }
         Ok(())
@@ -409,6 +445,37 @@ pub enum Answer {
     Always,
 }
 
+/// An action waiting for its arguments: the form the window shows for what the invocation still
+/// needs. The app derives its fields from the action's parameters (each control from the
+/// parameter's type), keeps what the person typed as their lens state, and checks each value as
+/// the action takes it; the window presents the fields (a sheet over the window, a popover at the
+/// control it came from, a sheet from the foot of a narrow window) with the title, submit and
+/// cancel, and reports edits by field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Form {
+    /// Which form: edits and answers name it, so ones for a form that closed are dropped.
+    pub id: u64,
+    /// The action, as its label names it ("Share…").
+    pub title: String,
+    /// The submit button's label: the action's label without its ellipsis ("Share").
+    pub submit: String,
+    /// The action takes something away: the submit button is destructive.
+    pub destructive: bool,
+    /// Every argument parses as its type: submit can be taken.
+    pub ready: bool,
+    /// Why the action refused the last submit, when that names no field.
+    pub error: Option<String>,
+    /// The control that ran the action, by lane and key: a popover form is anchored to it.
+    pub from: Option<(Lane, String)>,
+    /// Each field's control in `tree` by key, in order, with the text it holds now (what the
+    /// person typed, else the default): the window shows it when the form opens.
+    pub fields: Vec<(String, String)>,
+    /// Every field is short (one line, a switch or a choice): a popover can hold them.
+    pub short: bool,
+    /// The fields, laid out: a tree of the same components and content nodes views send.
+    pub tree: Node,
+}
+
 /// What an app sends its window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ToUi {
@@ -462,8 +529,15 @@ pub enum ToUi {
     },
     /// The Ask bar, or none.
     Ask(Option<Ask>),
+    /// The form of an action waiting for its arguments, or none: it closed (submitted,
+    /// cancelled, or the action ran).
+    Form(Option<Box<Form>>),
     /// Someone asked to see the window ("Show this window"): it comes forward.
     Activate,
+    /// The app ran the first `fired` presses the window sent (`ToApp::Fire`), and sent what
+    /// they opened before this. What the person typed after a press goes to the app once it
+    /// ran it, into the field focused then.
+    Took { fired: u64 },
 }
 
 /// What the person did, as the window tells its app.
@@ -476,33 +550,42 @@ pub enum ToApp {
         event: String,
         value: Option<Value>,
     },
-    /// The checkbox or switch `key` is now `checked`.
+    /// The checkbox or switch `key` of the view of `target` is now `checked`.
+    ///
+    /// An edit names the resource the lane showed when the person made it: it applies to that
+    /// resource, whatever the lane shows by the time the app takes it.
     Toggle {
         lane: Lane,
+        target: ResourceRef,
         key: String,
         checked: bool,
     },
-    /// Text typed into the bound control `key`: `delete` bytes at byte `at` replaced by
-    /// `insert`, against what the control showed. `seq` counts the control's splices.
+    /// Text typed into the bound control `key` of the view of `target`: `delete` bytes at byte
+    /// `at` replaced by `insert`, against what the control showed. `seq` counts the control's
+    /// splices.
     Splice {
         lane: Lane,
+        target: ResourceRef,
         key: String,
         seq: u64,
         at: u32,
         delete: u32,
         insert: String,
     },
-    /// The bound control `key`, which edits a value other than text (a number, a date), now
-    /// holds `text`.
+    /// The bound control `key` of the view of `target`, which edits a value other than text (a
+    /// number, a date), now holds `text`.
     Edit {
         lane: Lane,
+        target: ResourceRef,
         key: String,
         text: String,
     },
-    /// The bound rich-text control `key` now holds `rich`: its paragraphs, marks and
-    /// references (the runtime brings the field to it by splices and marks).
+    /// The bound rich-text control `key` of the view of `target` now holds `rich`: its
+    /// paragraphs, marks and references (the runtime brings the field to it by splices and
+    /// marks).
     EditRich {
         lane: Lane,
+        target: ResourceRef,
         key: String,
         rich: rich::RichText,
     },
@@ -531,6 +614,21 @@ pub enum ToApp {
         end: u32,
     },
     Answer(Answer),
+    /// The field `field` (a key of [`Form::fields`]) of the form `form` now holds `text`: what
+    /// was typed, a case or a resource chosen by its name or id, `true` or `false`.
+    FormEdit {
+        form: u64,
+        field: String,
+        text: String,
+    },
+    /// The form `form` was submitted.
+    FormSubmit {
+        form: u64,
+    },
+    /// The form `form` was closed without submitting: what was typed stays for next time.
+    FormCancel {
+        form: u64,
+    },
     /// The person chose Undo on a notice.
     Undo,
     /// The keyboard focus is in the bound control `key` of `lane`, or in none.
@@ -539,6 +637,20 @@ pub enum ToApp {
     },
     /// An input method is composing in the focused control, or stopped.
     Composing(bool),
+    /// What the window calls the room's participants now: `me` for the person at the window,
+    /// and each of `others` by id. An app whose instance runs out of the window's process names
+    /// people only by these.
+    Names {
+        me: String,
+        others: Vec<(String, String)>,
+    },
+    /// The view of `lane` has `width` by `height` of the window, in `rem` (the body text size
+    /// after the person's setting): what its `space` reads (layout.md, "Responding to space").
+    Space {
+        lane: Lane,
+        width: f32,
+        height: f32,
+    },
 }
 
 /// Largest batch either side sends or accepts.
@@ -742,11 +854,94 @@ mod tests {
         for rich in [rich::RichText::default(), plain] {
             let edit = vec![ToApp::EditRich {
                 lane: Lane::Root,
+                target: ResourceRef {
+                    id: "n1".into(),
+                    ty: "Note".into(),
+                },
                 key: "draft".into(),
                 rich,
             }];
             let bytes = encode_batch(&edit).expect("encodes");
             assert_eq!(decode_batch::<ToApp>(&bytes).expect("decodes"), edit);
         }
+    }
+
+    #[test]
+    fn maps_offered_actions_and_list_splices_round_trip_and_apply() {
+        let who = |id: &str| {
+            Value::Principal(Principal {
+                id: id.to_owned(),
+                name: id.to_owned(),
+            })
+        };
+        let reactions = Value::Map(vec![
+            (Value::text("👍"), Value::List(vec![who("ada"), who("leo")])),
+            (Value::text("🎉"), Value::List(vec![who("mia")])),
+        ]);
+        let offered = Value::List(vec![Value::Action(Offered {
+            label: "Pin".to_owned(),
+            icon: Some("pin".to_owned()),
+            on: Some(false),
+            event: "actions.0".to_owned(),
+            ..Offered::default()
+        })]);
+        let item = |id: &str| {
+            Value::Ref(ResourceRef {
+                id: id.to_owned(),
+                ty: "chat.Message".to_owned(),
+            })
+        };
+        let mut node = Node::empty("ui.Reactions", "r");
+        node.props.insert("reactions".to_owned(), reactions);
+        node.props.insert("actions".to_owned(), offered);
+        node.props.insert(
+            "items".to_owned(),
+            Value::List(vec![item("m1"), item("m3")]),
+        );
+        let splice = Patch::SpliceProp {
+            path: Vec::new(),
+            name: "items".to_owned(),
+            at: 1,
+            remove: 0,
+            insert: vec![item("m2")],
+        };
+        let batch = vec![
+            ToUi::Open {
+                lane: Lane::Root,
+                target: ResourceRef {
+                    id: "c".to_owned(),
+                    ty: "chat.Conversation".to_owned(),
+                },
+                tree: node.clone(),
+                front: None,
+            },
+            ToUi::Patch {
+                lane: Lane::Root,
+                patches: vec![splice.clone()],
+            },
+        ];
+        let bytes = encode_batch(&batch).expect("encodes");
+        assert_eq!(decode_batch::<ToUi>(&bytes).expect("decodes"), batch);
+        splice.apply(&mut node).expect("applies");
+        assert_eq!(
+            node.props.get("items"),
+            Some(&Value::List(vec![item("m1"), item("m2"), item("m3")]))
+        );
+        let past_the_end = Patch::SpliceProp {
+            path: Vec::new(),
+            name: "items".to_owned(),
+            at: 3,
+            remove: 1,
+            insert: Vec::new(),
+        };
+        assert_eq!(past_the_end.apply(&mut node), Err(Unapplied));
+        let not_a_list = Patch::SpliceProp {
+            path: Vec::new(),
+            name: "reactions".to_owned(),
+            at: 0,
+            remove: 0,
+            insert: Vec::new(),
+        };
+        assert_eq!(not_a_list.apply(&mut node), Err(Unapplied));
     }
 }

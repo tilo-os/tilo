@@ -192,7 +192,7 @@ impl ShellOverlayHost {
             let tree = state.tree();
             tree.desktop
                 .active_workspace()
-                .map(|workspace| !workspace.has_windows())
+                .map(tilo_desktop::composition::shows_launchpad)
         });
         self
     }
@@ -228,7 +228,7 @@ impl ShellOverlayHost {
             let active_empty = tree
                 .desktop
                 .active_workspace()
-                .is_some_and(|workspace| !workspace.has_windows());
+                .is_some_and(tilo_desktop::composition::shows_launchpad);
             // A kept workspace that was removed (or became another room)
             // lets go of its apps now, not at the next switch; so does one a
             // tab moved out of, before the reconcile that follows mounts the
@@ -333,7 +333,7 @@ impl ShellOverlayHost {
         self.content_built_for_ws = Some(desktop.active.raw());
         self.content_built_empty = desktop
             .active_workspace()
-            .map(|workspace| !workspace.has_windows());
+            .map(tilo_desktop::composition::shows_launchpad);
         self.workspace_content_layout_dirty = true;
         true
     }

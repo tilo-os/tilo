@@ -10,10 +10,6 @@ use tilo_peer_state::workspace_membership::{
     AppAction, SettingsChange, WorkspaceMembershipCommand, app_action_lifetime,
 };
 
-/// How long a change this device's own host committed may take to reach
-/// this device's replica.
-const OWN_HOST_COMMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
 /// Why a desktop command is not a change to the room's governance.
 const NOT_GOVERNANCE: &str = "this change is not one of the room's own";
 
@@ -277,10 +273,9 @@ impl ShellNetwork {
 
     /// Commit `command`, a membership change of `caller`, this device, at
     /// this device's own `host`, which governs `room`
-    /// ([`Self::own_host_governs`]), and answer once `owner`, this device's
-    /// replica, carries it: a change made here is in force here when this
-    /// returns, wherever it was committed. Blocks on the host and the
-    /// replica: for a worker, never the frame loop.
+    /// ([`Self::own_host_governs`]), and take what the host wrote into this
+    /// device's replica at once ([`Self::take_own_host_write`]). Blocks on
+    /// the host: for a worker, never the frame loop.
     pub(crate) fn commit_membership_at_own_host(
         &self,
         host: &std::sync::Arc<tilo_network_actor::local_host::room_host::RoomHost>,
@@ -290,7 +285,8 @@ impl ShellNetwork {
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
     ) -> Result<(), String> {
         let host = std::sync::Arc::clone(host);
-        let (completion, heads) = self
+        let governor = caller.device_public_key;
+        let (completion, added) = self
             .wait_on(async move {
                 host.rooms()
                     .commit_own_membership(&room.to_string(), &caller, command)
@@ -298,26 +294,34 @@ impl ShellNetwork {
             })?
             .map_err(|error| error.to_string())?;
         tracing::debug!(%room, generation = completion.generation, "this device's host committed its membership change");
-        // The host's publication reaches this device's replica as every
-        // member's does; it is drained now rather than on the next tick.
-        self.schedule_native_owner_publication(room);
-        let deadline = std::time::Instant::now() + OWN_HOST_COMMIT_TIMEOUT;
-        loop {
-            let carried = owner.with_current(room, |view| {
-                Ok(view.peer().admitted_room().is_some_and(|doc| {
-                    heads
-                        .iter()
-                        .all(|head| automerge::ReadDoc::get_change_by_hash(doc, head).is_some())
-                }))
-            })?;
-            if carried {
-                return Ok(());
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err("this device's host committed the change but it did not reach this device in time".into());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
+        self.take_own_host_write(owner, room, governor, added)
+    }
+
+    /// Take `added`, what this device's own host just wrote to `room` as its
+    /// governor `governor`, into `owner`, this device's replica, as the host's
+    /// publication would bring it: in process, so the change is in force
+    /// here when the call that made it returns.
+    pub(crate) fn take_own_host_write(
+        &self,
+        owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
+        room: RoomId,
+        governor: [u8; 32],
+        added: Vec<Vec<u8>>,
+    ) -> Result<(), String> {
+        if added.is_empty() {
+            return Ok(());
         }
+        owner.receive(
+            room,
+            tilo_peer_state::TransportOrigin::RelayDelta(governor),
+            neighbour_wire::NeighbourMsg::SyncResp {
+                changes: added,
+                room: room.to_string(),
+            },
+            std::time::SystemTime::now(),
+        )?;
+        self.schedule_native_owner_publication(room);
+        Ok(())
     }
 
     /// Commit `command` in `room` as `caller`, this device, signed with its

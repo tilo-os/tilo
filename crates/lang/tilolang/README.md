@@ -23,6 +23,43 @@ The ids lock gives every declaration its stable id. The compiler adds new declar
 retires removed ones; commit it with the sources. Rename a declaration with
 `tilolang ids --rename old new`, so it keeps its id and with it the data stored under it.
 
+Rename the app itself by giving it its new id and naming the old one in the header:
+`app so.tilo.lang.tasks "Tasks" (previously: so.tilo.lang.todo)` (several in brackets). The
+records stored under the old id are the app's: they open in it where they are, with the ids they
+have, and its actions change them there; what it creates goes under the new id. The id it had
+before is signed into the app's manifest, and installing it over an app of that id from another
+publisher is refused; from the same publisher it takes that app's place.
+
+A package migrates its own records when its schema changes shape. The field the type no longer
+uses stays, marked `(previously)`: its values stay in the records, and only a migration reads
+it. A `migration action` on the type moves what it held to where the type keeps it now:
+
+```
+type Column {
+    title: Text (title)
+    cards: Collection<Card>
+}
+
+type Board {
+    columns: Collection<Column>
+    cards: Collection<Card> (previously)
+}
+
+/// Puts each card of a board from before into its column, in the order the board showed them.
+migration action place_cards(b: Board) {
+    for card in b.cards {
+        let col = card.column
+        col.cards.move(card, to: col.cards.len())
+    }
+}
+```
+
+The platform runs it once on each resource of its type that holds something in a `(previously)`
+field (a type without one: once on each resource), as an ordinary action of the person whose
+window opened the data: it is in history, undone like any other, and records in the same change
+that it ran. A migration is never offered. It cannot delete anything; moving items between
+collections keeps their ids and history.
+
 To start a package, make a directory next to the others with one file:
 
 ```
@@ -36,14 +73,14 @@ root Counter
 
 default view counter for Counter
 
-action increment(c: Counter) {
+primary action increment(c: Counter) (icon: .plus) {
     c.value += 1
 }
 
 view counter(c: Counter) {
     page {
-        heading("{c.value}")
-        button("+1", on: increment(c), style: .primary) as plus
+        text("{c.value}", role: .numeric)
+        button(increment(c)) as plus
     }
 }
 ```
@@ -54,6 +91,13 @@ opens through the type's default view (`default view counter for Counter`).
 `use other.app as other` imports another package. Imports are found among the package's sibling
 directories (for `apps/tl/today`, the other directories of `apps/tl`); `--path <dir>` adds a
 package directory, or a directory of packages, to look in.
+
+A package may also `use` a native app: `use so.tilo.chat as chat` reads what Chat publishes, the
+resources, records and enums of its committed `surface.toml`, as types (`chat.Workspace`,
+`chat.Channel`, `chat.ChannelKind`) and its verbs as actions, and checks field reads and action
+signatures against them. The language's tool (`tilolang check`) finds native apps among the
+`--path` directories (`--path apps/chat`, or `--path apps`). Reading native records at runtime and
+invoking native actions come later; for now this is compile-time only.
 
 ## Syntax reference
 
@@ -147,11 +191,30 @@ Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest 
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
 `Option<host.Version>` (`.who`, `.at`, `.what`), `history(r)` all of them, oldest first.
 
-**Collections.** `items.remove_where(pred)` removes what the predicate holds of and gives how
+**Members.** Who is in the workspace is the platform's membership, read and never copied:
+`workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`
+those of them the workspace's grants let read `r`. A principal says what it is: `p.name()`,
+`p.kind()` (`.person` or `.agent`, a `PrincipalKind`) and `p.role()` (`Option<Text>`, the
+workspace role, `owner` or `editor`, of a member who holds one); `avatar(p)` shows it. A view
+that reads them runs again when membership or grants change. Every `rich_input`'s `@` drawer
+offers who spoke last in the resource its view shows, then `members(r)` of it (the workspace's
+members in a view of no resource), without the view declaring anything.
+
+**Collections.** An item is its id: a reference to it names its document and id
+(`@board.Card:root-x/i3`), wherever the item is. `items.remove(x)` removes an item with
+everything in it; `items.remove_where(pred)` removes what the predicate holds of and gives how
 many went. A move names a neighbour, `items.move(x, after: y)` or `before: y`, or a place,
 `items.move(x, to: i)` (what a drag gives): the place is resolved, when the action runs, to the
 item it then comes before, and the move is recorded beside it, so concurrent moves converge
-where each person meant.
+where each person meant. The collection a move is called on is where the item goes, from
+whichever collection of the document holds it: `done.cards.move(card, to: done.cards.len())`
+takes a card from its column to the foot of `done`, the same card, with its history and every
+reference to it. An item cannot go inside itself. A place may count only a run of the
+collection, the items a board's lane shows: `items.move(x, to: i, among: items.filter(t ->
+t.section == s))` puts `x` at the place `i` among that run's other items, beside the one it
+then comes before, or after the run's last. A board lane's drop says both what was dropped and
+where: `on drop(moved: Task, at: Int): place(moved, s, at)`. How moves, edits and removals made
+at the same time merge is convergence.md, "Storage and sync".
 
 **Flows** invoke actions by calling them. `try act(args)` gives a `Result<T, Text>` (`Result<(),
 Text>` for an action without a result) instead of failing:
@@ -196,13 +259,13 @@ view notebook(nb: Notebook) {
     page {
         stack(gap: .section) {
             row(distribute: .between) {
-                heading("Notes")
-                button("New note", on: new_note(nb), style: .primary) as new
+                text("Notes", role: .title)
+                button(new_note(nb)) as new
             }
             button("Sort by title", on: set(order, .title))
             for n in listed(nb, order) {
-                button(n.title, on: open(n), style: .plain)
-                text(n.body, style: .caption, truncate, min: 11rem)
+                button(n.title, on: open(n))
+                text(n.body, role: .caption, truncate, min: 11rem)
             }
         }
     }
@@ -210,12 +273,13 @@ view notebook(nb: Notebook) {
 ```
 
 The options and their values: `gap:`/`padding:` `.tight .related .sibling .section .group`;
-`align:` `.start .center .end .stretch`; `distribute:` `.start .center .end .between`;
-`collapse:` `.stack .drawer .navigate`; `side:` `.leading .trailing`; `at:` the nine positions
-`.top_leading` ... `.bottom_trailing`; `axis:` `.vertical .horizontal`; button `style:`
-`.secondary .primary .destructive .plain`; text `style:` `.body .title .heading .caption .label
-.code`. `space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation`
-(`.portrait .landscape .ultrawide`) compare with the same literals.
+`align:` `.start .center .end .stretch`; `distribute:` `.start .center .end .between`; `collapse:`
+`.stack .drawer .navigate`; `side:` `.leading .trailing`; `at:` the nine positions `.top_leading`
+... `.bottom_trailing`; `axis:` `.vertical .horizontal`; text `role:` `.body .title .caption
+.numeric`. A button takes its look from its action, `primary action` or `destructive action`, and
+its label and icon from the action too unless it names them (`button(n.title, on: open(n))`).
+`space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation` (`.portrait
+.landscape .ultrawide`) compare with the same literals.
 
 **View state** (workspace-model.md, "In the language") is declared at the top of a view:
 `window name: T = default` is the window's and shared, `lens name: T = default` is each
@@ -227,6 +291,29 @@ what the invoker sees, as its parameter defaults are: an action a view applies r
 state its arguments use when the control fires (`send(c, draft)`, `set(open, not open)`,
 `send(c, "{draft}!")`), so a press right after a keystroke sends that keystroke and a toggle
 pressed twice before the view draws again toggles twice.
+
+**Outside origins** (convergence.md, "Origins" and "Outside services"). A type holds the
+resources of an outside service when it names one of the service's kinds:
+
+```
+type Message (origin: imap.message) {
+    subject: Text (title)
+    from: Text
+    unread: Bool
+    mailbox: Text
+    note: Text            // the app's own field: the service never touches it
+}
+```
+
+The system keeps such resources in step with the service (getting, searching, and telling it
+what people changed), with credentials the package never sees. The fields the type declares of
+the kind take the kind's types (E112); the type may add fields of its own. Only the service
+writes the kind's other fields: code writing one is E113, except in a scenario. People change the
+fields the kind marks as theirs (a message's `unread`, `flagged` and `mailbox`): the change
+applies at once and becomes final when the service accepts it. The kinds are in
+`src/origin.rs`: `imap.account`, `imap.mailbox`, `imap.thread`, `imap.message`.
+`outside(capability, payload)` takes one of the platform's capabilities (`post`, `smtp.send`),
+checked by the compiler.
 
 **Search** (search.md, "What a type declares"). A type may end with a `search` block: its filters in
 order (the first are the visible chips), its default order, and fields kept out of filters.
@@ -267,6 +354,37 @@ and look across the workspace. `items.matching("is:done due:-7d")` asks the same
 written as people type it in search, and `filters(T)` gives a type's filters as places and
 chips show them (`host.Filter`).
 
+**Programs** (agents.md, "Querying" and "Reading and describing"). An agent's program (the
+door's `tilo` tool, `tilolang repl`) has words for reading what the workspace holds, across
+apps:
+
+```
+grep(/\bChen\b/, in: notes + chat).count_by(.doc)      // counts first, then a row per note
+grep(/^- \[ \] (.*launch.*)/i, in: notes, not: .quote, changed: -14d)
+    .each(t -> todo.add(todo.tasks, t.group(1)))
+find("standup chen")                                   // the palette's words, every app
+find(Note, pinned: true).sort_by(.title).take(3)       // a type and its filters
+find("groceries").single()                             // one, or an error listing them
+read(n3, matching: /lemon/, around: 1)                 // size first, anchors, paged
+describe(notes)   describe(Note)   describe(notes.pin)   describe(Note.title)   describe(n3)
+print(xs, fields: [.title, .due])
+```
+
+- `/.../flags` is a regular expression, a `Text` (`i`, `m`, `s`, `x` written inline). A `/`
+  after a value still divides.
+- `grep` gives `host.Match`es: `.doc` (the resource whose text holds it), `.anchor` (`¶4`,
+  `¶2.1`, or a field's name), `.text`, `.line`, `.groups` and `.group(n)`, `.kind` (`paragraph`,
+  `heading`, `quote`, `list`, `code`, `field`), `.written_by` and `.changed`. It searches the
+  apps `in:` names (all it may read without one) or the resources it names, and says first
+  how many matched in how many resources and what it could not cover. A plain text is read as
+  markdown writes it: `> ` a quote, `# ` a heading, `- ` a list item.
+- `count_by(key)` and `group(key)` give rows with `.key` and `.count` or `.items`, the largest
+  first; `take(n)`, `each(f)` and `single()` chain on any list.
+- `me` is the person the task acts for.
+- An app the program's host does not hold is read through that app's host: its resources are
+  `host.Resource`s, which print, count, group, `read` and `describe`, and `.of(T)` narrows to a
+  type the host holds.
+
 **Native vocabulary.** Some smaller pieces of syntax:
 
 - An enum case takes an icon: `all (icon: .file_text)`.
@@ -294,6 +412,8 @@ chips show them (`host.Filter`).
   it as mia's at that time.
 - `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may
   read it; until the host makes it, it reads as it would start.
+- An item block names a template's other slots beside the item's view; they do not see the
+  item: `std.transcript(c, c.messages) { m -> message(m, replying) composer: { ... } }`.
 - `composer { ... }` is the entry bar of a frame and stands directly in `page`, `document` or
   `canvas`.
 - `xs.first()` and `xs.last()` give an `Option` of the item.
@@ -317,6 +437,8 @@ tilolang build [dir] [--out DIR]          writes a signed Tilo app per package: 
 tilolang fmt [dir] [--check]              rewrites every file in canonical form
 tilolang ids [dir] [--rename old new]     prints or edits the ids lock
 tilolang run [dir] [--peers N] [--headless]  runs the package as an app in a nested Tilo session
+tilolang describe [dir] [--search DIR]    prints what an app publishes as tilolang: a native app
+                                          (its surface.toml) and a tilolang package alike
 ```
 
 `dir` defaults to the current directory. Errors print as `path:line:col: E0xx message`;

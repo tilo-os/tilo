@@ -83,7 +83,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SESSION = REPO / "dist/dev/nested-session.sh"
 BIN = REPO / "target/nested-session/bin"
-APPS = ["notes", "chat", "todo", "today"]
+APPS = ["notes", "chat", "tasks", "today"]
 # The native app installed beside them, to hold the tilolang apps to what it does.
 NATIVE = "so.tilo.notes"
 # Opened last in the local site's Lounge, to time a first launch in a synced room.

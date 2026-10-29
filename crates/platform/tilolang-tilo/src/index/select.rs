@@ -22,7 +22,7 @@ use super::derive::{column_field, member_list};
 use super::lists::Pages;
 use super::merged::{Base, Merged};
 use super::view::{View, child, index_error};
-use super::{IndexError, KEY, Snapshot, TYPE};
+use super::{IndexError, Snapshot, TYPE};
 use crate::schema::{ColumnKind, TypeSchema};
 
 /// The entries the open writes put into a run, and those they take out of it.
@@ -141,11 +141,11 @@ impl View<'_> {
             .map(|f| f.spec.id.clone())
             .chain(order.map(|o| o.field.clone()))
             .collect();
-        let named = self
-            .overlay
-            .touched_reading(resource, field, &member, &|written| {
-                read.iter().any(|r| r == written)
-            });
+        let named = self.overlay.touched_reading(
+            &member,
+            &|path| self.is_item_of(path, (resource, field)),
+            &|written| read.iter().any(|r| r == written),
+        );
         let touched = self.changed_items((resource, field), named, &read)?;
         let chosen = choose(schema, &conj, false);
         let order_column = order.and_then(|o| schema.column_of(&o.field));
@@ -265,7 +265,7 @@ impl View<'_> {
             candidates.retain(|(_, id, _)| !touched.contains(&**id));
             for id in touched {
                 if let Some(key) = self
-                    .text(&child(resource, field, id), KEY)
+                    .key_in(&child(resource, id), (resource, field))
                     .map_err(index_error)?
                 {
                     candidates.push((key, Rc::from(id.as_str()), true));
@@ -284,7 +284,7 @@ impl View<'_> {
         let every = rest(conj, None);
         let mut kept = Vec::with_capacity(candidates.len());
         for (key, id, touched) in candidates {
-            let path = child(resource, field, &id);
+            let path = child(resource, &id);
             let check = if touched { &every } else { &residual };
             if let Some(p) = check {
                 evaluated.set(evaluated.get().saturating_add(1));
@@ -320,9 +320,11 @@ impl View<'_> {
     ) -> Result<std::collections::BTreeSet<String>, StoreError> {
         let mut out = std::collections::BTreeSet::new();
         for id in candidates {
-            let path = child(resource, field, &id);
-            let mut changed = self.snapshot.text(&path, KEY).map_err(index_error)?
-                != self.text(&path, KEY).map_err(index_error)?;
+            let path = child(resource, &id);
+            let mut changed = self
+                .held_key_in(&path, (resource, field))
+                .map_err(index_error)?
+                != self.key_in(&path, (resource, field)).map_err(index_error)?;
             for f in read {
                 if changed {
                     break;
@@ -388,15 +390,17 @@ impl View<'_> {
             return Ok((added, removed));
         };
         for id in touched {
-            let path = child(resource, field, id);
-            let was_key = self.snapshot.text(&path, KEY).map_err(index_error)?;
+            let path = child(resource, id);
+            let was_key = self
+                .held_key_in(&path, (resource, field))
+                .map_err(index_error)?;
             let was: Vec<String> = self
                 .snapshot
                 .text(&path, &column_field(column))
                 .map_err(index_error)?
                 .map(|held| held.split(columns::SEP).map(str::to_owned).collect())
                 .unwrap_or_default();
-            let now_key = self.text(&path, KEY).map_err(index_error)?;
+            let now_key = self.key_in(&path, (resource, field)).map_err(index_error)?;
             let now = match &now_key {
                 Some(_) => self
                     .column_values(&path, schema, spec)

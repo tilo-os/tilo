@@ -27,7 +27,10 @@ impl Checker<'_> {
             );
             return None;
         };
-        match self.type_named(&first.value) {
+        let named = self
+            .type_named(&first.value)
+            .or_else(|| self.program_type(&first.value));
+        match named {
             Some(Ty::Record(key)) if self.env.type_info(&key).is_some() => Some(key),
             Some(Ty::Error) => None,
             other => {
@@ -74,7 +77,12 @@ impl Checker<'_> {
     /// filters hold of, inside `x` (or anywhere in the workspace), as a lazy list the index
     /// answers.
     pub(super) fn builtin_query(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let Some(key) = self.queried("query", args, span) else {
+        self.query_named("query", args, span)
+    }
+
+    /// `query(...)`, or a program's typed `find(...)`, which is the same query.
+    pub(super) fn query_named(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(key) = self.queried(what, args, span) else {
             for a in args.iter().skip(1) {
                 if !matches!(
                     a.value.kind,
@@ -121,11 +129,19 @@ impl Checker<'_> {
                         } else {
                             format!("its filters: {}", keys.join(", "))
                         };
+                        let hint = crate::diag::suggestion(
+                            filter,
+                            info.search
+                                .filters
+                                .iter()
+                                .map(|f| f.key.as_str())
+                                .chain(["in", "sort"]),
+                        );
                         self.err(
                             "E105",
                             name.span,
                             format!(
-                                "`{}` has no filter `{filter}`; {keys}, and `in:` and `sort:`",
+                                "`{}` has no filter `{filter}`{hint}; {keys}, and `in:` and `sort:`",
                                 key.name
                             ),
                         );
@@ -167,7 +183,9 @@ impl Checker<'_> {
                 ),
             );
         }
-        let scope = scope.unwrap_or_else(|| Ex::host(Imp::NoneV, Vec::new(), Ty::Unit));
+        // No scope: an Option the host reads as none (a handle, so the call has its argument).
+        let scope = scope
+            .unwrap_or_else(|| Ex::host(Imp::NoneV, Vec::new(), Ty::Option(Box::new(Ty::Text))));
         let pairs = self.text_pairs(terms);
         Ex::host(
             Imp::Query,

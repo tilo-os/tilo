@@ -292,6 +292,16 @@ impl Door {
     }
 }
 
+/// Where the agent door starts a task's tilolang host: the session's launcher, as it starts
+/// every tilolang host, its author the task.
+struct TaskHosts;
+
+impl tilo_runtime::mcp::TaskHosts for TaskHosts {
+    fn start(&self, room: &str, task: &str) -> std::io::Result<std::os::fd::OwnedFd> {
+        crate::shell::launcher::start_task_host(room, task)
+    }
+}
+
 /// Serve one connection of this account by what its first line speaks: the
 /// control protocol from a program in an app this session launched, handed
 /// to the compositor with that app's scope; MCP from an unconfined process,
@@ -352,6 +362,7 @@ fn serve_connection(
         stream,
         Some(first),
         crate::shell::remote_actions::BrokerActionHost::new(broker),
+        Some(std::sync::Arc::new(TaskHosts)),
         |hello, connected| ask_person(requests, wake, facts, hello, connected),
     );
     if let Err(error) = ended {

@@ -1,5 +1,5 @@
-//! Every app under `apps/tl`, compiled with its committed ids and run end to end: chat with
-//! embedded agent blocks, letters, Today's foreign views and flow, lists that open their
+//! Every app under `apps/tl`, compiled with its committed ids and run end to end: a chat with
+//! embedded agent blocks (the fixture `tests/block_chat`), letters, Today's foreign views and flow, lists that open their
 //! items in windows of their own, window and lens state, and every root's window at a compact
 //! and a wide space.
 
@@ -45,19 +45,37 @@ mod cases {
     struct Apps {
         notes: App,
         todo: App,
+        /// The chat of messages with blocks, a fixture.
         chat: App,
         letters: App,
         counter: App,
         today: App,
+        /// Chat: channels, replies and threads.
+        channels: App,
     }
 
     fn apps() -> Apps {
         let notes = build("notes", app_source!("notes"), &[]);
-        let todo = build("todo", app_source!("todo"), &[]);
-        let chat = build("chat", app_source!("chat"), &[]);
-        let letters = build("letters", app_source!("letters"), &[]);
+        let todo = build("todo", app_source!("tasks"), &[]);
+        let chat = build(
+            "block_chat",
+            (
+                include_str!("block_chat/app.tl"),
+                include_str!("block_chat/app.ids"),
+            ),
+            &[],
+        );
+        let letters = build(
+            "letters",
+            (
+                include_str!("../../tilolang/tests/fixtures/letters/app.tl"),
+                include_str!("../../tilolang/tests/fixtures/letters/app.ids"),
+            ),
+            &[],
+        );
         let counter = build("counter", app_source!("counter"), &[]);
-        let today = build("today", app_source!("today"), &[&notes, &todo, &chat]);
+        let channels = build("chat", app_source!("chat"), &[]);
+        let today = build("today", app_source!("today"), &[&notes, &todo, &channels]);
         Apps {
             notes,
             todo,
@@ -65,6 +83,7 @@ mod cases {
             letters,
             counter,
             today,
+            channels,
         }
     }
 
@@ -87,6 +106,7 @@ mod cases {
             &apps.letters,
             &apps.counter,
             &apps.today,
+            &apps.channels,
         ]
         .iter()
         .map(|a| a.load(&rt))
@@ -301,8 +321,16 @@ mod cases {
     fn every_app_compiles_with_its_committed_ids_and_loads_together() {
         let a = apps();
         let w = world(&a, &AmStore::new());
-        assert_eq!(w.ids.len(), 6);
-        for app in [&a.notes, &a.todo, &a.chat, &a.letters, &a.counter, &a.today] {
+        assert_eq!(w.ids.len(), 7);
+        for app in [
+            &a.notes,
+            &a.todo,
+            &a.chat,
+            &a.letters,
+            &a.counter,
+            &a.today,
+            &a.channels,
+        ] {
             let meta = app.meta();
             let root = meta
                 .roots
@@ -471,11 +499,12 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
+        let project = returned_ref(w.call(&apps.todo, "new_project", vec![res(&list)]));
         w.call(
             &apps.todo,
             "rename",
-            vec![res(&list), Value::text("Groceries")],
+            vec![res(&project), Value::text("Groceries")],
         );
         post(&w, &apps, &conv, "agent:helper", "", "1 + 2");
         post(
@@ -484,7 +513,7 @@ mod cases {
             &conv,
             "agent:helper",
             "",
-            &format!("@todo.TodoList:{}", list.id_string()),
+            &format!("@tasks.Project:{}", project.id_string()),
         );
         let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(view.tree());
@@ -504,7 +533,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        post(&w, &apps, &conv, "agent:helper", "see", "todo.nothing(1)");
+        post(&w, &apps, &conv, "agent:helper", "see", "tasks.nothing(1)");
         post(&w, &apps, &conv, "person:ada", "still here", "");
         let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(view.tree());
@@ -585,7 +614,7 @@ mod cases {
         assert_eq!(text_prop(inv, "state"), "suggested");
         assert_eq!(inv.props.get("can_resolve"), Some(&Value::Bool(true)));
         assert_eq!(text_prop(inv, "action"), "send");
-        assert_eq!(text_prop(inv, "app"), "so.tilo.lang.letters");
+        assert_eq!(text_prop(inv, "app"), "test.letters");
         let run = text_prop(inv, "run");
         assert_eq!(
             title_texts(inv),
@@ -630,6 +659,8 @@ mod cases {
             json!(["bo@example.org", "Plans", "See you at nine."])
         );
         assert_eq!(w.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
+        // Marked as being handed over, then handed over.
+        assert_eq!(w.rt.settle().unwrap().marked, 1);
         assert_eq!(w.rt.settle().unwrap().delivered, 1);
         assert_eq!(
             w.sink.delivered(),
@@ -671,12 +702,12 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         let first = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
         let second = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("eggs")]));
         let remove = |item: &ResourceRef| {
             format!(
-                "button(\"Remove\", on: todo.remove(@todo.TodoList:{}, @todo.Todo:{}))",
+                "button(\"Remove\", on: tasks.remove(@tasks.Tasks:{}, @tasks.Task:{}))",
                 list.id_string(),
                 item.id_string()
             )
@@ -730,9 +761,9 @@ mod cases {
         let (mut a, mut b) = (AmStore::new(), AmStore::new());
         let (wa, wb) = (world(&apps, &a), world(&apps, &b));
         let (_, conv) = start_chat(&wa, &apps);
-        let list = wa.create("TodoList");
+        let list = wa.create("Tasks");
         wa.auth.trust_principal("agent:helper");
-        let src = format!("todo.add(@todo.TodoList:{}, \"bread\")", list.id_string());
+        let src = format!("tasks.add(@tasks.Tasks:{}, \"bread\")", list.id_string());
         let message = post(&wa, &apps, &conv, "agent:helper", "", &src);
 
         assert_eq!(
@@ -777,9 +808,9 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         w.auth.trust_principal("agent:helper");
-        let src = format!("todo.add(@todo.TodoList:{}, \"spam\")", list.id_string());
+        let src = format!("tasks.add(@tasks.Tasks:{}, \"spam\")", list.id_string());
 
         let mallory = Principal::new("person:mallory");
         let message = post(&w, &apps, &conv, "person:mallory", "", &src);
@@ -912,6 +943,7 @@ mod cases {
                     .count();
             assert_eq!(sends, 1);
         }
+        assert_eq!(wa.rt.settle().unwrap().marked, 1);
         assert_eq!(wa.rt.settle().unwrap().delivered, 1);
         assert_eq!(wa.sink.delivered().len(), 1);
 
@@ -1044,14 +1076,15 @@ mod cases {
     fn a_lists_filter_is_window_state_and_changes_nothing_in_the_list() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         for (t, done) in [("milk", true), ("eggs", false)] {
             let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
             if done {
                 w.call(&apps.todo, "check", vec![res(&item)]);
             }
         }
-        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+        // It starts on the inbox: what is in no project, done or not.
         assert_eq!(row_titles(v.tree()), ["milk", "eggs"]);
         let before = w.rt.history(&list.doc).unwrap().len();
         choose(&v, "is:done");
@@ -1064,11 +1097,11 @@ mod cases {
         );
         assert_eq!(
             (
-                &node_with(tree, "ui.NavItem", "key", "all").props["count"],
-                &node_with(tree, "ui.NavItem", "key", "is:open").props["count"],
+                &node_with(tree, "ui.NavItem", "key", "is:inbox").props["count"],
+                &node_with(tree, "ui.NavItem", "key", "is:today").props["count"],
                 &node_with(tree, "ui.NavItem", "key", "is:done").props["count"]
             ),
-            (&Value::Int(2), &Value::Int(1), &Value::Int(1))
+            (&Value::Int(2), &Value::Int(0), &Value::Int(1))
         );
 
         assert_eq!(
@@ -1116,8 +1149,8 @@ mod cases {
         // Today reads the other apps' roots: the workspace's one of each.
         let today = w.create("Today");
         let notebook = w.rt.create_root("Notes").unwrap();
-        let list = w.rt.create_root("TodoList").unwrap();
-        let chat = w.rt.create_root("Conversations").unwrap();
+        let list = w.rt.create_root("Tasks").unwrap();
+        let chat = w.rt.create_root("Channels").unwrap();
         Morning {
             w,
             today,
@@ -1301,15 +1334,19 @@ mod cases {
     fn todo_is_one_row_per_item_at_every_width() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         for t in ["a", "b"] {
             w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]);
         }
-        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
             assert!(of_kind(tree, "grid").is_empty());
-            assert!(of_kind(tree, "ui.TextInput").is_empty());
+            assert_eq!(
+                of_kind(tree, "ui.TextInput").len(),
+                1,
+                "the quick add alone"
+            );
             let rows = of_kind(tree, "ui.ListRow");
             assert_eq!(rows.len(), 2);
             assert!(
@@ -1323,13 +1360,13 @@ mod cases {
     fn the_new_item_action_adds_an_item_that_opens_in_its_editor() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("TodoList");
-        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        let list = w.create("Tasks");
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         assert_eq!(
             text_prop(of_kind(v.tree(), "ui.EmptyState")[0], "title"),
-            "Nothing to do"
+            "No tasks here"
         );
-        let item = returned_ref(w.call(&apps.todo, "new_item", vec![res(&list)]));
+        let item = returned_ref(w.call(&apps.todo, "new_task", vec![res(&list)]));
         v.poll_patches().unwrap();
         assert_eq!(item_titled(v.tree(), ""), item);
         let editor = w.rt.open_resource(&me(), &item, None).unwrap();
@@ -1344,7 +1381,7 @@ mod cases {
     fn an_action_whose_requirement_fails_is_not_offered_and_is_refused_with_its_reason() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
         let labels = |v: &ViewInstance| -> Vec<String> {
             of_kind(v.tree(), "ui.Button")
@@ -1352,7 +1389,7 @@ mod cases {
                 .map(|button| text_prop(button, "label"))
                 .collect()
         };
-        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         assert!(
             !labels(&v).contains(&"Clear done".to_owned()),
             "nothing is done, so the header offers no Clear done: {:?}",
@@ -1381,7 +1418,7 @@ mod cases {
     fn clearing_done_removes_only_the_finished_items() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         for (t, done) in [("milk", true), ("eggs", false), ("rice", true)] {
             let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
             if done {

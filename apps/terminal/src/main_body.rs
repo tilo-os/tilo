@@ -2523,14 +2523,83 @@ impl TerminalWidget {
                 };
                 runs.running = typed;
             }
-            Piece::Mark(Mark::Ended { .. }) | Piece::Output(_) => {}
+            Piece::Mark(Mark::History(ask)) => {
+                self.answer_history(ask);
+                return;
+            }
+            Piece::Mark(
+                Mark::Ended { .. }
+                | Mark::JobStarted { .. }
+                | Mark::JobOutput { .. }
+                | Mark::JobEnded { .. },
+            )
+            | Piece::Output(_) => {}
         }
         if let Some(run) = runs
             .current
             .follow(piece, ui::tilo_resource::origin_now_ms())
         {
-            let asked = runs.running.take();
+            // A background job's run is nobody's request: the line that
+            // started it was.
+            let asked = if run.job.is_some() {
+                None
+            } else {
+                runs.running.take()
+            };
             runs.ended.push((run, asked));
+        }
+    }
+
+    /// Answer the shell's line editor with a page of the person's history
+    /// (docs/app-model/ush.md, "The session's shell"): the newest command
+    /// lines past the `skip` newest, each once, as one mark on its input.
+    fn answer_history(&self, ask: &crate::runs::HistoryAsk) {
+        use base64::Engine as _;
+        /// What one answer holds at most: small enough to pass the
+        /// terminal's input buffer whole, so the shell reads it in one go.
+        const ANSWER_BYTES: usize = 3072;
+        let Some(key) = self.runs.marks.as_ref().map(|m| m.key().to_owned()) else {
+            return;
+        };
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let limit = ask.limit.clamp(1, 256);
+        let (entries, end) = self.runs.history.as_ref().map_or_else(
+            || (Vec::new(), true),
+            |history| {
+                history.record.with(|history| {
+                    let mut seen = std::collections::HashSet::new();
+                    let mut lines = history
+                        .matching(&ask.matching)
+                        .map(|run| run.command.0.as_str())
+                        .filter(|line| seen.insert(*line))
+                        .skip(ask.skip);
+                    let mut entries = Vec::new();
+                    let mut bytes = 0;
+                    let mut end = true;
+                    for line in lines.by_ref() {
+                        let encoded = b64.encode(line);
+                        if !entries.is_empty()
+                            && (entries.len() >= limit || bytes + encoded.len() + 1 > ANSWER_BYTES)
+                        {
+                            end = false;
+                            break;
+                        }
+                        bytes += encoded.len() + 1;
+                        entries.push(encoded);
+                    }
+                    (entries, end)
+                })
+            },
+        );
+        let answer = format!(
+            "\x1b]133;H;k={key};s={};q={};e={}{}\x07",
+            ask.skip,
+            b64.encode(&ask.matching),
+            entries.join(","),
+            if end { ";end=1" } else { "" }
+        );
+        if let Err(error) = self.try_write_input(answer.as_bytes()) {
+            tracing::warn!(%error, "terminal could not answer the shell's history");
         }
     }
 
@@ -2581,11 +2650,25 @@ impl TerminalWidget {
         let Some(asked) = self.runs.waiting.pop_front() else {
             return;
         };
-        // Ctrl-U first: what was half typed at the prompt does not become
-        // part of the command.
-        let mut line = vec![0x15];
-        line.extend_from_slice(asked.command.as_bytes());
-        line.push(b'\r');
+        // A shell that reads Terminal's marks takes the line whole, in place
+        // of whatever was typed, and knows who asked.
+        let line = if let Some(marks) = self.runs.marks.as_ref().filter(|m| m.reads_input()) {
+            use base64::Engine as _;
+            format!(
+                "\x1b]133;R;k={};cmd={}{}\x07",
+                marks.key(),
+                base64::engine::general_purpose::STANDARD.encode(&asked.command),
+                if asked.agent { ";agent=1" } else { "" }
+            )
+            .into_bytes()
+        } else {
+            // Ctrl-U first: what was half typed at the prompt does not
+            // become part of the command.
+            let mut line = vec![0x15];
+            line.extend_from_slice(asked.command.as_bytes());
+            line.push(b'\r');
+            line
+        };
         match self.try_write_input(&line) {
             Ok(()) => {
                 self.runs.at_prompt = false;
@@ -2666,9 +2749,13 @@ impl TerminalWidget {
                 session: String::new(),
                 run: id.clone(),
             };
+            let job = run.job.is_some();
             let recorded =
                 dispatch.submit_now(edits, crate::resource::Terminal::RECORD_RUN.with(finished));
             match &recorded {
+                // A background job's run stays the session's: the line that
+                // started it is the person's history.
+                Ok(()) if job => {}
                 Ok(()) => self.remember(ran),
                 Err(error) => tracing::warn!(%error, "terminal session record refused a run"),
             }

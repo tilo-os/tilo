@@ -294,6 +294,53 @@ impl Core {
         Ok(args)
     }
 
+    /// The parameters `aref` leaves out that have no default, by index: what an invocation of
+    /// it still needs. Empty for anything but an action of a package.
+    pub(crate) fn missing_arguments(&self, aref: &ActionRef) -> Vec<usize> {
+        let Some(pkg) = self.registry.borrow().action_package(&aref.action) else {
+            return Vec::new();
+        };
+        let Some(meta) = pkg.action(&aref.action) else {
+            return Vec::new();
+        };
+        meta.params
+            .iter()
+            .enumerate()
+            .skip(aref.args.len())
+            .filter(|(_, param)| param.default.is_none())
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    /// The default of the parameter `at` of `action`, over the arguments before it: `None`
+    /// when it has none.
+    pub(crate) fn default_argument(
+        &self,
+        action: &str,
+        at: usize,
+        before: &[Value],
+    ) -> Result<Option<Value>, RuntimeError> {
+        let Some(pkg) = self.registry.borrow().action_package(action) else {
+            return Ok(None);
+        };
+        let meta = pkg
+            .action(action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {action}")))?
+            .clone();
+        let Some(param) = meta.params.get(at) else {
+            return Ok(None);
+        };
+        let Some(default) = &param.default else {
+            return Ok(None);
+        };
+        let params = meta.params.get(..at).unwrap_or_default();
+        if params.len() != before.len() {
+            return Ok(None);
+        }
+        self.call_pure(&pkg, &default.export, params, before, &param.ty)
+            .map(Some)
+    }
+
     /// Call the export `export` of `pkg`, a function of the values it is given that changes
     /// nothing (a parameter default, an argument computed at an event), in a frame of its own.
     pub(crate) fn call_pure(
@@ -739,6 +786,12 @@ impl Core {
         let aref = self
             .completed(&aref)
             .map_err(|e| HostFail::Trap(e.to_string()))?;
+        if self.invoker.borrow().is_some() {
+            let invocation = self
+                .invocation_of(&aref)
+                .map_err(|e| HostFail::Trap(e.to_string()))?;
+            return self.delegated(&ctx, &aref.action, &invocation);
+        }
         let decision = self
             .decide(&ctx, &aref)
             .map_err(|e| HostFail::Trap(e.to_string()))?;
@@ -781,10 +834,186 @@ impl Core {
         }
     }
 
+    /// The invocation a task's host sends on for `aref`: the declared action with its
+    /// arguments by name.
+    fn invocation_of(&self, aref: &ActionRef) -> Result<crate::delegate::Invocation, RuntimeError> {
+        let pkg = self
+            .registry
+            .borrow()
+            .action_package(&aref.action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", aref.action)))?;
+        let meta = pkg
+            .action(&aref.action)
+            .ok_or_else(|| RuntimeError::NotFound(format!("action {}", aref.action)))?;
+        Ok(crate::delegate::Invocation::Action {
+            app: pkg.meta.app.clone(),
+            action: aref.action.clone(),
+            name: meta.name.clone(),
+            args: meta
+                .params
+                .iter()
+                .map(|p| p.name.clone())
+                .zip(aref.args.iter().cloned())
+                .collect(),
+            class: meta.class,
+            destructive: meta.role.as_deref() == Some("destructive"),
+        })
+    }
+
+    /// Send `invocation` (journaled as `action`) to the host's invoker and hand the program its
+    /// answer: the result, or the reason as an error value; one the person is asked about first
+    /// stops the program there.
+    pub(crate) fn delegated(
+        &self,
+        ctx: &ExecCtx,
+        action: &str,
+        invocation: &crate::delegate::Invocation,
+    ) -> HResult<Option<Wasm>> {
+        use crate::delegate::Invoked;
+        let answer = match self.invoker.borrow().as_ref() {
+            Some(invoker) => invoker.invoke(invocation),
+            None => return trap("this host sends no invocation on"),
+        };
+        let (entry, value) = match answer {
+            Invoked::Done(result) => (
+                JournalEntry::Invoked {
+                    action: action.to_owned(),
+                    result: result.clone(),
+                },
+                result,
+            ),
+            Invoked::Failed(reason) => (
+                JournalEntry::Failed {
+                    action: action.to_owned(),
+                    reason: reason.clone(),
+                },
+                Value::Error(reason),
+            ),
+            Invoked::Refused(reason) => (
+                JournalEntry::Denied {
+                    action: action.to_owned(),
+                    reason: reason.clone(),
+                },
+                Value::Error(reason),
+            ),
+            Invoked::Asks(_) => {
+                let aref = ActionRef::new(action.to_owned(), Vec::new());
+                self.suspend_on(ctx, &aref)?;
+                return Err(HostFail::Suspend);
+            }
+        };
+        self.journal_push(entry)?;
+        // What did not run stops a program that does not `try` it: it never goes on as if it
+        // had.
+        if let Value::Error(reason) = &value
+            && !self.trying.get()
+        {
+            return trap(format!("{}: {reason}", invocation.name()));
+        }
+        self.ret_h(boxed(value))
+    }
+
+    /// `r.f = v` in a program: the field edit of `r`, sent to the host's invoker as an
+    /// invocation of the app that holds `r`. One the policy refuses or that fails stops the
+    /// program with why; one the person is asked about first stops it there.
+    pub(crate) fn flow_edit(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        use crate::delegate::{Invocation, Invoked};
+        let target = self.ref_arg(a.h(0)?)?;
+        let field_id = self.text(a.h(1)?)?;
+        let value = crate::host_res::unboxed(self.val(a.h(2)?)?);
+        let (app, field) = {
+            let registry = self.registry.borrow();
+            let Some((pkg, info)) = registry.type_info(&target.target.ty) else {
+                return trap(format!("no app declares the type {}", target.target.ty));
+            };
+            let Some(field) = info.fields.iter().find(|f| f.id == field_id) else {
+                return trap(format!("{} has no field {field_id}", info.name));
+            };
+            (pkg.meta.app.clone(), field.clone())
+        };
+        // A flag travels as the integer the guest boxed it as.
+        let value = match (&field.ty, value) {
+            (crate::meta::Ty::Bool, Value::Int(flag)) => Value::Bool(flag != 0),
+            (_, value) => value,
+        };
+        let field = field.name;
+        let action = format!("edit:{field_id}");
+        let ctx = {
+            let mut frames = self.frames.borrow_mut();
+            let FrameKind::Flow(fs) = &mut frames.top_mut()?.kind else {
+                return trap("a field is set by a program only");
+            };
+            if let Some(entry) = fs.journal.entries.get(fs.cursor) {
+                let replayed = replay_value(entry, &action)?;
+                fs.cursor = fs.cursor.saturating_add(1);
+                return match replayed {
+                    Value::Error(reason) => trap(reason),
+                    _ => ret_void(),
+                };
+            }
+            ExecCtx {
+                invoker: fs.invoker.clone(),
+                chain: fs.journal.chain.clone(),
+                approved_by: None,
+                origin: None,
+            }
+        };
+        let invocation = Invocation::Edit {
+            app,
+            target: ResourceRef::clone(&target.target),
+            field,
+            field_id,
+            value,
+        };
+        let answer = match self.invoker.borrow().as_ref() {
+            Some(invoker) => invoker.invoke(&invocation),
+            None => {
+                return trap(
+                    "a program changes a field through its app: this host sends no change on",
+                );
+            }
+        };
+        let (entry, failed) = match answer {
+            Invoked::Done(_) => (
+                JournalEntry::Invoked {
+                    action,
+                    result: Value::Unit,
+                },
+                None,
+            ),
+            Invoked::Failed(reason) => (
+                JournalEntry::Failed {
+                    action,
+                    reason: reason.clone(),
+                },
+                Some(reason),
+            ),
+            Invoked::Refused(reason) => (
+                JournalEntry::Denied {
+                    action,
+                    reason: reason.clone(),
+                },
+                Some(reason),
+            ),
+            Invoked::Asks(_) => {
+                self.suspend_on(&ctx, &ActionRef::new(action, Vec::new()))?;
+                return Err(HostFail::Suspend);
+            }
+        };
+        self.journal_push(entry)?;
+        match failed {
+            Some(reason) => trap(reason),
+            None => ret_void(),
+        }
+    }
+
     /// `try act(args)`: invokes like `invoke` and hands the guest a `Result`: `.ok` with the
     /// action's result (none for a unit action), or `.err` with the reason it failed.
     fn flow_try_invoke(&self, h: i32) -> HResult<Option<Wasm>> {
-        let Some(Wasm::I32(raw)) = self.flow_invoke(h)? else {
+        let outer = self.trying.replace(true);
+        let invoked = self.flow_invoke(h);
+        self.trying.set(outer);
+        let Some(Wasm::I32(raw)) = invoked? else {
             return trap("invoke returned no handle");
         };
         let outcome = unboxed(self.val_whole(raw)?);
@@ -867,7 +1096,7 @@ impl Core {
     fn outside(&self, cap_h: i32, payload_h: i32) -> HResult<Option<Wasm>> {
         let capability = self.text(cap_h)?;
         let payload = outside_json(&unboxed(self.val_whole(payload_h)?))?;
-        if capability != "post" {
+        if !tilolang::origin::is_capability(&capability) {
             return trap(format!("unknown outside capability `{capability}`"));
         }
         let (txn, action, primary, origin) = {
@@ -910,17 +1139,20 @@ impl Core {
         let Value::List(args) = self.val(args_h)? else {
             return trap("act_ref expects the arguments as a list");
         };
-        // How many arguments it takes, and how many of the last of them have defaults, which
-        // an application may leave out: they are computed when it is invoked.
+        // How many arguments it takes, and how many of the last of them an application may
+        // leave out: those with defaults, computed when it is invoked, and those its form asks
+        // the person for (forms-and-diagrams.md §1).
         let arity = {
             let reg = self.registry.borrow();
-            let as_action = reg.action_package(&action).and_then(|p| {
-                p.action(&action).map(|a| {
+            let as_action = reg.action_package(&action).and_then(|pkg| {
+                pkg.action(&action).map(|a| {
                     let defaulted = a
                         .params
                         .iter()
                         .rev()
-                        .take_while(|p| p.default.is_some())
+                        .take_while(|p| {
+                            p.default.is_some() || crate::platform::form_asks(&pkg.meta, &p.ty)
+                        })
                         .count();
                     (a.params.len(), defaulted)
                 })
@@ -948,7 +1180,7 @@ impl Core {
         }))
     }
 
-    fn principal_arg(&self, h: i32) -> HResult<Principal> {
+    pub(crate) fn principal_arg(&self, h: i32) -> HResult<Principal> {
         self.with_val(h, |v| match v {
             Value::Principal(p) => Ok(p.clone()),
             other => trap(format!("expected a principal, got {}", other.kind_name())),
@@ -1075,13 +1307,16 @@ impl Core {
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
             Imp::Invoker => {
                 let frames = self.frames.borrow();
-                let FrameKind::Action(state) = &frames.top()?.kind else {
-                    return trap("invoker is only available in actions");
+                let who = match &frames.top()?.kind {
+                    FrameKind::Action(state) => state
+                        .acting_as
+                        .last()
+                        .map_or(&state.invoker, |(who, _)| who),
+                    // An action's requirement read where it is presented: the person looking,
+                    // who would invoke it.
+                    FrameKind::View(view) => &view.viewer,
+                    _ => return trap("invoker is only available in actions"),
                 };
-                let who = state
-                    .acting_as
-                    .last()
-                    .map_or(&state.invoker, |(who, _)| who);
                 let who = Value::Principal(who.clone());
                 drop(frames);
                 self.ret_h(who)

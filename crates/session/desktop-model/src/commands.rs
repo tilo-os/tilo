@@ -210,6 +210,19 @@ pub enum DesktopCommand {
         strip: u64,
         before: Option<u64>,
     },
+    /// Show the workspace's windows on its canvas (`canvas`) or in its
+    /// strips. The windows and their strips stay as they are; only how the
+    /// workspace lays them out changes. Appended last: existing encodings
+    /// are unchanged.
+    SetArrangement {
+        canvas: bool,
+    },
+    /// Stand window group `group` at `place` on the workspace's canvas.
+    /// Appended last: existing encodings are unchanged.
+    PlaceGroup {
+        group: u64,
+        place: crate::arrangement::CanvasPlace,
+    },
 }
 
 impl DesktopCommand {
@@ -874,7 +887,59 @@ pub fn apply_command(
         DesktopCommand::ClaimNamespace { .. } => {
             return Err("a namespace claim changes the room's registry, not a workspace".into());
         }
+        DesktopCommand::SetArrangement { canvas } => {
+            workspace.arrangement.kind = if *canvas {
+                crate::arrangement::ArrangementKind::Canvas
+            } else {
+                crate::arrangement::ArrangementKind::Strips
+            };
+        }
+        DesktopCommand::PlaceGroup { group, place } => place_group(workspace, *group, *place)?,
     }
+    free_closed_places(workspace);
+    Ok(())
+}
+
+/// A window closed or moved out of the workspace leaves its canvas place
+/// free.
+fn free_closed_places(workspace: &mut Workspace) {
+    let live: std::collections::HashSet<u64> = workspace
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .map(|group| group.id)
+        .collect();
+    workspace
+        .arrangement
+        .retain_groups(|group| live.contains(&group));
+}
+
+/// The largest side a canvas place may have, in canvas pixels: room for a
+/// window across several displays, and no further.
+pub const MAX_CANVAS_SIDE: u32 = 16_384;
+
+/// Stand `group` at `place` on the canvas.
+fn place_group(
+    workspace: &mut Workspace,
+    group: u64,
+    place: crate::arrangement::CanvasPlace,
+) -> Result<(), String> {
+    if !workspace
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .any(|candidate| candidate.id == group)
+    {
+        return Err("that window is not in this workspace".into());
+    }
+    if place.width == 0
+        || place.height == 0
+        || place.width > MAX_CANVAS_SIDE
+        || place.height > MAX_CANVAS_SIDE
+    {
+        return Err("a window on the canvas needs a size it can be shown at".into());
+    }
+    workspace.arrangement.places.insert(group, place);
     Ok(())
 }
 

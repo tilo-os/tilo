@@ -17,7 +17,7 @@ use tokio::sync::Notify;
 
 /// The folders a server has, named and marked as one provider does.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Layout {
+pub enum Layout {
     /// Gmail: `[Gmail]/…` folders marked with their use; archiving is
     /// "All Mail".
     Gmail,
@@ -50,7 +50,7 @@ impl Layout {
 
 /// One message in a folder.
 #[derive(Clone, Debug)]
-pub(crate) struct Stored {
+pub struct Stored {
     pub uid: u32,
     pub flags: Vec<String>,
     pub raw: Vec<u8>,
@@ -80,7 +80,7 @@ impl State {
 
 /// A running server: where it listens, and the mailboxes it serves.
 #[derive(Clone)]
-pub(crate) struct FakeImap {
+pub struct FakeImap {
     pub port: u16,
     state: Arc<Mutex<State>>,
     changed: Arc<Notify>,
@@ -91,7 +91,7 @@ pub(crate) struct FakeImap {
 impl FakeImap {
     /// Serve `layout`'s folders, empty, on a loopback port, on the current
     /// tokio runtime.
-    pub(crate) async fn start(layout: Layout, tls: Arc<rustls::ServerConfig>) -> Self {
+    pub async fn start(layout: Layout, tls: Arc<rustls::ServerConfig>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let state = Arc::new(Mutex::new(State {
@@ -132,7 +132,7 @@ impl FakeImap {
 
     /// Put a message into `folder` as another client or a delivery would,
     /// and tell idling connections. Its UID.
-    pub(crate) fn append(&self, folder: &str, raw: &str, flags: &[&str]) -> u32 {
+    pub fn append(&self, folder: &str, raw: &str, flags: &[&str]) -> u32 {
         let uid = {
             let mut state = self.state.lock().unwrap();
             let mailbox = state.find(folder).unwrap();
@@ -151,7 +151,7 @@ impl FakeImap {
     }
 
     /// Set `flag` on a message, as another client would.
-    pub(crate) fn flag(&self, folder: &str, uid: u32, flag: &str) {
+    pub fn flag(&self, folder: &str, uid: u32, flag: &str) {
         {
             let mut state = self.state.lock().unwrap();
             let message = state
@@ -167,11 +167,11 @@ impl FakeImap {
     }
 
     /// How many connections wait in IDLE for news of the mailbox.
-    pub(crate) fn idling(&self) -> usize {
+    pub fn idling(&self) -> usize {
         self.idling.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    pub(crate) fn messages(&self, folder: &str) -> Vec<Stored> {
+    pub fn messages(&self, folder: &str) -> Vec<Stored> {
         self.state
             .lock()
             .unwrap()
@@ -350,7 +350,13 @@ impl FakeImap {
                     if upper_query.starts_with("TEXT ") {
                         raw.contains(&needle("TEXT "))
                     } else if upper_query.starts_with("HEADER MESSAGE-ID ") {
-                        raw.contains(&needle("HEADER MESSAGE-ID "))
+                        // The Message-ID header alone, as a server matches it: a reply's
+                        // References name the message too.
+                        let wanted = needle("HEADER MESSAGE-ID ");
+                        raw.lines().any(|line| {
+                            line.strip_prefix("message-id:")
+                                .is_some_and(|value| value.contains(&wanted))
+                        })
                     } else if upper_query.starts_with("FLAGGED") {
                         message.flags.iter().any(|flag| flag == "\\Flagged")
                     } else {

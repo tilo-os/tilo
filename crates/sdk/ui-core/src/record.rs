@@ -2455,7 +2455,8 @@ impl RecordStore {
     }
 
     /// The route native component admission joins before the factory runs:
-    /// the open record's, a live New reservation's, or an exact native original
+    /// the open record's, a live New reservation's, the room's record while
+    /// it opens off the frame ([`Self::begin_opening`]), or an exact native original
     /// creation capture whose genesis the factory has yet to write. This does
     /// not make the record publishable before the owner's Initialize reply.
     pub(crate) fn admission_route(
@@ -2469,6 +2470,9 @@ impl RecordStore {
                     return Err(RecordOpenError::IdentityMismatch);
                 }
                 return set.wire_route(&checkout.id);
+            }
+            if let Some(route) = set.opening_route(checkout) {
+                return route;
             }
             if set
                 .open
@@ -3433,6 +3437,14 @@ impl RecordStore {
         checkout: &RecordCheckout,
         mutation: collab_types::DocumentMutation,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
+        // The room's record may still be decoding off the frame when its
+        // route's committed history arrives: take it in first, as every open
+        // of it does, so the history lands on it.
+        self.0
+            .try_borrow_mut()
+            .map_err(|_| RecordOpenError::Busy.to_string())?
+            .take_in_opening(&checkout.id, true)
+            .map_err(|error| error.to_string())?;
         let identity = self.replica_identity_stamp(checkout)?;
         let merged = self.with_action_state(&checkout.id, |doc, history, actions| {
             let mut local = doc.clone();

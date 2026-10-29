@@ -869,7 +869,7 @@ async fn tool(server: &McpServer<Notes>, name: &str, arguments: Value) -> (Strin
 }
 
 fn agent(host: &Notes) -> McpServer<Notes> {
-    McpServer::for_agent(host.clone(), "room".into(), "claude-code")
+    McpServer::for_agent(host.clone(), "room".into(), "claude-code", "ada")
 }
 
 #[test]
@@ -900,7 +900,7 @@ fn a_path_is_app_names_and_an_action() {
 }
 
 #[test]
-fn an_agent_is_offered_five_small_tools_and_no_classic_ones() {
+fn an_agent_is_offered_six_small_tools_and_no_classic_ones() {
     let host = Notes::new(true);
     run(async {
         let reply = agent(&host)
@@ -919,6 +919,7 @@ fn an_agent_is_offered_five_small_tools_and_no_classic_ones() {
                 "tilo_read",
                 "tilo_do",
                 "tilo_find",
+                "tilo",
                 "tilo_status"
             ]
         );

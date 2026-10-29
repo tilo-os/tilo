@@ -16,6 +16,7 @@ use tilo_action_policy::{
 };
 
 use crate::app::AppId;
+use crate::arrangement::Arrangement;
 use crate::capability::Capability;
 use crate::collaborator::Collaborator;
 use crate::ids::{RoomId, WorkspaceId};
@@ -35,6 +36,11 @@ pub struct Workspace {
     room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
+    /// Whether the workspace shows its strips or its canvas, and where each
+    /// window group stands on the canvas: the same windows, arranged on a
+    /// 2D surface ([`crate::arrangement`]).
+    #[serde(default, skip_serializing_if = "Arrangement::is_default")]
+    pub arrangement: Arrangement,
     /// Who is in this workspace *right now*, asserted present by a
     /// verified invite or presence frame — not durable membership, which
     /// is [`Workspace::policy`].
@@ -115,6 +121,8 @@ struct StoredWorkspace {
     room: RoomId,
     name: String,
     strips: Vec<Strip>,
+    #[serde(default)]
+    arrangement: Arrangement,
     #[serde(skip_deserializing)]
     collaborators: Vec<Collaborator>,
     #[serde(default)]
@@ -163,6 +171,7 @@ impl From<StoredWorkspace> for Workspace {
             room,
             name: stored.name,
             strips: stored.strips,
+            arrangement: stored.arrangement,
             collaborators: stored.collaborators,
             pending_ownership_transfer: stored.pending_ownership_transfer,
             ownership_transfer_audit: stored.ownership_transfer_audit,
@@ -1080,6 +1089,7 @@ impl Workspace {
             room,
             name: name.into(),
             strips: Vec::new(),
+            arrangement: Arrangement::default(),
             collaborators: Vec::new(),
             pending_ownership_transfer: None,
             ownership_transfer_audit: Vec::new(),
@@ -1111,6 +1121,7 @@ impl Workspace {
             room,
             name,
             strips: _,
+            arrangement: _,
             collaborators,
             pending_ownership_transfer,
             ownership_transfer_audit: _,
@@ -1131,6 +1142,7 @@ impl Workspace {
             room: *room,
             name: name.clone(),
             strips: Vec::new(),
+            arrangement: Arrangement::default(),
             collaborators: collaborators.clone(),
             pending_ownership_transfer: pending_ownership_transfer.clone(),
             ownership_transfer_audit: Vec::new(),
@@ -1193,6 +1205,7 @@ impl Default for Workspace {
             room,
             name: String::new(),
             strips: Vec::new(),
+            arrangement: Arrangement::default(),
             collaborators: Vec::new(),
             pending_ownership_transfer: None,
             ownership_transfer_audit: Vec::new(),

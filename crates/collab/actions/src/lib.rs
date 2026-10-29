@@ -132,6 +132,7 @@ pub mod draft;
 pub mod entry;
 pub mod envelope;
 pub mod executor;
+pub mod field_type;
 pub mod framework;
 pub mod group_form;
 pub mod interaction;

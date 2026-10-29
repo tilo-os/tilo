@@ -100,6 +100,46 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "Dated",
+        id: "host-dated",
+        doc: "When a text says something is due, as `dated(text, at)` read it.",
+        fields: &[
+            (
+                "text",
+                "Text",
+                "The text without the phrase that said when: `Call the landlord`.",
+            ),
+            (
+                "day",
+                "Option<Date>",
+                "The day it named, in the zone of who typed it.",
+            ),
+            (
+                "at",
+                "Option<Time>",
+                "The moment it named, when it named a time.",
+            ),
+        ],
+    },
+    ValueType {
+        name: "Delivery",
+        id: "host-delivery",
+        doc: "How an outside effect a resource's action queued stands: a mail being sent.",
+        fields: &[
+            (
+                "state",
+                "Text",
+                "`waiting` (to go online), `sending`, `sent`, `rejected` or `unknown` (the device \
+                 stopped while handing it over, so it is not tried again).",
+            ),
+            (
+                "reason",
+                "Text",
+                "Why it waits or was rejected, as the service said; empty otherwise.",
+            ),
+        ],
+    },
+    ValueType {
         name: "Lens",
         id: "host-lens",
         doc: "Someone's lens on a resource: a person or an agent whose window shows it now.",
@@ -120,7 +160,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "title",
                 "Text",
-                "Its title: its field marked `title`; else its app's title for a root, or its type's name.",
+                "Its title: its field marked `title`; else the first line of its field marked `body`; else its app's title for a root, or its type's name.",
             ),
             (
                 "type_name",
@@ -165,7 +205,50 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
         ],
     },
+    ValueType {
+        name: "Match",
+        id: "host-match",
+        doc: "A match of `grep` in the text of a resource: where it is, what it says, and the facts the system knows of it.",
+        fields: &[
+            (
+                "doc",
+                "Resource",
+                "The resource whose text holds it: a note, a todo, a message's part.",
+            ),
+            (
+                "anchor",
+                "Text",
+                "Where in it: the paragraph (`¶4`, `¶2.1` for a list's first item), or the field (`title`).",
+            ),
+            ("text", "Text", "What matched."),
+            ("line", "Text", "The whole paragraph or field it is in."),
+            (
+                "groups",
+                "List<Text>",
+                "The regular expression's groups: the whole match first, then each group, empty where one took no part.",
+            ),
+            (
+                "kind",
+                "Text",
+                "The kind of block it is in: `paragraph`, `heading`, `quote`, `list`, `code`, or `field` for a text field of one line.",
+            ),
+            (
+                "written_by",
+                "Option<Principal>",
+                "Who wrote that run of text, when the system knows: an authored run, or a resource only one person changed.",
+            ),
+            (
+                "changed",
+                "Option<Time>",
+                "When the resource last changed, from the log.",
+            ),
+        ],
+    },
 ];
+
+/// The type that stands for any resource, of whatever app: what `find` and `grep` answer when
+/// they read across apps. `.of(T)` keeps those of one type.
+pub const RESOURCE_TYPE_NAME: &str = "Resource";
 
 /// The value type `name` of the host.
 #[must_use]
@@ -230,7 +313,17 @@ pub fn host_meta() -> PackageMeta {
             ],
             search: crate::meta::SearchMeta::default(),
             holder: false,
+            origin: None,
         })
+        .chain(std::iter::once(TypeMeta {
+            id: format!("host-{}", RESOURCE_TYPE_NAME.to_lowercase()),
+            name: RESOURCE_TYPE_NAME.to_owned(),
+            doc: "Any resource of the workspace, of whichever app: what `find` and `grep` answer across apps. `.of(T)` keeps those of one type.".to_owned(),
+            fields: Vec::new(),
+            search: crate::meta::SearchMeta::default(),
+            holder: false,
+            origin: None,
+        }))
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
                 id: value.id.to_string(),
@@ -251,6 +344,7 @@ pub fn host_meta() -> PackageMeta {
                     .collect(),
                 search: crate::meta::SearchMeta::default(),
                 holder: false,
+                origin: None,
             }
         }))
         .collect(),

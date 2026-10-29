@@ -101,6 +101,12 @@ impl ResourceApp for TlApp {
         })
     }
 
+    // A package whose records are each member's own (`records: .own`) keeps them in the
+    // person's own record of the workspace.
+    fn member_record() -> bool {
+        crate::installed_bundle().is_some_and(|bundle| bundle.meta.own_records)
+    }
+
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::i18n::CATALOG)
     }
@@ -178,10 +184,27 @@ impl ResourceApp for TlApp {
             if let Some(room) = cx.room() {
                 window = window.in_room(&room);
             }
+            // Another record than the workspace's: the person's own, for a package that keeps
+            // each member's.
+            if let Some(record) = cx.record_id().filter(|id| !id.is_package_primary()) {
+                window = window.of_record(record.as_str());
+            }
             window
         };
         // What its runtime invokes is decided by the person's standing as the host keeps it.
-        let window = window.with_standing(cx.standing());
+        let mut window = window.with_standing(cx.standing());
+        // Types whose origin is a mail server are kept in step with the servers of the
+        // workspace's mail accounts, in a live window.
+        if cx.mode() == ui::framework::RunMode::Live
+            && tilolang_tilo::origin::uses_origin(meta, "imap")
+        {
+            let wake = ui::wake::WakeHandle::new();
+            let origin = tilolang_mail::live_origin(
+                tilolang_mail::settings_accounts(cx.storage().config_root()),
+                std::sync::Arc::new(move || wake.wake()),
+            );
+            window = window.with_origin(origin);
+        }
         // A search hit, or an agent's `open`, shows the resource it names.
         let opens = window.open_requests();
         cx.on_open(move |anchor: &str| {
@@ -193,12 +216,13 @@ impl ResourceApp for TlApp {
 
 /// Where windows keep their rooms' indexes: in the app's cache area, which its host gives it.
 pub fn indexes(files: &ui::storage::AppFiles) -> Option<std::path::PathBuf> {
-    files
-        .paths()
-        .cache()
-        .native_path()
-        .ok()
-        .map(|cache| cache.join("indexes"))
+    match files.paths().cache().native_path() {
+        Ok(cache) => Some(cache.join("indexes")),
+        Err(error) => {
+            tracing::warn!(%error, "no cache area for the rooms' indexes: they are kept in memory");
+            None
+        }
+    }
 }
 
 /// The built-in packages, compiled in the test process, which the window's tests run side by

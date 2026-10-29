@@ -275,6 +275,11 @@ impl<'a> ModalSpec<'a> {
         self.close_focused = v;
         self
     }
+    #[must_use]
+    pub fn anchor(mut self, anchor: Option<Rect>) -> Self {
+        self.anchor = anchor;
+        self
+    }
 }
 
 /// Where every part of the modal landed. Pure geometry, computed without a
@@ -304,6 +309,10 @@ pub struct ModalLayout {
     /// The sheet stands beside a control ([`ModalSpec::anchor`]): the
     /// window behind it is not dimmed.
     pub anchored: bool,
+    /// The sheet rises from a compact window's foot, as tall as what it
+    /// holds ([`rise_from_foot`]): a [`super::BottomSheet`] over the dimmed
+    /// page rather than a page of its own.
+    pub foot: bool,
 }
 
 /// What a point landed on.
@@ -579,7 +588,35 @@ pub fn layout(
         primary,
         dismiss_on_scrim: spec.dismiss_on_scrim,
         anchored: anchor.is_some(),
+        foot: false,
     }
+}
+
+/// Raise `layout`, a compact window's full-window page, as a sheet from the
+/// window's foot that is as tall as what it holds: `content_h` of body, the
+/// title above it, the footer below it and a grip `grip` tall along its top.
+/// A form of a few fields asks from the foot, where the thumb is; one too
+/// tall for most of the window stays the whole page. Whether it rose.
+pub fn rise_from_foot(layout: &mut ModalLayout, content_h: f64, grip: f64) -> bool {
+    if layout.card != layout.scrim {
+        return false;
+    }
+    let window = layout.scrim;
+    let above = layout.body.y0 - layout.card.y0;
+    let below = layout.card.y1 - layout.body.y1;
+    let needed = grip + above + content_h.max(0.0) + below;
+    if needed > window.height() * 0.85 {
+        return false;
+    }
+    let card = Rect::new(window.x0, window.y1 - needed, window.x1, window.y1);
+    let shift = Vec2::new(0.0, card.y0 + grip - layout.card.y0);
+    layout.title = layout.title + shift;
+    layout.close = layout.close.map(|close| close + shift);
+    layout.body.y0 += shift.y;
+    layout.card = card;
+    layout.body_overflows = false;
+    layout.foot = true;
+    true
 }
 
 struct FooterGeometry {
@@ -746,7 +783,9 @@ pub fn paint_sheet(
     layout: &ModalLayout,
     spec: &ModalSpec<'_>,
 ) {
-    if layout.card == layout.scrim {
+    if layout.foot {
+        // The caller painted the sheet from the foot (`BottomSheet::paint`).
+    } else if layout.card == layout.scrim {
         // A full-window modal is the foreground page. It does not sample or
         // dim the displaced page and has no floating shadow or rounded edge.
         crate::floating_surface::paint_material(
@@ -1289,6 +1328,12 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     layout_theme: Theme,
     /// Its arriving and leaving (`motion::Appear`, from the sheet's centre).
     appear: crate::motion::Appearing,
+    /// The control the sheet asks about: it stands beside it, the window
+    /// undimmed ([`Self::set_anchor`]).
+    anchor: Option<Rect>,
+    /// On a compact window the sheet rises from the foot when what it holds
+    /// fits ([`Self::with_foot_sheet`]).
+    foot: Option<super::BottomSheet>,
     /// Last, so a `ModalDialog<C>` coerces to `ModalDialog<dyn Widget>`, the
     /// one type the dialog's behaviour is compiled for.
     content: C,
@@ -1335,7 +1380,30 @@ impl<C: Widget + 'static> ModalDialog<C> {
             platform: PlatformConventions::default(),
             layout_theme: Theme::dark(),
             appear: crate::motion::Appearing::closed(),
+            anchor: None,
+            foot: None,
         }
+    }
+
+    /// Stand beside the control at `anchor` as a popover, the window
+    /// undimmed, rather than over the window's centre; `None` centres it.
+    /// A compact window shows it as a page (or from the foot) whatever.
+    pub fn set_anchor(&mut self, anchor: Option<Rect>) {
+        if self.anchor != anchor {
+            self.anchor = anchor;
+            self.invalidate_layout();
+        }
+    }
+
+    /// On a compact window, rise from the window's foot as a
+    /// [`super::BottomSheet`] as tall as what the sheet holds, over the dimmed
+    /// page, when that fits; else stay the whole page.
+    #[must_use]
+    pub fn with_foot_sheet(mut self) -> Self {
+        let mut sheet = super::BottomSheet::new();
+        sheet.snap_to(super::SheetDetent::Full);
+        self.foot = Some(sheet);
+        self
     }
 
     /// An icon before the title naming who asks.
@@ -1717,9 +1785,17 @@ impl ModalDialog<dyn Widget> {
             .platform_conventions(self.platform)
             .body_height(self.content_size.1)
             .max_width(self.max_width)
-            .closable(self.closable());
+            .closable(self.closable())
+            .anchor(self.anchor);
         let mut layout = layout(self.window, &spec, text_renderer, theme);
         drop(actions);
+        if self.foot.is_some() {
+            rise_from_foot(
+                &mut layout,
+                self.content_size.1,
+                f64::from(theme.tokens.metrics.min_pointer_target),
+            );
+        }
         if layout.body_overflows && self.trim > 0.0 {
             shorten(&mut layout, self.trim);
         }
@@ -2246,6 +2322,8 @@ impl Widget for ModalDialog<dyn Widget> {
         for key in &mut self.keys {
             key.enabled = key.slot != Slot::Primary || primary_enabled;
         }
+        // The sheet a compact window raises from its foot, painted under the title.
+        let mut foot = self.foot.clone().filter(|_| layout.foot);
         let focused = self.focused_slot();
         let (mut actions, slots) = self.actions();
         for ((action, rect), slot) in actions.iter_mut().zip(&layout.actions).zip(&slots) {
@@ -2264,7 +2342,9 @@ impl Widget for ModalDialog<dyn Widget> {
         // fades (it comes from nowhere in particular). The scrim fades with
         // it, cut out where the sheet is drawn.
         let mut pose = self.appear.pose(layout.card, layout.card.center());
-        if layout.card == layout.scrim {
+        // A sheet from the foot stands on the window's edge: it fades, as a
+        // page does, rather than growing from its centre.
+        if layout.card == layout.scrim || layout.foot {
             pose.transform = Affine::IDENTITY;
         }
         let scrim = crate::motion::Pose {
@@ -2278,6 +2358,19 @@ impl Widget for ModalDialog<dyn Widget> {
         let Some(transform) = pose.begin(scene, transform, layout.scrim) else {
             return;
         };
+        if let Some(sheet) = &mut foot {
+            sheet.place(
+                super::SheetFrame {
+                    area: layout.card,
+                    peek: 0.0,
+                    grip: f64::from(theme.tokens.metrics.min_pointer_target),
+                    least_half: 0.0,
+                },
+                1.0,
+                true,
+            );
+            sheet.paint(scene, transform, theme);
+        }
         paint_sheet(scene, transform, text_renderer, theme, &layout, &spec);
         paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
         drop(actions);

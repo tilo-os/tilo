@@ -175,6 +175,12 @@ impl App {
                 | WindowEvent::Ime(winit::event::Ime::Commit(_))
         ) {
             self.take_over_owner_view();
+            // What the person does lands on the controls the app shows now.
+            // A change of the app's structure since its last frame (what it
+            // took in while the person typed) left the layout map behind: a
+            // press would name a control the map no longer reaches, and the
+            // control it leaves would keep the keyboard.
+            self.build_tree_before_input();
         }
         match &event {
             WindowEvent::KeyboardLayoutChanged(layout) => {
@@ -1019,15 +1025,26 @@ impl App {
         self.sync_model(false);
         if self.layout.root_node.is_none() {
             self.init_layout();
-        } else {
-            let changed = self.take_root_structure_dirty();
-            self.layout.structure_dirty |= changed;
-            if !self.layout.structure_dirty {
-                return false;
-            }
-            self.rebuild_structure();
+        } else if !self.build_tree_before_input() {
+            return false;
         }
         damage.repaint("a tree built between frames");
+        true
+    }
+
+    /// Rebuild the app's tree when its structure changed since it was last
+    /// built, so input or focus handed to it between frames finds the
+    /// controls it shows now. Whether it rebuilt.
+    fn build_tree_before_input(&mut self) -> bool {
+        if self.layout.root_node.is_none() {
+            return false;
+        }
+        let changed = self.take_root_structure_dirty();
+        self.layout.structure_dirty |= changed;
+        if !self.layout.structure_dirty {
+            return false;
+        }
+        self.rebuild_structure();
         true
     }
 

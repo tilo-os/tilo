@@ -148,6 +148,11 @@ impl Checker<'_> {
                 {
                     return self.space_field(name);
                 }
+                if matches!(&base.kind, ExprKind::Ident(n) if n == "workspace")
+                    && self.lookup("workspace").is_none()
+                {
+                    return self.workspace_field(name);
+                }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
                     return match super::enums::Shape::of(self, &ty) {
@@ -237,7 +242,9 @@ impl Checker<'_> {
             return Ex::local(id, ty);
         }
         if name == "invoker" {
-            if self.st.ctx == Ctx::Action {
+            // An action's requirement also says, where the action is presented, whether the
+            // person looking may invoke it: there `invoker` is them.
+            if self.st.ctx == Ctx::Action || self.st.invoker == super::Invoker::Viewer {
                 return Ex::host(Imp::Invoker, vec![], Ty::Principal);
             }
             self.err(
@@ -258,6 +265,10 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
+        // `me`: the person a program's task acts for (agents.md, "What the agent knows").
+        if name == "me" && self.st.program {
+            return Ex::host(Imp::Me, vec![], Ty::Principal);
+        }
         // A named root of this package: `notes`.
         if let Some(key) = self
             .env
@@ -268,6 +279,17 @@ impl Checker<'_> {
             && let Some(info) = self.env.type_info(&key)
         {
             return Self::root_ref(&info.key.app, &info.id, &key);
+        }
+        if name == "workspace" {
+            self.err(
+                "E064",
+                span,
+                format!(
+                    "`workspace` is read through its fields: {}",
+                    crate::prims::WORKSPACE_FIELDS
+                ),
+            );
+            return Ex::error();
         }
         if name == "space" {
             self.err(
@@ -485,6 +507,9 @@ impl Checker<'_> {
             return Ex::error();
         }
         let env = self.env;
+        if let Some(foreign) = self.foreign_ref(r) {
+            return foreign;
+        }
         let Some(info) = env.resolve_ref(&r.app, &r.ty) else {
             let known: Vec<String> = env
                 .types
@@ -768,8 +793,14 @@ impl Checker<'_> {
                     );
                     return Ex::error();
                 };
-                if matches!(f.ty, Ty::Map(_)) {
-                    self.err("E080", name.span, format!("the Map field `{}` is not read as a whole; read it with `.get(key)` or `.keys()`, change it with `.put` and `.remove`", f.name));
+                if f.role.as_deref() == Some("previously")
+                    && self.st.role.as_deref() != Some("migration")
+                {
+                    self.err("E114", name.span, format!("`{}` is what `{}` held previously: only a `migration action` reads it, to bring it to where the type keeps it now", f.name, key.name));
+                    return Ex::error();
+                }
+                if matches!(f.ty, Ty::Map(_)) && self.st.ctx != Ctx::View {
+                    self.err("E080", name.span, format!("the Map field `{}` is read as a whole only in a view, to hand it to a component or another view; read it with `.get(key)` or `.keys()`, change it with `.put` and `.remove`", f.name));
                     return Ex::error();
                 }
                 let (imp, c) = load_op(&f.ty, Imp::ResGetI, Imp::ResGetF, Imp::ResGetH);
@@ -779,6 +810,34 @@ impl Checker<'_> {
                     Ex::host(imp, vec![b, Ex::str(&f.id)], raw_ty),
                     f.ty.clone(),
                 )
+            }
+            // A row of `count_by` (`.key`, `.count`) or of `group` (`.key`, `.items`).
+            Ty::Tuple(cells) if cells.len() == 2 => {
+                let at: usize = match (name.name.as_str(), cells.get(1)) {
+                    ("key", _) => 0,
+                    ("count", Some(Ty::Int)) | ("items", Some(Ty::List(_))) => 1,
+                    _ => {
+                        let second = if matches!(cells.get(1), Some(Ty::Int)) {
+                            "count"
+                        } else {
+                            "items"
+                        };
+                        self.err(
+                            "E021",
+                            name.span,
+                            format!(
+                                "a row of `count_by` or `group` has `.key` and `.{second}`; `.{}` is neither",
+                                name.name
+                            ),
+                        );
+                        return Ex::error();
+                    }
+                };
+                let ty = cells.get(at).cloned().unwrap_or(Ty::Error);
+                let (imp, c) = load_op(&ty, Imp::TupleGetI, Imp::TupleGetF, Imp::TupleGetH);
+                let raw_ty = if c.is_some() { Ty::Int } else { ty.clone() };
+                let index = Ex::new(ir::Ek::I32(i32::from(at == 1)), Ty::Bool);
+                conv(c, Ex::host(imp, vec![b, index], raw_ty), ty)
             }
             Ty::Union(keys) => {
                 let t = self.show(&b.ty);

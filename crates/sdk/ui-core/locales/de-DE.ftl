@@ -1042,6 +1042,8 @@ screen-reader-turned-on = Bildschirmleser an
 screen-reader-turned-off = Bildschirmleser aus
 
 ## Completion drawers
+completion-in-conversation = In diesem Gespräch
+completion-members = Mitglieder
 completion-no-match = Keine Treffer für „{ $query }“
 completion-results = { $count ->
     [one] 1 Treffer

@@ -26,6 +26,7 @@ use syn::{
 ///   `SlotType` (`Option<Element>`, `Vec<Element>`, or `Option<P>` of another component's props:
 ///   the slot accepts only that component);
 /// - `#[component(event)]`, `#[component(event(value = T))]`: an **event**, of type `Event`;
+///   `event(value = T, at = i64)` also says where the value lands (a drop's place);
 /// - `#[component(bind)]`, `#[component(bind(merge = "splice"))]`: a **binding**, of type
 ///   `Bound<T>`;
 /// - `#[component(state)]`: the widget's own **state** (lens state) to restore, a `PropType`;
@@ -64,6 +65,7 @@ enum Part {
     },
     Event {
         value: Option<Box<syn::Type>>,
+        at: Option<Box<syn::Type>>,
     },
     Bind {
         merge: Tokens,
@@ -132,6 +134,26 @@ fn head_of(attrs: &[Attribute]) -> syn::Result<Head> {
     Ok(head)
 }
 
+/// `event`, `event(value = T)` or `event(value = T, at = U)`: an event, what it carries and
+/// where that lands.
+fn event_part(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<Part> {
+    let (mut value, mut at) = (None, None);
+    if meta.input.peek(syn::token::Paren) {
+        meta.parse_nested_meta(|inner| {
+            if inner.path.is_ident("value") {
+                value = Some(Box::new(inner.value()?.parse::<syn::Type>()?));
+                Ok(())
+            } else if inner.path.is_ident("at") {
+                at = Some(Box::new(inner.value()?.parse::<syn::Type>()?));
+                Ok(())
+            } else {
+                Err(inner.error("an event takes `value = Type` and `at = Type`"))
+            }
+        })?;
+    }
+    Ok(Part::Event { value, at })
+}
+
 fn part_of(field: &syn::Field) -> syn::Result<Part> {
     let mut part = None;
     let mut required = false;
@@ -168,18 +190,7 @@ fn part_of(field: &syn::Field) -> syn::Result<Part> {
                 }
                 set(&mut part, Part::Slot { default }, span)?;
             } else if meta.path.is_ident("event") {
-                let mut value = None;
-                if meta.input.peek(syn::token::Paren) {
-                    meta.parse_nested_meta(|inner| {
-                        if inner.path.is_ident("value") {
-                            value = Some(Box::new(inner.value()?.parse::<syn::Type>()?));
-                            Ok(())
-                        } else {
-                            Err(inner.error("an event takes `value = Type`"))
-                        }
-                    })?;
-                }
-                set(&mut part, Part::Event { value }, span)?;
+                set(&mut part, event_part(&meta)?, span)?;
             } else if meta.path.is_ident("bind") {
                 let mut merge = quote!(Register);
                 if meta.input.peek(syn::token::Paren) {
@@ -428,16 +439,20 @@ impl Generated {
                         .map_err(|message| #k::Error::value(#name, #key, message))?;
                 });
             }
-            Part::Event { value } => {
-                let value = value.map_or_else(
-                    || quote!(None),
-                    |v| quote!(Some(<#v as #k::PropType>::ty())),
-                );
+            Part::Event { value, at } => {
+                let ty = |t: Option<Box<syn::Type>>| {
+                    t.map_or_else(
+                        || quote!(None),
+                        |v| quote!(Some(<#v as #k::PropType>::ty())),
+                    )
+                };
+                let (value, at) = (ty(value), ty(at));
                 self.events.push(quote! {
                     #k::EventDescription {
                         name: #key.into(),
                         doc: #field_doc.into(),
                         value: #value,
+                        at: #at,
                     }
                 });
                 // An event is data: the field is an `Event`, never a closure.
@@ -522,7 +537,7 @@ impl Generated {
         self.reads.push(quote! {
             match source.prop(#key) {
                 Some(value) => {
-                    props.#member = <#ty as #k::PropType>::from_value(&value)
+                    props.#member = <#ty as #k::PropType>::read(&value, source)
                         .map_err(|message| #k::Error::value(#name, #key, message))?;
                 }
                 None => #missing

@@ -253,6 +253,10 @@ impl ShellOverlayHost {
         if !self.banner_stack_rect().contains(p) {
             self.release_banner_keyboard();
         }
+        // A press on a window, wherever it lands (an app's own surface
+        // included), puts the canvas's caret away and gives the keyboard
+        // back.
+        self.canvas_press_on_window(p);
         // A press outside a desk card opened on purpose folds it.
         self.desk_note_press(p);
         self.with_maximized_group(|group| group.note_maximized_press(p));

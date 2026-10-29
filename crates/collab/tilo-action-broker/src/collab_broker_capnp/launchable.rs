@@ -1144,9 +1144,9 @@ mod tests {
             "a person's own view already shows them"
         );
 
-        let agent = Caller::local_agent("scribe")
+        let agent = Caller::local_person("owner")
             .in_room(&room)
-            .acting_for("owner");
+            .delegated_to("scribe");
         invoke(&state, &agent, "5", "new-window", None).expect("the agent acts");
         assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
         let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {

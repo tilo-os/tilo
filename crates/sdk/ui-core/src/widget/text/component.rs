@@ -17,6 +17,9 @@ pub struct TextProps {
     pub role: TextRole,
     /// A number that changes: tabular figures, so it does not jitter as it changes.
     pub numeric: bool,
+    /// What it says stands beside the content it is about, in secondary ink: "edited" after a
+    /// message, "Pinned" over it.
+    pub secondary: bool,
 }
 
 impl Described for Text {
@@ -27,10 +30,14 @@ impl Described for Text {
             value,
             role,
             numeric,
+            secondary,
         } = props;
         let mut text = Self::new("").with_role(role).with_id(key);
         if numeric {
             text = text.numeric();
+        }
+        if secondary {
+            text = text.dimmed();
         }
         text.show_content(value);
         text
@@ -42,7 +49,7 @@ impl Described for Text {
             self.modifiers.kind,
             Some(crate::text_render::TextKind::Numeric)
         );
-        if props.role != self.role || props.numeric != numeric {
+        if props.role != self.role || props.numeric != numeric || props.secondary != self.dimmed {
             return false;
         }
         self.show_content(props.value);

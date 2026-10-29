@@ -117,16 +117,29 @@ impl InstalledPackage {
     }
 }
 
+/// An app installed under an id another app of the same publisher names as its earlier one
+/// (`[package] previously`), which that app took the place of when it was installed: `id` is the
+/// earlier id, `by` the app that took it over.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TakenOver {
+    pub id: String,
+    pub by: String,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 struct RegistryFile {
     #[serde(default)]
     entry: Vec<InstalledPackage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    taken_over: Vec<TakenOver>,
 }
 
 /// The rows of one `registry.toml`, in file order.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Registry {
     entries: Vec<InstalledPackage>,
+    taken_over: Vec<TakenOver>,
 }
 
 #[derive(Debug, Error)]
@@ -171,6 +184,7 @@ impl Registry {
         })?;
         Ok(Self {
             entries: file.entry,
+            taken_over: file.taken_over,
         })
     }
 
@@ -191,6 +205,7 @@ impl Registry {
         }
         let file = RegistryFile {
             entry: self.entries.clone(),
+            taken_over: self.taken_over.clone(),
         };
         let text = toml::to_string(&file).map_err(|error| write_error(error.to_string()))?;
         tilo_files::native::atomic::write(path, text.as_bytes())
@@ -236,10 +251,33 @@ impl Registry {
         None
     }
 
-    /// Drop the row for `app_id`.
+    /// Drop the row for `app_id`, and what it had taken over.
     pub fn remove(&mut self, app_id: &str) -> Option<InstalledPackage> {
         let index = self.entries.iter().position(|entry| entry.id == app_id)?;
+        self.taken_over.retain(|taken| taken.by != app_id);
         Some(self.entries.remove(index))
+    }
+
+    /// The earlier ids installed apps took over (see [`TakenOver`]).
+    pub fn taken_over(&self) -> &[TakenOver] {
+        &self.taken_over
+    }
+
+    /// The installed app that took over the earlier id `id`, when one did.
+    pub fn taken_over_by(&self, id: &str) -> Option<&str> {
+        self.taken_over
+            .iter()
+            .find(|taken| taken.id == id)
+            .map(|taken| taken.by.as_str())
+    }
+
+    /// Record that `by` took over the earlier id `id`.
+    pub fn take_over(&mut self, id: &str, by: &str) {
+        self.taken_over.retain(|taken| taken.id != id);
+        self.taken_over.push(TakenOver {
+            id: id.to_owned(),
+            by: by.to_owned(),
+        });
     }
 }
 

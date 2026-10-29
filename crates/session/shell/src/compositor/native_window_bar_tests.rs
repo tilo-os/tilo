@@ -176,14 +176,21 @@ fn an_app_in_its_own_process_offers_its_window_and_hears_the_bars_search_and_his
         )]
     );
     for (to, event) in outbox {
-        service.send(to, &FloatingSurfaceHostMessage::ToolbarEvent { event });
+        service.send(
+            to,
+            &FloatingSurfaceHostMessage::ToolbarEvent {
+                event,
+                after_input: None,
+            },
+        );
     }
     assert_eq!(
         app_reads(&mut app),
         vec![FloatingSurfaceHostMessage::ToolbarEvent {
             event: ToolbarEvent::Search {
                 query: String::new()
-            }
+            },
+            after_input: None,
         }]
     );
 

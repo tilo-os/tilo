@@ -203,10 +203,14 @@ pub enum Mutation {
         item: NewRecord,
         index: Option<usize>,
     },
+    /// Remove the item, with every item in it ([`crate::place`]).
     CollRemove {
         field: FieldId,
         item: ItemId,
     },
+    /// Put the item at the place `index` of this collection, among its other items: from where
+    /// it is in this collection, or from another collection of the same document. It keeps its
+    /// id ([`crate::place`]).
     CollMove {
         field: FieldId,
         item: ItemId,
@@ -332,13 +336,17 @@ impl Reflected {
 }
 
 /// The versions of `at` among a document's change notes, oldest first: the changes whose
-/// resources include it.
+/// resources include it (named by id, or by the path an older change named it by).
 #[must_use]
 pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
     let id = at.id_string();
     notes
         .iter()
-        .filter(|note| note.touched.contains(&id))
+        .filter(|note| {
+            note.touched
+                .iter()
+                .any(|touched| *touched == id || crate::value::flat_id(touched) == id)
+        })
         .map(|note| Version {
             who: note.invoker.clone(),
             at: note
@@ -350,8 +358,32 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
         .collect()
 }
 
+/// Who made the changes `newest_first` of `at`, each once, at most `limit` of them
+/// ([`Store::recent_authors`]).
+pub fn recent_authors_in<'n>(
+    newest_first: impl Iterator<Item = &'n ChangeNote>,
+    at: &ResourceRef,
+    limit: usize,
+) -> Vec<String> {
+    let id = at.id_string();
+    let mut out: Vec<String> = Vec::new();
+    for note in newest_first {
+        if out.len() >= limit {
+            break;
+        }
+        let touches = note
+            .touched
+            .iter()
+            .any(|touched| *touched == id || crate::value::flat_id(touched) == id);
+        if touches && !out.contains(&note.invoker) {
+            out.push(note.invoker.clone());
+        }
+    }
+    out
+}
+
 /// One field of one resource: the resource as [`ResourceRef::id_string`] writes it (its
-/// document, then a step per nested item), and the field id, or [`ANY_FIELD`] for every field
+/// document, then `/item` for an item), and the field id, or [`ANY_FIELD`] for every field
 /// of that resource. Views record what they read as these, and stores report changes as them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FieldKey {
@@ -633,6 +665,83 @@ pub struct OutboxEntry {
     pub id: String,
     pub capability: String,
     pub payload: Json,
+    pub state: OutboxState,
+}
+
+/// Where an outside effect that is not settled yet is on its way out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum OutboxState {
+    /// Queued: nothing was tried yet.
+    #[default]
+    Queued,
+    /// Being handed to the service by the process whose token `by` is. It is marked so before
+    /// it is handed over, so one whose process stopped meanwhile reads as outcome unknown and
+    /// is never handed over twice.
+    Sending { by: String },
+    /// The service could not be reached, for `reason`: it waits to go online.
+    Waiting { reason: String },
+}
+
+/// How an outside effect ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Settled {
+    /// The service took it.
+    Done,
+    /// The service refused it, for this reason.
+    Rejected(String),
+    /// The process handing it over stopped before the service answered: whether it went is
+    /// not known, and it is not tried again.
+    Unknown,
+}
+
+impl Settled {
+    /// The outcome as the record keeps it: `done`, `rejected` or `unknown`.
+    #[must_use]
+    pub const fn word(&self) -> &'static str {
+        match self {
+            Self::Done => "done",
+            Self::Rejected(_) => "rejected",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Why, when the service said.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Rejected(reason) => reason,
+            Self::Done | Self::Unknown => "",
+        }
+    }
+}
+
+/// How the outside effect a resource's actions queued last stands, as `delivery(r)` reads it:
+/// `waiting`, `sending`, `sent`, `rejected` or `unknown`, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeliveryState {
+    pub state: String,
+    pub reason: String,
+}
+
+impl DeliveryState {
+    /// How an entry stands: settled with `settled`'s outcome word and reason, else by `state`.
+    #[must_use]
+    pub fn of(state: &OutboxState, settled: Option<(&str, &str)>) -> Self {
+        let (state, reason) = match settled {
+            Some(("done", _)) => ("sent", ""),
+            Some(("unknown", _)) => ("unknown", ""),
+            Some((_, reason)) => ("rejected", reason),
+            None => match state {
+                OutboxState::Queued => ("waiting", ""),
+                OutboxState::Sending { .. } => ("sending", ""),
+                OutboxState::Waiting { reason } => ("waiting", reason.as_str()),
+            },
+        };
+        Self {
+            state: state.to_owned(),
+            reason: reason.to_owned(),
+        }
+    }
 }
 
 pub trait Store {
@@ -666,6 +775,13 @@ pub trait Store {
     /// `NotFound` when the document or item does not exist.
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError>;
 
+    /// Where the item `at` is: the resource whose collection holds it, and the collection's
+    /// field. `None` for a document, which no collection holds.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the document or item does not exist.
+    fn container(&self, at: &ResourceRef) -> Result<Option<(ResourceRef, FieldId)>, StoreError>;
     /// How a reference in rich text reads for the person this store holds resources for: a
     /// resource they hold by what it is called now, one they cannot read as only being there.
     /// A store that cannot tell what its reader holds reads every resource as not shared: a
@@ -743,7 +859,7 @@ pub trait Store {
         let all = self.listing(at, field)?;
         let mut items = Vec::new();
         for id in all.iter() {
-            let target = at.item(&field.id, &id, item.clone());
+            let target = at.item(&id, item.clone());
             let holds =
                 pred.eval(&mut |read: &FieldRead| read.lit(self.read(&target, &read.spec)?))?;
             if holds {
@@ -781,7 +897,7 @@ pub trait Store {
         };
         let mut keyed = Vec::with_capacity(base.len());
         for id in base.iter() {
-            let target = at.item(&field.id, &id, item.clone());
+            let target = at.item(&id, item.clone());
             let value = match Reflected::of(&order.field) {
                 Some(end) => self
                     .version_end(&target, end == Reflected::Updated)?
@@ -851,18 +967,60 @@ pub trait Store {
         })
     }
 
+    /// Who made the latest versions of `at`, newest first and each once: at most `limit` of
+    /// them, from at most the last `window` changes of its document. What a rich input's `@`
+    /// drawer offers first; its cost is bounded by `window`, never by how long the history is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::history`].
+    fn recent_authors(
+        &self,
+        at: &ResourceRef,
+        limit: usize,
+        window: usize,
+    ) -> Result<Vec<String>, StoreError> {
+        Ok(recent_authors_in(
+            self.history(&at.doc)?.iter().rev().take(window),
+            at,
+            limit,
+        ))
+    }
+
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId;
     fn unsubscribe(&mut self, sub: SubId);
 
     /// Outside effects queued and not yet settled.
     fn outbox_pending(&self) -> Vec<OutboxEntry>;
 
-    /// Mark an entry settled, as one change.
+    /// Record where an entry that is not settled is now (handed over, or waiting to go
+    /// online), as one change.
     ///
     /// # Errors
     ///
     /// `NotFound` when the entry is gone.
-    fn outbox_settle(&mut self, entry: &OutboxEntry, note: &ChangeNote) -> Result<(), StoreError>;
+    fn outbox_mark(
+        &mut self,
+        entry: &OutboxEntry,
+        state: &OutboxState,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError>;
+
+    /// Mark an entry settled with `outcome`, as one change.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the entry is gone.
+    fn outbox_settle(
+        &mut self,
+        entry: &OutboxEntry,
+        outcome: &Settled,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError>;
+
+    /// How the outside effect each resource's actions queued last stands, by document: what
+    /// `delivery(r)` reads.
+    fn outbox_states(&self) -> Vec<(DocId, DeliveryState)>;
 
     /// # Errors
     ///

@@ -24,7 +24,7 @@ use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::{DataEnum, DeriveInput, Fields, Ident, Type};
 
-use crate::{field_options, krate, snake_case};
+use crate::{field_options, first_doc_line, krate, snake_case};
 
 struct Field {
     /// How the variant's pattern and constructor name it: an identifier or
@@ -289,6 +289,21 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
         }
     });
 
+    let cases = variants.iter().map(|variant| {
+        let key = &variant.key;
+        let keys = variant.stored().map(|field| &field.key);
+        let types = variant.stored().map(|field| &field.ty);
+        quote! {
+            (#key, "", &[#((
+                #keys,
+                <#types as #krate::Model>::field_type
+                    as fn(&mut #krate::TypeSet) -> #krate::FieldType,
+            )),*])
+        }
+    });
+    let type_name = name.to_string();
+    let type_doc = first_doc_line(&input.attrs);
+
     let checks = variants.iter().map(|variant| {
         let pattern = variant.pattern();
         let checked = variant.stored().map(|field| &field.binding);
@@ -399,6 +414,16 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
 
             fn value_schema() -> #krate::__private::serde_json::Value {
                 #krate::schema::one_of(::std::vec![#(#schemas),*])
+            }
+
+            fn field_type(types: &mut #krate::TypeSet) -> #krate::FieldType {
+                #krate::surface::enum_type(
+                    types,
+                    ::core::any::type_name::<Self>(),
+                    #type_name,
+                    #type_doc,
+                    &[#(#cases),*],
+                )
             }
 
             fn check(&self) -> ::core::result::Result<(), #krate::Refusal> {

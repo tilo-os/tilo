@@ -513,3 +513,144 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
         })
         .await;
 }
+
+/// The launches of a renamed app this test process stands for: `LaunchedHere`'s, of an app the
+/// launcher's catalogue believes had the ids `earlier` before.
+struct RenamedHere {
+    launched: LaunchedHere,
+    earlier: tilo_action_policy::EarlierIds,
+}
+impl crate::services::LauncherServices for RenamedHere {
+    fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+        Vec::new()
+    }
+    fn launch(
+        &self,
+        app: &str,
+        workspace: &tilo_desktop_model::Workspace,
+        record: Option<&str>,
+        place: &crate::services::LaunchPlace,
+    ) -> Result<(), String> {
+        self.launched.launch(app, workspace, record, place)
+    }
+    fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
+        self.launched.attest_process(pid, app, room)
+    }
+    fn authenticated_launch(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+        window_instance: Option<u64>,
+    ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
+        self.launched
+            .authenticated_launch(pid, app, room, window_instance)
+    }
+    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
+        self.earlier.clone()
+    }
+}
+
+/// A renamed app keeps using the record of the id it had before: launched as its new id, its
+/// connection joins the earlier id's channel as its own and works there as itself (its worker,
+/// its publications), only while the launcher's catalogue believes the same publisher signed the
+/// earlier id. Claiming the earlier id without that belief joins nothing, and publishing as the
+/// earlier app is refused.
+#[tokio::test(flavor = "current_thread")]
+async fn a_renamed_app_keeps_the_record_of_the_id_it_had_before() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            const RENAMED: &str = "so.tilo.test.renamed";
+            const APP_PEER: u64 = 931;
+            const CLAIMING_PEER: u64 = 932;
+            let env = Environment::new();
+            let mut earlier = tilo_action_policy::EarlierIds::new();
+            earlier.insert(RENAMED, [env.route.app_id.clone()]);
+            let mut services = env.membership.services();
+            services.app_action_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
+            services.launcher = Some(Arc::new(RenamedHere {
+                launched: LaunchedHere {
+                    app: RENAMED.to_owned(),
+                    room: env.route.cluster_id.clone(),
+                },
+                earlier,
+            }));
+            let rig = Rig::with_services(&env, services).await;
+            let (app, _server, _client) = launched_app_connection(
+                &rig.state,
+                &rig.directories,
+                APP_PEER,
+                RENAMED,
+                &env.route.cluster_id,
+            );
+            let identity = presentation(&env.route.cluster_id, &env.cert, &env.key);
+            // The earlier id's record, on its own channel: nothing moved.
+            let kept = app
+                .join_channel(&env.route.channel_key(), &identity)
+                .await
+                .expect("the renamed app joins the record of the id it had before");
+            let as_renamed = CrdtRoute {
+                app_id: RENAMED.to_owned(),
+                ..env.route.clone()
+            };
+            assert!(
+                rig.state
+                    .host_workers
+                    .lock()
+                    .unwrap()
+                    .get(APP_PEER, &as_renamed)
+                    .is_some(),
+                "the connection works as the renamed app"
+            );
+            let directory = || {
+                capnp_rpc::new_client(LocalDocumentDirectory {
+                    kind: tilo_actions::OperationKind::Document,
+                    read: false,
+                    pin_dropped: Rc::new(std::cell::Cell::new(false)),
+                    resolutions: Rc::new(std::cell::Cell::new(0)),
+                })
+            };
+            kept.publish_action_directory(RENAMED, directory())
+                .await
+                .expect("it publishes as itself");
+            let as_earlier = kept
+                .publish_action_directory(&env.route.app_id, directory())
+                .await
+                .expect_err("it never publishes as the app it was");
+            assert!(
+                as_earlier.to_string().contains("must match"),
+                "{as_earlier:?}"
+            );
+            rig.state.remove_connection(APP_PEER);
+            drop((kept, app));
+            rig.stop().await;
+
+            // A claim the catalogue does not believe (an id another publisher signed) joins
+            // nothing of the id it claims.
+            let mut services = env.membership.services();
+            services.launcher = Some(Arc::new(LaunchedHere {
+                app: RENAMED.to_owned(),
+                room: env.route.cluster_id.clone(),
+            }));
+            let rig = Rig::with_services(&env, services).await;
+            let (claiming, _server, _client) = launched_app_connection(
+                &rig.state,
+                &rig.directories,
+                CLAIMING_PEER,
+                RENAMED,
+                &env.route.cluster_id,
+            );
+            let refused = claiming
+                .join_channel(&env.route.channel_key(), &identity)
+                .await
+                .err()
+                .expect("an unbelieved claim joins nothing of the earlier id");
+            assert!(
+                refused.to_string().contains("declares no read of"),
+                "{refused:?}"
+            );
+            drop(claiming);
+            rig.stop().await;
+        })
+        .await;
+}

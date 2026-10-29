@@ -103,8 +103,14 @@ pub struct Hello {
 /// What the person decided about one connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Consent {
-    /// Serve it as agent `agent`, confined to `room`.
-    Admit { room: String, agent: String },
+    /// Serve it as agent `agent`, confined to `room`, acting for `person`:
+    /// the person who admitted it, whose own records it reads and whose
+    /// authority bounds what it does (the lesser of theirs and the agent's).
+    Admit {
+        room: String,
+        agent: String,
+        person: String,
+    },
     /// Refuse it, telling the client why.
     Refuse(String),
 }
@@ -328,7 +334,7 @@ pub fn serve<H>(
 where
     H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
 {
-    serve_after(stream, None, host, ask)
+    serve_after(stream, None, host, None, ask)
 }
 
 /// [`serve`] a connection whose first line, `first`, was already read
@@ -338,6 +344,7 @@ pub fn serve_after<H>(
     mut stream: std::os::unix::net::UnixStream,
     mut first: Option<Vec<u8>>,
     host: H,
+    tasks: Option<std::sync::Arc<dyn crate::mcp::TaskHosts>>,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
 where
@@ -383,15 +390,26 @@ where
         let stream = stream.try_clone()?;
         move || client_connected(&stream)
     };
-    let (room, agent) = match ask(&hello, &probe) {
-        Consent::Admit { room, agent } => (room, agent),
+    let (room, agent, person) = match ask(&hello, &probe) {
+        Consent::Admit {
+            room,
+            agent,
+            person,
+        } => (room, agent, person),
         Consent::Refuse(message) => {
             write_line(&mut stream, &error_reply(&id, &message));
             finish_refusal(&mut stream);
             return Ok(());
         }
     };
-    let server = std::sync::Arc::new(crate::mcp::McpServer::for_agent(host, room, &agent));
+    // The connection is one task of the agent: its run, whose programs run in a tilolang host
+    // of the task's own (docs/designs/app-language/agents.md, "How a program runs").
+    let run = format!("door-{}", uuid::Uuid::new_v4().simple());
+    let server = std::sync::Arc::new(
+        crate::mcp::McpServer::for_agent(host, room, &agent, &person)
+            .with_agent_run(run, agent.clone())
+            .with_task_hosts(tasks),
+    );
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     if let Some(reply) = runtime
         .block_on(server.handle(hello.request))
@@ -626,6 +644,7 @@ mod tests {
             Consent::Admit {
                 room: "room".into(),
                 agent: "claude-code".into(),
+                person: "ada".into(),
             },
         );
         served.join().unwrap().unwrap();
@@ -649,6 +668,7 @@ mod tests {
             Consent::Admit {
                 room: "room".into(),
                 agent: "claude-code".into(),
+                person: "ada".into(),
             },
         );
         near.shutdown(std::net::Shutdown::Write).unwrap();
@@ -684,6 +704,7 @@ mod tests {
             Consent::Admit {
                 room: "room".into(),
                 agent: "claude-code".into(),
+                person: "ada".into(),
             },
         );
         let reader = std::thread::spawn(move || {
@@ -717,6 +738,7 @@ mod tests {
             Consent::Admit {
                 room: "room".into(),
                 agent: "claude-code".into(),
+                person: "ada".into(),
             },
         );
         near.shutdown(std::net::Shutdown::Write).unwrap();

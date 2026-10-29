@@ -163,3 +163,16 @@ Each entry is the closest working design to `docs/designs/app-language`.
   again on that wake only.
 - **Ids.** A development build writes new ids to the package's `app.ids` at once, so the replicas
   and the next build agree on them.
+
+## Outside origins
+
+- **An origin is native code the instance holds** (`origin::Origin`): the connection to a
+  service, with its credentials, which package code never sees. The instance polls an origin
+  only while it is `due` (the service answered and woke the window, or people changed what the
+  service is told), so nothing runs while nothing changed. What it writes is one change by the
+  origin (`Runtime::apply_origin`, invoker `origin:<name>`), handed to the door as every commit
+  is. The outbox delivers each capability an origin `serves` to it (`RoutingSink`); `Err` keeps
+  the entry queued with the reason.
+- **Today an origin runs while a window of its package is open**, in that window's process. A
+  connector the system runs without a window (sync, push and sends with Mail closed), a broker
+  that hands it credentials, and the connector compiled to wasm are the platform's next steps.

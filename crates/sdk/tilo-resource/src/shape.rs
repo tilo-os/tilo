@@ -111,6 +111,9 @@ pub struct FieldShape {
     pub trust: Trust,
     /// The JSON Schema of the field's value ([`Model::value_schema`](crate::Model::value_schema)).
     pub schema: fn() -> serde_json::Value,
+    /// The field's type in the language-neutral vocabulary
+    /// ([`Model::field_type`](crate::Model::field_type)).
+    pub field_type: fn(&mut crate::TypeSet) -> crate::FieldType,
     /// The first line of the field's text as stored ([`stored_text`]): what
     /// a label made of it reads, rich text included.
     pub text: StoredText,

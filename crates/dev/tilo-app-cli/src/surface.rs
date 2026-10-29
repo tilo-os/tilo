@@ -17,6 +17,15 @@
 //! and types. Labels, descriptions, field titles and owners stay in the
 //! code; a field type's own operation vocabulary is kept as its digest. One
 //! line per field keeps the file small and its diffs readable.
+//!
+//! Field and parameter types are the language-neutral
+//! `tilo_actions::surface::FieldType`, the records and enums they name
+//! declared once under `[[resources.types]]`. A file written before that
+//! holds each field's Rust type as text: it still parses, receivers read it
+//! as before, and `check` counts it as current, so no app's surface is
+//! rewritten for the vocabulary alone. Each app's file takes the new form the
+//! next time its surface is written (`tilo-app surface`), when the app is
+//! next built or changed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -198,7 +207,7 @@ pub fn filed(resource: &Value) -> Value {
     let Some(map) = resource.as_object_mut() else {
         return resource;
     };
-    for list in ["verbs", "fields"] {
+    for list in ["verbs", "fields", "types"] {
         if map
             .get(list)
             .and_then(Value::as_array)
@@ -249,6 +258,51 @@ pub fn filed(resource: &Value) -> Value {
             && !ops.is_string()
         {
             *ops = Value::String(digest(ops));
+        }
+    }
+    // A named type keeps its fields' and cases' names and types, and how a
+    // case reads when that is not its name in words; its prose stays in the
+    // code.
+    for named in map
+        .get_mut("types")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        named.remove("doc");
+        // A case that reads as its name in words says nothing more.
+        for case in named
+            .get_mut("cases")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_object_mut)
+        {
+            let name = case.get("name").and_then(Value::as_str).unwrap_or_default();
+            let plain = tilo_actions::field_type::label_of(name);
+            if case.get("label").and_then(Value::as_str) == Some(plain.as_str()) {
+                case.remove("label");
+            }
+        }
+        let mut fields: Vec<&mut Value> = Vec::new();
+        for (key, list) in named.iter_mut() {
+            let Some(items) = list.as_array_mut() else {
+                continue;
+            };
+            match key.as_str() {
+                "fields" => fields.extend(items.iter_mut()),
+                "cases" => fields.extend(
+                    items
+                        .iter_mut()
+                        .filter_map(|case| case.get_mut("fields").and_then(Value::as_array_mut))
+                        .flatten(),
+                ),
+                _ => {}
+            }
+        }
+        for field in fields.into_iter().filter_map(Value::as_object_mut) {
+            field.remove("title");
         }
     }
     resource
@@ -388,7 +442,7 @@ pub fn render(resources: &[Value]) -> Result<String> {
         };
         text.push_str("[[resources]]\n");
         for (key, value) in leading(map, &["kind", "label", "version", "person"])
-            .filter(|(key, _)| !matches!(key.as_str(), "verbs" | "fields"))
+            .filter(|(key, _)| !matches!(key.as_str(), "verbs" | "fields" | "types"))
         {
             let _ = write!(text, "{} = ", toml_key(key));
             inline(value, &mut text)?;
@@ -419,6 +473,36 @@ pub fn render(resources: &[Value]) -> Result<String> {
                 let _ = write!(text, "{} = ", toml_key(key));
                 match value.as_array() {
                     Some(items) if key == "params" && !items.is_empty() => {
+                        text.push_str("[\n");
+                        for item in items {
+                            text.push_str("  ");
+                            inline(item, &mut text)?;
+                            text.push_str(",\n");
+                        }
+                        text.push(']');
+                    }
+                    _ => inline(value, &mut text)?,
+                }
+                text.push('\n');
+            }
+        }
+        for named in map
+            .get("types")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Value::Object(named) = named else {
+                bail!("a type of the surface is not a table");
+            };
+            text.push_str("\n[[resources.types]]\n");
+            let lists = ["fields", "cases"];
+            let rest = leading(named, &["name"]).filter(|(key, _)| !lists.contains(&key.as_str()));
+            let lists = lists.iter().filter_map(|key| named.get_key_value(*key));
+            for (key, value) in rest.chain(lists) {
+                let _ = write!(text, "{} = ", toml_key(key));
+                match value.as_array() {
+                    Some(items) if key != "name" && !items.is_empty() => {
                         text.push_str("[\n");
                         for item in items {
                             text.push_str("  ");
@@ -487,15 +571,69 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
+/// Whether `before`, a committed field, is `now` as a file written before
+/// field types had their own vocabulary holds it: its Rust type's text in
+/// place of the type, and no named types. Such a file is read as it was
+/// written ([`tilo_actions::surface::FieldType::from_rust_text`]) and stays
+/// current until the app writes its surface again.
+fn same_but_older(before: &Value, now: &Value) -> bool {
+    if !rust_text(before) || rust_text(now) {
+        return false;
+    }
+    let mut upgraded = before.clone();
+    if let (Some(slot), Some(ty)) = (upgraded.get_mut("type"), now.get("type")) {
+        slot.clone_from(ty);
+    }
+    upgraded == *now
+}
+
+/// Whether the committed resource `before` was written before field and
+/// parameter types had their own vocabulary: it declares no named types, and
+/// its fields hold Rust type text or its parameters no types.
+fn written_before_types(before: &Value) -> bool {
+    if before.get("types").is_some() {
+        return false;
+    }
+    let fields = before.get("fields").and_then(Value::as_array);
+    let verbs = before.get("verbs").and_then(Value::as_array);
+    let params = verbs
+        .into_iter()
+        .flatten()
+        .filter_map(|verb| verb.get("params").and_then(Value::as_array))
+        .flatten();
+    fields.is_some_and(|fields| fields.iter().any(rust_text))
+        || params.clone().next().is_some()
+            && params.clone().all(|param| param.get("type").is_none())
+}
+
+/// Whether the committed verb `before` is `now` but for the types of its
+/// parameters, which a file written before parameters had them leaves out.
+fn same_but_untyped(before: &Value, now: &Value) -> bool {
+    let mut untyped = now.clone();
+    for param in untyped
+        .get_mut("params")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object_mut)
+    {
+        param.remove("type");
+    }
+    untyped == *before
+}
+
 /// How the committed surface `before` differs from `now`, one line each.
 fn differences(kind: &str, before: &Value, now: &Value) -> Vec<String> {
     let mut changes = Vec::new();
+    let older = written_before_types(before);
     for (what, list, key) in [("verb", "verbs", "id"), ("field", "fields", "path")] {
         let old = by(before.get(list), key);
         let new = by(now.get(list), key);
         for (name, value) in &new {
             match old.get(name) {
                 None => changes.push(format!("{kind}: new {what} `{name}`")),
+                Some(previous) if older && same_but_older(previous, value) => {}
+                Some(previous) if older && same_but_untyped(previous, value) => {}
                 Some(previous) if previous != value => {
                     changes.push(format!("{kind}: {what} `{name}` changed"));
                 }
@@ -511,6 +649,9 @@ fn differences(kind: &str, before: &Value, now: &Value) -> Vec<String> {
             changes.push(format!("{kind}: {key} changed"));
         }
     }
+    if !older && before.get("types") != now.get("types") {
+        changes.push(format!("{kind}: types changed"));
+    }
     changes
 }
 
@@ -523,20 +664,52 @@ fn incompatible(before: &Value, now: &Value) -> Vec<String> {
         .filter_map(|(path, field)| match new.get(path) {
             None => Some(format!("`{path}` is gone")),
             Some(current)
-                if stored_type(text(current, "type")) != stored_type(text(field, "type"))
+                if other_type(field, current)
                     || text(current, "stored") != text(field, "stored") =>
             {
                 Some(format!(
                     "`{path}` is now {} ({}), was {} ({})",
-                    text(current, "type"),
+                    type_text(current),
                     text(current, "stored"),
-                    text(field, "type"),
+                    type_text(field),
                     text(field, "stored")
                 ))
             }
             Some(_) => None,
         })
         .collect()
+}
+
+/// Whether the field `now` holds another type than `before` did. A file
+/// written before field types had their own vocabulary holds Rust type text,
+/// compared as text; text and a typed field are not compared, only their
+/// layouts are.
+fn other_type(before: &Value, now: &Value) -> bool {
+    match (rust_text(before), rust_text(now)) {
+        (true, true) => stored_type(text(before, "type")) != stored_type(text(now, "type")),
+        (true, false) | (false, true) => false,
+        (false, false) => before.get("type") != now.get("type"),
+    }
+}
+
+/// Whether `field`'s type is Rust type text, as a surface file written
+/// before field types had their own vocabulary holds it, rather than a
+/// [`tilo_actions::surface::FieldType`] (whose plain types are words too:
+/// `text`, `int`).
+fn rust_text(field: &Value) -> bool {
+    field.get("type").is_some_and(|ty| {
+        ty.is_string()
+            && serde_json::from_value::<tilo_actions::surface::FieldType>(ty.clone()).is_err()
+    })
+}
+
+/// A field's type, for a sentence.
+fn type_text(field: &Value) -> String {
+    match field.get("type") {
+        Some(Value::String(text)) => text.clone(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
 }
 
 /// A field's type as the document stores it: a shared `Map<T>` is stored

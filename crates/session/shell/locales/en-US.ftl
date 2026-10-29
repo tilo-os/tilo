@@ -1998,6 +1998,10 @@ search-action-strip-remove = Remove a strip
 search-action-strip-remove-subtitle = Remove an empty strip from this workspace
 search-action-strip-remove-not-empty = This strip still has windows. Move or close them first
 search-action-strip-remove-last = A workspace keeps at least one strip
+search-action-workspace-show-canvas = Show the canvas
+search-action-workspace-show-canvas-subtitle = Lay this workspace's windows out anywhere on one surface
+search-action-workspace-show-strips = Show the strips
+search-action-workspace-show-strips-subtitle = Lay this workspace's windows out in their strips again
 
 # Shortcut steps that ask before they run, and keyboard capture
 shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.
@@ -2669,6 +2673,8 @@ search-kw-strip-focus-next = down, strip below, row below, next strip, switch st
 search-kw-workspace-previous = previous workspace, switch workspace, back, desktop
 search-kw-workspace-next = next workspace, switch workspace, desktop
 search-kw-strip-create = new strip, add strip, add row, new lane, create strip
+search-kw-workspace-show-canvas = canvas, board, surface, freeform, arrange, layout, whiteboard
+search-kw-workspace-show-strips = strips, rows, tiles, arrange, layout
 search-kw-strip-rename = rename strip, name strip, strip name, label row
 search-kw-strip-move = move strip, reorder strips, strip up, strip down, rearrange rows
 search-kw-tab-previous = previous tab, left tab, back

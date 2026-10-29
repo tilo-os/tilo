@@ -521,10 +521,31 @@ impl Checker<'_> {
         if p.name == "embed" {
             self.embed_complete(c, args);
         }
+        if p.name == "rich_input" {
+            self.drawer_props(n);
+        }
         if let Some(block) = &c.block {
             self.child_block(p.name, block, n);
         }
         n
+    }
+
+    /// The people of a rich input's `@` drawer, which no view declares: the system gives them
+    /// to every rich input as its `speakers` and `people`.
+    pub(super) fn drawer_props(&mut self, n: LocalId) {
+        let subject = self
+            .st
+            .subject
+            .clone()
+            .map(|(local, ty)| Ex::local(local, ty));
+        let (speakers, people) = Self::drawer_people(subject);
+        for (name, value) in [("speakers", speakers), ("people", people)] {
+            self.emit(Stmt::Eval(Ex::host(
+                Imp::UiPropH,
+                vec![Ex::local(n, Ty::View), Ex::str(name), value],
+                Ty::Unit,
+            )));
+        }
     }
 
     /// The statements of a primitive's block, as children of `n`.

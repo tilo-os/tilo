@@ -3682,6 +3682,11 @@ impl FrameBuilder {
     /// strip's pixels by whole pixels.
     fn strip_plan(&self) -> Option<StripPlan> {
         use crate::shell::state::StripId;
+        // A canvas is no strip a presenter pans: its windows stand anywhere
+        // and the camera moves them all, so it is drawn as it is on screen.
+        if self.host.canvas_shown() {
+            return None;
+        }
         let to_scene = self.lone_output_transform()?;
         let screen_w = scene_px(self.scene_size.0).max(1);
         let screen_h = scene_px(self.scene_size.1).max(1);
@@ -6185,6 +6190,18 @@ impl FrameBuilder {
     ) -> bool {
         let focus_before = *focus;
         let handled = self.dispatch_to_desktop(event, modifiers, state, root_obj, focus);
+        // What the person did in a window's bar with this input comes after the input the
+        // compositor sent its app so far, and before what it sends later.
+        if matches!(
+            event,
+            WindowEvent::MouseInput { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Touch(_)
+                | WindowEvent::Ime(_)
+        ) {
+            self.host
+                .place_toolbar_events(crate::compositor::input_order::clock());
+        }
         // What the desktop handled, or a move of focus, may move what it
         // lays out, as in an app's window.
         self.layout_owed |= handled || *focus != focus_before;

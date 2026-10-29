@@ -12,8 +12,8 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::{
-    DesktopTree, DropTarget, IdMinter, RoomId, Strip, StripId, Tab, TileContent, WindowGroup,
-    WindowWidth, Workspace, WorkspaceId,
+    ArrangementKind, CanvasPlace, DesktopTree, DropTarget, IdMinter, RoomId, Strip, StripId, Tab,
+    TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 
 fn tab(id: u64) -> Tab {
@@ -399,6 +399,70 @@ fn shortcuts_are_seeded_saved_replaced_and_deleted() {
         WorkspaceId(9),
         &shortcut("x", "X")
     ));
+}
+
+#[test]
+fn the_canvas_is_recorded_so_history_can_take_it_back() {
+    let (mut tree, mut doc) = seeded();
+    doc.commit();
+    let before = doc.get_heads();
+    let workspace = &mut tree.workspaces[0];
+    let mut no_ids = || Err::<u64, String>("no ids".into());
+    let mut no_records = |_: &str, _: u64| Err::<(String, TileContent), String>("none".into());
+    apply_command(
+        workspace,
+        &DesktopCommand::SetArrangement { canvas: true },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    apply_command(
+        workspace,
+        &DesktopCommand::PlaceGroup {
+            group: 11,
+            place: CanvasPlace::new(-300, 40, 640, 480),
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    desktop_doc::seed(&mut doc, &tree);
+    doc.commit();
+    let back = read_back(&doc).workspaces[0].arrangement.clone();
+    assert_eq!(back.kind, ArrangementKind::Canvas);
+    assert_eq!(
+        back.place_of(11),
+        Some(CanvasPlace::new(-300, 40, 640, 480))
+    );
+    let undone = read_back(&doc.fork_at(&before).unwrap());
+    assert!(undone.workspaces[0].arrangement.is_default());
+
+    // Closing the window frees its place.
+    apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::CloseTab {
+            location: TabLocation {
+                strip: 1,
+                group: 11,
+                tab: 110,
+            },
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    assert_eq!(tree.workspaces[0].arrangement.place_of(11), None);
+    // Only windows of the workspace are placed.
+    let refused = apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::PlaceGroup {
+            group: 99,
+            place: CanvasPlace::new(0, 0, 10, 10),
+        },
+        &mut no_ids,
+        &mut no_records,
+    );
+    assert!(refused.is_err());
 }
 
 /// [`tree`] plus workspace 2 ("Lab"): strip 3 holds group 30 [300].

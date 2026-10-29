@@ -264,11 +264,10 @@ view detail(n: Note) {
             "all"
         );
         let facts = of_kind(view.tree(), "ui.Property");
-        // The view's own facts; the document's foot says when it was edited.
+        // The view's own facts, and nothing of the document's history.
         let pairs: Vec<(String, Value)> = facts
             .iter()
             .map(|f| (text_prop(f, "label"), f.props["value"].clone()))
-            .filter(|(label, _)| !label.starts_with("tilolang-edited"))
             .collect();
         assert_eq!(
             pairs,
