@@ -212,7 +212,12 @@ each list come with the tree, so the first frame shows them.
 shows on the next frame. The window sends a splice of what the field showed
 (`ToApp::Splice`, numbered per field); what the app sends of the field before
 it took the window's last splice (`ToUi::Bound { acked }`) is not shown, so
-the app never takes a person's typing back.
+the app never takes a person's typing back. Every edit names the resource its
+lane showed when the person made it, and the app applies it there, whatever
+the lane shows by the time the edit arrives. What is typed after a press
+waits until the app says it ran that press (`ToUi::Took`, sent right after
+what the press opened), then goes to the field the press left the keyboard
+in: several quick presses keep each one's typing apart.
 
 **Hostile until validated.** A batch is decoded once into the window's own
 memory and checked before a widget is touched: a described component's node
