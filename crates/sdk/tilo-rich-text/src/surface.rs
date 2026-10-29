@@ -8,7 +8,7 @@ use ui::widget::{AppModel, ModelPath};
 use tilo_doc::snapshot::BlockView;
 use tilo_document::{ChangeCursor, RichText, RichTextAction, RichTextState};
 use ui::automerge::{AutoCommit, ChangeHash};
-use ui::framework::{ResourceSurface, SurfaceCx};
+use ui::framework::ViewCx;
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
 use ui::widget::Edits;
@@ -1076,14 +1076,11 @@ impl<'e, S: RichTextSource + ?Sized> Host for Through<'_, 'e, S> {
     }
 }
 
-impl ResourceSurface<RichText> for RichTextSurface {
-    /// The surface reads the live state when it syncs; a new state only
-    /// asks for the next sync to present it.
-    fn present(&mut self, _state: &Rc<RichTextState>) {
-        self.revision = None;
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<RichText>) {
+impl RichTextSurface {
+    /// Edit the document `cx` shows through its dispatcher. The editor
+    /// reads the live state when it syncs, so a new state is presented on
+    /// the next sync.
+    pub(crate) fn attach<T: 'static>(&mut self, cx: &ViewCx<RichText, T>) {
         let dispatch = cx.dispatcher();
         // A reference in shown text opens where it lives, as the person under their grants.
         self.editor.on_open_reference(move |reference| {
@@ -1093,7 +1090,7 @@ impl ResourceSurface<RichText> for RichTextSurface {
                 dispatch.open_reference(&at.app, at.record.as_deref(), &at.reference);
             }
         });
-        self.source.attach(cx.live(), cx.dispatcher());
+        self.source.attach(cx.live().clone(), cx.dispatcher());
         self.revision = None;
         self.cursor = None;
         self.keyed = false;

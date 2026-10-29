@@ -86,8 +86,9 @@ impl<T: 'static> RichTextViews for ViewCx<RichText, T> {
         self.rich_text_in(RichTextSurface::new())
     }
 
-    fn rich_text_in(&self, surface: RichTextSurface) -> Element {
-        self.surface(surface)
+    fn rich_text_in(&self, mut surface: RichTextSurface) -> Element {
+        surface.attach(self);
+        Box::new(surface)
     }
 }
 
