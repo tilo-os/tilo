@@ -409,6 +409,53 @@ impl super::ShellOverlayHost {
             .open(owner, label, origin, viewport);
         true
     }
+    /// Open the view the composer's run answered with, once it first did or when the person
+    /// asked to open it again: beside what the composer is about. Whether one was asked.
+    pub(super) fn open_composer_answer(&mut self) -> bool {
+        let Some(resource) = self.agent_quick_composer.take_answer_to_open() else {
+            return false;
+        };
+        let answer = crate::shell::answer_window::AnswerPlacement {
+            resource,
+            anchor: self.agent_quick_composer.anchor(),
+            beside_app: self
+                .agent_quick_composer
+                .about()
+                .map(|about| about.app_id.clone()),
+        };
+        self.open_answer(&answer)
+    }
+
+    /// Open `answer` as a window placed by the strip beside its subject, through the door as
+    /// the person whose composer it is. Whether it was asked.
+    pub(crate) fn open_answer(
+        &mut self,
+        answer: &crate::shell::answer_window::AnswerPlacement,
+    ) -> bool {
+        let Some(owner) = self.agent_quick_composer.owner().cloned() else {
+            return false;
+        };
+        let windows: Vec<_> = self
+            .group_hit_candidates()
+            .into_iter()
+            .map(|(_, group, rect)| (group, rect))
+            .collect();
+        let placement = self.chrome.as_ref().and_then(|chrome| {
+            let state = chrome.borrow();
+            crate::shell::answer_window::strip_placement(answer, &windows, &state.tree())
+        });
+        let Some(actions) = self.agent_actions.get_mut(&owner) else {
+            return false;
+        };
+        let asked = actions.open_resource(&answer.resource);
+        // The note is read when the answer's window maps, wherever its app opens it; the open
+        // is still on its way through the door.
+        if asked && let Some(placement) = placement {
+            crate::shell::launcher::set_pending_placement(&answer.resource.app, placement);
+        }
+        asked
+    }
+
     pub(crate) fn agent_marker_pointer_at(&self, point: (f64, f64)) -> bool {
         !self.agent_quick_composer.is_open() && self.agent_markers.pointer_at(point)
     }
@@ -436,20 +483,27 @@ impl super::ShellOverlayHost {
             viewport.x0 + viewport.width() * 0.58,
             viewport.y0 + viewport.height() * 0.34 + 44.0,
         );
-        // A link selected in a note, as Notes hands it over: its Markdown.
-        let seed = crate::shell::selection_agent::SelectionSeed::new(
-            "so.tilo.notes",
-            "Notes",
-            Some(
-                ui::shared_selection::SharedSelection::of_text(&t("agent-quick-shots-selection"))
+        // A link selected in a note, as Notes hands it over: its Markdown; or, asking what is
+        // left for the release, the release board.
+        let seed = if shots_release::PHASES.contains(&phase) {
+            shots_release::seed()
+        } else {
+            crate::shell::selection_agent::SelectionSeed::new(
+                "so.tilo.notes",
+                "Notes",
+                Some(
+                    ui::shared_selection::SharedSelection::of_text(&t(
+                        "agent-quick-shots-selection",
+                    ))
                     .at(tilo_actions::SelectionPlace::range("block-3", 0, 38))
                     .in_resource(tilo_actions::ActionResource {
                         id: "note:launch".into(),
                         kind: "rich-text".into(),
                         label: t("agent-quick-shots-note"),
                     }),
-            ),
-        )
+                ),
+            )
+        }
         .drawn_at(Some(selection));
         self.agent_quick_composer.open_about(
             ComposerOwner {
@@ -482,6 +536,7 @@ impl super::ShellOverlayHost {
             progress: crate::shell::agent_quick_composer::RunProgress {
                 streamed: t("agent-quick-shots-streamed"),
                 steps: vec![t("agent-quick-shots-step-1"), t("agent-quick-shots-step-2")],
+                ..Default::default()
             },
         };
         let (draft, conversation, followed) = match phase {
@@ -503,10 +558,17 @@ impl super::ShellOverlayHost {
                 vec![asked("agent-quick-shots-request")],
                 Some(run(RunPhase::Working)),
             ),
+            "agent-composer-steps" | "agent-composer-answer-view" => (
+                String::new(),
+                vec![asked("agent-quick-shots-release-question")],
+                Some(shots_release::run(phase == "agent-composer-answer-view")),
+            ),
             _ => return Err("unknown agent composer phase"),
         };
         self.agent_quick_composer
             .stage_for_shots(&draft, conversation, followed);
+        // The shots desktop has no Views app to open the answer in.
+        let _ = self.agent_quick_composer.take_answer_to_open();
         Ok(())
     }
 
@@ -517,6 +579,220 @@ impl super::ShellOverlayHost {
         &mut self,
     ) -> &mut crate::shell::agent_quick_composer::AgentQuickComposer {
         &mut self.agent_quick_composer
+    }
+}
+
+/// The shots' run that asks what is left for the release: three programs over Board, Todo and
+/// Chat, with what each answered, one change and one proposal.
+#[cfg(debug_assertions)]
+mod shots_release {
+    use crate::shell::agent_quick_composer::{ComposerRun, ComposerTask, RunPhase, RunProgress};
+    use crate::shell::i18n::t;
+    use tilo_reference::{
+        ProgramStep, ResourceAt, ResourceRef, StepChange, StepOutcome, StepPreview,
+    };
+
+    /// The shots phases that show this run.
+    pub(super) const PHASES: [&str; 2] = ["agent-composer-steps", "agent-composer-answer-view"];
+    const BOARD_APP: &str = "so.tilo.lang.board";
+    const TODO_APP: &str = "so.tilo.lang.todo";
+    const CHAT_APP: &str = "so.tilo.lang.chat";
+    const VIEWS_APP: &str = "so.tilo.lang.views";
+
+    /// A record of `app`'s type `ty` with id `id`, labelled by the catalogue's `key`, and its
+    /// literal as an answer names it.
+    fn record(app: &str, alias: &str, ty: &str, id: &str, key: &str) -> (ResourceAt, String) {
+        (
+            ResourceAt {
+                app: app.into(),
+                record: None,
+                reference: ResourceRef::whole(
+                    format!("tl.{app}.{ty}"),
+                    format!("tl:{app}:{id}"),
+                    t(key),
+                ),
+            },
+            format!("@{alias}.{ty}:{id} {:?}", t(key)),
+        )
+    }
+
+    fn column(id: &str, key: &str) -> String {
+        format!("column: @board.Column:root/columns:{id} {:?}", t(key))
+    }
+
+    /// What the question is about: the release board.
+    pub(super) fn seed() -> crate::shell::selection_agent::SelectionSeed {
+        crate::shell::selection_agent::SelectionSeed::new(
+            BOARD_APP,
+            t("agent-quick-shots-board-app"),
+            None,
+        )
+        .showing(tilo_actions::ActionResource {
+            id: format!("tl:{BOARD_APP}:root"),
+            kind: format!("tl.{BOARD_APP}.Board"),
+            label: t("agent-quick-shots-board"),
+        })
+    }
+
+    /// The run, working or `finished` with the view it answered with.
+    pub(super) fn run(finished: bool) -> ComposerRun {
+        ComposerRun {
+            task: ComposerTask {
+                task_id: "tasks.tracker/issues/release-left".into(),
+                run_epoch: 1,
+                revision: 0,
+                label: t("agent-quick-shots-release-task"),
+            },
+            phase: if finished {
+                RunPhase::Finished(Some(t("agent-quick-shots-release-reply")))
+            } else {
+                RunPhase::Working
+            },
+            progress: progress(finished),
+        }
+    }
+
+    /// The card the run moves, and its answer line.
+    fn notes() -> (ResourceAt, String) {
+        record(
+            BOARD_APP,
+            "board",
+            "Card",
+            "root/cards:c1",
+            "agent-quick-shots-card-notes",
+        )
+    }
+
+    /// The board's open cards.
+    fn board() -> ProgramStep {
+        let (notes, notes_line) = notes();
+        let (video, video_line) = record(
+            BOARD_APP,
+            "board",
+            "Card",
+            "root/cards:c4",
+            "agent-quick-shots-card-video",
+        );
+        let (page, page_line) = record(
+            BOARD_APP,
+            "board",
+            "Card",
+            "root/cards:c7",
+            "agent-quick-shots-card-page",
+        );
+        ProgramStep {
+            program: "board.cards.filter(.column.title != \"Done\")".into(),
+            outcome: StepOutcome::Done,
+            answer: vec![
+                "// 3 items".into(),
+                format!(
+                    "{notes_line} {}",
+                    column("doing", "agent-quick-shots-column-doing")
+                ),
+                format!(
+                    "{video_line} {}",
+                    column("todo", "agent-quick-shots-column-todo")
+                ),
+                format!(
+                    "{page_line} {}",
+                    column("todo", "agent-quick-shots-column-todo")
+                ),
+            ],
+            refs: vec![notes, video, page],
+            ..ProgramStep::default()
+        }
+    }
+
+    /// The release's open todos.
+    fn todos() -> ProgramStep {
+        let (sign, sign_line) = record(
+            TODO_APP,
+            "todo",
+            "Todo",
+            "root/todos:t2",
+            "agent-quick-shots-todo-sign",
+        );
+        let (beta, beta_line) = record(
+            TODO_APP,
+            "todo",
+            "Todo",
+            "root/todos:t5",
+            "agent-quick-shots-todo-beta",
+        );
+        ProgramStep {
+            program: "todo.todos\n  .filter(.list.title == \"2.4\" and not .done)\n  .sort(.due)"
+                .into(),
+            outcome: StepOutcome::Done,
+            answer: vec![
+                "// 2 items".into(),
+                format!("{sign_line} due: 2026-10-30"),
+                format!("{beta_line} due: 2026-10-31"),
+            ],
+            refs: vec![sign, beta],
+            ..ProgramStep::default()
+        }
+    }
+
+    /// Moving the notes to Review, and a post that waits for the person.
+    fn act() -> ProgramStep {
+        let (notes, notes_line) = notes();
+        let review = t("agent-quick-shots-column-review");
+        let post = t("agent-quick-shots-post");
+        ProgramStep {
+            program: format!(
+                "board.move(@board.Card:root/cards:c1, column: {review:?})\nchat.post(@chat.Channel:root/channels:release, text: {post:?})"
+            ),
+            outcome: StepOutcome::Asked,
+            answer: vec![
+                "// move: done".into(),
+                format!(
+                    "{notes_line} {}",
+                    column("review", "agent-quick-shots-column-review")
+                ),
+                "// post: waits for the person to approve it".into(),
+            ],
+            refs: vec![notes.clone()],
+            changes: vec![StepChange {
+                resource: notes,
+                action: t("agent-quick-shots-change-move"),
+            }],
+            previews: vec![StepPreview {
+                invocation: ResourceAt {
+                    app: CHAT_APP.into(),
+                    record: None,
+                    reference: ResourceRef::whole(
+                        "tl.invocation",
+                        "inv-release-post",
+                        t("agent-quick-shots-preview-post"),
+                    ),
+                },
+                action: t("agent-quick-shots-preview-post"),
+                summary: t("agent-quick-shots-preview-summary"),
+            }],
+            planned: Vec::new(),
+        }
+    }
+
+    /// The run's work so far; `answered`: finished, with the view it answered with.
+    fn progress(answered: bool) -> RunProgress {
+        RunProgress {
+            streamed: if answered {
+                String::new()
+            } else {
+                t("agent-quick-shots-release-streamed")
+            },
+            steps: Vec::new(),
+            programs: vec![board(), todos(), act()],
+            answer: answered.then(|| ResourceAt {
+                app: VIEWS_APP.into(),
+                record: None,
+                reference: ResourceRef::whole(
+                    format!("tl.{VIEWS_APP}.Answer"),
+                    format!("tl:{VIEWS_APP}:release-left"),
+                    t("agent-quick-shots-answer-title"),
+                ),
+            }),
+        }
     }
 }
 

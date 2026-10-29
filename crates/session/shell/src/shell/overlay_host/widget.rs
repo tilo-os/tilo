@@ -136,7 +136,10 @@ impl Widget for ShellOverlayHost {
             .fold(false, |changed, actions| {
                 actions.pump(&mut self.agent_quick_composer, tracker) | changed
             });
-        let action_dirty = action_dirty | self.pump_agent_asks() | self.switch_composer_agent();
+        let action_dirty = action_dirty
+            | self.pump_agent_asks()
+            | self.switch_composer_agent()
+            | self.open_composer_answer();
         if action_dirty {
             self.agent_quick_composer.sync(doc, path);
         }

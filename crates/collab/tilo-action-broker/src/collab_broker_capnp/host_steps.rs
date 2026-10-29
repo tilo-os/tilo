@@ -89,6 +89,21 @@ pub(super) fn is_local_host_caller(
             })
 }
 
+/// What a host step reads of who takes it.
+impl super::BrokerActor {
+    /// The person this actor acts for, when one delegated it.
+    #[must_use]
+    pub fn acting_for(&self) -> Option<&str> {
+        self.for_person.as_deref()
+    }
+
+    /// The issue whose run this agent works in, by its address.
+    #[must_use]
+    pub fn issue(&self) -> Option<&str> {
+        self.issue.as_deref()
+    }
+}
+
 impl CapnpBrokerState {
     /// Admit one host step (pairing a nearby device, administering the
     /// person's identity) for `caller` and start it on the host.

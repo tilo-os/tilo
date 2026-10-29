@@ -21,6 +21,7 @@ mod dispatch;
 mod editor;
 mod exec;
 mod expand;
+pub mod field;
 mod glob;
 pub mod host;
 pub mod io;
