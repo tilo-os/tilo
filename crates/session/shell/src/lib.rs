@@ -34,6 +34,8 @@ pub mod notifications;
 pub mod onboarding;
 #[cfg(target_os = "linux")]
 mod onboarding_browser;
+#[cfg(target_os = "linux")]
+mod onboarding_continuation;
 #[cfg(not(target_os = "linux"))]
 mod onboarding_elsewhere;
 #[cfg(target_os = "linux")]
