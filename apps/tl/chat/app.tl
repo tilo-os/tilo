@@ -223,7 +223,9 @@ view composer(to: TextChannel | Thread, draft: State<RichText>, replying: State<
         std.reply_banner(r, cancel: set(replying, .none))
     }
     row {
-        rich_input(bind: draft, placeholder: placeholder, fill)
+        ui.RichInput(value: draft, placeholder: placeholder, fill) {
+            on submit: send(to, draft, replying).then(set(draft, RichText(""))).then(set(replying, .none))
+        }
         ui.Button("Send", icon: .send, icon_only: true) {
             on press: send(to, draft, replying).then(set(draft, RichText(""))).then(set(replying, .none))
         }
@@ -290,7 +292,9 @@ view said(m: Message) {
 
 /// A message being edited in place: its text in an editor, saved or left as it was.
 view revision(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
-    rich_input(bind: revised, placeholder: "Edit message")
+    ui.RichInput(value: revised, placeholder: "Edit message") {
+        on submit: edit(m, revised).then(set(editing, .none))
+    }
     row {
         ui.Button("Cancel") {
             on press: set(editing, .none)
