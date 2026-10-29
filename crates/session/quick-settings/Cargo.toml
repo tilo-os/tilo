@@ -12,7 +12,6 @@ license.workspace = true
 test-support = []
 
 [dependencies]
-durable-store = { path = "../../system/durable-store" }
 os-actions = { path = "../../system/os-actions" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 parking_lot.workspace = true
