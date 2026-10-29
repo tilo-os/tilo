@@ -34,6 +34,7 @@ mod tests {
             "tilolang-invocation-failed",
             "tilolang-invocation-denied",
             "tilolang-embed-error",
+            "tilolang-typing-unplaced",
             "tilolang-form-cancel",
         ] {
             let text = t(key);

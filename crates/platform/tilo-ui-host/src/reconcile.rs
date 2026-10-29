@@ -56,7 +56,49 @@ pub enum UiEvent {
 }
 
 /// Where controls report what the person did.
-pub type EventSink = Rc<RefCell<Vec<UiEvent>>>;
+pub type EventSink = Rc<Reports>;
+
+/// What the person did, in the order they did it: what the window's own controls report here,
+/// and what the described components report through the view's adapter, which is taken in
+/// before each report of the controls' so that neither overtakes the other.
+#[derive(Default)]
+pub struct Reports {
+    events: RefCell<Vec<UiEvent>>,
+    adapter: RefCell<Option<Adapter>>,
+}
+
+impl Reports {
+    /// Report `event`, after what the components reported before it.
+    pub fn push(&self, event: UiEvent) {
+        self.take_in();
+        self.events.borrow_mut().push(event);
+    }
+
+    /// Everything reported since the last call, oldest first.
+    pub fn take(&self) -> Vec<UiEvent> {
+        self.take_in();
+        std::mem::take(&mut *self.events.borrow_mut())
+    }
+
+    /// Whether nothing was reported.
+    pub fn is_empty(&self) -> bool {
+        self.take_in();
+        self.events.borrow().is_empty()
+    }
+
+    /// The components of the view `adapter` builds report here too.
+    fn follow(&self, adapter: &Adapter) {
+        *self.adapter.borrow_mut() = Some(adapter.clone());
+    }
+
+    fn take_in(&self) {
+        let reported = match self.adapter.borrow().as_ref() {
+            Some(adapter) => adapter.take_events(),
+            None => return,
+        };
+        self.events.borrow_mut().extend(reported);
+    }
+}
 
 /// A case of an enum, as a control shows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -384,13 +426,15 @@ fn with_host<R>(element: &mut Element, run: impl FnOnce(&mut dyn SlotHost) -> R)
 impl Reconciler {
     #[must_use]
     pub fn new(sink: EventSink) -> Self {
+        let adapter = Adapter::default();
+        sink.follow(&adapter);
         Self {
             sink,
             texts: HashMap::new(),
             flags: HashMap::new(),
             riches: HashMap::new(),
             navigation: None,
-            adapter: Adapter::default(),
+            adapter,
             rows: None,
         }
     }
@@ -847,8 +891,7 @@ impl Reconciler {
         let label = crate::date::shown(node, "label").unwrap_or_default();
         let control = Checkbox::from_state(&state)
             .on_change(move |checked| {
-                sink.borrow_mut()
-                    .push(UiEvent::Toggle(key.clone(), checked));
+                sink.push(UiEvent::Toggle(key.clone(), checked));
             })
             .with_id(&node.key)
             .with_enabled(prop(node, "enabled").is_none() || flag(node, "enabled"));
@@ -914,8 +957,7 @@ impl Reconciler {
                     Button::new(&format!("{}~{suffix}", node.key), &label)
                         .role(role)
                         .on_view(move || {
-                            sink.borrow_mut()
-                                .push(UiEvent::Resolve(key.clone(), approve));
+                            sink.push(UiEvent::Resolve(key.clone(), approve));
                         }),
                 ))
             };
@@ -1039,8 +1081,7 @@ impl Reconciler {
         let key = node.key.clone();
         let label = crate::date::shown(node, "label").unwrap_or_default();
         let control = Toggle::from_state(&state).on_change(move |checked| {
-            sink.borrow_mut()
-                .push(UiEvent::Toggle(key.clone(), checked));
+            sink.push(UiEvent::Toggle(key.clone(), checked));
         });
         Box::new(FormSection::untitled().field(Field::new(label, control)))
     }
@@ -1068,11 +1109,7 @@ impl Reconciler {
             Box::new(
                 ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_change(move |index| {
                     if let Some(case) = names.get(index) {
-                        sink.borrow_mut().push(UiEvent::Fire(
-                            key.clone(),
-                            format!("pick.{case}"),
-                            None,
-                        ));
+                        sink.push(UiEvent::Fire(key.clone(), format!("pick.{case}"), None));
                     }
                 }),
             )
@@ -1093,11 +1130,7 @@ impl Reconciler {
                             .position(|shown| shown == label)
                             .and_then(|index| names.get(index))
                         {
-                            sink.borrow_mut().push(UiEvent::Fire(
-                                key.clone(),
-                                format!("pick.{case}"),
-                                None,
-                            ));
+                            sink.push(UiEvent::Fire(key.clone(), format!("pick.{case}"), None));
                         }
                     }),
             )

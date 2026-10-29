@@ -670,6 +670,12 @@ impl<'a> Validator<'a> {
                         self.string(name)?;
                     }
                 }
+                ToApp::Space { width, height, .. } => {
+                    if !(width.is_finite() && height.is_finite() && *width >= 0.0 && *height >= 0.0)
+                    {
+                        return Err(Refused::invalid("a space is no size"));
+                    }
+                }
                 ToApp::FormEdit { field, text, .. } => {
                     self.key(field)?;
                     self.string(text)?;
