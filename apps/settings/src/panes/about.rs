@@ -34,9 +34,9 @@ use ui::tilo_actions::remote::crash_records::{
 use ui::tilo_resource;
 use ui::widget::{Element, Widget};
 
+use crate::area::AreaContext;
 use crate::categories::Category;
 use crate::effects::SettingsEffect;
-use crate::host::PaneCx;
 use crate::i18n::t;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -70,7 +70,7 @@ pub(crate) fn answer(
 ) -> EffectAnswer {
     match effect {
         AboutEffect::BackUpIdentity => {
-            if !app.host().reaches_devices() {
+            if !app.reaches_devices() {
                 return Err("only a window someone uses opens the identity backup".into());
             }
             Ok(app.job(
@@ -263,7 +263,10 @@ impl ProblemRecords for RemoteRecords {
 /// What the about area keeps for the window: the model, made when the pane
 /// or an effect first needs it.
 pub struct AboutArea {
-    cx: PaneCx,
+    /// Whether it asks the host for the problems this device recorded.
+    devices: bool,
+    /// The pages the panes drilled into: a problem's page among them.
+    pages: crate::pages::PanePages,
     /// The window's client for the action door, shared with the other
     /// areas that act through the host.
     remote: ui::RemoteActions,
@@ -273,9 +276,10 @@ pub struct AboutArea {
 }
 
 impl AboutArea {
-    pub fn new(cx: &PaneCx, remote: ui::RemoteActions) -> Self {
+    pub fn new(cx: &AreaContext, remote: ui::RemoteActions) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            pages: cx.pages.clone(),
             remote,
             model: OnceCell::new(),
             shown: LocalState::new(0),
@@ -284,7 +288,7 @@ impl AboutArea {
 
     /// The area over `model` in place of the one it would make: a test's.
     #[cfg(test)]
-    fn over(cx: &PaneCx, model: AboutModel) -> Self {
+    fn over(cx: &AreaContext, model: AboutModel) -> Self {
         let area = Self::new(cx, ui::RemoteActions::current());
         let _ = area.model.set(Rc::new(RefCell::new(model)));
         area
@@ -294,13 +298,13 @@ impl AboutArea {
     /// the window reaches the device.
     pub fn model(&self) -> &Rc<RefCell<AboutModel>> {
         self.model.get_or_init(|| {
-            let source = self.cx.reaches_devices().then(|| {
+            let source = self.devices.then(|| {
                 Rc::new(RemoteRecords {
                     remote: self.remote.clone(),
                 }) as Rc<dyn ProblemRecords>
             });
             Rc::new(RefCell::new(AboutModel::new(
-                self.cx.clone(),
+                self.pages.clone(),
                 AboutInfo::from_system(),
                 source,
             )))
@@ -359,7 +363,8 @@ fn page_key(id: &str) -> String {
 }
 
 pub struct AboutModel {
-    cx: PaneCx,
+    /// The pages the panes drilled into: a problem's page among them.
+    pages: crate::pages::PanePages,
     info: AboutInfo,
     source: Option<Rc<dyn ProblemRecords>>,
     problems: Problems,
@@ -372,16 +377,20 @@ pub struct AboutModel {
 impl AboutModel {
     /// The model over `info`, asking `source` for the problems; without one
     /// (a screenshot, a test of the facts) there are none.
-    pub fn new(cx: PaneCx, info: AboutInfo, source: Option<Rc<dyn ProblemRecords>>) -> Self {
+    pub fn new(
+        pages: crate::pages::PanePages,
+        info: AboutInfo,
+        source: Option<Rc<dyn ProblemRecords>>,
+    ) -> Self {
         let listing = source.as_ref().map(|source| source.list());
         let problems = if listing.is_some() {
             Problems::Reading
         } else {
             Problems::Read(Vec::new())
         };
-        let pages_seen = cx.pages().revision();
+        let pages_seen = pages.revision();
         Self {
-            cx,
+            pages,
             info,
             source,
             problems,
@@ -412,7 +421,7 @@ impl AboutModel {
             .find(|record| record.id == id)
             .ok_or_else(|| t("settings-about-problem-missing"))?;
         let title = kind_label(record.kind);
-        self.cx.pages().open(Category::About, page_key(id), title);
+        self.pages.open(Category::About, page_key(id), title);
         self.follow_page();
         Ok(())
     }
@@ -421,8 +430,7 @@ impl AboutModel {
     /// one whose page closed.
     fn follow_page(&mut self) {
         let wanted = self
-            .cx
-            .pages()
+            .pages
             .top(Category::About)
             .and_then(|page| page.key.strip_prefix("problem:").map(str::to_owned));
         if wanted.as_deref() == self.opened.as_ref().map(|opened| opened.id.as_str()) {
@@ -446,7 +454,7 @@ impl AboutModel {
                 .map_or(Problems::Unreadable, Problems::Read);
             self.changed = true;
         }
-        let revision = self.cx.pages().revision();
+        let revision = self.pages.revision();
         if revision != self.pages_seen {
             self.pages_seen = revision;
             self.follow_page();
@@ -911,10 +919,10 @@ mod tests {
     /// A Settings window on About, whose area shows the model `model`
     /// makes in the window's context.
     fn window_on(
-        model: impl FnOnce(PaneCx) -> AboutModel + 'static,
+        model: impl FnOnce(crate::pages::PanePages) -> AboutModel + 'static,
     ) -> ui::prelude::TestApp<crate::resource::SettingsShell> {
         crate::area::replace_in_next_window(move |context| {
-            AboutArea::over(context.cx, model(context.cx.clone()))
+            AboutArea::over(context, model(context.pages.clone()))
         });
         let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
         crate::effects::show_pane(&mut app, Category::About);
@@ -991,7 +999,7 @@ mod tests {
             .is_err()));
         let title = change_model(&mut app, |model| {
             model.open_problem(STOPPED).unwrap();
-            model.cx.pages().top(Category::About).map(|page| page.title)
+            model.pages.top(Category::About).map(|page| page.title)
         });
         assert_eq!(title, Some(t("settings-about-problem-computer-stopped")));
         app.settle();
@@ -1008,7 +1016,7 @@ mod tests {
         }
         assert_eq!(*source.reads.borrow(), [STOPPED.to_owned()]);
 
-        change_model(&mut app, |model| model.cx.pages().back());
+        change_model(&mut app, |model| model.pages.back());
         app.settle();
         let back = shown(&mut app);
         assert!(

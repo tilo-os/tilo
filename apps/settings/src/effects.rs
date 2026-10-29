@@ -363,12 +363,13 @@ pub fn defer_area_reads_in_tests(deferred: bool) {
 }
 
 impl AreaReads {
-    /// The reads of a window attached through `cx`.
-    pub fn of(cx: &crate::host::PaneCx) -> Self {
+    /// The reads of a window whose areas reach this device's hardware
+    /// and services when `devices`.
+    pub fn of(devices: bool) -> Self {
         #[cfg(test)]
-        let deferred = cx.reaches_devices() || DEFERRED_IN_TESTS.with(std::cell::Cell::get);
+        let deferred = devices || DEFERRED_IN_TESTS.with(std::cell::Cell::get);
         #[cfg(not(test))]
-        let deferred = cx.reaches_devices();
+        let deferred = devices;
         Self {
             deferred: std::cell::Cell::new(deferred),
             ..Self::default()
@@ -485,6 +486,40 @@ pub fn rows(app: &SettingsApp) -> Vec<ui::framework::LiveRow> {
 /// read lands ([`row_pending`]); asking never reads it here.
 pub fn row(app: &SettingsApp, id: &str) -> Option<ui::framework::LiveRow> {
     rows(app).into_iter().find(|row| row.id() == id)
+}
+
+/// An area's live rows, kept while what they were made from holds. Every
+/// publication asks each area for its rows; an area listing every installed
+/// app made hundreds of action declarations each time, on every click and
+/// keystroke, though nothing they show had changed.
+pub struct RowsMemo<K> {
+    kept: std::cell::RefCell<Option<(K, Vec<ui::framework::LiveRow>)>>,
+}
+
+impl<K> Default for RowsMemo<K> {
+    fn default() -> Self {
+        Self {
+            kept: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+impl<K: PartialEq> RowsMemo<K> {
+    /// The rows made from `key`: those kept when they were made from it,
+    /// else what `make` makes now.
+    pub fn rows(
+        &self,
+        key: K,
+        make: impl FnOnce() -> Vec<ui::framework::LiveRow>,
+    ) -> Vec<ui::framework::LiveRow> {
+        let mut kept = self.kept.borrow_mut();
+        if let Some((_, rows)) = kept.as_ref().filter(|(was, _)| *was == key) {
+            return rows.clone();
+        }
+        let rows = make();
+        *kept = Some((key, rows.clone()));
+        rows
+    }
 }
 
 /// Whether row `id`, which no area read so far shows, may be one of an area

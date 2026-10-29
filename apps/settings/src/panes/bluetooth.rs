@@ -23,8 +23,8 @@ use ui::widget::{
     Row, Toggle, Widget,
 };
 
+use crate::area::AreaContext;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -59,7 +59,7 @@ pub(crate) fn enabled(
     _: &crate::setting::Follows,
 ) -> crate::setting::Read {
     use crate::setting::Read;
-    if adapter_absent(app.host()) {
+    if adapter_absent(app.radios()) {
         return Read::Value(Some(t("settings-bluetooth-no-adapter")));
     }
     area(app)
@@ -171,7 +171,7 @@ pub(crate) fn answer(
 ) -> EffectAnswer {
     if effect == BluetoothEffect::RefreshBluetooth {
         // A dongle plugged in a moment ago is seen without waiting.
-        app.host().radios().look_again();
+        app.radios().look_again();
     }
     let model = crate::panes::bluetooth::area(app)
         .ok_or_else(crate::area::missing)?
@@ -464,7 +464,10 @@ impl BluetoothControl for RealBluetooth {
 /// What the Bluetooth area keeps for the window: the model, read when
 /// first needed.
 pub struct BluetoothArea {
-    cx: PaneCx,
+    /// Whether it reads this device's adapter.
+    devices: bool,
+    /// The radios this device has.
+    radios: crate::radios::Radios,
     model: OnceCell<Rc<RefCell<BluetoothModel>>>,
     /// The adapter, read off the UI thread after the window's first frame
     /// ([`Self::start_read`]).
@@ -478,9 +481,10 @@ pub struct BluetoothArea {
 }
 
 impl BluetoothArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            radios: cx.radios.clone(),
             model: OnceCell::new(),
             read: crate::device_read::DeviceRead::default(),
             #[cfg(test)]
@@ -491,7 +495,7 @@ impl BluetoothArea {
 
     /// The area over `control` in place of the device's adapter.
     #[cfg(test)]
-    fn over(cx: &PaneCx, control: Arc<dyn BluetoothControl>) -> Self {
+    fn over(cx: &AreaContext, control: Arc<dyn BluetoothControl>) -> Self {
         Self {
             over: Some(control),
             ..Self::new(cx)
@@ -504,7 +508,7 @@ impl BluetoothArea {
         if let Some(control) = &self.over {
             return Arc::clone(control);
         }
-        if self.cx.reaches_devices() {
+        if self.devices {
             Arc::new(RealBluetooth)
         } else {
             Arc::new(SampleBluetooth)
@@ -520,7 +524,7 @@ impl BluetoothArea {
                 .take()
                 .unwrap_or_else(|| read_adapter_of(control.as_ref()));
             Rc::new(RefCell::new(BluetoothModel::with_read(
-                self.cx.clone(),
+                self.radios.clone(),
                 control,
                 read,
             )))
@@ -556,7 +560,7 @@ impl BluetoothArea {
 
     /// Whether this device has no Bluetooth adapter, as last read.
     fn adapter_absent(&self) -> bool {
-        adapter_absent(&self.cx)
+        adapter_absent(&self.radios)
     }
 
     /// What this device cannot do with Bluetooth now: anything, without an
@@ -688,8 +692,8 @@ fn device_live_row(device: &DeviceInfo, pairing: Option<&str>) -> LiveRow {
 
 /// Whether `cx`'s device has no Bluetooth adapter, as its radios were last
 /// read; `false` until they have been.
-fn adapter_absent(cx: &PaneCx) -> bool {
-    cx.radios().now().is_some_and(|radios| !radios.bluetooth)
+fn adapter_absent(radios: &crate::radios::Radios) -> bool {
+    radios.now().is_some_and(|radios| !radios.bluetooth)
 }
 
 #[expect(
@@ -697,7 +701,8 @@ fn adapter_absent(cx: &PaneCx) -> bool {
     reason = "each flag is an independent state of the adapter or its reads, never a parameter"
 )]
 pub struct BluetoothModel {
-    cx: PaneCx,
+    /// The radios this device has: whether it has an adapter.
+    radios: crate::radios::Radios,
     control: Arc<dyn BluetoothControl>,
     /// Whether the device had an adapter when the model last looked.
     adapter: Option<bool>,
@@ -747,10 +752,14 @@ fn read_adapter_of(control: &dyn BluetoothControl) -> AdapterRead {
 
 impl BluetoothModel {
     /// The model over `control`'s adapter as `read` found it.
-    fn with_read(cx: PaneCx, control: Arc<dyn BluetoothControl>, read: AdapterRead) -> Self {
-        let adapter = cx.radios().now().map(|radios| radios.bluetooth);
+    fn with_read(
+        radios: crate::radios::Radios,
+        control: Arc<dyn BluetoothControl>,
+        read: AdapterRead,
+    ) -> Self {
+        let adapter = radios.now().map(|radios| radios.bluetooth);
         let mut model = Self {
-            cx,
+            radios,
             control,
             adapter,
             reread: crate::device_read::DeviceRead::default(),
@@ -783,7 +792,7 @@ impl BluetoothModel {
     /// Follow the device's adapter: show it gone when it is pulled out, and
     /// read it, off the UI thread, when one is plugged in.
     fn follow_adapter(&mut self) {
-        let adapter = self.cx.radios().now().map(|radios| radios.bluetooth);
+        let adapter = self.radios.now().map(|radios| radios.bluetooth);
         if adapter != self.adapter {
             let plugged_in = adapter == Some(true);
             self.adapter = adapter;
@@ -1121,7 +1130,7 @@ impl BluetoothModel {
     /// The page as the model shows the adapter now: the radio, the person's
     /// devices and, while the radio is on, what is nearby.
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
-        if adapter_absent(&self.cx) {
+        if adapter_absent(&self.radios) {
             return Self::without_adapter(cx);
         }
         let dispatcher = cx.dispatcher();
@@ -1449,7 +1458,7 @@ mod tests {
     ) -> ui::prelude::TestApp<crate::resource::SettingsShell> {
         crate::area::replace_in_next_window(move |context| {
             BluetoothArea::over(
-                context.cx,
+                context,
                 Arc::new(Mock {
                     calls: Mutex::new(vec![]),
                     devices,
@@ -1647,9 +1656,7 @@ mod tests {
 
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let radios = app
-            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
-                settings.host().radios().clone()
-            })
+            .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.radios().clone())
             .expect("the Settings window is mounted");
         let device_rows = |app: &mut TestApp<SettingsShell>| {
             app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
@@ -1844,13 +1851,13 @@ mod tests {
         use crate::radios::Present;
 
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
+        let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
         let area = BluetoothArea::new(&cx);
         assert!(
             area.statuses().is_empty(),
             "radios not read offer everything"
         );
-        cx.radios().set(Present::NONE);
+        cx.radios.set(Present::NONE);
         assert_eq!(area.statuses().len(), RADIO.len());
         assert!(!area.is_open(), "the adapter was not read");
     }
@@ -1859,13 +1866,13 @@ mod tests {
     /// them, counting its reads, and telling the model of each change while
     /// it is followed.
     #[derive(Default)]
-    struct Followed {
+    struct WatchedAdapter {
         devices: Mutex<Vec<DeviceInfo>>,
         reads: std::sync::atomic::AtomicUsize,
         follower: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     }
 
-    impl BluetoothControl for Followed {
+    impl BluetoothControl for WatchedAdapter {
         fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
             self.reads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1920,12 +1927,14 @@ mod tests {
     /// read.
     #[test]
     fn a_device_connecting_by_itself_shows_while_the_page_is_open() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        let control = Arc::new(Followed::default());
+        let control = Arc::new(WatchedAdapter::default());
         control.devices.lock().unwrap().push(dev());
         let read = read_adapter_of(control.as_ref());
-        let mut model = BluetoothModel::with_read(cx, Arc::clone(&control) as _, read);
+        let mut model = BluetoothModel::with_read(
+            crate::radios::Radios::unread(),
+            Arc::clone(&control) as _,
+            read,
+        );
         assert!(!model.devices[0].connected);
         let adapter_reads = || control.reads.load(std::sync::atomic::Ordering::Relaxed);
         // Poll as the window does until the page shows the headphones
@@ -1977,11 +1986,13 @@ mod tests {
     /// followed: a followed `BlueZ` reports each device that appears.
     #[test]
     fn discovery_wakes_the_window_only_while_bluez_is_not_followed() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
-        let control = Arc::new(Followed::default());
+        let control = Arc::new(WatchedAdapter::default());
         let read = read_adapter_of(control.as_ref());
-        let mut model = BluetoothModel::with_read(cx, Arc::clone(&control) as _, read);
+        let mut model = BluetoothModel::with_read(
+            crate::radios::Radios::unread(),
+            Arc::clone(&control) as _,
+            read,
+        );
         model.scanning = true;
         assert!(
             model.next_wake().is_some(),

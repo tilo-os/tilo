@@ -29,9 +29,9 @@ use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{ChipStyle, Element, RowMenu, Toggle};
 
+use crate::area::AreaContext;
 use crate::channel;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::replies::Replies;
 use crate::resource::Settings;
@@ -213,16 +213,23 @@ fn request_for(operation: &DrivesEffect) -> Result<Option<(Request, String)>, St
 
 /// The host keeps the drives model when the Storage pane is closed.
 pub struct DrivesArea {
-    cx: PaneCx,
+    /// Whether the model talks to this device's drive service.
+    devices: bool,
+    /// The drives a capture remembers, in place of the service's.
+    remembered: Vec<RememberedDrive>,
     model: std::cell::OnceCell<Rc<RefCell<DrivesModel>>>,
     /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
 impl DrivesArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            remembered: cx
+                .scene()
+                .map(|scene| scene.remembered_drives.clone())
+                .unwrap_or_default(),
             model: std::cell::OnceCell::new(),
             shown: LocalState::new(0),
         }
@@ -230,17 +237,12 @@ impl DrivesArea {
 
     pub fn model(&self) -> &Rc<RefCell<DrivesModel>> {
         self.model.get_or_init(|| {
-            let service: Arc<dyn DriveService> = if self.cx.reaches_devices() {
+            let service: Arc<dyn DriveService> = if self.devices {
                 Arc::new(SocketService {
                     socket: PathBuf::from(protocol::SOCKET_PATH),
                 })
             } else {
-                Arc::new(CaptureService(
-                    self.cx
-                        .scene()
-                        .map(|scene| scene.remembered_drives.clone())
-                        .unwrap_or_default(),
-                ))
+                Arc::new(CaptureService(self.remembered.clone()))
             };
             Rc::new(RefCell::new(DrivesModel::over(service)))
         })

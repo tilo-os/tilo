@@ -52,7 +52,7 @@ fn away_from_network(app: &mut ui::framework::testing::TestApp<crate::SettingsSh
 fn without_a_modem() {
     crate::area::replace_in_next_window(|context| {
         mobile::MobileArea::over(
-            context.cx,
+            context,
             Arc::new(mobile::ScriptedModem::with(
                 os_actions::MobileReading::default(),
                 None,
@@ -282,8 +282,12 @@ fn pending_network() -> Result<(NetworkModel, ReleaseSnapshot), String> {
         release: releases,
     });
     let profile = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let mut network =
-        NetworkModel::with_service(PaneCx::in_profile(profile.path().to_path_buf()), fake);
+    let mut network = NetworkModel::with_service(
+        Reach::of(&crate::area::AreaContext::in_profile(
+            profile.path().to_path_buf(),
+        )),
+        fake,
+    );
     let release = ReleaseSnapshot(Some(release));
     network.start_snapshot();
     starts
@@ -704,7 +708,7 @@ fn saved(uuid: &str, name: &str, last_used: u64) -> SavedNetworkProfile {
 fn model(fake: &Arc<FakeNetwork>) -> NetworkModel {
     let profile = tempfile::tempdir().unwrap().keep();
     NetworkModel::loaded_from(
-        PaneCx::in_profile(profile),
+        Reach::of(&crate::area::AreaContext::in_profile(profile)),
         Arc::clone(fake) as Arc<dyn NetworkService>,
     )
 }
@@ -717,7 +721,7 @@ fn hosted_model(
 ) -> NetworkModel {
     let cx = app
         .with_widget::<crate::window::SettingsWindow, _>(|settings| {
-            crate::panes::network::area(settings).unwrap().cx.clone()
+            crate::panes::network::area(settings).unwrap().reach.clone()
         })
         .unwrap();
     NetworkModel::loaded_from(cx, service)
@@ -923,7 +927,7 @@ fn network_inspection_observes_the_actual_pending_refresh_and_failed_snapshot() 
 #[test]
 fn network_inspection_does_not_initialize_an_unopened_area_and_bounds_private_reads() {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
     let area = NetworkArea::new(&cx);
     assert_eq!(area.inspection().unwrap()["state"], "unopened");
     assert!(
@@ -931,7 +935,7 @@ fn network_inspection_does_not_initialize_an_unopened_area_and_bounds_private_re
         "Read must not lazily start a device scan"
     );
     let fake = Arc::new(FakeNetwork::default());
-    let mut observed = NetworkModel::with_service(cx, fake);
+    let mut observed = NetworkModel::with_service(Reach::of(&cx), fake);
     let initial = observed.inspection().unwrap();
     assert_eq!(initial["state"], "loading");
     assert!(initial["wifi"]["enabled"].is_null());
@@ -1240,7 +1244,7 @@ fn the_wifi_list_shows_the_known_and_five_others_and_show_all_counts_the_rest() 
     );
     model.set_filter("5");
     assert_eq!(network_rows(&mut model), ["Office_5G", "Studio_5"]);
-    assert!(model.cx.pages().back());
+    assert!(model.reach.pages.back());
     let _ = model.poll();
     assert!(model.filter.is_empty(), "leaving the page drops its search");
 }
@@ -1949,7 +1953,7 @@ fn networks_saved_profiles_and_vpns_are_rows() {
         },
     ];
     let profile = tempfile::tempdir().unwrap().keep();
-    let cx = PaneCx::in_profile(profile);
+    let cx = crate::area::AreaContext::in_profile(profile);
     let area = NetworkArea::new(&cx);
     let _ = area.model.set(Rc::new(RefCell::new(model(&fake))));
     let ids: Vec<String> = area.rows().iter().map(|row| row.id().to_owned()).collect();
@@ -1993,7 +1997,10 @@ fn supported_network_wake_is_named_and_routes_through_the_worker() {
             problem: None,
         }),
     );
-    let area = NetworkArea::new(&model.cx);
+    let profile = tempfile::tempdir().unwrap();
+    let area = NetworkArea::new(&crate::area::AreaContext::in_profile(
+        profile.path().to_path_buf(),
+    ));
     let _ = area.model.set(Rc::new(RefCell::new(model)));
     let row = area
         .rows()
@@ -2508,9 +2515,7 @@ fn without_a_wifi_radio_wifi_is_unavailable_until_one_is_plugged_in() {
     wired_only.adopt_snapshot(snapshot).unwrap();
     mount_network(&mut app, wired_only).unwrap();
     let radios = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
-            settings.host().radios().clone()
-        })
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.radios().clone())
         .expect("the Settings window is mounted");
 
     radios.set(Present::NONE);
@@ -2566,7 +2571,7 @@ fn a_radio_either_source_sees_is_offered() {
     use crate::radios::Present;
 
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
     let area = NetworkArea::new(&cx);
     assert!(
         area.statuses().is_empty(),
@@ -2574,7 +2579,7 @@ fn a_radio_either_source_sees_is_offered() {
     );
     assert!(!area.is_open(), "the networks were not read");
 
-    cx.radios().set(Present::ALL);
+    cx.radios.set(Present::ALL);
     assert!(
         area.statuses().is_empty(),
         "with every radio nothing changes"
@@ -2584,16 +2589,16 @@ fn a_radio_either_source_sees_is_offered() {
         wwan_available: true,
         ..os_actions::RadioState::default()
     };
-    cx.radios().set(Present::NONE);
+    cx.radios.set(Present::NONE);
     assert_eq!(
-        NetworkRadios::of(&cx, Some(&reported)),
+        NetworkRadios::of(&cx.radios, Some(&reported)),
         NetworkRadios {
             wifi: Some(false),
             wwan: Some(true),
         }
     );
     assert_eq!(
-        NetworkRadios::of(&PaneCx::in_profile(profile.path().join("other")), None),
+        NetworkRadios::of(&crate::radios::Radios::unread(), None),
         NetworkRadios::default(),
         "neither has said"
     );
@@ -2672,7 +2677,7 @@ fn the_vpn_tool_opens_settings_where_it_asks() {
     *fake.vpns.lock().unwrap() = vec![work_vpn()];
     let profile = tempfile::tempdir().unwrap().keep();
     let mut model = NetworkModel::with_service(
-        PaneCx::in_profile(profile),
+        Reach::of(&crate::area::AreaContext::in_profile(profile)),
         Arc::clone(&fake) as Arc<dyn NetworkService>,
     );
     run_vpn(

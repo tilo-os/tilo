@@ -21,15 +21,23 @@ pub fn width_for_text_scale(scale: f32) -> f64 {
 }
 
 /// Build the sectioned category list with `selected` chosen. Choosing a row
-/// runs its pane's open effect.
-pub fn build(cx: &crate::host::PaneCx, selected: Category, query: &str) -> Box<dyn ui::Widget> {
+/// runs its pane's open effect through `actions`; outside a view (`None`)
+/// the rows open nothing.
+pub fn build(
+    actions: Option<&ui::framework::Actions<crate::resource::Settings>>,
+    selected: Category,
+    query: &str,
+) -> Box<dyn ui::Widget> {
     let bindings = Category::ALL
         .iter()
         .filter_map(|category| {
-            cx.invocation_binding(crate::effects::NavigationEffect::OpenPane {
-                pane: category.slug().to_owned(),
-            })
-            .map(|binding| (category.slug().to_owned(), binding))
+            actions?
+                .effect(&crate::effects::SettingsEffect::from(
+                    crate::effects::NavigationEffect::OpenPane {
+                        pane: category.slug().to_owned(),
+                    },
+                ))
+                .map(|binding| (category.slug().to_owned(), binding))
         })
         .collect::<Vec<_>>();
     let mut list = NavList::new(sections())
@@ -103,8 +111,6 @@ mod tests {
     /// setting matched: "where is the keyboard layout".
     #[test]
     fn the_filter_finds_pages_by_the_settings_on_them() {
-        let cx =
-            crate::host::PaneCx::detached(ui::storage::AppStorage::for_app("so.tilo.settings"));
         for (query, page) in [
             ("layout", Category::Keyboard),
             ("qwertz", Category::Keyboard),
@@ -114,7 +120,7 @@ mod tests {
             ("tap to click", Category::Pointing),
             ("disable touchpad while typing", Category::Pointing),
         ] {
-            let mut widget = build(&cx, Category::Network, query);
+            let mut widget = build(None, Category::Network, query);
             let list = widget
                 .as_any_mut()
                 .unwrap()

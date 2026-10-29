@@ -24,72 +24,68 @@ fn mesh_remote(made: &crate::area::Areas) -> ui::RemoteActions {
 /// mesh's host client).
 pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
     (10, |context, _| {
-        Box::new(accessibility::Software::for_host(context.cx))
+        Box::new(accessibility::Software::for_device(context.devices))
     }),
     (20, |context, _| {
-        Box::new(notifications::NotificationsArea::new(context.cx))
+        Box::new(notifications::NotificationsArea::new(context))
     }),
     (30, |context, _| {
-        Box::new(personal_apps::DefaultAppsArea::new(context.cx))
+        Box::new(personal_apps::DefaultAppsArea::new(context))
     }),
     (50, |context, _| {
-        Box::new(mouse_keyboard::InputArea::new(context.cx))
+        Box::new(mouse_keyboard::InputArea::new(context))
     }),
-    (60, |context, _| Box::new(power::PowerArea::new(context.cx))),
+    (60, |context, _| Box::new(power::PowerArea::new(context))),
     (100, |context, _| {
-        Box::new(permissions::PermissionsArea::new(context.cx))
+        Box::new(permissions::PermissionsArea::new(context))
     }),
     (120, |context, _| {
-        Box::new(bluetooth::BluetoothArea::new(context.cx))
+        Box::new(bluetooth::BluetoothArea::new(context))
     }),
-    (180, |context, _| {
-        Box::new(audio::AudioArea::new(context.cx))
-    }),
+    (180, |context, _| Box::new(audio::AudioArea::new(context))),
     (200, |context, _| {
-        Box::new(display::DisplayArea::new(context.cx))
+        Box::new(display::DisplayArea::new(context))
     }),
     (210, |context, _| {
-        Box::new(network::NetworkArea::new(context.cx))
+        Box::new(network::NetworkArea::new(context))
     }),
     (215, |context, _| {
-        Box::new(network::mobile::MobileArea::new(context.cx))
+        Box::new(network::mobile::MobileArea::new(context))
     }),
     (40, |context, _| {
-        Box::new(time_date::TimeDateArea::new(context.cx))
+        Box::new(time_date::TimeDateArea::new(context))
     }),
     (70, |context, _| {
-        Box::new(updates::UpdatesArea::new(context.cx))
+        Box::new(updates::UpdatesArea::new(context))
     }),
     (80, |context, _| {
-        Box::new(disk_unlock::DiskUnlockArea::new(context.cx))
+        Box::new(disk_unlock::DiskUnlockArea::new(context))
     }),
-    (90, |context, _| {
-        Box::new(drives::DrivesArea::new(context.cx))
-    }),
+    (90, |context, _| Box::new(drives::DrivesArea::new(context))),
     (110, |context, _| {
-        Box::new(printers::PrintersArea::new(context.cx))
+        Box::new(printers::PrintersArea::new(context))
     }),
     (130, |context, _| {
-        Box::new(speakers::SpeakersArea::new(context.cx))
+        Box::new(speakers::SpeakersArea::new(context))
     }),
     (140, |context, _| {
-        Box::new(agent_models::AgentModelsArea::new(context.cx))
+        Box::new(agent_models::AgentModelsArea::new(context))
     }),
     (150, |context, _| {
-        Box::new(device_mesh::DeviceMeshArea::new(context.cx))
+        Box::new(device_mesh::DeviceMeshArea::new(context))
     }),
     (160, |context, made| {
-        Box::new(users::UsersArea::new(context.cx, mesh_remote(made)))
+        Box::new(users::UsersArea::new(context, mesh_remote(made)))
     }),
     (170, |context, made| {
-        Box::new(storage::StorageArea::new(context.cx, mesh_remote(made)))
+        Box::new(storage::StorageArea::new(context, mesh_remote(made)))
     }),
     (175, |context, made| {
-        Box::new(about::AboutArea::new(context.cx, mesh_remote(made)))
+        Box::new(about::AboutArea::new(context, mesh_remote(made)))
     }),
     (190, |context, _| {
         Box::new(
-            accounts::AccountsArea::new(context.cx).with_account_root(context.account_root.clone()),
+            accounts::AccountsArea::new(context).with_account_root(context.account_root.clone()),
         )
     }),
     (220, |_, _| Box::new(region::language::LanguageArea::new())),

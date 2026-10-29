@@ -12,7 +12,7 @@ use crate::setting::{Follows, on_off};
 use crate::settings_app::SettingsApp;
 
 fn input(app: &SettingsApp, follows: &Follows) -> InputPrefs {
-    follows.get::<InputPrefs>(app.host())
+    follows.get::<InputPrefs>(app.storage())
 }
 
 /// A slider's position, as a share of its track.
@@ -84,7 +84,7 @@ pub(crate) fn scroll_method(app: &SettingsApp, follows: &Follows) -> Option<Stri
 
 pub(crate) fn spelling_language(app: &SettingsApp, follows: &Follows) -> String {
     let language = follows
-        .get::<TextAssistancePrefs>(app.host())
+        .get::<TextAssistancePrefs>(app.storage())
         .spelling_language;
     if language.is_empty() {
         return t("input-spell-language-session");

@@ -43,8 +43,8 @@ use ui::tilo_resource;
 use ui::widget::{Button, Dropdown, Element, Row, Spacer, Text, TextInput, Widget};
 use vello::kurbo::{Point, Rect};
 
+use crate::area::AreaContext;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::input_sources::CatalogEntry;
 use crate::prefs::{InputDevicePrefs, InputPrefs};
@@ -80,11 +80,11 @@ impl std::ops::DerefMut for Input {
 }
 
 impl Input {
-    /// The input settings `cx` holds.
-    pub(crate) fn load(cx: &PaneCx) -> Self {
+    /// The input settings `storage` holds.
+    pub(crate) fn load(storage: &ui::storage::AppStorage) -> Self {
         Self {
-            person: cx.settings::<InputPrefs>().get(),
-            device: cx.settings::<InputDevicePrefs>().get(),
+            person: storage.settings::<InputPrefs>().get(),
+            device: storage.settings::<InputDevicePrefs>().get(),
         }
     }
 
@@ -894,7 +894,6 @@ fn answer_read(app: &SettingsApp, effect: InputEffect) -> EffectAnswer {
     if effect == InputEffect::InspectKeyboardMap {
         return app.keyboard_inspection().map(Effected::value);
     }
-    let host = app.host();
     match effect {
         InputEffect::AddDictionaryWord {
             word,
@@ -967,13 +966,12 @@ fn answer_read(app: &SettingsApp, effect: InputEffect) -> EffectAnswer {
     if let InputEffect::SetTabletOutput { device, output } = effect {
         // Only a display connected to this device is offered.
         tablet::tablet_output_for_id(&output)?;
-        return host
-            .invoke_section::<InputDevicePrefs>(
-                InputDevicePrefs::SET_TABLET_OUTPUT.with((device, output)),
-            )
+        return app
+            .sections()
+            .invoke::<InputDevicePrefs>(InputDevicePrefs::SET_TABLET_OUTPUT.with((device, output)))
             .map(|()| Effected::done());
     }
-    let mut input = Input::load(host);
+    let mut input = Input::load(app.storage());
     input.normalise_keyboard_sources();
     let before = input.clone();
     keyboard_editor::apply_scoped(
@@ -982,24 +980,24 @@ fn answer_read(app: &SettingsApp, effect: InputEffect) -> EffectAnswer {
         crate::panes::mouse_keyboard::area(app).ok_or_else(crate::area::missing)?,
     )?;
     input.normalise_keyboard_sources();
-    commit(host, &before, &input)
+    commit(app.sections(), &before, &input)
 }
 
 /// Write what `after` changed of `before` through the input sections'
 /// verbs, each checking what it writes.
-fn commit(host: &PaneCx, before: &Input, after: &Input) -> EffectAnswer {
+fn commit(sections: &crate::sections::Sections, before: &Input, after: &Input) -> EffectAnswer {
     let (person, device) = (&after.person, &after.device);
     if person.keyboard_layouts != before.person.keyboard_layouts
         || person.keyboard_layout != before.person.keyboard_layout
     {
-        host.invoke_section::<InputPrefs>(InputPrefs::SET_LAYOUTS.with((
+        sections.invoke::<InputPrefs>(InputPrefs::SET_LAYOUTS.with((
             person.keyboard_layouts.clone(),
             person.keyboard_layout.clone(),
         )))?;
     }
     for (keyboard, profile) in &device.keyboard_assignments {
         if before.device.keyboard_assignments.get(keyboard) != Some(profile) {
-            host.invoke_section::<InputDevicePrefs>(
+            sections.invoke::<InputDevicePrefs>(
                 InputDevicePrefs::SET_KEYBOARD_LAYOUTS.with((keyboard.clone(), profile.clone())),
             )?;
         }
@@ -1010,7 +1008,7 @@ fn commit(host: &PaneCx, before: &Input, after: &Input) -> EffectAnswer {
         .keys()
         .filter(|keyboard| !device.keyboard_assignments.contains_key(*keyboard))
     {
-        host.invoke_section::<InputDevicePrefs>(
+        sections.invoke::<InputDevicePrefs>(
             InputDevicePrefs::USE_SHARED_LAYOUTS.with(keyboard.clone()),
         )?;
     }
@@ -1021,13 +1019,13 @@ fn commit(host: &PaneCx, before: &Input, after: &Input) -> EffectAnswer {
         before.device.keyboard_inspected_key.clone(),
     );
     if device.keyboard_model != before.device.keyboard_model {
-        host.invoke_section::<InputDevicePrefs>(
+        sections.invoke::<InputDevicePrefs>(
             InputDevicePrefs::SET_KEYBOARD_MODEL.with(device.keyboard_model.clone()),
         )?;
         inspected = (0, false, "AD01".into());
     }
     if device.keyboard_preview != before.device.keyboard_preview {
-        host.invoke_section::<InputDevicePrefs>(
+        sections.invoke::<InputDevicePrefs>(
             InputDevicePrefs::SHOW_KEYBOARD_LAYOUT.with(device.keyboard_preview.clone()),
         )?;
         inspected.0 = 0;
@@ -1040,7 +1038,7 @@ fn commit(host: &PaneCx, before: &Input, after: &Input) -> EffectAnswer {
     );
     if wanted != inspected {
         let level = u32::try_from(wanted.0).map_err(|_| "invalid keyboard preview level")?;
-        host.invoke_section::<InputDevicePrefs>(
+        sections.invoke::<InputDevicePrefs>(
             InputDevicePrefs::INSPECT_KEYBOARD.with((level, wanted.1, wanted.2)),
         )?;
     }
@@ -1078,7 +1076,7 @@ fn inspect_input_sources(
         return Err("Input source query exceeds 128 bytes".into());
     }
     let query = query.to_lowercase();
-    let prefs = app.host().settings::<InputPrefs>().get();
+    let prefs = app.storage().settings::<InputPrefs>().get();
     let area = crate::panes::mouse_keyboard::area(app).ok_or_else(crate::area::missing)?;
     let matches: Vec<_> = area
         .catalog()
@@ -1148,7 +1146,8 @@ struct Seen {
 /// the attached devices as the compositor last reported them, the keyboard
 /// editor's state, and what the Spelling page shows of the dictionary.
 pub struct InputArea {
-    cx: PaneCx,
+    /// The input sections' actions its live rows offer.
+    sections: crate::sections::Sections,
     catalog: SourceCatalog,
     live: Cell<bool>,
     /// The attached devices as last read, and when the live rows read them
@@ -1182,8 +1181,8 @@ pub struct InputArea {
 impl InputArea {
     /// The area of this device, or, for a capture, of sample sources and no
     /// devices reported.
-    pub fn new(cx: &PaneCx) -> Self {
-        let live = cx.reaches_devices();
+    pub fn new(cx: &AreaContext) -> Self {
+        let live = cx.devices;
         let mut area = Self::over(
             cx,
             if live {
@@ -1203,6 +1202,7 @@ impl InputArea {
             ..Default::default()
         });
         area.osk_always = cx
+            .storage
             .settings::<crate::accessibility_settings::AccessibilitySettings>()
             .get()
             .on_screen_keyboard
@@ -1212,9 +1212,13 @@ impl InputArea {
 
     /// The area over `catalog` and the attached `devices`, reading nothing
     /// of the device.
-    fn over(cx: &PaneCx, catalog: SourceCatalog, devices: Option<InputHardwareSnapshot>) -> Self {
+    fn over(
+        cx: &AreaContext,
+        catalog: SourceCatalog,
+        devices: Option<InputHardwareSnapshot>,
+    ) -> Self {
         Self {
-            cx: cx.clone(),
+            sections: cx.sections.clone(),
             catalog,
             live: Cell::new(false),
             devices: Rc::new(RefCell::new((None, devices))),
@@ -1223,7 +1227,7 @@ impl InputArea {
             showing: RefCell::new(Weak::new()),
             editor: LocalState::new(keyboard_editor::EditorState::default()),
             osk_always: false,
-            document: cx.storage().settings_document().clone(),
+            document: cx.storage.settings_document().clone(),
             drawing: RefCell::new(None),
             drawings: Cell::new(0),
             dictionary: RefCell::new(Dictionary::default()),
@@ -1464,7 +1468,7 @@ impl InputArea {
         let offer =
             |row: LiveRow, decls: Vec<Option<tilo_resource::ActionDecl<InputDevicePrefs>>>| {
                 decls.into_iter().flatten().fold(row, |row, decl| {
-                    match self.cx.row_operation(&decl) {
+                    match self.sections.operation(&decl) {
                         Some(operation) => row.operation(operation),
                         None => row,
                     }

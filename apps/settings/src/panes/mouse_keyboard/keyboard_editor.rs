@@ -174,7 +174,7 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
         return Some(inspect_sources(app));
     }
     let mut editor = area.editor.get();
-    let input = Input::load(app.host());
+    let input = Input::load(app.storage());
     let profile = area.profile(&input, &editor.scope);
     if !matches!(
         operation,
@@ -201,7 +201,7 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
         if let Err(error) = mutate_sources(&mut profile, operation.clone(), area, OSK) {
             return Some(Err(error));
         }
-        return Some(store_osk(app.host(), &profile));
+        return Some(store_osk(app.sections(), &profile));
     }
     let result = match operation {
         InputEffect::SelectKeyboardScope { scope } => {
@@ -270,7 +270,7 @@ pub(super) fn answer_editor(app: &SettingsApp, operation: &InputEffect) -> Optio
 
 fn inspect_sources(app: &SettingsApp) -> EffectAnswer {
     let area = crate::panes::mouse_keyboard::area(app).ok_or_else(crate::area::missing)?;
-    let input = Input::load(app.host());
+    let input = Input::load(app.storage());
     let scopes: Vec<_> = area
         .keyboard_scopes()
         .into_iter()
@@ -310,7 +310,7 @@ fn confirm_added_source(
             OSK,
         )?;
         profile.active = active;
-        store_osk(app.host(), &profile)?;
+        store_osk(app.sections(), &profile)?;
     } else {
         let before = input.clone();
         let mut updated = input;
@@ -327,7 +327,7 @@ fn confirm_added_source(
         if let Some(profile) = updated.device.keyboard_assignments.get_mut(&editor.scope) {
             profile.active = active;
         }
-        super::commit(app.host(), &before, &updated)?;
+        super::commit(app.sections(), &before, &updated)?;
     }
     editor.selected = Some(source);
     editor.adding = false;
@@ -1186,11 +1186,12 @@ fn osk_profile(document: &ui::storage::SettingsDocument) -> KeyboardProfile {
 
 /// Store `profile` as the on-screen keyboard's layouts, through its
 /// section's verb.
-fn store_osk(host: &PaneCx, profile: &KeyboardProfile) -> EffectAnswer {
-    host.invoke_section::<OskSourceSettings>(
-        OskSourceSettings::SET_LAYOUTS.with((profile.sources.clone(), profile.active.clone())),
-    )
-    .map(|()| Effected::done())
+fn store_osk(sections: &crate::sections::Sections, profile: &KeyboardProfile) -> EffectAnswer {
+    sections
+        .invoke::<OskSourceSettings>(
+            OskSourceSettings::SET_LAYOUTS.with((profile.sources.clone(), profile.active.clone())),
+        )
+        .map(|()| Effected::done())
 }
 
 fn touch_preview(source: &str, label: String) -> ui::KeyboardMap {
@@ -1706,9 +1707,9 @@ mod tests {
                 .contains_key("fixture-input-1")
         );
         assert!(
-            crate::host::testing::invoke_section(
+            crate::testing::invoke_section(
                 &mut app,
-                crate::host::testing::INPUT_DEVICE,
+                crate::testing::INPUT_DEVICE,
                 "use-shared-layouts",
                 serde_json::json!({ "keyboard": "fixture-input-1" }),
             )

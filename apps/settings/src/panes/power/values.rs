@@ -9,7 +9,7 @@ use crate::setting::Follows;
 use crate::settings_app::SettingsApp;
 
 fn prefs(app: &SettingsApp, follows: &Follows) -> PowerPrefs {
-    follows.get::<PowerPrefs>(app.host())
+    follows.get::<PowerPrefs>(app.storage())
 }
 
 pub(crate) fn profile(app: &SettingsApp, _: &Follows) -> Option<String> {

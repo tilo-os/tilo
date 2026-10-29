@@ -75,7 +75,7 @@ impl PaneKey {
 /// view code.
 pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
     let accounts = cx.shared_person::<accounts::person::PersonAccounts>();
-    app.attach_host(crate::host::PaneCx::attached(cx), accounts);
+    app.attach(cx, accounts);
     let app = app.into_shared();
     // A pane search hit, or an agent's `open`, shows the pane it names.
     cx.on_open(app.opener());
@@ -135,7 +135,7 @@ fn content(app: &Rc<SettingsApp>, key: &PaneKey, cx: Option<&ViewCx<Settings>>) 
         });
         (
             Box::new(crate::setting::Found::new(
-                app.host().clone(),
+                app.sections().actions().cloned(),
                 key.found.clone(),
                 key.reads.clone(),
                 bound,
@@ -334,7 +334,7 @@ impl SettingsWindow {
         if self.app.selected() != category {
             self.revealed = None;
             self.app.show(category);
-            self.pages_seen = self.app.host().pages().revision();
+            self.pages_seen = self.app.pages().revision();
             self.structure_dirty = true;
             self.refresh_shell_children();
         }
@@ -411,7 +411,6 @@ impl SettingsWindow {
 
     /// Read the values of the settings found again; whether one changed.
     fn read_found(&mut self) -> bool {
-        self.value_follows.refresh();
         let values = crate::setting::reads(&self.app, &self.value_follows, &self.found);
         if values == self.found_reads {
             return false;
@@ -458,9 +457,13 @@ impl SettingsWindow {
     }
 
     fn build_shell(&mut self) -> NavShell {
-        let nav = sidebar::build(self.app.host(), self.app.selected(), &self.staged_filter);
-        let can_go_back = self.app.host().pages().clone();
-        let go_back = self.app.host().pages().clone();
+        let nav = sidebar::build(
+            self.app.sections().actions(),
+            self.app.selected(),
+            &self.staged_filter,
+        );
+        let can_go_back = self.app.pages().clone();
+        let go_back = self.app.pages().clone();
         let mut shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
             .with_id("settings.shell")
@@ -485,7 +488,6 @@ impl SettingsWindow {
         if self.found.is_empty() {
             let selected = self.app.selected();
             self.app
-                .host()
                 .pages()
                 .top(selected)
                 .map_or_else(|| selected.label(), |page| page.title)
@@ -527,7 +529,11 @@ impl SettingsWindow {
                     nav.set_selected(Some(selected.slug()));
                 }
             } else {
-                shell.set_sidebar(Some(sidebar::build(self.app.host(), selected, "")));
+                shell.set_sidebar(Some(sidebar::build(
+                    self.app.sections().actions(),
+                    selected,
+                    "",
+                )));
             }
             shell.set_content_title(title);
         }
@@ -836,7 +842,7 @@ impl Widget for SettingsWindow {
 
         // A pane drilled into a page or came back out of one: the page is
         // built from its top, titled in the header.
-        let pages = self.app.host().pages().revision();
+        let pages = self.app.pages().revision();
         if pages != self.pages_seen {
             self.pages_seen = pages;
             self.app.forget_scroll(self.app.selected());
@@ -855,7 +861,7 @@ impl Widget for SettingsWindow {
         }
 
         // A pane asked for a secret, or is done with the one it asked.
-        if crate::secrets::ShownPrompt::follow(&mut self.secret, self.app.host().secrets()) {
+        if crate::secrets::ShownPrompt::follow(&mut self.secret, self.app.secrets()) {
             self.structure_dirty = true;
         }
 
@@ -1041,7 +1047,7 @@ impl Widget for SettingsWindow {
                 ctx.path,
             );
             *ctx.handled = true;
-            if crate::secrets::ShownPrompt::answered(&mut self.secret, self.app.host().secrets()) {
+            if crate::secrets::ShownPrompt::answered(&mut self.secret, self.app.secrets()) {
                 self.structure_dirty = true;
             }
             return;
@@ -1149,12 +1155,12 @@ impl Widget for SettingsWindow {
             None => crate::panes::appearance::intent(
                 &self
                     .app
-                    .host()
+                    .storage()
                     .settings::<crate::prefs::AppearancePrefs>()
                     .get(),
                 &self
                     .app
-                    .host()
+                    .storage()
                     .settings::<crate::prefs::AppearanceDevicePrefs>()
                     .get(),
             ),

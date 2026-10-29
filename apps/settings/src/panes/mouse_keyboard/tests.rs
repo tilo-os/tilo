@@ -3,12 +3,12 @@
 
 use super::tablet::*;
 use super::*;
-use crate::host::testing::{INPUT, INPUT_DEVICE, TEXT_ASSISTANCE, edit_field, invoke_section};
 use crate::prefs::tablet_choices::{
     PadButtonChoice, WHOLE_DESKTOP, dial, dial_id, eraser, eraser_id, pad_button, pad_button_id,
     set_pad_button, stylus_button, stylus_button_id,
 };
 use crate::resource::SettingsShell;
+use crate::testing::{INPUT, INPUT_DEVICE, TEXT_ASSISTANCE, edit_field, invoke_section};
 use settings_store::hardware::{
     EraserAction, PadDial, PadDialAction, ShortcutAction, StylusButtonAction, TabletConfig,
 };
@@ -333,7 +333,7 @@ fn dropdown_language_mounted_settings_flow_is_clear_and_keyboard_operable() {
 /// with it).
 fn area_with(catalog: Vec<CatalogEntry>) -> (tempfile::TempDir, InputArea) {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
     let area = InputArea::over(&cx, SourceCatalog::ready(catalog, None), None);
     (profile, area)
 }

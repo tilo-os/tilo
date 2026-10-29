@@ -6,7 +6,7 @@ use crate::setting::Follows;
 use crate::settings_app::SettingsApp;
 
 fn prefs(app: &SettingsApp, follows: &Follows) -> AppearancePrefs {
-    follows.get::<AppearancePrefs>(app.host())
+    follows.get::<AppearancePrefs>(app.storage())
 }
 
 pub(crate) fn style(app: &SettingsApp, follows: &Follows) -> String {

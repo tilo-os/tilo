@@ -13,21 +13,22 @@
 //! page; the row says what it is set to, read where its pane reads it.
 //!
 //! A pane brings its settings' rows in its [`crate::area::Part`] with
-//! [`setting_entry!`], its device switches with [`setting_switch!`] (or
-//! [`setting_view_switch!`] for a pane that is view code), and what the
-//! others are set to with [`setting_value!`].
+//! [`setting_row!`], its device switches with [`setting_bound_switch!`] or
+//! [`setting_view_switch!`], and what the others are set to with
+//! [`setting_value!`].
 
 use std::any::Any;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use settings_store::index::{self, Setting};
+use ui::storage::SettingsCache;
 use ui::widget::{AppModel, Button, ButtonRole, ControlSize, ModelPath, Widget};
 
 use crate::categories::Category;
 use crate::effects::{NavigationEffect, SettingsEffect};
-use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
+use crate::resource::Settings;
 use provider_settings_ui::widgets::{Item, SettingsSection, rows, section_action};
 
 /// One setting, as search shows it.
@@ -39,8 +40,6 @@ pub struct SettingEntry {
 
 /// How search shows a setting.
 pub enum Shown {
-    /// The row its pane shows, over the sections `follows` keeps current.
-    Row(fn(&PaneCx, &Follows) -> Item),
     /// The row its page shows, as view code over its section
     /// ([`setting_row!`]); `None` where the section cannot be held.
     Bound(fn(&ui::framework::ViewCx<crate::resource::Settings>) -> Option<Item>),
@@ -50,21 +49,16 @@ pub enum Shown {
     /// sync while shown, so it reads only what is already at hand.
     Value(fn(&crate::settings_app::SettingsApp, &Follows) -> Option<String>),
     /// A yes-or-no its pane switches only where the device lets it (a
-    /// radio, a display, the sound server): the switch the second function
-    /// builds over what the first reads, as its pane reads it in the
-    /// window, like [`Shown::Value`]. Listed by name with what it says
-    /// while it cannot be switched, or is not known.
-    Switch(
-        fn(&crate::settings_app::SettingsApp, &Follows) -> Read,
-        fn(&PaneCx, bool) -> Item,
-    ),
-    /// [`Shown::Switch`] whose switch is view code over its section
-    /// ([`setting_bound_switch!`]): it follows the section itself.
+    /// radio, a display, the sound server), as view code over its section
+    /// ([`setting_bound_switch!`]): the switch the second function builds
+    /// while what the first reads, as its pane reads it in the window like
+    /// [`Shown::Value`], says it can be switched. Listed by name with what
+    /// it says while it cannot be switched, or is not known.
     BoundSwitch(
         fn(&crate::settings_app::SettingsApp, &Follows) -> Read,
         fn(&ui::framework::ViewCx<crate::resource::Settings>) -> Option<Item>,
     ),
-    /// [`Shown::Switch`] whose switch is view code: the second function
+    /// [`Shown::BoundSwitch`] whose switch is the device's: the second function
     /// builds it in the window's view, showing whether it is on, bound to
     /// the effect that switches the device ([`setting_view_switch!`]).
     ViewSwitch(
@@ -82,24 +76,6 @@ pub enum Read {
     /// A switch, on or off.
     Switch(bool),
 }
-
-/// The [`SettingEntry`] of the setting `$id`, whose row `$row(cx, followed)`
-/// builds over the followed section `$section`: the function the pane
-/// builds the row with.
-#[macro_export]
-macro_rules! setting_entry {
-    ($id:literal, $section:ty => $row:path) => {
-        $crate::setting::SettingEntry {
-            id: $id,
-            shown: $crate::setting::Shown::Row(|cx, follows| {
-                let followed = follows.of::<$section>(cx);
-                let followed = followed.borrow();
-                $row(cx, &followed)
-            }),
-        }
-    };
-}
-pub use crate::setting_entry;
 
 /// The [`SettingEntry`] of the setting `$id`, whose row `$row(cx)` builds
 /// as view code over the section `$section`: the function its page builds
@@ -137,20 +113,6 @@ macro_rules! setting_value {
     };
 }
 pub use crate::setting_value;
-
-/// The [`SettingEntry`] of the setting `$id`, which search shows as the
-/// switch `$row(cx, on)` builds while `$read(app, follows)` says
-/// it can be switched ([`Shown::Switch`]).
-#[macro_export]
-macro_rules! setting_switch {
-    ($id:literal => $read:path, $row:path) => {
-        $crate::setting::SettingEntry {
-            id: $id,
-            shown: $crate::setting::Shown::Switch($read, $row),
-        }
-    };
-}
-pub use crate::setting_switch;
 
 /// The [`SettingEntry`] of the setting `$id`, which search shows as the
 /// switch `$row(cx)` builds as view code over the section `$section` while
@@ -217,12 +179,10 @@ pub fn reads(
         .map(
             |setting| match entry(setting.id).map(|entry| &entry.shown) {
                 Some(Shown::Value(value)) => Read::Value(value(app, follows)),
-                Some(
-                    Shown::Switch(read, _)
-                    | Shown::BoundSwitch(read, _)
-                    | Shown::ViewSwitch(read, _),
-                ) => read(app, follows),
-                Some(Shown::Row(_) | Shown::Bound(_)) | None => Read::Value(None),
+                Some(Shown::BoundSwitch(read, _) | Shown::ViewSwitch(read, _)) => {
+                    read(app, follows)
+                }
+                Some(Shown::Bound(_)) | None => Read::Value(None),
             },
         )
         .collect()
@@ -238,69 +198,35 @@ pub fn on_off(on: bool) -> String {
     })
 }
 
-/// The sections the rows shown outside their panes read, each followed
-/// once and kept current as it changes ([`Self::refresh`]).
+/// The sections the settings search lists by name read, each read again
+/// only when the settings document changed.
 #[derive(Default)]
 pub struct Follows {
-    /// Each section followed, as itself and as what refreshes it.
-    held: RefCell<Vec<Held>>,
+    /// Each section read, as a `RefCell<SettingsCache<T>>`.
+    held: RefCell<Vec<Rc<dyn Any>>>,
 }
-
-/// A followed section, as itself and as what refreshes it.
-type Held = (Rc<dyn Any>, Rc<dyn Refresh>);
 
 /// A section of the settings that can be followed.
 pub trait Followable: ui::storage::SettingsSchema + Clone + PartialEq + 'static {}
 
 impl<T: ui::storage::SettingsSchema + Clone + PartialEq + 'static> Followable for T {}
 
-/// A followed section, whatever its type.
-trait Refresh {
-    fn refresh(&self) -> bool;
-}
-
-impl<T: Followable> Refresh for RefCell<Followed<T>> {
-    fn refresh(&self) -> bool {
-        self.borrow_mut().refresh()
-    }
-}
-
 impl Follows {
-    /// The section `T`, followed through `cx` from when it was first asked
-    /// for.
-    pub fn of<T: Followable>(&self, cx: &PaneCx) -> Rc<RefCell<Followed<T>>> {
+    /// The section `T` as stored in `storage` now, read again only where
+    /// the document changed since it was last asked for.
+    pub fn get<T: Followable>(&self, storage: &ui::storage::AppStorage) -> T {
         let mut held = self.held.borrow_mut();
-        if let Some(followed) = held
+        let found = held
             .iter()
-            .find_map(|(any, _)| Rc::clone(any).downcast::<RefCell<Followed<T>>>().ok())
-        {
-            return followed;
-        }
-        let followed = Rc::new(RefCell::new(cx.follow::<T>()));
-        held.push((
-            Rc::clone(&followed) as Rc<dyn Any>,
-            Rc::clone(&followed) as Rc<dyn Refresh>,
-        ));
-        followed
-    }
-
-    /// The section `T` as stored now, followed from when it was first
-    /// asked for.
-    pub fn get<T: Followable>(&self, cx: &PaneCx) -> T {
-        self.of::<T>(cx).borrow().get().clone()
-    }
-
-    /// Read every followed section again where the settings changed, moving
-    /// the controls that show them; whether any value changed.
-    pub fn refresh(&self) -> bool {
-        let held: Vec<Rc<dyn Refresh>> = self
-            .held
-            .borrow()
-            .iter()
-            .map(|(_, followed)| Rc::clone(followed))
-            .collect();
-        held.iter()
-            .fold(false, |moved, followed| followed.refresh() | moved)
+            .find_map(|any| Rc::clone(any).downcast::<RefCell<SettingsCache<T>>>().ok());
+        let cache = found.unwrap_or_else(|| {
+            let cache = Rc::new(RefCell::new(SettingsCache::new(storage.settings::<T>())));
+            held.push(Rc::clone(&cache) as Rc<dyn Any>);
+            cache
+        });
+        let mut cache = cache.borrow_mut();
+        cache.refresh();
+        cache.get().clone()
     }
 }
 
@@ -380,8 +306,9 @@ pub fn bound_rows(
 /// What Settings' search found: the matching settings, grouped by the page
 /// each is on, as the rows that change them.
 pub struct Found {
-    cx: PaneCx,
-    follows: Follows,
+    /// What its navigation buttons are bound through; `None` outside a
+    /// view, where they are unavailable.
+    actions: Option<ui::framework::Actions<Settings>>,
     /// The rows of the settings found whose pages are view code, built by
     /// the view that shows this list, by the setting's place in `settings`.
     bound: RefCell<Vec<Option<Item>>>,
@@ -397,14 +324,13 @@ impl Found {
     /// for those whose pages are ([`bound_rows`]).
     #[must_use]
     pub fn new(
-        cx: PaneCx,
+        actions: Option<ui::framework::Actions<Settings>>,
         settings: Vec<&'static Setting>,
         reads: Vec<Read>,
         bound: Vec<Option<Item>>,
     ) -> Self {
         Self {
-            cx,
-            follows: Follows::default(),
+            actions,
             bound: RefCell::new(bound),
             settings,
             reads,
@@ -415,12 +341,14 @@ impl Found {
     /// A button `id` reading `label`, running `effect`: Settings' own
     /// navigation, as an agent's `open` runs it.
     fn navigating(&self, id: &str, label: &str, effect: NavigationEffect) -> Button {
-        self.cx.bind_invocation(
-            Button::new(id, label)
-                .role(ButtonRole::Plain)
-                .control_size(ControlSize::Small),
-            SettingsEffect::from(effect),
-        )
+        use ui::framework::ActionControl as _;
+        let button = Button::new(id, label)
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small);
+        match &self.actions {
+            Some(actions) => actions.bind_effect_invocation(button, &SettingsEffect::from(effect)),
+            None => button.unavailable(),
+        }
     }
 
     /// One page's group: its name, a button opening it, and each setting
@@ -434,12 +362,8 @@ impl Found {
                 if let Some(row) = self.bound.borrow_mut().get_mut(at).and_then(Option::take) {
                     return row;
                 }
-                let value = match (entry(setting.id).map(|entry| &entry.shown), read) {
-                    (Some(Shown::Row(row)), _) => return row(&self.cx, &self.follows),
-                    (Some(Shown::Switch(_, row)), Some(&Read::Switch(on))) => {
-                        return row(&self.cx, on);
-                    }
-                    (_, Some(Read::Value(value))) => value.as_deref(),
+                let value = match read {
+                    Some(Read::Value(value)) => value.as_deref(),
                     _ => None,
                 };
                 let name = t(&setting.name_key());
@@ -496,8 +420,6 @@ impl Found {
 
 impl Widget for Found {
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        // The rows' controls follow the stored values in place.
-        self.follows.refresh();
         self.composed.sync(state, root);
     }
 

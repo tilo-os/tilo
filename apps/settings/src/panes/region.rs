@@ -276,7 +276,7 @@ mod tests {
     fn region_effects_write_the_locale() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         let locale_field = |app: &mut TestApp<SettingsShell>, field: &str, value: &str| {
-            crate::host::testing::edit_field(app, "settings.locale", field, value)
+            crate::testing::edit_field(app, "settings.locale", field, value)
         };
         locale_field(&mut app, "currency", "JPY").unwrap();
         locale_field(&mut app, "date_format", "EU").unwrap();
@@ -317,8 +317,7 @@ mod tests {
         assert!(crate::i18n::languages().contains(&"en-US"));
         assert!(crate::i18n::languages().contains(&"de-DE"));
 
-        crate::host::testing::edit_field(&mut app, "settings.appearance", "language", "de-DE")
-            .unwrap();
+        crate::testing::edit_field(&mut app, "settings.appearance", "language", "de-DE").unwrap();
         let settings = app.settings::<AppearancePrefs>();
         assert_eq!(settings.get().language.as_deref(), Some("de-DE"));
         assert_eq!(

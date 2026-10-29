@@ -80,7 +80,7 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
             found(&mut app)
         );
         match entry.shown {
-            super::Shown::Row(_) | super::Shown::Bound(_) => assert!(
+            super::Shown::Bound(_) => assert!(
                 control(app.harness().root_widget(), setting, content_left()).is_some(),
                 "{}: its row is shown with its control",
                 entry.id
@@ -94,9 +94,7 @@ fn every_setting_row_is_an_indexed_setting_drawn_by_its_control() {
                 "{}: it is listed by name",
                 entry.id
             ),
-            super::Shown::Switch(..)
-            | super::Shown::BoundSwitch(..)
-            | super::Shown::ViewSwitch(..) => assert!(
+            super::Shown::BoundSwitch(..) | super::Shown::ViewSwitch(..) => assert!(
                 control(app.harness().root_widget(), setting, content_left())
                     .is_some_and(|(_, checked)| checked.is_some())
                     || widget(

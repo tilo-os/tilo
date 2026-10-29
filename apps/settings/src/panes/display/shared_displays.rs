@@ -15,14 +15,17 @@ use crate::resource::Settings;
 impl DisplayModel {
     /// The person's display arrangement, as stored now.
     fn arrangement(&self) -> Arrangement {
-        self.cx.settings::<SharedDisplayPrefs>().get().arrangement
+        self.storage
+            .settings::<SharedDisplayPrefs>()
+            .get()
+            .arrangement
     }
 
     /// Store `next` as the person's arrangement, through the section's
     /// verb: only the displays whose entries it changes are written.
     fn arrange(&self, next: &Arrangement) -> Result<(), String> {
-        self.cx
-            .invoke_section::<SharedDisplayPrefs>(
+        self.sections
+            .invoke::<SharedDisplayPrefs>(
                 SharedDisplayPrefs::ARRANGE_DISPLAYS.with(next.to_value()),
             )
             .map_err(|error| t_args("display-shared-save-failed", &[("error", error.into())]))
@@ -178,7 +181,7 @@ impl DisplayModel {
             "layout": self.shared_layout(),
             "arrangement": self.arrangement(),
             "automatic_input": self
-                .cx
+                .storage
                 .settings::<AutomaticDisplayPrefs>()
                 .get()
                 .automatic_display_input,
@@ -659,7 +662,7 @@ mod tests {
             .shared_layout()
             .displays[0]
             .enabled));
-        crate::host::testing::edit_path(&mut app, "settings.night-light", &["night_light"], true)
+        crate::testing::edit_path(&mut app, "settings.night-light", &["night_light"], true)
             .unwrap();
         frame(&mut app);
         assert!(
@@ -909,7 +912,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(before["automatic_input"], true, "on until turned off");
-        crate::host::testing::invoke_section(
+        crate::testing::invoke_section(
             &mut app,
             "settings.automatic-display",
             "set-automatic-display-input",

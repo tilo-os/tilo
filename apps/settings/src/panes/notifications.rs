@@ -30,15 +30,17 @@ use ui::framework::{ActionControl as _, LiveRow, ViewCx};
 use ui::tilo_resource;
 use ui::widget::Element;
 
-use crate::host::{Followed, PaneCx};
+use crate::area::AreaContext;
 use crate::i18n::{english, t, t_args};
 use crate::prefs::{MUTE_OPTIONS, NotificationPrefs, mute_shown, valid_app_id};
 use crate::resource::Settings;
+use crate::sections::Sections;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, error_row, note, row, rows, section, semantic_status_pill,
     setting_row, value_row,
 };
+use ui::storage::SettingsCache;
 
 crate::area::pane_area!(NotificationsArea);
 
@@ -229,8 +231,9 @@ impl AppChoice {
 /// What the notification area keeps for the window: the policy as last
 /// read, and the apps it lists.
 pub struct NotificationsArea {
-    cx: PaneCx,
-    prefs: RefCell<Followed<NotificationPrefs>>,
+    /// The notification section's actions its rows offer.
+    sections: Sections,
+    prefs: RefCell<SettingsCache<NotificationPrefs>>,
     apps: OnceCell<Vec<InstalledNotificationApp>>,
     sample: bool,
     /// The installed apps, read off the UI thread after the window's first
@@ -238,20 +241,22 @@ pub struct NotificationsArea {
     read: crate::device_read::DeviceRead<Vec<InstalledNotificationApp>>,
     /// The rows, kept for the policy version and locale they show, until
     /// the first mute they show runs out.
-    rows: crate::host::RowsMemo<(ui::storage::SettingsRevision, u64, Option<i64>)>,
+    rows: crate::effects::RowsMemo<(ui::storage::SettingsRevision, u64, Option<i64>)>,
 }
 
 impl NotificationsArea {
     /// The area over `cx`'s settings. A capture lists a fixed set of apps
     /// rather than the ones this device has installed.
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
-            prefs: RefCell::new(cx.follow::<NotificationPrefs>()),
+            sections: cx.sections.clone(),
+            prefs: RefCell::new(SettingsCache::new(
+                cx.storage.settings::<NotificationPrefs>(),
+            )),
             apps: OnceCell::new(),
-            sample: !cx.reaches_devices(),
+            sample: !cx.devices,
             read: crate::device_read::DeviceRead::default(),
-            rows: crate::host::RowsMemo::default(),
+            rows: crate::effects::RowsMemo::default(),
         }
     }
 
@@ -331,7 +336,7 @@ impl NotificationsArea {
         self.rows.rows(key, || {
             apps.iter()
                 .take(MAX_APP_ROWS)
-                .map(|app| app_row(&self.cx, prefs.get(), app))
+                .map(|app| app_row(&self.sections, prefs.get(), app))
                 .collect()
         })
     }
@@ -355,7 +360,11 @@ fn sample_apps() -> Vec<InstalledNotificationApp> {
 /// The live row of `app` under `prefs`: each delivery choice offered as the
 /// flip of what applies to it now, and its mute lifted or set, all changes
 /// of the app's rule in the notification section.
-fn app_row(cx: &PaneCx, prefs: &NotificationPrefs, app: &InstalledNotificationApp) -> LiveRow {
+fn app_row(
+    sections: &Sections,
+    prefs: &NotificationPrefs,
+    app: &InstalledNotificationApp,
+) -> LiveRow {
     let rule = prefs.per_app.get(&app.id).copied().unwrap_or_default();
     let muted = rule.muted_until.is_some_and(|until| until > unix_now_i64());
     let (duration, mute_label) = if muted {
@@ -385,7 +394,7 @@ fn app_row(cx: &PaneCx, prefs: &NotificationPrefs, app: &InstalledNotificationAp
             "settings.notification-app",
             app.name.clone(),
         ),
-        |row, decl| match cx.row_operation(&decl) {
+        |row, decl| match sections.operation(&decl) {
             Some(operation) => row.operation(operation),
             None => row,
         },
@@ -766,8 +775,8 @@ pub(crate) fn quiet_hours(cx: &ViewCx<NotificationPrefs>) -> Item {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::testing::{NOTIFICATIONS, edit_field, edit_path, invoke_section};
     use crate::resource::SettingsShell;
+    use crate::testing::{NOTIFICATIONS, edit_field, edit_path, invoke_section};
     use ui::prelude::TestApp;
 
     /// Set `field` of the rule of `app_id` through the door, as an agent

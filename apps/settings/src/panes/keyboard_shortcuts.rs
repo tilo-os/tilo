@@ -71,11 +71,11 @@ pub(crate) fn answer(
                         return Ok(Effected::done());
                     };
                     remember_app_name(&chosen);
-                    let input = app.host().settings::<InputPrefs>().get();
+                    let input = app.storage().settings::<InputPrefs>().get();
                     match paste_app(&input, &chosen) {
                         Some(shortcut) => app
-                            .host()
-                            .invoke_section::<InputPrefs>(
+                            .sections()
+                            .invoke::<InputPrefs>(
                                 InputPrefs::PASTE_WITH.with((chosen.id, shortcut.id().to_owned())),
                             )
                             .map(|()| Effected::done()),
@@ -401,7 +401,7 @@ mod tests {
     use ui::prelude::TestApp;
 
     fn bind(app: &mut TestApp<SettingsShell>, shortcut: &str, chord: &str) -> bool {
-        crate::host::testing::invoke_section(
+        crate::testing::invoke_section(
             app,
             "settings.shortcuts",
             REBIND,
@@ -490,7 +490,7 @@ mod tests {
             "Super+Shift+l"
         );
 
-        crate::host::testing::edit_field(&mut app, "settings.desktop-controls", "vim_mode", true)
+        crate::testing::edit_field(&mut app, "settings.desktop-controls", "vim_mode", true)
             .unwrap();
         assert!(app.settings::<DesktopControls>().get().vim_mode);
     }

@@ -28,11 +28,11 @@ use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Element, ProgressBar, Row, Text};
 use ui::{LocalState, WakeHandle};
 
+use crate::area::AreaContext;
 #[cfg(test)]
 use crate::channel;
 use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
 use crate::resource::Settings;
@@ -913,9 +913,9 @@ pub struct UpdatesModel {
     /// must surface here, not only in the journal.
     notice: Option<String>,
     dispatched_restart: bool,
-    /// The settings document the update preferences are kept in, and the
-    /// door the pane's controls go through.
-    cx: PaneCx,
+    /// The update preferences' actions, which keep what the machine
+    /// reported.
+    sections: crate::sections::Sections,
     /// The callers waiting for a request to finish.
     replies: crate::replies::Replies,
     /// What the pane shows changed since it last looked.
@@ -925,8 +925,8 @@ pub struct UpdatesModel {
 impl UpdatesModel {
     /// The model of this device's updates. It opens empty and reads the
     /// system off the UI thread; the pane says it is reading until then.
-    pub fn new(cx: PaneCx) -> Self {
-        let mut model = Self::reading(cx, DeviceReaders::system());
+    pub fn new(storage: &ui::storage::AppStorage, sections: crate::sections::Sections) -> Self {
+        let mut model = Self::reading(storage, sections, DeviceReaders::system());
         model.codec_runner = Arc::new(crate::codec_pack::run);
         model.windows_support_runner = Arc::new(crate::windows_compat::run);
         model.watch_codec_status();
@@ -935,15 +935,24 @@ impl UpdatesModel {
 
     /// A model that reads `readers` off the UI thread before it shows
     /// anything; requests that arrive meanwhile wait for the read.
-    fn reading(cx: PaneCx, readers: DeviceReaders) -> Self {
-        let prefs = cx.settings::<UpdatePrefs>().get();
-        let mut model = Self::assemble(cx, readers.clone(), Arc::new(now_stamp), prefs);
+    fn reading(
+        storage: &ui::storage::AppStorage,
+        sections: crate::sections::Sections,
+        readers: DeviceReaders,
+    ) -> Self {
+        let prefs = storage.settings::<UpdatePrefs>().get();
+        let mut model = Self::assemble(sections, readers.clone(), Arc::new(now_stamp), prefs);
         model.first_read = Some(Landing::start(move || readers.read()));
         model
     }
 
     /// The model's parts, showing nothing read yet.
-    fn assemble(cx: PaneCx, readers: DeviceReaders, clock: Clock, prefs: UpdatePrefs) -> Self {
+    fn assemble(
+        sections: crate::sections::Sections,
+        readers: DeviceReaders,
+        clock: Clock,
+        prefs: UpdatePrefs,
+    ) -> Self {
         Self {
             status: UpdateStatus {
                 current_version: String::new(),
@@ -992,7 +1001,7 @@ impl UpdatesModel {
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
-            cx,
+            sections,
             replies: crate::replies::Replies::default(),
             changed: false,
         }
@@ -1026,7 +1035,7 @@ impl UpdatesModel {
     /// a test written before that existed neither reaches systemd nor gets a
     /// switch that silently reports "off".
     pub fn with_parts(
-        cx: PaneCx,
+        sections: crate::sections::Sections,
         status: UpdateStatus,
         prefs: UpdatePrefs,
         status_provider: StatusProvider,
@@ -1034,7 +1043,7 @@ impl UpdatesModel {
         rebooter: Arc<dyn Rebooter>,
     ) -> Self {
         Self::with_parts_and_control(
-            cx,
+            sections,
             status,
             prefs,
             status_provider,
@@ -1051,7 +1060,7 @@ impl UpdatesModel {
     /// stand-in that answers at once ([`UnavailableControl`], a test's), so
     /// a capture and a test show it from their first frame.
     pub fn with_parts_and_control(
-        cx: PaneCx,
+        sections: crate::sections::Sections,
         status: UpdateStatus,
         prefs: UpdatePrefs,
         status_provider: StatusProvider,
@@ -1084,7 +1093,7 @@ impl UpdatesModel {
             codec_status: Arc::new(CodecPackStatus::default),
             windows_support: Arc::new(|| WindowsReadiness::NotOffered),
         };
-        let mut model = Self::assemble(cx, readers, clock, prefs);
+        let mut model = Self::assemble(sections, readers, clock, prefs);
         model.adopt(read);
         model.changed = false;
         model
@@ -1092,7 +1101,7 @@ impl UpdatesModel {
 
     /// What a capture shows: a staged image waiting for a restart, and
     /// nothing that reaches the system.
-    pub fn sample(cx: PaneCx) -> Self {
+    pub fn sample(sections: crate::sections::Sections) -> Self {
         let status = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
             staged_version: Some("Tilo 2026.07".into()),
@@ -1100,7 +1109,7 @@ impl UpdatesModel {
         };
         let staged = status.clone();
         Self::with_parts_and_control(
-            cx,
+            sections,
             status,
             UpdatePrefs::default(),
             Arc::new(move || staged.clone()),
@@ -1931,7 +1940,7 @@ impl UpdatesModel {
     /// Keep what the machine reported in the update preferences, through
     /// the section's verb `record`.
     fn record(&self, record: impl Into<ui::tilo_resource::Invoke<UpdatePrefs>>) {
-        if let Err(e) = self.cx.invoke_section::<UpdatePrefs>(record) {
+        if let Err(e) = self.sections.invoke::<UpdatePrefs>(record) {
             warn!(target: "tilo::settings", op = "update_prefs_save", error = %e, "failed to keep update prefs");
         }
     }
@@ -2669,16 +2678,26 @@ fn button(cx: &ViewCx<Settings>, control_id: &str, label: &str, effect: UpdatesE
 /// What the updates area keeps for the window: the model, read from the
 /// system when first needed.
 pub struct UpdatesArea {
-    cx: PaneCx,
+    /// The settings document the update preferences are read from.
+    storage: ui::storage::AppStorage,
+    /// The update preferences' actions.
+    sections: crate::sections::Sections,
+    /// Whether the model reads this device's system tools.
+    devices: bool,
+    /// The installed formats a capture shows; `None` in a live window.
+    codec_status: Option<CodecPackStatus>,
     model: std::cell::OnceCell<Rc<RefCell<UpdatesModel>>>,
     /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
 impl UpdatesArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            storage: cx.storage.clone(),
+            sections: cx.sections.clone(),
+            devices: cx.devices,
+            codec_status: cx.scene().and_then(|scene| scene.codec_status.clone()),
             model: std::cell::OnceCell::new(),
             shown: LocalState::new(0),
         }
@@ -2688,13 +2707,13 @@ impl UpdatesArea {
     /// A live model reads the system off the UI thread.
     pub fn model(&self) -> &Rc<RefCell<UpdatesModel>> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                UpdatesModel::new(self.cx.clone())
+            let model = if self.devices {
+                UpdatesModel::new(&self.storage, self.sections.clone())
             } else {
-                UpdatesModel::sample(self.cx.clone())
+                UpdatesModel::sample(self.sections.clone())
             };
-            let model = if !self.cx.reaches_devices()
-                && let Some(status) = self.cx.scene().and_then(|scene| scene.codec_status.clone())
+            let model = if !self.devices
+                && let Some(status) = self.codec_status.clone()
             {
                 model.with_codec_pack(
                     Arc::new(move || status.clone()),

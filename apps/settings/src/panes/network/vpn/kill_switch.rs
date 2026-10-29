@@ -22,7 +22,7 @@ use provider_settings_ui::widgets::{Item, error_caption, row, setting_row_descri
 impl NetworkModel {
     /// The kill switch of the profile `uuid`, while it is on.
     pub(super) fn kill_switch(&self, uuid: &str) -> Option<ProfileKillSwitch> {
-        let document = self.cx.storage().settings_document();
+        let document = self.reach.storage.settings_document();
         PROFILE_KILL_SWITCHES
             .from_section(&document.section(device_vpn::SECTION))
             .remove(uuid)
@@ -62,8 +62,9 @@ impl NetworkModel {
         if next == previous {
             return Ok(Begun::Done);
         }
-        self.cx
-            .invoke_section(DeviceVpnPrefs::SET_PROFILE_KILL_SWITCH.with((
+        self.reach
+            .sections
+            .invoke(DeviceVpnPrefs::SET_PROFILE_KILL_SWITCH.with((
                 vpn.uuid.clone(),
                 on,
                 allow_local,
@@ -81,8 +82,9 @@ impl NetworkModel {
         if self.kill_switch(uuid).is_none() {
             return Ok(());
         }
-        self.cx
-            .invoke_section(DeviceVpnPrefs::RELEASE_PROFILE.with(uuid.to_owned()))
+        self.reach
+            .sections
+            .invoke(DeviceVpnPrefs::RELEASE_PROFILE.with(uuid.to_owned()))
     }
 
     /// Show the profile `uuid` as no longer blocking until the session
@@ -107,8 +109,9 @@ impl NetworkModel {
             if self.kill_switch(uuid).is_none() {
                 return Ok(());
             }
-            self.cx
-                .invoke_section(DeviceVpnPrefs::SET_PROFILE_KILL_SWITCH.with((
+            self.reach
+                .sections
+                .invoke(DeviceVpnPrefs::SET_PROFILE_KILL_SWITCH.with((
                     uuid.to_owned(),
                     false,
                     None,
@@ -186,7 +189,7 @@ impl NetworkModel {
             allow_local: blocking,
         };
         // A capture's fixture: written as it would be stored.
-        let document = self.cx.storage().settings_document();
+        let document = self.reach.storage.settings_document();
         let mut switches =
             PROFILE_KILL_SWITCHES.from_section(&document.section(device_vpn::SECTION));
         switches.insert(uuid.to_owned(), switch);

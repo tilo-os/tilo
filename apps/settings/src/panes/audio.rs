@@ -42,9 +42,9 @@ use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
 
+use crate::area::AreaContext;
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 
 mod level_meter;
@@ -531,7 +531,12 @@ pub type SharedModel = Rc<std::cell::RefCell<AudioModel>>;
 /// What the Sound area keeps for the window: the model, read when first
 /// needed.
 pub struct AudioArea {
-    cx: PaneCx,
+    /// Whether it reads and drives this device's audio.
+    devices: bool,
+    /// The settings document the remembered devices are read from.
+    storage: ui::storage::AppStorage,
+    /// The sound sections' actions.
+    sections: crate::sections::Sections,
     model: std::cell::OnceCell<SharedModel>,
     /// The device's audio, read off the UI thread after the window's first
     /// frame ([`Self::start_read`]); `None` stands for the sample graph a
@@ -545,9 +550,11 @@ pub struct AudioArea {
 }
 
 impl AudioArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            storage: cx.storage.clone(),
+            sections: cx.sections.clone(),
             model: std::cell::OnceCell::new(),
             read: crate::device_read::DeviceRead::default(),
             shown: LocalState::new(0),
@@ -587,8 +594,8 @@ impl AudioArea {
         self.model.get_or_init(|| {
             let read = self.read.take().unwrap_or_else(|| self.read_now());
             let model = match read {
-                Some(read) => AudioModel::from_read(self.cx.clone(), read),
-                None => AudioModel::sample(self.cx.clone()),
+                Some(read) => AudioModel::from_read(self.sections.clone(), read),
+                None => AudioModel::sample(self.sections.clone()),
             };
             Rc::new(std::cell::RefCell::new(model))
         })
@@ -604,12 +611,8 @@ impl AudioArea {
     /// Whether the area reaches the device, and the remembered output and
     /// input devices a read routes to again.
     fn route(&self) -> (bool, Option<String>, Option<String>) {
-        let prefs = self.cx.settings::<AudioDevicePrefs>().get();
-        (
-            self.cx.reaches_devices(),
-            prefs.output_device,
-            prefs.input_device,
-        )
+        let prefs = self.storage.settings::<AudioDevicePrefs>().get();
+        (self.devices, prefs.output_device, prefs.input_device)
     }
 
     /// Read the device's audio off the UI thread; `false` when it has been
@@ -728,8 +731,16 @@ fn stream_live_row(stream: &AudioStream) -> LiveRow {
         }))
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts: whether it drives the device, what the runtime offers, what changed"
+)]
 pub struct AudioModel {
-    cx: PaneCx,
+    /// Whether it drives this device's audio: a capture's and a test's
+    /// show what they were given.
+    reaches_devices: bool,
+    /// The sound sections' actions, which remember the devices chosen.
+    sections: crate::sections::Sections,
     output: Arc<dyn OutputControl>,
     input: Arc<dyn InputControl>,
     device: Arc<dyn DeviceControl>,
@@ -1015,7 +1026,7 @@ impl AudioModel {
     }
 
     /// The model over what `read` found on this device.
-    fn from_read(cx: PaneCx, read: AudioRead) -> Self {
+    fn from_read(sections: crate::sections::Sections, read: AudioRead) -> Self {
         let AudioRead {
             initial,
             volume_error,
@@ -1062,13 +1073,15 @@ impl AudioModel {
             page: std::rc::Weak::new(),
             sets: SpeakerSets::default(),
             speakers: Arc::new(crate::speaker_setup::BrokerSpeakers),
-            cx,
+            reaches_devices: true,
+            sections,
         }
     }
 
-    /// A model over `cx`'s settings with no devices and controls that do
-    /// nothing; tests give it what they drive.
-    fn detached(cx: PaneCx) -> Self {
+    /// A model with no devices and controls that do nothing, remembering
+    /// the devices chosen through `sections`; tests give it what they
+    /// drive.
+    fn detached(sections: crate::sections::Sections) -> Self {
         Self {
             output: Arc::new(NoopOutput),
             input: Arc::new(NoopInput),
@@ -1102,13 +1115,14 @@ impl AudioModel {
             page: std::rc::Weak::new(),
             sets: SpeakerSets::default(),
             speakers: Arc::new(NoSpeakerSets),
-            cx,
+            reaches_devices: false,
+            sections,
         }
     }
 
     /// What a screenshot and the crate's tests show: speakers and
     /// headphones, a microphone, and three apps playing or recording.
-    fn sample(cx: PaneCx) -> Self {
+    fn sample(sections: crate::sections::Sections) -> Self {
         use media::audio::AudioDevice as GDevice;
         let sink = |id, serial, name: &str, def| GDevice {
             id,
@@ -1146,7 +1160,7 @@ impl AudioModel {
             record_streams: vec![stream(95, 340, "Meeting", "Microphone", 52, false, 0.75)],
             hardware: vec![],
         };
-        let mut model = Self::detached(cx);
+        let mut model = Self::detached(sections);
         model.speakers = Arc::new(SampleSpeakerSets);
         model.volume = 0.65;
         model.input_volume = 0.7;
@@ -1556,8 +1570,8 @@ impl AudioModel {
     /// Remember the device chosen, through the `audio-device` section's
     /// verb.
     fn remember(&self, invoke: ui::tilo_resource::Invoke<AudioDevicePrefs>) -> Result<(), String> {
-        self.cx
-            .invoke_section(invoke)
+        self.sections
+            .invoke(invoke)
             .map_err(|error| t_args("sound-notice-pref-err", &[("error", error.into())]))
     }
 
@@ -1681,7 +1695,7 @@ impl AudioModel {
     /// start its capture, move it when the default output changes, and let
     /// it go when it ends. Without a pane nothing is captured.
     fn follow_output_meter(&self) {
-        if !self.cx.reaches_devices() {
+        if !self.reaches_devices {
             // A capture or a test shows the level it was given.
             return;
         }
@@ -1765,7 +1779,7 @@ impl AudioModel {
     /// building a page again never restarts them.
     fn follow(&mut self) -> Rc<dyn std::any::Any> {
         let page = crate::watch::shared(&mut self.page, || ());
-        if !self.cx.reaches_devices() {
+        if !self.reaches_devices {
             return page;
         }
         let metering = self.metering.upgrade().unwrap_or_else(|| {
@@ -2025,8 +2039,7 @@ mod tests {
     }
 
     fn model() -> AudioModel {
-        let profile = tempfile::tempdir().unwrap().keep();
-        AudioModel::detached(PaneCx::in_profile(profile))
+        AudioModel::detached(crate::sections::Sections::default())
     }
 
     fn recording(rec: &Arc<RecordingDispatcher>) -> AudioModel {
@@ -2414,11 +2427,11 @@ mod tests {
             let mut model = model().with_graph(graph, Arc::new(NoopGraphControl));
             model.runtime_caps = runtime.capabilities();
             model.runtime = runtime.clone();
-            model
-                .cx
-                .settings::<AudioPrefs>()
-                .update(|prefs| prefs.balance = 0.75)
-                .unwrap();
+            let profile = tempfile::tempdir().unwrap();
+            let stored = crate::area::AreaContext::in_profile(profile.path().to_path_buf())
+                .storage
+                .settings::<AudioPrefs>();
+            stored.update(|prefs| prefs.balance = 0.75).unwrap();
             model
                 .apply(&AudioEffect::TestSpeaker {
                     channel: "left".into(),
@@ -2430,7 +2443,7 @@ mod tests {
                 ["test(alsa_speakers,true)", "meter(alsa_input.mic)",]
             );
             assert_eq!(drops.load(Ordering::SeqCst), 0);
-            let prefs = model.cx.settings::<AudioPrefs>().get();
+            let prefs = stored.get();
             assert!((prefs.balance - 0.75).abs() < 0.001);
             drop(model);
             assert_eq!(
@@ -2647,7 +2660,7 @@ mod tests {
     /// page's controls change them.
     #[test]
     fn echo_cancellation_and_system_sounds_are_the_persons_settings() {
-        use crate::host::testing::{edit_path, invoke_section};
+        use crate::testing::{edit_path, invoke_section};
         const AUDIO: &str = "settings.audio";
         let mut app = on_sound();
         assert!(

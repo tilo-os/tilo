@@ -34,9 +34,9 @@ use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::tilo_resource;
 use ui::widget::{Dropdown, Element};
 
+use crate::area::AreaContext;
 use crate::device_read::Reading;
 use crate::effects::effect;
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -120,7 +120,7 @@ pub(crate) mod values {
         let reading = area(app)?.reading.get()?;
         let zone = reading.status.ok()?.timezone?;
         let city = zone_name(&zone)?;
-        Some(if follows.get::<ClockPrefs>(app.host()).automatic_zone {
+        Some(if follows.get::<ClockPrefs>(app.storage()).automatic_zone {
             crate::i18n::t_args(
                 "time-zone-automatic-now",
                 &[("zone", ui::i18n::ArgValue::from(city.as_str()))],
@@ -581,14 +581,14 @@ impl TimeDateArea {
 
     /// The area over this device's clock, or a stand-in for a capture.
     /// Nothing is read until the page opens.
-    pub fn new(cx: &PaneCx) -> Self {
-        let clock: Arc<dyn Clock> = if cx.reaches_devices() {
+    pub fn new(cx: &AreaContext) -> Self {
+        let clock: Arc<dyn Clock> = if cx.devices {
             Arc::new(SystemClock)
         } else {
             Arc::new(SampleClock::default())
         };
         Self {
-            live: cx.reaches_devices(),
+            live: cx.devices,
             ..Self::over(clock)
         }
     }
@@ -673,8 +673,8 @@ pub(crate) fn answer(
     {
         // The session's zone follower sets the zone from here on.
         return app
-            .host()
-            .invoke_section::<ClockPrefs>(ClockPrefs::paths().automatic_zone.set(true))
+            .sections()
+            .invoke::<ClockPrefs>(ClockPrefs::paths().automatic_zone.set(true))
             .map(|()| Effected::done())
             .map_err(|error| {
                 format!("the time zone could not be set to follow this device: {error}")
@@ -709,9 +709,8 @@ pub(crate) fn answer(
                     if manual_zone {
                         // A zone the person picked stays: it no longer
                         // follows the device's location.
-                        app.host().invoke_section::<ClockPrefs>(
-                            ClockPrefs::paths().automatic_zone.set(false),
-                        )?;
+                        app.sections()
+                            .invoke::<ClockPrefs>(ClockPrefs::paths().automatic_zone.set(false))?;
                     }
                     Ok(Effected::done())
                 }
@@ -1536,7 +1535,7 @@ mod tests {
             .is_err()
         );
 
-        crate::host::testing::edit_field(&mut app, "settings.locale", "time_format", "H12")
+        crate::testing::edit_field(&mut app, "settings.locale", "time_format", "H12")
             .expect("the clock format is the locale's");
         assert_eq!(app.settings::<Locale>().get().time_format, TimeStyle::H12);
         let frame = app.harness().inspection_json().unwrap();

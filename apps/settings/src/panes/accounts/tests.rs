@@ -1,8 +1,8 @@
 use super::*;
 use crate::accounts::sample_directory;
 use crate::effects::page_of;
-use crate::host::testing::actions_of;
 use crate::resource::SettingsShell;
+use crate::testing::actions_of;
 use ui::framework::testing::TestApp;
 
 struct RejectCandidate;
@@ -131,7 +131,7 @@ fn access_nodes(w: &dyn Widget, nodes: &mut Vec<ui::a11y::AccessNode>) {
 /// its page: the page the window builds over it, its controls bound to
 /// the actions the window publishes.
 pub(super) fn window_showing(pane: AccountsPane) -> TestApp<SettingsShell> {
-    crate::area::replace_in_next_window(move |context| AccountsArea::holding(context.cx, pane));
+    crate::area::replace_in_next_window(move |context| AccountsArea::holding(context, pane));
     let mut app = TestApp::<SettingsShell>::new().expect("Settings opens headlessly");
     crate::effects::show_pane(&mut app, crate::categories::Category::ExternalAccounts);
     app.settle();
@@ -757,7 +757,7 @@ fn the_area_builds_its_model_from_the_read_it_started() {
     let mut vault = root.vault();
     vault.put(&id, &accounts::Secret::password("test-only-password"));
     vault.try_save().expect("the vault is saved");
-    let cx = PaneCx::in_profile(dir.path().to_path_buf());
+    let cx = crate::area::AreaContext::in_profile(dir.path().to_path_buf());
     let area = AccountsArea::new(&cx).with_account_root(root.clone());
     assert!(area.start_read(), "the first read starts");
     assert!(!area.start_read(), "one read at a time");

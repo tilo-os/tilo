@@ -94,7 +94,8 @@ mod tests {
     /// The settings of the profile at `root` after storing `value` as its
     /// section, as the panes and the door store it.
     fn store<T: SettingsSchema>(root: &std::path::Path, value: &T) -> serde_json::Value {
-        crate::host::PaneCx::in_profile(root.to_owned())
+        crate::area::AreaContext::in_profile(root.to_owned())
+            .storage
             .settings::<T>()
             .set(value)
             .unwrap();
@@ -131,7 +132,8 @@ mod tests {
     /// Section `T` as read from settings holding `text`.
     fn read<T: SettingsSchema>(text: &str) -> T {
         let dir = seeded(text);
-        crate::host::PaneCx::in_profile(dir.path().to_owned())
+        crate::area::AreaContext::in_profile(dir.path().to_owned())
+            .storage
             .settings::<T>()
             .get()
     }

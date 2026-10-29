@@ -20,9 +20,9 @@ use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, ChipStyle, ControlSize, Element, Row, RowMenu, Widget};
 
+use crate::area::AreaContext;
 use crate::channel;
 use crate::effects::SettingsEffect;
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -309,16 +309,17 @@ impl PrintService for CupsService {
 /// What the printers area keeps for the window: the model, read when
 /// first needed.
 pub struct PrintersArea {
-    cx: PaneCx,
+    /// Whether the model reads this device's print service.
+    devices: bool,
     model: OnceCell<Rc<RefCell<PrintersModel>>>,
     /// Moves whenever what the page shows of the model does.
     shown: LocalState<u64>,
 }
 
 impl PrintersArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
             model: OnceCell::new(),
             shown: LocalState::new(0),
         }
@@ -328,7 +329,7 @@ impl PrintersArea {
     /// for a screenshot.
     pub fn model(&self) -> &Rc<RefCell<PrintersModel>> {
         self.model.get_or_init(|| {
-            let sample = !self.cx.reaches_devices();
+            let sample = !self.devices;
             let service: Arc<dyn PrintService> = if sample {
                 Arc::new(SamplePrintService)
             } else {
@@ -1144,7 +1145,9 @@ mod tests {
     #[test]
     fn sample_area_rows_do_not_wait_for_workers() {
         let profile = tempfile::tempdir().unwrap();
-        let area = PrintersArea::new(&PaneCx::in_profile(profile.path().to_path_buf()));
+        let area = PrintersArea::new(&crate::area::AreaContext::in_profile(
+            profile.path().to_path_buf(),
+        ));
         assert_eq!(
             area.rows().len(),
             2,

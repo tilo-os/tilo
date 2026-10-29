@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use runtime_portal::runtime_request::{Client, OfferedLanguage, Response};
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx};
+use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::tilo_resource;
 
 use crate::device_read::Reading;
@@ -144,7 +144,7 @@ pub const DEVICE: &str = "device";
 pub(crate) fn value(app: &SettingsApp, follows: &crate::setting::Follows) -> String {
     name(
         follows
-            .get::<AppearancePrefs>(app.host())
+            .get::<AppearancePrefs>(app.storage())
             .language
             .as_deref(),
     )
@@ -251,8 +251,9 @@ pub(crate) fn answer(
                 Chosen::Language(locale) => Some(locale),
             };
             return app
-                .host()
-                .update::<AppearancePrefs>(move |prefs| prefs.language = language);
+                .sections()
+                .invoke::<AppearancePrefs>(AppearancePrefs::paths().language.set(language))
+                .map(|()| Effected::done());
         }
     };
     languages.failed.set(None);
@@ -269,8 +270,11 @@ pub(crate) fn answer(
                     area.offered.refresh();
                     // The pack is on disk: this window reads it too.
                     ui::i18n::refresh_language_packs();
-                    app.host()
-                        .update::<AppearancePrefs>(move |prefs| prefs.language = Some(chosen))
+                    app.sections()
+                        .invoke::<AppearancePrefs>(
+                            AppearancePrefs::paths().language.set(Some(chosen)),
+                        )
+                        .map(|()| Effected::done())
                 }
                 Err(error) => {
                     area.failed.set(Some(error.clone()));

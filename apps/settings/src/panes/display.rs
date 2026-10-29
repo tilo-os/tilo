@@ -35,9 +35,9 @@ use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, ActionRef, Effect};
 use ui::widget::{Dropdown, Slider, Toggle};
 
+use crate::area::AreaContext;
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::{DisplayPrefs, NightLightPrefs};
 use crate::resource::Settings;
@@ -881,7 +881,15 @@ pub type SharedModel = Rc<std::cell::RefCell<DisplayModel>>;
 /// What the Displays area keeps for the window: the model, read when first
 /// needed.
 pub struct DisplayArea {
-    cx: PaneCx,
+    /// Whether the model is over this device's displays.
+    devices: bool,
+    /// The settings document the arrangement and the change being tried
+    /// are read from.
+    storage: ui::storage::AppStorage,
+    /// The display sections' actions.
+    sections: crate::sections::Sections,
+    /// The displays a capture shows; `None` in a live window.
+    scene: Option<Rc<crate::scenarios::CaptureScene>>,
     model: std::cell::OnceCell<SharedModel>,
     /// Moves whenever what the page shows of the displays does: a new
     /// reading, a staged or settled change, a notice, another display
@@ -890,9 +898,12 @@ pub struct DisplayArea {
 }
 
 impl DisplayArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            storage: cx.storage.clone(),
+            sections: cx.sections.clone(),
+            scene: cx.scene.clone(),
             model: std::cell::OnceCell::new(),
             shown: LocalState::new(0),
         }
@@ -902,10 +913,11 @@ impl DisplayArea {
     /// screenshot.
     pub fn model(&self) -> &SharedModel {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                DisplayModel::of_device(self.cx.clone())
+            let (storage, sections) = (self.storage.clone(), self.sections.clone());
+            let model = if self.devices {
+                DisplayModel::of_device(storage, sections)
             } else {
-                DisplayModel::sample(self.cx.clone())
+                DisplayModel::sample(storage, sections, self.scene.as_deref())
             };
             Rc::new(std::cell::RefCell::new(model))
         })
@@ -967,7 +979,11 @@ impl DisplayArea {
     reason = "independent facts: whose displays, what the hardware offers, what awaits an answer, whether it changed"
 )]
 pub struct DisplayModel {
-    cx: PaneCx,
+    /// The settings document the arrangement and the change being tried
+    /// are read from.
+    storage: ui::storage::AppStorage,
+    /// The display sections' actions, which store the arrangement.
+    sections: crate::sections::Sections,
     /// Whether the outputs, arrangement and transactions are this device's.
     of_device: bool,
     brightness_control: Arc<dyn BrightnessControl>,
@@ -1151,7 +1167,7 @@ impl DisplayModel {
 
     /// This device's displays; brightness is probed and set off the UI
     /// thread.
-    fn of_device(cx: PaneCx) -> Self {
+    fn of_device(storage: ui::storage::AppStorage, sections: crate::sections::Sections) -> Self {
         let (probe_tx, probe_rx) = crate::channel::channel();
         let brightness_error = crate::device_read::thread(
             "settings-display-probe",
@@ -1194,7 +1210,8 @@ impl DisplayModel {
         }));
         let mut model = Self {
             pending_change: None,
-            cx,
+            storage,
+            sections,
             of_device: true,
             brightness_control: control,
             outputs,
@@ -1248,11 +1265,13 @@ impl DisplayModel {
     /// A built-in panel at 62 %, with an ambient light sensor, and for the
     /// displays captures a desk monitor beside it; nothing it does reaches
     /// the device or its files.
-    fn sample(cx: PaneCx) -> Self {
-        let device_displays = cx
-            .scene()
-            .map_or_else(Vec::new, |scene| scene.device_displays.clone());
-        let displays = cx.scene().and_then(|scene| scene.displays);
+    fn sample(
+        storage: ui::storage::AppStorage,
+        sections: crate::sections::Sections,
+        scene: Option<&crate::scenarios::CaptureScene>,
+    ) -> Self {
+        let device_displays = scene.map_or_else(Vec::new, |scene| scene.device_displays.clone());
+        let displays = scene.and_then(|scene| scene.displays);
         let mode = OutputMode {
             width: 1920,
             height: 1080,
@@ -1282,11 +1301,8 @@ impl DisplayModel {
         if displays.is_some() {
             outputs.push(sample_monitor());
         }
-        let mut model = Self::detached(cx).with_outputs(outputs);
-        model.person_devices = model
-            .cx
-            .scene()
-            .map_or_else(Vec::new, |scene| scene.person_devices.clone());
+        let mut model = Self::detached(storage, sections).with_outputs(outputs);
+        model.person_devices = scene.map_or_else(Vec::new, |scene| scene.person_devices.clone());
         model.device_displays = device_displays;
         if let Some(sample) = displays {
             model.stage_sample(sample);
@@ -1344,10 +1360,11 @@ impl DisplayModel {
 
     /// A model with no outputs whose brightness changes nothing; tests give
     /// it what they drive.
-    fn detached(cx: PaneCx) -> Self {
+    fn detached(storage: ui::storage::AppStorage, sections: crate::sections::Sections) -> Self {
         Self {
             pending_change: None,
-            cx,
+            storage,
+            sections,
             of_device: false,
             brightness_control: Arc::new(NoBrightness),
             outputs: Vec::new(),

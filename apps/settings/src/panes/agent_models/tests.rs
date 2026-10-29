@@ -148,7 +148,10 @@ fn in_process_models_are_set_up_with_the_same_confirmation() {
     // Case `each_model_is_a_row_with_its_install`.
     {
         let model = model_over(mock(with_subject(None)));
-        let area = AgentModelsArea::new(&model.cx);
+        let profile = tempfile::tempdir().unwrap();
+        let area = AgentModelsArea::new(&crate::area::AreaContext::in_profile(
+            profile.path().to_path_buf(),
+        ));
         let _ = area.model.set(Rc::new(std::cell::RefCell::new(model)));
         let published = area
             .rows()
@@ -577,17 +580,17 @@ pub(super) fn hosted_model(
 ) {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
     let cx = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.host().clone())
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.area_context())
         .unwrap();
-    let mut model = AgentModelsModel::new(cx, control);
+    let mut model = AgentModelsModel::new(&cx.storage, cx.sections, cx.provider_admin, control);
     model.follow_local_profile = false;
     (app, model)
 }
 
 pub(super) fn model_over(control: Arc<MockControl>) -> AgentModelsModel {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
-    let mut model = AgentModelsModel::new(cx, control);
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
+    let mut model = AgentModelsModel::new(&cx.storage, cx.sections, cx.provider_admin, control);
     model.follow_local_profile = false;
     model
 }
@@ -765,12 +768,12 @@ fn model_request_limits_use_the_published_settings_effects() {
     profile.models[0].context_window = Some(262_144);
     let profile_id = profile.id.clone();
     crate::area::replace_in_next_window(move |context| {
-        let area = crate::panes::agent_models::AgentModelsArea::new(context.cx);
+        let area = crate::panes::agent_models::AgentModelsArea::new(context);
         area.model().borrow_mut().follow_local_profile = false;
         area
     });
     let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    crate::host::testing::invoke_section(
+    crate::testing::invoke_section(
         &mut app,
         "settings.hosted-agent-providers",
         "set-providers",
@@ -1047,7 +1050,7 @@ fn until_finished(finished: impl Fn() -> bool) {
 #[test]
 fn the_area_builds_its_model_from_the_read_it_started() {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
     let area = AgentModelsArea::new(&cx);
     assert!(area.start_read(), "the first read starts");
     assert!(!area.start_read(), "one read at a time");
@@ -1072,10 +1075,16 @@ fn the_area_builds_its_model_from_the_read_it_started() {
 #[test]
 fn a_model_shows_what_its_read_asked() {
     let profile = tempfile::tempdir().unwrap();
-    let cx = PaneCx::in_profile(profile.path().to_path_buf());
+    let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
     let control = mock(snapshot(None));
     let read = AgentModelsRead::of(control.as_ref(), Vec::new());
-    let model = AgentModelsModel::from_read(cx.clone(), control.clone(), read);
+    let model = AgentModelsModel::from_read(
+        &cx.storage,
+        cx.sections.clone(),
+        cx.provider_admin.clone(),
+        control.clone(),
+        read,
+    );
     assert!(model.manager_available);
     assert_eq!(
         model
@@ -1090,7 +1099,8 @@ fn a_model_shows_what_its_read_asked() {
         keys: HashMap::new(),
         hub_token: Ok(HubTokenState::None),
     };
-    let model = AgentModelsModel::from_read(cx, control, down);
+    let model =
+        AgentModelsModel::from_read(&cx.storage, cx.sections, cx.provider_admin, control, down);
     assert!(!model.manager_available);
     assert_eq!(
         model.notice,

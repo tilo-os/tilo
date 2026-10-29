@@ -275,7 +275,7 @@ fn connected_account_files_handoff_is_typed_and_matches_files_resource() {
             .unwrap();
         assert_eq!(published.build_args([]).unwrap(), encoded);
         let mut labels = Vec::new();
-        crate::host::testing::labels_of(
+        crate::testing::labels_of(
             crate::effects::page_of(app.harness().root_widget()),
             "Button",
             &mut labels,

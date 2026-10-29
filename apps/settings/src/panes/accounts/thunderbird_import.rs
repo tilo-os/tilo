@@ -35,7 +35,7 @@ pub(super) fn discover(
 }
 
 pub(super) fn choose(app: &SettingsApp, cx: &mut EffectCx<Settings>) -> EffectAnswer {
-    if !app.host().reaches_devices() {
+    if !app.reaches_devices() {
         return Err(t("accounts-import-chooser-unavailable"));
     }
     let revision = {

@@ -28,7 +28,6 @@ use ui::framework::ViewCx;
 use ui::widget::{Element, Picture};
 
 use crate::accessibility_settings::{AccessibilityDevicePrefs, AccessibilitySettings};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
@@ -157,9 +156,10 @@ impl Software {
         }
     }
 
-    /// What `cx` reaches: this device's software, or the sample.
-    pub fn for_host(cx: &PaneCx) -> Self {
-        if cx.reaches_devices() {
+    /// This device's software where the areas reach it (`devices`), else
+    /// the sample.
+    pub fn for_device(devices: bool) -> Self {
+        if devices {
             Self::installed()
         } else {
             Self::sample()
@@ -405,7 +405,7 @@ pub(crate) mod values {
     /// The screen reader, a switch where there is a speech engine for it.
     pub(crate) fn screen_reader(app: &SettingsApp, follows: &Follows) -> Read {
         let on = follows
-            .get::<AccessibilitySettings>(app.host())
+            .get::<AccessibilitySettings>(app.storage())
             .screen_reader;
         if super::software(app).speech.is_some() {
             Read::Switch(on)
@@ -426,7 +426,7 @@ pub(crate) mod values {
 
     pub(crate) fn dictation_language(app: &SettingsApp, follows: &Follows) -> String {
         let language = follows
-            .get::<AccessibilitySettings>(app.host())
+            .get::<AccessibilitySettings>(app.storage())
             .dictation_language;
         crate::i18n::t(&language.label_key())
     }
@@ -541,8 +541,8 @@ pub(crate) fn visual_alerts(cx: &ViewCx<AccessibilitySettings>) -> Item {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
-    use crate::host::testing::{ACCESSIBILITY, edit_field};
     use crate::resource::SettingsShell;
+    use crate::testing::{ACCESSIBILITY, edit_field};
     use tilo_accessibility_settings::OnScreenKeyboard;
     use ui::prelude::TestApp;
     use ui::widget::Widget;
@@ -603,20 +603,10 @@ mod tests {
     #[test]
     fn accessibility_effects_write_their_sections() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::APPEARANCE,
-            "high_contrast",
-            true,
-        )
-        .unwrap();
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::APPEARANCE,
-            "text_scale",
-            1.3,
-        )
-        .unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "high_contrast", true)
+            .unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "text_scale", 1.3)
+            .unwrap();
         let appearance = app.settings::<AppearancePrefs>().get();
         assert!(appearance.high_contrast);
         assert_eq!(appearance.text_scale, 1.30);

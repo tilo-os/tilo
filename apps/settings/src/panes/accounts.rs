@@ -38,8 +38,8 @@ use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Element, Row, RowMenu, Spacer, TextInput, TextInputKind, Widget};
 
 use crate::accounts::{AccountDirectory, AccountKind, AccountRoot, AccountView};
+use crate::area::AreaContext;
 use crate::effects::SettingsEffect;
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -578,7 +578,12 @@ fn cloud(
 /// What the External Accounts area keeps for the window: the model, read
 /// when first needed.
 pub struct AccountsArea {
-    cx: PaneCx,
+    /// The sample accounts and form a screenshot shows; `None` in a live
+    /// window.
+    scene: Option<Rc<crate::scenarios::CaptureScene>>,
+    /// The person's accounts with the services the workspace is connected
+    /// to, when the host lent them.
+    linked: ui::linked_accounts::LinkedAccounts,
     pub(crate) remote: ui::RemoteActions,
     removal: std::cell::RefCell<Option<browser_sessions::Removal>>,
     model: std::cell::OnceCell<Rc<std::cell::RefCell<AccountsPane>>>,
@@ -622,9 +627,10 @@ impl AccountsRead {
 }
 
 impl AccountsArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            scene: cx.scene.clone(),
+            linked: cx.linked.clone(),
             remote: ui::RemoteActions::current(),
             removal: std::cell::RefCell::default(),
             model: std::cell::OnceCell::new(),
@@ -638,7 +644,7 @@ impl AccountsArea {
     /// The area holding `pane` as its model, its linked accounts the
     /// window's unless `pane` was given its own.
     #[cfg(test)]
-    pub(crate) fn holding(cx: &PaneCx, mut pane: AccountsPane) -> Self {
+    pub(crate) fn holding(cx: &AreaContext, mut pane: AccountsPane) -> Self {
         let area = Self::new(cx);
         if pane.linked.is_none() {
             pane.linked = Some(cx.linked.clone());
@@ -651,7 +657,7 @@ impl AccountsArea {
     /// `false` when they have been opened or are being opened, or for a
     /// screenshot, which opens none of them.
     pub(crate) fn start_read(&self) -> bool {
-        if self.is_open() || self.cx.scene().is_some() {
+        if self.is_open() || self.scene.is_some() {
             return false;
         }
         let explicit = self
@@ -680,7 +686,7 @@ impl AccountsArea {
     /// accounts and the form its scene asks for.
     pub fn model(&self) -> &Rc<std::cell::RefCell<AccountsPane>> {
         self.model.get_or_init(|| {
-            let scene = self.cx.scene();
+            let scene = self.scene.as_deref();
             let root = scene
                 .and_then(|scene| scene.account_root.clone())
                 .map_or_else(
@@ -707,9 +713,9 @@ impl AccountsArea {
             }
             // Where the person stands with each connected service is asked
             // of the room's host; the pane shows it once answered.
-            self.cx.linked.refresh();
+            self.linked.refresh();
             Rc::new(std::cell::RefCell::new(
-                model.with_linked(self.cx.linked.clone()),
+                model.with_linked(self.linked.clone()),
             ))
         })
     }
@@ -749,13 +755,13 @@ impl AccountsArea {
 
     /// The person's accounts with the services the room is connected to.
     pub(crate) fn linked(&self) -> &ui::linked_accounts::LinkedAccounts {
-        &self.cx.linked
+        &self.linked
     }
 
     /// Show the linked accounts again when the room's host answered
     /// something new about them.
     fn follow_linked(&self) {
-        let revision = self.cx.linked.revision();
+        let revision = self.linked.revision();
         if self.linked_seen.replace(revision) != revision
             && let Some(model) = self.model.get()
         {

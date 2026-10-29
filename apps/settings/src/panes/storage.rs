@@ -33,9 +33,9 @@ use ui::i18n::ArgValue;
 use ui::tilo_resource;
 use ui::widget::{Button, Element};
 
+use crate::area::AreaContext;
 use crate::device_read::{Landed, Landing};
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::replies::Replies;
 use crate::resource::Settings;
@@ -398,8 +398,8 @@ struct DeviceStorage {
 }
 
 impl DeviceStorage {
-    fn of(cx: &PaneCx) -> Self {
-        if cx.reaches_devices() {
+    fn of(devices: bool) -> Self {
+        if devices {
             Self {
                 roots: StorageRoots::discover(),
                 disk: std::env::var_os("HOME").map(std::path::PathBuf::from),
@@ -446,7 +446,10 @@ impl StorageDevice for DeviceStorage {
 /// What the storage area keeps for the window: the device, and the model,
 /// scanned when first needed.
 pub struct StorageArea {
-    cx: PaneCx,
+    /// Whether it measures this device and asks its storage service.
+    devices: bool,
+    /// The stand-in devices a capture shows; `None` in a live window.
+    scene: Option<Rc<crate::scenarios::CaptureScene>>,
     device: std::cell::OnceCell<std::sync::Arc<dyn StorageDevice>>,
     model: std::cell::OnceCell<Rc<RefCell<StorageModel>>>,
     /// The window's client for the action door, which asks the person's
@@ -457,9 +460,10 @@ pub struct StorageArea {
 }
 
 impl StorageArea {
-    pub fn new(cx: &PaneCx, remote: ui::RemoteActions) -> Self {
+    pub fn new(cx: &AreaContext, remote: ui::RemoteActions) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            scene: cx.scene.clone(),
             device: std::cell::OnceCell::new(),
             model: std::cell::OnceCell::new(),
             remote,
@@ -472,7 +476,7 @@ impl StorageArea {
     fn device(&self) -> std::sync::Arc<dyn StorageDevice> {
         std::sync::Arc::clone(
             self.device
-                .get_or_init(|| std::sync::Arc::new(DeviceStorage::of(&self.cx))),
+                .get_or_init(|| std::sync::Arc::new(DeviceStorage::of(self.devices))),
         )
     }
 
@@ -491,20 +495,23 @@ impl StorageArea {
     /// person's other devices; a capture shows its stand-in devices.
     pub fn model(&self) -> &Rc<RefCell<StorageModel>> {
         self.model.get_or_init(|| {
-            let mut model = StorageModel::over(self.cx.clone(), self.device());
-            if self.cx.reaches_devices() {
+            let mut model = StorageModel::over(self.devices, self.device());
+            if self.devices {
                 model.refresh_sync();
                 model.ask_other_devices(other_devices::OtherDevices::new(self.remote.clone()));
             } else {
                 for device in self
-                    .cx
-                    .scene()
+                    .scene
+                    .as_deref()
                     .map(|scene| scene.storage_devices.clone())
                     .unwrap_or_default()
                 {
                     model.fleet.adopt(device);
                 }
-                model.capacity_stand_in = self.cx.scene().and_then(|scene| scene.storage_capacity);
+                model.capacity_stand_in = self
+                    .scene
+                    .as_deref()
+                    .and_then(|scene| scene.storage_capacity);
             }
             Rc::new(RefCell::new(model))
         })
@@ -551,8 +558,13 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     Some(build_with_drives(storage, drives))
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent facts: whether it asks the device, what runs, what changed"
+)]
 pub struct StorageModel {
-    cx: PaneCx,
+    /// Whether it asks this device's storage service.
+    devices: bool,
     /// What was last measured; `None` until the first scan lands.
     scan: Option<StorageScan>,
     /// The scan on its way, off the UI thread.
@@ -623,9 +635,9 @@ impl SyncRead {
 impl StorageModel {
     /// `device`'s storage, measured off the UI thread: the pane shows that
     /// it is being measured until the scan lands.
-    fn over(cx: PaneCx, device: std::sync::Arc<dyn StorageDevice>) -> Self {
+    fn over(devices: bool, device: std::sync::Arc<dyn StorageDevice>) -> Self {
         Self {
-            cx,
+            devices,
             scan: None,
             scanning: Some(Landing::start(move || device.scan())),
             cleaning: false,
@@ -765,7 +777,7 @@ impl StorageModel {
     /// storage service, or, in a capture, its stand-in.
     fn summarize(&mut self, reply: EffectReply) {
         self.wait(StorageEffect::STORAGE_SUMMARY.id, reply);
-        if !self.cx.reaches_devices() {
+        if !self.devices {
             let summary = self
                 .fleet
                 .this_device()
@@ -834,7 +846,7 @@ impl StorageModel {
             self.replies.fail(id, t("settings-storage-residency-busy"));
             return;
         }
-        if !self.cx.reaches_devices() {
+        if !self.devices {
             self.replies
                 .fail(id, t("settings-storage-accounting-unavailable"));
             return;
@@ -1569,10 +1581,8 @@ mod tests {
             let cache = tmp.path().join("cache");
             std::fs::create_dir_all(cache.join("so.tilo.browser")).unwrap();
             std::fs::write(cache.join("so.tilo.browser/http"), vec![0u8; 24]).unwrap();
-            let profile = tempfile::tempdir().unwrap();
-            let cx = PaneCx::in_profile(profile.path().to_path_buf());
             let mut pane = StorageModel::over(
-                cx,
+                false,
                 std::sync::Arc::new(DeviceStorage {
                     roots: StorageRoots {
                         app_payloads: None,

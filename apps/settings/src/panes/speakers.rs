@@ -27,9 +27,9 @@ use ui::widget::{Button, Dropdown, Element, TextInput, Toggle, Widget};
 
 use room_canvas::{RoomCanvas, RoomGesture};
 
+use crate::area::AreaContext;
 use crate::channel::{Receiver, Sender, channel};
 use crate::effects::SettingsEffect;
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::replies::Replies;
 use crate::resource::Settings;
@@ -223,7 +223,7 @@ pub(crate) fn answer(
 pub(crate) fn answer_flow(
     app: &SettingsApp,
     step: SpeakerFlow,
-    _cx: &mut EffectCx<Settings>,
+    cx: &EffectCx<Settings>,
 ) -> EffectAnswer {
     let job = crate::panes::speakers::area(app)
         .ok_or_else(crate::area::missing)?
@@ -231,7 +231,7 @@ pub(crate) fn answer_flow(
         .borrow_mut()
         .flow(step)?;
     if let Some(job) = job {
-        app.host().invoke(job);
+        cx.dispatcher().effect(&SettingsEffect::from(job));
     }
     Ok(Effected::done())
 }
@@ -346,7 +346,10 @@ struct Finished {
 /// What the speakers area keeps for the window: the model, asked for the
 /// sets when first needed.
 pub struct SpeakersArea {
-    cx: PaneCx,
+    /// Whether the model talks to this device's compositor.
+    devices: bool,
+    /// The layout a capture stages; `None` in a live window.
+    staged: Option<crate::scenarios::SpeakersSample>,
     model: std::cell::OnceCell<Rc<std::cell::RefCell<SpeakersModel>>>,
     /// Moves whenever what the page shows does: a step taken, a control
     /// changed, an answer of the compositor.
@@ -354,9 +357,10 @@ pub struct SpeakersArea {
 }
 
 impl SpeakersArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            staged: cx.scene().and_then(|scene| scene.speakers),
             model: std::cell::OnceCell::new(),
             shown: ui::LocalState::new(0),
         }
@@ -366,15 +370,15 @@ impl SpeakersArea {
     /// screenshot.
     pub fn model(&self) -> &Rc<std::cell::RefCell<SpeakersModel>> {
         self.model.get_or_init(|| {
-            let service: Arc<dyn SpeakerService> = if self.cx.reaches_devices() {
+            let service: Arc<dyn SpeakerService> = if self.devices {
                 Arc::new(BrokerSpeakers)
             } else {
                 Arc::new(SampleSpeakers)
             };
             Rc::new(std::cell::RefCell::new(SpeakersModel::new(
-                self.cx.clone(),
                 service,
-                !self.cx.reaches_devices(),
+                !self.devices,
+                self.staged,
             )))
         })
     }
@@ -424,7 +428,6 @@ impl SpeakersArea {
 }
 
 pub struct SpeakersModel {
-    cx: PaneCx,
     setup: SpeakerSetup,
     service: Arc<dyn SpeakerService>,
     sample: bool,
@@ -455,10 +458,15 @@ pub struct SpeakersModel {
 }
 
 impl SpeakersModel {
-    fn new(cx: PaneCx, service: Arc<dyn SpeakerService>, sample: bool) -> Self {
+    /// The model over `service`; a `sample` stages the layout capture
+    /// `staged`, if any.
+    fn new(
+        service: Arc<dyn SpeakerService>,
+        sample: bool,
+        staged: Option<crate::scenarios::SpeakersSample>,
+    ) -> Self {
         let (finished_tx, finished_rx) = channel();
         let mut model = Self {
-            cx,
             setup: SpeakerSetup::default(),
             service,
             sample,
@@ -484,16 +492,16 @@ impl SpeakersModel {
         model.refresh();
         if sample {
             model.poll_finished();
-            model.stage_capture();
+            model.stage_capture(staged);
         }
         model
     }
 
     /// A capture of the room layout step: four speakers chosen as a room,
     /// each told apart, and the selection or drag the scenario shows.
-    fn stage_capture(&mut self) {
+    fn stage_capture(&mut self, staged: Option<crate::scenarios::SpeakersSample>) {
         use crate::scenarios::SpeakersSample;
-        let Some(sample) = self.cx.scene().and_then(|scene| scene.speakers) else {
+        let Some(sample) = staged else {
             return;
         };
         self.setup.begin();
@@ -1793,7 +1801,9 @@ mod tests {
     #[test]
     fn sample_area_rows_do_not_wait_for_workers() {
         let profile = tempfile::tempdir().unwrap();
-        let area = SpeakersArea::new(&PaneCx::in_profile(profile.path().to_path_buf()));
+        let area = SpeakersArea::new(&crate::area::AreaContext::in_profile(
+            profile.path().to_path_buf(),
+        ));
         assert_eq!(
             area.rows().len(),
             1,
@@ -1881,12 +1891,7 @@ mod tests {
     }
 
     fn model(service: Arc<FakeService>) -> SpeakersModel {
-        let profile = tempfile::tempdir().unwrap();
-        SpeakersModel::new(
-            PaneCx::in_profile(profile.path().to_path_buf()),
-            service,
-            false,
-        )
+        SpeakersModel::new(service, false, None)
     }
 
     /// Run passes until the model has no call in flight.

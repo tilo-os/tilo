@@ -95,7 +95,7 @@ impl AgentModelsModel {
             ),
         };
         // A key is stored through provider administration only.
-        if service.issuer().is_none() && !self.cx.provider_admin.is_available() {
+        if service.issuer().is_none() && !self.provider_admin.is_available() {
             return Err(t("agent-provider-offline"));
         }
         self.cancel_vertex();
@@ -176,7 +176,7 @@ impl AgentModelsModel {
                 }
                 Ok(())
             }
-            (signed, existing, Some(reply)) if self.cx.provider_admin.is_available() => {
+            (signed, existing, Some(reply)) if self.provider_admin.is_available() => {
                 let mut config = self.panel.provider_config().clone();
                 let profile = (!existing).then(|| agent_sign_in::new_profile(setup.service, &id));
                 if let Some(profile) = &profile {
@@ -201,7 +201,7 @@ impl AgentModelsModel {
                 let profile = agent_sign_in::new_profile(setup.service, &id);
                 let mut config = self.providers.config();
                 config.upsert(profile);
-                self.providers.store(&self.cx, config)?;
+                self.providers.store(&self.sections, config)?;
                 self.panel.offline_config = self.providers.config();
                 self.read_vertex_keys();
                 self.notice = Some(t_args("agent-sign-in-done", &[("service", label.into())]));

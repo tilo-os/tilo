@@ -24,8 +24,8 @@ use ui::widget::{
 };
 use zeroize::Zeroizing;
 
+use crate::area::AreaContext;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -448,7 +448,8 @@ fn users_and_error(read: Result<Vec<DeviceUser>, String>) -> (Vec<DeviceUser>, O
 /// What the users area keeps for the window: the model, read when first
 /// needed.
 pub struct UsersArea {
-    cx: PaneCx,
+    /// Whether the model reads this device's accounts.
+    devices: bool,
     /// The window's client for the action door, shared with the other
     /// areas that act through the host.
     remote: ui::RemoteActions,
@@ -462,9 +463,9 @@ pub struct UsersArea {
 }
 
 impl UsersArea {
-    pub fn new(cx: &PaneCx, remote: ui::RemoteActions) -> Self {
+    pub fn new(cx: &AreaContext, remote: ui::RemoteActions) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
             remote,
             model: OnceCell::new(),
             shown: LocalState::new(0),
@@ -478,7 +479,7 @@ impl UsersArea {
             let read = self
                 .read
                 .take()
-                .unwrap_or_else(|| self.cx.reaches_devices().then(UsersRead::of_device));
+                .unwrap_or_else(|| self.devices.then(UsersRead::of_device));
             let model = match read {
                 Some(read) => UsersModel::from_read(
                     read,
@@ -514,7 +515,7 @@ impl UsersArea {
         if self.is_open() {
             return false;
         }
-        let device = self.cx.reaches_devices();
+        let device = self.devices;
         self.read.start(move || device.then(UsersRead::of_device))
     }
 
@@ -1691,7 +1692,7 @@ mod tests {
         // The accounts as a window has them before it has read them, their
         // read waiting on AccountsService.
         crate::area::replace_in_next_window(move |context| {
-            let area = UsersArea::new(context.cx, ui::RemoteActions::current());
+            let area = UsersArea::new(context, ui::RemoteActions::current());
             assert!(area.read.start(move || {
                 crate::device_read::off_ui_thread();
                 // The samples, once AccountsService answers.

@@ -67,14 +67,12 @@ pub mod area;
 pub mod categories;
 pub mod channel;
 pub mod resource;
-pub mod row;
 pub mod scenarios;
 pub use os_actions::codec_pack;
 pub use os_actions::windows_compat;
 pub mod continuity;
 pub mod device_read;
 pub mod effects;
-pub mod host;
 pub mod i18n;
 pub mod on_row;
 pub mod pages;
@@ -83,11 +81,14 @@ pub mod radios;
 pub mod replies;
 pub mod search;
 pub mod secrets;
+pub mod sections;
 pub mod setting;
 pub mod settings_app;
 pub mod sidebar;
 #[cfg(test)]
 pub(crate) mod stall;
+#[cfg(test)]
+pub(crate) mod testing;
 pub mod watch;
 pub mod window;
 

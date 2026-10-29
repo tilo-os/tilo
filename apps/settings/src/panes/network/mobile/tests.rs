@@ -3,14 +3,17 @@ use super::*;
 const PIN: &str = "1234";
 const PUK: &str = "12345678";
 
-fn cx() -> PaneCx {
+fn cx() -> crate::area::AreaContext {
     let profile = tempfile::tempdir().unwrap().keep();
-    PaneCx::in_profile(profile)
+    crate::area::AreaContext::in_profile(profile)
 }
 
 fn scripted(sample: Option<MobileSample>) -> (Arc<ScriptedModem>, MobileModel) {
     let device = Arc::new(ScriptedModem::new(sample));
-    let model = MobileModel::loaded_from(cx(), Arc::clone(&device) as Arc<dyn MobileService>);
+    let model = MobileModel::loaded_from(
+        Reach::of(&cx()),
+        Arc::clone(&device) as Arc<dyn MobileService>,
+    );
     (device, model)
 }
 
@@ -125,9 +128,7 @@ fn mobile_settings_follow_the_kernel_until_read_then_modem_manager() {
 
     let mut app = App::new().unwrap();
     let radios = app
-        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
-            settings.host().radios().clone()
-        })
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| settings.radios().clone())
         .expect("the Settings window is mounted");
     radios.set(Present::NONE);
     app.settle();
@@ -144,9 +145,9 @@ fn mobile_settings_follow_the_kernel_until_read_then_modem_manager() {
     let cx = cx();
     let unread = MobileArea::new(&cx);
     assert!(unread.statuses().is_empty(), "nothing has said yet");
-    cx.radios().set(Present::NONE);
+    cx.radios.set(Present::NONE);
     assert!(!unread.statuses().is_empty(), "the kernel lists no modem");
-    cx.radios().set(Present::ALL);
+    cx.radios.set(Present::ALL);
     assert!(
         unread.statuses().is_empty(),
         "a modem the kernel lists is offered before it is read"
@@ -246,7 +247,7 @@ fn roaming_is_said_and_switched_on_the_profile() {
 fn hosted(sample: MobileSample) -> (Arc<ScriptedModem>, App) {
     let device = Arc::new(ScriptedModem::new(Some(sample)));
     let service = Arc::clone(&device) as Arc<dyn MobileService>;
-    crate::area::replace_in_next_window(move |context| MobileArea::over(context.cx, service));
+    crate::area::replace_in_next_window(move |context| MobileArea::over(context, service));
     let mut app = App::new().unwrap();
     app.harness().resize((1280, 900)).unwrap();
     app.call("open-pane", serde_json::json!({"pane": "network"}))
@@ -710,7 +711,7 @@ fn the_other_sim_is_used_by_its_slot() {
 /// refused unless every month has it; resetting is the section's verb.
 #[test]
 fn the_count_the_reset_day_and_reset_are_the_sections() {
-    use crate::host::testing::{edit_field, invoke_section};
+    use crate::testing::{edit_field, invoke_section};
     let kind = <MobileDataUsage as ui::tilo_resource::Resource>::KIND;
     let (_, mut app) = hosted(MobileSample::Registered);
     app.call("refresh-mobile", serde_json::json!({})).unwrap();
@@ -773,7 +774,7 @@ fn the_count_the_reset_day_and_reset_are_the_sections() {
 #[test]
 fn the_count_kept_before_it_was_a_section_survives() {
     let cx = cx();
-    let document = cx.settings::<MobileDataUsage>().document().clone();
+    let document = cx.storage.settings::<MobileDataUsage>().document().clone();
     let app_local = ui::storage::Scope::DeviceLocal.section();
     let mut former = serde_json::Map::new();
     former.insert(
@@ -787,8 +788,8 @@ fn the_count_kept_before_it_was_a_section_survives() {
         }),
     );
     document.update_section(app_local, former).unwrap();
-    let _model = MobileModel::loaded_from(cx.clone(), Arc::new(ScriptedModem::new(None)));
-    let usage = cx.settings::<MobileDataUsage>().get();
+    let _model = MobileModel::loaded_from(Reach::of(&cx), Arc::new(ScriptedModem::new(None)));
+    let usage = cx.storage.settings::<MobileDataUsage>().get();
     assert_eq!(usage.reset_day.get(), 15);
     assert_eq!(
         (usage.period, usage.used, usage.counter),
@@ -839,7 +840,10 @@ fn the_shown_section_reads_the_modems_again_when_they_change() {
         reads: std::sync::atomic::AtomicUsize::new(0),
         follower: Mutex::new(None),
     });
-    let mut model = MobileModel::loaded_from(cx(), Arc::clone(&device) as Arc<dyn MobileService>);
+    let mut model = MobileModel::loaded_from(
+        Reach::of(&cx()),
+        Arc::clone(&device) as Arc<dyn MobileService>,
+    );
     let reads = || device.reads.load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(reads(), 1);
     let poll_until_read = |model: &mut MobileModel, count: usize| {

@@ -250,10 +250,9 @@ pub(crate) fn answer(
     effect: AppearanceEffect,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
-    let host = app.host();
     match effect {
         AppearanceEffect::InspectAppearance => {
-            let prefs = host.settings::<AppearancePrefs>().get();
+            let prefs = app.storage().settings::<AppearancePrefs>().get();
             serde_json::to_value(AppearanceInspection::from(&prefs))
                 .map(Effected::value)
                 .map_err(|error| format!("the appearance preferences could not be read: {error}"))
@@ -266,11 +265,11 @@ pub(crate) fn answer(
 /// Wallpaper portal, which previews it and asks before applying it. The
 /// pane shows where the request stands.
 fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings>) -> EffectAnswer {
-    if !app.host().reaches_devices() {
+    if !app.reaches_devices() {
         return Err("only a window someone uses opens the file chooser".into());
     }
     let target = match app
-        .host()
+        .storage()
         .settings::<AppearancePrefs>()
         .get()
         .wallpaper_target
@@ -638,7 +637,7 @@ mod tests {
     use ui::theme::Theme;
     use ui::widget::Widget;
 
-    use crate::host::testing::{APPEARANCE, edit_field, invoke_section};
+    use crate::testing::{APPEARANCE, edit_field, invoke_section};
 
     /// Every appearance control's effect writes the person's `appearance`
     /// section, where the compositor and every app read it; a value outside
@@ -653,33 +652,17 @@ mod tests {
             serde_json::json!({ "theme": "Automatic" }),
         )
         .unwrap();
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::APPEARANCE,
-            "ui_scale",
-            1.5,
-        )
-        .unwrap();
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::APPEARANCE,
-            "text_scale",
-            1.15,
-        )
-        .unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "ui_scale", 1.5).unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "text_scale", 1.15)
+            .unwrap();
         edit_field(&mut app, APPEARANCE, "high_contrast", true).unwrap();
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::APPEARANCE,
-            "schedule",
-            "custom",
-        )
-        .unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "schedule", "custom")
+            .unwrap();
         edit_field(&mut app, APPEARANCE, "sunrise", "06:30").unwrap();
         edit_field(&mut app, APPEARANCE, "sunset", "21:00").unwrap();
-        crate::host::testing::edit_field(
+        crate::testing::edit_field(
             &mut app,
-            crate::host::testing::APPEARANCE,
+            crate::testing::APPEARANCE,
             "wallpaper_scope",
             "all",
         )

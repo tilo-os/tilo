@@ -18,9 +18,9 @@ use ui::framework::{Actions, EffectAnswer, EffectCx, EffectReply, Effected, Live
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{DisclosureGroup, Element};
 
+use crate::area::AreaContext;
 use crate::continuity::{self, Capability, ContinuityPrivacy};
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -502,7 +502,10 @@ pub(crate) fn answer(
 /// What the Devices & Sync area keeps for the window: the model, read when
 /// first needed.
 pub struct DeviceMeshArea {
-    cx: PaneCx,
+    /// Whether it reads this device's relay and asks the host for the fleet.
+    devices: bool,
+    /// The stand-ins a capture shows; `None` in a live window.
+    scene: Option<Rc<crate::scenarios::CaptureScene>>,
     model: std::cell::OnceCell<Rc<RefCell<DeviceMeshModel>>>,
     /// The relay's configuration and state, read off the UI thread after
     /// the window's first frame ([`Self::start_read`]).
@@ -515,9 +518,10 @@ pub struct DeviceMeshArea {
 }
 
 impl DeviceMeshArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            scene: cx.scene.clone(),
             model: std::cell::OnceCell::new(),
             read: crate::device_read::DeviceRead::default(),
             remote: ui::RemoteActions::current(),
@@ -527,7 +531,7 @@ impl DeviceMeshArea {
 
     /// The area over `model` in place of the one it would read: a test's.
     #[cfg(test)]
-    fn over(cx: &PaneCx, model: DeviceMeshModel) -> Self {
+    fn over(cx: &AreaContext, model: DeviceMeshModel) -> Self {
         let area = Self::new(cx);
         let _ = area.model.set(Rc::new(RefCell::new(model)));
         area
@@ -542,7 +546,7 @@ impl DeviceMeshArea {
     /// paired or discovered is: this device's, or, for a screenshot, an
     /// unconfigured one with nothing paired.
     fn source(&self) -> (PathBuf, bool) {
-        if self.cx.reaches_devices() {
+        if self.devices {
             (PathBuf::from(DEFAULT_CONFIG), true)
         } else {
             (PathBuf::from("/nonexistent/tilo/relay.toml"), false)
@@ -559,14 +563,14 @@ impl DeviceMeshArea {
                 let (path, devices) = self.source();
                 MeshRead::of(path, devices, ui::time::wall())
             });
-            let mut model = DeviceMeshModel::from_read(self.cx.clone(), read);
+            let mut model = DeviceMeshModel::from_read(self.devices, read);
             model.remote = self.remote.clone();
             // The fleet is the host's: it answers; a capture shows its
             // stand-ins.
-            if self.cx.reaches_devices() {
+            if self.devices {
                 model.refresh_personal_devices();
                 model.refresh_home_relay();
-            } else if let Some(scene) = self.cx.scene() {
+            } else if let Some(scene) = self.scene.as_deref() {
                 model.home_relay.hosting.clone_from(&scene.home_relay);
                 match crate::device_fleet::views(scene.fleet_devices.clone()) {
                     Ok(devices) => model.personal_devices = devices,
@@ -732,7 +736,8 @@ pub struct DeviceMeshModel {
     config_path: PathBuf,
     config: RelayConfig,
     load_status: String,
-    cx: PaneCx,
+    /// Whether it follows this device's relay.
+    devices: bool,
     changed: bool,
     runtime_status: RelayRuntimeStatus,
     registered_home_peers: usize,
@@ -1126,19 +1131,23 @@ impl DeviceMeshModel {
     /// ([`MeshRead::of`]). Without `devices`, nothing paired or discovered
     /// is read.
     #[cfg(test)]
-    fn from_path(cx: PaneCx, config_path: PathBuf, devices: bool) -> Self {
-        Self::from_read(cx, MeshRead::of(config_path, devices, ui::time::wall()))
+    fn from_path(config_path: PathBuf, devices: bool) -> Self {
+        Self::from_read(
+            devices,
+            MeshRead::of(config_path, devices, ui::time::wall()),
+        )
     }
 
-    /// The model over what `read` read of the device.
-    fn from_read(cx: PaneCx, read: MeshRead) -> Self {
+    /// The model over what `read` read of the device, following this
+    /// device's relay when `devices`.
+    fn from_read(devices: bool, read: MeshRead) -> Self {
         let (roaming_provenance, roaming_provenance_status, roaming_provenance_stamp) =
             shown_roaming_provenance(read.roaming_provenance);
         Self {
             config_path: read.config_path,
             config: read.config,
             load_status: read.load_status,
-            cx,
+            devices,
             changed: false,
             runtime_status: read.runtime_status,
             registered_home_peers: read.home_peers.len(),
@@ -1178,8 +1187,7 @@ impl DeviceMeshModel {
 
     #[cfg(test)]
     fn with_path(path: &std::path::Path) -> Self {
-        let cx = PaneCx::in_profile(path.parent().unwrap().to_path_buf());
-        let mut pane = Self::from_path(cx, path.to_path_buf(), false);
+        let mut pane = Self::from_path(path.to_path_buf(), false);
         pane.roaming_provenance_path =
             Some(path.with_file_name(settings_store::roaming_provenance::FILE_NAME));
         pane.refresh_roaming_provenance();
@@ -2124,7 +2132,7 @@ impl DeviceMeshModel {
     fn follow(&mut self) -> Option<Rc<MeshFollow>> {
         // Only a serving device shows the relay's status; a page opened
         // before the role changed reads it on its timer instead.
-        if !self.cx.reaches_devices() || !shows_advanced_services(self.config.device_role) {
+        if !self.devices || !shows_advanced_services(self.config.device_role) {
             return None;
         }
         if let Some(follow) = self.following.upgrade() {
@@ -2212,7 +2220,7 @@ mod tests {
 
     /// A Settings window on Devices & Sync, whose area shows `model`.
     fn window_on(model: DeviceMeshModel) -> TestApp<SettingsShell> {
-        crate::area::replace_in_next_window(move |context| DeviceMeshArea::over(context.cx, model));
+        crate::area::replace_in_next_window(move |context| DeviceMeshArea::over(context, model));
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::DeviceMesh);
         app
@@ -2455,7 +2463,7 @@ mod tests {
 
         // Case `continuity_edits_persist_locally_and_append_redacted_audit_rows`.
         {
-            use crate::host::testing::{CONTINUITY, invoke_section};
+            use crate::testing::{CONTINUITY, invoke_section};
             let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
             invoke_section(
                 &mut app,
@@ -3274,7 +3282,7 @@ mod tests {
     #[test]
     fn the_area_builds_its_model_from_the_read_it_started() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
+        let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
         let area = DeviceMeshArea::new(&cx);
         assert!(area.start_read(), "the first read starts");
         assert!(!area.start_read(), "one read at a time");
@@ -3298,10 +3306,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("relay.toml");
         std::fs::write(&path, "device_role = \"interactive\"\n").unwrap();
-        let cx = PaneCx::in_profile(dir.path().to_path_buf());
-        let here = DeviceMeshModel::from_path(cx.clone(), path.clone(), false);
+        let here = DeviceMeshModel::from_path(path.clone(), false);
         let read = MeshRead::of(path, false, ui::time::wall());
-        let there = DeviceMeshModel::from_read(cx, read);
+        let there = DeviceMeshModel::from_read(false, read);
         assert_eq!(here.config_path, there.config_path);
         assert_eq!(here.load_status, there.load_status);
         assert_eq!(here.config.device_role, there.config.device_role);

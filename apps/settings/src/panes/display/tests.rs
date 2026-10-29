@@ -556,7 +556,8 @@ fn readonly_host_reply_replaces_stale_observation_without_staging_or_disk_writes
 
 fn model(outputs: Vec<DisplayOutput>) -> DisplayModel {
     let profile = tempfile::tempdir().unwrap().keep();
-    DisplayModel::detached(PaneCx::in_profile(profile)).with_outputs(outputs)
+    let cx = crate::area::AreaContext::in_profile(profile);
+    DisplayModel::detached(cx.storage, cx.sections).with_outputs(outputs)
 }
 
 /// An output named after the DRM connector `conn` (`card0-eDP-1`, with the
@@ -1155,11 +1156,11 @@ fn display_scale_and_plans_persist_confirm_and_revert() {
 
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let mut pane = model(vec![panel()]);
-    pane.cx
+    pane.storage
         .settings::<DisplayPrefs>()
         .update(|prefs| prefs.scale = 1.5)
         .unwrap();
-    assert!((pane.cx.settings::<DisplayPrefs>().get().scale - 1.5).abs() < 1e-9);
+    assert!((pane.storage.settings::<DisplayPrefs>().get().scale - 1.5).abs() < 1e-9);
 
     let mut committed = DisplayConfig::default();
     committed.outputs.insert(

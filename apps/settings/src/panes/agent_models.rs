@@ -29,19 +29,21 @@ use ui::tilo_resource::{self, Binds, Effect};
 use ui::time::{Duration, Instant};
 use ui::widget::{Button, Element, ProgressBar, Row};
 
+use crate::area::AreaContext;
 use crate::effects::SettingsEffect;
-use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::panes::accounts::{BrowserOpener, PortalOpener};
 use crate::panes::agent_sign_in::SignInSetup;
 use crate::panes::agent_vertex::{self, Polled, VertexFields, VertexSetup};
 use crate::resource::Settings;
+use crate::sections::Sections;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, note, row, rows, section, section_with,
     semantic_status_pill, thing_row, value_row,
 };
 use ui::lock::MutexRecover as _;
+use ui::storage::SettingsCache;
 
 #[cfg(test)]
 mod admin_tests;
@@ -160,17 +162,17 @@ pub use crate::prefs::{AgentProviders, HostedAgentProviders};
 /// person's hosted ones, read as one configuration and changed through the
 /// sections' verbs.
 pub(crate) struct Providers {
-    device: Followed<AgentProviders>,
-    hosted: Followed<HostedAgentProviders>,
+    device: SettingsCache<AgentProviders>,
+    hosted: SettingsCache<HostedAgentProviders>,
     /// What was last stored here, shown until the sections show a change.
     stored: Option<ProviderConfig>,
 }
 
 impl Providers {
-    fn new(cx: &PaneCx) -> Self {
+    fn new(storage: &ui::storage::AppStorage) -> Self {
         Self {
-            device: cx.follow::<AgentProviders>(),
-            hosted: cx.follow::<HostedAgentProviders>(),
+            device: SettingsCache::new(storage.settings::<AgentProviders>()),
+            hosted: SettingsCache::new(storage.settings::<HostedAgentProviders>()),
             stored: None,
         }
     }
@@ -193,19 +195,18 @@ impl Providers {
         device || hosted
     }
 
-    /// Store `config` through `host`: this device's providers by its
+    /// Store `config` through `sections`: this device's providers by its
     /// section's verb, the hosted ones by the person's; each only where it
     /// changed.
-    fn store(&mut self, host: &PaneCx, config: ProviderConfig) -> Result<(), String> {
+    fn store(&mut self, sections: &Sections, config: ProviderConfig) -> Result<(), String> {
         let (was_local, was_hosted) = self.config().stored();
         let (local, hosted) = config.stored();
         if local != was_local {
-            host.invoke_section::<AgentProviders>(
-                AgentProviders::SET_PROVIDERS.with(as_json(&local)?),
-            )?;
+            sections
+                .invoke::<AgentProviders>(AgentProviders::SET_PROVIDERS.with(as_json(&local)?))?;
         }
         if hosted != was_hosted {
-            host.invoke_section::<HostedAgentProviders>(
+            sections.invoke::<HostedAgentProviders>(
                 HostedAgentProviders::SET_PROVIDERS.with(as_json(&hosted)?),
             )?;
         }
@@ -214,9 +215,13 @@ impl Providers {
     }
 
     /// Keep the provider of the models this device runs as `profile`, as
-    /// its model manager serves them, through `host`.
-    fn follow_local(&mut self, host: &PaneCx, profile: ProviderProfile) -> Result<(), String> {
-        host.invoke_section::<AgentProviders>(
+    /// its model manager serves them, through `sections`.
+    fn follow_local(
+        &mut self,
+        sections: &Sections,
+        profile: ProviderProfile,
+    ) -> Result<(), String> {
+        sections.invoke::<AgentProviders>(
             AgentProviders::FOLLOW_LOCAL_MODELS.with(as_json(&profile)?),
         )?;
         let mut config = self.config();
@@ -721,10 +726,10 @@ pub(crate) fn answer(
                     | AgentModelsEffect::SetGeminiProvider { .. }
             ) || matches!(&provider, AgentModelsEffect::RemoveProvider { provider }
                     if model.panel.provider_config().profiles.iter().any(|profile| profile.id == *provider && profile.sign_in.is_some()));
-            if vertex_change && model.cx.provider_admin.is_available() {
+            if vertex_change && model.provider_admin.is_available() {
                 model.submit_vertex_change(provider, cx.reply())?;
                 Ok(Effected::Pending)
-            } else if model.cx.provider_admin.is_available() {
+            } else if model.provider_admin.is_available() {
                 let provider = ProviderEffect::decode(provider.id(), &provider.arguments())?;
                 model.submit_provider(provider, cx.reply())?;
                 Ok(Effected::Pending)
@@ -908,7 +913,14 @@ impl ManagerWork {
 /// What the agent models area keeps for the window: the model, asked of
 /// the manager when first needed.
 pub struct AgentModelsArea {
-    cx: PaneCx,
+    /// Whether it asks this device's model manager.
+    devices: bool,
+    /// The settings document the providers are read from.
+    storage: ui::storage::AppStorage,
+    /// The provider sections' actions.
+    sections: Sections,
+    /// The administration of the providers the launcher granted.
+    provider_admin: ui::models::ProviderAdministration,
     model: std::cell::OnceCell<Rc<std::cell::RefCell<AgentModelsModel>>>,
     /// The manager's snapshot, asked off the UI thread after the first frame.
     /// Provider administration is separately polled as a portable future.
@@ -954,9 +966,12 @@ fn hosted_profiles(config: &ProviderConfig) -> Vec<String> {
 }
 
 impl AgentModelsArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
+            storage: cx.storage.clone(),
+            sections: cx.sections.clone(),
+            provider_admin: cx.provider_admin.clone(),
             model: std::cell::OnceCell::new(),
             read: crate::device_read::DeviceRead::default(),
             shown: LocalState::new(0),
@@ -1007,7 +1022,7 @@ impl AgentModelsArea {
 
     /// The model manager: this device's, or a sample one for a screenshot.
     fn control(&self) -> Arc<dyn LocalModelControl> {
-        if self.cx.reaches_devices() {
+        if self.devices {
             Arc::new(ModelManagerCli)
         } else {
             Arc::new(SampleManager)
@@ -1018,9 +1033,12 @@ impl AgentModelsArea {
     pub fn model(&self) -> &Rc<std::cell::RefCell<AgentModelsModel>> {
         self.model.get_or_init(|| {
             let control = self.control();
+            let (sections, admin) = (self.sections.clone(), self.provider_admin.clone());
             let model = match self.read.take() {
-                Some(read) => AgentModelsModel::from_read(self.cx.clone(), control, read),
-                None => AgentModelsModel::new(self.cx.clone(), control),
+                Some(read) => {
+                    AgentModelsModel::from_read(&self.storage, sections, admin, control, read)
+                }
+                None => AgentModelsModel::new(&self.storage, sections, admin, control),
             };
             Rc::new(std::cell::RefCell::new(model))
         })
@@ -1032,7 +1050,7 @@ impl AgentModelsArea {
             return false;
         }
         let control = self.control();
-        let hosted = hosted_profiles(&Providers::new(&self.cx).config());
+        let hosted = hosted_profiles(&Providers::new(&self.storage).config());
         self.read
             .start(move || AgentModelsRead::of(control.as_ref(), hosted))
     }
@@ -1136,7 +1154,11 @@ impl AgentModelsArea {
 }
 
 pub struct AgentModelsModel {
-    cx: PaneCx,
+    /// The provider sections' actions, and the dispatcher the model's own
+    /// follow-up effects run through.
+    sections: Sections,
+    /// The administration of the providers the launcher granted.
+    provider_admin: ui::models::ProviderAdministration,
     control: Arc<dyn LocalModelControl>,
     snapshot: LocalModelSnapshot,
     manager_available: bool,
@@ -1184,15 +1206,26 @@ impl std::ops::DerefMut for AgentModelsModel {
 }
 impl AgentModelsModel {
     /// The model over `control`, starting the host's asynchronous provider read.
-    fn new(cx: PaneCx, control: Arc<dyn LocalModelControl>) -> Self {
-        let hosted = hosted_profiles(&Providers::new(&cx).config());
+    fn new(
+        storage: &ui::storage::AppStorage,
+        sections: Sections,
+        provider_admin: ui::models::ProviderAdministration,
+        control: Arc<dyn LocalModelControl>,
+    ) -> Self {
+        let hosted = hosted_profiles(&Providers::new(storage).config());
         let read = AgentModelsRead::of(control.as_ref(), hosted);
-        Self::from_read(cx, control, read)
+        Self::from_read(storage, sections, provider_admin, control, read)
     }
 
     /// Build from the device snapshot. No legacy local settings are treated
     /// as authoritative when this mount has a provider administration grant.
-    fn from_read(cx: PaneCx, control: Arc<dyn LocalModelControl>, read: AgentModelsRead) -> Self {
+    fn from_read(
+        storage: &ui::storage::AppStorage,
+        sections: Sections,
+        provider_admin: ui::models::ProviderAdministration,
+        control: Arc<dyn LocalModelControl>,
+        read: AgentModelsRead,
+    ) -> Self {
         let (snapshot, manager_available, notice) = match read.snapshot {
             Ok(snapshot) => (snapshot, true, None),
             Err(error) => (
@@ -1206,12 +1239,13 @@ impl AgentModelsModel {
         };
         let panel = ProviderPanel::new(
             PanelActions::default(),
-            cx.provider_admin.clone(),
-            Providers::new(&cx).config(),
+            provider_admin.clone(),
+            Providers::new(storage).config(),
         );
         let mut model = Self {
-            providers: Providers::new(&cx),
-            cx,
+            providers: Providers::new(storage),
+            sections,
+            provider_admin,
             control,
             snapshot,
             manager_available,
@@ -1414,7 +1448,7 @@ impl AgentModelsModel {
 
     /// Keep the local provider profile on what the manager serves.
     fn sync_local_profile(&mut self) {
-        if self.cx.provider_admin.is_available() || !self.follow_local_profile {
+        if self.provider_admin.is_available() || !self.follow_local_profile {
             return;
         }
         let config = self.providers.config();
@@ -1429,7 +1463,7 @@ impl AgentModelsModel {
         if existing.as_ref() == Some(&profile) {
             return;
         }
-        match self.providers.follow_local(&self.cx, profile) {
+        match self.providers.follow_local(&self.sections, profile) {
             Ok(()) => self.panel.offline_config = self.providers.config(),
             Err(error) => {
                 tracing::warn!(target: "tilo::settings", %error, "the local provider does not follow the model manager");
@@ -1764,7 +1798,7 @@ impl AgentModelsModel {
                 self.proposed_config(effect)?
             }
         };
-        self.providers.store(&self.cx, config)?;
+        self.providers.store(&self.sections, config)?;
         self.panel.offline_config = self.providers.config();
         if let Some(id) = vertex_saved {
             self.vertex_saved(&id);
@@ -2650,7 +2684,7 @@ impl AgentModelsModel {
                 self.read_vertex_keys();
             }
         }
-        if !self.cx.provider_admin.is_available() && self.providers.refresh() {
+        if !self.provider_admin.is_available() && self.providers.refresh() {
             self.panel.offline_config = self.providers.config();
             self.read_keys();
             self.read_vertex_keys();

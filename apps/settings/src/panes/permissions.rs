@@ -35,9 +35,9 @@ use ui::tilo_actions::policy::{Grant, Level, Lifetime};
 use ui::tilo_resource;
 use ui::widget::{Button, Column, Element, Row, Toggle};
 
+use crate::area::AreaContext;
 use crate::device_read::Reading;
 use crate::effects::SettingsEffect;
-use crate::host::PaneCx;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use settings_store::desktop_control::TabGrantEntry;
@@ -115,7 +115,7 @@ pub(crate) fn answer(
             ))
         }
         PermissionsEffect::OpenWorkspacePrivacy => {
-            if !app.host().reaches_devices() {
+            if !app.reaches_devices() {
                 return Err("only a window someone uses opens workspace settings".into());
             }
             Ok(app.job(
@@ -422,14 +422,14 @@ pub struct PermissionsArea {
 impl PermissionsArea {
     /// The area over this device, or a stand-in for a capture or a test.
     /// Nothing is read until the pane opens.
-    pub fn new(cx: &PaneCx) -> Self {
-        let reader: Arc<dyn PermissionsReader> = if cx.reaches_devices() {
+    pub fn new(cx: &AreaContext) -> Self {
+        let reader: Arc<dyn PermissionsReader> = if cx.devices {
             Arc::new(SystemPermissions)
         } else {
             Arc::new(SamplePermissions::default())
         };
         Self {
-            watches: cx.reaches_devices(),
+            watches: cx.devices,
             ..Self::over(reader)
         }
     }
@@ -1258,7 +1258,7 @@ fn panel(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::testing::count_named;
+    use crate::testing::count_named;
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use ui::prelude::TestApp;
     use ui::widget::Widget;

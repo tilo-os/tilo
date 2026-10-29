@@ -36,8 +36,9 @@ use ui::tilo_resource::{self, ActionRef};
 use ui::widget::{Button, ButtonRole, ListRow, Row, SignalLevel, Spacer, TextInput, TextInputKind};
 use zeroize::Zeroizing;
 
+use super::Reach;
+use crate::area::AreaContext;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::{DeviceVpnPrefs, MobileDataUsage, ResetDay};
 use crate::resource::Settings;
@@ -176,7 +177,7 @@ pub(crate) fn answer(
         return Ok(Effected::value(area.model().borrow().inspection()));
     }
     if effect == MobileEffect::RefreshMobile {
-        app.host().radios().look_again();
+        app.radios().look_again();
     }
     let begun = area.model().borrow_mut().begin(effect)?;
     Ok(match begun {
@@ -194,7 +195,7 @@ fn area_of(app: &SettingsApp) -> Result<&MobileArea, String> {
 /// Mobile data, as search shows it: a switch once the modem was read,
 /// "no modem" where there is none.
 pub(crate) fn mobile_data(app: &SettingsApp, _: &Follows) -> Read {
-    let listed = app.host().radios().now().map(|radios| radios.wwan);
+    let listed = app.radios().now().map(|radios| radios.wwan);
     let model = area(app).and_then(|area| area.model.get());
     match model.map(|model| {
         let model = model.borrow();
@@ -221,26 +222,29 @@ pub(crate) fn mobile_data_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
 /// What the Mobile section keeps for the window: the model, read when
 /// first needed.
 pub struct MobileArea {
-    cx: PaneCx,
+    reach: Reach,
+    /// The modem a capture shows; `None` in a live window.
+    sample: Option<MobileSample>,
     model: OnceCell<Rc<RefCell<MobileModel>>>,
 }
 
 impl MobileArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            reach: Reach::of(cx),
+            sample: cx.scene().and_then(|scene| scene.mobile),
             model: OnceCell::new(),
         }
     }
 
     /// The area over `service` in place of the device's modems.
     #[cfg(test)]
-    pub(crate) fn over(cx: &PaneCx, service: Arc<dyn MobileService>) -> Self {
+    pub(crate) fn over(cx: &AreaContext, service: Arc<dyn MobileService>) -> Self {
         let area = Self::new(cx);
         let _ = area
             .model
             .set(Rc::new(RefCell::new(MobileModel::loaded_from(
-                cx.clone(),
+                Reach::of(cx),
                 service,
             ))));
         area
@@ -250,12 +254,14 @@ impl MobileArea {
     /// capture.
     pub fn model(&self) -> &Rc<RefCell<MobileModel>> {
         self.model.get_or_init(|| {
-            let model = if self.cx.reaches_devices() {
-                MobileModel::of_device(self.cx.clone())
+            let model = if self.reach.devices {
+                MobileModel::of_device(self.reach.clone())
             } else {
-                let sample = self.cx.scene().and_then(|scene| scene.mobile);
-                let mut model =
-                    MobileModel::loaded_from(self.cx.clone(), Arc::new(ScriptedModem::new(sample)));
+                let sample = self.sample;
+                let mut model = MobileModel::loaded_from(
+                    self.reach.clone(),
+                    Arc::new(ScriptedModem::new(sample)),
+                );
                 model.stage(sample);
                 model
             };
@@ -279,8 +285,8 @@ impl MobileArea {
         {
             return Some(model.present());
         }
-        self.cx
-            .radios()
+        self.reach
+            .radios
             .now()
             .map(|radios| radios.wwan)
             .filter(|wwan| !wwan)
@@ -797,7 +803,7 @@ pub(crate) enum Landed {
     reason = "independent facts: read yet, listed, switched on, editor open, changed"
 )]
 pub struct MobileModel {
-    cx: PaneCx,
+    reach: Reach,
     service: Arc<dyn MobileService>,
     /// False until the first snapshot arrives.
     loaded: bool,
@@ -828,30 +834,30 @@ pub struct MobileModel {
 }
 
 impl MobileModel {
-    fn of_device(cx: PaneCx) -> Self {
-        let mut model = Self::with_service(cx, Arc::new(DeviceModem));
+    fn of_device(reach: Reach) -> Self {
+        let mut model = Self::with_service(reach, Arc::new(DeviceModem));
         model.start_snapshot();
         model
     }
 
     /// A model over `service`, its first snapshot read at once.
-    pub(crate) fn loaded_from(cx: PaneCx, service: Arc<dyn MobileService>) -> Self {
-        let mut model = Self::with_service(cx, service);
+    pub(crate) fn loaded_from(reach: Reach, service: Arc<dyn MobileService>) -> Self {
+        let mut model = Self::with_service(reach, service);
         let snapshot = model.service.snapshot();
         model.adopt(snapshot);
         model
     }
 
-    fn with_service(cx: PaneCx, service: Arc<dyn MobileService>) -> Self {
+    fn with_service(reach: Reach, service: Arc<dyn MobileService>) -> Self {
         // The count Settings kept before it was a section is taken in
         // before anything counts on it.
-        if let Err(error) =
-            settings_sections::mobile_data::take_in_former(&cx.settings::<MobileDataUsage>())
-        {
+        if let Err(error) = settings_sections::mobile_data::take_in_former(
+            &reach.storage.settings::<MobileDataUsage>(),
+        ) {
             warn!(target: "tilo::settings", %error, "the mobile data count kept before could not be taken in");
         }
         Self {
-            cx,
+            reach,
             service,
             loaded: false,
             snapshot: None,
@@ -881,7 +887,7 @@ impl MobileModel {
         let Some(sample) = sample.filter(|sample| *sample != MobileSample::Registered) else {
             return;
         };
-        self.cx.pages().open(
+        self.reach.pages.open(
             crate::categories::Category::Network,
             super::PAGE_MOBILE,
             t("net-mobile"),
@@ -900,7 +906,7 @@ impl MobileModel {
     fn present(&self) -> bool {
         !self.modems.is_empty()
             || (self.modems_error.is_some()
-                && (self.wwan_listed || self.cx.radios().now().is_some_and(|radios| radios.wwan)))
+                && (self.wwan_listed || self.reach.radios.now().is_some_and(|radios| radios.wwan)))
     }
 
     /// The modem the section shows: the one with a SIM in use, else the
@@ -994,12 +1000,12 @@ impl MobileModel {
             .map(Traffic::total)
             .reduce(u64::saturating_add);
         let now = tilo_clock::unix_now_i64();
-        let mut counted = self.cx.settings::<MobileDataUsage>().get();
+        let mut counted = self.reach.storage.settings::<MobileDataUsage>().get();
         if !counted.account(total, self.boot.as_deref(), now) {
             return;
         }
         let count = MobileDataUsage::COUNT_DATA_USED.with((total, self.boot.clone(), now));
-        if let Err(error) = self.cx.invoke_section::<MobileDataUsage>(count) {
+        if let Err(error) = self.reach.sections.invoke::<MobileDataUsage>(count) {
             warn!(target: "tilo::settings", %error, "the mobile data count could not be kept");
         }
     }
@@ -1379,9 +1385,9 @@ impl MobileModel {
                 })
             })
             .collect();
-        let usage = self.cx.settings::<MobileDataUsage>().get();
+        let usage = self.reach.storage.settings::<MobileDataUsage>().get();
         serde_json::json!({
-            "source": if self.cx.reaches_devices() { "device" } else { "preview" },
+            "source": if self.reach.devices { "device" } else { "preview" },
             "loaded": self.loaded, "present": self.loaded.then(|| self.present()),
             "data": self.loaded.then(|| self.data_on()),
             "roaming": self.profile.as_ref().map(|profile| profile.roaming),

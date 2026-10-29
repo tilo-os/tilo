@@ -901,7 +901,7 @@ mod tests {
                 let status = codec_status(Some(scenario)).expect("formats fixture status");
                 live.with_widget::<crate::window::SettingsWindow, ()>(|settings| {
                     let model =
-                        crate::panes::updates::UpdatesModel::sample(settings.host().clone())
+                        crate::panes::updates::UpdatesModel::sample(settings.sections().clone())
                             .with_codec_pack(
                                 std::sync::Arc::new(move || status.clone()),
                                 std::sync::Arc::new(|_| Ok(())),

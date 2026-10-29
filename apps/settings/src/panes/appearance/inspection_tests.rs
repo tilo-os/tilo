@@ -18,7 +18,7 @@ fn read(app: &mut TestApp<SettingsShell>) -> serde_json::Value {
     .unwrap()
 }
 
-use crate::host::testing::{APPEARANCE, edit_field, invoke_section};
+use crate::testing::{APPEARANCE, edit_field, invoke_section};
 
 #[test]
 fn appearance_inspection_reads_actual_automatic_preferences_and_restores_public_changes() {
@@ -30,13 +30,7 @@ fn appearance_inspection_reads_actual_automatic_preferences_and_restores_public_
         serde_json::json!({ "theme": "Automatic" }),
     )
     .unwrap();
-    crate::host::testing::edit_field(
-        &mut app,
-        crate::host::testing::APPEARANCE,
-        "schedule",
-        "custom",
-    )
-    .unwrap();
+    crate::testing::edit_field(&mut app, crate::testing::APPEARANCE, "schedule", "custom").unwrap();
     edit_field(&mut app, APPEARANCE, "sunrise", "06:30").unwrap();
     edit_field(&mut app, APPEARANCE, "sunset", "21:00").unwrap();
     let original = read(&mut app);

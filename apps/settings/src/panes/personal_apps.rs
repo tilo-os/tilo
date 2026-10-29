@@ -15,14 +15,15 @@ use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Dropdown, Element};
 
+use crate::area::AreaContext;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
     note, rows, section, setting_row, setting_row_described, untitled,
 };
+use ui::storage::SettingsCache;
 
 crate::effects::effect_family!(DefaultAppsEffect => answer);
 
@@ -79,7 +80,7 @@ pub(crate) fn answer(
     let (kind, package) = match effect {
         DefaultAppsEffect::SetDefaultApp { kind, app } => (kind, app),
         DefaultAppsEffect::OpenWorkspaceDefaults => {
-            if !app.host().reaches_devices() {
+            if !app.reaches_devices() {
                 return Err("only a window someone uses opens workspace settings".into());
             }
             return Ok(app.job(
@@ -99,8 +100,8 @@ pub(crate) fn answer(
     // The section's verb changes only the chosen kind in the latest
     // settings, not a cached resolver snapshot that may omit newer or
     // unrecognized handlers.
-    app.host()
-        .invoke_section::<DefaultApps>(DefaultApps::OPEN_WITH.with((kind, package)))
+    app.sections()
+        .invoke::<DefaultApps>(DefaultApps::OPEN_WITH.with((kind, package)))
         .map(|()| Effected::done())
 }
 
@@ -112,32 +113,32 @@ fn stored_kind(kind: &str) -> Option<ResourceKind> {
 /// What the Default Apps area keeps for the window: the choices as last
 /// read, and the installed apps that claim kinds of files and links.
 pub struct DefaultAppsArea {
-    prefs: RefCell<Followed<DefaultApps>>,
+    prefs: RefCell<SettingsCache<DefaultApps>>,
     candidates: OnceCell<Vec<AppCandidate>>,
     sample: bool,
     /// The installed apps, read off the UI thread after the window's first
     /// frame ([`Self::start_read`]).
     read: crate::device_read::DeviceRead<Vec<AppCandidate>>,
     /// The rows, kept for the defaults version and locale they show.
-    rows: crate::host::RowsMemo<(ui::storage::SettingsRevision, u64)>,
+    rows: crate::effects::RowsMemo<(ui::storage::SettingsRevision, u64)>,
 }
 
 impl DefaultAppsArea {
     /// The area over `cx`'s settings. A capture lists sample apps rather
     /// than the ones this device has installed.
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            prefs: RefCell::new(cx.follow::<DefaultApps>()),
+            prefs: RefCell::new(SettingsCache::new(cx.storage.settings::<DefaultApps>())),
             candidates: OnceCell::new(),
-            sample: !cx.reaches_devices(),
+            sample: !cx.devices,
             read: crate::device_read::DeviceRead::default(),
-            rows: crate::host::RowsMemo::default(),
+            rows: crate::effects::RowsMemo::default(),
         }
     }
 
     /// The area among `candidates` in place of the apps installed.
     #[cfg(test)]
-    fn over(cx: &PaneCx, candidates: Vec<AppCandidate>) -> Self {
+    fn over(cx: &AreaContext, candidates: Vec<AppCandidate>) -> Self {
         Self {
             candidates: OnceCell::from(candidates),
             ..Self::new(cx)
@@ -585,7 +586,7 @@ mod tests {
     fn the_page_follows_the_choices() {
         crate::area::replace_in_next_window(|context| {
             DefaultAppsArea::over(
-                context.cx,
+                context,
                 vec![candidate("so.tilo.a", "pdf"), candidate("so.tilo.b", "pdf")],
             )
         });

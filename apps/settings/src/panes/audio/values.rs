@@ -9,7 +9,7 @@ use crate::setting::{Follows, Read, on_off};
 use crate::settings_app::SettingsApp;
 
 fn prefs(app: &SettingsApp, follows: &Follows) -> AudioPrefs {
-    follows.get::<AudioPrefs>(app.host())
+    follows.get::<AudioPrefs>(app.storage())
 }
 
 fn read<V>(app: &SettingsApp, read: impl FnOnce(&AudioModel) -> Option<V>) -> Option<V> {

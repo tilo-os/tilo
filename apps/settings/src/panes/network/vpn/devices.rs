@@ -109,7 +109,7 @@ fn exit_user_row_id(device: &str) -> String {
 impl NetworkModel {
     /// Follow the session's status file, on a device.
     pub(crate) fn follow_device_vpn(&mut self) -> Option<Rc<dyn Any>> {
-        if !self.cx.reaches_devices() {
+        if !self.reach.devices {
             return None;
         }
         let path = device_vpn::status_path()?;
@@ -315,7 +315,7 @@ impl NetworkModel {
             .find(|row| row.device == device)
             .map(|row| row.label)
             .ok_or_else(|| t("net-device-vpn-unknown"))?;
-        let document = self.cx.storage().settings_document();
+        let document = self.reach.storage.settings_document();
         let previous = THROUGH.from_section(&document.section(device_vpn::SECTION));
         let next = if on {
             Some(Through {
@@ -326,8 +326,9 @@ impl NetworkModel {
             previous.clone().filter(|through| through.device != device)
         };
         if next != previous {
-            self.cx
-                .invoke_section(DeviceVpnPrefs::ROUTE_THROUGH.with((device.to_owned(), on)))?;
+            self.reach
+                .sections
+                .invoke(DeviceVpnPrefs::ROUTE_THROUGH.with((device.to_owned(), on)))?;
         }
         // A route through a device carries everything, so the VPNs that do
         // too turn off.
@@ -373,7 +374,7 @@ impl NetworkModel {
     /// Stop routing everything through a device: a VPN that carries all
     /// traffic turned on.
     pub(crate) fn leave_device_route(&mut self) {
-        let document = self.cx.storage().settings_document();
+        let document = self.reach.storage.settings_document();
         let Some(through) = THROUGH
             .from_section(&document.section(device_vpn::SECTION))
             .filter(|through| through.routes == device_vpn::Routes::All)
@@ -388,13 +389,14 @@ impl NetworkModel {
     /// Block this device's traffic while the tunnel to the device it routes
     /// through is down, or let it go out directly.
     pub(super) fn set_device_kill_switch(&mut self, on: bool) -> Result<Begun, String> {
-        let document = self.cx.storage().settings_document();
+        let document = self.reach.storage.settings_document();
         let through = THROUGH
             .from_section(&document.section(device_vpn::SECTION))
             .ok_or_else(|| t("net-device-vpn-no-route"))?;
         if through.kill_switch != on {
-            self.cx
-                .invoke_section(DeviceVpnPrefs::SET_KILL_SWITCH.with(on))?;
+            self.reach
+                .sections
+                .invoke(DeviceVpnPrefs::SET_KILL_SWITCH.with(on))?;
         }
         if let Some(client) = self
             .vpn
@@ -442,8 +444,9 @@ impl NetworkModel {
         {
             return Err(t("net-device-vpn-cannot-share"));
         }
-        self.cx
-            .invoke_section(DeviceVpnPrefs::paths().exit.set(on))?;
+        self.reach
+            .sections
+            .invoke(DeviceVpnPrefs::paths().exit.set(on))?;
         if let Some(status) = &mut self.vpn.devices.status {
             status.exit_on = on;
         }
@@ -461,8 +464,9 @@ impl NetworkModel {
             .and_then(|status| status.exit_users.iter().find(|user| user.device == device))
             .cloned()
             .ok_or_else(|| t("net-device-vpn-unknown"))?;
-        self.cx
-            .invoke_section(DeviceVpnPrefs::STOP_DEVICE.with(device.to_owned()))?;
+        self.reach
+            .sections
+            .invoke(DeviceVpnPrefs::STOP_DEVICE.with(device.to_owned()))?;
         if let Some(status) = &mut self.vpn.devices.status {
             status.exit_users.retain(|using| using.device != device);
         }

@@ -9,9 +9,9 @@
 //! the window's code names none of them.
 
 use std::any::Any;
+use std::rc::Rc;
 
 use crate::categories::Category;
-use crate::host::PaneCx;
 
 /// One area of Settings: what its pane reads and keeps.
 pub trait PaneArea: Any {
@@ -125,7 +125,7 @@ pub struct Areas(Vec<Box<dyn PaneArea>>);
 impl Areas {
     /// The areas the registry ([`registry`]) makes in `context`, in order: an
     /// area made later may use one made before it.
-    pub fn of(context: &AreaContext<'_>) -> Self {
+    pub fn of(context: &AreaContext) -> Self {
         let mut areas = Self::default();
         for make in &registry().areas {
             let area = make(context, &areas);
@@ -161,7 +161,7 @@ impl Areas {
     /// Put the areas a test asked for ([`replace_in_next_window`]) in place
     /// of the areas of their types.
     #[cfg(test)]
-    pub(crate) fn take_replacements(&mut self, context: &AreaContext<'_>) {
+    pub(crate) fn take_replacements(&mut self, context: &AreaContext) {
         for make in REPLACEMENTS.with(std::cell::RefCell::take) {
             self.replace(make(context));
         }
@@ -175,7 +175,7 @@ impl Areas {
 
 /// What makes an area in place of one a window would make, for a test.
 #[cfg(test)]
-type Replacement = Box<dyn FnOnce(&AreaContext<'_>) -> Box<dyn PaneArea>>;
+type Replacement = Box<dyn FnOnce(&AreaContext) -> Box<dyn PaneArea>>;
 
 #[cfg(test)]
 thread_local! {
@@ -187,7 +187,7 @@ thread_local! {
 /// its context, in place of the area of its type: a stand-in a test drives
 /// (a daemon that stalls).
 #[cfg(test)]
-pub fn replace_in_next_window<A: PaneArea>(make: impl FnOnce(&AreaContext<'_>) -> A + 'static) {
+pub fn replace_in_next_window<A: PaneArea>(make: impl FnOnce(&AreaContext) -> A + 'static) {
     REPLACEMENTS.with(|replacements| {
         replacements
             .borrow_mut()
@@ -195,16 +195,71 @@ pub fn replace_in_next_window<A: PaneArea>(make: impl FnOnce(&AreaContext<'_>) -
     });
 }
 
-/// What an area is made in: the window's host and the person's accounts.
-pub struct AreaContext<'a> {
-    /// What the panes reach of the host.
-    pub cx: &'a PaneCx,
+/// What an area is made in: the window's settings document and what it
+/// reaches of the device and the person. An area keeps the parts it uses.
+pub struct AreaContext {
+    /// The app's storage: its settings document, files and secrets.
+    pub storage: ui::storage::AppStorage,
+    /// The stand-ins a screenshot shows in place of this device's hardware
+    /// and accounts; `None` in a live window.
+    pub scene: Option<Rc<crate::scenarios::CaptureScene>>,
+    /// Whether the areas probe and drive this device's hardware and
+    /// services, rather than the stand-ins a screenshot shows. The crate's
+    /// own tests drive the stand-ins too, so they never touch the machine
+    /// running them.
+    pub devices: bool,
+    /// The radios this device has; never read when it reaches no device.
+    pub radios: crate::radios::Radios,
+    /// The pages the panes drilled into, shared with the window.
+    pub pages: crate::pages::PanePages,
+    /// The password prompt the window shows for the panes.
+    pub secrets: crate::secrets::SecretAsks,
+    /// The administration of the agent providers the launcher granted.
+    pub provider_admin: ui::models::ProviderAdministration,
+    /// The person's accounts with the services the workspace is connected
+    /// to, when the host lent them.
+    pub linked: ui::linked_accounts::LinkedAccounts,
+    /// The settings sections' actions, for an area invoking them.
+    pub sections: crate::sections::Sections,
     /// Where the person's accounts are kept.
-    pub account_root: &'a crate::accounts::AccountRoot,
+    pub account_root: crate::accounts::AccountRoot,
+}
+
+impl AreaContext {
+    /// The stand-ins a screenshot shows; `None` in a live window.
+    #[must_use]
+    pub fn scene(&self) -> Option<&crate::scenarios::CaptureScene> {
+        self.scene.as_deref()
+    }
+
+    /// What an area is made in over the settings and accounts of the
+    /// profile at `root`, outside any view, for a test: it reaches no
+    /// device and its sections are not kept.
+    #[cfg(test)]
+    #[must_use]
+    pub fn in_profile(root: std::path::PathBuf) -> Self {
+        let id = <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID;
+        Self {
+            storage: ui::storage::AppStorage::new(
+                id,
+                ui::storage::secrets(id),
+                ui::storage::SettingsDocument::Profile(root.clone()),
+            ),
+            scene: None,
+            devices: false,
+            radios: crate::radios::Radios::unread(),
+            pages: crate::pages::PanePages::new(),
+            secrets: crate::secrets::SecretAsks::new(),
+            provider_admin: ui::models::ProviderAdministration::default(),
+            linked: ui::linked_accounts::LinkedAccounts::default(),
+            sections: crate::sections::Sections::default(),
+            account_root: crate::accounts::AccountRoot::at(root),
+        }
+    }
 }
 
 /// What makes one area in a window's context, given the areas made before.
-pub type MakeArea = fn(&AreaContext<'_>, &Areas) -> Box<dyn PaneArea>;
+pub type MakeArea = fn(&AreaContext, &Areas) -> Box<dyn PaneArea>;
 
 /// Why an effect could not reach its area: the window holds every area from
 /// when it is made, so this says only that the window was not.

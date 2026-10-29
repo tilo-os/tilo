@@ -2,10 +2,9 @@ use super::*;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-/// A model's settings document of its own.
-fn test_cx() -> PaneCx {
-    let profile = tempfile::tempdir().unwrap().keep();
-    PaneCx::in_profile(profile)
+/// A model's sections, kept nowhere.
+fn test_cx() -> crate::sections::Sections {
+    crate::sections::Sections::default()
 }
 
 #[derive(Default)]
@@ -921,7 +920,7 @@ fn an_unreadable_bootc_status_is_not_reported_as_up_to_date() {
             .unwrap()
             .model()
             .borrow_mut() = UpdatesModel::with_parts_and_control(
-            settings.host().clone(),
+            settings.sections().clone(),
             status,
             UpdatePrefs::default(),
             Arc::new(move || requeried.clone()),
@@ -1096,7 +1095,7 @@ fn a_check_and_the_timer_are_kept_in_the_update_preferences() {
             .unwrap()
             .model()
             .borrow_mut() = UpdatesModel::with_parts_and_control(
-            settings.host().clone(),
+            settings.sections().clone(),
             status,
             UpdatePrefs::default(),
             Arc::new(move || requeried.clone()),
@@ -1231,7 +1230,8 @@ fn a_stalled_update_control_never_holds_the_window() {
     let model = app
         .with_widget::<crate::window::SettingsWindow, _>(move |settings| {
             let shared = std::rc::Rc::clone(crate::panes::updates::area(settings).unwrap().model());
-            *shared.borrow_mut() = UpdatesModel::reading(settings.host().clone(), readers);
+            *shared.borrow_mut() =
+                UpdatesModel::reading(settings.storage(), settings.sections().clone(), readers);
             shared
         })
         .expect("the Settings window is mounted");

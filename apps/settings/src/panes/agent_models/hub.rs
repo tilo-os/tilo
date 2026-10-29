@@ -361,7 +361,7 @@ impl HubBrowser {
                 body.push(row(provider_settings_ui::widgets::error_caption(&t_args(
                     "agent-hub-search-error",
                     &[("error", error.as_str().into())],
-                ))))
+                ))));
             }
             Some(Ok(results)) if results.is_empty() => body.push(note(&t("agent-hub-no-results"))),
             Some(Ok(results)) => {
@@ -613,8 +613,8 @@ impl crate::area::PaneQuery for super::AgentModelsArea {
             model.changed = true;
             model.hub.typed(text)
         };
-        if let Some(search) = search {
-            self.cx.invoke(search);
+        if let Some((search, dispatcher)) = search.zip(self.sections.dispatcher()) {
+            dispatcher.effect(&crate::effects::SettingsEffect::from(search));
         }
     }
 
@@ -655,7 +655,8 @@ pub(crate) fn answer(
                 parse_format(&format).ok_or_else(|| t("agent-hub-format-unknown"))?;
             if model.hub.searching == 0 && !model.hub.query.is_empty() {
                 let search = model.hub.search_typed();
-                model.cx.invoke(search);
+                cx.dispatcher()
+                    .effect(&crate::effects::SettingsEffect::from(search));
             }
             model.changed = true;
             Ok(Effected::done())
@@ -749,7 +750,7 @@ fn search(
             let (query, format) = (query.clone(), format.clone());
             move || control.hub_search(&query, &format)
         },
-        move |app: &SettingsApp, results: Result<Vec<HubSearchResult>, String>, _| {
+        move |app: &SettingsApp, results: Result<Vec<HubSearchResult>, String>, cx| {
             let shared = area(app).ok_or_else(crate::area::missing)?.model();
             let mut model = shared.borrow_mut();
             model.hub.searching = model.hub.searching.saturating_sub(1);
@@ -757,7 +758,8 @@ fn search(
                 model.hub.results = Some(results.clone());
             }
             if let Some(next) = model.hub.follow_up(&query, &format) {
-                model.cx.invoke(next);
+                cx.dispatcher()
+                    .effect(&crate::effects::SettingsEffect::from(next));
             }
             model.changed = true;
             results.map(Effected::value)

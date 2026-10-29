@@ -38,9 +38,9 @@ use ui::widget::{Element, Widget};
 
 use history_chart::{HistoryChart, Span};
 
+use crate::area::AreaContext;
 use crate::device_read::Reading;
 use crate::effects::effect;
-use crate::host::PaneCx;
 use crate::i18n::{english, t, t_args};
 use crate::prefs::{PowerActionPref, PowerPrefs};
 use crate::resource::Settings;
@@ -619,8 +619,8 @@ impl PowerArea {
 
     /// The area over this device's power hardware, or a stand-in for a
     /// capture. Nothing is read until the pane or an effect needs it.
-    pub fn new(cx: &PaneCx) -> Self {
-        let control: Arc<dyn PowerControl> = if cx.reaches_devices() {
+    pub fn new(cx: &AreaContext) -> Self {
+        let control: Arc<dyn PowerControl> = if cx.devices {
             Arc::new(SystemPower)
         } else {
             Arc::new(SamplePower::default())
@@ -1541,12 +1541,12 @@ mod tests {
             // the compositor's policy and the `power.auto-suspend` action
             // read from the untouched document.
             let profile = tempfile::tempdir().unwrap();
-            let cx = PaneCx::in_profile(profile.path().to_path_buf());
+            let cx = crate::area::AreaContext::in_profile(profile.path().to_path_buf());
             let area = PowerArea::new(&cx);
             area.warm();
             let state = tilo_test_env::wait_for("the hardware is read", || area.state.get());
             assert_eq!(state.battery, sample_battery());
-            let prefs = cx.settings::<PowerPrefs>().get();
+            let prefs = cx.storage.settings::<PowerPrefs>().get();
             assert!(!prefs.auto_suspend);
             assert_eq!(
                 prefs.auto_suspend,
@@ -1658,13 +1658,8 @@ mod tests {
         gate.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("power-reading")), "{frame}");
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::POWER,
-            "auto_suspend",
-            false,
-        )
-        .expect("a preference changes while the hardware is read");
+        crate::testing::edit_field(&mut app, crate::testing::POWER, "auto_suspend", false)
+            .expect("a preference changes while the hardware is read");
         assert!(!app.settings::<PowerPrefs>().get().auto_suspend);
 
         gate.release();
@@ -1683,15 +1678,9 @@ mod tests {
     #[test]
     fn idle_and_button_preferences_write_the_power_section() {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::POWER,
-            "auto_suspend",
-            true,
-        )
-        .unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::POWER, "auto_suspend", true).unwrap();
         let edit = |app: &mut TestApp<SettingsShell>, field: &str, value: serde_json::Value| {
-            crate::host::testing::edit_field(app, crate::host::testing::POWER, field, value)
+            crate::testing::edit_field(app, crate::testing::POWER, field, value)
         };
         edit(&mut app, "blank_minutes", 30.into()).unwrap();
         edit(&mut app, "lock_minutes", 1.into()).expect("locking sooner asks nothing");
@@ -1704,7 +1693,7 @@ mod tests {
         }
         assert_eq!(app.settings::<PowerPrefs>().get().lock_minutes, 1);
         app.call_confirmed_on(
-            &format!("settings:{}", crate::host::testing::POWER),
+            &format!("settings:{}", crate::testing::POWER),
             "field-edit",
             serde_json::json!({
                 "edit": { "path": [{ "field": "lock_minutes" }], "op": "set", "value": 0 }
@@ -1779,13 +1768,7 @@ mod tests {
         );
 
         // On: both take input; each writes its own source's timer.
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::POWER,
-            "auto_suspend",
-            true,
-        )
-        .unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::POWER, "auto_suspend", true).unwrap();
         for _ in 0..5 {
             app.settle();
             let _ = app.harness().poll_frame();
@@ -1798,16 +1781,16 @@ mod tests {
                 .unwrap()
                 .contains(&t("power-suspend-needs-idle"))
         );
-        crate::host::testing::invoke_section(
+        crate::testing::invoke_section(
             &mut app,
-            crate::host::testing::POWER,
+            crate::testing::POWER,
             "set-suspend-on-battery",
             serde_json::json!({ "minutes": 5 }),
         )
         .unwrap();
-        crate::host::testing::invoke_section(
+        crate::testing::invoke_section(
             &mut app,
-            crate::host::testing::POWER,
+            crate::testing::POWER,
             "set-suspend-plugged-in",
             serde_json::json!({ "minutes": 60 }),
         )
@@ -1815,9 +1798,9 @@ mod tests {
         let timers = app.settings::<PowerPrefs>().get().timers();
         assert_eq!((timers.on_battery(), timers.plugged_in()), (5, 60));
         assert!(
-            crate::host::testing::invoke_section(
+            crate::testing::invoke_section(
                 &mut app,
-                crate::host::testing::POWER,
+                crate::testing::POWER,
                 "set-suspend-on-battery",
                 serde_json::json!({ "minutes": 7 }),
             )
@@ -1827,13 +1810,8 @@ mod tests {
 
         // Profile timers that truly differ: the selected profile's timer is
         // the one, shown with the profile, and the source timers go.
-        crate::host::testing::edit_field(
-            &mut app,
-            crate::host::testing::POWER,
-            "saver_suspend_minutes",
-            10,
-        )
-        .unwrap();
+        crate::testing::edit_field(&mut app, crate::testing::POWER, "saver_suspend_minutes", 10)
+            .unwrap();
         for _ in 0..5 {
             app.settle();
             let _ = app.harness().poll_frame();

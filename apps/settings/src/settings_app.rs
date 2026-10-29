@@ -1,6 +1,6 @@
 //! `SettingsApp` — what the Settings window shares with its view: the
-//! areas the panes read, the door their controls go through, the pane shown
-//! and what asks for another.
+//! areas the panes read, the settings document and the sections' actions,
+//! the pane shown and what asks for another.
 //!
 //! The window ([`crate::window::SettingsWindow`]) draws it; the view
 //! ([`crate::window::window`]) answers the effects and publishes the live
@@ -22,7 +22,24 @@ pub struct SettingsApp {
     me: Weak<SettingsApp>,
     /// The pane the window shows.
     selected: Cell<Category>,
-    cx: crate::host::PaneCx,
+    /// The app's storage: its settings document, files and secrets.
+    storage: ui::storage::AppStorage,
+    /// The stand-ins a screenshot shows; `None` in a live window.
+    scene: Option<Rc<crate::scenarios::CaptureScene>>,
+    /// Whether the areas reach this device's hardware and services
+    /// ([`crate::area::AreaContext::devices`]).
+    devices: bool,
+    /// The radios this device has; never read when it reaches no device.
+    radios: crate::radios::Radios,
+    /// The pages the panes drilled into.
+    pages: crate::pages::PanePages,
+    /// The password prompt the window shows for the panes.
+    secrets: crate::secrets::SecretAsks,
+    provider_admin: ui::models::ProviderAdministration,
+    /// The person's linked accounts, when the host lent them.
+    linked: ui::linked_accounts::LinkedAccounts,
+    /// The settings sections' actions, once attached to a view.
+    sections: crate::sections::Sections,
     /// The pane a row, the palette or an agent asked for, taken by the
     /// window on its next sync.
     sidebar_selection: ui::LocalState<Option<Category>>,
@@ -72,24 +89,27 @@ impl SettingsApp {
 
     fn with_account_root(account_root: crate::accounts::AccountRoot) -> Self {
         account_root.recover_mutation_or_warn();
-        let cx = crate::host::PaneCx::detached(ui::storage::AppStorage::for_app(
-            <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID,
-        ));
-        let areas = crate::area::Areas::of(&crate::area::AreaContext {
-            cx: &cx,
-            account_root: &account_root,
-        });
-        Self {
+        let mut app = Self {
             me: Weak::new(),
             selected: Cell::new(Category::DEFAULT),
-            area_reads: crate::effects::AreaReads::of(&cx),
-            cx,
+            area_reads: crate::effects::AreaReads::of(false),
+            storage: ui::storage::AppStorage::for_app(
+                <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID,
+            ),
+            scene: None,
+            devices: false,
+            radios: crate::radios::Radios::unread(),
+            pages: crate::pages::PanePages::new(),
+            secrets: crate::secrets::SecretAsks::new(),
+            provider_admin: ui::models::ProviderAdministration::default(),
+            linked: ui::linked_accounts::LinkedAccounts::default(),
+            sections: crate::sections::Sections::default(),
             sidebar_selection: ui::LocalState::new(None),
             setting_request: ui::LocalState::new(None),
             staged: RefCell::new(None),
             account_root,
             wallpaper_status: ui::LocalState::new(None),
-            areas,
+            areas: crate::area::Areas::default(),
             keyboard_map_input: ui::KeyboardMapInput::default(),
             pane_waits: Cell::new(false),
             content_built: Cell::new(0),
@@ -98,7 +118,9 @@ impl SettingsApp {
             pane_scroll: RefCell::default(),
             keyboard_shown: RefCell::new(None),
             input_picker_shown: RefCell::new(None),
-        }
+        };
+        app.areas = crate::area::Areas::of(&app.area_context());
+        app
     }
 
     /// Open on `category`.
@@ -108,18 +130,49 @@ impl SettingsApp {
         self
     }
 
-    /// Attach the app to its host: the door the panes' controls go through,
-    /// and the person's accounts.
-    pub fn attach_host(
+    /// Attach the app to the view `cx`: the settings document and the
+    /// sections' actions it holds, what it lends (the provider
+    /// administration, the person's linked accounts), the stand-ins a
+    /// capture stages, and the person's accounts.
+    pub fn attach(
         &mut self,
-        cx: crate::host::PaneCx,
+        cx: &ui::framework::ViewCx<crate::resource::Settings>,
         accounts: Option<ui::framework::PersonRecord<accounts::person::PersonAccounts>>,
     ) {
-        if let Some(root) = cx.scene().and_then(|scene| scene.account_root.clone()) {
+        let launcher_admin = crate::take_launcher_provider_admin();
+        self.provider_admin = if cx.mode().is_live() {
+            launcher_admin
+        } else {
+            ui::models::ProviderAdministration::default()
+        };
+        while let Some(loan) = cx.take_lent::<ui::models::ProviderAdministration>() {
+            self.provider_admin = loan;
+        }
+        self.linked = ui::linked_accounts::LinkedAccounts::default();
+        while let Some(loan) = cx.take_lent::<ui::linked_accounts::LinkedAccounts>() {
+            self.linked = loan;
+        }
+        self.scene = cx.fixture::<crate::scenarios::CaptureScene>();
+        if let Some(state) = self
+            .scene
+            .as_ref()
+            .and_then(|scene| scene.linked_account.clone())
+        {
+            self.linked = ui::linked_accounts::LinkedAccounts::new(Rc::new(
+                crate::scenarios::CaptureBridge(state),
+            ));
+        }
+        self.storage = cx.storage().clone();
+        self.devices = cx.mode().is_live() && !cfg!(test);
+        if self.devices {
+            self.radios = crate::radios::Radios::of_device();
+        }
+        self.sections = crate::sections::Sections::of(cx);
+        if let Some(root) = self.scene().and_then(|scene| scene.account_root.clone()) {
             self.account_root = crate::accounts::AccountRoot::at(root);
         } else if let Some(record) = accounts {
             self.account_root = self.account_root.clone().with_person(record);
-            if cx.reaches_devices()
+            if self.devices
                 && let Err(error) = self
                     .account_root
                     .take_in_device_accounts()
@@ -128,16 +181,28 @@ impl SettingsApp {
                 tracing::warn!(%error, "the device's account file could not follow the person's accounts");
             }
         }
-        let cx = cx.with_pages(self.cx.pages().clone());
-        let context = crate::area::AreaContext {
-            cx: &cx,
-            account_root: &self.account_root,
-        };
+        let context = self.area_context();
         self.areas = crate::area::Areas::of(&context);
         #[cfg(test)]
         self.areas.take_replacements(&context);
-        self.area_reads = crate::effects::AreaReads::of(&cx);
-        self.cx = cx;
+        self.area_reads = crate::effects::AreaReads::of(self.devices);
+    }
+
+    /// What the areas are made in: the parts of this app they keep.
+    #[must_use]
+    pub fn area_context(&self) -> crate::area::AreaContext {
+        crate::area::AreaContext {
+            storage: self.storage.clone(),
+            scene: self.scene.clone(),
+            devices: self.devices,
+            radios: self.radios.clone(),
+            pages: self.pages.clone(),
+            secrets: self.secrets.clone(),
+            provider_admin: self.provider_admin.clone(),
+            linked: self.linked.clone(),
+            sections: self.sections.clone(),
+            account_root: self.account_root.clone(),
+        }
     }
 
     /// The app, shared by the window, its effects and its rows.
@@ -160,7 +225,7 @@ impl SettingsApp {
             self.keyboard_map_input.clear();
         }
         if self.selected.replace(category) != category {
-            self.cx.pages().clear();
+            self.pages.clear();
         }
     }
 
@@ -380,8 +445,58 @@ impl SettingsApp {
         *self.input_picker_shown.borrow_mut() = shown;
     }
 
-    pub fn host(&self) -> &crate::host::PaneCx {
-        &self.cx
+    /// The app's storage: its settings document, files and secrets.
+    #[must_use]
+    pub fn storage(&self) -> &ui::storage::AppStorage {
+        &self.storage
+    }
+
+    /// The stand-ins a screenshot shows; `None` in a live window.
+    #[must_use]
+    pub fn scene(&self) -> Option<&crate::scenarios::CaptureScene> {
+        self.scene.as_deref()
+    }
+
+    /// Whether the areas reach this device's hardware and services.
+    #[must_use]
+    pub fn reaches_devices(&self) -> bool {
+        self.devices
+    }
+
+    /// The radios this device has, read off the UI thread.
+    #[must_use]
+    pub fn radios(&self) -> &crate::radios::Radios {
+        &self.radios
+    }
+
+    /// The pages the panes drilled into ([`crate::pages`]).
+    #[must_use]
+    pub fn pages(&self) -> &crate::pages::PanePages {
+        &self.pages
+    }
+
+    /// The password prompt the window shows ([`crate::secrets`]).
+    #[must_use]
+    pub fn secrets(&self) -> &crate::secrets::SecretAsks {
+        &self.secrets
+    }
+
+    /// The administration of the agent providers the launcher granted.
+    #[must_use]
+    pub fn provider_admin(&self) -> &ui::models::ProviderAdministration {
+        &self.provider_admin
+    }
+
+    /// The person's linked accounts, when the host lent them.
+    #[must_use]
+    pub fn linked(&self) -> &ui::linked_accounts::LinkedAccounts {
+        &self.linked
+    }
+
+    /// The settings sections' actions ([`crate::sections`]).
+    #[must_use]
+    pub fn sections(&self) -> &crate::sections::Sections {
+        &self.sections
     }
 
     /// Run blocking `work` off the UI thread for an effect, then `then` with

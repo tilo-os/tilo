@@ -18,9 +18,9 @@
 //! The section is view code over the model the area keeps ([`view`]): the
 //! area moves what it is keyed by whenever what it shows changes.
 
+use crate::area::AreaContext;
 use crate::channel;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::PaneCx;
 use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
@@ -77,7 +77,8 @@ pub(crate) fn answer(
 
 /// The host keeps the disk-unlock model when its pane is closed.
 pub struct DiskUnlockArea {
-    cx: PaneCx,
+    /// Whether the enrolment is this device's.
+    devices: bool,
     model: OnceCell<Rc<RefCell<DiskUnlockModel>>>,
     /// What the enrolment is read and changed through, where it is not the
     /// device's or the detached stand-in: a test's.
@@ -88,9 +89,9 @@ pub struct DiskUnlockArea {
 }
 
 impl DiskUnlockArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
             model: OnceCell::new(),
             #[cfg(test)]
             over: None,
@@ -100,7 +101,7 @@ impl DiskUnlockArea {
 
     /// The area over `authority` in place of the device's.
     #[cfg(test)]
-    fn over(cx: &PaneCx, authority: Arc<dyn UnlockAuthority>) -> Self {
+    fn over(cx: &AreaContext, authority: Arc<dyn UnlockAuthority>) -> Self {
         Self {
             over: Some(authority),
             ..Self::new(cx)
@@ -112,7 +113,7 @@ impl DiskUnlockArea {
         if let Some(authority) = &self.over {
             return Arc::clone(authority);
         }
-        if self.cx.reaches_devices() {
+        if self.devices {
             Arc::new(PolkitAuthority)
         } else {
             Arc::new(DetachedAuthority)
@@ -866,7 +867,7 @@ mod tests {
     /// `authority`, once its first read is shown; what the window shows.
     fn shown_over(authority: Arc<dyn UnlockAuthority>) -> String {
         crate::area::replace_in_next_window(move |context| {
-            DiskUnlockArea::over(context.cx, authority)
+            DiskUnlockArea::over(context, authority)
         });
         let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
         app.harness().resize((1280, 4096)).unwrap();

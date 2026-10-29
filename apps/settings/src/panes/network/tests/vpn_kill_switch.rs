@@ -23,8 +23,8 @@ fn document(app: &mut App) -> ui::storage::SettingsDocument {
     app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         super::super::area(settings)
             .unwrap()
-            .cx
-            .storage()
+            .reach
+            .storage
             .settings_document()
             .clone()
     })

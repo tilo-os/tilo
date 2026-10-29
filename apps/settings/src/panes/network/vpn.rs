@@ -864,7 +864,7 @@ impl NetworkModel {
         };
         match effect {
             VpnEffect::ShowVpns => {
-                self.cx.pages().clear();
+                self.reach.pages.clear();
                 open(self, PAGE_VPN, t("net-vpn"))
             }
             VpnEffect::ShowVpnProfile { connection } => {
@@ -874,13 +874,13 @@ impl NetworkModel {
                     // read.
                     Err(_) if !self.loaded => {
                         self.vpn.wanted = Some(connection);
-                        self.cx.pages().clear();
+                        self.reach.pages.clear();
                         return open(self, PAGE_VPN, t("net-vpn"));
                     }
                     Err(error) => return Err(error),
                 };
                 if self.page_key().as_deref() != Some(PAGE_VPN) {
-                    self.cx.pages().clear();
+                    self.reach.pages.clear();
                     self.open_page(PAGE_VPN, t("net-vpn"));
                 }
                 self.vpn.errors.remove(&vpn.uuid);
@@ -1240,8 +1240,8 @@ impl NetworkModel {
                 self.forget_kill_switch(uuid);
                 self.vpns.retain(|vpn| &vpn.uuid != uuid);
                 self.vpn.settings.remove(uuid);
-                self.cx
-                    .pages()
+                self.reach
+                    .pages
                     .close(Category::Network, &profile_page_key(uuid));
                 Ok(t_args("net-vpn-deleted", &[("name", name.as_str().into())]))
             }
@@ -1261,7 +1261,7 @@ impl NetworkModel {
                 self.vpn.plugin = PluginForm::default();
                 self.start_snapshot();
                 self.read_vpn(&uuid);
-                let pages = self.cx.pages();
+                let pages = &self.reach.pages;
                 pages.clear();
                 pages.open(Category::Network, PAGE_VPN, t("net-vpn"));
                 pages.open(Category::Network, profile_page_key(&uuid), t("net-vpn"));
