@@ -133,6 +133,7 @@ pub mod media_keys;
 pub(crate) mod membership;
 pub mod memory_report;
 pub mod mls_vault;
+pub(crate) mod mobile_data;
 pub mod mpris;
 pub(crate) mod native_media;
 pub(crate) mod native_workspace_owner;

@@ -706,40 +706,63 @@ fn the_other_sim_is_used_by_its_slot() {
     );
 }
 
-/// The modem's count is kept in this device's section through its verb;
-/// the reset day is the section's field, bound on the modem's page and
+/// The count is the device's: the session counts the modem's totals into
+/// the section through its verb with no page ever opened, and an agent
+/// reading the section sees them. Reading the modem in Settings counts
+/// nothing of its own.
+#[test]
+fn the_count_is_kept_in_the_section_with_no_page_opened() {
+    use crate::testing::invoke_section;
+    let kind = <MobileDataUsage as ui::tilo_resource::Resource>::KIND;
+    // The window opens on About: the network page, whose model reads the
+    // modem, is never built.
+    let mut app =
+        ui::prelude::TestApp::<crate::resource::SettingsShell>::launched(&["settings://about"])
+            .unwrap();
+    let now = tilo_clock::unix_now_i64();
+    for (total, at) in [(9_000_u64, now), (9_750, now + 60)] {
+        invoke_section(
+            &mut app,
+            kind,
+            "count-data-used",
+            serde_json::json!({ "total": total, "boot": "b", "at": at }),
+        )
+        .unwrap();
+    }
+    let usage = app.settings::<MobileDataUsage>().get();
+    assert_eq!((usage.used, usage.counter), (750, Some(9_750)));
+    let opened = app
+        .with_widget::<crate::window::Inspected, _>(|settings| settings.selected())
+        .unwrap();
+    assert_eq!(
+        opened,
+        crate::categories::Category::About,
+        "no modem page was opened"
+    );
+}
+
+/// The reset day is the section's field, bound on the modem's page and
 /// refused unless every month has it; resetting is the section's verb.
 #[test]
-fn the_count_the_reset_day_and_reset_are_the_sections() {
+fn the_reset_day_and_reset_are_the_sections() {
     use crate::testing::{edit_field, invoke_section};
     let kind = <MobileDataUsage as ui::tilo_resource::Resource>::KIND;
     let (_, mut app) = hosted(MobileSample::Registered);
-    app.call("refresh-mobile", serde_json::json!({})).unwrap();
-    let deadline = tilo_test_env::hang_deadline();
-    while app.settings::<MobileDataUsage>().get().counter.is_none() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the modem's total was never counted"
-        );
-        app.settle();
-        std::thread::yield_now();
-    }
-    let counted = app.settings::<MobileDataUsage>().get();
     invoke_section(
         &mut app,
         kind,
         "count-data-used",
-        serde_json::json!({
-            "total": counted.counter.unwrap() + 500,
-            "boot": counted.boot,
-            "at": tilo_clock::unix_now_i64(),
-        }),
+        serde_json::json!({ "total": 1_000, "boot": "b", "at": tilo_clock::unix_now_i64() }),
     )
     .unwrap();
-    assert_eq!(
-        app.settings::<MobileDataUsage>().get().used,
-        counted.used + 500
-    );
+    invoke_section(
+        &mut app,
+        kind,
+        "count-data-used",
+        serde_json::json!({ "total": 1_500, "boot": "b", "at": tilo_clock::unix_now_i64() }),
+    )
+    .unwrap();
+    assert_eq!(app.settings::<MobileDataUsage>().get().used, 500);
 
     app.call("show-mobile", serde_json::json!({})).unwrap();
     app.settle();
@@ -766,44 +789,6 @@ fn the_count_the_reset_day_and_reset_are_the_sections() {
     assert_eq!(reported["data_period_starts_on_day"], 3);
     invoke_section(&mut app, kind, "reset-data-used", serde_json::json!({})).unwrap();
     assert_eq!(app.settings::<MobileDataUsage>().get().used, 0);
-}
-
-/// The count Settings kept among its own device-local settings before it
-/// was a section is taken in when the modem is first read: its period,
-/// count and reset day survive, and the keys it was kept under go.
-#[test]
-fn the_count_kept_before_it_was_a_section_survives() {
-    let cx = cx();
-    let document = cx.storage.settings::<MobileDataUsage>().document().clone();
-    let app_local = ui::storage::Scope::DeviceLocal.section();
-    let mut former = serde_json::Map::new();
-    former.insert(
-        settings_sections::APP_ID.to_owned(),
-        serde_json::json!({
-            "mobile_reset_day": 15,
-            "mobile_period": 24_314,
-            "mobile_used": 123_456,
-            "mobile_counter": 9_000,
-            "mobile_boot": "b",
-        }),
-    );
-    document.update_section(app_local, former).unwrap();
-    let _model = MobileModel::loaded_from(Reach::of(&cx), Arc::new(ScriptedModem::new(None)));
-    let usage = cx.storage.settings::<MobileDataUsage>().get();
-    assert_eq!(usage.reset_day.get(), 15);
-    assert_eq!(
-        (usage.period, usage.used, usage.counter),
-        (24_314, 123_456, Some(9_000))
-    );
-    assert_eq!(usage.boot.as_deref(), Some("b"));
-    assert!(
-        document
-            .section(app_local)
-            .get(settings_sections::APP_ID)
-            .and_then(|kept| kept.get("mobile_used"))
-            .is_none(),
-        "the former keys are gone"
-    );
 }
 
 /// A modem service whose changes are followed by hand.

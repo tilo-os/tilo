@@ -362,8 +362,6 @@ pub(crate) struct MobileSnapshot {
     /// `NetworkManager`'s radios: whether it lists a modem, and its WWAN
     /// switch.
     radios: Result<os_actions::RadioState, String>,
-    /// This boot's id, which tells a traffic total that started again.
-    boot: Option<String>,
 }
 
 /// A change carried out off the UI thread. Codes are zeroed when it is
@@ -443,9 +441,6 @@ impl MobileService for DeviceModem {
             modems: os_actions::read_mobile(),
             profile: os_actions::read_mobile_profile(),
             radios: os_actions::get_radio_state(),
-            boot: std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-                .ok()
-                .map(|id| id.trim().to_owned()),
         }
     }
 
@@ -736,7 +731,6 @@ impl MobileService for ScriptedModem {
                 wwan_enabled: state.wwan_enabled,
                 ..os_actions::RadioState::default()
             }),
-            boot: Some("scripted".into()),
         }
     }
 
@@ -816,7 +810,6 @@ pub struct MobileModel {
     wwan_listed: bool,
     /// `NetworkManager`'s WWAN switch: whether mobile data may be used.
     wwan_enabled: bool,
-    boot: Option<String>,
     in_flight: usize,
     notice: Option<String>,
     /// The SIM code the password prompt asks for.
@@ -849,13 +842,6 @@ impl MobileModel {
     }
 
     fn with_service(reach: Reach, service: Arc<dyn MobileService>) -> Self {
-        // The count Settings kept before it was a section is taken in
-        // before anything counts on it.
-        if let Err(error) = settings_sections::mobile_data::take_in_former(
-            &reach.storage.settings::<MobileDataUsage>(),
-        ) {
-            warn!(target: "tilo::settings", %error, "the mobile data count kept before could not be taken in");
-        }
         Self {
             reach,
             service,
@@ -867,7 +853,6 @@ impl MobileModel {
             profile_error: None,
             wwan_listed: false,
             wwan_enabled: false,
-            boot: None,
             in_flight: 0,
             notice: None,
             asking: None,
@@ -980,34 +965,8 @@ impl MobileModel {
             self.wwan_listed = radios.wwan_available;
             self.wwan_enabled = radios.wwan_enabled;
         }
-        self.boot = snapshot.boot;
-        self.count_usage();
         self.loaded = true;
         self.follow_lock();
-    }
-
-    /// Count the traffic just read toward the period through the section's
-    /// verb, where it changes the count: the modem's reading, nobody's undo
-    /// step. A device without a modem has nothing to count.
-    fn count_usage(&self) {
-        if self.modems.is_empty() {
-            return;
-        }
-        let total = self
-            .modems
-            .iter()
-            .filter_map(|modem| modem.traffic)
-            .map(Traffic::total)
-            .reduce(u64::saturating_add);
-        let now = tilo_clock::unix_now_i64();
-        let mut counted = self.reach.storage.settings::<MobileDataUsage>().get();
-        if !counted.account(total, self.boot.as_deref(), now) {
-            return;
-        }
-        let count = MobileDataUsage::COUNT_DATA_USED.with((total, self.boot.clone(), now));
-        if let Err(error) = self.reach.sections.invoke::<MobileDataUsage>(count) {
-            warn!(target: "tilo::settings", %error, "the mobile data count could not be kept");
-        }
     }
 
     /// Start `change` on a worker.

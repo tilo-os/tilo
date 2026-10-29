@@ -2,7 +2,9 @@
 //! modem's traffic in the current period and the day of the month the
 //! period starts on. Kept on this device only: another device's modem
 //! counts its own. The person sets the day and starts the count again; the
-//! count itself follows what the modem reports, nobody's undo step.
+//! count itself follows what the modem reports, nobody's undo step: the
+//! session counts the modem's traffic into it where the modem is read,
+//! whether or not a page shows it.
 
 use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
@@ -201,80 +203,6 @@ impl MobileDataUsage {
     }
 }
 
-/// The count as Settings kept it among its own device-local settings
-/// before it was a section; the reset day 0 was the 1st.
-#[derive(Default, Deserialize)]
-#[serde(default)]
-struct Former {
-    #[serde(rename = "mobile_reset_day")]
-    reset_day: u32,
-    #[serde(rename = "mobile_period")]
-    period: u32,
-    #[serde(rename = "mobile_used")]
-    used: u64,
-    #[serde(rename = "mobile_counter")]
-    counter: Option<u64>,
-    #[serde(rename = "mobile_boot")]
-    boot: Option<String>,
-}
-
-/// The keys of [`Former`].
-const FORMER_KEYS: [&str; 5] = [
-    "mobile_reset_day",
-    "mobile_period",
-    "mobile_used",
-    "mobile_counter",
-    "mobile_boot",
-];
-
-impl From<Former> for MobileDataUsage {
-    fn from(former: Former) -> Self {
-        let day = ResetDay::nearest(former.reset_day);
-        Self {
-            reset_day: day,
-            period: former.period,
-            period_day: day.get(),
-            used: former.used,
-            counter: former.counter,
-            boot: former.boot,
-        }
-    }
-}
-
-/// Take in the count Settings kept among its own device-local settings
-/// (`app_device_local`, under its app id) before it was this section: while
-/// the section holds nothing yet, it is written from them, and they are
-/// removed. Whether there was a count to take in.
-///
-/// # Errors
-/// The document could not be written.
-pub fn take_in_former(settings: &ui::storage::Settings<MobileDataUsage>) -> std::io::Result<bool> {
-    let document = settings.document();
-    if !document.section(SECTION).is_empty() {
-        return Ok(false);
-    }
-    let app_local = settings_store::placement::APP_DEVICE_LOCAL_SECTION;
-    let Some(serde_json::Value::Object(mut kept)) =
-        document.section(app_local).remove(crate::APP_ID)
-    else {
-        return Ok(false);
-    };
-    let former: serde_json::Map<String, serde_json::Value> = FORMER_KEYS
-        .iter()
-        .filter_map(|key| kept.remove(*key).map(|value| ((*key).to_owned(), value)))
-        .collect();
-    if former.is_empty() {
-        return Ok(false);
-    }
-    let former: Former = serde_json::from_value(serde_json::Value::Object(former))
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    settings.set(&MobileDataUsage::from(former))?;
-    let mut entry = serde_json::Map::new();
-    entry.insert(crate::APP_ID.to_owned(), serde_json::Value::Object(kept));
-    document.update_section(app_local, entry)?;
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,26 +322,5 @@ mod tests {
             .unwrap();
         let state = usage.state().unwrap();
         assert_eq!((state.used, state.counter), (0, Some(1_250)));
-    }
-
-    /// The count Settings kept before it was a section reads as the
-    /// section: its period, count and day.
-    #[test]
-    fn the_former_count_reads_as_the_section() {
-        let former: Former = serde_json::from_value(serde_json::json!({
-            "mobile_reset_day": 0,
-            "mobile_period": 24_314,
-            "mobile_used": 42,
-            "mobile_counter": 9_000,
-            "mobile_boot": "b",
-        }))
-        .unwrap();
-        let usage = MobileDataUsage::from(former);
-        assert_eq!(usage.reset_day, ResetDay::default());
-        assert_eq!(
-            (usage.period, usage.period_day, usage.used, usage.counter),
-            (24_314, 1, 42, Some(9_000))
-        );
-        assert_eq!(usage.boot.as_deref(), Some("b"));
     }
 }
