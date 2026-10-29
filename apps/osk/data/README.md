@@ -3,8 +3,9 @@
 Compact, embedded, **offline** English and French data for the on-screen
 keyboard's swipe decoder, tap-target resolver, autocorrector and next-word
 predictor. Every table is `include_str!`-bundled into the `osk` binary, so the
-keyboard works with no network and no model download. The letter layout picks
-the language: QWERTY types English, AZERTY French. Personal vocabulary and
+keyboard works with no network and no model download. The typing language
+follows the letter layout (QWERTY English, AZERTY French) unless one is chosen.
+Personal vocabulary and
 word pairs are learned on the device on top of this baseline.
 
 ## Files
@@ -45,10 +46,13 @@ Each language combines three sources: one decides *which words exist*, one
      `https://www.grammalecte.net/dic/lexique-grammalecte-fr-v7.7.zip`: every
      inflected form of the database the Grammalecte Hunspell dictionaries are
      built from, except proper names (tags `npr`, `prn`), lower-cased and
-     limited to `a–z` plus `àâäçéèêëîïôöùûüÿæœ`.
+     limited to `a–z` plus `àâäçéèêëîïôöùûüÿæœ`, with apostrophes inside
+     lexicalised words (`aujourd'hui`) and ending elisions (`l'`, `qu'`).
+     The keyboard composes an elision and the word after it as one word
+     (`l'homme`) and predicts that word after the elision.
    * Both keep words of at most 24 letters and only the real one-letter
-     words (`a`, `i`; `a`, `à`, `y`, `ô`), so stray letters and elided
-     articles (`l'`, `d'`) never become suggestions.
+     words (`a`, `i`; `a`, `à`, `y`, `ô`), so stray letters and the bare
+     stems of elisions (`l`, `d`) never become suggestions.
 2. **Word frequency — wordfreq 3.1.1** (Robyn Speer,
    <https://github.com/rspeer/wordfreq>), the `large_en` and `large_fr` lists
    from `wordfreq-3.1.1-py3-none-any.whl` on PyPI. wordfreq blends subtitles,

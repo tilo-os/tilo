@@ -2036,6 +2036,40 @@ fn long_press_options(osk: &mut OskWidget, label: &str) -> Vec<String> {
 }
 
 #[test]
+fn french_elisions_compose_as_prefix_plus_word() {
+    let mut osk = OskWidget::new().with_active_layout("azerty");
+    assert_eq!(osk.language(), Language::French);
+    for c in ["l", "'", "h", "o", "m"] {
+        osk.apply_action(KeyAction::Char(c.into()));
+    }
+    assert_eq!(osk.current_word(), "l'hom");
+    let words: Vec<&str> = osk.suggestions().iter().map(|s| s.word.as_str()).collect();
+    assert_eq!(words.first(), Some(&"l'homme"), "{words:?}");
+    for c in ["m", "r"] {
+        osk.apply_action(KeyAction::Char(c.into()));
+    }
+    osk.apply_action(KeyAction::Space);
+    assert_eq!(
+        osk.pending_text(),
+        "l'homme ",
+        "only the word after the elision is corrected"
+    );
+    // The word after the elision is the next word's context.
+    assert_eq!(osk.prev_word.as_deref(), Some("homme"));
+    // A typographic apostrophe composes the same way.
+    for c in ["q", "u", "\u{2019}", "i"] {
+        osk.apply_action(KeyAction::Char(c.into()));
+    }
+    assert_eq!(osk.current_word(), "qu'i");
+    // An apostrophe that starts no known word still ends the word.
+    let mut osk = OskWidget::new().with_active_layout("azerty");
+    for c in ["x", "y", "'"] {
+        osk.apply_action(KeyAction::Char(c.into()));
+    }
+    assert_eq!(osk.current_word(), "");
+}
+
+#[test]
 fn french_accents_come_in_the_order_french_uses_them() {
     let mut osk = OskWidget::new().with_active_layout("azerty");
     lay_out(&mut osk, 390.0, 312.0);

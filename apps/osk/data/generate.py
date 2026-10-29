@@ -108,7 +108,10 @@ PROPER_NAME_TAGS = frozenset({"npr", "prn"})
 NGRAM_ROOT = "https://storage.googleapis.com/books/ngrams/books/20200217"
 
 EN_WORD_RE = re.compile(r"^[a-z]+$")
-FR_WORD_RE = re.compile(r"^[a-zàâäçéèêëîïôöùûüÿæœ]+$")
+# French letters, with apostrophes inside lexicalised words (aujourd'hui,
+# presqu'île) and ending elided forms (l', qu', jusqu').
+FR_LETTERS = "a-zàâäçéèêëîïôöùûüÿæœ"
+FR_WORD_RE = re.compile(rf"^[{FR_LETTERS}]+(?:'[{FR_LETTERS}]+)*'?$")
 
 MAX_WORDS_EN = 40_000
 MAX_WORDS_FR = 50_000
@@ -456,7 +459,7 @@ def french_vocabulary() -> set[str]:
             row = dict(zip(columns, fields))
             if PROPER_NAME_TAGS.intersection(row["Étiquettes"].split()):
                 continue
-            w = row["Flexion"].lower()
+            w = row["Flexion"].lower().replace("\u2019", "'")
             if FR_WORD_RE.match(w) and len(w) <= MAX_LEN:
                 words.add(w)
     if columns is None:
@@ -493,6 +496,21 @@ def centibel_count(bucket: int) -> float:
     return WORDFREQ_SCALE * 10 ** (-bucket / 100)
 
 
+def split_elisions(token: str, vocab: frozenset[str]) -> list[str]:
+    """``token`` as vocabulary words: itself when it is one, else split after
+    each leading elision (``qu'il`` -> ``qu'``, ``il``). Google Books
+    tokenises elisions inconsistently (``l'`` alone, ``n'est`` joined)."""
+    pieces: list[str] = []
+    while token not in vocab and "'" in token:
+        head, _, tail = token.partition("'")
+        if f"{head}'" not in vocab or not tail:
+            break
+        pieces.append(f"{head}'")
+        token = tail
+    pieces.append(token)
+    return pieces
+
+
 def bigram_shard(
     args: tuple[str, int, int, tuple[int, str], frozenset[str]],
 ) -> tuple[int, Counter]:
@@ -504,12 +522,27 @@ def bigram_shard(
         for line in lines:
             # Only the n-gram is decoded; almost every line is rejected there.
             head, _, rest = line.partition(b"\t")
-            w1, sep, w2 = head.decode("utf-8", "replace").lower().partition(" ")
-            if not sep or w1 not in vocab or w2 not in vocab:
+            text = head.decode("utf-8", "replace").lower()
+            w1, sep, w2 = text.replace("\u2019", "'").partition(" ")
+            if not sep:
+                continue
+            if w1 in vocab and w2 in vocab:
+                pairs = [(w1, w2)]
+            elif "'" in text:
+                left = split_elisions(w1, vocab)
+                right = split_elisions(w2, vocab)
+                # The pairs inside the second token; those inside the first
+                # are counted where it is the second token.
+                pairs = [(left[-1], right[0]), *zip(right, right[1:])]
+                pairs = [(a, b) for a, b in pairs if a in vocab and b in vocab]
+                if not pairs:
+                    continue
+            else:
                 continue
             n = year_total(rest.decode("ascii").rstrip("\n").split("\t"))
             if n:
-                counts[(w1, w2)] += n
+                for pair in pairs:
+                    counts[pair] += n
     while raw.read(1 << 20):
         pass
     kept = Counter({k: v for k, v in counts.items() if v >= MIN_SHARD_PAIR_COUNT})
@@ -520,8 +553,8 @@ def bigram_shard(
 class Language:
     code: str
     vocabulary: Callable[[], set[str]]
-    # The only one-letter words; wordfreq also counts stray letters and
-    # elided articles ("l'", "d'") that must not become suggestions.
+    # The only one-letter words; wordfreq also counts stray letters and the
+    # bare stems of elisions ("l", "d") that must not become suggestions.
     single_letters: frozenset[str]
     max_words: int
     max_bigrams: int
@@ -551,15 +584,34 @@ LANGUAGES = {
 }
 
 
+def word_counts(vocab: set[str], centibels: dict[str, int]) -> dict[str, float]:
+    """Count per WORDFREQ_SCALE of every member word wordfreq knows.
+
+    wordfreq drops the apostrophe of most elisions (``l'homme`` counts
+    ``l`` and ``homme``) but keeps some joined (``jusqu'à``). An elision
+    (``l'``, ``jusqu'``) therefore counts its bare stem plus every joined
+    form that is not itself a word; the bare stem is no word of its own.
+    """
+    elisions = {w for w in vocab if w.endswith("'")}
+    counts: dict[str, float] = {}
+    for w, bucket in centibels.items():
+        count = centibel_count(bucket)
+        if w in vocab:
+            counts[w] = counts.get(w, 0.0) + count
+        elif f"{w}'" in elisions:
+            counts[f"{w}'"] = counts.get(f"{w}'", 0.0) + count
+        elif "'" in w and w.partition("'")[0] + "'" in elisions:
+            stem = w.partition("'")[0] + "'"
+            counts[stem] = counts.get(stem, 0.0) + count
+    return counts
+
+
 def generate(lang: Language, out: Path, jobs: int, words_only: bool) -> None:
     vocab = {w for w in lang.vocabulary() if len(w) > 1 or w in lang.single_letters}
-    centibels = wordfreq_centibels(lang.code)
+    vocab -= {w[:-1] for w in vocab if w.endswith("'")}
+    counts = word_counts(vocab, wordfreq_centibels(lang.code))
     ranked = sorted(
-        (
-            (w, weight_of(centibel_count(cb)))
-            for w, cb in centibels.items()
-            if w in vocab
-        ),
+        ((w, weight_of(count)) for w, count in counts.items()),
         key=lambda kv: (-kv[1], kv[0]),
     )[: lang.max_words]
     (out / f"words-{lang.code}.txt").write_text(
