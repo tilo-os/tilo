@@ -199,7 +199,7 @@ pub struct CommentCells {
 }
 
 /// A comment thread anchored at a range of cells of one sheet.
-pub type Comment = tilo_document::annotation::Comment<CommentCells>;
+pub type Comment = tilo_rich_text::annotation::Comment<CommentCells>;
 
 /// One sheet of the workbook.
 #[derive(Model, Clone, Debug, PartialEq)]

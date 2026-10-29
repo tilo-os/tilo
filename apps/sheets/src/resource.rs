@@ -31,7 +31,7 @@ use crate::workbook::{
     Area, Chart, ChartKind, Comment, CommentCells, Layout, MAX_ANNOTATION_BYTES, MAX_COLUMN,
     MAX_ROW, Sheet, Workbook,
 };
-use tilo_document::annotation::Reply;
+use tilo_rich_text::annotation::Reply;
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
