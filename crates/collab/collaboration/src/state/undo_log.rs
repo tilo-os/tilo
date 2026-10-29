@@ -484,19 +484,6 @@ impl UndoLog {
             .len()
     }
 
-    /// How many undos of this session redo can bring back.
-    pub fn redo_depth(&self, doc: &AutoCommit) -> usize {
-        let open = self.open_changes(doc);
-        self.index
-            .borrow_mut()
-            .undos(
-                doc,
-                &|version| self.claims(version, None, None, &open),
-                usize::MAX,
-            )
-            .len()
-    }
-
     /// The brackets of this session's steps in effect and of its undos redo
     /// would bring back, newest first.
     #[doc(hidden)]
@@ -612,12 +599,6 @@ impl UndoLog {
         metadata: Option<String>,
     ) -> bool {
         self.record_committed_action_authored(doc, before, focused_node_idx, metadata, None)
-    }
-
-    /// Observe the recorded committed frontier without closing pending work.
-    #[doc(hidden)]
-    pub fn matches_recorded_frontier(&self, doc: &AutoCommit) -> bool {
-        same_frontier(&self.last_heads, &doc.base_heads())
     }
 
     /// As [`Self::record_committed_action`], naming who performed it — for a
