@@ -266,8 +266,8 @@ impl Core {
             ResTextSet, RichEmpty, RichNew, RichPart, RichTime, SetAdd, SetRemove, SomeF, SomeH,
             SomeI, SpaceF, SpaceI, StateAt, StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit,
             TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
-            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
-            UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
+            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
+            UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -313,9 +313,8 @@ impl Core {
                 self.effect_import(imp, a)
             }
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
-            | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen => {
-                self.ui_import(imp, a)
-            }
+            | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
+            | UiActions => self.ui_import(imp, a),
             EventValue | Actions | Lenses | MetaOf | Versions | VersionEnd | Phrase => {
                 self.platform_import(imp, a)
             }
