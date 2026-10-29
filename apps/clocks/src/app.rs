@@ -1,5 +1,5 @@
-//! The Clocks window: a surface over the person's [`Clocks`]. It shows the
-//! state it is presented and changes it only through the resource's
+//! The Clocks window: a view over the person's [`Clocks`]. It shows the
+//! document as it changes and changes it only through the resource's
 //! actions; what stays on this device (floating clocks, the delivery
 //! ledger) goes through the app's device-local settings.
 //!
@@ -16,7 +16,7 @@ use crate::schedule::{DueEvent, OnThisDevice, shell_activity};
 use crate::transport::{ShellCommand, ShellSnapshot};
 use chrono::{Datelike, Offset, TimeZone, Utc};
 use std::{collections::BTreeSet, time::Duration};
-use ui::framework::{Actions, Dispatcher, Setting};
+use ui::framework::{Actions, Dispatcher, Live, Setting};
 use ui::icons::Icon;
 use ui::prelude::Id;
 use ui::widget::Filterable;
@@ -1261,26 +1261,66 @@ pub(crate) type DueNotice = (String, String, Option<Id>);
 /// How long a snoozed alarm waits before ringing again.
 pub(crate) const SNOOZE_MINUTES: u32 = 5;
 
-/// The Clocks surface.
-pub struct ClocksApp {
-    inner: Element,
+/// What the window and the view's effect handler share: the clocks shown
+/// with this device's choices, the due notice and the open section.
+#[derive(Clone)]
+pub(crate) struct Store {
     pub(crate) state: ui::LocalState<Shown>,
-    pub(crate) dispatcher: Dispatcher<Clocks>,
     pub(crate) device: Setting<OnThisDevice>,
-    /// Whether this window is one someone uses, which rings, schedules and
-    /// talks to the shell.
-    live: bool,
-    pub(crate) record: Option<ui::record::RecordId>,
-    pub(crate) opener: Option<ui::framework::OpenHere>,
-    /// Whether the section was chosen from the first state presented.
-    opened: bool,
-    pub(crate) last_notification: Option<(String, String, String)>,
     pub(crate) notice: ui::LocalState<Option<DueNotice>>,
-    next_clock_tick: ui::time::Instant,
     /// The open section: World, Alarms, Timers, Stopwatch.
     pub(crate) mode: ui::LocalState<usize>,
     /// The retained navigation projects the same mode as the content.
-    selection: ui::LocalState<Option<String>>,
+    pub(crate) selection: ui::LocalState<Option<String>>,
+}
+
+impl Store {
+    pub(crate) fn set_mode(&self, mode: usize) {
+        self.mode.set(mode);
+        self.selection.set(Some(mode.to_string()));
+    }
+
+    /// Show `clocks`, the document as it stands.
+    pub(crate) fn present(&self, clocks: &Clocks) {
+        if self.state.with(|shown| shown.clocks != *clocks) {
+            self.state.update(|shown| shown.clocks = clocks.clone());
+        }
+    }
+
+    /// Change this device's choices and show them at once.
+    pub(crate) fn update_device(&self, change: impl FnOnce(&mut OnThisDevice)) {
+        if let Err(error) = self.device.update(change) {
+            tracing::warn!(%error, "Clocks could not keep its device settings");
+        }
+        self.refresh_device();
+    }
+
+    /// Follow a write of this device's choices from anywhere.
+    fn refresh_device(&self) {
+        let device = self.device.get();
+        if self.state.with(|shown| shown.device != device) {
+            self.state.update(|shown| shown.device = device);
+        }
+    }
+}
+
+/// The Clocks window.
+pub struct ClocksApp {
+    inner: Element,
+    pub(crate) store: Store,
+    pub(crate) dispatcher: Dispatcher<Clocks>,
+    /// The document, followed into the store as it changes.
+    document: Live<Clocks>,
+    presented: Option<(u64, u64)>,
+    /// Whether this window is one someone uses, which rings, schedules and
+    /// talks to the shell.
+    live: bool,
+    record: Option<ui::record::RecordId>,
+    opener: Option<ui::framework::OpenHere>,
+    /// Whether the section was chosen from the first state presented.
+    opened: bool,
+    pub(crate) last_notification: Option<(String, String, String)>,
+    next_clock_tick: ui::time::Instant,
     /// The open section's name, which the window's bar shows.
     title: ui::LocalState<String>,
     /// The host's notifications, resolved on first use.
@@ -1294,9 +1334,20 @@ pub struct ClocksApp {
 }
 
 impl ClocksApp {
-    /// The surface over the clocks `controls` edit, keeping this device's
-    /// choices in `device`. Only a `live` one rings and talks to the shell.
-    pub(crate) fn new(controls: Controls, device: Setting<OnThisDevice>, live: bool) -> Self {
+    /// The window over the clocks `controls` edit and `document` holds,
+    /// keeping this device's choices in `device`. Only a `live` one rings
+    /// and talks to the shell; a clicked notification of another record
+    /// opens it through `opener`.
+    pub(crate) fn new(
+        controls: Controls,
+        device: Setting<OnThisDevice>,
+        document: Live<Clocks>,
+        live: bool,
+        (record, opener): (
+            Option<ui::record::RecordId>,
+            Option<ui::framework::OpenHere>,
+        ),
+    ) -> Self {
         let state = ui::LocalState::new(Shown {
             clocks: Clocks::default(),
             device: device.get(),
@@ -1319,7 +1370,7 @@ impl ClocksApp {
                 wake.wake();
             });
         }
-        Self {
+        let mut app = Self {
             inner: surface(
                 &mode,
                 &title,
@@ -1329,18 +1380,22 @@ impl ClocksApp {
                 &notice,
                 &validation_error,
             ),
-            state,
+            store: Store {
+                state,
+                device,
+                notice,
+                mode,
+                selection,
+            },
             dispatcher: controls.dispatcher,
-            device,
+            document,
+            presented: None,
             live,
-            record: None,
-            opener: None,
+            record,
+            opener,
             opened: false,
             last_notification: None,
-            notice,
             next_clock_tick: ui::time::now(),
-            mode,
-            selection,
             title,
             notifications: None,
             pending_notifications: Vec::new(),
@@ -1348,21 +1403,24 @@ impl ClocksApp {
             last_scheduled_clocks: None,
             next_schedule_attempt: ui::time::now(),
             activations,
+        };
+        app.follow_document();
+        app
+    }
+
+    /// Show the clocks the document holds when they changed. The first
+    /// time, open the section that most likely brought the person back; a
+    /// quiet first launch begins with the at-a-glance world view.
+    fn follow_document(&mut self) {
+        let held = (self.document.revision(), self.document.loads());
+        if self.presented == Some(held) {
+            return;
         }
-    }
-
-    pub(crate) fn set_mode(&self, mode: usize) {
-        self.mode.set(mode);
-        self.selection.set(Some(mode.to_string()));
-    }
-
-    /// Show `clocks`. The first time, open the section that most likely
-    /// brought the person back; a quiet first launch begins with the
-    /// at-a-glance world view.
-    pub(crate) fn show(&mut self, clocks: &Clocks) {
+        self.presented = Some(held);
+        let clocks = self.document.get();
         if !self.opened {
             self.opened = true;
-            self.set_mode(if !clocks.timers.is_empty() {
+            self.store.set_mode(if !clocks.timers.is_empty() {
                 TIMERS
             } else if clocks.stopwatch.is_running() || clocks.stopwatch.accumulated_ms > 0 {
                 STOPWATCH
@@ -1372,25 +1430,7 @@ impl ClocksApp {
                 WORLD
             });
         }
-        if self.state.with(|shown| shown.clocks != *clocks) {
-            self.state.update(|shown| shown.clocks = clocks.clone());
-        }
-    }
-
-    /// Change this device's choices and show them at once.
-    pub(crate) fn update_device(&self, change: impl FnOnce(&mut OnThisDevice)) {
-        if let Err(error) = self.device.update(change) {
-            tracing::warn!(%error, "Clocks could not keep its device settings");
-        }
-        self.refresh_device();
-    }
-
-    /// Follow a write of this device's choices from anywhere.
-    fn refresh_device(&self) {
-        let device = self.device.get();
-        if self.state.with(|shown| shown.device != device) {
-            self.state.update(|shown| shown.device = device);
-        }
+        self.store.present(&clocks);
     }
 
     /// Retain the latest due notice in every subsequent transport snapshot.
@@ -1424,7 +1464,9 @@ impl ClocksApp {
                     .push((tag, title.clone(), body.clone(), activation));
             }
         }
-        self.notice.set(Some((title.clone(), body.clone(), alarm)));
+        self.store
+            .notice
+            .set(Some((title.clone(), body.clone(), alarm)));
         if !native.1 {
             self.last_notification = Some((notification_id, title, body));
         }
@@ -1472,15 +1514,15 @@ impl ClocksApp {
         if !schedules_notifications() || ui::time::now() < self.next_schedule_attempt {
             return;
         }
-        let clocks = self.state.with(|shown| shown.clocks.clone());
-        let mut delivery = self.device.get().delivery;
+        let clocks = self.store.state.with(|shown| shown.clocks.clone());
+        let mut delivery = self.store.device.get().delivery;
         let offset = chrono::Local::now().offset().local_minus_utc();
         if self.last_scheduled_clocks.as_ref() == Some(&(clocks.clone(), delivery.clone(), offset))
         {
             return;
         }
         let host = self.notifier();
-        let device = self.device.clone();
+        let device = self.store.device.clone();
         let result = crate::native_timers::reconcile(
             self.record.as_ref(),
             &clocks,
@@ -1493,7 +1535,7 @@ impl ClocksApp {
                     .map_err(|error| error.to_string())
             },
         );
-        self.refresh_device();
+        self.store.refresh_device();
         match result {
             Ok(()) => self.last_scheduled_clocks = Some((clocks, delivery, offset)),
             Err(error) => {
@@ -1521,22 +1563,24 @@ impl ClocksApp {
         if states.is_empty() {
             return;
         }
-        let clocks = self.state.with(|shown| shown.clocks.clone());
-        let mut delivery = self.device.get().delivery;
+        let clocks = self.store.state.with(|shown| shown.clocks.clone());
+        let mut delivery = self.store.device.get().delivery;
         crate::native_timers::restore_alarms(&clocks, &mut delivery, &states);
-        if delivery != self.device.get().delivery {
-            self.update_device(|device| device.delivery = delivery);
+        if delivery != self.store.device.get().delivery {
+            self.store
+                .update_device(|device| device.delivery = delivery);
         }
     }
 
     /// Ring what is due, and turn off the one-shot alarms that rang.
     fn ring_due(&mut self, now: chrono::DateTime<Utc>) {
-        let mut delivery = self.device.get().delivery;
-        let tick = self.state.with(|shown| {
+        let mut delivery = self.store.device.get().delivery;
+        let tick = self.store.state.with(|shown| {
             crate::schedule::tick(&shown.clocks, &mut delivery, now, chrono::Local::now())
         });
-        if delivery != self.device.get().delivery {
-            self.update_device(|device| device.delivery = delivery);
+        if delivery != self.store.device.get().delivery {
+            self.store
+                .update_device(|device| device.delivery = delivery);
         }
         for alarm in tick.finished_alarms {
             self.dispatcher
@@ -1561,7 +1605,11 @@ impl ClocksApp {
         };
         match (command.command.as_str(), timer) {
             ("toggle-stopwatch", _) => {
-                let invoke = if self.state.with(|shown| shown.clocks.stopwatch.is_running()) {
+                let invoke = if self
+                    .store
+                    .state
+                    .with(|shown| shown.clocks.stopwatch.is_running())
+                {
                     Clocks::PAUSE_STOPWATCH.invoke()
                 } else {
                     Clocks::START_STOPWATCH.invoke()
@@ -1569,11 +1617,11 @@ impl ClocksApp {
                 self.dispatcher.submit(invoke);
             }
             ("lap-stopwatch", _) => self.dispatcher.submit(Clocks::LAP.invoke()),
-            ("close-stopwatch", _) => self.update_device(|device| {
+            ("close-stopwatch", _) => self.store.update_device(|device| {
                 device.floating_stopwatch = false;
             }),
             ("toggle", Some(id)) => {
-                let invoke = if self.state.with(|shown| running(shown, &id)) {
+                let invoke = if self.store.state.with(|shown| running(shown, &id)) {
                     Clocks::PAUSE_TIMER.with(id)
                 } else {
                     Clocks::RESUME_TIMER.with(id)
@@ -1581,7 +1629,7 @@ impl ClocksApp {
                 self.dispatcher.submit(invoke);
             }
             ("add-minute", Some(id)) => self.dispatcher.submit(Clocks::ADD_MINUTE.with(id)),
-            ("close", Some(id)) => self.update_device(|device| {
+            ("close", Some(id)) => self.store.update_device(|device| {
                 device.floating_timers.remove(id.as_str());
             }),
             _ => {}
@@ -1591,6 +1639,7 @@ impl ClocksApp {
     /// The floating clock as the shell reads it.
     fn shell_snapshot(&self, now: chrono::DateTime<Utc>) -> ShellSnapshot {
         let activity = self
+            .store
             .state
             .with(|shown| shell_activity(&shown.clocks, &shown.device, now));
         let mut snapshot = activity.map_or_else(
@@ -1643,8 +1692,8 @@ impl ClocksApp {
             });
         } else {
             match uri {
-                TIMERS_URI => self.set_mode(TIMERS),
-                ALARMS_URI => self.set_mode(ALARMS),
+                TIMERS_URI => self.store.set_mode(TIMERS),
+                ALARMS_URI => self.store.set_mode(ALARMS),
                 _ => {}
             }
         }
@@ -1693,11 +1742,12 @@ impl ui::widget::Decorator for ClocksApp {
         self.inner.as_mut()
     }
     fn sync(&mut self, d: &AppModel, p: &ModelPath) {
+        self.follow_document();
         let tick_base = ui::time::now();
         self.next_clock_tick = tick_base
             .checked_add(Duration::from_secs(1))
             .unwrap_or(tick_base);
-        self.refresh_device();
+        self.store.refresh_device();
         self.apply_activations();
         if self.live {
             let now = wall_now();
@@ -1711,11 +1761,11 @@ impl ui::widget::Decorator for ClocksApp {
             crate::transport::publish(&self.shell_snapshot(now));
         }
         // Countdowns move every second without any change to the clocks.
-        self.state.update(|_| {});
-        let mode = self.mode.get();
+        self.store.state.update(|_| {});
+        let mode = self.store.mode.get();
         let selected = Some(mode.to_string());
-        if self.selection.get() != selected {
-            self.selection.set(selected);
+        if self.store.selection.get() != selected {
+            self.store.selection.set(selected);
         }
         if self.title.with(|title| title != section_title(mode)) {
             self.title.set(section_title(mode).to_owned());

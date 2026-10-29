@@ -642,20 +642,6 @@ impl<R: Resource> SurfaceCx<R> {
         stage_hosted(&self.stages, scope, host.staging());
         HostedSurface::element(Box::new(host))
     }
-    /// The host-owned identity of the record this surface shows. A durable
-    /// activation link can name it without relying on the last-open window.
-    /// Absent in a historical view that cannot launch live work.
-    pub fn record(&self) -> Option<&ui_core::record::RecordId> {
-        self.run.launched.record.as_ref()
-    }
-
-    /// What [`RecordEnv::open_here`](super::env::RecordEnv::open_here) does, kept for later: the input that asks
-    /// for another record arrives after attaching (a file chosen in a
-    /// picker). `None` in a past version and a capture.
-    pub fn opener(&self) -> Option<super::OpenHere> {
-        self.run.opener.clone()
-    }
-
     /// Jobs the surface starts on its own, with nobody invoking an effect;
     /// their completions get `&mut` the surface (`jobs.start::<Self>(…)`).
     /// Keep the handle. See [`Jobs`].

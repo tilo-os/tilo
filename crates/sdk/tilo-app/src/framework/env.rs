@@ -146,6 +146,21 @@ impl<R: Resource> RecordEnv<R> {
         self.run.open_here(arguments)
     }
 
+    /// The host-owned identity of the record this window shows. A durable
+    /// activation link can name it without relying on the last-open window.
+    /// Absent in a historical view that cannot launch live work.
+    pub fn record_id(&self) -> Option<&ui_core::record::RecordId> {
+        self.run.launched.record.as_ref()
+    }
+
+    /// What [`Self::open_here`] does, kept for later: the input that asks
+    /// for another record arrives after the view is built (a file chosen in
+    /// a picker, a clicked notification). `None` in a past version and a
+    /// capture.
+    pub fn opener(&self) -> Option<super::OpenHere> {
+        self.run.opener.clone()
+    }
+
     /// The documents this app's windows started in this workspace, each as
     /// last kept, the most recently changed first, without the one this
     /// window shows: what an app whose windows each show a document of their
