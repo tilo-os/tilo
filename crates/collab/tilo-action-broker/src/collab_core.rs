@@ -100,6 +100,10 @@ pub struct BrokerChannels {
     /// The route (app, room, record) each artifact's ops were validated on
     /// this session. A history page is only ever answered to that room.
     pub routes: HashMap<ArtifactId, crate::route::CrdtRoute>,
+    /// Peers' writes waiting on an earlier write of their author to the same
+    /// record, which the room's host replays
+    /// ([`crate::collab_inbound::Behind`]).
+    pub behind: HashMap<(ArtifactId, Ed25519PublicKey), crate::collab_inbound::Behind>,
 }
 
 /// How long a peer history request stays open for answers.
