@@ -453,7 +453,6 @@ fn governor_keys(profile: &Profile, state: &str, readers: &[SigningKey]) -> Chan
             device_key: profile.key.clone(),
         },
         Box::new(Directory {
-            governs: true,
             governor: Ed25519PublicKey::from_bytes(profile.key.verifying_key().to_bytes()),
             policy: Policy {
                 allowed: Arc::new(Mutex::new(readers)),

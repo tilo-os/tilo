@@ -163,9 +163,6 @@ mod tests {
     // decides when the grant ends here.
     struct Polled(crate::shell::channel_policy::WorkspaceChannelDirectory);
     impl crate::shell::channel_encryption::ChannelDirectory for Polled {
-        fn governs(&self, room: crate::shell::state::RoomId) -> bool {
-            self.0.governs(room)
-        }
         fn governor_of(
             &self,
             room: crate::shell::state::RoomId,
@@ -178,7 +175,7 @@ mod tests {
             channel: collab_types::ChannelId,
             route: Option<&collab_types::ChannelRoute>,
             now: u64,
-        ) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
+        ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
             self.0.allowed_devices(room, channel, route, now)
         }
     }

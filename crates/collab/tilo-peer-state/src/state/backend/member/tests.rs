@@ -665,18 +665,18 @@ fn a_members_own_channel_admits_no_one_until_its_record_is_named() {
             .unwrap()
     };
     assert!(
-        !readers(None).contains(&source),
+        readers(None).is_none(),
         "another member asking without naming the record is refused"
     );
-    assert!(readers(None).is_empty());
     let named = collab_types::ChannelRoute::new("so.tilo.chat", theirs.as_str());
-    assert!(!readers(Some(&named)).contains(&source));
+    assert!(!readers(Some(&named)).unwrap().contains(&source));
     // An ordinary record is everyone's once named.
     let notes = collab_types::ChannelRoute::new("so.tilo.chat", "tab:0000000000000001");
     let notes_channel = notes.channel(&room_id);
     assert!(
         peer.governance()
             .channel_readers(now, notes_channel, Some(&notes))
+            .unwrap()
             .unwrap()
             .contains(&source)
     );

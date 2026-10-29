@@ -44,7 +44,6 @@ mod pump {
                 device_key: key(seed),
             },
             Box::new(Directory {
-                governs: seed == governor,
                 governor: public(governor),
                 policy: Policy::default(),
             }),

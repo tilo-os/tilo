@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 20
+version = 21
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -493,6 +493,7 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "MlsGovernanceAction::Commit" = "#1 struct"
 "MlsGovernanceAction::Commit.added" = "#1 Vec<Ed25519PublicKey>"
 "MlsGovernanceAction::Commit.commit" = "#2 Vec<u8>"
+"MlsGovernanceAction::Commit.history" = "#4 Option<Vec<u8>>"
 "MlsGovernanceAction::Commit.joining" = "#3 Option<Joining>"
 "MlsGovernanceAction::Commit.removed" = "#0 Vec<Ed25519PublicKey>"
 "MlsGovernanceAction::Genesis" = "#0 unit"

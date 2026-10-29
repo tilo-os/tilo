@@ -231,21 +231,24 @@ impl Joined {
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
         now: u64,
-    ) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
+    ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
         let at = std::time::SystemTime::UNIX_EPOCH
             .checked_add(std::time::Duration::from_secs(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        self.owner
+        let readers = self
+            .owner
             .with_current(room, |view| {
                 view.peer().governance().channel_readers(at, channel, route)
             })
-            .map(|readers| {
-                readers
-                    .into_iter()
-                    .map(collab_types::Ed25519PublicKey::from_bytes)
-                    .collect()
-            })
-            .unwrap_or_default()
+            // Governance that cannot be read says nothing of who reads.
+            .ok()
+            .flatten()?;
+        Some(
+            readers
+                .into_iter()
+                .map(collab_types::Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
     }
 
     fn invited_room(&self, invitation: &str) -> Result<RoomId, String> {

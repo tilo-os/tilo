@@ -315,6 +315,7 @@ mod tests {
                         added: Vec::new(),
                         commit: vec![epoch],
                         joining: None,
+                        history: None,
                     },
                     &signer,
                 )

@@ -92,7 +92,9 @@ impl PeerGovernance<'_> {
     /// The member devices that may read `channel`, one of the room's record
     /// channels, at `now`: the projection of the room's membership a
     /// channel's MLS group follows. `route` is the channel's record when the
-    /// caller knows it ([`Self::withheld_record_readers`]).
+    /// caller knows it ([`Self::withheld_record_readers`]). `None` when
+    /// neither `route` nor a grant names the record: who may read it is then
+    /// unknown, not no one.
     ///
     /// # Errors
     ///
@@ -102,19 +104,23 @@ impl PeerGovernance<'_> {
         now: SystemTime,
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
-    ) -> Result<BTreeSet<[u8; 32]>, String> {
+    ) -> Result<Option<BTreeSet<[u8; 32]>>, String> {
         let access = self.peer.governance().governed_access(now)?;
         let routes: Vec<collab_types::ChannelRoute> = route.cloned().into_iter().collect();
         let readers = self
             .peer
             .governance()
             .withheld_record_readers(now, &routes)?;
-        let withheld = readers.withheld.get(&channel).unwrap_or(&readers.unrouted);
-        Ok(access
-            .member_devices
-            .into_iter()
-            .filter(|device| !withheld.contains(device))
-            .collect())
+        let Some(withheld) = readers.withheld.get(&channel) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            access
+                .member_devices
+                .into_iter()
+                .filter(|device| !withheld.contains(device))
+                .collect(),
+        ))
     }
 
     /// The governed member devices a Read Deny keeps out of a record's

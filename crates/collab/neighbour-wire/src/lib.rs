@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 20;
+pub const PEER_PROTOCOL_VERSION: u32 = 21;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -802,6 +802,7 @@ mod tests {
                             added: Vec::new(),
                             commit: vec![0xC0, 0x33],
                             joining: None,
+                            history: None,
                         },
                         signed_by: Ed25519PublicKey::from_bytes([9; 32]),
                         signature: Signature::from_bytes([0xAB; 64]),
@@ -1221,7 +1222,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b14",
+                "0b15",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1327,6 +1328,8 @@ mod tests {
                 "3030303030630210555555555555555555555555555555550707070707070707",
                 "0707070707070707070707070707070707070707070707070301010808080808",
                 "0808080808080808080808080808080808080808080808080808080002c03300",
+                // No history handed over.
+                "00",
                 "0909090909090909090909090909090909090909090909090909090909090909",
                 "40ababababababababababababababababababababababababababababababab",
                 "abababababababababababababababababababababababababababababababab",

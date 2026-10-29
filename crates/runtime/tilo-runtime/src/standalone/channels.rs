@@ -159,10 +159,6 @@ struct Directory {
 }
 
 impl ChannelDirectory for Directory {
-    fn governs(&self, room: RoomId) -> bool {
-        room == self.own_room
-    }
-
     fn governor_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
         if room == self.own_room {
             return Some(self.device);
@@ -179,9 +175,9 @@ impl ChannelDirectory for Directory {
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
         now: u64,
-    ) -> BTreeSet<Ed25519PublicKey> {
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
         if room == self.own_room {
-            BTreeSet::from([self.device])
+            Some(BTreeSet::from([self.device]))
         } else {
             self.joined.channel_readers(room, channel, route, now)
         }

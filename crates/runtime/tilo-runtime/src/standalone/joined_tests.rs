@@ -1015,10 +1015,6 @@ struct GovernorDirectory {
 }
 
 impl ChannelDirectory for GovernorDirectory {
-    fn governs(&self, room: RoomId) -> bool {
-        room == self.room
-    }
-
     fn governor_of(&self, _room: RoomId) -> Option<collab_types::Ed25519PublicKey> {
         Some(self.governor)
     }
@@ -1029,11 +1025,11 @@ impl ChannelDirectory for GovernorDirectory {
         _channel: collab_types::ChannelId,
         _route: Option<&collab_types::ChannelRoute>,
         _now: u64,
-    ) -> BTreeSet<collab_types::Ed25519PublicKey> {
+    ) -> Option<BTreeSet<collab_types::Ed25519PublicKey>> {
         if room != self.room {
-            return BTreeSet::new();
+            return Some(BTreeSet::new());
         }
-        self.readers.lock().unwrap().clone()
+        Some(self.readers.lock().unwrap().clone())
     }
 }
 

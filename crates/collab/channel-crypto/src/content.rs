@@ -68,9 +68,15 @@ const KEY_HISTORY_VERSION: u8 = 1;
 pub const MAX_HISTORY_KEYS: usize = 1 << 20;
 
 /// Every content key a member holds for one channel, by epoch.
+///
+/// An epoch normally has one key. A channel whose group forked (two
+/// geneses, or two commits on one epoch, before every device kept the same
+/// one) has more: the key of the branch this member follows comes first and
+/// seals, and the keys of branches that lost follow, so whatever was sealed
+/// under them before the fork settled still opens.
 #[derive(Clone, Default)]
 pub struct ContentKeyring {
-    keys: BTreeMap<u64, SymmetricKey>,
+    keys: BTreeMap<u64, Vec<SymmetricKey>>,
 }
 
 impl ContentKeyring {
@@ -79,27 +85,35 @@ impl ContentKeyring {
         Self::default()
     }
 
-    /// Record the key of `epoch`. An existing key for the epoch must match;
-    /// a mismatch means two members disagree about the channel's history.
+    /// Record the key of `epoch` this member derived from its own group: it
+    /// seals that epoch's content from now on. A key received for the epoch
+    /// from another branch is kept beside it.
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidState`] when a different key is already recorded.
+    /// [`Error::InvalidState`] when the keyring is full.
     pub fn insert(&mut self, epoch: u64, key: SymmetricKey) -> Result<()> {
-        match self.keys.get(&epoch) {
-            Some(existing) if *existing != key => Err(Error::InvalidState(format!(
-                "conflicting content key for epoch {epoch}"
-            ))),
-            Some(_) => Ok(()),
-            None => {
-                self.keys.insert(epoch, key);
-                Ok(())
-            }
+        if !self.holds(epoch, &key) && self.total() >= MAX_HISTORY_KEYS {
+            return Err(Error::InvalidState("the keyring is full".into()));
         }
+        let keys = self.keys.entry(epoch).or_default();
+        keys.retain(|held| *held != key);
+        keys.insert(0, key);
+        Ok(())
     }
 
+    /// The key that seals `epoch`'s content.
     pub fn get(&self, epoch: u64) -> Option<&SymmetricKey> {
-        self.keys.get(&epoch)
+        self.keys.get(&epoch).and_then(|keys| keys.first())
+    }
+
+    /// Whether `key` is one of `epoch`'s keys.
+    fn holds(&self, epoch: u64, key: &SymmetricKey) -> bool {
+        self.keys.get(&epoch).is_some_and(|keys| keys.contains(key))
+    }
+
+    fn total(&self) -> usize {
+        self.keys.values().map(Vec::len).sum()
     }
 
     /// Number of epochs with a key.
@@ -117,8 +131,9 @@ impl ContentKeyring {
         Some((*self.keys.keys().next()?, *self.keys.keys().next_back()?))
     }
 
-    /// Open a content-key payload for `artifact`. Needs only the keyring, so
-    /// history pages fetched long after joining decrypt locally.
+    /// Open a content-key payload for `artifact`, under whichever of its
+    /// epoch's keys seals it. Needs only the keyring, so history pages
+    /// fetched long after joining decrypt locally.
     ///
     /// # Errors
     ///
@@ -137,12 +152,23 @@ impl ContentKeyring {
                 "payload is not content-key ciphertext for this channel".into(),
             ));
         }
-        let key = self
-            .get(metadata.epoch)
+        let keys = self
+            .keys
+            .get(&metadata.epoch)
             .ok_or(Error::MissingContentKey(metadata.epoch))?;
         let record = content_record(channel, metadata.epoch, artifact);
-        tilo_seal::envelope::open(key, Context::new(Label::ChannelContent, &record), payload)
-            .map_err(Error::ContentCrypto)
+        let mut failure = Error::MissingContentKey(metadata.epoch);
+        for key in keys {
+            match tilo_seal::envelope::open(
+                key,
+                Context::new(Label::ChannelContent, &record),
+                payload,
+            ) {
+                Ok(opened) => return Ok(opened),
+                Err(error) => failure = Error::ContentCrypto(error),
+            }
+        }
+        Err(failure)
     }
 
     /// Seal `plaintext` for `artifact` under the key of `epoch`.
@@ -169,37 +195,64 @@ impl ContentKeyring {
         ))
     }
 
-    /// Merge every key of `other`, refusing conflicting keys.
+    /// Keep every key of `other` this keyring lacks, after the keys it
+    /// holds for the same epoch.
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidState`] on a conflict; the keyring is unchanged then.
+    /// [`Error::InvalidState`] when the keyring would be full; it is
+    /// unchanged then.
     pub fn merge(&mut self, other: &Self) -> Result<()> {
-        for (epoch, key) in &other.keys {
-            if self.keys.get(epoch).is_some_and(|existing| existing != key) {
-                return Err(Error::InvalidState(format!(
-                    "conflicting content key for epoch {epoch}"
-                )));
-            }
+        let missing = other.missing_from(self);
+        if self.total().saturating_add(missing.total()) > MAX_HISTORY_KEYS {
+            return Err(Error::InvalidState("the keyring is full".into()));
         }
-        for (epoch, key) in &other.keys {
-            self.keys.entry(*epoch).or_insert_with(|| key.clone());
+        for (epoch, keys) in missing.keys {
+            self.keys.entry(epoch).or_default().extend(keys);
         }
         Ok(())
     }
 
+    /// The keys of this keyring `other` does not hold.
+    #[must_use]
+    pub fn missing_from(&self, other: &Self) -> Self {
+        let keys = self
+            .keys
+            .iter()
+            .filter_map(|(epoch, keys)| {
+                let missing: Vec<SymmetricKey> = keys
+                    .iter()
+                    .filter(|key| !other.holds(*epoch, key))
+                    .cloned()
+                    .collect();
+                (!missing.is_empty()).then_some((*epoch, missing))
+            })
+            .collect();
+        Self { keys }
+    }
+
+    /// Every key, each epoch's sealing key first.
     pub(crate) fn to_wire(&self) -> Vec<(u64, [u8; 32])> {
         self.keys
             .iter()
-            .map(|(epoch, key)| (*epoch, *key.expose_secret()))
+            .flat_map(|(epoch, keys)| keys.iter().map(|key| (*epoch, *key.expose_secret())))
             .collect()
     }
 
+    /// The keyring [`Self::to_wire`] wrote: an epoch's first key seals.
     pub(crate) fn from_wire(mut entries: Vec<(u64, [u8; 32])>) -> Result<Self> {
         let mut keyring = Self::new();
-        let result = entries
-            .iter()
-            .try_for_each(|(epoch, key)| keyring.insert(*epoch, SymmetricKey::from_bytes(*key)));
+        let result = if entries.len() > MAX_HISTORY_KEYS {
+            Err(Error::InvalidState("too many content keys".into()))
+        } else {
+            for (epoch, key) in &entries {
+                let key = SymmetricKey::from_bytes(*key);
+                if !keyring.holds(*epoch, &key) {
+                    keyring.keys.entry(*epoch).or_default().push(key);
+                }
+            }
+            Ok(())
+        };
         for (_, key) in &mut entries {
             key.zeroize();
         }
@@ -356,13 +409,13 @@ impl std::fmt::Debug for KeyHistory {
 mod tests {
     use super::*;
 
-    /// Content is bound to channel, epoch and artifact; conflicting keys are refused; a history
+    /// Content is bound to channel, epoch and artifact; another branch's keys open and never seal; a history
     /// bundle round-trips only for its channel and epoch.
     /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
     fn sealed_content_opens_only_for_its_channel_epoch_and_artifact() {
         content_is_bound_to_channel_epoch_and_artifact();
-        conflicting_keys_are_refused();
+        keys_of_another_branch_open_and_never_seal();
         history_bundle_round_trips_only_for_its_channel_and_epoch();
     }
 
@@ -396,17 +449,39 @@ mod tests {
         assert!(ring.open(channel, artifact, &v1, &sealed).is_err());
     }
 
-    fn conflicting_keys_are_refused() {
+    fn keys_of_another_branch_open_and_never_seal() {
+        let channel = ChannelId::new();
+        let artifact = ArtifactId::new();
+        let (own, other) = (
+            SymmetricKey::generate().unwrap(),
+            SymmetricKey::generate().unwrap(),
+        );
+        let mut lost = ContentKeyring::new();
+        lost.insert(1, other.clone()).unwrap();
+        let (metadata, sealed) = lost
+            .seal(channel, 1, artifact, ContentRetention::Delta, b"lost")
+            .unwrap();
         let mut ring = ContentKeyring::new();
-        let key = SymmetricKey::generate().unwrap();
-        ring.insert(1, key.clone()).unwrap();
-        ring.insert(1, key).unwrap();
-        assert!(ring.insert(1, SymmetricKey::generate().unwrap()).is_err());
-        let mut other = ContentKeyring::new();
-        other.insert(1, SymmetricKey::generate().unwrap()).unwrap();
-        other.insert(9, SymmetricKey::generate().unwrap()).unwrap();
-        assert!(ring.merge(&other).is_err());
-        assert!(ring.get(9).is_none(), "a refused merge changes nothing");
+        ring.insert(1, own.clone()).unwrap();
+        ring.merge(&lost).unwrap();
+        ring.merge(&lost).unwrap();
+        assert_eq!(ring.get(1), Some(&own), "the own branch's key seals");
+        assert_eq!(ring.to_wire().len(), 2);
+        assert_eq!(
+            ring.open(channel, artifact, &metadata, &sealed)
+                .unwrap()
+                .as_slice(),
+            b"lost"
+        );
+        assert_eq!(ring.missing_from(&lost).get(1), Some(&own));
+        assert!(lost.missing_from(&ring).is_empty());
+        let restored = ContentKeyring::from_wire(ring.to_wire()).unwrap();
+        assert_eq!(restored.get(1), Some(&own));
+        assert!(restored.open(channel, artifact, &metadata, &sealed).is_ok());
+        // Deriving a key again puts it first.
+        ring.insert(1, other.clone()).unwrap();
+        assert_eq!(ring.get(1), Some(&other));
+        assert_eq!(ring.to_wire().len(), 2);
     }
 
     fn history_bundle_round_trips_only_for_its_channel_and_epoch() {

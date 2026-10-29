@@ -254,6 +254,7 @@ fn a_commit_the_membership_does_not_back_is_refused() {
             added: vec![eve.public()],
             commit,
             joining,
+            history: None,
         },
         &alice.key,
     )
@@ -314,10 +315,14 @@ fn concurrent_commits_on_one_epoch_converge_on_the_lower_digest() {
     deliver(&from_bob, &mut [&mut alice], &everyone);
     deliver(&from_alice, &mut [&mut bob], &everyone);
 
+    let alice_won = head(&winner) == head(&from_alice);
     let mut devices = [&mut alice, &mut bob, &mut carol];
     for device in &devices {
         assert_eq!(device.epoch(), Some(2));
-        assert!(!device.peer.differs(&everyone), "the winner admitted Dave");
+        assert!(
+            device.peer.asking(&everyone).is_empty(),
+            "the winner admitted Dave"
+        );
     }
     // The writer of the winning commit publishes it again for the hosts
     // that kept the loser, which arrived later.
@@ -341,6 +346,173 @@ fn concurrent_commits_on_one_epoch_converge_on_the_lower_digest() {
             Some("one epoch for everyone")
         );
     }
+
+    // The writer of the losing commit and Dave hold the losing epoch's
+    // key, and hand it to every member, so nothing sealed under it is lost.
+    let losing_writer = usize::from(alice_won);
+    assert!(devices[losing_writer].peer.differs(&everyone));
+    assert!(dave.peer.differs(&everyone));
+    settle(
+        &mut [&mut alice, &mut bob, &mut carol, &mut dave],
+        &everyone,
+    );
+    for device in [&alice, &bob, &carol, &dave] {
+        assert!(!device.peer.differs(&everyone));
+    }
+}
+
+/// Run the protocol until nothing changes: every waiting device asks, every
+/// member reconciles, and every frame reaches every device (the copy
+/// carrying join material only the devices it adds). Frames a device cannot
+/// use are dropped, as a transport's receiver logs and drops them.
+fn settle(devices: &mut [&mut Device], allowed: &BTreeSet<Ed25519PublicKey>) {
+    let mut settled = false;
+    for _ in 0..32 {
+        let requests: Vec<_> = devices
+            .iter_mut()
+            .filter(|device| device.peer.access() == Access::Waiting)
+            .map(|device| device.ask(true))
+            .collect();
+        for device in devices.iter_mut() {
+            for request in &requests {
+                if request.device != device.public() {
+                    device
+                        .peer
+                        .learn_request(request.clone(), &vault())
+                        .unwrap();
+                }
+            }
+        }
+        let mut frames = Vec::new();
+        for device in devices.iter_mut() {
+            device.peer.reconcile_now(allowed, &vault()).unwrap();
+            frames.extend(device.take());
+        }
+        if frames.is_empty() && requests.is_empty() {
+            settled = true;
+            break;
+        }
+        for frame in &frames {
+            for device in devices.iter_mut() {
+                let adds_it = frame.added().contains(&device.public());
+                if frame.join_material().is_some() == adds_it {
+                    device.receive(frame, allowed).ok();
+                }
+            }
+        }
+    }
+    assert!(settled, "the channel never settled");
+}
+
+/// Two participants create a channel's group at once and each seals content
+/// before hearing of the other: one group remains, and everything written
+/// under either genesis opens for every member, a later joiner included.
+#[test]
+fn concurrent_geneses_leave_one_group_and_all_content_readable() {
+    // Which genesis wins is down to its digest: enough channels that both
+    // sides win.
+    for _ in 0..8 {
+        concurrent_geneses_leave_one_group_and_all_content_readable_once();
+    }
+}
+
+fn concurrent_geneses_leave_one_group_and_all_content_readable_once() {
+    let channel = ChannelId::new();
+    let mut alice = Device::waiting(1, channel);
+    let mut bob = Device::waiting(2, channel);
+    assert!(alice.peer.found_now(&vault()).unwrap());
+    assert!(bob.peer.found_now(&vault()).unwrap());
+    assert!(!alice.peer.found_now(&vault()).unwrap(), "one genesis each");
+    let from_alice = alice.seal("from alice's group");
+    let from_bob = bob.seal("from bob's group");
+    let mut carol = Device::waiting(3, channel);
+    let everyone = allowed(&[&alice, &bob, &carol]);
+    settle(&mut [&mut alice, &mut bob], &everyone);
+    assert_eq!(alice.peer.members(), bob.peer.members());
+    assert_eq!(alice.peer.members().len(), 2);
+    settle(&mut [&mut alice, &mut bob, &mut carol], &everyone);
+    for reader in [&alice, &bob, &carol] {
+        assert_eq!(
+            reader.opens(&from_alice).as_deref(),
+            Some("from alice's group")
+        );
+        assert_eq!(reader.opens(&from_bob).as_deref(), Some("from bob's group"));
+        assert_eq!(reader.epoch(), alice.epoch());
+    }
+}
+
+/// A device that missed a channel's genesis during an outage creates a
+/// second group and writes there. Whichever genesis wins, no one loses what
+/// was sealed under the other, and a device that has seen a genesis never
+/// creates another.
+#[test]
+fn a_device_that_missed_the_genesis_destroys_no_history() {
+    // Which genesis wins is down to its digest: enough channels that both
+    // sides win.
+    for _ in 0..8 {
+        a_device_that_missed_the_genesis_destroys_no_history_once();
+    }
+}
+
+fn a_device_that_missed_the_genesis_destroys_no_history_once() {
+    let channel = ChannelId::new();
+    let mut alice = Device::creating(1, channel);
+    let mut bob = Device::waiting(2, channel);
+    let mut carol = Device::waiting(3, channel);
+    let everyone = allowed(&[&alice, &bob, &carol]);
+    settle(&mut [&mut alice, &mut bob], &everyone);
+    let before = alice.seal("before the outage");
+    let during = bob.seal("during the outage");
+
+    // Carol was offline for all of it and creates the group herself.
+    assert!(carol.peer.found_now(&vault()).unwrap());
+    let offline = carol.seal("written offline");
+    settle(&mut [&mut alice, &mut bob, &mut carol], &everyone);
+    for reader in [&alice, &bob, &carol] {
+        for (sealed, text) in [
+            (&before, "before the outage"),
+            (&during, "during the outage"),
+            (&offline, "written offline"),
+        ] {
+            assert_eq!(reader.opens(sealed).as_deref(), Some(text));
+        }
+    }
+    assert_eq!(alice.peer.members().len(), 3);
+    for device in [&mut alice, &mut bob, &mut carol] {
+        assert!(!device.peer.found_now(&vault()).unwrap());
+    }
+}
+
+/// A device that cannot name the channel's record follows commits from the
+/// group's members, and a genesis of anyone else's does not make it leave
+/// its group.
+#[test]
+fn a_device_without_the_route_follows_commits_and_keeps_its_group() {
+    let channel = ChannelId::new();
+    let mut alice = Device::creating(1, channel);
+    let mut bob = Device::waiting(2, channel);
+    let mut carol = Device::waiting(3, channel);
+    let everyone = allowed(&[&alice, &bob, &carol]);
+    settle(&mut [&mut alice, &mut bob], &everyone);
+    let request = carol.ask(false);
+    alice.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.reconcile_now(&everyone, &vault()).unwrap();
+    for frame in alice.take() {
+        if frame.join_material().is_none() {
+            assert_eq!(
+                bob.peer.follow(frame, &vault()).unwrap(),
+                PeerEvent::Advanced { epoch: 2 }
+            );
+        }
+    }
+    let mut eve = Device::waiting(5, channel);
+    assert!(eve.peer.found_now(&vault()).unwrap());
+    let genesis = eve.take().remove(0);
+    assert_eq!(
+        bob.peer.follow(genesis, &vault()).unwrap(),
+        PeerEvent::Ignored
+    );
+    assert_eq!(bob.epoch(), Some(2));
 }
 
 #[test]

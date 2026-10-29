@@ -329,6 +329,33 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // that epoch's key: it waits for the key instead of being refused.
     let phone = enrol(&root, "phone", DeviceCapabilities::member());
     let phone_device = Ed25519PublicKey::from_bytes(phone.key.verifying_key().to_bytes());
+    // The phone announces itself in the room, as every device does: the
+    // browser vouches only for devices whose certificate the host relayed,
+    // and holds a commit adding any other until its certificate arrives.
+    let phone_endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    let phone_client = RelayClient::connect(
+        phone_endpoint,
+        host.relay.node_addr(),
+        root.verifying_key().to_bytes(),
+        phone.cert.clone(),
+        phone.key.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let phone_session =
+        RelayCoeditSession::join(phone_client, workspace(), *phone_device.as_bytes()).unwrap();
+    publish(
+        &phone_session,
+        &NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+            cert: Box::new(phone.cert.clone()),
+            revocations: Vec::new(),
+        },
+    );
     let mut phone_peer =
         ChannelPeer::waiting(None, channel, Box::new(phone.key.clone()), &vault).unwrap();
     let phone_request = phone_peer
@@ -413,6 +440,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     })
     .await;
     assert_eq!(refused, "cleartext on a channel that requires it sealed");
+    phone_session.close().await;
     peer.close();
     host.relay.shutdown().await;
 }

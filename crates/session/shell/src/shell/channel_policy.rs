@@ -174,14 +174,6 @@ pub fn fleet_devices(
 }
 
 impl ChannelDirectory for WorkspaceChannelDirectory {
-    fn governs(&self, room: RoomId) -> bool {
-        // A room this device governs is its own room host's, which takes part
-        // in its channels for this device.
-        self.hosted.is_none()
-            && self.tree.read().rooms().contains(&room)
-            && (self.governors)(room).is_some_and(|(here, governor)| here == governor)
-    }
-
     fn hosted_channel_keys(
         &self,
         room: RoomId,
@@ -202,9 +194,11 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         channel: ChannelId,
         route: Option<&ChannelRoute>,
         now: u64,
-    ) -> BTreeSet<Ed25519PublicKey> {
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
         let own = (self.own_devices)(room);
-        allowed_devices(&self.tree.read(), (room, channel, route), now, &own)
+        let tree = self.tree.read();
+        names_record(&tree, room, channel, route)
+            .then(|| allowed_devices(&tree, (room, channel, route), now, &own))
     }
 
     fn policy_epoch(&self) -> Option<u64> {
@@ -352,6 +346,22 @@ pub fn allowed_devices(
         }
     }
     allowed
+}
+
+/// Whether a grant names `channel`'s record or `route` proves to be its
+/// route: only then can anyone tell who may read it. A room this device does
+/// not hold names nothing.
+fn names_record(
+    tree: &WorkspaceTree,
+    room: RoomId,
+    channel: ChannelId,
+    route: Option<&ChannelRoute>,
+) -> bool {
+    tree.desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room() == room)
+        .is_some_and(|workspace| channel_record(workspace, channel, route).is_some())
 }
 
 /// The node of `channel`'s record, when a grant names it or `route` proves
