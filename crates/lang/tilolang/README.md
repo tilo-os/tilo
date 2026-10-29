@@ -52,7 +52,7 @@ view counter(c: Counter) {
 opens through the type's default view (`default view counter for Counter`).
 
 `use other.app as other` imports another package. Imports are found among the package's sibling
-directories (for `apps/tl/board`, the other directories of `apps/tl`); `--path <dir>` adds a
+directories (for `apps/tl/today`, the other directories of `apps/tl`); `--path <dir>` adds a
 package directory, or a directory of packages, to look in.
 
 ## Syntax reference
@@ -70,39 +70,43 @@ enum NoteOrder {
     title
 }
 
-enum Shape { dot, line(len: Int), box(w: Float, label: Text) }
+type Notes = Collection<Note>          // a resource that is a collection
+type Channel = TextChannel | Thread    // a resource of either type
 
-root Notebook                          // one per room; the launcher opens it
+root notes: Notes                      // one per room; the launcher opens it
+default view notebook for notes       // what a window of the root shows
 default view note_editor for Note     // what a window of a Note shows
 ```
 
-**Enums.** An `enum` is a sum type; a variant may carry named payload fields. A value is a
-dot literal resolved from the type the context expects, or written with its type where none
-is expected:
+**Enums** are plain named cases. A value is a dot literal resolved from the type the context
+expects, or written with its type where none is expected: `let o: NoteOrder = .title`,
+`NoteOrder.created`. A field of an enum type is a register.
+
+**Unions.** Cases that hold data are types of their own, and `A | B` (usually named,
+`type Channel = TextChannel | Thread`) takes a resource of any of them. A field of a union type
+is a reference, as a field of one resource type is; a `Collection<Channel>` owns items of
+each type. `match` takes a union apart by type and names every case:
 
 ```
-let s: Shape = .line(len: 3)
-let d = Shape.dot
-p.shape = .box(w: 1.5, label: "big")   // a field of an enum type is a register
-```
-
-`Option<T>` is the built-in enum `.none | .some(value)` and `Result<T, E>` the built-in
-`.ok(value) | .err(error)`. A `T` is accepted where an `Option<T>` is expected. Enums, options
-and results compare with `==` by value (`picked == .some(n)`); they are taken apart only with
-`match`, which is an expression and must name every variant (`_` skips a payload field):
-
-```
-fn area(s: Shape) -> Float {
-    match s {
-        .dot => 0.0,
-        .line(n) => n.to_float(),
-        .box(w, _) => {
-            let half = w / 2.0
-            half * half
-        }
+fn label(c: Channel) -> Text {
+    match c {
+        t: TextChannel => "# {t.name}",
+        x: Thread => x.title,
     }
 }
 ```
+
+`Option<T>` is the built-in `.none | .some(value)` and `Result<T, E>` the built-in
+`.ok(value) | .err(error)`. A `T` is accepted where an `Option<T>` is expected. Enums, options,
+results and resources compare with `==`; options and results are taken apart with `match`
+(`.some(x) => ...`), `if let`, `?.` and `??`.
+
+**Type names and roots.** `type Name = T` names any type. A name for a collection, set or map is
+a resource of its own that code uses as that container (`notes.insert(n)`, `for n in notes`,
+`std.list(notes, notes)`); its one field is `Name.items` in the ids lock, so renaming an old
+`type Notebook { notes: Collection<Note> }` to it (`tilolang ids --rename`) keeps its records. A
+root names one such resource per room: `root notes: Notes` is `notes` in the package and
+`alias.notes` in a package that uses it.
 
 **`if` and blocks.** There is one `if`: `if cond { ... } else { ... }`. Used as a value its branches
 agree on a type and the value is each block's last expression; as a statement it needs no
@@ -261,6 +265,12 @@ chips show them (`host.Filter`).
 - An action's `label:` and `icon:` may be an `if` over its subject, and `on:` is a Bool over
   the subject. The `else` branch is the static fallback:
   `action pin(n: Note) (label: if n.pinned { "Unpin" } else { "Pin" }, on: n.pinned)`.
+- `require <condition> "<reason>"` lines head an action's body: when the action is available
+  on its subject. Where it would be offered on the subject (`actions(r)`: `std`'s headers and
+  menus, agents' choices) it is not offered while one does not hold; invoked anyway, it is
+  refused with the reason before anything changes. A condition reads only the subject and is
+  pure, as the presentation is (it is checked in the action's presentation view):
+  `primary action send(d: Draft) { require not d.sent "It went already" ... }`.
 - `2026-10-24` is a Date and `2026-10-24T09:30Z` a Time (UTC), held as ISO text that compares
   with the ordering operators; `2026-10` is a month, a filter's value. `Date("2026-10-24")` and
   `Time(...)` read the same from text. `date(bind: t.due)` edits one. In an action, `now` is the
@@ -314,7 +324,7 @@ and writes each as a signed `.tapp`:
 - the entrypoint: `[entrypoint] runtime = "tilolang/<version>"`, `bin = "bin/tilolang-app"`. The
   launcher runs the tilolang runtime bundle's binary (`apps/tilolang`) and points it at the
   package's payload with `TILO_APP_MODULE`;
-- the payload: `app.wasm`, `app.ids`, the metadata of the packages it uses (`imports/`), the
+- the payload: `app.wasm`, `app.ids`, the compiled modules of the packages it uses (`imports/`), the
   `surface.toml` generated from the metadata (declaring the kinds it reads from the packages it
   uses as `reads`), and the icon.
 

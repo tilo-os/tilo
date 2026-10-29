@@ -63,6 +63,24 @@ pub struct RoomSync {
     /// when the shell has no answer; the launch's stands then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub writable: Option<bool>,
+    /// This device's writes to the room that are not yet synced: held on
+    /// this device because no host of the room carries them now, or because
+    /// the host did not keep them. They sync once a host keeps them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unsynced_writes: u32,
+    /// This device cannot keep its writes to the room on disk now (its disk
+    /// is full, say): it holds them in memory, and cannot sync them until
+    /// it can keep them again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cannot_keep_writes: bool,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
+const fn is_zero(count: &u32) -> bool {
+    *count == 0
 }
 
 impl RoomSync {
@@ -303,6 +321,32 @@ pub fn current() -> Option<RoomSync> {
     TOLD.with(|told| told.borrow().as_ref().map(|told| told.sync.clone()))
 }
 
+/// What the window says while this device holds writes to its room that
+/// are not yet synced ([`RoomSync::unsynced_writes`]), or cannot keep them
+/// on disk ([`RoomSync::cannot_keep_writes`]); `None` while neither.
+#[must_use]
+pub fn unsynced_status() -> Option<String> {
+    let sync = current().filter(|sync| sync.unsynced_writes > 0 || sync.cannot_keep_writes)?;
+    let workspace = sync.workspace.trim();
+    let key = match (sync.cannot_keep_writes, workspace.is_empty()) {
+        (true, true) => {
+            return Some(crate::i18n::I18nManager::lookup_plain(
+                "room-sync-cannot-keep-unnamed",
+            ));
+        }
+        (true, false) => "room-sync-cannot-keep",
+        (false, true) => {
+            return Some(crate::i18n::I18nManager::lookup_plain(
+                "room-sync-not-yet-synced-unnamed",
+            ));
+        }
+        (false, false) => "room-sync-not-yet-synced",
+    };
+    let mut args = fluent::FluentArgs::new();
+    args.set("workspace", workspace.to_owned());
+    Some(crate::i18n::I18nManager::lookup(key, Some(&args)))
+}
+
 /// Whether the window's room has not synced yet: its content may be
 /// missing, not absent.
 #[must_use]
@@ -449,6 +493,8 @@ mod tests {
             state,
             workspace: "Lounge".into(),
             writable: None,
+            unsynced_writes: 0,
+            cannot_keep_writes: false,
         })
     }
 
@@ -640,6 +686,8 @@ mod tests {
                 state: RoomSyncState::Synced,
                 workspace: "Lounge".into(),
                 writable,
+                unsynced_writes: 0,
+                cannot_keep_writes: false,
             })
         };
         set(told(Some(true)));
@@ -658,11 +706,50 @@ mod tests {
     }
 
     #[test]
+    fn writes_held_for_the_rooms_hosts_say_they_are_not_yet_synced_until_kept() {
+        let told = |unsynced_writes| {
+            Some(RoomSync {
+                state: RoomSyncState::Synced,
+                workspace: "Lounge".into(),
+                writable: None,
+                unsynced_writes,
+                cannot_keep_writes: false,
+            })
+        };
+        set(told(0));
+        assert_eq!(unsynced_status(), None, "nothing held, nothing to say");
+        assert!(set(told(2)), "held writes change what the window says");
+        let status = unsynced_status().expect("held writes are not yet synced");
+        assert!(status.contains("Lounge"), "{status}");
+        assert!(
+            !before_first_sync(),
+            "a synced room with held writes still shows what it holds"
+        );
+        assert!(set(told(0)), "a host kept them");
+        assert_eq!(unsynced_status(), None);
+        set(told(1));
+        let waiting = unsynced_status();
+        assert!(set(Some(RoomSync {
+            cannot_keep_writes: true,
+            ..told(1).unwrap()
+        })));
+        let full = unsynced_status().expect("a device that cannot keep its writes says so");
+        assert_ne!(
+            Some(full),
+            waiting,
+            "it says it cannot sync, not only that the writes wait"
+        );
+        set(None);
+    }
+
+    #[test]
     fn the_wire_names_each_state() {
         let sync = RoomSync {
             state: RoomSyncState::HostNeedsUpdate,
             workspace: "Lounge".into(),
             writable: None,
+            unsynced_writes: 0,
+            cannot_keep_writes: false,
         };
         let json = serde_json::to_value(&sync).unwrap();
         assert_eq!(

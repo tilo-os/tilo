@@ -10,22 +10,24 @@
 //! the conversation used to draw did. A thread that fills the window is the
 //! window's location, with Back to the conversation.
 
+use ui::framework::BarCommands;
 use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarNavigation, WindowToolbar,
 };
 
 use crate::app::{ChatApp, Hit};
 
+/// The bar's entries, each carrying the window's own hit.
+pub(crate) type BarEntries = BarCommands<Hit>;
+
 impl ChatApp {
-    fn window_bar_actions(&self) -> Vec<(ToolbarAction, Hit)> {
+    fn window_bar_actions(&self) -> Vec<ToolbarAction> {
+        let hits = &self.bar_entries;
         let mut actions = Vec::new();
         if self.sharing_context {
-            actions.push((
-                ToolbarAction::new(
-                    "stop-sharing",
-                    "eye-off",
-                    crate::i18n::t("chat-context-stop"),
-                ),
+            actions.push(hits.entry(
+                "eye-off",
+                crate::i18n::t("chat-context-stop"),
                 Hit::StopSharingLiveContext,
             ));
         }
@@ -35,10 +37,7 @@ impl ChatApp {
             } else {
                 "chat-agent-float"
             });
-            actions.push((
-                ToolbarAction::new("agent-window", "external-link", label),
-                Hit::AgentWindow,
-            ));
+            actions.push(hits.entry("external-link", label, Hit::AgentWindow));
         }
         // The call in progress, its microphone and leaving it, whatever the
         // window shows and whoever else is in the room: someone alone in a
@@ -49,10 +48,7 @@ impl ChatApp {
                 || crate::i18n::t("chat-header-call-open"),
                 |channel| channel.name.clone(),
             );
-            actions.push((
-                ToolbarAction::new("call", "volume-2", name).on(true),
-                Hit::StartCall,
-            ));
+            actions.push(hits.entry("volume-2", name, Hit::StartCall).on(true));
             // The microphone stays at hand wherever the call is.
             let (icon, label) = if self.microphone_missing() {
                 ("mic-off", "chat-call-no-microphone")
@@ -61,8 +57,7 @@ impl ChatApp {
             } else {
                 ("mic", "chat-call-mute")
             };
-            let label = crate::i18n::t(label);
-            actions.push((ToolbarAction::new("call-mute", icon, label), Hit::CallMute));
+            actions.push(hits.entry(icon, crate::i18n::t(label), Hit::CallMute));
             // Hearing the call, beside speaking into it: in the menu, so
             // the row keeps the call, its microphone and Leave.
             let (icon, label) = if self.call.deafened {
@@ -70,52 +65,49 @@ impl ChatApp {
             } else {
                 ("headphones", "chat-call-deafen")
             };
-            actions.push((
-                ToolbarAction::new("call-deafen", icon, crate::i18n::t(label))
+            actions.push(
+                hits.entry(icon, crate::i18n::t(label), Hit::CallDeafen)
                     .on(self.call.deafened)
                     .in_menu(),
-                Hit::CallDeafen,
-            ));
-            actions.push((
-                ToolbarAction::new(
-                    "call-leave",
+            );
+            actions.push(
+                hits.entry(
                     "phone-off",
                     crate::i18n::t("chat-call-leave-action"),
+                    Hit::CallLeave,
                 )
                 .destructive(),
-                Hit::CallLeave,
-            ));
+            );
         }
         if self.direct_person.is_none() && self.has_other_collaborator() {
             let pins = self.pins_open && self.right_flap_open() && self.thread_open.is_none();
-            actions.push((
-                ToolbarAction::new("pins", "pin", crate::i18n::t("chat-pins")).on(pins),
-                Hit::TogglePins,
-            ));
+            actions.push(
+                hits.entry("pin", crate::i18n::t("chat-pins"), Hit::TogglePins)
+                    .on(pins),
+            );
             let people = self.right_flap_open() && self.thread_open.is_none() && !self.pins_open;
-            actions.push((
-                ToolbarAction::new("people", "users", self.roster_label()).on(people),
-                Hit::ToggleRightFlap,
-            ));
+            actions.push(
+                hits.entry("users", self.roster_label(), Hit::ToggleRightFlap)
+                    .on(people),
+            );
         }
         if self.direct_person.is_none() {
             for command in self.model_controls(&self.active_channel) {
-                actions.push((
-                    ToolbarAction::new(
-                        format!("model:{command}"),
+                actions.push(
+                    hits.entry(
                         "sparkles",
                         crate::i18n::t(&format!("chat-model-{command}")),
+                        Hit::HostModel(command.into()),
                     )
                     .in_menu(),
-                    Hit::HostModel(command.into()),
-                ));
+                );
             }
         }
         if self.keeps_layout() && self.direct_person.is_none() {
-            actions.push((
-                ToolbarAction::new("create", "plus", crate::i18n::t("chat-create-menu")).in_menu(),
-                Hit::AddCategory,
-            ));
+            actions.push(
+                hits.entry("plus", crate::i18n::t("chat-create-menu"), Hit::AddCategory)
+                    .in_menu(),
+            );
         }
         actions
     }
@@ -158,11 +150,7 @@ impl ChatApp {
             label,
             ..ToolbarLocation::default()
         });
-        bar.actions = self
-            .window_bar_actions()
-            .into_iter()
-            .map(|(action, _)| action)
-            .collect();
+        bar.actions = self.window_bar_actions();
         bar
     }
 
@@ -184,18 +172,8 @@ impl ChatApp {
                 self.canonical_dirty = true;
                 continue;
             }
-            let hit = match event {
-                ToolbarEvent::Action { id } => {
-                    let Some((_, hit)) = self
-                        .window_bar_actions()
-                        .into_iter()
-                        .find(|(action, _)| action.id == id)
-                    else {
-                        continue;
-                    };
-                    hit
-                }
-                _ => continue,
+            let Some(hit) = self.bar_entries.pressed(&event) else {
+                continue;
             };
             self.on_hit(hit, doc);
             self.canonical_dirty = true;

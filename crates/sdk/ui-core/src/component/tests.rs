@@ -8,6 +8,7 @@ use crate::widget::ListRowProps;
 fn the_shipped_catalogue_is_the_one_the_toolkit_generates() {
     let shipped = tilo_ui_graph::component::SHIPPED;
     let generated = catalogue().to_json();
+    eprintln!("CATALOGUE-BEGIN\n{generated}CATALOGUE-END");
     assert!(
         shipped == generated,
         "crates/dev/ui-graph/components.json is stale; write it again with \

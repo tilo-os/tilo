@@ -583,7 +583,7 @@ impl PageTurn {
 }
 
 /// Everything a click or key can ask the app to do.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum Action {
     OpenBook(usize),
     Back,
@@ -1159,6 +1159,8 @@ pub struct BooksApp {
     /// library's field edit or verb through it, exactly as the Ctrl+K
     /// palette does.
     dispatch: ui::framework::Dispatcher<crate::resource::Ebook>,
+    /// The window bar's entries.
+    bar: window_bar::Bar,
     /// The library as the framework last presented it.
     record: Rc<Ebook>,
     /// Whether this window edited the library since it was last read, so
@@ -1377,6 +1379,7 @@ impl BooksApp {
             flow_complete: false,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
+            bar: window_bar::Bar::new(dispatch.clone()),
             dispatch,
             opens: Rc::default(),
             record: Rc::new(Ebook::default()),
@@ -3061,29 +3064,6 @@ impl BooksApp {
             target: RenameTarget::Font(id),
             field,
         });
-    }
-
-    /// The shelf's sort order, as the window bar's Sort menu chooses it.
-    pub(crate) fn choose_sort(
-        &mut self,
-        sort: crate::model::LibrarySort,
-        doc: &mut ui::widget::Edits<'_>,
-    ) {
-        self.library_prefs.sort = sort;
-        self.edit(doc, Ebook::paths().prefs.sort.set(sort));
-    }
-
-    /// Whether finished books are hidden, as the window bar's Hide finished
-    /// toggle turns it.
-    pub(crate) fn toggle_finished_hidden(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        self.library_prefs.hide_read = !self.library_prefs.hide_read;
-        self.edit(
-            doc,
-            Ebook::paths()
-                .prefs
-                .hide_read
-                .set(self.library_prefs.hide_read),
-        );
     }
 
     fn dispatch_comment_action(&mut self, action: CommentAction, doc: &mut ui::widget::Edits<'_>) {

@@ -442,6 +442,8 @@ pub struct SlidesApp {
     /// Every edit of the deck goes through the resource's dispatcher as a
     /// deck's action.
     dispatch: Dispatcher<DeckRecord>,
+    /// The window bar's entries.
+    bar: window_bar::Bar,
 
     /// Responsive slide-rail flap. On a wide window the rail is docked beside
     /// the canvas; on a narrow window it collapses to an overlay flap behind a
@@ -611,6 +613,7 @@ impl SlidesApp {
             text_edit_box: Rect::ZERO,
             opening_press: None,
             fingers_down: 0,
+            bar: window_bar::Bar::new(&dispatch),
             dispatch,
             rail_drawer: Self::new_drawers().0,
             inspector_drawer: Self::new_drawers().1,

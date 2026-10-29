@@ -110,7 +110,7 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
         Ty::Date => (ColumnKind::Date, Vec::new()),
         Ty::Time => (ColumnKind::Time, Vec::new()),
         Ty::Identifier => (ColumnKind::Ident, Vec::new()),
-        Ty::Record(_) => (ColumnKind::Ref, Vec::new()),
+        Ty::Record(_) | Ty::Union(_) => (ColumnKind::Ref, Vec::new()),
         Ty::Enum(key) => {
             let cases = meta
                 .enums

@@ -887,6 +887,8 @@ pub fn registry() -> &'static [Entry] {
             entry::<Card>(),
             entry::<PropertyList>(),
             entry::<Avatar>(),
+            entry::<crate::widget::Board>(),
+            entry::<crate::widget::Chip>(),
         ]
     })
 }
@@ -921,7 +923,7 @@ pub fn update(name: &str, widget: &mut Element, source: &mut dyn Source) -> Resu
 /// row's swipe, the items of a virtual list, and what a view attaches to the element it stands
 /// in (its context menu, hover toolbar and swipe).
 #[must_use]
-pub fn parts() -> [fn() -> Description; 10] {
+pub fn parts() -> [fn() -> Description; 12] {
     [
         crate::widget::PropertyProps::describe,
         crate::widget::NavItemProps::describe,
@@ -933,6 +935,8 @@ pub fn parts() -> [fn() -> Description; 10] {
         crate::widget::ContextMenuProps::describe,
         crate::widget::HoverToolbarProps::describe,
         crate::widget::SwipeProps::describe,
+        crate::widget::BoardLaneProps::describe,
+        crate::widget::BoardCardProps::describe,
     ]
 }
 

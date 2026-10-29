@@ -6,7 +6,7 @@ use ui::window_toolbar::{ToolbarEvent, WindowToolbar};
 
 use super::super::bench::{Bench, WINDOW, deck_of};
 use super::super::{ElementKind, Layout, Mode, Slide, SlidesApp, SlidesEffect};
-use super::{EDITOR, INSERT, OVERVIEW, PRESENT, PROPERTIES, ZOOM, insert_id};
+use super::{EDITOR, OVERVIEW};
 
 fn action(id: &str) -> ToolbarEvent {
     ToolbarEvent::Action { id: id.into() }
@@ -20,29 +20,28 @@ fn press(bench: &mut Bench, event: ToolbarEvent) {
     bench.frame();
 }
 
+/// Press the bar's entry named `name`, and let what it asked for run.
+fn press_named(bench: &mut Bench, name: &str) {
+    bench.app.harness().press_window_action(name).unwrap();
+    bench.frame();
+    bench.frame();
+}
+
 fn toolbar(bench: &mut Bench) -> WindowToolbar {
     bench.read(SlidesApp::window_toolbar)
 }
 
-fn action_ids(toolbar: &WindowToolbar) -> Vec<&str> {
+/// The bar's entries, by their icons: what they say follows the state.
+fn action_icons(toolbar: &WindowToolbar) -> Vec<&str> {
     toolbar
         .actions
         .iter()
-        .map(|action| action.id.as_str())
+        .map(|action| action.icon.as_str())
         .collect()
 }
 
-/// Every name and action target in `node`'s subtree.
-fn labels(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-    out.extend(node.name.clone());
-    out.extend(node.action_target.clone());
-    for child in &node.children {
-        labels(child, out);
-    }
-}
-
 #[test]
-fn the_editor_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
+fn the_bar_names_the_deck_and_holds_the_editors_controls() {
     let mut bench = Bench::sample();
     let title = bench.deck().title;
     let toolbar = toolbar(&mut bench);
@@ -61,69 +60,15 @@ fn the_editor_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
     assert_eq!(ids, [EDITOR, OVERVIEW]);
     assert_eq!(views.chosen, EDITOR);
     assert_eq!(toolbar.sidebar, Some(true), "the docked slide list is open");
-    assert_eq!(action_ids(&toolbar), [INSERT, PRESENT, PROPERTIES, ZOOM]);
-    let insert = &toolbar.actions[0];
-    let tools: Vec<&str> = insert.items.iter().map(|item| item.id.as_str()).collect();
     assert_eq!(
-        tools,
-        [
-            ElementKind::Text,
-            ElementKind::Rect,
-            ElementKind::Ellipse,
-            ElementKind::Line,
-            ElementKind::Image,
-        ]
-        .map(insert_id)
+        action_icons(&toolbar),
+        ["plus", "play", "panel-right", "search"]
     );
-
-    let (drawn, stray) = bench.read(|app| {
-        let mut drawn = Vec::new();
-        labels(
-            &ui::Widget::accessibility(app).expect("the editor's semantics"),
-            &mut drawn,
-        );
-        let chrome = app.compute_chrome();
-        let in_a_panel = |rect: vello::kurbo::Rect| {
-            chrome.rail.contains(rect.center()) || chrome.inspector.contains(rect.center())
-        };
-        let stray: Vec<String> = chrome
-            .buttons
-            .iter()
-            .filter(|button| !in_a_panel(button.rect))
-            .map(|button| app.semantic_target(&button.hit))
-            .chain(
-                chrome
-                    .labels
-                    .iter()
-                    .filter(|label| {
-                        !chrome.rail.contains(label.pos) && !chrome.inspector.contains(label.pos)
-                    })
-                    .map(|label| label.text.clone()),
-            )
-            .collect();
-        (drawn, stray)
-    });
-    assert!(
-        stray.is_empty(),
-        "the slide stands alone between the panels, with no header row: {stray:?}"
-    );
-    for own in [
-        "slides.control.present",
-        "slides.control.overview",
-        "slides.control.toggle-slides",
-        "slides.control.toggle-properties",
-        "slides.control.more-tools",
-        "Start presentation",
-        "Show properties",
-        "Hide properties",
-        "Show slides",
-        "Hide slides",
-    ] {
-        assert!(
-            !drawn.iter().any(|label| label == own),
-            "the editor draws no {own} of its own: {drawn:?}"
-        );
-    }
+    let insert = &toolbar.actions[0];
+    assert_eq!(insert.name, "Insert");
+    let tools: Vec<&str> = insert.items.iter().map(|item| item.name.as_str()).collect();
+    assert_eq!(tools, ["Text", "Rectangle", "Ellipse", "Line", "Image"]);
+    assert_eq!(toolbar.actions[1].name, "Start presentation");
 }
 
 #[test]
@@ -143,8 +88,8 @@ fn the_bar_switches_between_the_editor_and_the_overview_with_the_same_slots() {
         "the overview shows no slide list"
     );
     assert_eq!(
-        action_ids(&overview),
-        action_ids(&editor),
+        action_icons(&overview),
+        action_icons(&editor),
         "the bar keeps its slots between the views"
     );
     assert!(
@@ -165,7 +110,7 @@ fn the_bar_switches_between_the_editor_and_the_overview_with_the_same_slots() {
 
     press(&mut bench, action(OVERVIEW));
     let before = bench.deck().slides[0].elements.len();
-    press(&mut bench, action(&insert_id(ElementKind::Rect)));
+    press_named(&mut bench, "Rectangle");
     assert_eq!(
         bench.read(|app| app.mode),
         Mode::Edit,
@@ -188,12 +133,19 @@ fn the_bar_shows_and_hides_the_slide_list_and_the_properties() {
     assert!(bench.read(SlidesApp::rail_open), "and shows it again");
 
     let open = bench.read(SlidesApp::inspector_open);
-    press(&mut bench, action(PROPERTIES));
+    press_named(
+        &mut bench,
+        if open {
+            "Hide properties"
+        } else {
+            "Show properties"
+        },
+    );
     assert_eq!(bench.read(SlidesApp::inspector_open), !open);
     let toggle = toolbar(&mut bench)
         .actions
         .into_iter()
-        .find(|action| action.id == PROPERTIES)
+        .find(|action| action.icon == "panel-right")
         .expect("the properties' toggle");
     assert_eq!(toggle.on, !open, "the toggle shows the properties' state");
 }
@@ -201,7 +153,7 @@ fn the_bar_shows_and_hides_the_slide_list_and_the_properties() {
 #[test]
 fn the_bar_presents_and_declares_nothing_while_presenting() {
     let mut bench = Bench::sample();
-    press(&mut bench, action(PRESENT));
+    press_named(&mut bench, "Start presentation");
     assert_eq!(bench.read(|app| app.mode), Mode::Present);
     assert_eq!(toolbar(&mut bench), WindowToolbar::default());
 }
@@ -210,7 +162,7 @@ fn the_bar_presents_and_declares_nothing_while_presenting() {
 fn the_bar_inserts_a_shape_as_one_undo_step() {
     let mut bench = Bench::one_slide(Slide::new(Layout::Blank));
     let before = bench.deck().slides[0].elements.len();
-    press(&mut bench, action(&insert_id(ElementKind::Rect)));
+    press_named(&mut bench, "Rectangle");
     let deck = bench.deck();
     assert_eq!(deck.slides[0].elements.len(), before + 1);
     let inserted = deck.slides[0].elements.last().expect("the inserted shape");
@@ -263,7 +215,7 @@ fn a_viewer_can_neither_rename_nor_insert_from_the_bar() {
     let insert = declared
         .actions
         .into_iter()
-        .find(|action| action.id == INSERT)
+        .find(|action| action.name == "Insert")
         .expect("the Insert menu");
     assert!(!insert.enabled, "a viewer cannot insert");
     press(

@@ -567,9 +567,11 @@ pub struct StoreApp {
     can_go_back: Rc<Cell<bool>>,
     /// The window's Back was pressed; the next event or sync returns to the catalogue.
     back_requested: Rc<Cell<bool>>,
-    /// What the person pressed in the window's bar, as the invocations of the
-    /// actions its slots stand for ([`window_bar`]).
+    /// The view the person chose in the window's bar, as the invocation of
+    /// the view action it stands for ([`window_bar`]).
     bar_controls: std::collections::VecDeque<ui::tilo_actions::ControlInvocation>,
+    /// The window bar's entries, which run the Store's effects.
+    bar: Option<ui::framework::BarActions<Store>>,
     /// Remote and moderation jobs waiting on the worker.
     pending_jobs: usize,
     pending_detail: Option<String>,
@@ -647,6 +649,7 @@ impl StoreApp {
             can_go_back: Rc::new(Cell::new(false)),
             back_requested: Rc::new(Cell::new(false)),
             bar_controls: std::collections::VecDeque::new(),
+            bar: None,
             pending_jobs: 0,
             pending_detail: None,
             remotes: Vec::new(),
@@ -732,6 +735,7 @@ impl StoreApp {
 
     /// Edit reports through `dispatcher`.
     pub(crate) fn attach_dispatcher(&mut self, dispatcher: Dispatcher<Store>) {
+        self.bar = Some(ui::framework::BarActions::new(dispatcher.clone()));
         self.dispatcher = Some(dispatcher);
         self.structure_dirty = true;
     }

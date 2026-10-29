@@ -320,6 +320,8 @@ pub struct ChatApp {
     /// The shell's own controls in the window bar, and its sidebar's
     /// state; `None` outside a shell (a floated conversation, a test).
     pub(crate) bar: Option<WindowBarLink>,
+    /// The window bar's entries of the conversation shown.
+    pub(crate) bar_entries: crate::window_bar::BarEntries,
     /// The detail drawer: people, pins, or the open thread.
     pub(crate) right_flap: SidebarDrawer,
     /// The chrome metrics of the last painted theme.
@@ -747,6 +749,7 @@ impl ChatApp {
             search_opener: ui::search::SearchOpener::new(),
             places: NavFeed::new(),
             bar: None,
+            bar_entries: crate::window_bar::BarEntries::new(),
             right_flap: Self::detail_drawer(),
             chrome: Chrome::default(),
             layout_text_scale: 1.0,

@@ -1133,22 +1133,6 @@ impl LibrarySort {
             LibrarySort::Progress => "Progress",
         }
     }
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LibrarySort::Title => "title",
-            LibrarySort::Author => "author",
-            LibrarySort::Recent => "recent",
-            LibrarySort::Progress => "progress",
-        }
-    }
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "author" => LibrarySort::Author,
-            "recent" => LibrarySort::Recent,
-            "progress" => LibrarySort::Progress,
-            _ => LibrarySort::Title,
-        }
-    }
 }
 
 /// One book the reader has added to their library. Stored under the
@@ -1358,13 +1342,6 @@ mod tests {
                 CompositionStyle::Ragged,
                 "unknown persisted values take the ragged default"
             );
-        }
-
-        // --- phase: library_sort_round_trips ---
-        {
-            for s in LibrarySort::ALL {
-                assert_eq!(LibrarySort::from_str(s.as_str()), s);
-            }
         }
     }
 

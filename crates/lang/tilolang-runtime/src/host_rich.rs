@@ -114,7 +114,10 @@ impl Core {
             return trap(format!("type `{}` is not declared", r.target.ty));
         };
         let title = self.title_of(&r.target, meta, declared)?;
-        Ok((title, crate::rich::resource_reference(&meta.app, &r.target)))
+        Ok((
+            title,
+            crate::rich::resource_reference(&meta.app, &declared.name, &r.target),
+        ))
     }
 
     /// The resources `r` refers to that this store holds, as references.
@@ -123,10 +126,7 @@ impl Core {
         let store = self.store.borrow();
         let mut out = Vec::new();
         for reference in r.references() {
-            let Reference::Resource(name) = reference else {
-                continue;
-            };
-            let Some(id) = crate::rich::resource_id(&name) else {
+            let Some(id) = crate::rich::resource_id(&reference) else {
                 continue;
             };
             let Some(mut target) = ResourceRef::parse_id(id, String::new()) else {

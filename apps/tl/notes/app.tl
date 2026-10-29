@@ -59,6 +59,11 @@ action tag(n: Note, t: Text) (icon: .tag) {
     n.tags.add(t)
 }
 
+/// Takes a tag off a note.
+action untag(n: Note, t: Text) {
+    n.tags.remove(t)
+}
+
 /// The notes of a notebook, in its order.
 fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {
     let notes: List<Note> = nb.notes
@@ -80,10 +85,20 @@ view note_row(n: Note) {
     ui.ListRow(title: n.title, secondary: n.body, mark: if n.pinned { .pin })
 }
 
-/// A note's window.
+/// A note's window: its title, its tags as chips that come off with their remove button, and
+/// its body.
 view note_editor(n: Note) {
     std.document(n) {
         ui.TextInput(value: n.title, placeholder: "Title")
+        if not n.tags.is_empty() {
+            row(gap: .related, wrap: true) {
+                for t in n.tags {
+                    ui.Chip(t) {
+                        on remove: untag(n, t)
+                    }
+                }
+            }
+        }
         ui.TextInput(value: n.body, placeholder: "Write something", lines: 8)
     }
 }
@@ -92,6 +107,9 @@ view note_editor(n: Note) {
 scenario "a week of notes" -> Note {
     let nb = root Notebook
     let plan = nb.notes.insert(Note(title: "Q3 plan", body: "Ship the offline editor, then sharing. Hiring stays flat until October.", pinned: true))
+    plan.tags.add("planning")
+    plan.tags.add("work")
+    plan.tags.add("q3")
     nb.notes.insert(Note(title: "Standup, Monday", body: "Ada is on the sync bug. Bo pairs with Chen on the importer."))
     nb.notes.insert(Note(title: "Groceries", body: "Oat milk, eggs, sourdough, two lemons, coffee beans.", pinned: true))
     nb.notes.insert(Note(title: "Interview questions", body: "Ask about the last project they were proud of, and what they would change."))

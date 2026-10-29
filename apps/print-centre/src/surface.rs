@@ -61,6 +61,8 @@ pub struct PrintCentre {
     /// Where changes to the defaults go.
     pub(crate) dispatcher: Option<Dispatcher<PrintDefaults>>,
     pub(crate) controls: Option<ui::framework::Actions<PrintDefaults>>,
+    /// The window bar's entries, which run the pages' effects.
+    pub(crate) bar: Option<ui::framework::BarActions<PrintDefaults>>,
     /// An effect replaced the page since the last layout.
     replaced: bool,
 }
@@ -263,7 +265,6 @@ struct Door(
 #[derive(Clone)]
 enum UiCommand {
     Refresh,
-    Needs,
     Dashboard,
     Queue,
     History,
@@ -276,7 +277,6 @@ enum UiCommand {
     RequestCancel(String),
     ConfirmCancel(String),
     RetryJob(String),
-    ChooseDocument,
     PreviousPrintPage,
     NextPrintPage,
     SetPrintOption { option: String, value: String },
@@ -310,7 +310,6 @@ impl Door {
             UiCommand::Queue => E::OpenQueue,
             UiCommand::History => E::OpenHistory,
             UiCommand::Diagnostics => E::RunDiagnostics,
-            UiCommand::Needs => E::OpenNeeds,
             UiCommand::Discover => E::FindPrinters,
             UiCommand::AddPrinter(printer) => E::AddPrinter {
                 printer: printer.uri,
@@ -322,7 +321,6 @@ impl Door {
             UiCommand::RequestCancel(job) => E::ConfirmCancel { job },
             UiCommand::ConfirmCancel(job) => E::CancelDocument { job },
             UiCommand::RetryJob(job) => E::RetryDocument { job },
-            UiCommand::ChooseDocument => E::PrintDocument,
             UiCommand::PreviousPrintPage => E::PreviousPrintPage,
             UiCommand::NextPrintPage => E::NextPrintPage,
             UiCommand::SetPrintOption { option, value } => E::SetPrintOption { option, value },
@@ -880,6 +878,7 @@ impl PrintCentre {
             defaults,
             dispatcher: None,
             controls: None,
+            bar: None,
             replaced: false,
         }
     }

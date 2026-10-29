@@ -20,7 +20,7 @@ use crate::component::{
 };
 use crate::selection::KeySelection;
 use crate::tokens::{Rhythm, TextRole};
-use crate::widget::arrange::{Align, Fit, Page, PageRowEdges, Row, Slot, Stack};
+use crate::widget::arrange::{Align, Fit, Page, Row, Slot, Stack, TranscriptEdges};
 use crate::widget::conversation::list::RUN_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, DayDivider};
 use crate::widget::{
@@ -564,10 +564,13 @@ fn attach(row: Element, swipe: Option<SwipeActionProps>, attached: Attachments) 
 /// names them. A run of one author's messages, each within [`RUN_WINDOW_SECS`] of the one
 /// before it on the same day, shows the author's avatar and name once, over its first message;
 /// the others line up under it. The first message of a day has the day's divider over it.
+///
+/// Each message is one row of the page's column: a run's next line stands a tight gap under
+/// the one before, a new run a section's gap under the last.
 fn message_of(rows: &DescribedRows, key: &str) -> Element {
     let said = rows.with_item(key, |item| (item.author, item.time));
     let Some((Some(author), at)) = said else {
-        return row_of(rows, key);
+        return page_row(row_of(rows, key), RUN_GAP);
     };
     let before = rows
         .index_of(&key.to_owned())
@@ -593,7 +596,7 @@ fn message_of(rows: &DescribedRows, key: &str) -> Element {
                 }
         });
     let Some((said, swipe, attached)) = bare_row(rows, key) else {
-        return row_of(rows, key);
+        return page_row(row_of(rows, key), RUN_GAP);
     };
     let avatar = Avatar::person(author.name.clone(), author.identity.clone());
     let message = Row::row().fill_width().align(Align::Start);
@@ -631,15 +634,27 @@ fn message_of(rows: &DescribedRows, key: &str) -> Element {
         swipe,
         attached,
     );
+    let gap = if continues { Rhythm::Tight } else { RUN_GAP };
     match day.filter(|_| new_day) {
-        Some(day) => Box::new(
-            Stack::stack()
-                .gap(Rhythm::Related)
-                .push(Box::new(DayDivider::new(clock.day_label(day))))
-                .push(message),
+        Some(day) => page_row(
+            Box::new(
+                Stack::stack()
+                    .gap(RUN_GAP)
+                    .push(Box::new(DayDivider::new(clock.day_label(day))))
+                    .push(message),
+            ),
+            gap,
         ),
-        None => message,
+        None => page_row(message, gap),
     }
+}
+
+/// The gap over a run of messages, and over a day's divider.
+const RUN_GAP: Rhythm = Rhythm::Section;
+
+/// `content` as a row of a transcript's page column, `gap` under the row before it.
+fn page_row(content: Element, gap: Rhythm) -> Element {
+    Box::new(Page::full().row_after(gap).push_slot(Slot::new(content)))
 }
 
 /// The menu of the row under `at` (its focused row when the keyboard opened it): what its
@@ -699,18 +714,13 @@ impl Described for DescribedList {
             rendered: rendered(&rows),
         };
         if transcript {
-            let list = VirtualList::new(rows, MESSAGE_ESTIMATE, |rows, _, key| {
-                Box::new(
-                    Page::full()
-                        .row()
-                        .push_slot(Slot::new(message_of(rows, key))),
-                )
-            })
-            .flush()
-            .with_edges(PageRowEdges::new())
-            .filling()
-            .following_end()
-            .with_id(key);
+            let list =
+                VirtualList::new(rows, MESSAGE_ESTIMATE, |rows, _, key| message_of(rows, key))
+                    .flush()
+                    .with_edges(TranscriptEdges::new(RUN_GAP))
+                    .filling()
+                    .following_end()
+                    .with_id(key);
             // A message offers its menu as every row does.
             let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
                 row_menu(list, at, &Event::None)

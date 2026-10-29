@@ -327,6 +327,8 @@ tilo-search = { version = "0.1.0", path = "../search" }
 # focused app instance's open resources and dispatch their exported actions.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-history = { version = "0.1.0", path = "../tilo-history" }
+# What a reference in rich text refers to: a person, or the catalogue's resource reference.
+tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 # Who may invoke which action: grants over the published tree.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # Window-group widths and drop targets are the desktop model's own types.
