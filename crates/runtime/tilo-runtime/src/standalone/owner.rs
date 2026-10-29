@@ -133,23 +133,16 @@ impl RoomOwner {
         let Ok(committed) = self.committed.lock() else {
             return false;
         };
-        let now = SystemTime::now();
-        tilo_peer_state::BoundedStatePeer::restore(
-            &committed.durable,
-            &self.room,
-            &self.governor,
-            std::slice::from_ref(&self.governor),
-            &RevocationList::new(),
-            now,
-            &tilo_peer_state::PeerLimits::default(),
+        matches!(
+            committed.peer.capture_document(
+                self.governor.device_public_key,
+                (app, record),
+                SystemTime::now(),
+                usize::MAX,
+                None,
+            ),
+            Err(tilo_peer_state::PeerDocumentReadError::Encrypted)
         )
-        .is_ok_and(|peer| {
-            matches!(
-                peer.read()
-                    .document_read(self.governor.device_public_key, app, record, now),
-                Err(tilo_peer_state::PeerDocumentReadError::Encrypted)
-            )
-        })
     }
 
     fn commit_now(

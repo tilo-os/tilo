@@ -21,17 +21,14 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 pub use tilo_workspace_join::{DocumentRow, GovernedMember};
 use web_time::{Duration, SystemTime};
 mod backend;
-mod bounded;
-pub use bounded::{
-    BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, PeerDeliveryPolicy,
-    PeerDeliveryPolicyError, PeerDocumentCapture, PeerDocumentRead, PeerDocumentReadError,
-    PeerLimits, PeerMediaCall, PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations,
-    PeerRoomAccess, committed_document_revision,
+mod document_capture;
+pub use document_capture::{
+    PeerDocumentCapture, PeerDocumentReadError, committed_document_revision,
 };
 #[cfg(test)]
 pub(crate) mod json_resource_tests;
 use crate::shared::Shared;
-use backend::{LegacyNative, PeerCore, PeerDocument};
+use backend::{PeerCore, PeerDocument};
 mod bans;
 mod facades;
 mod governance;
@@ -67,7 +64,6 @@ mod room_settings;
 use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
-mod resources;
 mod sealed_compaction;
 mod sealed_history;
 pub use sealed_compaction::{
@@ -87,12 +83,6 @@ fn now_ns(now: SystemTime) -> u64 {
         .as_nanos()
         .try_into()
         .unwrap_or(u64::MAX)
-}
-#[cfg(test)]
-fn now_secs(now: SystemTime) -> u64 {
-    now.duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 /// A current member's authority in the room: who they are, their role, the
 /// room's policy as admitted, and whether their device is held to the
@@ -282,7 +272,7 @@ impl AcceptedCheckpoint {
     }
 }
 
-type Document = PeerDocument<LegacyNative>;
+type Document = PeerDocument;
 #[derive(Serialize, Deserialize)]
 struct DurableDocument {
     route: Route,
@@ -358,7 +348,7 @@ const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct StatePeer {
-    core: PeerCore<LegacyNative>,
+    core: PeerCore,
     /// The app surfaces received changes are decided against by their
     /// claims; without a source, a change is decided as an edit of its
     /// record. Set by the host, never persisted.
@@ -573,7 +563,6 @@ impl StatePeer {
                 exact_admissions: ExactAdmissions::default(),
                 admission_v5: false,
                 native_cut_publisher: None,
-                _retention: (),
             },
             surfaces: process_default().0,
             app_surfaces: process_default().1,
@@ -2410,7 +2399,7 @@ impl StatePeer {
     fn admit_sealed(
         &mut self,
         route: Route,
-        mut candidate: backend::StoredDocument<LegacyNative>,
+        mut candidate: backend::StoredDocument,
         validated: ChannelState,
         envelope: SignedOp,
     ) -> Result<AdmissionReport, AdmissionError> {
@@ -3259,7 +3248,6 @@ impl StatePeer {
                 exact_admissions,
                 admission_v5: version >= 5,
                 native_cut_publisher: None,
-                _retention: (),
             },
             surfaces: process_default().0,
             app_surfaces: process_default().1,

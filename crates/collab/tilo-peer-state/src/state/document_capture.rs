@@ -1,11 +1,33 @@
-//! Open only the retained, validated history of an admitted record.
-use super::{AutoCommit, ChangeHash, PeerDocumentReadError, PeerRead, SystemTime};
-use crate::resources::native::NativeBatch;
-use crate::state::Route;
-use crate::state::backend::{BoundedNative, PeerDocument};
+//! An admitted record captured for a reader, from the live peer, within a
+//! byte limit.
+use super::{AutoCommit, Route, StatePeer, SystemTime, backend::PeerDocument};
+use automerge::ChangeHash;
 use collab_types::{DocumentMutation, Ed25519PublicKey, OpKind, SealedCompaction, SignedOp};
 
-/// Complete history bytes and heads from one bounded, currently permitted read.
+/// The most bytes one capture hands out, whatever the caller allows.
+const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Why a record was not captured. These are observations; the embedding
+/// owner authenticates caller and time.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PeerDocumentReadError {
+    /// The reader is no current member of the room.
+    Membership(String),
+    Denied,
+    Missing,
+    Encrypted,
+    Incomplete,
+    Capacity,
+    Opening(String),
+}
+impl std::fmt::Display for PeerDocumentReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "document read refusal: {self:?}")
+    }
+}
+impl std::error::Error for PeerDocumentReadError {}
+
+/// Complete history bytes and heads from one currently permitted read.
 /// It carries data only, with no owner credential or mutable peer.
 pub struct PeerDocumentCapture {
     heads: Vec<ChangeHash>,
@@ -58,8 +80,8 @@ impl PeerDocumentCapture {
                 bytes: EMPTY_DOCUMENT.clone(),
             });
         }
-        // Count borrowed admitted chunks before allocating the output. Raw
-        // change chunks preserve every original writer and load as a complete
+        // Count the admitted chunks before allocating the output. Raw change
+        // chunks preserve every original writer and load as a complete
         // document without allocating an unbounded compressed save first.
         let size = changes.iter().try_fold(0usize, |size, change| {
             size.checked_add(change.raw_bytes().len())
@@ -74,43 +96,55 @@ impl PeerDocumentCapture {
     }
 }
 
-impl PeerRead<'_> {
-    /// Capture an exact record under current Read permission. Encrypted
-    /// history is opened only after bounded restore verified every envelope;
-    /// `open` is supplied by the embedding owner's existing channel service.
-    /// No cached opened document or live peer is used as an authority fallback.
+impl StatePeer {
+    /// Capture `app`'s `record` for the device `reader` under its current
+    /// membership and Read permission, at most `maximum` bytes of it. An
+    /// encrypted record is refused without `open`; with it, its retained
+    /// sealed history is opened through the embedding owner's already-held
+    /// channel keys, once that history is known to cover every admitted
+    /// write.
     ///
     /// # Errors
-    /// Refuses denied access, incomplete admission coverage, unavailable epoch
-    /// keys, invalid mutations, conflicting writers or an exceeded byte limit.
+    /// Refuses a non-member, denied access, an absent record, incomplete
+    /// admission coverage, unavailable epoch keys, invalid mutations or an
+    /// exceeded byte limit.
     pub fn capture_document(
         &self,
-        device: [u8; 32],
-        route: (&str, &str),
+        reader: [u8; 32],
+        (app, record): (&str, &str),
         now: SystemTime,
         maximum: usize,
-        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
+        open: Option<&mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>>,
     ) -> Result<PeerDocumentCapture, PeerDocumentReadError> {
-        let (app, record) = route;
-        if !self
-            .document_read_allowed(device, app, record, now)
-            .map_err(PeerDocumentReadError::Peer)?
-        {
+        let member = self
+            .permissions(reader, now)
+            .map_err(PeerDocumentReadError::Membership)?;
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        if !super::backend::access::document_read(
+            &member.authority(&bound),
+            &self.core.room,
+            app,
+            record,
+            now,
+        ) {
             return Err(PeerDocumentReadError::Denied);
         }
-        let (route, document) = self
-            .peer
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let document = self
             .core
             .documents
-            .iter()
-            .find(|(route, _)| route.app == app && route.record == record)
+            .get(&route)
             .ok_or(PeerDocumentReadError::Missing)?;
-        let maximum = maximum.min(self.limits.normalized_bytes);
+        let maximum = maximum.min(MAX_CAPTURE_BYTES);
         let document = if document.encryption_required {
-            self.check_sealed_coverage(route, document)?;
+            let open = open.ok_or(PeerDocumentReadError::Encrypted)?;
+            self.check_sealed_coverage(&route, document)?;
             open_history(document, open, maximum)?
         } else {
-            document.doc.document().clone()
+            (*document.doc).clone()
         };
         PeerDocumentCapture::from_document(document, maximum)
     }
@@ -118,17 +152,14 @@ impl PeerRead<'_> {
     fn check_sealed_coverage(
         &self,
         route: &Route,
-        document: &PeerDocument<BoundedNative>,
+        document: &PeerDocument,
     ) -> Result<(), PeerDocumentReadError> {
         if document.sealed.is_empty() {
             return Err(PeerDocumentReadError::Encrypted);
         }
-        let exact = self
-            .peer
-            .core
-            .exact_admissions
-            .as_ref()
-            .ok_or(PeerDocumentReadError::Incomplete)?;
+        if !self.core.admission_v5 {
+            return Err(PeerDocumentReadError::Incomplete);
+        }
         let held: std::collections::HashSet<_> = document
             .sealed
             .iter()
@@ -153,7 +184,7 @@ impl PeerRead<'_> {
                     })
                 })
         };
-        if exact.iter().any(|(key, _)| {
+        if self.core.exact_admissions.iter().any(|(key, _)| {
             key.app == route.app && key.record == route.record && !covered(key.author, key.sequence)
         }) || document
             .channel
@@ -168,17 +199,21 @@ impl PeerRead<'_> {
 }
 
 fn open_history(
-    document: &PeerDocument<BoundedNative>,
+    document: &PeerDocument,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
     maximum: usize,
 ) -> Result<AutoCommit, PeerDocumentReadError> {
     let mut remaining = maximum;
     let mut merged = match &document.covered_snapshot {
-        Some(base) => NativeBatch::continuing(&mut remaining)
-            .load(&base.original)
-            .map_err(|error| PeerDocumentReadError::Peer(error.into()))?
-            .document()
-            .clone(),
+        Some(base) => {
+            remaining = remaining
+                .checked_sub(base.0.bytes.len())
+                .ok_or(PeerDocumentReadError::Capacity)?;
+            base.decoded()
+                .map_err(PeerDocumentReadError::Opening)?
+                .doc
+                .clone()
+        }
         None => AutoCommit::new(),
     };
     let mut waiting = Vec::with_capacity(document.sealed.len());

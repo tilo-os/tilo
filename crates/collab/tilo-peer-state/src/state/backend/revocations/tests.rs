@@ -17,10 +17,10 @@ fn signed(key: [u8; 32], time: u64, root: &SigningKey) -> RevocationEntry {
 fn roster(
     peer: &crate::StatePeer,
     now: std::time::SystemTime,
-) -> super::super::roster::BoundedRoster {
-    super::super::roster::BoundedRoster::restore(
-        &peer.certificates(),
-        &[],
+) -> BTreeMap<[u8; 32], VerifiedCertificate> {
+    super::super::roster::restore_legacy(
+        peer.certificates(),
+        Vec::new(),
         peer.authority(),
         now_ns(now),
     )
@@ -28,7 +28,7 @@ fn roster(
 }
 
 #[test]
-fn bounded_revocations_preserves_independent_verified_union_and_earliest_floor() {
+fn revocations_preserves_independent_verified_union_and_earliest_floor() {
     let (peer, _, _, member, now) = crate::admission_tests::seeded();
     let roster = roster(&peer, now);
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -41,8 +41,8 @@ fn bounded_revocations_preserves_independent_verified_union_and_earliest_floor()
     enrollment
         .insert(signed(member.device_public_key, 20, &root))
         .unwrap();
-    let union = BoundedRevocations::restore(
-        &stored,
+    let union = restore_legacy(
+        stored.clone(),
         &enrollment,
         &roster,
         peer.authority().device_public_key,
@@ -70,7 +70,7 @@ fn bounded_revocations_preserves_independent_verified_union_and_earliest_floor()
 }
 
 #[test]
-fn bounded_revocations_rejects_mismatched_root_signature_and_pinned_authority() {
+fn revocations_rejects_mismatched_root_signature_and_pinned_authority() {
     let (peer, _, _, member, now) = crate::admission_tests::seeded();
     let roster = roster(&peer, now);
     let empty = RevocationList::new();
@@ -88,8 +88,8 @@ fn bounded_revocations_rejects_mismatched_root_signature_and_pinned_authority() 
         ),
         (&revoked[..], RestoreRevocationsError::AuthorityRevoked),
     ] {
-        let result = BoundedRevocations::restore(
-            entries,
+        let result = restore_legacy(
+            entries.to_vec(),
             &empty,
             &roster,
             peer.authority().device_public_key,
@@ -99,7 +99,7 @@ fn bounded_revocations_rejects_mismatched_root_signature_and_pinned_authority() 
 }
 
 #[test]
-fn bounded_revocations_restores_growing_real_tables() {
+fn revocations_restores_growing_real_tables() {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
     let roster = roster(&peer, now);
     let root = SigningKey::from_bytes(&[1; 32]);
@@ -112,8 +112,8 @@ fn bounded_revocations_restores_growing_real_tables() {
         .collect::<Vec<_>>();
     let empty = RevocationList::new();
     for count in [0, 1, 3, 4, 7, 8, 14, 15, 28, 29, 128, 129] {
-        let value = BoundedRevocations::restore(
-            &entries[..count],
+        let value = restore_legacy(
+            entries[..count].to_vec(),
             &empty,
             &roster,
             peer.authority().device_public_key,
