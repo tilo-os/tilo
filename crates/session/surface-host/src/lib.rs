@@ -24,6 +24,7 @@ use smithay::utils::Transform;
 use tilo_compositor::{HostKey, HostLayer, KeyModifiers, SurfaceHost};
 use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
+use ui::device_local_door::SharedDoor;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{
     DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, RawKeyEvent,
@@ -108,6 +109,9 @@ pub struct AppHost {
     keyboard: bool,
     /// The modifiers the app last heard of.
     modifiers: ModifiersState,
+    /// The app's actions for this device: what it publishes, and what the
+    /// session's catalogue asked of it, run on the next frame.
+    door: SharedDoor,
 }
 
 impl AppHost {
@@ -130,7 +134,30 @@ impl AppHost {
             wants: true,
             keyboard: false,
             modifiers: ModifiersState::empty(),
+            door: SharedDoor::default(),
         }
+    }
+
+    /// The app's door, shared with the catalogue the person, a script or
+    /// an agent on this device drives the app through.
+    pub fn door(&self) -> SharedDoor {
+        self.door.clone()
+    }
+
+    /// Run what was asked through the door now, then publish what the app
+    /// offers: the session serves an invocation without waiting for a
+    /// frame. Whether anything ran.
+    pub fn serve_door(&mut self) -> bool {
+        let app = &mut self.app;
+        let ran = self
+            .door
+            .serve_with(|address, arguments| app.invoke_local_resource_action(address, arguments));
+        if ran {
+            self.wants = true;
+        }
+        self.door
+            .publish_resources(Some(self.app.collect_resources()));
+        ran
     }
 
     /// The app, to hand it events of its own (external events, settings).
@@ -268,6 +295,9 @@ impl SurfaceHost for AppHost {
     }
 
     fn prepare_frame(&mut self) {
+        if self.door.has_queued() {
+            self.serve_door();
+        }
         let now = ui::time::now();
         let due = self.app.surface_next_frame().is_some_and(|at| at <= now);
         if !(self.wants || self.surface.redraw.replace(false) || self.app.wake_pending() || due) {
@@ -281,6 +311,8 @@ impl SurfaceHost for AppHost {
         let changed = self.damage.take();
         self.canvas
             .present(&self.scene, changed.as_deref(), &mut self.buffer);
+        self.door
+            .publish_resources(Some(self.app.collect_resources()));
     }
 }
 

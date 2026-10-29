@@ -7,7 +7,21 @@ use std::rc::Rc;
 use tilo_compositor::{HostKey, HostLayer, SurfaceHost};
 use tilo_desktop::topbar::TOPBAR_HEIGHT_PX;
 use tilo_surface_host::{AppHost, Placement};
+use ui::device_local_door::SharedDoor;
 use ui::kurbo::Rect;
+
+/// A surface app whose actions the session publishes: through its door,
+/// as any catalogue on this device reaches it.
+pub(crate) trait Served {
+    /// The surface's door.
+    fn door(&self) -> SharedDoor;
+    /// Run what its door holds now, and publish what it offers.
+    fn serve(&mut self);
+    /// Whether it offers its actions now.
+    fn offered(&self) -> bool {
+        true
+    }
+}
 
 /// The width of a popover panel (quick settings), logical pixels.
 const POPOVER_WIDTH: i32 = 380;
@@ -54,6 +68,16 @@ impl Popover {
             host: AppHost::new(app, placement(0, 0, POPOVER_WIDTH, 1, scale)),
             open,
         }
+    }
+}
+
+impl Served for Popover {
+    fn door(&self) -> SharedDoor {
+        self.host.door()
+    }
+
+    fn serve(&mut self) {
+        self.host.serve_door();
     }
 }
 
@@ -131,6 +155,16 @@ impl Banners {
             host: AppHost::new(app, placement(0, 0, 1, 1, scale)),
             link,
         }
+    }
+}
+
+impl Served for Banners {
+    fn door(&self) -> SharedDoor {
+        self.host.door()
+    }
+
+    fn serve(&mut self) {
+        self.host.serve_door();
     }
 }
 

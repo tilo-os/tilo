@@ -639,6 +639,27 @@ impl Compositor {
     pub fn focused_window(&self) -> Option<WindowInfo> {
         self.data.state.focused_window()
     }
+
+    /// A waker for the loop, from any thread: waking it ends the wait of
+    /// [`Compositor::dispatch`], so news of a surface app's background work
+    /// is drawn without waiting for the next input or due frame.
+    #[must_use]
+    pub fn waker(&self) -> std::task::Waker {
+        std::task::Waker::from(std::sync::Arc::new(LoopWaker(self.event_loop.get_signal())))
+    }
+}
+
+/// Wakes the compositor's loop.
+struct LoopWaker(smithay::reexports::calloop::LoopSignal);
+
+impl std::task::Wake for LoopWaker {
+    fn wake(self: std::sync::Arc<Self>) {
+        self.0.wakeup();
+    }
+
+    fn wake_by_ref(self: &std::sync::Arc<Self>) {
+        self.0.wakeup();
+    }
 }
 
 impl std::os::fd::AsFd for Compositor {

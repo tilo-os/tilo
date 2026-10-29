@@ -7,19 +7,23 @@
 //! the chrome (top bar, strip ribbon and rail, overview, menus) above them;
 //! the window policy of the desk's strips ([`tilo_surface_host::desktop`]),
 //! so each window is a tab of a strip; and the desktop's surface apps, each
-//! an ordinary app hosted on a layer of its own: the notification banners
-//! and quick settings. What the chrome asks of its host comes back as
-//! [`DesktopAsk`]s, carried out here.
+//! an ordinary app hosted on a layer of its own: the notification banners,
+//! quick settings, and setup over everything while a person first uses the
+//! device. What the chrome asks of its host comes back as [`DesktopAsk`]s,
+//! carried out here.
 //!
-//! The session also hosts the system services it was started with
-//! ([`Options::services`]): connectivity, audio and the rest publish their
-//! resources beside the desktop's, and [`Session::invoke`] reaches their
-//! actions as it reaches the desktop's, by address.
+//! Everything a person can do here is a published action: the desk's and
+//! the chrome's, and each surface app's through its door
+//! ([`ui::device_local_door::SharedDoor`]). [`Session::resources`] lists
+//! them and [`Session::invoke`] runs one, as any caller of the action
+//! protocol on this device does.
 
 #![cfg(target_os = "linux")]
 
 mod chrome;
 mod panels;
+mod setup;
+mod sheets;
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -34,20 +38,33 @@ use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
-use tilo_service::Started;
 use tilo_surface_host::{DesktopHost, Placement, WidgetHost, desktop_with};
 use ui::application::ComponentRunnerInputs;
 use ui::headless::FrameHarness;
 use ui::host_operation::ResourceOperationStart;
 
 pub use tilo_quick_settings::host::PanelHost;
-pub use tilo_service::{Service, Services};
 
 use chrome::{SessionChrome, SessionRules};
-use panels::{Banners, Held, Popover};
+use panels::{Banners, Held, Popover, Served};
+use setup::Setup;
+use sheets::Sheet;
+use tilo_sheets::Seat as _;
+use tilo_sheets::portal::PortalSeat;
+use tilo_sheets::power::{PowerEffect, PowerSeat};
+use tilo_sheets::workspace_settings::{
+    Settings as WorkspaceSettings, WorkspaceSettingsEffect, WorkspaceSettingsSeat,
+};
+
+pub use os_actions::SessionAction;
+
+pub use tilo_onboarding_host::view::OnboardingView;
 
 /// The generation the session's own desktop commands carry.
 const GENERATION: &str = "session";
+
+/// The workspace menu's action that opens workspace settings.
+const WORKSPACE_SETTINGS: &str = "workspace-settings";
 
 /// What a session starts with.
 pub struct Options {
@@ -64,9 +81,20 @@ pub struct Options {
     /// What quick settings reads of the device and carries out on it;
     /// without one, the bar's status cluster opens nothing.
     pub quick_settings: Option<Rc<dyn PanelHost>>,
-    /// The system services the session hosts: what they publish is the
-    /// session's, beside the desktop's.
-    pub services: Vec<Box<dyn Service>>,
+    /// Setup to run over everything before the desktop is used: the first
+    /// use of this device, or the recovery of its identity.
+    pub setup: Option<OnboardingView>,
+    /// Carries out what the person chose in the power menu (log out,
+    /// suspend, restart, shut down, switch user); the session locks the
+    /// screen itself. Without one, the choice is only logged.
+    pub session_actions: fn(SessionAction) -> Result<(), String>,
+}
+
+/// The default for [`Options::session_actions`]: a session that owns no
+/// machine (a test, a screenshot) carries out nothing.
+fn no_session_actions(action: SessionAction) -> Result<(), String> {
+    tracing::info!(?action, "this session carries out no session actions");
+    Ok(())
 }
 
 impl Default for Options {
@@ -78,7 +106,8 @@ impl Default for Options {
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
             quick_settings: None,
-            services: Vec::new(),
+            setup: None,
+            session_actions: no_session_actions,
         }
     }
 }
@@ -92,8 +121,14 @@ struct Shared {
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// Whether quick settings is open, when the session has it.
     quick_settings: Option<Rc<Cell<bool>>>,
-    /// The system services.
-    services: RefCell<Services>,
+    /// The power menu, workspace settings, and the questions the session
+    /// asks for apps and services, by their seats.
+    power: Option<PowerSeat>,
+    workspace_settings: Option<WorkspaceSettingsSeat>,
+    portal: Option<PortalSeat>,
+    session_actions: fn(SessionAction) -> Result<(), String>,
+    /// The power menu asked to lock the screen.
+    lock: Cell<bool>,
 }
 
 impl Shared {
@@ -113,7 +148,67 @@ impl Shared {
                     }
                 }
                 DesktopAsk::Launchpad(action) => self.launchpad(action),
+                DesktopAsk::HostAction(action) if action == WORKSPACE_SETTINGS => {
+                    self.open_workspace_settings();
+                }
                 other => tracing::debug!(?other, "desktop ask the session has no part in yet"),
+            }
+        }
+        self.follow_sheets();
+    }
+
+    /// Show workspace settings for the workspace in front.
+    fn open_workspace_settings(&self) {
+        let Some(seat) = &self.workspace_settings else {
+            return;
+        };
+        let name = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.name.clone())
+                .unwrap_or_default()
+        });
+        seat.show(WorkspaceSettings {
+            name,
+            ..seat.settings()
+        });
+        seat.reset();
+        seat.presentation().open(false);
+    }
+
+    /// Carry out what the person chose in the sheets.
+    fn follow_sheets(&self) {
+        if let Some(power) = &self.power {
+            for effect in power.take_asked() {
+                power.presentation().close();
+                let action = match effect {
+                    PowerEffect::Lock => {
+                        self.lock.set(true);
+                        continue;
+                    }
+                    PowerEffect::LogOut => SessionAction::Logout,
+                    PowerEffect::SwitchUser => SessionAction::SwitchUser,
+                    PowerEffect::Suspend => SessionAction::Suspend,
+                    PowerEffect::Restart => SessionAction::Restart,
+                    PowerEffect::ShutDown => SessionAction::ShutDown,
+                };
+                if let Err(error) = (self.session_actions)(action) {
+                    tracing::warn!(%error, ?action, "power menu");
+                }
+            }
+        }
+        if let Some(settings) = &self.workspace_settings {
+            for effect in settings.take_asked() {
+                match effect {
+                    WorkspaceSettingsEffect::Rename { name } => self
+                        .intents
+                        .borrow_mut()
+                        .push(ChromeIntent::RenameWorkspace { name }),
+                    WorkspaceSettingsEffect::Close => {}
+                    other => tracing::debug!(
+                        ?other,
+                        "workspace settings asks what the session cannot do yet"
+                    ),
+                }
             }
         }
     }
@@ -142,6 +237,32 @@ impl Shared {
     }
 }
 
+/// Mount a sheet lent `seat` on a layer of its own, its actions among the
+/// session's; the seat, when it mounted.
+fn mount_sheet<S: tilo_sheets::Seat>(
+    compositor: &mut Compositor,
+    surfaces: &mut Vec<Rc<RefCell<dyn Served>>>,
+    definition: &'static ui::application::ApplicationDefinition,
+    seat: S,
+    who: (&str, &str),
+    presentation: ComponentRunnerInputs,
+    scale: f64,
+) -> Option<S> {
+    match Sheet::mount(definition, seat, who, presentation, scale) {
+        Ok(sheet) => {
+            let seat = sheet.seat().clone();
+            let held = Rc::new(RefCell::new(sheet));
+            compositor.add_host(Box::new(Held(Rc::clone(&held))));
+            surfaces.push(held);
+            Some(seat)
+        }
+        Err(error) => {
+            tracing::warn!(%error, app = definition.app_id(), "sheet not mounted");
+            None
+        }
+    }
+}
+
 /// A running session: the compositor and the desktop it hosts.
 pub struct Session {
     compositor: Compositor,
@@ -150,6 +271,10 @@ pub struct Session {
     chrome: Rc<RefCell<WidgetHost>>,
     shared: Rc<Shared>,
     banners: tilo_notification_banners::Link,
+    /// The surface apps whose actions the session publishes.
+    surfaces: Vec<Rc<RefCell<dyn Served>>>,
+    /// Setup, while it runs: it withholds the desktop's actions.
+    setup: Option<Rc<RefCell<Setup>>>,
 }
 
 impl Session {
@@ -221,12 +346,19 @@ impl Session {
         compositor.add_host(Box::new(Held(Rc::clone(&chrome))));
 
         let presentation = options.presentation;
+        let mut surfaces: Vec<Rc<RefCell<dyn Served>>> = Vec::new();
         let banners = tilo_notification_banners::Link::new();
         match tilo_notification_banners::prepare(banners.clone(), &options.device, &options.person)
             .and_then(|component| ui::App::from_component(component, presentation()))
         {
             Ok(app) => {
-                compositor.add_host(Box::new(Banners::new(app, banners.clone(), options.scale)));
+                let held = Rc::new(RefCell::new(Banners::new(
+                    app,
+                    banners.clone(),
+                    options.scale,
+                )));
+                compositor.add_host(Box::new(Held(Rc::clone(&held))));
+                surfaces.push(held);
             }
             Err(error) => tracing::warn!(%error, "notification banners not mounted"),
         }
@@ -237,11 +369,13 @@ impl Session {
                 .and_then(|component| ui::App::from_component(component, presentation()))
             {
                 Ok(app) => {
-                    compositor.add_host(Box::new(Popover::new(
+                    let held = Rc::new(RefCell::new(Popover::new(
                         app,
                         Rc::clone(&open),
                         options.scale,
                     )));
+                    compositor.add_host(Box::new(Held(Rc::clone(&held))));
+                    surfaces.push(held);
                     Some(open)
                 }
                 Err(error) => {
@@ -251,16 +385,55 @@ impl Session {
             }
         });
 
-        let mut services = Services::default();
-        for service in options.services {
-            services.add(service);
-        }
+        // The sheets, over the desktop and its panels.
+        let seats = (options.device.as_str(), options.person.as_str());
+        let power = mount_sheet(
+            &mut compositor,
+            &mut surfaces,
+            tilo_sheets::power::definition(),
+            PowerSeat::default(),
+            seats,
+            presentation(),
+            options.scale,
+        );
+        let workspace_settings = mount_sheet(
+            &mut compositor,
+            &mut surfaces,
+            tilo_sheets::workspace_settings::definition(),
+            WorkspaceSettingsSeat::default(),
+            seats,
+            presentation(),
+            options.scale,
+        );
+        let portal = mount_sheet(
+            &mut compositor,
+            &mut surfaces,
+            tilo_sheets::portal::definition(),
+            PortalSeat::default(),
+            seats,
+            presentation(),
+            options.scale,
+        );
+
+        // Setup last: above everything, and first to the keyboard.
+        setup::lend(compositor.waker(), &options.person);
+        let setup = options.setup.map(|view| {
+            let held = Rc::new(RefCell::new(Setup::new(view, options.scale)));
+            compositor.add_host(Box::new(Held(Rc::clone(&held))));
+            surfaces.push(Rc::clone(&held) as Rc<RefCell<dyn Served>>);
+            held
+        });
+
         let shared = Rc::new(Shared {
             handle,
             asks,
             intents,
             quick_settings,
-            services: RefCell::new(services),
+            power,
+            workspace_settings,
+            portal,
+            session_actions: options.session_actions,
+            lock: Cell::new(false),
         });
         Ok(Self {
             compositor,
@@ -268,6 +441,8 @@ impl Session {
             chrome,
             shared,
             banners,
+            surfaces,
+            setup,
         })
     }
 
@@ -322,37 +497,49 @@ impl Session {
         [desk, chrome]
     }
 
+    /// Whether setup is up: it withholds the desktop until it is done.
+    #[must_use]
+    pub fn setup_up(&self) -> bool {
+        self.setup.as_ref().is_some_and(|setup| setup.borrow().up())
+    }
+
+    /// The doors of the surface apps offering their actions now, each
+    /// freshly published.
+    fn doors(&self) -> Vec<(ui::device_local_door::SharedDoor, Rc<RefCell<dyn Served>>)> {
+        self.surfaces
+            .iter()
+            .filter_map(|surface| {
+                let mut served = surface.borrow_mut();
+                served.offered().then(|| {
+                    served.serve();
+                    (served.door(), Rc::clone(surface))
+                })
+            })
+            .collect()
+    }
+
     /// Everything the session publishes now: the desk's resource (its
-    /// windows among its children) and the chrome's, with their actions,
-    /// then the services'.
+    /// windows among its children), the chrome's, and each surface app's,
+    /// with their actions. While setup is up, only setup's.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
-        let mut resources = self.each_layer(|host| host.resources()).concat();
-        resources.extend(self.shared.services.borrow().resources());
+        let mut resources = if self.setup_up() {
+            Vec::new()
+        } else {
+            self.each_layer(|host| host.resources()).concat()
+        };
+        for (door, _) in self.doors() {
+            resources.extend(door.resources());
+        }
         resources
-    }
-
-    /// What the service publishing `resource` reads of it now, as JSON;
-    /// `None` when no service publishes it.
-    #[must_use]
-    pub fn read(&self, resource: &str) -> Option<serde_json::Value> {
-        self.shared.services.borrow().read(resource)
-    }
-
-    /// Wait until every device call the services started has landed, and
-    /// take them in: what a headless run does before it reads.
-    pub fn settle_services(&self) {
-        self.shared.services.borrow_mut().settle();
     }
 
     /// Invoke the published action `action` of resource `resource`, as
     /// any caller of the action protocol does, and carry out what it asked
-    /// of the session. A service's action that runs on the device is
-    /// accepted at once; its result lands in the service's reading.
+    /// of the session.
     ///
     /// # Errors
-    /// The door's refusal: no such resource or action, bad arguments, or
-    /// one the device cannot do now.
+    /// The door's refusal: no such resource or action, or bad arguments.
     pub fn invoke(
         &mut self,
         resource: &str,
@@ -360,33 +547,60 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
         let address = ActionAddress::new(resource, action);
-        let [desk, chrome] = self.each_layer(|host| {
-            tilo_actions::door::resolve(&host.resources(), &address)
-                .is_some()
-                .then(|| host.invoke_published(resource, action, arguments))
-        });
-        let started = match desk.or(chrome) {
+        let started = match self.invoke_desktop(&address, arguments) {
             Some(started) => started,
-            None => match self
-                .shared
-                .services
-                .borrow_mut()
-                .invoke(resource, action, arguments)
-            {
-                Some(Ok(Started::Done(output))) => Ok(ResourceOperationStart::Completed(output)),
-                Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
-                Some(Err(error)) => Err(error),
-                None => Err(DoorError::Unknown(address)),
-            },
+            None => self.invoke_surface(&address, arguments)?,
         }?;
         self.shared.follow_asks();
+        self.follow_lock();
         Ok(started)
+    }
+
+    /// Invoke `address` on the desk or the chrome, when one publishes it
+    /// and setup is not up.
+    fn invoke_desktop(
+        &self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<Result<ResourceOperationStart, DoorError>> {
+        if self.setup_up() {
+            return None;
+        }
+        let [desk, chrome] = self.each_layer(|host| {
+            tilo_actions::door::resolve(&host.resources(), address)
+                .is_some()
+                .then(|| {
+                    host.invoke_published(address.resource.as_str(), &address.action, arguments)
+                })
+        });
+        desk.or(chrome)
+    }
+
+    /// Invoke `address` through the door of the surface app publishing it,
+    /// served at once.
+    fn invoke_surface(
+        &self,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Result<ResourceOperationStart, DoorError>, DoorError> {
+        let (door, surface) = self
+            .doors()
+            .into_iter()
+            .find(|(door, _)| tilo_actions::door::resolve(&door.resources(), address).is_some())
+            .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+        let answer = door.invoke(address.clone(), arguments.clone());
+        surface.borrow_mut().serve();
+        let answered = answer.borrow_mut().take();
+        answered.ok_or_else(|| DoorError::Unknown(address.clone()))
     }
 
     /// The labels of the desktop's accessibility trees, the desk's and the
     /// chrome's, as assistive technology reads them.
     #[must_use]
     pub fn accessible_labels(&self) -> Vec<String> {
+        if let Some(setup) = self.setup.as_ref().filter(|setup| setup.borrow().up()) {
+            return setup.borrow_mut().accessible_labels();
+        }
         self.each_layer(|host| {
             host.a11y_nodes()
                 .into_iter()
@@ -394,6 +608,42 @@ impl Session {
                 .collect::<Vec<_>>()
         })
         .concat()
+    }
+
+    /// The power menu's seat: the session puts it up.
+    #[must_use]
+    pub fn power_menu(&self) -> Option<&PowerSeat> {
+        self.shared.power.as_ref()
+    }
+
+    /// Workspace settings' seat: what it shows, kept current by whoever
+    /// knows the workspace.
+    #[must_use]
+    pub fn workspace_settings(&self) -> Option<&WorkspaceSettingsSeat> {
+        self.shared.workspace_settings.as_ref()
+    }
+
+    /// The portal sheet's seat: the portal, authentication and
+    /// network-secret services ask through it and read the answers.
+    #[must_use]
+    pub fn portal(&self) -> Option<&PortalSeat> {
+        self.shared.portal.as_ref()
+    }
+
+    /// Lock the screen when the power menu asked to.
+    fn follow_lock(&mut self) {
+        if self.shared.lock.replace(false)
+            && let Err(error) = self.compositor.lock_now()
+        {
+            tracing::warn!(%error, "lock the screen");
+        }
+    }
+
+    /// The verified browser projection a carried-over setup brought: the
+    /// browser starts with it.
+    #[must_use]
+    pub fn browser_continuity(&self) -> Option<std::path::PathBuf> {
+        setup::browser_continuity()
     }
 
     /// Whether quick settings is open.
@@ -412,10 +662,10 @@ impl Session {
     /// The compositor failed.
     pub fn step(&mut self, timeout: std::time::Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
-        self.shared.services.borrow_mut().poll();
         self.shared.follow_asks();
         self.compositor.render()?;
         self.shared.follow_asks();
+        self.follow_lock();
         Ok(())
     }
 
@@ -425,10 +675,19 @@ impl Session {
     /// The compositor failed.
     pub fn run(&mut self, mut stop: impl FnMut(&Compositor) -> bool) -> Result<(), Error> {
         let shared = Rc::clone(&self.shared);
-        self.compositor.run(|compositor| {
-            shared.services.borrow_mut().poll();
-            shared.follow_asks();
-            stop(compositor)
-        })
+        loop {
+            let mut stopped = false;
+            self.compositor.run(|compositor| {
+                shared.follow_asks();
+                // The loop lends no compositor to lock with: leave it to
+                // lock, then go on.
+                stopped = stop(compositor);
+                stopped || shared.lock.get()
+            })?;
+            if stopped || !shared.lock.get() {
+                return Ok(());
+            }
+            self.follow_lock();
+        }
     }
 }

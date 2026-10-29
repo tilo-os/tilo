@@ -30,6 +30,7 @@ pub struct SharedDoor(Rc<RefCell<State>>);
 
 #[derive(Default)]
 struct State {
+    resources: Vec<tilo_actions::ResourceSpec>,
     actions: Vec<tilo_actions::ActionDescriptor>,
     revision: u64,
     queued: Vec<Queued>,
@@ -42,6 +43,13 @@ struct Queued {
 }
 
 impl SharedDoor {
+    /// The resources the surface published when its host last published
+    /// it, with their actions.
+    #[must_use]
+    pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        self.0.borrow().resources.clone()
+    }
+
     /// What the surface offered when its host last published it.
     #[must_use]
     pub fn actions(&self) -> Vec<tilo_actions::ActionDescriptor> {
@@ -79,11 +87,23 @@ impl SharedDoor {
     /// Host: run what was queued through `app`'s door, oldest first.
     /// Returns whether anything ran.
     pub fn serve(&self, app: &mut dyn AppWidget) -> bool {
+        self.serve_with(|address, arguments| app.invoke_device_local_action(address, arguments))
+    }
+
+    /// Host: run what was queued through `run`, the surface's own door,
+    /// oldest first: for a host holding the surface as something other
+    /// than an [`AppWidget`]. Returns whether anything ran.
+    pub fn serve_with(
+        &self,
+        mut run: impl FnMut(
+            &tilo_actions::ActionAddress,
+            &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<ResourceOperationStart, tilo_actions::DoorError>,
+    ) -> bool {
         let queued = std::mem::take(&mut self.0.borrow_mut().queued);
         let ran = !queued.is_empty();
         for invocation in queued {
-            let started =
-                app.invoke_device_local_action(&invocation.address, &invocation.arguments);
+            let started = run(&invocation.address, &invocation.arguments);
             *invocation.answer.borrow_mut() = Some(started);
         }
         ran
@@ -101,14 +121,19 @@ impl SharedDoor {
     /// Host: publish what `app` offers now; nothing for a surface that is
     /// gone or offers nothing to this device.
     pub fn publish(&self, app: Option<&dyn AppWidget>) {
-        let actions = app
-            .and_then(AppWidget::device_local_resources)
-            .map(|resources| tilo_actions::door::survey(&resources))
-            .unwrap_or_default();
+        self.publish_resources(app.and_then(AppWidget::device_local_resources));
+    }
+
+    /// Host: publish `resources`, what the surface offers now; `None` for
+    /// a surface that is gone.
+    pub fn publish_resources(&self, resources: Option<Vec<tilo_actions::ResourceSpec>>) {
+        let resources = resources.unwrap_or_default();
+        let actions = tilo_actions::door::survey(&resources);
         let mut state = self.0.borrow_mut();
         if state.actions != actions {
             state.actions = actions;
             state.revision = state.revision.wrapping_add(1);
         }
+        state.resources = resources;
     }
 }

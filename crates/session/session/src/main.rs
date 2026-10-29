@@ -1,5 +1,5 @@
 //! The native session: `tilo-session [--backend drm|headless] [--size WxH]
-//! [-- command args...]`. Listens on a fresh `wayland-N` socket, prints its
+//! [--host-desktop] [-- command args...]`. Listens on a fresh `wayland-N` socket, prints its
 //! name and starts `command` with `WAYLAND_DISPLAY` set to it; with a
 //! command, the session lasts as long as it does.
 
@@ -28,9 +28,9 @@ fn main() -> std::process::ExitCode {
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .unwrap_or((1280, 720));
 
-    let (services, _following) = services();
     let options = Options {
-        services,
+        setup: setup(ours.iter().any(|arg| arg == "--host-desktop")),
+        session_actions: os_actions::perform_session_action,
         ..Options::default()
     };
     let started = match backend {
@@ -83,52 +83,33 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-/// What keeps the services' readings following the device while it lives.
+/// The setup this device needs before its desktop is used: the first use
+/// when it has no identity yet, the recovery of its identity when startup
+/// found it unusable; `None` when the identity is ready.
 #[cfg(target_os = "linux")]
-type Following = Vec<Box<dyn std::any::Any>>;
-
-/// The system services the session hosts, on this device's own daemons,
-/// and what keeps their readings following the device.
-#[cfg(target_os = "linux")]
-fn services() -> (Vec<Box<dyn tilo_session::Service>>, Following) {
-    use std::sync::Arc;
-    use tilo_connectivity_service::{Connectivity, device::OsDevice};
-
-    let mut services: Vec<Box<dyn tilo_session::Service>> = Vec::new();
-    let mut following: Following = Vec::new();
-    match Connectivity::new(Arc::new(OsDevice), None) {
-        Ok(connectivity) => {
-            match connectivity.follow() {
-                Ok(follow) => following.push(Box::new(follow)),
-                Err(error) => tracing::warn!(%error, "connectivity does not follow the device"),
-            }
-            services.push(Box::new(connectivity));
+fn setup(host_desktop: bool) -> Option<tilo_session::OnboardingView> {
+    use tilo_onboarding_host::identity_provisioning::{
+        DiskIdentityStore, IDENTITY_RECOVERY_ENV, needs_first_run_flow,
+    };
+    use tilo_session::OnboardingView;
+    let store = match DiskIdentityStore::from_env() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("tilo-session: no identity store: {error}");
+            return None;
         }
-        Err(error) => tracing::warn!(%error, "connectivity service not started"),
+    };
+    let recovery = std::env::var_os(IDENTITY_RECOVERY_ENV).is_some();
+    if !recovery && !needs_first_run_flow(&store) {
+        return None;
     }
-    match audio_helper().map(|helper| {
-        let mut command = std::process::Command::new(helper);
-        command.arg("--serve");
-        tilo_service::lines::Process::spawn(command, tilo_audio_service::sound::publish, None)
-    }) {
-        Some(Ok(audio)) => services.push(Box::new(audio)),
-        Some(Err(error)) => tracing::warn!(%error, "the audio service did not start"),
-        None => tracing::warn!("the audio service is not installed here"),
-    }
-    (services, following)
-}
-
-/// The audio service (`tilo-audio`): beside the session, else where the
-/// image installs it.
-#[cfg(target_os = "linux")]
-fn audio_helper() -> Option<std::path::PathBuf> {
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("tilo-audio")));
-    beside
-        .into_iter()
-        .chain([std::path::PathBuf::from("/usr/libexec/tilo-audio")])
-        .find(|path| path.exists())
+    let identity_dir = store.path().parent()?.to_path_buf();
+    Some(match (host_desktop, recovery) {
+        (false, false) => OnboardingView::new(identity_dir),
+        (false, true) => OnboardingView::new_for_recovery(identity_dir),
+        (true, false) => OnboardingView::new_for_host_desktop(identity_dir),
+        (true, true) => OnboardingView::new_for_host_desktop_recovery(identity_dir),
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
