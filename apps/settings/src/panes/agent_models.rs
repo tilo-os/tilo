@@ -2466,15 +2466,7 @@ impl LocalModelControl for ModelManagerCli {
 fn fallback_snapshot() -> LocalModelSnapshot {
     let memory_gib = std::fs::read_to_string("/proc/meminfo")
         .ok()
-        .and_then(|text| {
-            text.lines().find_map(|line| {
-                line.strip_prefix("MemTotal:")?
-                    .split_whitespace()
-                    .next()?
-                    .parse::<u64>()
-                    .ok()
-            })
-        })
+        .and_then(|text| crate::panes::about::parse_mem_total_kb(&text))
         .and_then(|kib| u16::try_from(kib / 1024 / 1024).ok())
         .unwrap_or(8);
     let (fit, reason) = if memory_gib >= 32 {
