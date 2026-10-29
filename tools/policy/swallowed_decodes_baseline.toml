@@ -3,8 +3,6 @@
 # --update records a file that shed some. Report the error, or mark a genuinely
 # optional read with `// optional-decode: <why>`.
 [files]
-"apps/tilolang/src/hosted.rs" = 1
-"apps/tilolang/src/mail/origin.rs" = 1
 "crates/collab/collaboration/src/app_surface.rs" = 4
 "crates/collab/collaboration/src/broker.rs" = 6
 "crates/collab/collaboration/src/document_routes.rs" = 1
@@ -28,17 +26,6 @@
 "crates/collab/tilo-action-broker/src/collab_presence.rs" = 2
 "crates/collab/tilo-action-broker/src/lib.rs" = 1
 "crates/collab/tilo-action-broker/src/services/task_execution.rs" = 2
-"crates/platform/tilo-ui-host/src/date.rs" = 2
-"crates/platform/tilolang-host/src/task.rs" = 1
-"crates/platform/tilolang-tilo/src/action.rs" = 1
-"crates/platform/tilolang-tilo/src/bench.rs" = 2
-"crates/platform/tilolang-tilo/src/bench/engines.rs" = 1
-"crates/platform/tilolang-tilo/src/index/columns.rs" = 2
-"crates/platform/tilolang-tilo/src/index/lists.rs" = 1
-"crates/platform/tilolang-tilo/src/index/reflect.rs" = 1
-"crates/platform/tilolang-tilo/src/meta.rs" = 3
-"crates/platform/tilolang-tilo/src/surface.rs" = 4
-"crates/platform/tilolang-tilo/src/task.rs" = 1
 "crates/session/shell/src/bin/pressure_fixture.rs" = 2
 "crates/session/shell/src/bin/shots/driver.rs" = 1
 "crates/session/shell/src/bin/shots/driver/desktop_control.rs" = 1
