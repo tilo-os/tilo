@@ -948,6 +948,9 @@ impl LiveAppActionsProvider {
         let mut entries = broker
             .surfaces()
             .into_iter()
+            // The shell's own actions are listed by the actions provider,
+            // from their declarations.
+            .filter(|surface| surface.app_id != crate::shell::actions::host::APP_ID)
             .filter(|surface| match scope.scope {
                 crate::shell::chrome_state::SearchScope::All => true,
                 crate::shell::chrome_state::SearchScope::Workspace => {

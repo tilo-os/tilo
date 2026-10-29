@@ -28,6 +28,7 @@ use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, Par
 mod all;
 pub(crate) mod device_pairing;
 pub(crate) mod enrollment_tokens;
+pub(crate) mod host;
 pub(crate) mod identity_admin;
 pub(crate) mod native_identity;
 pub(crate) mod shortcuts;
