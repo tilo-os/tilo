@@ -239,7 +239,7 @@ fn bound(effect: &MailEffect, label: &str) -> ActionSpec {
 }
 
 /// A message as written: who it goes to, what it says, what it carries.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default, JsonSchema)]
 pub struct DraftData {
     #[serde(default)]
     pub sender: Option<crate::model::DraftSender>,
@@ -530,6 +530,17 @@ pub enum ServerUpdate {
         locator: String,
         folder: Folder,
     },
+    /// Keep the draft `id` in the server's Drafts as written now
+    /// (`APPEND`), under `locator`; the copy it replaces is removed once
+    /// this one is kept.
+    SaveDraft {
+        id: String,
+        account: String,
+        locator: String,
+        written: String,
+        draft: Box<DraftData>,
+        in_reply_to: Option<String>,
+    },
 }
 
 tilo_resource::json_model!(ServerUpdate);
@@ -549,10 +560,31 @@ impl Default for ServerUpdate {
 }
 
 impl ServerUpdate {
+    /// The draft a `SaveDraft` writes, as the engine builds it: its own
+    /// `Message-ID` the locator its copy is found by.
+    pub fn saved_draft(&self) -> Option<Draft> {
+        let Self::SaveDraft {
+            locator,
+            draft,
+            in_reply_to,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let mut written = draft.to_draft();
+        written.in_reply_to = in_reply_to.as_deref().and_then(|id| id.parse().ok());
+        written.wire.message_id = Some(locator.clone());
+        Some(written)
+    }
+
     /// The message it is about.
     pub fn id(&self) -> &str {
         match self {
-            Self::Flags { id, .. } | Self::Move { id, .. } | Self::Remove { id, .. } => id,
+            Self::Flags { id, .. }
+            | Self::Move { id, .. }
+            | Self::Remove { id, .. }
+            | Self::SaveDraft { id, .. } => id,
         }
     }
 
@@ -561,7 +593,8 @@ impl ServerUpdate {
         match self {
             Self::Flags { account, .. }
             | Self::Move { account, .. }
-            | Self::Remove { account, .. } => account,
+            | Self::Remove { account, .. }
+            | Self::SaveDraft { account, .. } => account,
         }
     }
 
@@ -580,9 +613,13 @@ impl ServerUpdate {
             Self::Remove {
                 locator, folder, ..
             } => (locator, *folder, false, false),
+            Self::SaveDraft { locator, .. } => (locator, Folder::Drafts, true, false),
         };
         crate::model::Message {
-            id: self.id().parse().unwrap_or_default(),
+            id: match self {
+                Self::SaveDraft { locator, .. } => crate::transport::stable_message_id(locator),
+                _ => self.id().parse().unwrap_or_default(),
+            },
             rfc_message_id: Some(locator.clone()),
             in_reply_to: None,
             from: crate::model::Addr::new("", ""),

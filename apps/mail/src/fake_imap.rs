@@ -4,7 +4,7 @@
 //! LOGIN, CAPABILITY, LIST with special-use marks (RFC 6154), SELECT with
 //! UIDVALIDITY and UIDNEXT, FETCH by position and by UID (`n:*` included),
 //! UID SEARCH (TEXT, HEADER, FLAGGED, ALL), UID STORE, UID MOVE, UID
-//! EXPUNGE, NOOP and IDLE, over TLS with a throwaway certificate. A test
+//! EXPUNGE, APPEND (a literal, with flags), NOOP and IDLE, over TLS with a throwaway certificate. A test
 //! changes the mailbox as another client would (new mail, a flag) and the
 //! server tells an idling connection, as a real one does.
 
@@ -204,7 +204,13 @@ impl FakeImap {
             let text = line.trim_end().to_owned();
             let (tag, command) = text.split_once(' ').unwrap_or((&text, ""));
             let upper = command.to_ascii_uppercase();
-            let reply = if upper.starts_with("LOGOUT") {
+            let reply = if upper.starts_with("APPEND ") {
+                match receive_literal(&mut reader, &mut write, command).await {
+                    Ok(raw) => self.appended(tag, command, raw),
+                    Err(Some(refused)) => format!("{tag} {refused}\r\n"),
+                    Err(None) => return,
+                }
+            } else if upper.starts_with("LOGOUT") {
                 let _ = write
                     .write_all(format!("* BYE\r\n{tag} OK LOGOUT\r\n").as_bytes())
                     .await;
@@ -260,6 +266,41 @@ impl FakeImap {
             }
             let _ = write.flush().await;
         }
+    }
+
+    /// Keep what a client appended (`APPEND "box" (flags) {n}`) in its
+    /// folder, and answer as a server with UIDPLUS does.
+    fn appended(&self, tag: &str, command: &str, raw: Vec<u8>) -> String {
+        let head = command.rsplit_once('{').map_or(command, |(head, _)| head);
+        let rest = head.trim_start()["APPEND ".len()..].trim();
+        let (name, flags) = if let Some(quoted) = rest.strip_prefix('"') {
+            let end = quoted.find('"').unwrap_or(quoted.len());
+            (
+                quoted[..end].to_owned(),
+                quoted[end..].trim_start_matches('"'),
+            )
+        } else {
+            let (name, flags) = rest.split_once(' ').unwrap_or((rest, ""));
+            (name.to_owned(), flags)
+        };
+        let flags: Vec<String> = flags
+            .trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        let mut state = self.state.lock().unwrap();
+        let Some(mailbox) = state.find(&name) else {
+            return format!("{tag} NO [TRYCREATE] no such mailbox\r\n");
+        };
+        let uid = mailbox.next_uid;
+        mailbox.next_uid += 1;
+        mailbox.messages.push(Stored { uid, flags, raw });
+        let validity = mailbox.validity;
+        drop(state);
+        self.changed.notify_waiters();
+        format!("{tag} OK [APPENDUID {validity} {uid}] APPEND completed\r\n")
     }
 
     /// The whole answer to one command but IDLE and LOGOUT.
@@ -412,6 +453,36 @@ impl FakeImap {
         }
         format!("{tag} BAD unknown command\r\n")
     }
+}
+
+/// The literal an `APPEND` carries (`{n}` at its end): asked for, read and
+/// its line ended. `Err(Some(why))` refuses the command; `Err(None)` is a
+/// connection that closed.
+async fn receive_literal<R, W>(
+    reader: &mut BufReader<R>,
+    write: &mut W,
+    command: &str,
+) -> Result<Vec<u8>, Option<String>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let size = command
+        .rsplit_once('{')
+        .and_then(|(_, size)| size.strip_suffix('}'))
+        .and_then(|size| size.parse::<usize>().ok())
+        .ok_or_else(|| Some("BAD APPEND needs a literal".to_owned()))?;
+    write.write_all(b"+ go on\r\n").await.map_err(|_| None)?;
+    write.flush().await.map_err(|_| None)?;
+    let mut raw = vec![0_u8; size];
+    tokio::io::AsyncReadExt::read_exact(reader, &mut raw)
+        .await
+        .map_err(|_| None)?;
+    let mut rest = String::new();
+    if reader.read_line(&mut rest).await.unwrap_or(0) == 0 {
+        return Err(None);
+    }
+    Ok(raw)
 }
 
 /// One FETCH answer: the UID always, the flags unless only the UID was

@@ -2401,6 +2401,17 @@ impl MailApp {
             self.shared.borrow_mut().mailbox.purge(*gone);
         }
         *projected = kept;
+        // A draft's copy on its server, fetched with Drafts, is the draft
+        // itself: it shows once, as the draft.
+        for copy in mail.draft_copy_ids() {
+            if let Ok(copy) = copy.parse::<MessageId>() {
+                let mut st = self.shared.borrow_mut();
+                if st.mailbox.get(copy).is_some() {
+                    st.mailbox.purge(copy);
+                    st.dirty = true;
+                }
+            }
+        }
     }
 
     /// Whether the app is at first run (no account configured and no mail
@@ -3018,6 +3029,13 @@ impl MailApp {
                 ServerUpdate::Flags { .. } => EngineRequest::store_flag(account, message),
                 ServerUpdate::Move { to, .. } => EngineRequest::move_message(account, message, *to),
                 ServerUpdate::Remove { .. } => EngineRequest::purge(account, message),
+                ServerUpdate::SaveDraft { .. } => {
+                    let Some(draft) = update.saved_draft() else {
+                        done(Err("not a draft to keep".into()));
+                        continue;
+                    };
+                    EngineRequest::save_draft(account, Box::new(draft))
+                }
             };
             let posted = self.state().post_engine(request);
             match posted {

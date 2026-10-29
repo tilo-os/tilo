@@ -127,7 +127,9 @@ second model.
   - A URL opens in Browser; content opens in the app for its media type.
 - `create-strip { name }` returns the strip id; `rename-strip`.
 - `move-group { group, strip, index }`.
-- `arrange { strip, layout: columns | rows | grid, widths? }`.
+- `arrange { strip, widths? }`: strips lay windows out side by side, so
+  this sets the columns' order and widths. There's no rows or grid layout,
+  and asking for one is refused in words.
 - `list-windows` returns windows with id, app, resource, title, group and
   strip, so the agent can find what it opened before.
 - The palette's `tab.*`, `group.*` and `strip.*` actions become thin wrappers

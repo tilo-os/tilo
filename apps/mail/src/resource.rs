@@ -186,6 +186,21 @@ pub struct DraftState {
     /// Private notes on the draft: a review, what to check before sending.
     /// They are never sent and never leave the mailbox.
     pub notes: String,
+    /// The copy its account's server keeps in Drafts, as the server
+    /// confirmed it, so other mail clients show it too.
+    #[model(readonly)]
+    pub server: Option<DraftCopy>,
+}
+
+/// A draft's copy in its server's Drafts folder.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct DraftCopy {
+    /// The account whose server keeps it
+    pub account: String,
+    /// Its `Message-ID`, which finds it there
+    pub locator: String,
+    /// What it says, as [`DraftState::written`] fingerprints it
+    pub written: String,
 }
 
 impl DraftState {
@@ -255,7 +270,29 @@ impl DraftState {
             drafted: None,
             in_reply_to: self.in_reply_to.clone(),
             notes: self.notes.clone(),
+            server: self.server.clone(),
         }
+    }
+
+    /// A fingerprint of what its server's copy says: everything it is sent
+    /// with, and the message it answers. Its notes are not in the copy.
+    pub(crate) fn written(&self) -> String {
+        let written = serde_json::json!([DraftData::from_draft(&self.draft()), self.in_reply_to]);
+        tilo_content::hash_bytes(written.to_string().as_bytes())
+    }
+
+    /// The copy of this draft its account's server should keep, when it has
+    /// an account: `(account, locator, fingerprint)`. A new fingerprint is a
+    /// new copy, under a new `Message-ID`.
+    pub(crate) fn wanted_copy(&self, id: &str) -> Option<(String, String, String)> {
+        let account = self.sender.as_ref()?.email.trim().to_owned();
+        if account.is_empty() || self.is_empty() {
+            return None;
+        }
+        let written = self.written();
+        let short: String = written.chars().take(16).collect();
+        let locator = format!("{}.{short}@drafts.tilo.local", draft_named(id));
+        Some((account, locator, written))
     }
 
     /// Whether `sent` is this draft: it goes to the same recipients under
@@ -383,6 +420,17 @@ impl Mail {
     /// A mail server confirmed it holds what `update` asked of it.
     #[action(external)]
     pub fn server_applied(&mut self, #[param("What the server was told")] update: ServerUpdate) {
+        if let ServerUpdate::SaveDraft {
+            id,
+            account,
+            locator,
+            written,
+            ..
+        } = update
+        {
+            self.draft_copied(&id, account, locator, written);
+            return;
+        }
         let Some(message) = self.messages.get_mut(&Id::from_raw(update.id())) else {
             return;
         };
@@ -396,6 +444,7 @@ impl Mail {
             }
             ServerUpdate::Move { to, .. } => server.folder = to,
             ServerUpdate::Remove { .. } => server.removed = true,
+            ServerUpdate::SaveDraft { .. } => {}
         }
     }
 
@@ -570,7 +619,7 @@ impl Mail {
         match draft.as_deref().filter(|named| !is_composer_draft(named)) {
             Some(named) => self.forget_draft(Some(named))?,
             None if self.draft.is_written_as(&outgoing.draft) => {
-                self.draft = DraftState::default();
+                self.forget_draft(None)?;
             }
             None => self.draft.drafted = None,
         }
@@ -767,17 +816,85 @@ impl Mail {
     /// Throw the draft `id` away: the composer's own empties, any other
     /// leaves the drafts.
     fn forget_draft(&mut self, id: Option<&str>) -> Result<(), Refusal> {
-        match id.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
-            None => {
-                self.draft = DraftState::default();
-                Ok(())
-            }
+        let gone = match id.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
+            None => std::mem::take(&mut self.draft),
             Some(id) => self
                 .drafts
                 .remove(&Id::from_raw(id))
-                .map(drop)
-                .ok_or_else(|| Refusal::new("there is no such draft")),
+                .ok_or_else(|| Refusal::new("there is no such draft"))?,
+        };
+        if let Some(copy) = gone.server {
+            self.retire_copy(copy);
         }
+        Ok(())
+    }
+
+    /// The server confirmed it keeps the draft `id` as `locator`: an earlier
+    /// copy, under another `Message-ID`, goes from the server.
+    fn draft_copied(&mut self, id: &str, account: String, locator: String, written: String) {
+        let Ok(draft) = self.draft_mut(Some(id)) else {
+            // Discarded meanwhile: the copy just made goes too.
+            self.retire_copy(DraftCopy {
+                account,
+                locator,
+                written,
+            });
+            return;
+        };
+        let now = locator.clone();
+        let earlier = draft.server.replace(DraftCopy {
+            account,
+            locator,
+            written,
+        });
+        if let Some(earlier) = earlier.filter(|earlier| earlier.locator != now) {
+            self.retire_copy(earlier);
+        }
+    }
+
+    /// A draft's copy its server no longer needs keep: recorded as a
+    /// message of that server deleted for good, which the server is told
+    /// as every permanent deletion is.
+    fn retire_copy(&mut self, copy: DraftCopy) {
+        let key = Id::from_raw(crate::transport::stable_message_id(&copy.locator).to_string());
+        let server = ServerCopy {
+            account: copy.account,
+            locator: copy.locator,
+            read: true,
+            starred: false,
+            folder: Folder::Drafts,
+            removed: false,
+        };
+        match self.messages.get_mut(&key) {
+            Some(message) => {
+                message.purged = true;
+                if message.server.is_none() {
+                    message.server = Some(server);
+                }
+            }
+            None => {
+                self.messages.push(
+                    key,
+                    MessageState {
+                        read: true,
+                        folder: Folder::Drafts,
+                        server: Some(server),
+                        purged: true,
+                        ..MessageState::default()
+                    },
+                );
+            }
+        }
+    }
+
+    /// The ids, as fetched messages, of the copies servers keep of drafts:
+    /// each draft shows as itself, not again as its copy.
+    pub(crate) fn draft_copy_ids(&self) -> Vec<String> {
+        self.drafts_listed()
+            .into_iter()
+            .filter_map(|(_, draft)| draft.server.as_ref())
+            .map(|copy| crate::transport::stable_message_id(&copy.locator).to_string())
+            .collect()
     }
 
     /// Every draft with something in it, by id: the composer's own first
@@ -967,6 +1084,28 @@ impl Mail {
 
     pub fn server_updates(&self) -> Vec<ServerUpdate> {
         let mut updates = Vec::new();
+        // Each draft with an account is kept in its server's Drafts too, as
+        // it is written now.
+        for (id, draft) in self.drafts_listed() {
+            let Some((account, locator, written)) = draft.wanted_copy(&id) else {
+                continue;
+            };
+            if draft
+                .server
+                .as_ref()
+                .is_some_and(|copy| copy.written == written && copy.account == account)
+            {
+                continue;
+            }
+            updates.push(ServerUpdate::SaveDraft {
+                id,
+                account,
+                locator,
+                written,
+                draft: Box::new(DraftData::from_draft(&draft.draft())),
+                in_reply_to: draft.in_reply_to.clone(),
+            });
+        }
         for (id, message) in self.messages.iter() {
             let Some(server) = &message.server else {
                 continue;
@@ -1101,6 +1240,7 @@ impl Mail {
     fn places(&self) -> Vec<Derived<Self>> {
         let mut remaining = OPEN_MESSAGE_LIMIT;
         let mut places = Vec::new();
+        let copies = self.draft_copy_ids();
         for folder in Folder::ALL {
             let mut place = Derived::new(folder.title())
                 .of_kind("folder")
@@ -1116,7 +1256,11 @@ impl Mail {
             for (id, message) in self
                 .messages
                 .iter()
-                .filter(|(_, message)| !message.purged && message.folder == folder)
+                .filter(|(id, message)| {
+                    !message.purged
+                        && message.folder == folder
+                        && !copies.iter().any(|copy| copy == id.as_str())
+                })
                 .take(remaining)
             {
                 let label = if message.label.is_empty() {
