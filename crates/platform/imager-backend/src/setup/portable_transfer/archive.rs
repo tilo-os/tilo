@@ -490,6 +490,80 @@ pub(super) fn verify_mapped_after_applications(
         mutable,
     )
 }
+/// The same application allowance as `verify_mapped_after_applications`, for
+/// a tree that is still at its admitted root: the user installation may gain
+/// deployments, and only its repository metadata may be rewritten.
+pub(super) fn verify_tree_after_applications(
+    root: &Arc<PinnedDirectory>,
+    records: &Records,
+    cancel: &AtomicBool,
+) -> io::Result<()> {
+    let installation = Path::new(".local/share/flatpak");
+    let mutable = |record: &Record| {
+        matches!(record.kind, Kind::File(_) | Kind::Sparse(_))
+            && [
+                installation.join("repo/config"),
+                installation.join(".changed"),
+            ]
+            .contains(&record.path)
+    };
+    for record in records.iter() {
+        let record = record?;
+        if mutable(&record) {
+            verify_mutable_application_file(&record, root)?;
+        }
+    }
+    verify_root_acl(records, root, true)?;
+    verify_records_skipping(
+        records,
+        false,
+        cancel,
+        |path| {
+            Ok((
+                Arc::clone(root),
+                path.starts_with(installation) || installation.starts_with(path),
+            ))
+        },
+        mutable,
+    )?;
+    fn walk(
+        directory: &Arc<PinnedDirectory>,
+        relative: &Path,
+        records: &Records,
+        installation: &Path,
+        cancel: &AtomicBool,
+    ) -> io::Result<()> {
+        use cap_std::fs::Dir;
+        let listing = Dir::from_std_file(durability::readable_directory(&directory.file)?);
+        for item in listing.entries()? {
+            check_cancel(cancel)?;
+            let name = item?.file_name();
+            let path = relative.join(&name);
+            // Deployments own the installation; its archived entries were
+            // verified above and the applier's receipts cover the rest.
+            if path.starts_with(installation) {
+                continue;
+            }
+            if !records.contains(&path)? {
+                return Err(changed("Transferred tree contains an unreviewed entry"));
+            }
+            let metadata =
+                super::super::nofollow::metadata_nofollow(&directory.file, Path::new(&name))?;
+            if metadata.is_dir() && !metadata.is_symlink() {
+                walk(
+                    &directory.open_child(&name, &metadata)?,
+                    &path,
+                    records,
+                    installation,
+                    cancel,
+                )?;
+            }
+        }
+        Ok(())
+    }
+    walk(root, Path::new(""), records, installation, cancel)?;
+    root.validate()
+}
 fn verify_mutable_application_file(record: &Record, root: &Arc<PinnedDirectory>) -> io::Result<()> {
     use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
     use cap_primitives::fs::{FollowSymlinks, OpenOptions};
