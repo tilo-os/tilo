@@ -65,13 +65,15 @@ fn feedback_opens_once_beside_the_window_in_front_through_its_action() {
     desktop.check();
 }
 
-/// The id of the composer's `action` among this device's private-window actions.
+/// The id of the composer's `action` among this device's private-window
+/// actions, programmatic ones (a field edit) included as automation asks.
 fn device_local(desktop: &Desktop, action: &str) -> String {
     let suffix = format!("\u{1f}{action}");
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let listed = desktop.call(&json!({
-            "op": "actions_enumerate", "query": "device-local", "limit": 2000, "wait_ms": 2000,
+            "op": "actions_enumerate", "query": "device-local", "include_programmatic": true,
+            "limit": 2000, "wait_ms": 2000,
         }));
         let found = listed["answer"]["actions"]
             .as_array()
