@@ -75,36 +75,27 @@ impl TextEdit {
 /// `Text` created on first use.
 pub fn splice_text_diffed(doc: &mut AutoCommit, text_id: &ObjId, new: &str) -> TextEdit {
     let cur = doc.text(text_id).unwrap_or_default();
-    if cur == new {
+    let Some(tilo_resource::TextEdit::Splice { at, delete, insert }) =
+        tilo_resource::text::splice_between(&cur, new)
+    else {
         return TextEdit {
             pos: 0,
             del: 0,
             ins: 0,
         };
-    }
-    let cur_chars: Vec<char> = cur.chars().collect();
-    let new_chars: Vec<char> = new.chars().collect();
-    let (prefix_len, suffix_len) = tilo_resource::text::common_ends(&cur_chars, &new_chars);
-    let del = cur_chars.len().saturating_sub(prefix_len + suffix_len);
-    let ins_end = new_chars.len().saturating_sub(suffix_len);
-    let ins: String = new_chars
-        .get(prefix_len..ins_end)
-        .unwrap_or(&[])
-        .iter()
-        .collect();
-    let ins_len = ins_end.saturating_sub(prefix_len);
-    // `del` is bounded by `Vec<char>::len()`, which the global allocator
-    // already caps at `isize::MAX` bytes, so it always fits `isize`.
-    #[allow(
-        clippy::cast_possible_wrap,
-        reason = "del is bounded by Vec<char>::len(), which the allocator already caps under isize::MAX"
-    )]
-    let del_isize = del as isize;
-    let _ = doc.splice_text(text_id, prefix_len, del_isize, &ins);
+    };
+    // `delete` counts characters of a `String`, which the allocator already
+    // caps under `isize::MAX` bytes.
+    let _ = doc.splice_text(
+        text_id,
+        at,
+        isize::try_from(delete).unwrap_or(isize::MAX),
+        &insert,
+    );
     TextEdit {
-        pos: prefix_len,
-        del,
-        ins: ins_len,
+        pos: at,
+        del: delete,
+        ins: insert.chars().count(),
     }
 }
 
