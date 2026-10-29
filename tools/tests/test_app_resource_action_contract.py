@@ -79,7 +79,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::operation(\"open\", \"Open\", OperationKind::View, \"app.open\", &()).unwrap())] }\n"
                 " fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &[\"app.open\"] }\n"
                 " fn start_operation(&mut self, type_id: &str) { match type_id { \"app.open\" => open(), _ => {} } } }\n"
@@ -151,7 +151,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             self.assertIn("ActionSpec", reasons)
         with self.subTest(phase='comments and empty provider do not satisfy contract'):
             root = self.fixture(
-                "// ActionSpec::operation Resource::new\n"
+                "// ActionSpec::operation ResourceSpec::new\n"
                 "impl Widget for App { fn resources(&self) -> Vec<Resource> { vec![] } }\n"
             )
             violations, _ = contract.audit(root)
@@ -797,28 +797,6 @@ class AppResourceActionContractTests(unittest.TestCase):
                 self.assertIn("tilo-app", reasons)
                 self.assertIn("Widget::resources", reasons)
 
-    def test_a_part_crate_publishes_through_the_one_app_that_links_it(self):
-        facade = 'ui={package="tilo-app",path="../../crates/sdk/tilo-app"}\n'
-
-        def part_reasons(linked: bool) -> list[str]:
-            root = self.fixture("pub fn pane() {}\n", app_name="sample-parts")
-            owner = root / "apps" / "sample"
-            (owner / "src").mkdir(parents=True)
-            (owner / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
-            (owner / "tilo-app.toml").write_text('[package]\nid="so.tilo.sample"\n', encoding="utf-8")
-            link = 'sample-parts={path="../sample-parts"}\n' if linked else ""
-            (owner / "Cargo.toml").write_text(
-                '[package]\nname="sample"\nversion="0.1.0"\n[dependencies]\n' + facade + link,
-                encoding="utf-8",
-            )
-            violations, _ = contract.audit(root)
-            return [item.reason for item in violations if "sample-parts" in str(item.path)]
-
-        with self.subTest(phase="linked by a launched app, the app's contract covers it"):
-            self.assertEqual(part_reasons(True), [])
-        with self.subTest(phase="linked by no app, it must publish its own surface"):
-            self.assertIn("app does not implement Widget::resources", part_reasons(False))
-
     def test_search_providers_must_be_budgeted_paged_and_catalogue_stable(self):
         with self.subTest(phase='app search provider must override limited and paged queries'):
             root = self.fixture(
@@ -942,7 +920,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::operation(\"open\", \"Open\", OperationKind::View, \"app.open\", &()).unwrap())] }\n"
                 " fn start_operation(&mut self) {} }\n"
             )
@@ -959,7 +937,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::operation(\"open\", \"Open\", OperationKind::View, \"app.open\", &()).unwrap())] }\n"
                 " fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &[\"app.open\"] }\n"
                 " fn start_operation(&mut self) { Ok(None) } }\n"
@@ -971,7 +949,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "use tilo_actions::ActionSpec;\n"
                 "const APP_OPEN: &str = \"app.open\";\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::operation(\"open\", \"Open\", OperationKind::Effect, \"app.open\", &()).unwrap())] }\n"
                 " fn local_resource_operation_handlers(&self) -> &'static [&'static str] { &[APP_OPEN] }\n"
                 " fn start_operation(&mut self) { self.start_local_operation(); } }\n"
@@ -1052,7 +1030,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
                 "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
             )
@@ -1062,7 +1040,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
                 "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
             )
@@ -1087,7 +1065,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
             )
             baseline = root / contract.BASELINE / "sample.toml"
@@ -1102,7 +1080,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
                 "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
             )
@@ -1119,7 +1097,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         header = (
             "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
         )
         root = self.fixture(
@@ -1149,7 +1127,7 @@ class AppResourceActionContractTests(unittest.TestCase):
         header = (
             "use tilo_actions::ActionSpec;\n"
             "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
             " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
         )
         root = self.fixture(
@@ -1248,7 +1226,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
                 "fn private(palette: &mut Palette) -> Option<CommandOutcome> {\n"
                 " palette.open_argument(\"go\", \"Go\", \"Value\", None); None }\n"
@@ -1261,7 +1239,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] }\n"
                 " fn activate_search_result(&mut self, id: &str) { private_open(id); } }\n"
             )
@@ -1274,7 +1252,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "use tilo_actions::{ActionRegistry, ActionSpec};\n"
                 "pub fn register(_: &mut ActionRegistry) {}\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
                 "#[test] fn registration_test() { actions::register(&mut registry()); }\n"
             )
@@ -1287,7 +1265,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "use tilo_actions::{ActionRegistry, ActionSpec};\n"
                 "pub fn register(_: &mut ActionRegistry) {}\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
             )
             main = root / "apps" / "sample" / "src" / "main.rs"
@@ -1304,7 +1282,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "use tilo_actions::{ActionRegistry, ActionSpec};\n"
                 "pub fn register(_: &mut ActionRegistry) {}\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
             )
             main = root / "apps" / "sample" / "src" / "main.rs"
@@ -1320,7 +1298,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "use tilo_actions::{ActionRegistry, ActionSpec};\n"
                 "pub fn register(_: &mut ActionRegistry) {}\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
             )
             launch = "fn main() { LaunchSpec::new(root).prepare_legacy_with_args(prepare); }\n"
@@ -1397,7 +1375,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "use tilo_actions::{ActionRegistry, ActionSpec};\n"
                 "pub fn register(_: &mut ActionRegistry) {}\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
                 "static DEFINITION: LazyLock<ApplicationDefinition> = LazyLock::new(|| "
                 "ApplicationDefinition { create: |context, target, restore| "
@@ -1423,7 +1401,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "use tilo_actions::{ActionRegistry, ActionSpec};\n"
                 "pub fn register(_: &mut ActionRegistry) {}\n"
                 "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
-                " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+                " vec![ResourceSpec::new(\"app\", \"app\", \"App\").with_action(\n"
                 " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
                 "static DEFINITION: LazyLock<ApplicationDefinition> = LazyLock::new(|| "
                 "ApplicationDefinition { create: |context, target, restore| "

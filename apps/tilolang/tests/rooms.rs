@@ -13,6 +13,8 @@ fn told(state: RoomSyncState) -> RoomSync {
         state,
         workspace: "Lounge".into(),
         writable: None,
+        unsynced_writes: 0,
+        cannot_keep_writes: false,
     }
 }
 
