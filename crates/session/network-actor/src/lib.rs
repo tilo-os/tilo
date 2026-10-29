@@ -4,10 +4,13 @@
 //! iroh. Tilo only names authenticated endpoint ids and workspaces. Every
 //! workspace travels on one protocol, the session a room host serves: a
 //! device reaches the devices that hold a workspace through the hosts that
-//! store it, the person's own devices included, since each device serves
-//! its own ([`local_host`]). Only what is for one exact device (input,
-//! window streams, remote actions, the person's own device fabric) goes
-//! directly to it, on the authenticated device plane.
+//! store it, each device serving its own ([`local_host`]). Two of the
+//! person's own devices keep one session of their own between them
+//! ([`device_sessions`]), which carries what is for the person's devices
+//! alone: their device fabric, nearby transfers, codec adverts and their
+//! workspace list. Only what is for one exact device of a room (input,
+//! window streams, remote actions) goes directly to it, on the
+//! authenticated device plane.
 //! The actor is the desktop's transport, below the compositor: what arrives
 //! on it that is the desktop's business goes to the services the session
 //! installs ([`services`]), so a compositor change does not rebuild it and
@@ -237,10 +240,9 @@ struct SurfaceWireFrame {
 }
 
 /// Versioned private-device traffic. It travels directly between two of
-/// the person's devices, each frame on a bidirectional stream of the device
-/// plane's connection (whose window streams and input use unidirectional
-/// streams only, `read_personal_fabric`), and leaves the legacy Postcard
-/// enum untouched.
+/// the person's devices, each frame on a bidirectional stream of the
+/// connection their session runs on ([`device_sessions`],
+/// `read_personal_fabric`), and leaves the legacy Postcard enum untouched.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum PersonalFabricPayload {
     Request,
@@ -314,7 +316,6 @@ pub enum PersonalNearbyTransferFrame {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct PersonalFabricWireFrame {
-    workspace: WorkspaceId,
     user_public_key: [u8; 32],
     payload: PersonalFabricPayload,
 }
@@ -359,7 +360,7 @@ pub enum NetCmd {
     },
     /// A device on `ws` sent something this device cannot place without
     /// that device's identity: announce this device's own again on the
-    /// workspace's sessions (`IDENTITY_ANSWER_INTERVAL`).
+    /// topic's host sessions (`IDENTITY_ANSWER_INTERVAL`).
     AnnounceIdentity {
         ws: WorkspaceId,
     },
@@ -411,9 +412,9 @@ pub enum NetCmd {
     PrivateMessages(tokio::sync::oneshot::Sender<crate::private_messages::Transport>),
     /// What this device has received from its peers, by kind.
     WireTally(tokio::sync::oneshot::Sender<Arc<WireTally>>),
-    /// A message for `ws`'s workspace hosts only, held until a host session
-    /// is up: what only the hosts of the person's own continuity topic may
-    /// keep for their other devices.
+    /// A message for the hosts of topic `ws` ([`NetCmd::JoinHostedTopic`])
+    /// only, held until a host session is up: what the person's hosts keep
+    /// for their devices that are away.
     PublishToHosts {
         ws: u64,
         msg: NeighbourMsg,
@@ -441,12 +442,22 @@ pub enum NetCmd {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
     },
-    /// [`NetCmd::JoinWorkspace`] for the topic of the person's own devices
-    /// (their continuity), which also travels through each of those devices
-    /// ([`NetCmd::Connect`]): every device serves it from its own host.
-    JoinPersonalTopic {
+    /// [`NetCmd::JoinWorkspace`] for a topic only the person's hosts carry
+    /// ([`NetCmd::ConnectHost`]): what this device publishes there
+    /// ([`NetCmd::PublishToHosts`]) they keep for the person's devices that
+    /// are away, and replay to each when its session starts.
+    JoinHostedTopic {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
+    },
+    /// Hear the person's other devices at `on_event`: each whose session is
+    /// up ([`NetEvent::Sibling`]), what it sends there, and when it ends.
+    WatchSiblings {
+        on_event: mpsc::Sender<NetEvent>,
+    },
+    /// Send `msg` to each of the person's devices whose session is up.
+    PublishToSiblings {
+        msg: NeighbourMsg,
     },
     LeaveWorkspace {
         ws: WorkspaceId,
@@ -493,22 +504,14 @@ pub enum NetCmd {
     },
     /// Send one piece of a record's content to the device that asked for it.
     PublishRecordContent(RecordContentDelivery),
-    /// Publish a shell-tree message that is known to contain the complete
-    /// room history. Only the deliberate `HostReady` baseline uses this;
-    /// ordinary `SyncResp` messages may be partial anti-entropy responses.
-    PublishCheckpoint {
-        ws: WorkspaceId,
-        msg: NeighbourMsg,
-    },
-    /// Exchange same-person fabric state over its separately negotiated ALPN.
+    /// Send same-person fabric state to each of the person's devices that
+    /// proved a certificate of `user_public_key` on its session.
     PublishPersonalFabric {
-        ws: WorkspaceId,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     },
     /// Send an ephemeral personal-fabric action to one authenticated device.
     PublishPersonalFabricTarget {
-        ws: WorkspaceId,
         user_public_key: [u8; 32],
         target: EndpointId,
         payload: PersonalFabricPayload,
@@ -522,15 +525,13 @@ pub enum NetCmd {
     /// device from the receiver-confirmed checkpoint. A second request for
     /// the same peer and transfer replaces the running stream.
     PublishNearbyTransfer {
-        ws: WorkspaceId,
         user_public_key: [u8; 32],
         target: EndpointId,
         transfer: NearbyTransferCheckpoint,
         file: std::fs::File,
     },
-    /// One of the person's own devices, where it is reached: its host is
-    /// dialled for every personal topic, and the direct device plane to it
-    /// carries what is for it alone.
+    /// One of the person's own devices, where it is reached: the session
+    /// between the two is kept up ([`device_sessions`]).
     Connect {
         addr: EndpointAddr,
     },
@@ -592,10 +593,28 @@ pub enum NetEvent {
         frame: Vec<u8>,
     },
     NativeInput(native_ingress::Input),
-    PeerJoined {
-        ws: WorkspaceId,
+    /// One of the person's devices proved itself on the session between the
+    /// two ([`device_sessions`]), or proved itself anew there (a renewed
+    /// certificate, a new revocation): `certs` are its certificates of the
+    /// roots this device acts for too. What is for that device alone is
+    /// bound to `membership_epoch` while the session lasts.
+    Sibling {
         peer: PeerId,
         membership_epoch: MembershipEpoch,
+        certs: Vec<DeviceCert>,
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+    },
+    /// The session of membership `membership_epoch` with one of the
+    /// person's devices ended.
+    SiblingLeft {
+        peer: PeerId,
+        membership_epoch: MembershipEpoch,
+    },
+    /// One of the person's devices sent `msg` on its session.
+    SiblingMsg {
+        peer: PeerId,
+        membership_epoch: MembershipEpoch,
+        msg: NeighbourMsg,
     },
     PeerLeft {
         ws: WorkspaceId,
@@ -650,7 +669,6 @@ pub enum NetEvent {
         msg: NeighbourMsg,
     },
     PersonalFabric {
-        ws: WorkspaceId,
         peer: PeerId,
         membership_epoch: MembershipEpoch,
         user_public_key: [u8; 32],
@@ -671,7 +689,9 @@ impl NetEvent {
         match self {
             Self::Live { .. } => "Live",
             Self::NativeInput(_) => "NativeInput",
-            Self::PeerJoined { .. } => "PeerJoined",
+            Self::Sibling { .. } => "Sibling",
+            Self::SiblingLeft { .. } => "SiblingLeft",
+            Self::SiblingMsg { msg, .. } => msg.kind(),
             Self::PeerLeft { .. } => "PeerLeft",
             Self::NotAdmitted { .. } => "NotAdmitted",
             Self::HostMember { .. } => "HostMember",
@@ -684,9 +704,10 @@ impl NetEvent {
     }
 }
 
-/// Actor-minted identity of one endpoint's membership incarnation on one
-/// workspace topic. This value never crosses the wire: it is authority only
-/// for local consumers of [`NetEvent`].
+/// Actor-minted identity of one endpoint's membership incarnation: of a
+/// room's roster, or of a session with one of the person's devices. This
+/// value never crosses the wire: it is authority only for local consumers
+/// of [`NetEvent`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MembershipEpoch(u64);
 
@@ -713,11 +734,8 @@ pub enum PersonalTransferStatus {
 /// a timeout can be an unreliable network just as easily as a closed app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerDepartureCause {
-    /// The session that reached the peer closed: the peer's own host, or a
-    /// durable host's.
+    /// The session that reached the peer closed.
     HostSessionClosed,
-    /// This device left the workspace.
-    WorkspaceRouteClosed,
 }
 
 enum InternalEvent {
@@ -742,9 +760,25 @@ enum InternalEvent {
         peer: EndpointId,
         event: HostEvent,
     },
-    /// One of the person's devices dialled this device's host
-    /// ([`device_sessions`]).
+    /// A device dialled this one for the session between two of the
+    /// person's devices ([`device_sessions`]).
     SiblingConnected(iroh::endpoint::Connection),
+    /// Both sides of such a session said who they are.
+    SiblingOpened(Box<device_sessions::Opened>),
+    /// Dialling one of the person's devices failed.
+    SiblingFailed(EndpointId),
+    /// One of the person's devices sent something on its session.
+    SiblingHeard {
+        peer: EndpointId,
+        epoch: MembershipEpoch,
+        heard: device_sessions::Heard,
+    },
+    /// The session of membership `epoch` with one of the person's devices
+    /// ended.
+    SiblingClosed {
+        peer: EndpointId,
+        epoch: MembershipEpoch,
+    },
     HostConnected {
         ws: WorkspaceId,
         peer: EndpointId,
@@ -787,15 +821,10 @@ enum InternalEvent {
         delivered: bool,
     },
     PersonalFabric {
-        ws: WorkspaceId,
         peer: EndpointId,
-        connection_incarnation: u64,
+        epoch: MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
-    },
-    PersonalFabricClosed {
-        peer: EndpointId,
-        connection_incarnation: u64,
     },
     /// A file this device's identity material is read from changed.
     IdentityMaterialChanged,
@@ -894,9 +923,10 @@ enum HostEvent {
     Closed,
 }
 
-/// A personal topic this device joined ([`NetCmd::JoinPersonalTopic`]).
+/// A topic only the person's hosts carry, which this device joined
+/// ([`NetCmd::JoinHostedTopic`]).
 #[derive(Default)]
-struct PersonalTopic {
+struct HostedTopic {
     /// Fingerprint of the identity material last announced on the topic, so
     /// a renewed certificate or a new revocation goes out the tick it lands
     /// and an unchanged one never does.
@@ -906,7 +936,7 @@ struct PersonalTopic {
     identity_announced: Option<Instant>,
 }
 
-impl PersonalTopic {
+impl HostedTopic {
     /// Whether this device announced its identity here within
     /// [`IDENTITY_ANSWER_INTERVAL`].
     fn announced_identity_lately(&self) -> bool {
@@ -915,23 +945,11 @@ impl PersonalTopic {
     }
 }
 
-/// Where a host session of a personal topic goes, besides a host.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Reach {
-    /// A workspace host: a relay, a host the person configured, or a
-    /// room's own route.
-    Host,
-    /// The host of another of the person's devices: that device is a member
-    /// of the topic while the session is up.
-    Device,
-}
-
 struct HostRuntime {
     native_scope: Option<Arc<native_ingress::Scope>>,
     /// The session goes to this device's own host, in this process: no
     /// remote party, nothing to keep up.
     local: bool,
-    reach: Reach,
     /// The private lane to a governed room's governor, opened on first use.
     governor: Option<governor_lane::Lane>,
     actions: Option<tokio::task::JoinHandle<()>>,
@@ -997,7 +1015,6 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                 connection: Some(connection.clone()),
             })
             .await;
-        read_personal_fabric(connection.clone(), tx.clone(), connection_incarnation);
         tokio::spawn(async move {
             loop {
                 let Ok(mut recv) = connection.accept_uni().await else {
@@ -1098,25 +1115,20 @@ async fn enqueue_surface_event(
     }
 }
 
-/// Read the personal fabric frames `connection` brings, whichever side
-/// opened it, into the actor, until it closes. Each frame comes on a
-/// bidirectional stream of its own, which the device plane's window streams
-/// and input never open; the return direction carries nothing.
+/// Read the personal fabric frames the connection of a session with one of
+/// the person's devices brings, whichever side opened it, into the actor,
+/// bound to the session's membership `epoch`, until it closes. Each frame
+/// comes on a bidirectional stream of its own after the session's first;
+/// the return direction carries nothing.
 fn read_personal_fabric(
     connection: iroh::endpoint::Connection,
     tx: mpsc::Sender<InternalEvent>,
-    connection_incarnation: u64,
+    epoch: MembershipEpoch,
 ) {
     let peer = connection.remote_id();
     tokio::spawn(async move {
         loop {
             let Ok((_, mut recv)) = connection.accept_bi().await else {
-                let _ = tx
-                    .send(InternalEvent::PersonalFabricClosed {
-                        peer,
-                        connection_incarnation,
-                    })
-                    .await;
                 return;
             };
             let bytes = match recv
@@ -1141,9 +1153,8 @@ fn read_personal_fabric(
             }
             if tx
                 .send(InternalEvent::PersonalFabric {
-                    ws: frame.workspace,
                     peer,
-                    connection_incarnation,
+                    epoch,
                     user_public_key: frame.user_public_key,
                     payload: frame.payload,
                 })
@@ -1326,10 +1337,8 @@ struct ActorState {
     /// The endpoint's relays, held back until a remote party appears.
     reachability: Reachability,
     internal_tx: mpsc::Sender<InternalEvent>,
-    /// The person's own topics this device joined: they travel through the
-    /// hosts of the person's devices ([`Self::own_devices`]) besides their
-    /// workspace hosts.
-    topics: HashMap<WorkspaceId, PersonalTopic>,
+    /// The topics only the person's hosts carry that this device joined.
+    topics: HashMap<WorkspaceId, HostedTopic>,
     /// Each room's direct sends, so one room's slow devices hold up no
     /// other room ([`room_lane`]).
     lanes: room_lane::Lanes,
@@ -1337,18 +1346,18 @@ struct ActorState {
     /// The person's other devices ([`NetCmd::Connect`]), where each is
     /// reached.
     own_devices: HashMap<EndpointId, EndpointAddr>,
-    /// The direct links personal fabric frames take to the person's devices
-    /// ([`fabric_link`]).
-    fabric_links: HashMap<EndpointId, fabric_link::FabricLink>,
-    /// The one connection to each of the person's devices that the sessions
-    /// between the two run on ([`device_sessions`]).
-    sibling_links: HashMap<EndpointId, device_sessions::SiblingLink>,
-    /// Hears the connections the person's devices dial this device's host
-    /// on.
-    sibling_watch: Option<device_sessions::SiblingWatch>,
-    /// Numbers each direct connection of the device plane, accepted or
-    /// dialled, so what arrives on one is told from a later one's.
-    connection_incarnations: Arc<AtomicU64>,
+    /// The person's devices whose session with this one is up
+    /// ([`device_sessions`]).
+    siblings: HashMap<EndpointId, device_sessions::Sibling>,
+    /// The person's devices being dialled for that session.
+    sibling_dialling: HashSet<EndpointId>,
+    /// Since when this device waits to be dialled by each of the person's
+    /// devices with a lower endpoint id.
+    sibling_waiting: HashMap<EndpointId, Instant>,
+    /// Fingerprint of the hello last said to the person's devices.
+    sibling_hello_sent: Option<[u8; 32]>,
+    /// Where the person's devices are heard ([`NetCmd::WatchSiblings`]).
+    sibling_events: Option<mpsc::Sender<NetEvent>>,
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
     host_sessions: HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     /// The on-demand records this device asked its rooms' hosts for
@@ -1364,12 +1373,7 @@ struct ActorState {
     /// Approver sessions that put this person's agents' questions on the
     /// sheet, one per connected host.
     agent_questions: Box<dyn services::Approvers>,
-    peers_seen: HashMap<(WorkspaceId, EndpointId), PeerMembership>,
     next_membership_epoch: u64,
-    /// Inbound ALPN connections are bound once to the membership active on
-    /// their first frame. `None` is a tombstone retained until that concrete
-    /// connection closes, so an old connection cannot rebind after reconnect.
-    personal_fabric_ingress: HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
     /// Each room's admitted roster ([`NetCmd::SetRoomRoster`]), and the
     /// window-stream connections peers opened to this device, bound to it.
     room_members: room_members::RoomMembers,
@@ -1451,19 +1455,17 @@ impl WireTally {
 /// One running outgoing transfer stream. Dropping `cancel` also stops it.
 struct ActivePersonalTransfer {
     generation: u64,
-    workspace: WorkspaceId,
     total_bytes: u64,
     sent_bytes: std::sync::Arc<std::sync::atomic::AtomicU64>,
     cancel: tokio::sync::watch::Sender<bool>,
 }
 
-/// The exact certified device a personal-fabric stream goes to, the direct
-/// connection to it, and the personal workspace and user key its frames are
-/// authenticated under.
+/// The exact certified device a personal-fabric stream goes to, the
+/// connection of its session, and the user key its frames are authenticated
+/// under.
 struct PersonalStreamRoute {
-    link: fabric_link::Dialer,
+    connection: iroh::endpoint::Connection,
     target: EndpointId,
-    workspace: WorkspaceId,
     user_public_key: [u8; 32],
 }
 
@@ -1492,55 +1494,6 @@ fn take_personal_transfer_generation(
         .is_some_and(|entry| entry.generation == generation)
         .then(|| active.remove(&key))
         .flatten()
-}
-
-/// One of the person's devices being a member of a personal topic: while
-/// this device's session with that device's host is up, or while that
-/// device's own session with this device's host is.
-#[derive(Clone, Copy)]
-struct PeerMembership {
-    epoch: MembershipEpoch,
-    /// Fingerprint of the last codec advert taken from the peer during this
-    /// membership: a repeated advert changes nothing, but one repeated after
-    /// the peer left and came back is new again.
-    caps_advert: Option<[u8; 32]>,
-    /// This device's session with the peer's host is up.
-    dialled: bool,
-    /// The peer is live on this device's own host.
-    dialled_in: bool,
-}
-
-/// What makes one of the person's devices a member of a personal topic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Link {
-    /// This device's session with the device's host.
-    Dialled,
-    /// The device's session with this device's host.
-    DialledIn,
-}
-
-impl PeerMembership {
-    const fn new(epoch: MembershipEpoch, link: Link) -> Self {
-        Self {
-            epoch,
-            caps_advert: None,
-            dialled: matches!(link, Link::Dialled),
-            dialled_in: matches!(link, Link::DialledIn),
-        }
-    }
-
-    const fn set(&mut self, link: Link, up: bool) {
-        match link {
-            Link::Dialled => self.dialled = up,
-            Link::DialledIn => self.dialled_in = up,
-        }
-    }
-
-    /// Take codec advert `fingerprint`, answering whether it is news from
-    /// this peer.
-    fn take_caps_advert(&mut self, fingerprint: [u8; 32]) -> bool {
-        self.caps_advert.replace(fingerprint) != Some(fingerprint)
-    }
 }
 
 const MAX_PENDING_REMOTE_ACTIONS: usize = 8;
@@ -1605,36 +1558,6 @@ impl PendingRemoteActions {
     }
 }
 
-fn bind_personal_fabric_ingress(
-    ingress: &mut HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
-    peer: EndpointId,
-    connection_incarnation: u64,
-    ws: WorkspaceId,
-    epoch: MembershipEpoch,
-) -> bool {
-    let key = (peer, connection_incarnation);
-    match ingress.get(&key).copied() {
-        Some(Some(bound)) => bound == (ws, epoch),
-        Some(None) => false,
-        None => {
-            ingress.insert(key, Some((ws, epoch)));
-            true
-        }
-    }
-}
-
-fn revoke_personal_fabric_ingress(
-    ingress: &mut HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
-    ws: WorkspaceId,
-    epoch: MembershipEpoch,
-) {
-    for binding in ingress.values_mut() {
-        if binding.is_some_and(|bound| bound == (ws, epoch)) {
-            *binding = None;
-        }
-    }
-}
-
 impl Drop for HostRuntime {
     fn drop(&mut self) {
         if let Some(scope) = &self.native_scope {
@@ -1648,94 +1571,16 @@ impl Drop for HostRuntime {
 }
 
 impl ActorState {
-    /// `link` with `peer` on personal topic `ws` came up: the peer's
-    /// membership, when this made it a member (a link already made it one
-    /// otherwise).
-    fn link_up(
-        &mut self,
-        ws: WorkspaceId,
-        peer: EndpointId,
-        link: Link,
-    ) -> Option<MembershipEpoch> {
-        if let Some(membership) = self.peers_seen.get_mut(&(ws, peer)) {
-            membership.set(link, true);
-            return None;
-        }
-        self.next_membership_epoch = self.next_membership_epoch.saturating_add(1).max(1);
-        let epoch = MembershipEpoch(self.next_membership_epoch);
-        self.peers_seen
-            .insert((ws, peer), PeerMembership::new(epoch, link));
-        Some(epoch)
-    }
-
-    /// `link` with `peer` on personal topic `ws` went down: the membership
-    /// that ended with it, when no other link keeps the peer a member.
-    fn link_down(
-        &mut self,
-        ws: WorkspaceId,
-        peer: EndpointId,
-        link: Link,
-    ) -> Option<MembershipEpoch> {
-        let membership = self.peers_seen.get_mut(&(ws, peer))?;
-        membership.set(link, false);
-        if membership.dialled || membership.dialled_in {
-            return None;
-        }
-        let epoch = membership.epoch;
-        self.remove_membership_if_epoch(ws, peer, epoch)
-            .then_some(epoch)
-    }
-
-    /// Tell `ws`'s subscriber that `peer` joined (`Some` epoch) or left.
-    async fn membership_changed(
-        &mut self,
-        ws: WorkspaceId,
-        peer: EndpointId,
-        joined: Option<MembershipEpoch>,
-        left: Option<MembershipEpoch>,
-    ) {
-        if let Some(membership_epoch) = joined {
-            self.publish_to_subscriber(
-                ws,
-                NetEvent::PeerJoined {
-                    ws,
-                    peer,
-                    membership_epoch,
-                },
-            )
-            .await;
-            self.flush_pending_remote_actions(ws, peer);
-        }
-        if let Some(epoch) = left {
-            self.publish_to_subscriber(
-                ws,
-                NetEvent::PeerLeft {
-                    ws,
-                    peer,
-                    cause: PeerDepartureCause::HostSessionClosed,
-                    membership_epoch: Some(epoch),
-                },
-            )
-            .await;
-        }
-    }
-
-    /// `peer`'s current membership of `ws`, if it is a member.
-    fn membership(&self, ws: WorkspaceId, peer: EndpointId) -> Option<MembershipEpoch> {
-        self.peers_seen
-            .get(&(ws, peer))
-            .map(|membership| membership.epoch)
-    }
-
     /// Whether `peer` is a member of `ws` for window streams: on the room's
-    /// admitted roster, or, on the person's own topic, a member there.
+    /// admitted roster, or, on a topic without one, one of the person's
+    /// devices whose session is up.
     fn is_surface_member(&self, ws: WorkspaceId, peer: EndpointId) -> bool {
         if self.room_members.has_roster(ws) {
             self.room_members
                 .member(ws, peer, tilo_clock::unix_now_ns())
                 .is_some()
         } else {
-            self.peers_seen.contains_key(&(ws, peer))
+            self.siblings.contains_key(&peer)
         }
     }
 
@@ -1744,11 +1589,7 @@ impl ActorState {
         if self.room_members.has_roster(ws) {
             return self.room_members.members(ws, tilo_clock::unix_now_ns());
         }
-        self.peers_seen
-            .keys()
-            .filter(|(peer_ws, _)| *peer_ws == ws)
-            .map(|(_, peer)| *peer)
-            .collect()
+        self.siblings.keys().copied().collect()
     }
 
     /// Take room `ws`'s admitted roster as `devices` (none, and not `keep`,
@@ -1789,30 +1630,6 @@ impl ActorState {
         }
     }
 
-    fn remove_membership_if_epoch(
-        &mut self,
-        ws: WorkspaceId,
-        peer: EndpointId,
-        epoch: MembershipEpoch,
-    ) -> bool {
-        if self
-            .peers_seen
-            .get(&(ws, peer))
-            .is_none_or(|membership| membership.epoch != epoch)
-        {
-            return false;
-        }
-        self.peers_seen.remove(&(ws, peer));
-        self.cancel_personal_transfer_route(ws, peer);
-        revoke_personal_fabric_ingress(&mut self.personal_fabric_ingress, ws, epoch);
-        // Its direct links go once it is a member of no topic.
-        if !self.peers_seen.keys().any(|(_, member)| *member == peer) {
-            self.fabric_links.remove(&peer);
-            self.sibling_links.remove(&peer);
-        }
-        true
-    }
-
     /// Handle one [`NetCmd`]. Returns `false` once the command channel has
     /// closed, so [`run`]'s loop should stop.
     #[allow(
@@ -1842,11 +1659,7 @@ impl ActorState {
                     });
             }
             Some(NetCmd::NativeConnect(connect, https)) => self.native_connect(connect, https),
-            Some(NetCmd::LocalHostReady) => {
-                self.retry_native_routes();
-                self.watch_siblings();
-                self.schedule_all_topic_sessions();
-            }
+            Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
             Some(NetCmd::ChannelQueue(queue)) => self.channel_queue = queue,
             Some(NetCmd::AskHost(request)) => self.ask_host(*request),
             Some(NetCmd::GovernorAction { ws, room, request }) => {
@@ -1893,10 +1706,12 @@ impl ActorState {
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                 self.handle_join_workspace(ws, on_event);
             }
-            Some(NetCmd::JoinPersonalTopic { ws, on_event }) => {
+            Some(NetCmd::JoinHostedTopic { ws, on_event }) => {
                 self.topics.entry(ws).or_default();
                 self.handle_join_workspace(ws, on_event);
             }
+            Some(NetCmd::WatchSiblings { on_event }) => self.watch_siblings(on_event).await,
+            Some(NetCmd::PublishToSiblings { msg }) => self.publish_to_siblings(msg),
             Some(NetCmd::SetRoomRoster { ws, devices }) => {
                 self.set_room_roster(ws, devices, true);
             }
@@ -1904,30 +1719,7 @@ impl ActorState {
                 self.topics.remove(&ws);
                 self.native_routes.remove(ws);
                 self.opened_records.remove(&ws);
-                let subscriber = self.subscribers.get(&ws).cloned();
-                let leaving = self
-                    .peers_seen
-                    .iter()
-                    .filter_map(|(&(peer_ws, peer), membership)| {
-                        (peer_ws == ws).then_some((peer, membership.epoch))
-                    })
-                    .collect::<Vec<_>>();
-                for (peer, epoch) in leaving {
-                    if self.remove_membership_if_epoch(ws, peer, epoch)
-                        && let Some(tx) = subscriber.as_ref()
-                    {
-                        let _ = tx
-                            .send(NetEvent::PeerLeft {
-                                ws,
-                                peer,
-                                cause: PeerDepartureCause::WorkspaceRouteClosed,
-                                membership_epoch: Some(epoch),
-                            })
-                            .await;
-                    }
-                }
                 self.subscribers.remove(&ws);
-                self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
                 self.set_room_roster(ws, Vec::new(), false);
                 self.pending_surface_frames
                     .retain(|(frame_ws, _), _| *frame_ws != ws);
@@ -2049,11 +1841,11 @@ impl ActorState {
                         .remove(&(ws, fanout_surface(&msg)));
                     // The host plane is already connected and independently
                     // useful. Enqueue it before any direct-peer dial timeout.
-                    publish(&self.host_sessions, ws, &msg, false);
+                    publish(&self.host_sessions, ws, &msg);
                     let _ = self.start_surface_fanout(ws, msg);
                 } else {
-                    self.hold_for_host(ws, &msg, false);
-                    publish(&self.host_sessions, ws, &msg, false);
+                    self.hold_for_host(ws, &msg);
+                    publish(&self.host_sessions, ws, &msg);
                 }
             }
             Some(NetCmd::SetWake(LoopWake(wake))) => {
@@ -2061,8 +1853,8 @@ impl ActorState {
                 self.wake = Some(wake);
             }
             Some(NetCmd::PublishToHosts { ws, msg }) => {
-                self.hold_for_host(ws, &msg, false);
-                publish(&self.host_sessions, ws, &msg, false);
+                self.hold_for_host(ws, &msg);
+                publish(&self.host_sessions, ws, &msg);
             }
             Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
                 self.publish_workspace_control(ws, msg, route);
@@ -2076,27 +1868,18 @@ impl ActorState {
             Some(NetCmd::PublishRecordContent(delivery)) => {
                 self.publish_record_content(delivery);
             }
-            Some(NetCmd::PublishCheckpoint { ws, msg }) => {
-                if self.native_routes.contains(ws) {
-                    return true;
-                }
-                self.hold_for_host(ws, &msg, true);
-                publish(&self.host_sessions, ws, &msg, true);
-            }
             Some(NetCmd::PublishPersonalFabric {
-                ws,
                 user_public_key,
                 payload,
             }) => {
-                self.publish_personal_fabric_to(ws, user_public_key, payload, None);
+                self.publish_personal_fabric_to(user_public_key, payload, None);
             }
             Some(NetCmd::PublishPersonalFabricTarget {
-                ws,
                 user_public_key,
                 target,
                 payload,
             }) => {
-                self.publish_personal_fabric_to(ws, user_public_key, payload, Some(target));
+                self.publish_personal_fabric_to(user_public_key, payload, Some(target));
             }
             Some(NetCmd::CancelNearbyTransfer {
                 target,
@@ -2105,13 +1888,12 @@ impl ActorState {
                 self.cancel_personal_transfer((target, transfer_id));
             }
             Some(NetCmd::PublishNearbyTransfer {
-                ws,
                 user_public_key,
                 target,
                 transfer,
                 file,
             }) => {
-                self.publish_nearby_transfer(ws, user_public_key, target, transfer, file);
+                self.publish_nearby_transfer(user_public_key, target, transfer, file);
             }
             Some(NetCmd::Connect { addr }) => {
                 if addr.id == self.endpoint.id() {
@@ -2119,7 +1901,7 @@ impl ActorState {
                 }
                 self.lookup.add_endpoint_info(addr.clone());
                 self.own_devices.insert(addr.id, addr);
-                self.schedule_all_topic_sessions();
+                self.dial_siblings();
             }
             Some(NetCmd::ConnectHost { addr, expectation }) => {
                 let id = addr.id;
@@ -2487,22 +2269,21 @@ impl ActorState {
             .retain(|(held_ws, held_surface, _), _| (*held_ws, *held_surface) != (ws, surface));
     }
 
-    /// Send `payload` to every member of personal topic `ws`, or to
-    /// `exact_target` alone, each on its direct link ([`fabric_link`]).
+    /// Send `payload` to each of the person's devices that proved a
+    /// certificate of `user_public_key` on its session, or to
+    /// `exact_target` alone, on the session's connection ([`fabric_link`]).
     fn publish_personal_fabric_to(
         &mut self,
-        ws: WorkspaceId,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
         exact_target: Option<EndpointId>,
     ) {
         if matches!(payload, PersonalFabricPayload::Action(ref bytes) if bytes.len() > crate::fabric::MAX_FABRIC_ACTION_BYTES)
         {
-            tracing::warn!(ws, "personal fabric action exceeds wire limit");
+            tracing::warn!("personal fabric action exceeds wire limit");
             return;
         }
         let wire = PersonalFabricWireFrame {
-            workspace: ws,
             user_public_key,
             payload,
         };
@@ -2511,48 +2292,19 @@ impl ActorState {
         };
         if bytes.len() > crate::fabric::MAX_FABRIC_CHECKPOINT_BYTES + 128 {
             tracing::warn!(
-                ws,
                 bytes = bytes.len(),
                 "personal fabric frame exceeds wire limit"
             );
             return;
         }
-        // A member whose link is down misses the frame: when its session is
-        // back, each side asks the other for its fabric anew.
-        let targets: Vec<EndpointId> = self
-            .peers_seen
-            .keys()
-            .filter(|(topic, peer)| {
-                *topic == ws && exact_target.is_none_or(|target| *peer == target)
-            })
-            .map(|(_, peer)| *peer)
-            .collect();
-        for peer in targets {
-            self.fabric_link(peer).send(bytes.clone());
+        // A device whose session is down misses the frame: when its session
+        // is back, each side asks the other for its fabric anew.
+        for (peer, sibling) in &self.siblings {
+            if exact_target.is_none_or(|target| *peer == target) && sibling.proved(&user_public_key)
+            {
+                sibling.fabric.send(bytes.clone());
+            }
         }
-    }
-
-    /// The direct link to the person's device `peer`, made now when there
-    /// is none.
-    fn fabric_link(&mut self, peer: EndpointId) -> &fabric_link::FabricLink {
-        let addr = self
-            .own_devices
-            .get(&peer)
-            .cloned()
-            .unwrap_or_else(|| EndpointAddr::new(peer));
-        let (endpoint, internal_tx, incarnations) = (
-            &self.endpoint,
-            &self.internal_tx,
-            &self.connection_incarnations,
-        );
-        self.fabric_links.entry(peer).or_insert_with(|| {
-            fabric_link::FabricLink::new(
-                endpoint.clone(),
-                addr,
-                internal_tx.clone(),
-                Arc::clone(incarnations),
-            )
-        })
     }
 
     /// Report one outgoing transfer's progress. A terminal status is
@@ -2560,13 +2312,12 @@ impl ActorState {
     /// would leave the sender waiting on a stream that has ended.
     fn report_personal_transfer(
         &self,
-        workspace: WorkspaceId,
         key: (EndpointId, [u8; 16]),
         sent_bytes: u64,
         total_bytes: u64,
         status: PersonalTransferStatus,
     ) {
-        let Some(progress) = self.subscribers.get(&workspace).cloned() else {
+        let Some(progress) = self.sibling_events.clone() else {
             return;
         };
         let event = NetEvent::NearbyTransferProgress {
@@ -2594,7 +2345,6 @@ impl ActorState {
         };
         let _ = active.cancel.send(true);
         self.report_personal_transfer(
-            active.workspace,
             key,
             active.sent_bytes.load(std::sync::atomic::Ordering::Relaxed),
             active.total_bytes,
@@ -2603,13 +2353,12 @@ impl ActorState {
         true
     }
 
-    fn cancel_personal_transfer_route(&mut self, workspace: WorkspaceId, target: EndpointId) {
+    fn cancel_personal_transfer_route(&mut self, target: EndpointId) {
         let keys = self
             .active_personal_transfers
-            .iter()
-            .filter_map(|(key, active)| {
-                (key.0 == target && active.workspace == workspace).then_some(*key)
-            })
+            .keys()
+            .filter(|key| key.0 == target)
+            .copied()
             .collect::<Vec<_>>();
         for key in keys {
             self.cancel_personal_transfer(key);
@@ -2618,7 +2367,6 @@ impl ActorState {
 
     fn publish_nearby_transfer(
         &mut self,
-        ws: WorkspaceId,
         user_public_key: [u8; 32],
         target: EndpointId,
         transfer: NearbyTransferCheckpoint,
@@ -2637,21 +2385,25 @@ impl ActorState {
         self.active_personal_transfers.remove(&key);
         let failed = |actor: &Self| {
             actor.report_personal_transfer(
-                ws,
                 key,
                 resume_offset,
                 total_bytes,
                 PersonalTransferStatus::Failed,
             );
         };
-        if transfer_id == [0; 16]
-            || request_id == [0; 16]
-            || resume_offset > total_bytes
-            || !self.peers_seen.contains_key(&(ws, target))
-        {
+        if transfer_id == [0; 16] || request_id == [0; 16] || resume_offset > total_bytes {
             failed(self);
             return;
         }
+        let Some(connection) = self
+            .siblings
+            .get(&target)
+            .filter(|sibling| sibling.proved(&user_public_key))
+            .map(|sibling| sibling.fabric.connection())
+        else {
+            failed(self);
+            return;
+        };
         if self.active_personal_transfers.len() >= MAX_ACTIVE_PERSONAL_TRANSFERS {
             tracing::warn!(peer = %target, "refusing transfer while source streams are full");
             failed(self);
@@ -2666,21 +2418,18 @@ impl ActorState {
             key,
             ActivePersonalTransfer {
                 generation,
-                workspace: ws,
                 total_bytes,
                 sent_bytes: std::sync::Arc::clone(&sent_bytes),
                 cancel,
             },
         );
         let route = PersonalStreamRoute {
-            link: self.fabric_link(target).dialer(),
+            connection,
             target,
-            workspace: ws,
             user_public_key,
         };
         let internal = self.internal_tx.clone();
         self.report_personal_transfer(
-            ws,
             key,
             resume_offset,
             total_bytes,
@@ -2919,9 +2668,7 @@ impl ActorState {
         self.request_native_refresh(ws);
         self.host_sessions
             .get(&(ws, peer))
-            .is_some_and(|runtime| {
-                runtime.reach == Reach::Host && (!runtime.local || runtime.native_scope.is_some())
-            })
+            .is_some_and(|runtime| !runtime.local || runtime.native_scope.is_some())
             .then_some(NetEvent::HostReady { ws, peer })
     }
 
@@ -3099,6 +2846,36 @@ impl ActorState {
         self.schedule_topic_sessions(ws);
     }
 
+    /// [`Self::schedule_topic_sessions`] for every hosted topic.
+    fn schedule_all_topic_sessions(&mut self) {
+        let workspaces: Vec<WorkspaceId> = self.topics.keys().copied().collect();
+        for ws in workspaces {
+            self.schedule_topic_sessions(ws);
+        }
+    }
+
+    /// Open whatever session of hosted topic `ws` with a host of the
+    /// person's is missing and not being opened.
+    fn schedule_topic_sessions(&mut self, ws: WorkspaceId) {
+        if !self.topics.contains_key(&ws) || self.native_routes.contains(ws) {
+            return;
+        }
+        let Some(identity) = self.host_identity.clone() else {
+            return;
+        };
+        let mut routes = HostRouteScheduler {
+            endpoint: &self.endpoint,
+            identity: &identity,
+            internal_tx: &self.internal_tx,
+            sessions: &self.host_sessions,
+            connecting: &mut self.connecting_hosts,
+            content_discovery_tasks: &mut self.content_discovery_tasks,
+        };
+        for (addr, expectation) in self.hosts.values().cloned() {
+            routes.schedule(ws, addr, expectation);
+        }
+    }
+
     /// Handle one [`InternalEvent`]. Returns `false` once the internal
     /// channel has closed, so [`run`]'s loop should stop.
     #[allow(
@@ -3120,6 +2897,16 @@ impl ActorState {
             Some(InternalEvent::DirectSent { ws, outcome }) => self.direct_sent(ws, *outcome),
             Some(InternalEvent::SiblingConnected(connection)) => {
                 self.sibling_connected(connection);
+            }
+            Some(InternalEvent::SiblingOpened(opened)) => self.sibling_opened(*opened).await,
+            Some(InternalEvent::SiblingFailed(peer)) => {
+                self.sibling_dialling.remove(&peer);
+            }
+            Some(InternalEvent::SiblingHeard { peer, epoch, heard }) => {
+                self.sibling_heard(peer, epoch, heard).await;
+            }
+            Some(InternalEvent::SiblingClosed { peer, epoch }) => {
+                self.sibling_closed(peer, epoch).await;
             }
             Some(InternalEvent::HostConnected {
                 ws,
@@ -3190,30 +2977,16 @@ impl ActorState {
                 self.held_surface_unit_written(key, generation, delivered);
             }
             Some(InternalEvent::PersonalFabric {
-                ws,
                 peer,
-                connection_incarnation,
+                epoch,
                 user_public_key,
                 payload,
             }) => {
-                self.handle_personal_fabric(
-                    ws,
-                    peer,
-                    connection_incarnation,
-                    user_public_key,
-                    payload,
-                )
-                .await;
+                self.handle_personal_fabric(peer, epoch, user_public_key, payload)
+                    .await;
             }
             Some(InternalEvent::IdentityMaterialChanged) => {
                 self.identity_material_changed();
-            }
-            Some(InternalEvent::PersonalFabricClosed {
-                peer,
-                connection_incarnation,
-            }) => {
-                self.personal_fabric_ingress
-                    .remove(&(peer, connection_incarnation));
             }
             Some(InternalEvent::PersonalTransferProgress {
                 target,
@@ -3222,14 +2995,13 @@ impl ActorState {
                 sent_bytes,
             }) => {
                 let key = (target, transfer_id);
-                if let Some((workspace, total_bytes)) = self
+                if let Some(total_bytes) = self
                     .active_personal_transfers
                     .get(&key)
                     .filter(|active| active.generation == generation)
-                    .map(|active| (active.workspace, active.total_bytes))
+                    .map(|active| active.total_bytes)
                 {
                     self.report_personal_transfer(
-                        workspace,
                         key,
                         sent_bytes,
                         total_bytes,
@@ -3267,9 +3039,10 @@ impl ActorState {
         msg: NeighbourMsg,
     ) {
         // A bare ALPN connection is not workspace admission. Require the
-        // peer to be a member: of the room's admitted roster, or of the
-        // person's own topic. ShellNetwork performs the capability and
-        // claimed-publisher checks before dispatch.
+        // peer to be a member: of the room's admitted roster, or, on a topic
+        // without one, one of the person's devices whose session is up.
+        // ShellNetwork performs the capability and claimed-publisher checks
+        // before dispatch.
         let membership = if self.room_members.has_roster(ws) {
             match self.room_members.admit(
                 ws,
@@ -3286,7 +3059,7 @@ impl ActorState {
                 }
             }
         } else {
-            self.membership(ws, peer)
+            self.siblings.get(&peer).map(|sibling| sibling.epoch)
         };
         let Some(membership_epoch) = membership else {
             tracing::warn!(ws, peer = %peer, "surface frame from a device that is no member");
@@ -3358,38 +3131,30 @@ impl ActorState {
     }
 
     /// [`InternalEvent::PersonalFabric`] arm of [`Self::handle_internal`], split
-    /// out to keep that dispatcher short.
+    /// out to keep that dispatcher short: a frame `peer` sent on the session
+    /// of membership `epoch`, taken while that session lasts. `ShellNetwork`
+    /// still binds the frame to the certificate the device proved there.
     async fn handle_personal_fabric(
         &mut self,
-        ws: WorkspaceId,
         peer: EndpointId,
-        connection_incarnation: u64,
+        epoch: MembershipEpoch,
         user_public_key: [u8; 32],
         payload: PersonalFabricPayload,
     ) {
         self.tally.note("PersonalFabric");
-        // Topic membership establishes reachability only. ShellNetwork
-        // still binds the frame to the peer's certified person/device.
-        let Some(membership_epoch) = self.membership(ws, peer) else {
-            tracing::warn!(ws, peer = %peer, "personal fabric frame from unknown peer");
-            return;
-        };
-        if !bind_personal_fabric_ingress(
-            &mut self.personal_fabric_ingress,
-            peer,
-            connection_incarnation,
-            ws,
-            membership_epoch,
-        ) {
-            tracing::warn!(ws, peer = %peer, "personal fabric connection crossed membership authority");
+        if self
+            .siblings
+            .get(&peer)
+            .is_none_or(|sibling| sibling.epoch != epoch)
+        {
+            tracing::warn!(peer = %peer, "personal fabric frame from an ended session");
             return;
         }
-        if let Some(tx) = self.subscribers.get(&ws) {
+        if let Some(tx) = &self.sibling_events {
             let _ = tx
                 .send(NetEvent::PersonalFabric {
-                    ws,
                     peer,
-                    membership_epoch,
+                    membership_epoch: epoch,
                     user_public_key,
                     payload,
                 })
@@ -3415,47 +3180,20 @@ impl ActorState {
                 PersonalTransferOutcome::Failed => PersonalTransferStatus::Failed,
                 PersonalTransferOutcome::Cancelled => PersonalTransferStatus::Cancelled,
             };
-            self.report_personal_transfer(
-                active.workspace,
-                key,
-                sent_bytes,
-                active.total_bytes,
-                status,
-            );
+            self.report_personal_transfer(key, sent_bytes, active.total_bytes, status);
         }
     }
 
-    /// Whether a message `peer` sent on personal topic `ws` is news. A
-    /// codec advert describes its sender rather than reporting an event:
-    /// from a member it is news when it differs from the last one this
-    /// membership took, so a device that left and came back is heard again
-    /// though it says the same thing. An identity hello is always news: the
-    /// shell binds the peer's current membership to the identity each time
-    /// it hears one.
-    fn is_news(
-        &mut self,
-        ws: WorkspaceId,
-        peer: EndpointId,
-        decoded: Option<&NeighbourMsg>,
-        fingerprint: [u8; 32],
-    ) -> bool {
-        match decoded {
-            Some(NeighbourMsg::IdentityHello { .. }) => true,
-            Some(NeighbourMsg::MediaCapabilities { .. })
-                if self.peers_seen.contains_key(&(ws, peer)) =>
-            {
-                self.peers_seen
-                    .get_mut(&(ws, peer))
-                    .is_some_and(|membership| membership.take_caps_advert(fingerprint))
-            }
-            _ => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
-        }
+    /// Whether a message on hosted topic `ws` is news. An identity hello is
+    /// always news: the shell takes the device's identity anew each time.
+    fn is_news(&mut self, ws: WorkspaceId, msg: &NeighbourMsg, fingerprint: [u8; 32]) -> bool {
+        matches!(msg, NeighbourMsg::IdentityHello { .. })
+            || mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
     }
 
     /// [`InternalEvent::HostConnected`] arm of [`Self::handle_internal`],
-    /// split out to keep that dispatcher short. `peer` is a workspace host,
-    /// one of the person's devices, or this device itself, whose own host
-    /// the session went to in process.
+    /// split out to keep that dispatcher short. `peer` is a host of the
+    /// person's.
     async fn handle_host_connected(
         &mut self,
         ws: WorkspaceId,
@@ -3467,25 +3205,18 @@ impl ActorState {
         if self.native_routes.contains(ws) || !self.topics.contains_key(&ws) {
             return;
         }
-        let local = peer == self.endpoint.id();
-        let reach = if local
-            || self
-                .hosts
-                .get(&peer)
-                .is_some_and(|(current, _)| current == attempted_addr)
+        if self
+            .hosts
+            .get(&peer)
+            .is_none_or(|(current, _)| current != attempted_addr)
         {
-            Reach::Host
-        } else if self.own_devices.get(&peer) == Some(attempted_addr) {
-            Reach::Device
-        } else {
             return;
-        };
+        }
         match *result {
             Ok(session) => {
-                tracing::info!(ws, host = %peer, local, device = reach == Reach::Device, "workspace host session started");
+                tracing::info!(ws, host = %peer, "workspace host session started");
                 let session = Arc::new(session);
                 self.announce_identity_to_new_host(ws, &session);
-                self.announce_media_caps(ws, &session);
                 for (channel, bytes) in self.governance.get(&ws).into_iter().flatten() {
                     if let Err(error) = session.publish_checkpoint(*channel, bytes.clone()) {
                         tracing::warn!(ws, %error, "could not send channel governance to the workspace host");
@@ -3513,7 +3244,7 @@ impl ActorState {
                     Arc::clone(&replaying),
                     self.internal_tx.clone(),
                     None,
-                    !local,
+                    true,
                 );
                 let actions = self.serve_actions(ws, peer, &session);
                 self.host_sessions.insert(
@@ -3521,21 +3252,13 @@ impl ActorState {
                     HostRuntime {
                         replaying,
                         native_scope: None,
-                        local,
-                        reach,
+                        local: false,
                         governor: None,
                         actions,
                         session,
                         pump,
                     },
                 );
-                if reach == Reach::Device {
-                    // The device is a member from now on, before its host
-                    // replays what it keeps: its identity, retained there,
-                    // then comes bound to this membership.
-                    let joined = self.link_up(ws, peer, Link::Dialled);
-                    self.membership_changed(ws, peer, joined, None).await;
-                }
             }
             Err(error) => {
                 tracing::warn!(ws, peer = %peer, %error, "workspace host connection failed");
@@ -3612,48 +3335,6 @@ impl ActorState {
     /// to keep that dispatcher short.
     async fn handle_host_event(&mut self, ws: WorkspaceId, peer: EndpointId, event: HostEvent) {
         self.tally.note(host_event_kind(&event));
-        // The person's devices live on this device's own host are members
-        // of its personal topic, as long as their sessions with it last.
-        let own_host = peer == self.endpoint.id()
-            && self.topics.contains_key(&ws)
-            && self
-                .host_sessions
-                .get(&(ws, peer))
-                .is_some_and(|runtime| runtime.local && runtime.native_scope.is_none());
-        if own_host {
-            match &event {
-                HostEvent::Member { device, active } => {
-                    let Ok(device) = EndpointId::from_bytes(device) else {
-                        return;
-                    };
-                    if self.is_own_device(&device) {
-                        return;
-                    }
-                    let (joined, left) = if *active {
-                        (self.link_up(ws, device, Link::DialledIn), None)
-                    } else {
-                        (None, self.link_down(ws, device, Link::DialledIn))
-                    };
-                    self.membership_changed(ws, device, joined, left).await;
-                    return;
-                }
-                HostEvent::Closed => {
-                    let dialled_in: Vec<_> = self
-                        .peers_seen
-                        .iter()
-                        .filter(|((member_ws, _), membership)| {
-                            *member_ws == ws && membership.dialled_in
-                        })
-                        .map(|((_, member), _)| *member)
-                        .collect();
-                    for device in dialled_in {
-                        let left = self.link_down(ws, device, Link::DialledIn);
-                        self.membership_changed(ws, device, None, left).await;
-                    }
-                }
-                _ => {}
-            }
-        }
         let event = self.admit_native_governance(ws, event).await;
         if let Some(event) = self.map_host_event(ws, peer, event) {
             self.publish_to_subscriber(ws, event).await;
@@ -3737,7 +3418,6 @@ impl ActorState {
     /// The session of `ws` with the host at `peer` ended.
     fn host_session_closed(&mut self, ws: WorkspaceId, peer: EndpointId) -> Option<NetEvent> {
         tracing::info!(ws, host = %peer, "workspace host session ended; the next heartbeat dials it again");
-        let mut membership_epoch = None;
         if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
             runtime.pump.abort();
             if let Some(scope) = runtime.native_scope.clone() {
@@ -3749,17 +3429,12 @@ impl ActorState {
             if runtime.local && runtime.native_scope.is_none() {
                 return None;
             }
-            // One of the person's devices stays a member while its own
-            // session with this device's host lasts.
-            if runtime.reach == Reach::Device {
-                membership_epoch = Some(self.link_down(ws, peer, Link::Dialled)?);
-            }
         }
         Some(NetEvent::PeerLeft {
             ws,
             peer,
             cause: PeerDepartureCause::HostSessionClosed,
-            membership_epoch,
+            membership_epoch: None,
         })
     }
 
@@ -3807,7 +3482,6 @@ impl ActorState {
         // host deduplicates it by invocation id instead. A replay the host
         // was asked for repeats what this device saw before on purpose too:
         // the broker drops what it holds.
-        let personal = self.topics.contains_key(&ws);
         let new = match msg {
             NeighbourMsg::RemoteAction { .. } => true,
             NeighbourMsg::RemoteInput { .. } => mark_new_input(
@@ -3817,36 +3491,31 @@ impl ActorState {
                 Instant::now(),
                 &mut self.recent_input,
             ),
-            _ if personal => self.is_news(ws, author, Some(&msg), fingerprint),
+            _ if self.topics.contains_key(&ws) => self.is_news(ws, &msg, fingerprint),
             _ => mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order),
         };
         if !new && !replayed {
             return None;
         }
-        // On a personal topic, a message from one of the person's devices
-        // that is a member comes bound to its membership, whichever host
-        // handed it on.
-        let membership_epoch = personal.then(|| self.membership(ws, author)).flatten();
         Some(NetEvent::Msg {
             ws,
             peer: author,
-            membership_epoch,
+            membership_epoch: None,
             replayed,
             msg,
         })
     }
 
     /// Whether [`Self::run_heartbeat_tick`] has anything to do: one of the
-    /// person's devices without a session on one of the topics, a workspace
-    /// host or a governed room's relay to keep connected, or a remote action
-    /// held for a peer. A converged pair of desktops has none of these, so
-    /// its runtime sleeps until one appears ([`run`]).
+    /// person's devices without a session, a workspace host or a governed
+    /// room's relay to keep connected, or a remote action held for a peer.
+    /// A converged pair of desktops has none of these, so its runtime sleeps
+    /// until one appears ([`run`]).
     fn needs_upkeep(&self) -> bool {
-        self.own_devices.keys().any(|device| {
-            self.topics
-                .keys()
-                .any(|ws| !self.host_sessions.contains_key(&(*ws, *device)))
-        }) || !self.hosts.is_empty()
+        self.own_devices
+            .keys()
+            .any(|device| !self.siblings.contains_key(device))
+            || !self.hosts.is_empty()
             || self.remote_host_sessions()
             || self.native_routes.any_remote()
             || !self.pending_remote_actions.is_empty()
@@ -3938,8 +3607,8 @@ impl ActorState {
         let own = self.endpoint.id();
         Some(if !self.own_devices.is_empty() {
             "one of the person's devices this device dials"
-        } else if !self.peers_seen.is_empty() {
-            "a peer on one of its topics"
+        } else if !self.siblings.is_empty() {
+            "one of the person's devices dialled this one"
         } else if !self.hosts.is_empty()
             || self.connecting_hosts.iter().any(|(_, host)| *host != own)
             || self.remote_host_sessions()
@@ -3990,6 +3659,7 @@ impl ActorState {
         }
         self.sealed_records.retry();
         self.schedule_all_topic_sessions();
+        self.dial_siblings();
     }
 
     /// Each session heard this device's identity when it started; from here
@@ -4000,6 +3670,7 @@ impl ActorState {
         for ws in workspaces {
             self.announce_identity_if_changed(ws);
         }
+        self.hello_siblings_if_changed();
     }
 
     /// The identity announcement this device makes on `ws`: its certificate
@@ -4064,18 +3735,8 @@ impl ActorState {
         crate::media_caps::local_advert(crate::behaviour::peer_liveness_handle(&self.endpoint.id()))
     }
 
-    /// Tell the host at the other end of `session`, a new session of
-    /// personal topic `ws`, what this machine can encode and decode.
-    fn announce_media_caps(&mut self, ws: WorkspaceId, session: &RelayCoeditSession) {
-        let advert = self.media_caps_message();
-        if let Ok(bytes) = postcard::to_allocvec(&advert) {
-            self.caps_sent = Some(message_fingerprint(&bytes));
-        }
-        publish_on(ws, session, &advert);
-    }
-
-    /// Announce this machine's codecs again on every personal topic's
-    /// sessions when they changed since they were last announced.
+    /// Announce this machine's codecs again to the person's devices when
+    /// they changed since they were last announced.
     fn announce_media_caps_if_changed(&mut self) {
         let advert = self.media_caps_message();
         let Ok(bytes) = postcard::to_allocvec(&advert) else {
@@ -4088,11 +3749,7 @@ impl ActorState {
         if sent == fingerprint {
             return;
         }
-        for ((ws, _), runtime) in &self.host_sessions {
-            if self.topics.contains_key(ws) {
-                publish_on(*ws, &runtime.session, &advert);
-            }
-        }
+        self.publish_to_siblings(advert);
     }
 
     /// Whether a host-relayed message was authored by this device: the host
@@ -4109,7 +3766,7 @@ impl ActorState {
     /// writes meanwhile (a record it creates at launch, say) would otherwise
     /// reach no host, and every later change of it would depend on changes
     /// the host's other devices never get. The next session sends it first.
-    fn hold_for_host(&mut self, ws: WorkspaceId, msg: &NeighbourMsg, shell_checkpoint: bool) {
+    fn hold_for_host(&mut self, ws: WorkspaceId, msg: &NeighbourMsg) {
         if self.hosts.is_empty()
             || self
                 .host_sessions
@@ -4119,7 +3776,7 @@ impl ActorState {
             return;
         }
         let (Some((channel, kind)), Ok(bytes)) =
-            (retention(msg, shell_checkpoint), postcard::to_allocvec(msg))
+            (retention(msg, false), postcard::to_allocvec(msg))
         else {
             return;
         };
@@ -4188,7 +3845,7 @@ impl ActorState {
         for (&(ws, peer), _) in self
             .host_sessions
             .iter()
-            .filter(|(_, runtime)| !runtime.local && runtime.reach == Reach::Host)
+            .filter(|(_, runtime)| !runtime.local)
         {
             if let Some(tx) = self.subscribers.get(&ws) {
                 let _ = tx.send(NetEvent::HostReady { ws, peer }).await;
@@ -4208,12 +3865,10 @@ fn reaches_governor(runtime: &HostRuntime) -> bool {
 
 async fn send_nearby_transfer_frame(
     connection: &iroh::endpoint::Connection,
-    workspace: WorkspaceId,
     user_public_key: [u8; 32],
     frame: PersonalNearbyTransferFrame,
 ) -> Result<(), ()> {
     let wire = PersonalFabricWireFrame {
-        workspace,
         user_public_key,
         payload: PersonalFabricPayload::NearbyTransfer(frame),
     };
@@ -4246,14 +3901,10 @@ async fn stream_nearby_transfer(
     task: PersonalTransferTask,
 ) -> PersonalTransferOutcome {
     let PersonalStreamRoute {
-        link,
+        connection,
         target,
-        workspace,
         user_public_key,
     } = route;
-    let Some((connection, _lease)) = link.lease().await else {
-        return PersonalTransferOutcome::Failed;
-    };
     let NearbyTransferCheckpoint {
         transfer_id,
         request_id,
@@ -4328,7 +3979,6 @@ async fn stream_nearby_transfer(
             hasher.update(&bytes);
             let send = send_nearby_transfer_frame(
                 &connection,
-                workspace,
                 user_public_key,
                 PersonalNearbyTransferFrame::Chunk {
                     transfer_id,
@@ -4360,7 +4010,6 @@ async fn stream_nearby_transfer(
         }
         let finish = send_nearby_transfer_frame(
             &connection,
-            workspace,
             user_public_key,
             PersonalNearbyTransferFrame::Finish {
                 transfer_id,
@@ -4383,7 +4032,6 @@ async fn stream_nearby_transfer(
                 Duration::from_secs(1),
                 send_nearby_transfer_frame(
                     &connection,
-                    workspace,
                     user_public_key,
                     PersonalNearbyTransferFrame::Abort {
                         transfer_id,
@@ -4433,7 +4081,11 @@ async fn run(
                 next_connection_incarnation: Arc::clone(&connection_incarnations),
             },
         )
-        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol);
+        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
+        .accept(
+            tilo_relay_protocol::transport::SIBLING_ALPN,
+            device_sessions::SiblingProtocol(internal_tx.clone()),
+        );
     // This device's room host answers here once it opens: until then its
     // handlers refuse, as a device hosting nothing does.
     let (local_host, protocols, held_log) = match hosting {
@@ -4479,10 +4131,11 @@ async fn run(
         topics: HashMap::new(),
         subscribers: HashMap::new(),
         own_devices: HashMap::new(),
-        fabric_links: HashMap::new(),
-        sibling_links: HashMap::new(),
-        sibling_watch: None,
-        connection_incarnations,
+        siblings: HashMap::new(),
+        sibling_dialling: HashSet::new(),
+        sibling_waiting: HashMap::new(),
+        sibling_hello_sent: None,
+        sibling_events: None,
         hosts: HashMap::new(),
         host_sessions: HashMap::new(),
         opened_records: HashMap::new(),
@@ -4490,9 +4143,7 @@ async fn run(
         connecting_hosts: HashSet::new(),
         content_discovery_tasks: HashMap::new(),
         agent_questions: services::approvers(),
-        peers_seen: HashMap::new(),
         next_membership_epoch: 0,
-        personal_fabric_ingress: HashMap::new(),
         room_members: room_members::RoomMembers::default(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
@@ -4711,16 +4362,13 @@ fn fanout_surface(msg: &NeighbourMsg) -> SurfaceId {
     }
 }
 
-/// Publish `msg` on every session of `ws`: its workspace hosts', and on a
-/// personal topic this device's own host's and the person's other
-/// devices'. Each session's client enqueues it into its already
-/// authenticated QUIC pump at once: none waits for another, nor for any
-/// other room.
+/// Publish `msg` on every session of `ws` with its workspace hosts. Each
+/// session's client enqueues it into its already authenticated QUIC pump at
+/// once: none waits for another, nor for any other room.
 fn publish(
     host_sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     ws: WorkspaceId,
     msg: &NeighbourMsg,
-    shell_checkpoint: bool,
 ) {
     let mut sessions = host_sessions
         .iter()
@@ -4731,18 +4379,11 @@ fn publish(
     if sessions.peek().is_none() {
         return;
     }
-    let Some((bytes, retention)) = encode_for_hosts(ws, msg, shell_checkpoint) else {
+    let Some((bytes, retention)) = encode_for_hosts(ws, msg) else {
         return;
     };
     for (_, runtime) in sessions {
         send_encoded(ws, &runtime.session, bytes.clone(), retention);
-    }
-}
-
-/// Publish `msg` on the one session `session` of `ws`.
-fn publish_on(ws: WorkspaceId, session: &RelayCoeditSession, msg: &NeighbourMsg) {
-    if let Some((bytes, retention)) = encode_for_hosts(ws, msg, false) {
-        send_encoded(ws, session, bytes, retention);
     }
 }
 
@@ -4751,13 +4392,9 @@ fn publish_on(ws: WorkspaceId, session: &RelayCoeditSession, msg: &NeighbourMsg)
 type HostRetention = Option<([u8; 32], Retention)>;
 
 /// `msg` encoded for a host, with what the host keeps it as.
-fn encode_for_hosts(
-    ws: WorkspaceId,
-    msg: &NeighbourMsg,
-    shell_checkpoint: bool,
-) -> Option<(Vec<u8>, HostRetention)> {
+fn encode_for_hosts(ws: WorkspaceId, msg: &NeighbourMsg) -> Option<(Vec<u8>, HostRetention)> {
     match postcard::to_allocvec(msg) {
-        Ok(bytes) => Some((bytes, retention(msg, shell_checkpoint))),
+        Ok(bytes) => Some((bytes, retention(msg, false))),
         Err(error) => {
             tracing::warn!(ws, %error, "collaboration message encode failed");
             None

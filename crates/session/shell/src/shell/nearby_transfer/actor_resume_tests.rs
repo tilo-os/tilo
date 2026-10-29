@@ -8,8 +8,8 @@ use tilo_network_actor::{
 };
 use tokio::sync::mpsc;
 
-/// One of the person `root`'s devices on topic 67, keeping its host under
-/// `state`.
+/// One of the person `root`'s devices, hearing the person's other devices,
+/// keeping its host under `state`.
 async fn peer(
     root: &ed25519_dalek::SigningKey,
     state: &std::path::Path,
@@ -21,10 +21,7 @@ async fn peer(
     let (events, receiver) = mpsc::channel(64);
     device
         .cmd
-        .send(NetCmd::JoinPersonalTopic {
-            ws: 67,
-            on_event: events,
-        })
+        .send(NetCmd::WatchSiblings { on_event: events })
         .await
         .unwrap();
     (device.cmd, receiver, device.addr)
@@ -33,7 +30,7 @@ async fn peer(
 async fn joined(events: &mut mpsc::Receiver<NetEvent>, expected: EndpointId) {
     tilo_test_env::within("Nearby peers joined", async {
         loop {
-            if matches!(events.recv().await.unwrap(), NetEvent::PeerJoined { peer, .. } if peer == expected) {
+            if matches!(events.recv().await.unwrap(), NetEvent::Sibling { peer, .. } if peer == expected) {
                 return;
             }
         }
@@ -42,6 +39,7 @@ async fn joined(events: &mut mpsc::Receiver<NetEvent>, expected: EndpointId) {
 
 async fn receive(
     events: &mut mpsc::Receiver<NetEvent>,
+    person: [u8; 32],
     source: EndpointId,
     manifest: &IncomingManifest,
     store: &mut NearbyTransferStore,
@@ -50,7 +48,6 @@ async fn receive(
         loop {
             let NetEvent::PersonalFabric {
                 peer,
-                ws,
                 user_public_key,
                 payload: PersonalFabricPayload::NearbyTransfer(frame),
                 ..
@@ -59,8 +56,7 @@ async fn receive(
                 continue;
             };
             assert_eq!(peer, source);
-            assert_eq!(ws, 67);
-            assert_eq!(user_public_key, [0x67; 32]);
+            assert_eq!(user_public_key, person);
             match frame {
                 PersonalNearbyTransferFrame::Chunk {
                     transfer_id,
@@ -155,8 +151,7 @@ async fn nearby_two_peers_resume_reopened_spools_after_fresh_receiver_consent() 
     assert_eq!(resume_offset, CHECKPOINT_BYTES);
     sender
         .send(NetCmd::PublishNearbyTransfer {
-            ws: 67,
-            user_public_key: [0x67; 32],
+            user_public_key: person.verifying_key().to_bytes(),
             target: receiver_addr.id,
             transfer: NearbyTransferCheckpoint {
                 transfer_id: staged.id,
@@ -172,6 +167,7 @@ async fn nearby_two_peers_resume_reopened_spools_after_fresh_receiver_consent() 
         .unwrap();
     receive(
         &mut received_events,
+        person.verifying_key().to_bytes(),
         sender_addr.id,
         &manifest,
         &mut incoming,

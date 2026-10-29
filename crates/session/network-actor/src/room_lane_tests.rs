@@ -155,70 +155,63 @@ async fn a_room_whose_device_stalls_holds_up_no_other_room() {
         .accept(SURFACE_STREAM_ALPN, opened.clone())
         .spawn();
 
-    // Topic 42 is shared by two of a person's devices.
+    // Two of a person's devices, on topic 42.
     let [a, mut b] = crate::tests::two(crate::tests::linked(42, 2).await);
-    let (cmd_a, rx_b) = (&a.cmd, &mut b.rx);
+    let (cmd_a, rx_b, a_id, b_id) = (&a.cmd, &mut b.rx, a.id, b.id);
     a.lookup.add_endpoint_info(stalled.addr());
 
     // In room 7, the one other device takes what is sent to it and never
     // reads it: each remote action waits out its whole budget.
     let _rx_7 = stall_room_7(cmd_a, stalled.id(), STALLED_SENDS).await;
 
-    // Room 42's publish and presence still go through, and the actor still
-    // answers, while room 7's sends wait.
+    // What goes to the other device of the person still goes through, and
+    // the actor still answers, while room 7's sends wait.
     let (reply, tally) = tokio::sync::oneshot::channel();
     cmd_a.send(NetCmd::WireTally(reply)).await.unwrap();
     tilo_test_env::within("the actor answers", tally)
         .await
         .expect("the actor is running");
     cmd_a
-        .send(NetCmd::Publish {
-            ws: 42,
-            msg: NeighbourMsg::SyncReq {
-                since: vec![],
-                room: String::new(),
-                invite_id: None,
-                nonce: 1,
-            },
+        .send(NetCmd::PublishPersonalFabricTarget {
+            user_public_key: a.root,
+            target: b_id,
+            payload: PersonalFabricPayload::Action(vec![4, 2]),
         })
         .await
         .unwrap();
     cmd_a
-        .send(NetCmd::Publish {
+        .send(NetCmd::PublishWorkspaceControl {
             ws: 42,
-            msg: NeighbourMsg::PresenceMoved {
-                peer: 1,
-                user: "a".into(),
-                key: "cursor".into(),
-                point: (1.0, 2.0),
-                ts: 1,
-                colour: None,
+            msg: NeighbourMsg::RemoteInput {
+                peer: crate::behaviour::peer_liveness_handle(&a_id),
+                surface: 7,
+                event: vec![1],
             },
+            route: WorkspaceControlRoute::Direct { target: b_id },
         })
         .await
         .unwrap();
-    let (mut published, mut presence) = (false, false);
-    while !(published && presence) {
-        match tilo_test_env::within("room 42's messages", rx_b.recv())
+    let (mut fabric, mut input) = (false, false);
+    while !(fabric && input) {
+        match tilo_test_env::within("the other device's traffic", rx_b.recv())
             .await
             .unwrap()
         {
+            NetEvent::PersonalFabric {
+                payload: PersonalFabricPayload::Action(bytes),
+                ..
+            } if bytes == vec![4, 2] => fabric = true,
             NetEvent::Msg {
                 ws: 42,
-                msg: NeighbourMsg::SyncReq { nonce: 1, .. },
+                msg: NeighbourMsg::RemoteInput { surface: 7, .. },
                 ..
-            } => published = true,
-            NetEvent::Msg {
-                ws: 42,
-                msg: NeighbourMsg::PresenceMoved { .. },
-                ..
-            } => presence = true,
+            } => input = true,
             _ => {}
         }
     }
     assert!(
         opened.0.load(Ordering::SeqCst) < STALLED_SENDS,
-        "room 42 waited for every one of room 7's stalled sends"
+        "the other device waited for every one of room 7's stalled sends"
     );
 
     stalled_router.shutdown().await.unwrap();

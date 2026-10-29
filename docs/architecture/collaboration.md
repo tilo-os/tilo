@@ -251,9 +251,11 @@ frame codec in `tilo-relay-client`.
 - A person's two devices: ALPN `tilo-relay-sibling/1`, one connection per
   pair that the device with the lower endpoint id dials (the other only
   when it is not dialled within 5 s; of two at once, the lower id's is
-  kept). Each device's
-  sessions with the other's host are streams of their own on it, the same
-  sessions as on `tilo-relay/1`, so an idle pair keeps one connection's
+  kept). Its first stream carries the two devices' session: each first
+  sends its certificates and revocations (the endpoint id proves the device
+  key), then codec adverts, the person's workspace list and renewed hellos.
+  Every further stream carries one personal fabric frame, and nearby
+  transfers stream on it too, so an idle pair keeps one connection's
   keep-alives, not one per direction.
 - Persistent host: the relay stream, ALPN `tilo-relay/1`, mutually
   authenticated with device certs. There is one framing on it, at the peer

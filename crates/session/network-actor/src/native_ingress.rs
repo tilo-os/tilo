@@ -755,7 +755,6 @@ impl ActorState {
                 pump,
                 native_scope: Some(scope),
                 local,
-                reach: super::Reach::Host,
             },
         );
         self.drive_native_publication(ws);

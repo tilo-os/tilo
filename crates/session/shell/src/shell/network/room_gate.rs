@@ -78,12 +78,11 @@ impl ShellNetwork {
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsRoutedAccessRequest { .. } => Some((TreePath::root(), ActionKind::Read)),
             // Settled before the room gate: identity is how a sender becomes
-            // known at all, a codec advert describes the sender's device, and
-            // the personal lane is the person's own topic, never a room's.
+            // known at all; a codec advert and the person's workspace list
+            // travel only between the person's own devices, never in a room.
             NeighbourMsg::IdentityHello { .. }
             | NeighbourMsg::MediaCapabilities { .. }
             | NeighbourMsg::PersonalWorkspaces { .. }
-            | NeighbourMsg::RoomArchive { .. }
             // Retired generations, refused where they enter
             // (`NeighbourMsg::is_retired`).
             | NeighbourMsg::IdentityAnnouncement { .. }

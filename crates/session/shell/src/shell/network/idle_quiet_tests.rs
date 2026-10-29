@@ -1,6 +1,7 @@
 //! What a converged, idle two-desktop session costs on the wire: two devices
 //! of one person share a workspace room, hosted on the first and held by
-//! the second as a member (and the person's own continuity topic), one of
+//! the second as a member (and keeping the session between the person's
+//! devices), one of
 //! them with its pointer resting over a shared tab. Both run
 //! their network tick and pointer presence the way the compositor's frame
 //! loop does, ten times a second, as a loop woken by something unrelated (a

@@ -28,13 +28,12 @@ use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::app_serving::AppServingPlane;
-use crate::auth::AuthenticatedPeer;
 use crate::client::{ClientError, RelayClient};
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::metrics::Metrics;
 use crate::peer::{PeerContext, WorkspaceAutobind, WorkspaceRegistry, run_peer_until};
 use crate::policy::TrustPolicy;
-use crate::transport::{ALPN, MAX_FRAME_BYTES, SIBLING_ALPN};
+use crate::transport::{ALPN, MAX_FRAME_BYTES};
 
 /// How much an in-process session buffers each way before its writer waits.
 const LOCAL_SESSION_BUFFER: usize = 1 << 20;
@@ -134,9 +133,8 @@ pub enum HostError {
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 
 /// The ALPNs a room host answers on.
-const HOST_ALPNS: [&[u8]; 4] = [
+const HOST_ALPNS: [&[u8]; 3] = [
     ALPN,
-    SIBLING_ALPN,
     tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
     tilo_relay_session::rooms::private::PRIVATE_ALPN,
 ];
@@ -245,7 +243,6 @@ impl HostSessions {
                 .member_limits
                 .map(|limits| Arc::new(crate::member_limits::MemberLimits::new(limits))),
             arrivals: crate::federation::Arrivals::default(),
-            siblings: tokio::sync::broadcast::channel(SIBLINGS).0,
         };
         let sessions = Self {
             endpoint: endpoint.clone(),
@@ -390,9 +387,7 @@ impl HostSessions {
                 // The sender lives as long as the host; its end is one too.
                 let _ = closing.wait_for(|closing| *closing).await;
             };
-            if let Err(error) =
-                serve_session(handler, server_read, server_write, closed, |_| {}).await
-            {
+            if let Err(error) = serve_session(handler, server_read, server_write, closed).await {
                 tracing::debug!(%error, "in-process session ended");
             }
         });
@@ -441,10 +436,6 @@ fn host_handlers(
             Arc::new(sessions.handler.clone()) as Arc<dyn DynProtocolHandler>,
         ),
         (
-            SIBLING_ALPN,
-            Arc::new(SiblingProtocol(sessions.handler.clone())),
-        ),
-        (
             tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
             Arc::new(
                 tilo_relay_session::workspace_join::WorkspaceJoinProtocol::new(
@@ -466,7 +457,7 @@ pub fn rooms_protocols(
 ) -> Vec<(&'static [u8], Box<dyn DynProtocolHandler>)> {
     host_handlers(sessions, rooms)
         .into_iter()
-        .filter(|(alpn, _)| *alpn != ALPN && *alpn != SIBLING_ALPN)
+        .filter(|(alpn, _)| *alpn != ALPN)
         .map(|(alpn, handler)| {
             (
                 alpn,
@@ -604,32 +595,6 @@ impl RoomHost {
         revocations: RevocationList,
     ) -> Result<RelayClient, ClientError> {
         self.sessions.connect_local(cert, key, revocations).await
-    }
-
-    /// Serve the session one of this person's other devices opened on
-    /// `streams` of `connection`, which this device dialled to it on
-    /// [`SIBLING_ALPN`], until the stream or the connection ends. The
-    /// caller keeps the connection open.
-    pub fn serve_stream(&self, connection: &Connection, streams: (SendStream, RecvStream)) {
-        let (ctx, closed) = (self.sessions.handler.clone(), connection.clone());
-        let (send, recv) = streams;
-        tokio::spawn(async move {
-            let closed = async move {
-                closed.closed().await;
-            };
-            if let Err(error) = Box::pin(serve_session(ctx, recv, send, closed, |_| {})).await {
-                tracing::debug!("relay session ended: {error}");
-            }
-        });
-    }
-
-    /// The connections the person's other devices dial this one on
-    /// ([`SIBLING_ALPN`]), each once its first session here authenticated,
-    /// for this device to open its own sessions with their hosts on. While
-    /// one is heard the host leaves closing it to the listener.
-    #[must_use]
-    pub fn siblings(&self) -> tokio::sync::broadcast::Receiver<Connection> {
-        self.sessions.handler.siblings.subscribe()
     }
 
     /// This host's endpoint address: what a member dials.
@@ -981,9 +946,6 @@ pub struct RelayProtocol {
     /// Told each device whose session here authenticated
     /// ([`crate::federation::Arrivals`]).
     pub(crate) arrivals: crate::federation::Arrivals,
-    /// Told each connection one of the person's other devices dialled on
-    /// [`SIBLING_ALPN`] ([`RoomHost::siblings`]).
-    pub(crate) siblings: tokio::sync::broadcast::Sender<Connection>,
 }
 
 impl RelayProtocol {
@@ -1029,18 +991,14 @@ impl std::fmt::Debug for RelayProtocol {
 
 impl ProtocolHandler for RelayProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        self.accept_streams(connection, Keeper::Host).await
+        self.accept_streams(connection).await
     }
 }
 
 impl RelayProtocol {
     /// Take `connection`'s first stream and serve its sessions on a task of
     /// their own, so the iroh router can accept the next connection.
-    async fn accept_streams(
-        &self,
-        connection: Connection,
-        keeper: Keeper,
-    ) -> Result<(), AcceptError> {
+    async fn accept_streams(&self, connection: Connection) -> Result<(), AcceptError> {
         if self
             .autobind
             .as_ref()
@@ -1051,34 +1009,9 @@ impl RelayProtocol {
             )));
         }
         let first = connection.accept_bi().await?;
-        tokio::spawn(serve_streams(self.clone(), connection, first, keeper));
+        tokio::spawn(serve_streams(self.clone(), connection, first));
         Ok(())
     }
-}
-
-/// The [`SIBLING_ALPN`] handler: the relay's sessions, on a connection one
-/// of the person's other devices keeps with this one.
-#[derive(Clone, Debug)]
-struct SiblingProtocol(RelayProtocol);
-
-impl ProtocolHandler for SiblingProtocol {
-    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        self.0.accept_streams(connection, Keeper::Sibling).await
-    }
-}
-
-/// Connections from the person's other devices waiting for the device's
-/// network to take them.
-const SIBLINGS: usize = 16;
-
-/// Who closes a connection whose sessions the host serves.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Keeper {
-    /// The host, once its last session ended: a member's connection.
-    Host,
-    /// Whoever hears of it on [`RoomHost::siblings`] once a session of one
-    /// of the person's other devices authenticated on it, else the host.
-    Sibling,
 }
 
 /// Serve every session `connection` carries, `first` (already accepted)
@@ -1087,10 +1020,8 @@ async fn serve_streams(
     ctx: RelayProtocol,
     connection: Connection,
     first: (SendStream, RecvStream),
-    keeper: Keeper,
 ) {
     let sessions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let kept = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut first = Some(first);
     loop {
         let (send, recv) = match first.take() {
@@ -1102,41 +1033,18 @@ async fn serve_streams(
         };
         sessions.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let (ctx, connection) = (ctx.clone(), connection.clone());
-        let (sessions, kept) = (Arc::clone(&sessions), Arc::clone(&kept));
+        let sessions = Arc::clone(&sessions);
         tokio::spawn(async move {
             let closed = connection.clone();
-            let (own_user, own_device) = (
-                ctx.identity.user_public_key,
-                ctx.identity.cert.device_public_key,
-            );
-            let (siblings, offered, adopted) =
-                (ctx.siblings.clone(), connection.clone(), Arc::clone(&kept));
-            let adopt = move |peer: &AuthenticatedPeer| {
-                let sibling =
-                    peer.user_public_key == own_user && peer.device_public_key != own_device;
-                if keeper == Keeper::Sibling
-                    && sibling
-                    && !adopted.load(std::sync::atomic::Ordering::Acquire)
-                    && siblings.send(offered).is_ok()
-                {
-                    adopted.store(true, std::sync::atomic::Ordering::Release);
-                }
-            };
-            let result = Box::pin(serve_session(
-                ctx,
-                recv,
-                send,
-                async move {
-                    closed.closed().await;
-                },
-                adopt,
-            ))
+            let result = Box::pin(serve_session(ctx, recv, send, async move {
+                closed.closed().await;
+            }))
             .await;
             if let Err(error) = result {
                 tracing::debug!("relay session ended: {error}");
             }
             let last = sessions.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1;
-            if last && !kept.load(std::sync::atomic::Ordering::Acquire) {
+            if last {
                 connection.close(0u32.into(), b"relay session ended");
             }
         });
@@ -1146,14 +1054,12 @@ async fn serve_streams(
 /// One member session over `recv`/`send`: the bounded shared handshake
 /// under the live policy (the owner and every user the host currently
 /// admits), then the peer loop until the stream ends or `closed` resolves.
-/// `authenticated` hears the member first. Every carrier runs this: an iroh
-/// stream, and an in-process stream.
+/// Every carrier runs this: an iroh stream, and an in-process stream.
 async fn serve_session<R, W>(
     ctx: RelayProtocol,
     mut recv: R,
     mut send: W,
     closed: impl std::future::Future<Output = ()> + Send,
-    authenticated: impl FnOnce(&AuthenticatedPeer) + Send,
 ) -> Result<(), HostError>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -1180,7 +1086,6 @@ where
     };
     ctx.metrics.inc_conns_authed();
     ctx.arrivals.arrived(client_peer.device_public_key);
-    authenticated(&client_peer);
     let context = ctx.peer_context();
     if let Err(e) = Box::pin(run_peer_until(client_peer, closed, recv, send, context)).await {
         tracing::debug!("peer session ended with error: {e}");

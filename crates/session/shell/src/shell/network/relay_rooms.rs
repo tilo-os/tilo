@@ -117,6 +117,17 @@ pub(super) enum PersonsHost {
     Configured(iroh::EndpointAddr),
 }
 
+impl PersonsHost {
+    /// Where the host is reached, unless it is this device's own.
+    fn endpoint(&self) -> Option<iroh::EndpointId> {
+        match self {
+            Self::Here => None,
+            Self::Device { addr, .. } | Self::Configured(addr) => Some(addr.id),
+            Self::Relay(home) => Some(home.addr.id),
+        }
+    }
+}
+
 /// The device of `room`'s governor, when it is also the host `view`'s
 /// transport hint names: a relay, or a person's device hosting the rooms
 /// placed on it. `None` when the room is governed elsewhere than where it
@@ -815,11 +826,16 @@ impl ShellNetwork {
         }
     }
 
-    /// Enter every room the configured workspace host `only` (each of them
-    /// when `None`) lists for this person and this device does not hold:
-    /// what a company node's session does when its host session comes up
-    /// and when the person's list changes, rather than looking again on a
-    /// timer. Blocks on the hosts: runs on the peer-sync worker.
+    /// Enter every room a host of the person's lists for this person and
+    /// this device does not hold: how a device learns which workspaces its
+    /// person holds, from the hosts that hold them, and joins them as any
+    /// member device. `only` names the host asked: a configured workspace
+    /// host, a home relay the person paired, or another of the person's
+    /// devices whose session is up; `None` asks every configured workspace
+    /// host. A host is asked when its session comes up, a device when its
+    /// session starts, the configured hosts when the person's list changes,
+    /// rather than any of them on a timer. Blocks on the hosts: runs on the
+    /// peer-sync worker.
     pub(super) fn enter_configured_host_rooms(&self, only: Option<iroh::EndpointId>) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
@@ -828,11 +844,30 @@ impl ShellNetwork {
             tracing::debug!(%error, "host rooms: no device certificate");
             return;
         }
-        for addr in super::configured_host_addrs()
+        let mut hosts: Vec<PersonsHost> = super::configured_host_addrs()
             .into_iter()
-            .filter(|addr| only.is_none_or(|only| only == addr.id))
+            .map(PersonsHost::Configured)
+            .collect();
+        if let Some(only) = only {
+            hosts.extend(
+                super::registered_home_peer_addrs(self.local_person)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(PersonsHost::Relay),
+            );
+            if let Some(user) = self.local_person
+                && self.personal_route_targets(&user).contains(&only)
+            {
+                hosts.push(PersonsHost::Device {
+                    addr: iroh::EndpointAddr::new(only),
+                    device: *only.as_bytes(),
+                });
+            }
+        }
+        for host in hosts
+            .into_iter()
+            .filter(|host| only.is_none_or(|only| host.endpoint() == Some(only)))
         {
-            let host = PersonsHost::Configured(addr);
             let listed = self
                 .ask_host(&host, LIST_ROOMS, serde_json::Map::new())
                 .and_then(answer_of::<Vec<RoomListing>>);

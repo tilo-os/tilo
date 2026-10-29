@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 22
+version = 23
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -597,10 +597,6 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "NeighbourMsg::RemoteInput.event" = "#2 Vec<u8>"
 "NeighbourMsg::RemoteInput.peer" = "#0 PeerId"
 "NeighbourMsg::RemoteInput.surface" = "#1 SurfaceId"
-"NeighbourMsg::RoomArchive" = "#30 struct"
-"NeighbourMsg::RoomArchive.documents" = "#2 Vec<Vec<u8>>"
-"NeighbourMsg::RoomArchive.room" = "#1 String"
-"NeighbourMsg::RoomArchive.user_public_key" = "#0 [u8; 32]"
 "NeighbourMsg::ScrollbackRequest" = "#14 struct"
 "NeighbourMsg::ScrollbackRequest.artifact" = "#0 ArtifactId"
 "NeighbourMsg::ScrollbackRequest.before_seq" = "#1 u64"

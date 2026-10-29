@@ -73,9 +73,8 @@ fn lists_sent(commands: &[NetCmd]) -> usize {
         .filter(|command| {
             matches!(
                 command,
-                NetCmd::PublishCheckpoint {
+                NetCmd::PublishToSiblings {
                     msg: NeighbourMsg::PersonalWorkspaces { .. },
-                    ..
                 }
             )
         })

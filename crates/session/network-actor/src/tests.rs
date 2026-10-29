@@ -280,7 +280,6 @@ fn active_personal_transfer(generation: u64) -> ActivePersonalTransfer {
     let (cancel, _receiver) = tokio::sync::watch::channel(false);
     ActivePersonalTransfer {
         generation,
-        workspace: 7,
         total_bytes: 8,
         sent_bytes: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         cancel,
@@ -313,33 +312,9 @@ fn personal_bindings_are_exact_generation_and_membership_scoped() {
         assert!(take_personal_transfer_generation(&mut active, key, 12).is_some());
         assert!(active.contains_key(&sibling_key));
     }
-    // Phase `departed_personal_connection_cannot_rebind_after_membership_reconnect`.
-    {
-        let peer = iroh::SecretKey::from_bytes(&[0xA1; 32]).public();
-        let old_epoch = MembershipEpoch::for_test(7);
-        let new_epoch = MembershipEpoch::for_test(8);
-        let mut ingress = HashMap::new();
-        assert!(bind_personal_fabric_ingress(
-            &mut ingress,
-            peer,
-            11,
-            21,
-            old_epoch,
-        ));
-        revoke_personal_fabric_ingress(&mut ingress, 21, old_epoch);
-        assert!(
-            !bind_personal_fabric_ingress(&mut ingress, peer, 11, 21, new_epoch),
-            "the old QUIC connection stays tombstoned after reconnect"
-        );
-        assert!(
-            bind_personal_fabric_ingress(&mut ingress, peer, 12, 21, new_epoch),
-            "a fresh connection may bind the fresh membership epoch"
-        );
-    }
     // Phase `nearby_transfer_frame_round_trips_exact_binding_and_bounded_chunk`.
     {
         let wire = PersonalFabricWireFrame {
-            workspace: 42,
             user_public_key: [3; 32],
             payload: PersonalFabricPayload::NearbyTransfer(PersonalNearbyTransferFrame::Chunk {
                 transfer_id: [4; 16],
@@ -374,19 +349,20 @@ async fn endpoint() -> (Endpoint, MemoryLookup) {
 }
 
 /// Reads personal fabric frames on every connection it accepts, as the
-/// actor does on each connection of its device plane.
+/// actor does on the connection of each session with one of the person's
+/// devices.
 #[derive(Debug, Clone)]
 struct FabricReader(mpsc::Sender<InternalEvent>);
 
 impl ProtocolHandler for FabricReader {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        read_personal_fabric(connection, self.0.clone(), 1);
+        read_personal_fabric(connection, self.0.clone(), MembershipEpoch::for_test(1));
         Ok(())
     }
 }
 
-/// One of a person's devices as a test runs it ([`crate::siblings`]), on
-/// one personal topic, its events heard.
+/// One of a person's devices as a test runs it ([`crate::siblings`]),
+/// joined to one topic, its events and its siblings' heard.
 pub(super) struct Device {
     pub(super) cmd: mpsc::Sender<NetCmd>,
     pub(super) rx: mpsc::Receiver<NetEvent>,
@@ -395,11 +371,13 @@ pub(super) struct Device {
     pub(super) addr: EndpointAddr,
     pub(super) endpoint: Endpoint,
     pub(super) lookup: MemoryLookup,
+    /// The person's root key.
+    pub(super) root: [u8; 32],
     _state: tempfile::TempDir,
 }
 
-/// The device `key` of the person `root`, joined to personal topic `ws`,
-/// retrying what is missing every `tick`.
+/// The device `key` of the person `root`, joined to topic `ws`, hearing the
+/// person's other devices, retrying what is missing every `tick`.
 pub(super) async fn device_of(
     root: &ed25519_dalek::SigningKey,
     key: ed25519_dalek::SigningKey,
@@ -411,7 +389,15 @@ pub(super) async fn device_of(
     let (on_event, rx) = mpsc::channel(256);
     sibling
         .cmd
-        .send(NetCmd::JoinPersonalTopic { ws, on_event })
+        .send(NetCmd::JoinWorkspace {
+            ws,
+            on_event: on_event.clone(),
+        })
+        .await
+        .unwrap();
+    sibling
+        .cmd
+        .send(NetCmd::WatchSiblings { on_event })
         .await
         .unwrap();
     Device {
@@ -422,12 +408,13 @@ pub(super) async fn device_of(
         addr: sibling.addr,
         endpoint: sibling.endpoint,
         lookup: sibling.lookup,
+        root: root.verifying_key().to_bytes(),
         _state: state,
     }
 }
 
-/// `count` devices of one person on personal topic `ws`, each told where
-/// the others are, once each has every other as a member.
+/// `count` devices of one person on topic `ws`, each told where the others
+/// are, once each has a session with every other.
 pub(super) async fn linked(ws: WorkspaceId, count: usize) -> Vec<Device> {
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
     let mut devices = Vec::new();
@@ -441,7 +428,7 @@ pub(super) async fn linked(ws: WorkspaceId, count: usize) -> Vec<Device> {
         let mut waiting: HashSet<_> = ids.iter().copied().filter(|id| *id != device.id).collect();
         tilo_test_env::within("the devices link", async {
             while !waiting.is_empty() {
-                if let Some(NetEvent::PeerJoined { peer, .. }) = device.rx.recv().await {
+                if let Some(NetEvent::Sibling { peer, .. }) = device.rx.recv().await {
                     waiting.remove(&peer);
                 }
             }
@@ -517,62 +504,51 @@ fn open_connections(endpoint: &Endpoint) -> u64 {
         .saturating_sub(socket.num_conns_closed.get())
 }
 
-/// Two of a person's devices keep one connection between them, however
-/// many topics they share: each one's sessions with the other's host are
-/// streams on it, both ways, as an idle connection costs both devices its
-/// keep-alives.
+/// Two of a person's devices keep one connection between them: their
+/// session and every fabric frame and transfer run on it, both ways, as an
+/// idle connection costs both devices its keep-alives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn two_devices_keep_one_connection_for_their_sessions_both_ways() {
-    let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-    let key = || ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-    let (mut a, mut b) = (
-        device_of(&root, key(), 45, HEARTBEAT_INTERVAL).await,
-        device_of(&root, key(), 45, HEARTBEAT_INTERVAL).await,
-    );
-    let (mut a_46, mut b_46) = (mpsc::channel(64), mpsc::channel(64));
-    for (device, on_event) in [(&a, a_46.0.clone()), (&b, b_46.0.clone())] {
-        device
-            .cmd
-            .send(NetCmd::JoinPersonalTopic { ws: 46, on_event })
+async fn two_devices_keep_one_connection_for_their_session_both_ways() {
+    let [mut a, mut b] = two(linked(45, 2).await);
+    let (a_id, b_id, root) = (a.id, b.id, a.root);
+    let update = |author: EndpointId| NeighbourMsg::PersonalWorkspaces {
+        user_public_key: root,
+        update: Box::new(tilo_user_identity::DirectoryUpdate {
+            author_device_public_key: *author.as_bytes(),
+            authored_at_ns: 1,
+            delta: vec![1, 2, 3],
+            signature: [0; 64],
+        }),
+    };
+    for (cmd, rx, from) in [(&a.cmd, &mut b.rx, a_id), (&b.cmd, &mut a.rx, b_id)] {
+        cmd.send(NetCmd::PublishToSiblings { msg: update(from) })
             .await
             .unwrap();
-    }
-    link(&[&a, &b]).await;
-    let (a_id, b_id) = (a.id, b.id);
-    for (what, rx, peer) in [
-        ("A hears B on 45", &mut a.rx, b_id),
-        ("B hears A on 45", &mut b.rx, a_id),
-        ("A hears B on 46", &mut a_46.1, b_id),
-        ("B hears A on 46", &mut b_46.1, a_id),
-    ] {
-        wait_for_event(
-            what,
-            rx,
-            |event| matches!(event, NetEvent::PeerJoined { peer: joined, .. } if *joined == peer),
-        )
+        wait_for_event("the other device's workspace list", rx, |event| {
+            matches!(
+                event,
+                NetEvent::SiblingMsg {
+                    peer,
+                    msg: NeighbourMsg::PersonalWorkspaces { .. },
+                    ..
+                } if *peer == from
+            )
+        })
         .await;
-    }
-    // Each device's sessions with the other's host are up: what each
-    // publishes reaches the other.
-    for (cmd, rx, nonce) in [(&a.cmd, &mut b.rx, 1), (&b.cmd, &mut a.rx, 2)] {
-        cmd.send(NetCmd::Publish {
-            ws: 45,
-            msg: NeighbourMsg::SyncReq {
-                since: vec![],
-                room: String::new(),
-                invite_id: None,
-                nonce,
-            },
+        cmd.send(NetCmd::PublishPersonalFabric {
+            user_public_key: root,
+            payload: PersonalFabricPayload::Request,
         })
         .await
         .unwrap();
-        wait_for_event("the other device's request", rx, |event| {
+        wait_for_event("the other device's fabric request", rx, |event| {
             matches!(
                 event,
-                NetEvent::Msg {
-                    msg: NeighbourMsg::SyncReq { nonce: heard, .. },
+                NetEvent::PersonalFabric {
+                    peer,
+                    payload: PersonalFabricPayload::Request,
                     ..
-                } if *heard == nonce
+                } if *peer == from
             )
         })
         .await;
@@ -587,6 +563,23 @@ async fn two_devices_keep_one_connection_for_their_sessions_both_ways() {
             endpoint.metrics().socket.num_conns_opened.get(),
             1,
             "{name} never opened a second connection"
+        );
+    }
+}
+
+/// A device proves who it is with a certificate of the person's root for
+/// its own endpoint; a device of another person is no sibling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_of_another_person_is_no_sibling() {
+    let key = || ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+    let (mine, theirs) = (key(), key());
+    let mut a = device_of(&mine, key(), 48, HEARTBEAT_INTERVAL).await;
+    let b = device_of(&theirs, key(), 48, HEARTBEAT_INTERVAL).await;
+    link(&[&a, &b]).await;
+    while let Ok(Some(event)) = timeout(Duration::from_secs(1), a.rx.recv()).await {
+        assert!(
+            !matches!(event, NetEvent::Sibling { .. }),
+            "another person's device became a sibling"
         );
     }
 }
@@ -641,7 +634,7 @@ impl Drop for Sleeper {
 }
 
 /// A device asleep for longer than its connection's idle timeout loses its
-/// sessions, and its sibling drops it. On waking the two are linked again
+/// session, and its sibling drops it. On waking the two are linked again
 /// soon, each side hears the other join, and what the device asks for on
 /// that join reaches its sibling.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -659,7 +652,7 @@ async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
         .unwrap();
     let (a_id, b_id) = (a.id, b.id);
     link(&[&a, &b]).await;
-    let joined = |peer: EndpointId| move |event: &NetEvent| matches!(event, NetEvent::PeerJoined { peer: joined, .. } if *joined == peer);
+    let joined = |peer: EndpointId| move |event: &NetEvent| matches!(event, NetEvent::Sibling { peer: joined, .. } if *joined == peer);
     wait_for_event("A hears B join", &mut a.rx, joined(b_id)).await;
     wait_for_event("B hears A join", &mut b.rx, joined(a_id)).await;
 
@@ -667,7 +660,7 @@ async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
     wait_for_event(
         "A drops the sleeping device",
         &mut a.rx,
-        |event| matches!(event, NetEvent::PeerLeft { peer, .. } if *peer == b_id),
+        |event| matches!(event, NetEvent::SiblingLeft { peer, .. } if *peer == b_id),
     )
     .await;
     let woke = Instant::now();
@@ -677,8 +670,7 @@ async fn a_device_asleep_past_the_idle_timeout_is_linked_again_on_waking() {
     wait_for_event("B hears A join again", &mut b.rx, joined(a_id)).await;
     b.cmd
         .send(NetCmd::PublishPersonalFabric {
-            ws: 47,
-            user_public_key: [0xB7; 32],
+            user_public_key: b.root,
             payload: PersonalFabricPayload::Request,
         })
         .await
@@ -718,7 +710,7 @@ async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
     wait_for_event(
         "the pair links",
         &mut pair[0].rx,
-        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == b_id),
+        |event| matches!(event, NetEvent::Sibling { peer, .. } if *peer == b_id),
     )
     .await;
     // B's first run ends: its actor stops and its endpoint closes.
@@ -732,7 +724,7 @@ async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
     wait_for_event(
         "the restarted device links",
         &mut restarted.rx,
-        |event| matches!(event, NetEvent::PeerJoined { peer, .. } if *peer == a_id),
+        |event| matches!(event, NetEvent::Sibling { peer, .. } if *peer == a_id),
     )
     .await;
 
@@ -740,8 +732,7 @@ async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
     restarted
         .cmd
         .send(NetCmd::PublishPersonalFabric {
-            ws: 46,
-            user_public_key: [0xB6; 32],
+            user_public_key: a.root,
             payload: PersonalFabricPayload::Request,
         })
         .await
@@ -759,8 +750,7 @@ async fn a_restarted_device_hears_its_siblings_fabric_at_once() {
     .await;
     a.cmd
         .send(NetCmd::PublishPersonalFabricTarget {
-            ws: 46,
-            user_public_key: [0xB6; 32],
+            user_public_key: a.root,
             target: b_id,
             payload: PersonalFabricPayload::Action(vec![6, 6]),
         })
@@ -788,14 +778,13 @@ async fn personal_fabric_unknown_extension_preserves_following_streams() {
         .spawn();
     let connection = a.connect(b.addr(), FIXTURE_ALPN).await.unwrap();
     let frame = PersonalFabricWireFrame {
-        workspace: 43,
         user_public_key: [0xA5; 32],
         payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
     };
     let valid = postcard::to_allocvec(&frame).unwrap();
-    assert_eq!(valid[33], 1, "the legacy Snapshot payload tag stays fixed");
+    assert_eq!(valid[32], 1, "the legacy Snapshot payload tag stays fixed");
     let mut future = valid.clone();
-    future[33] = 9; // First unsupported tag after optional connector observations.
+    future[32] = 9; // First unsupported tag after optional connector observations.
     assert!(postcard::from_bytes::<PersonalFabricWireFrame>(&future).is_err());
     for bytes in [&future, &valid] {
         let (mut stream, _) = connection.open_bi().await.unwrap();
@@ -806,7 +795,7 @@ async fn personal_fabric_unknown_extension_preserves_following_streams() {
         .await
         .unwrap();
     assert!(matches!(event, InternalEvent::PersonalFabric {
-        ws: 43, payload: PersonalFabricPayload::Snapshot(bytes), ..
+        payload: PersonalFabricPayload::Snapshot(bytes), ..
     } if bytes == vec![1, 2, 3]));
     connection.close(0u32.into(), b"fixture complete");
     router.shutdown().await.unwrap();
@@ -820,10 +809,7 @@ async fn remote_input_bypasses_a_saturated_surface_frame_queue() {
     let (media_tx, mut media_rx) = mpsc::channel(1);
     let (input_tx, mut input_rx) = mpsc::channel(1);
     media_tx
-        .send(InternalEvent::PersonalFabricClosed {
-            peer,
-            connection_incarnation: 7,
-        })
+        .send(InternalEvent::IdentityMaterialChanged)
         .await
         .unwrap();
 
@@ -854,16 +840,13 @@ async fn remote_input_bypasses_a_saturated_surface_frame_queue() {
     ));
     assert!(matches!(
         media_rx.try_recv(),
-        Ok(InternalEvent::PersonalFabricClosed {
-            connection_incarnation: 7,
-            ..
-        })
+        Ok(InternalEvent::IdentityMaterialChanged)
     ));
 }
 
 /// Two of a person's devices hear who the other is as soon as they link,
-/// exchange what they publish on their topic through each other's hosts,
-/// and stream a window directly.
+/// from the certificate it proves on their session, and stream a window
+/// directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_devices_exchange_and_announce_identity_over_iroh() {
     let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
@@ -875,48 +858,23 @@ async fn two_devices_exchange_and_announce_identity_over_iroh() {
     link(&[&pair[0], &pair[1]]).await;
     let ids = [pair[0].id, pair[1].id];
     for (device, other) in pair.iter_mut().zip([ids[1], ids[0]]) {
-        let (mut identity, mut joined) = (false, false);
-        tilo_test_env::within(
-            "identity announcement should not wait for the heartbeat",
-            async {
-                while !(identity && joined) {
-                    match device.rx.recv().await {
-                        Some(NetEvent::Msg {
-                            msg: NeighbourMsg::IdentityHello { cert, .. },
-                            ..
-                        }) if cert.device_public_key == *other.as_bytes() => identity = true,
-                        Some(NetEvent::PeerJoined { peer, .. }) if peer == other => joined = true,
-                        _ => {}
-                    }
-                }
+        wait_for_event(
+            "the other device's certificate should not wait for the heartbeat",
+            &mut device.rx,
+            |event| {
+                matches!(
+                    event,
+                    NetEvent::Sibling { peer, certs, .. }
+                        if *peer == other
+                            && certs.iter().any(|cert| {
+                                cert.device_public_key == *other.as_bytes()
+                                    && cert.user_public_key == root.verifying_key().to_bytes()
+                            })
+                )
             },
         )
         .await;
     }
-
-    pair[1]
-        .cmd
-        .send(NetCmd::Publish {
-            ws: 42,
-            msg: NeighbourMsg::SyncReq {
-                since: vec![],
-                room: String::new(),
-                invite_id: None,
-                nonce: 0,
-            },
-        })
-        .await
-        .unwrap();
-    wait_for_event("B's message at A", &mut pair[0].rx, |event| {
-        matches!(
-            event,
-            NetEvent::Msg {
-                msg: NeighbourMsg::SyncReq { .. },
-                ..
-            }
-        )
-    })
-    .await;
 
     let dedicated_before =
         DEDICATED_SURFACE_FRAMES_RECEIVED.load(std::sync::atomic::Ordering::Relaxed);
@@ -948,8 +906,6 @@ async fn two_devices_exchange_and_announce_identity_over_iroh() {
         )
     })
     .await;
-    // The hosts hand the frame on too, perhaps first: the direct route is
-    // opened for it and carries it as well.
     tilo_test_env::within(
         "surface frame should arrive through the dedicated QUIC ALPN",
         async {
@@ -979,11 +935,8 @@ async fn await_identity_and_codecs(rx: &mut mpsc::Receiver<NetEvent>) {
             .await
             .unwrap()
         {
-            NetEvent::Msg {
-                msg: NeighbourMsg::IdentityHello { .. },
-                ..
-            } => identity = true,
-            NetEvent::Msg {
+            NetEvent::Sibling { .. } => identity = true,
+            NetEvent::SiblingMsg {
                 msg: NeighbourMsg::MediaCapabilities { .. },
                 ..
             } => codecs = true,
@@ -1026,25 +979,24 @@ async fn linked_devices_keep_liveness_on_the_transport_and_say_nothing_while_idl
     assert!(
         std::iter::from_fn(|| a.rx.try_recv().ok())
             .chain(std::iter::from_fn(|| b.rx.try_recv().ok()))
-            .all(|event| !matches!(event, NetEvent::PeerLeft { .. })),
-        "a silent, linked device stays a member"
+            .all(|event| !matches!(event, NetEvent::SiblingLeft { .. })),
+        "a silent, linked device stays a sibling"
     );
 
-    // Phase `a_departed_device_is_dropped_when_its_sessions_end`. A device
-    // that shuts down closes its sessions; it is dropped then, not after a
+    // Phase `a_departed_device_is_dropped_when_its_session_ends`. A device
+    // that shuts down closes its session; it is dropped then, not after a
     // timeout.
     drop(b.cmd);
     b.task.await.unwrap();
     let gone = Instant::now();
-    let left = tilo_test_env::within("the departed device to be dropped", async {
+    tilo_test_env::within("the departed device to be dropped", async {
         loop {
-            if let Some(NetEvent::PeerLeft { cause, .. }) = a.rx.recv().await {
-                return cause;
+            if let Some(NetEvent::SiblingLeft { .. }) = a.rx.recv().await {
+                return;
             }
         }
     })
     .await;
-    assert_eq!(left, PeerDepartureCause::HostSessionClosed);
     let took = gone.elapsed();
     assert!(
         took <= Duration::from_secs(3),
@@ -1064,7 +1016,7 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
     // Phase `dead_surface_viewer_does_not_stall_later_collaboration_messages`.
     {
         let [a, b, mut c] = three(linked(44, 3).await);
-        let (cmd_a, rx_c) = (&a.cmd, &mut c.rx);
+        let (cmd_a, rx_c, c_id, root) = (&a.cmd, &mut c.rx, c.id, a.root);
         let source_peer = crate::behaviour::peer_liveness_handle(&a.id);
 
         // Leave A's authenticated membership evidence intact while making B's
@@ -1093,15 +1045,12 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
                 })
                 .await
                 .unwrap();
+            let probe = vec![0x7e, u8::try_from(attempt).unwrap()];
             cmd_a
-                .send(NetCmd::Publish {
-                    ws: 44,
-                    msg: NeighbourMsg::SyncReq {
-                        since: vec![],
-                        room: "responsive".into(),
-                        invite_id: None,
-                        nonce: u64::from(attempt),
-                    },
+                .send(NetCmd::PublishPersonalFabricTarget {
+                    user_public_key: root,
+                    target: c_id,
+                    payload: PersonalFabricPayload::Action(probe.clone()),
                 })
                 .await
                 .unwrap();
@@ -1114,10 +1063,10 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
                 .unwrap();
                 if matches!(
                     event,
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::SyncReq { ref room, .. },
+                    NetEvent::PersonalFabric {
+                        payload: PersonalFabricPayload::Action(ref bytes),
                         ..
-                    } if room == "responsive"
+                    } if *bytes == probe
                 ) {
                     break;
                 }
@@ -1139,8 +1088,7 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
 
         cmd_a
             .send(NetCmd::PublishPersonalFabricTarget {
-                ws: 44,
-                user_public_key: [0xB4; 32],
+                user_public_key: a.root,
                 target: b_id,
                 payload: PersonalFabricPayload::Action(vec![4, 4]),
             })
@@ -1230,15 +1178,14 @@ async fn direct_collaboration_traffic_reaches_only_its_exact_target() {
     reason = "the integration test verifies both receiver framing and the sender's ordered progress lifecycle"
 )]
 async fn personal_fabric_reaches_members_and_streams_verified_media() {
-    // Phase `personal_fabric_reaches_the_topics_member`.
+    // Phase `personal_fabric_reaches_the_persons_device`.
     {
         let [a, mut b] = two(linked(43, 2).await);
-        let (cmd_a, rx_b) = (&a.cmd, &mut b.rx);
+        let (cmd_a, rx_b, root) = (&a.cmd, &mut b.rx, a.root);
 
         cmd_a
             .send(NetCmd::PublishPersonalFabric {
-                ws: 43,
-                user_public_key: [0xA5; 32],
+                user_public_key: root,
                 payload: PersonalFabricPayload::Snapshot(vec![1, 2, 3]),
             })
             .await
@@ -1250,11 +1197,10 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
             if matches!(
                 event,
                 NetEvent::PersonalFabric {
-                    ws: 43,
                     user_public_key,
                     payload: PersonalFabricPayload::Snapshot(bytes),
                     ..
-                } if user_public_key == [0xA5; 32] && bytes == vec![1, 2, 3]
+                } if user_public_key == root && bytes == vec![1, 2, 3]
             ) {
                 break;
             }
@@ -1265,7 +1211,7 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
         // Progress is best-effort; each device's events leave room for every
         // chunk's report while the receiver side is drained first.
         let [mut a, mut b] = two(linked(45, 2).await);
-        let (cmd_a, a_id, b_id) = (&a.cmd, a.id, b.id);
+        let (cmd_a, a_id, b_id, root) = (&a.cmd, a.id, b.id, a.root);
         let (rx_a, rx_b) = (&mut a.rx, &mut b.rx);
 
         let dir = tempfile::tempdir().unwrap();
@@ -1277,8 +1223,7 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
         let request_id = [0x46; 16];
         cmd_a
             .send(NetCmd::PublishNearbyTransfer {
-                ws: 45,
-                user_public_key: [0xA6; 32],
+                user_public_key: root,
                 target: b_id,
                 transfer: NearbyTransferCheckpoint {
                     transfer_id,
@@ -1376,8 +1321,7 @@ async fn personal_fabric_reaches_members_and_streams_verified_media() {
         let cancelled_id = [0x47; 16];
         cmd_a
             .send(NetCmd::PublishNearbyTransfer {
-                ws: 45,
-                user_public_key: [0xA6; 32],
+                user_public_key: root,
                 target: b_id,
                 transfer: NearbyTransferCheckpoint {
                     transfer_id: cancelled_id,

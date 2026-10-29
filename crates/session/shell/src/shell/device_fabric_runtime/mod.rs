@@ -9783,10 +9783,8 @@ mod tests {
             let sibling_endpoint = iroh::SecretKey::from_bytes(&[0x92; 32]).public();
             let old_epoch = tilo_network_actor::MembershipEpoch::for_test(7);
             let sibling_epoch = tilo_network_actor::MembershipEpoch::for_test(8);
-            let route =
-                network.install_personal_route_for_test(77, endpoint, old_epoch, [0x93; 32]);
+            let route = network.install_personal_route_for_test(endpoint, old_epoch, [0x93; 32]);
             let sibling_route = network.install_personal_route_for_test(
-                77,
                 sibling_endpoint,
                 sibling_epoch,
                 [0x93; 32],
@@ -9823,11 +9821,9 @@ mod tests {
 
             network
                 .event_tx
-                .try_send(tilo_network_actor::NetEvent::PeerLeft {
-                    ws: 77,
+                .try_send(tilo_network_actor::NetEvent::SiblingLeft {
                     peer: endpoint,
-                    cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
-                    membership_epoch: Some(tilo_network_actor::MembershipEpoch::for_test(6)),
+                    membership_epoch: tilo_network_actor::MembershipEpoch::for_test(6),
                 })
                 .unwrap();
             network.tick();
@@ -9840,11 +9836,9 @@ mod tests {
 
             network
                 .event_tx
-                .try_send(tilo_network_actor::NetEvent::PeerLeft {
-                    ws: 77,
+                .try_send(tilo_network_actor::NetEvent::SiblingLeft {
                     peer: endpoint,
-                    cause: tilo_network_actor::PeerDepartureCause::HostSessionClosed,
-                    membership_epoch: Some(old_epoch),
+                    membership_epoch: old_epoch,
                 })
                 .unwrap();
             network.tick();

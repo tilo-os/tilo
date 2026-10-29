@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 22;
+pub const PEER_PROTOCOL_VERSION: u32 = 23;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -431,10 +431,10 @@ pub enum NeighbourMsg {
     },
     /// The person's workspace directory as one of their devices holds it:
     /// a device-signed Automerge snapshot of which workspaces the person
-    /// has and which room carries each. Travels only on the person's own
-    /// topic; the receiver merges it only when the authenticated transport
-    /// certificate and the update's author are devices of
-    /// `user_public_key`. Appended to preserve every existing Postcard
+    /// has and which room carries each. Travels only on the session between
+    /// two of the person's devices; the receiver merges it only when the
+    /// certificate that session proved and the update's author are devices
+    /// of `user_public_key`. Appended to preserve every existing Postcard
     /// discriminant.
     PersonalWorkspaces {
         user_public_key: [u8; 32],
@@ -527,16 +527,6 @@ pub enum NeighbourMsg {
         cluster_id: String,
         hash: String,
     },
-    /// The documents of `room` that bases replaced, each saved whole: what
-    /// a device keeps of the room's history from before an admission, for
-    /// another device of the same person alone, on that person's own lane
-    /// (`user_public_key`), never a room's. Appended to preserve every
-    /// existing Postcard discriminant.
-    RoomArchive {
-        user_public_key: [u8; 32],
-        room: String,
-        documents: Vec<Vec<u8>>,
-    },
 }
 
 impl NeighbourMsg {
@@ -597,23 +587,7 @@ impl NeighbourMsg {
             | Self::RecordContentLacks { .. }
             | Self::SurfaceKeyframeRequest { .. }
             | Self::LivePresence { .. }
-            | Self::SurfaceViewRequest { .. }
-            | Self::RoomArchive { .. } => false,
-        }
-    }
-
-    /// The person whose own lane carries this message, when it travels on
-    /// that lane rather than a room's.
-    #[must_use]
-    pub fn personal_lane(&self) -> Option<&[u8; 32]> {
-        match self {
-            Self::PersonalWorkspaces {
-                user_public_key, ..
-            }
-            | Self::RoomArchive {
-                user_public_key, ..
-            } => Some(user_public_key),
-            _ => None,
+            | Self::SurfaceViewRequest { .. } => false,
         }
     }
 
@@ -651,7 +625,6 @@ impl NeighbourMsg {
             Self::LivePresence { .. } => "LivePresence",
             Self::SurfaceViewRequest { .. } => "SurfaceViewRequest",
             Self::RecordContentLacks { .. } => "RecordContentLacks",
-            Self::RoomArchive { .. } => "RoomArchive",
         }
     }
 }
@@ -746,14 +719,6 @@ mod tests {
                 app_id: "so.tilo.slides".into(),
                 cluster_id: "room".into(),
                 hash: "ab".into(),
-            },
-        ));
-        all.push((
-            "room archive",
-            NeighbourMsg::RoomArchive {
-                user_public_key: [0x5E; 32],
-                room: "07848ffe-1898-4f72-8419-0b54c93e6dad".into(),
-                documents: vec![vec![1, 2, 3]],
             },
         ));
         all
@@ -1161,7 +1126,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 31;
+    const VARIANT_COUNT: usize = 30;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1222,7 +1187,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b15",
+                "0b17",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",
@@ -1362,14 +1327,6 @@ mod tests {
         (
             "record content lacks",
             "1d03040e736f2e74696c6f2e736c6964657304726f6f6d026162",
-        ),
-        (
-            "room archive",
-            concat!(
-                "1e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
-                "5e2430373834386666652d313839382d346637322d383431392d306235346339",
-                "3365366461640103010203",
-            ),
         ),
     ];
 

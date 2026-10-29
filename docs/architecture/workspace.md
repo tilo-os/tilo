@@ -269,10 +269,13 @@ the model but instead of it:
   (`channel_crypto::ChannelPeer`). The browser follows and checks commits
   but writes none, since it does not hold record-level Read grants.
 - **Per-person spaces.** The own room, the person room and the person's
-  relay workspace (`personal_continuity_workspace_id`, which carries host
-  verbs, own-device sessions and the workspace directory), each derived from
-  the root key under its own domain string, and the personal fabric lane
-  beside them.
+  relay workspace (`personal_continuity_workspace_id`), each derived from the
+  root key under its own domain string. The relay workspace is left only to
+  the person's hosts: they keep person-room records on it for devices that
+  are away, and ush environment sessions run on it. The person's devices
+  already meet without it, on the session between two of them
+  (`tilo-relay-sibling/1`), and learn the person's workspaces from the hosts
+  holding them (`room.list`).
 - **Settings outside the model.** `Settings<T>` with Personal, DeviceLocal and
   Shared scopes, the settings registry and `settings.json`. Settings are
   resources.
