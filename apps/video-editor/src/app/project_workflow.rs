@@ -101,7 +101,8 @@ impl VideoEditorApp {
     /// saved.
     pub(super) fn save_project(&mut self, doc: &AutoCommit) {
         if let Some(path) = self.project_path.clone() {
-            self.write_project_to(doc, path);
+            // A failure is held and shown by the save's own notice.
+            let _ = self.write_project_to(doc, path);
         } else if self.project_destination.is_some() {
             self.write_project_to_destination(doc);
         } else {
@@ -161,7 +162,12 @@ impl VideoEditorApp {
     /// A failure is reported in the words the file layer produced and the
     /// project keeps its old path: claiming a save that did not happen is the
     /// one outcome that could actually cost someone their work.
-    pub(super) fn write_project_to(&mut self, doc: &AutoCommit, path: PathBuf) {
+    /// Write the project to `path`; why not, when it could not be written.
+    pub(super) fn write_project_to(
+        &mut self,
+        doc: &AutoCommit,
+        path: PathBuf,
+    ) -> Result<(), String> {
         match crate::project_file::save(&path, &self.project) {
             Ok(()) => {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
@@ -178,10 +184,13 @@ impl VideoEditorApp {
                 // stamp the pre-edit heads and leave the project reading as
                 // unsaved the instant after it was written.
                 self.saved_now(doc);
+                Ok(())
             }
             Err(e) => {
                 self.save_then_open = None;
-                self.hold_save_failure(e.to_string());
+                let reason = e.to_string();
+                self.hold_save_failure(reason.clone());
+                Err(reason)
             }
         }
     }
@@ -202,6 +211,17 @@ impl VideoEditorApp {
                 .take()
                 .unwrap_or_else(|| self.doc_heads.clone()),
         );
+        // A save asked of the editor is answered here: a saved project shows
+        // no notice to read the outcome from.
+        if matches!(
+            self.resource_operation,
+            Some(
+                crate::actions::VideoEditorEffect::Save { .. }
+                    | crate::actions::VideoEditorEffect::SaveAs { .. }
+            )
+        ) {
+            self.settle_resource_job(Ok(()));
+        }
         if let Some(next) = self.save_then_open.take() {
             self.pending_open = None;
             self.load_project_file(next.path, next.contents.as_deref());
@@ -357,7 +377,10 @@ impl VideoEditorApp {
             self.project_rx = None;
         }
         match outcome {
-            Some(portal::ProjectOutcome::Save(path)) => self.write_project_to(doc, path),
+            Some(portal::ProjectOutcome::Save(path)) => {
+                // A failure is held and shown by the save's own notice.
+                let _ = self.write_project_to(doc, path);
+            }
             Some(portal::ProjectOutcome::SaveTo(destination)) => {
                 // Kept: the next Save writes here without asking.
                 self.project_destination = Some(destination);
@@ -648,14 +671,9 @@ impl VideoEditorApp {
             return None;
         }
         let names: Vec<&str> = missing.iter().map(|(name, _)| name.as_str()).collect();
-        let refers = if names.len() == 1 {
-            "refers to"
-        } else {
-            "refer to"
-        };
         let it = if names.len() == 1 { "it" } else { "them" };
         Some(format!(
-            "This cut {refers} {}. Bring {it} onto this device first.",
+            "This cut refers to {}. Bring {it} onto this device first.",
             names.join(", "),
         ))
     }

@@ -1299,9 +1299,6 @@ pub struct VideoEditorApp {
     /// `resource_reply` once it settles.
     resource_operation: Option<crate::actions::VideoEditorEffect>,
     resource_reply: Option<ui::framework::EffectReply>,
-    /// A project open or save at a named path, run on the next sync, where
-    /// the document is at hand.
-    resource_pending_operation: Option<crate::actions::VideoEditorEffect>,
     /// Recently-opened projects, most recent first. Per-device and outside
     /// the CRDT — see [`crate::project_file::recents`].
     recents: Vec<PathBuf>,
@@ -1524,7 +1521,6 @@ impl VideoEditorApp {
             save_failure: None,
             resource_operation: None,
             resource_reply: None,
-            resource_pending_operation: None,
             recents: crate::project_file::recents::load(),
             pending_open: None,
             chrome_theme: Theme::dark(),
@@ -5230,9 +5226,7 @@ impl VideoEditorApp {
             VideoEditorEffect::OpenProject { .. }
             | VideoEditorEffect::Save { .. }
             | VideoEditorEffect::SaveAs { .. }
-                if self.project_rx.is_none()
-                    && self.resource_pending_operation.is_none()
-                    && self.pending_open.is_none() =>
+                if self.project_rx.is_none() && self.pending_open.is_none() =>
             {
                 self.project_notice.get().map(|notice| {
                     if notice.level == NoticeLevel::Failed {
@@ -6182,28 +6176,11 @@ impl Widget for VideoEditorApp {
         dyn ui::widget::controls::ActionControls
     );
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the per-frame sync reads as the ordered list of things a frame reconciles"
-    )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document_ref(state, path);
         self.take_notice_actions();
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
-        }
-        if let Some(operation) = self.resource_pending_operation.take() {
-            use crate::actions::VideoEditorEffect;
-            match &operation {
-                VideoEditorEffect::OpenProject { path: Some(path) } => {
-                    self.begin_open(PathBuf::from(path), None);
-                }
-                VideoEditorEffect::Save { path: Some(path) }
-                | VideoEditorEffect::SaveAs { path: Some(path) } => {
-                    self.write_project_to(state, PathBuf::from(path));
-                }
-                _ => {}
-            }
         }
         // The project arrives through `present`; the document's heads say
         // whether it has changed since it was saved.
@@ -7177,6 +7154,13 @@ impl Widget for VideoEditorApp {
         self.presentation.keyboard_focus
     }
 
+    /// Tab walks the editor's panes (`focus_pane`); without claiming it the
+    /// host would take Tab for its own focus moves and the panes would be
+    /// unreachable from the keyboard.
+    fn wants_tab_input(&self) -> bool {
+        true
+    }
+
     /// The export dialog traps the keyboard while it is open.
     ///
     /// Without this, Tab out of a modal walks the content behind it — the user
@@ -7507,10 +7491,20 @@ impl VideoEditorApp {
                 self.perform_resource_operation(effect)?;
                 return Ok(ui::framework::Effected::done());
             }
-            VideoEditorEffect::OpenProject { path: Some(_) }
-            | VideoEditorEffect::Save { path: Some(_) }
-            | VideoEditorEffect::SaveAs { path: Some(_) } => {
-                self.resource_pending_operation = Some(effect.clone());
+            // Run now, with the document the invocation carries: nothing
+            // else would bring the editor a frame to run it on.
+            VideoEditorEffect::OpenProject { path: Some(path) } => {
+                self.begin_open(PathBuf::from(path), None);
+            }
+            VideoEditorEffect::Save { path: Some(path) }
+            | VideoEditorEffect::SaveAs { path: Some(path) } => {
+                let Some(doc) = cx.document() else {
+                    return Err("there is no project to save".into());
+                };
+                // Answered by the write itself: a saved project shows no
+                // notice to read the outcome from.
+                self.write_project_to(&doc, PathBuf::from(path))?;
+                return Ok(ui::framework::Effected::done());
             }
             _ => self.perform_resource_operation(effect.clone())?,
         }
@@ -7519,6 +7513,8 @@ impl VideoEditorApp {
         }
         self.resource_operation = Some(effect);
         self.resource_reply = Some(cx.reply());
+        // An open or save that ran to the end above answers now.
+        self.finish_resource_file_operation_if_ready();
         Ok(ui::framework::Effected::Pending)
     }
 }
