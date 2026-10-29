@@ -656,7 +656,7 @@ async fn task_runs_and_their_calls_are_only_for_a_delegated_agent() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn an_app_takes_its_invocations_and_answers_only_its_own() {
+async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let room = Room::new(&[13]);
@@ -691,6 +691,25 @@ async fn an_app_takes_its_invocations_and_answers_only_its_own() {
                     "{call:?}: an invocation the app was never handed"
                 );
             }
+            assert_eq!(
+                endpoint
+                    .call(Request::Subscribe {
+                        channel,
+                        topic: Topic::Catalogue,
+                    })
+                    .await,
+                Ok(Reply::Subscribed)
+            );
+            assert!(
+                matches!(
+                    endpoint.frame().await,
+                    HostFrame::Event {
+                        event: Event::Catalogue(_),
+                        ..
+                    }
+                ),
+                "the catalogue as it stands arrives at once"
+            );
         })
         .await;
 }

@@ -10073,45 +10073,14 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeActionCatalogueParams,
         mut results: channel_handle::SubscribeActionCatalogueResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
+        match self.catalogue_feed() {
+            Ok(stream) => {
+                let client: action_catalogue_stream::Client = capnp_rpc::new_client(stream);
+                results.get().set_stream(client);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
         }
-        let cluster = self.route().cluster_id;
-        let actor = self.verified_identity.broker_actor();
-        let snapshot = self.state.action_catalogue_json_for(&cluster, &actor, None);
-        let initial = match snapshot {
-            Ok(snapshot) => Arc::<str>::from(snapshot),
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        // The session's normal tracing filter passes only errors. Its flight
-        // recorder captures stderr; report numeric metadata without changing
-        // that filter or exporting any authorized catalogue contents.
-        eprintln!(
-            "collab: initial authorized action catalogue snapshot event_kind=ActionCatalogue serialized_bytes={}",
-            initial.len()
-        );
-        let (tx, rx) = watch::channel(Some(initial));
-        if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
-            subscribers.insert(self.connection_id, (cluster, actor, tx));
-        } else {
-            return Promise::err(capnp::Error::failed(
-                "action catalogue subscriber registry unavailable".into(),
-            ));
-        }
-        let client: action_catalogue_stream::Client =
-            capnp_rpc::new_client(ActionCatalogueStreamServer {
-                host_guard: HostWorkerReadGuard::for_channel(
-                    &self.state,
-                    self.peer_id,
-                    &self.verified_identity,
-                ),
-                reader: Rc::new(AsyncMutex::new(ActionCatalogueReader { rx, initial: true })),
-            });
-        results.get().set_stream(client);
-        Promise::ok(())
     }
 
     fn invoke_resolved_published_action_durable(
@@ -11583,20 +11552,31 @@ impl ActionCatalogueReader {
     }
 }
 
+impl ActionCatalogueStreamServer {
+    /// The catalogue as it stands now, then each time it changes.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the stream is served on the connection's single-threaded local set"
+    )]
+    async fn next(&self) -> Result<Arc<str>, capnp::Error> {
+        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+        let snapshot =
+            self.reader.lock().await.next().await.map_err(|()| {
+                capnp::Error::disconnected("action catalogue stream closed".into())
+            })?;
+        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+        Ok(snapshot)
+    }
+}
+
 impl action_catalogue_stream::Server for ActionCatalogueStreamServer {
     fn read(
         self: Rc<Self>,
         _params: action_catalogue_stream::ReadParams,
         mut results: action_catalogue_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let reader = self.reader.clone();
         Promise::from_future(async move {
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            let snapshot = reader.lock().await.next().await.map_err(|()| {
-                capnp::Error::disconnected("action catalogue stream closed".into())
-            })?;
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            results.get().set_catalogue_json(&snapshot);
+            results.get().set_catalogue_json(&self.next().await?);
             Ok(())
         })
     }

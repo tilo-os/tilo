@@ -313,6 +313,9 @@ pub enum Topic {
     /// The invocations of the app's published actions, replacing any
     /// stream it held; `stable_ids` asks for stable invocation ids.
     Invocations { stable_ids: bool },
+    /// The action catalogue this endpoint may see, as it stands and then
+    /// each time it changes.
+    Catalogue,
 }
 
 /// The host's answer to a call that succeeded.
@@ -377,6 +380,8 @@ pub enum Event {
     Context(ContextUpdate),
     /// An invocation handed to this app.
     Invocation(Invocation),
+    /// The action catalogue as JSON.
+    Catalogue(String),
     /// A task run handed to this agent, as `TaskRunEnvelope` JSON (its
     /// action context is free-form JSON, which postcard cannot carry).
     TaskRun(String),

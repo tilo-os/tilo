@@ -1646,6 +1646,43 @@ impl CapnpChannelHandle {
         Ok(())
     }
 
+    /// The action catalogue this endpoint may see: as it stands, then each
+    /// time it changes.
+    pub(super) fn catalogue_feed(&self) -> Result<ActionCatalogueStreamServer, capnp::Error> {
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let cluster = self.route().cluster_id;
+        let actor = self.verified_identity.broker_actor();
+        let snapshot = self.state.action_catalogue_json_for(&cluster, &actor, None);
+        let initial = match snapshot {
+            Ok(snapshot) => Arc::<str>::from(snapshot),
+            Err(error) => return Err(capnp::Error::failed(error)),
+        };
+        // The session's normal tracing filter passes only errors. Its flight
+        // recorder captures stderr; report numeric metadata without changing
+        // that filter or exporting any authorized catalogue contents.
+        eprintln!(
+            "collab: initial authorized action catalogue snapshot event_kind=ActionCatalogue serialized_bytes={}",
+            initial.len()
+        );
+        let (tx, rx) = watch::channel(Some(initial));
+        if let Ok(mut subscribers) = self.state.action_catalogue_subscribers.lock() {
+            subscribers.insert(self.connection_id, (cluster, actor, tx));
+        } else {
+            return Err(capnp::Error::failed(
+                "action catalogue subscriber registry unavailable".into(),
+            ));
+        }
+        Ok(ActionCatalogueStreamServer {
+            host_guard: HostWorkerReadGuard::for_channel(
+                &self.state,
+                self.peer_id,
+                &self.verified_identity,
+            ),
+            reader: Rc::new(AsyncMutex::new(ActionCatalogueReader { rx, initial: true })),
+        })
+    }
+
     /// News of the record's content from now on.
     pub(super) fn subscribe_content(
         &self,
@@ -2202,7 +2239,13 @@ impl WireConnection {
                     }
                     Topic::Invocations { stable_ids } => {
                         let stream = session.invocation_feed(stable_ids).map_err(failed)?;
-                        tokio::task::spawn_local(pump_invocations(stream, id, frames))
+                        tokio::task::spawn_local(pump_pulled(stream, id, frames, Event::Invocation))
+                    }
+                    Topic::Catalogue => {
+                        let stream = session.catalogue_feed().map_err(failed)?;
+                        tokio::task::spawn_local(pump_pulled(stream, id, frames, |catalogue| {
+                            Event::Catalogue(catalogue.to_string())
+                        }))
                     }
                     Topic::TaskRuns => {
                         let feed = session.task_run_feed().map_err(failed)?;
@@ -2309,15 +2352,36 @@ async fn pump<T>(
     });
 }
 
-async fn pump_invocations(
-    stream: InvocationStreamServer,
+/// A stream the host pulls one item at a time.
+trait Pulled {
+    type Item;
+    async fn pull(&self) -> Result<Self::Item, capnp::Error>;
+}
+
+impl Pulled for InvocationStreamServer {
+    type Item = runtime_collab::wire::Invocation;
+    async fn pull(&self) -> Result<Self::Item, capnp::Error> {
+        self.next().await?.on_wire()
+    }
+}
+
+impl Pulled for ActionCatalogueStreamServer {
+    type Item = Arc<str>;
+    async fn pull(&self) -> Result<Self::Item, capnp::Error> {
+        self.next().await
+    }
+}
+
+async fn pump_pulled<S: Pulled>(
+    stream: S,
     subscription: u64,
     frames: mpsc::UnboundedSender<HostFrame>,
+    event: impl Fn(S::Item) -> Event,
 ) {
     let reason = loop {
-        match stream.next().await.and_then(InvocationEnvelope::on_wire) {
-            Ok(invocation) => {
-                let event = Event::Invocation(invocation);
+        match stream.pull().await {
+            Ok(item) => {
+                let event = event(item);
                 if frames
                     .send(HostFrame::Event {
                         subscription,
