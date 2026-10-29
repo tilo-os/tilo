@@ -7,7 +7,7 @@ use super::{
 use crate::identity::MintedIdentity;
 use std::path::Path;
 use tilo_onboarding::t;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
 impl OnboardingView {
     pub(super) fn load_prepared_setup(&mut self, identity_dir: &Path) {
