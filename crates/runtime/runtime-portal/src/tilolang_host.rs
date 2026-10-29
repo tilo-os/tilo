@@ -108,6 +108,11 @@ pub struct TaskRequest {
     pub person: Option<String>,
     /// The length of the modules in their memfd ([`encode_modules`]).
     pub modules_len: u64,
+    /// The id whose records an app keeps, by the app's id, for each app that keeps another's:
+    /// an app renamed keeps using the record of its earliest id
+    /// ([`InstanceRequest::records_under`]).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub records_under: std::collections::BTreeMap<String, String>,
 }
 
 /// The descriptors a task arrives with, in the order the door carries them.
@@ -597,6 +602,7 @@ mod tests {
             room: "7a110d00-0000-4000-8000-000000000001".into(),
             person: Some("ada".into()),
             modules_len: 3,
+            records_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
         };
         let fds = TaskFds {
             program: connection(),

@@ -37,6 +37,7 @@ mod route_access;
 use route_access::{RouteAccess, attested_route_access, identity_reads_record};
 mod committed_document;
 mod content_put;
+mod record_read;
 pub use content_put::CONTENT_PUT_REFUSED;
 #[cfg(test)]
 mod directory_disclosure_tests;
