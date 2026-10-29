@@ -243,7 +243,6 @@ guide-vim-mode = Vim keys: h j k l
 # Devices and media, the Quick Settings drill-in
 
 # Quick Settings
-qs-connecting = Connecting…
 qs-not-connected = Not connected
 qs-devices = Devices
 qs-clipboard = Clipboard
@@ -256,7 +255,6 @@ qs-wifi-off = Wi-Fi is off
 qs-wifi-scanning = Scanning for networks…
 qs-power-mode = Power mode
 qs-battery = Battery
-qs-wifi-password-for = Enter the network's password to join
 qs-clipboard-copied = { $age }, from { $source }
 
 # Quick Settings: Bluetooth
@@ -529,7 +527,6 @@ host-qs-change-failed-wifi = Couldn’t change Wi-Fi
 host-qs-change-failed-bluetooth = Couldn’t change Bluetooth
 host-qs-change-failed-wired = Couldn’t change wired network
 host-qs-change-failed-airplane = Couldn’t change airplane mode
-host-qs-change-failed-hotspot = Couldn’t change personal hotspot
 host-qs-change-failed-mobile = Couldn’t change mobile broadband
 host-qs-change-failed-power = Couldn’t change power mode
 host-qs-change-failed-state-restored = The control was restored to the current device state.
@@ -571,17 +568,6 @@ a11y-at-a-glance = At a glance
 a11y-clipboard-data = Clipboard data
 a11y-clipboard-unpin = Unpin item
 a11y-clipboard-pin = Pin item
-
-# Accessibility tree: moving a Bluetooth accessory
-a11y-bluetooth-accessory = Bluetooth accessory
-a11y-bluetooth-disconnect = Disconnect { $accessory } from this device
-a11y-bluetooth-move-to = Move to { $device }
-a11y-bluetooth-destination-local = This device
-a11y-bluetooth-destination-online = The destination confirms its own local pairing before this device disconnects
-a11y-bluetooth-destination-offline = Offline device
-a11y-bluetooth-move = Move { $accessory }
-a11y-bluetooth-move-description = Choose one of your devices already paired with this accessory. Pairing keys never leave either device. Use Up and Down, Page Up and Page Down, Home, or End to reach every destination.
-a11y-bluetooth-destinations = Bluetooth destinations
 
 # Accessibility tree: devices and media rows
 a11y-certified-display = Your other display
@@ -706,15 +692,6 @@ qs-devices-external-power = external power
 qs-devices-charging = charging { $percent }%
 qs-devices-battery = battery { $percent }%
 
-# Quick Settings: moving a Bluetooth accessory
-qs-bluetooth-move-note = The other device must already be paired with it
-qs-devices-fabric-unavailable = Personal device fabric is unavailable
-qs-bluetooth-this-device = This device
-qs-bluetooth-disconnect = Disconnect { $accessory } without forgetting it
-qs-bluetooth-this-certified = This device
-qs-bluetooth-move-here = Move here after its local pairing is confirmed
-qs-devices-showing = { $first }–{ $last } of { $total }
-
 # Quick Settings: devices and media pane
 qs-devices-place = Place { $display } { $side ->
         [left] left
@@ -812,21 +789,8 @@ qs-devices-play-audio-here = Play the audio here
 qs-devices-no-audio = This device has no audio output
 
 # Quick Settings: clipboard history
-qs-clipboard-search-matches = { $count ->
-        [one] One copy matches “{ $query }”
-       *[other] { $count } copies match “{ $query }”
-    }
-qs-clipboard-no-matches = Nothing matches “{ $query }”
-qs-clipboard-search-range = { $first } to { $last } of { $total } copies. Type to search.
-qs-clipboard-search-count = { $count ->
-        [one] One copy. Type to search.
-       *[other] { $count } copies. Type to search.
-    }
 qs-clipboard-mime-bytes = { $mime } · { $bytes } bytes
 qs-clipboard-remove-a11y = Remove clipboard item
-
-# Quick Settings: joining a protected Wi-Fi network
-qs-wifi-protected = This network is protected
 
 # Retained history: sources and severities
 history-this-device = This device

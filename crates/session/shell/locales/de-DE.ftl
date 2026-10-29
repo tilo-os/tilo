@@ -241,7 +241,6 @@ guide-vim-mode = Vim-Tasten: h j k l
 # Geräte und Medien, die Detailansicht der Schnelleinstellungen
 
 # Schnelleinstellungen
-qs-connecting = Wird verbunden …
 qs-not-connected = Nicht verbunden
 qs-devices = Geräte
 qs-clipboard = Zwischenablage
@@ -254,7 +253,6 @@ qs-wifi-off = WLAN ist aus
 qs-wifi-scanning = Netzwerke werden gesucht …
 qs-power-mode = Energiemodus
 qs-battery = Akku
-qs-wifi-password-for = Gib das Passwort des Netzwerks ein
 qs-clipboard-copied = { $age }, von { $source }
 
 # Schnelleinstellungen: Bluetooth
@@ -526,7 +524,6 @@ host-qs-change-failed-wifi = WLAN konnte nicht geändert werden
 host-qs-change-failed-bluetooth = Bluetooth konnte nicht geändert werden
 host-qs-change-failed-wired = Kabelnetzwerk konnte nicht geändert werden
 host-qs-change-failed-airplane = Flugmodus konnte nicht geändert werden
-host-qs-change-failed-hotspot = Persönlicher Hotspot konnte nicht geändert werden
 host-qs-change-failed-mobile = Mobilfunk konnte nicht geändert werden
 host-qs-change-failed-power = Energiemodus konnte nicht geändert werden
 host-qs-change-failed-state-restored = Das Bedienelement zeigt wieder den aktuellen Zustand des Geräts.
@@ -568,17 +565,6 @@ a11y-at-a-glance = Auf einen Blick
 a11y-clipboard-data = Daten der Zwischenablage
 a11y-clipboard-unpin = Eintrag lösen
 a11y-clipboard-pin = Eintrag anheften
-
-# Barrierefreiheitsbaum: Bluetooth-Zubehör verschieben
-a11y-bluetooth-accessory = Bluetooth-Zubehör
-a11y-bluetooth-disconnect = { $accessory } von diesem Gerät trennen
-a11y-bluetooth-move-to = Zu { $device } verschieben
-a11y-bluetooth-destination-local = Dieses Gerät
-a11y-bluetooth-destination-online = Das Ziel bestätigt seine eigene lokale Kopplung, bevor dieses Gerät die Verbindung trennt
-a11y-bluetooth-destination-offline = Gerät offline
-a11y-bluetooth-move = { $accessory } verschieben
-a11y-bluetooth-move-description = Wähle eines deiner Geräte, das bereits mit diesem Zubehör gekoppelt ist. Kopplungsschlüssel verlassen keines der Geräte. Mit Pfeil nach oben und unten, Bild auf und Bild ab, Pos1 oder Ende erreichst du jedes Ziel.
-a11y-bluetooth-destinations = Bluetooth-Ziele
 
 # Barrierefreiheitsbaum: Zeilen für Geräte und Medien
 a11y-certified-display = Dein anderer Bildschirm
@@ -703,15 +689,6 @@ qs-devices-external-power = Netzbetrieb
 qs-devices-charging = lädt { $percent } %
 qs-devices-battery = Akku { $percent } %
 
-# Schnelleinstellungen: Bluetooth-Zubehör verschieben
-qs-bluetooth-move-note = Das andere Gerät muss bereits damit gekoppelt sein
-qs-devices-fabric-unavailable = Das persönliche Gerätenetz ist nicht verfügbar
-qs-bluetooth-this-device = Dieses Gerät
-qs-bluetooth-disconnect = { $accessory } trennen, ohne es zu vergessen
-qs-bluetooth-this-certified = Dieses Gerät
-qs-bluetooth-move-here = Hierher verschieben, sobald die lokale Kopplung bestätigt ist
-qs-devices-showing = { $first }–{ $last } von { $total }
-
 # Schnelleinstellungen: Bereich Geräte und Medien
 qs-devices-place = { $display } { $side ->
         [left] links
@@ -809,21 +786,8 @@ qs-devices-play-audio-here = Audio hier abspielen
 qs-devices-no-audio = Dieses Gerät hat keinen Audioausgang
 
 # Schnelleinstellungen: Verlauf der Zwischenablage
-qs-clipboard-search-matches = { $count ->
-        [one] Ein Eintrag passt zu „{ $query }“
-       *[other] { $count } Einträge passen zu „{ $query }“
-    }
-qs-clipboard-no-matches = Nichts passt zu „{ $query }“
-qs-clipboard-search-range = { $first } bis { $last } von { $total } Einträgen. Zum Suchen tippen.
-qs-clipboard-search-count = { $count ->
-        [one] Ein Eintrag. Zum Suchen tippen.
-       *[other] { $count } Einträge. Zum Suchen tippen.
-    }
 qs-clipboard-mime-bytes = { $mime } · { $bytes } Byte
 qs-clipboard-remove-a11y = Eintrag der Zwischenablage entfernen
-
-# Schnelleinstellungen: einem geschützten WLAN beitreten
-qs-wifi-protected = Dieses Netzwerk ist geschützt
 
 # Aufbewahrter Verlauf: Quellen und Schweregrade
 history-this-device = Dieses Gerät
