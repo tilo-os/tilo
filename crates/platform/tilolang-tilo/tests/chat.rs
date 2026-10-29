@@ -296,6 +296,36 @@ fn a_message_is_edited_in_place_and_pinned_and_both_show_for_everyone() {
         );
     }
 
+    // Only its author edits a message: Ben has no Edit on Ada's, and editing it as Ben is
+    // refused with the reason.
+    let row = rows(&mut ben_design).remove(0);
+    assert!(button(&row, "Edit").is_none(), "no Edit on someone else's");
+    let message = ben_design
+        .event_action(&button(&row, "Pin").expect("Pin"), "press")
+        .expect("Pin runs on the message")
+        .args[0]
+        .clone();
+    let meta = ben.host.package(APP).unwrap().meta;
+    let edit_id = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "edit")
+        .unwrap()
+        .id
+        .clone();
+    let refused = ben.host.runtime().invoke_action(
+        &Principal::new("ben"),
+        (edit_id.as_str(), vec![message, rich("Not mine to say.")]),
+    );
+    assert!(
+        !matches!(refused, Ok(InvokeOutcome::Done(_))),
+        "Ben's edit of Ada's message is refused: {refused:?}"
+    );
+    assert_eq!(
+        said(&mut ben_design),
+        ["The build is on the test machines."]
+    );
+
     // Ben pins it; both see it pinned.
     let row = rows(&mut ben_design).remove(0);
     let pin = button(&row, "Pin").expect("Pin on a message");
@@ -309,7 +339,16 @@ fn a_message_is_edited_in_place_and_pinned_and_both_show_for_everyone() {
             "{:?}",
             shown_in(&row)
         );
-        assert!(button(&row, "Unpin").is_some(), "Pin turns into Unpin");
+        let mut labels = Vec::new();
+        find_all(&row, "ui.Button", &mut labels);
+        let labels: Vec<_> = labels
+            .iter()
+            .map(|b| format!("{:?}", b.props.get("label")))
+            .collect();
+        assert!(
+            button(&row, "Unpin").is_some(),
+            "Pin turns into Unpin: {labels:?}"
+        );
     }
 }
 

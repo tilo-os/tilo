@@ -86,10 +86,9 @@ action send(to: TextChannel | Thread, body: RichText, reply_to: Option<Message> 
     }
 }
 
-/// Changes what a message says; the message shows it was edited.
-/// TODO(language): only its author may, a requirement that reads `invoker`, which requirements
-/// cannot yet.
+/// Changes what a message says; the message shows it was edited. Only its author may.
 action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") {
+    require created(m)?.who == .some(invoker) "Only its author can edit a message"
     require not body.is_empty() "Type a message first"
     m.body = body
 }
@@ -173,9 +172,7 @@ view channel_message(c: TextChannel, m: Message, replying: State<Option<Message>
         if m.thread == .none {
             button(start_thread(c, m), icon_only: true)
         }
-        ui.Button("Edit", icon: .pencil, icon_only: true) {
-            on press: set(revised, m.body).then(set(editing, m))
-        }
+        edit_button(m, editing, revised)
         button(pin(m), icon_only: true)
     }
 }
@@ -201,9 +198,7 @@ view thread_message(m: Message, replying: State<Option<Message>>, editing: State
         ui.Button("Reply", icon: .reply, icon_only: true) {
             on press: set(replying, m)
         }
-        ui.Button("Edit", icon: .pencil, icon_only: true) {
-            on press: set(revised, m.body).then(set(editing, m))
-        }
+        edit_button(m, editing, revised)
         button(pin(m), icon_only: true)
     }
 }
@@ -217,6 +212,15 @@ view composer(to: TextChannel | Thread, draft: State<RichText>, replying: State<
         rich_input(bind: draft, placeholder: placeholder, fill)
         ui.Button("Send", icon: .send, icon_only: true) {
             on press: send(to, draft, replying).then(set(draft, RichText(""))).then(set(replying, .none))
+        }
+    }
+}
+
+/// Edit, for whoever may edit the message (its author): puts the editor in its place.
+view edit_button(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
+    if actions(m).any(a -> a.label == "Edit") {
+        ui.Button("Edit", icon: .pencil, icon_only: true) {
+            on press: set(revised, m.body).then(set(editing, m))
         }
     }
 }

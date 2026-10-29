@@ -94,6 +94,9 @@ struct FnState {
     scenario: bool,
     /// Set while checking an agent's program: a flow that may `print`, `find` and `read`.
     program: bool,
+    /// Set while checking an action's requirements where it is presented: `invoker` is the
+    /// person looking, who would invoke it.
+    presenting: bool,
     /// Where the UI being lowered stands.
     ui: UiPlace,
     /// For a view made of a loop body, the declared view it was written in (for anchors).
