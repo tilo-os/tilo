@@ -74,9 +74,7 @@ impl StoreApp {
     /// Compose the whole tree. Called from `build_layout`; also used by tests
     /// to inspect the composition graph directly.
     pub(super) fn compose(&self, theme: &Theme) -> Element {
-        if self.runtime_visible() {
-            self.build_runtime_recovery(theme)
-        } else if self.safety_open {
+        if self.safety_open {
             self.build_safety_center(theme)
         } else if self.remotes_open {
             self.build_remotes(theme)
@@ -1289,94 +1287,6 @@ impl StoreApp {
                 ),
             ],
         ))
-    }
-
-    /// Optional payloads never download just because a Browser link was opened.
-    fn build_runtime_recovery(&self, theme: &Theme) -> Element {
-        use crate::runtime_recovery::Phase;
-        let Some(recovery) = &self.runtime_recovery else {
-            return self.build_home(theme);
-        };
-        let app_name = self
-            .item(&recovery.target.app)
-            .map_or(recovery.target.app.as_str(), |item| item.name.as_str());
-        let mut children = vec![
-            Self::prose(&ui::i18n!("store-runtime-explanation")),
-            Box::new(PropertyList::new(vec![Property::new(
-                ui::i18n!("store-runtime-consumer"),
-                app_name,
-            )])) as Element,
-        ];
-        match &recovery.phase {
-            Phase::Inspecting | Phase::Acquiring(_) => {
-                let key = if matches!(recovery.phase, Phase::Inspecting) {
-                    "store-runtime-inspecting"
-                } else {
-                    "store-runtime-acquiring"
-                };
-                children.push(Box::new(
-                    Row::new().push(Box::new(Spinner::new())).push(Box::new(
-                        Banner::info(ui::i18n!(key))
-                            .with_message(ui::i18n!("store-runtime-background")),
-                    )),
-                ));
-                if matches!(recovery.phase, Phase::Acquiring(_)) {
-                    children.push(Self::prose(&self.status_line));
-                }
-            }
-            Phase::Review(review) => {
-                if let Some(offer) = &review.offer {
-                    children.push(Box::new(PropertyList::new(vec![
-                        Property::new(ui::i18n!("store-runtime-source"), &offer.registry),
-                        Property::new(
-                            ui::i18n!("store-runtime-size"),
-                            format_size(offer.size_bytes),
-                        ),
-                    ])));
-                    children.push(Self::prose(&ui::i18n!("store-runtime-consent")));
-                    if let Ok(review) = serde_json::to_string(review) {
-                        let mut acquire = Button::new(
-                            "store.runtime.acquire",
-                            &ui::i18n!("store-runtime-download"),
-                        )
-                        .role(ButtonRole::Primary);
-                        if let Some(binding) =
-                            bindings::effect(&StoreEffect::AcquireRuntime { review })
-                        {
-                            acquire = acquire.on_action(binding);
-                        }
-                        children.push(Box::new(Actions::new(acquire)));
-                    }
-                    children.push(self.technical_properties_section(vec![
-                        Property::new(ui::i18n!("store-runtime-repair-reference"), &review.runtime),
-                        Property::new(ui::i18n!("store-runtime-package"), &offer.package_id),
-                        Property::new(ui::i18n!("store-runtime-version"), &offer.version),
-                        Property::new(ui::i18n!("store-runtime-publisher"), &offer.publisher),
-                        Property::new(ui::i18n!("store-runtime-root"), &offer.root),
-                        Property::new(ui::i18n!("store-runtime-hash"), &offer.archive_hash),
-                    ]));
-                }
-            }
-            Phase::Failed(error) => {
-                let mut retry =
-                    Button::new("store.runtime.retry", &ui::i18n!("store-runtime-retry"));
-                if let Some(binding) = bindings::effect(&StoreEffect::RetryRuntime) {
-                    retry = retry.on_action(binding);
-                }
-                children.push(Box::new(
-                    Banner::error(ui::i18n!("store-runtime-failed"))
-                        .with_message(error)
-                        .with_action(retry),
-                ));
-            }
-            Phase::Complete(_) => {
-                children.push(Box::new(
-                    Banner::info(ui::i18n!("store-runtime-complete"))
-                        .with_message(ui::i18n!("store-runtime-reopen")),
-                ));
-            }
-        }
-        self.page(theme, Measure::Reading, false, children)
     }
 
     /// Reports the person has drafted, how decisions work, and what a

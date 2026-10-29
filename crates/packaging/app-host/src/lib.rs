@@ -29,7 +29,6 @@ pub mod client;
 pub mod install;
 #[cfg(feature = "service")]
 pub mod runtime_request;
-pub mod runtime_transaction;
 #[cfg(feature = "service")]
 pub mod service;
 #[cfg(all(unix, feature = "test-support"))]
@@ -60,9 +59,9 @@ pub use package_store::{Catalog, InstalledPackage, Pinning};
 pub use tilo_app_package::PackageId;
 
 /// The app-host interface's one version: what the `app-host` service speaks
-/// to the apps it is handed to (the Store, the Browser, Settings), on its own
+/// to the apps it is handed to (the Store and Settings), on its own
 /// rather than the runtime interface's (crates/packaging/app-host/interface.toml).
-pub const APP_HOST_INTERFACE_VERSION: u32 = 3;
+pub const APP_HOST_INTERFACE_VERSION: u32 = 4;
 
 /// Default socket path: `$XDG_RUNTIME_DIR/tilo/services/app-host.sock`, or
 /// `None` without a runtime directory. Never the shared temp directory, where

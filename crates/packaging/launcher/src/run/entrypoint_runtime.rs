@@ -1,43 +1,9 @@
 //! The runtime bundle an entrypoint executes a binary of (`[entrypoint].runtime`):
-//! resolved beside the optional runtimes, and its binary's libraries checked as the
+//! resolved among the app's required runtimes, and its binary's libraries checked as the
 //! sandboxed loader looks for them.
 use std::path::{Path, PathBuf};
 
-use super::{
-    ManifestView, RunError, RunOptions, find_runtime_bundle, launch_entry_bin,
-    resolve_optional_runtimes,
-};
-
-/// The runtime bundle whose binary the entrypoint executes
-/// (`[entrypoint].runtime`), installed and verified. A launch cannot start
-/// without it, so a missing or refused bundle refuses the launch.
-pub(super) fn resolve_entrypoint_runtime(
-    manifest: &ManifestView,
-    opts: &RunOptions,
-) -> Result<Option<(PathBuf, String)>, RunError> {
-    let Some(raw) = manifest.entrypoint.runtime.as_deref() else {
-        return Ok(None);
-    };
-    match find_runtime_bundle(raw, opts)? {
-        (Some(bundle), _) => Ok(Some(bundle)),
-        (None, searched) => Err(RunError::EntrypointRuntimeMissing {
-            package: manifest.package_id.clone(),
-            runtime: raw.to_owned(),
-            searched,
-        }),
-    }
-}
-
-/// Every further runtime bundle a launch mounts: the optional runtimes that
-/// are installed and verify, and the entrypoint's runtime, which must be.
-pub(super) fn resolve_launch_runtimes(
-    manifest: &ManifestView,
-    opts: &RunOptions,
-) -> Result<Vec<(PathBuf, String)>, RunError> {
-    let mut bundles = resolve_optional_runtimes(manifest, opts);
-    bundles.extend(resolve_entrypoint_runtime(manifest, opts)?);
-    Ok(bundles)
-}
+use super::{ManifestView, RunError, RunOptions, launch_entry_bin};
 
 /// [`preflight_runtime_libraries`] for an entrypoint that executes a binary
 /// of its runtime bundle: the binary must find its libraries in that bundle,
@@ -55,7 +21,7 @@ pub(super) fn preflight_entrypoint_runtime(
         return Err(RunError::RuntimeReferenceMalformed(raw.to_owned()));
     };
     let Some((entry_root, _)) = bundles.iter().find(|(_, version)| version == entry_version) else {
-        return Err(RunError::EntrypointRuntimeMissing {
+        return Err(RunError::RequiredRuntimeMissing {
             package: manifest.package_id.clone(),
             runtime: raw.to_owned(),
             searched: Vec::new(),

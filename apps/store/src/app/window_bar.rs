@@ -2,8 +2,8 @@
 //!
 //! The bar shows the page as the window's location; on the catalogue, its
 //! four parts as the view switcher (Discover, Updates, On this device, Bots)
-//! and its actions: review a package file, the Flatpak remotes and trust,
-//! and repairing the runtime while it needs it; on the repositories,
+//! and its actions: review a package file, the Flatpak remotes and trust;
+//! on the repositories,
 //! refreshing them. Back is the shell's slot, and search the bar's own,
 //! which searches the catalogue in place (the Store is its
 //! [`ui::widget::Queryable`]). Each action runs the same published effect
@@ -24,13 +24,9 @@ use ui::widget::Widget as _;
 const VIEW_PREFIX: &str = "view:";
 
 impl StoreApp {
-    /// Whether the window shows the catalogue (no page, list or runtime over
-    /// it).
+    /// Whether the window shows the catalogue (no page or list over it).
     pub(super) fn shows_catalogue(&self) -> bool {
-        !self.runtime_visible()
-            && !self.safety_open
-            && !self.remotes_open
-            && self.focused_detail.is_none()
+        !self.safety_open && !self.remotes_open && self.focused_detail.is_none()
     }
 
     /// The window bar's slots, the shell's own (`base`) first.
@@ -43,14 +39,10 @@ impl StoreApp {
             })
         };
         base.location = Some(ToolbarLocation {
-            label: if self.runtime_visible() {
-                ui::i18n!("store-runtime-title")
-            } else {
-                self.page_title()
-            },
+            label: self.page_title(),
             ..ToolbarLocation::default()
         });
-        if self.remotes_open && !self.runtime_visible() {
+        if self.remotes_open {
             ui::widget::NavShell::push_window_actions(
                 &mut base,
                 entry(
@@ -95,13 +87,6 @@ impl StoreApp {
         });
         // Opening a package file and managing where apps come from are
         // occasional: they stand named in the More menu, not as bare icons.
-        let repair = self.runtime_recovery.is_some().then(|| {
-            entry(
-                StoreEffect::ShowRuntime,
-                "triangle-alert",
-                ui::i18n!("store-runtime-show"),
-            )
-        });
         let occasional = [
             entry(
                 StoreEffect::ImportPackage {
@@ -123,10 +108,7 @@ impl StoreApp {
                 ui::i18n!("store-trust-title"),
             ),
         ];
-        let actions = repair
-            .into_iter()
-            .flatten()
-            .chain(occasional.into_iter().flatten().map(ToolbarAction::in_menu));
+        let actions = occasional.into_iter().flatten().map(ToolbarAction::in_menu);
         ui::widget::NavShell::push_window_actions(&mut base, actions);
         base
     }

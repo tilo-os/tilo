@@ -1566,16 +1566,19 @@ npm run dev:tilo -- --port 9998 --host-origin https://localhost:9443 --user-publ
 ## Updating the engine without replacing the desktop SDK
 
 A worktree `tilo device swap userspace` assembles the native toolkit and apps in one
-Cargo graph. It does not build Chromium's optional runtime. Browser declares the
-exact engine reference in its signed `optional-runtimes`; a missing engine does
+Cargo graph. It does not build Chromium's engine runtime. Browser declares the
+exact engine reference in its signed `optional-runtimes` (the manifest key of
+its required runtimes); a missing engine does
 not become available merely because the nine userspace components were updated.
 
-The Browser's **Install the browser engine** action opens the existing Store
-review for `so.tilo.runtime.chromium`. Store verifies the configured catalogue and
-uses its ordinary installation action. This does not replace Browser or its
-required core SDK.
+The engine is a required runtime of the Browser: installing or updating the
+Browser installs the exact engine it names in the same step, or refuses and
+leaves the working Browser in place, and the launcher refuses to start a
+Browser whose engine is missing. There is no engine download from inside the
+Browser window.
 
-For an exact required version, the same canonical package flow is available as:
+For a developer who swapped userspace, the canonical package flow fetches the
+exact engine:
 
 ```sh
 app runtime install tilo-runtime/2026.10.4-chromium --repo 'Tilo main'
@@ -1596,4 +1599,3 @@ If the exact engine is not offered, this command fails. The maintained
 `publish=true`. Publication and an installed, verified engine are separate
 prerequisites; an accepted Browser Open is not proof of either.
 
-The Browser's Install engine action opens `tilo-store:runtime/tilo-runtime/2026.10.4-chromium`. Store asks its launcher-issued AppHost capability to resolve that precise runtime from the person's enabled, independently pinned repositories, including retained versions. The ordinary details sheet shows the signed runtime reference and package version. Review installs nothing. The separate Install runtime action binds the selected signed root and uses the same exact-version InstallOffer downloader/installer as other Store packages, with no launch of the engine host. A changed review, missing offer or ambiguous repository selection refuses rather than choosing another runtime. Matching Store and AppHost schema versions must be delivered together.

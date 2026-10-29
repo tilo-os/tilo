@@ -74,9 +74,9 @@ pub struct ManifestView {
     /// release linked into the module.
     pub runtime: Option<String>,
     /// `[package].optional-runtimes` — further runtime bundles
-    /// (`<name>/<version>`) mounted read-only beside the runtime when they
-    /// are installed and verify. A missing one never stops the launch.
-    pub optional_runtimes: Vec<String>,
+    /// (`<name>/<version>`) the app requires, mounted read-only beside the
+    /// runtime. The launch refuses to start without one.
+    pub required_runtimes: Vec<String>,
     pub entrypoint: Entrypoint,
     pub sandbox: Sandbox,
     /// `[cli].commands` — PATH-visible command names the package declares.
@@ -198,7 +198,7 @@ impl TryFrom<Manifest> for ManifestView {
             version: package.version,
             kind: package.kind.as_str().to_string(),
             runtime,
-            optional_runtimes: package.optional_runtimes,
+            required_runtimes: package.required_runtimes,
             entrypoint: Entrypoint::from(entrypoint),
             sandbox: Sandbox::from(sandbox),
             cli_commands: cli.map(|c| c.commands).unwrap_or_default(),
@@ -670,7 +670,7 @@ mod tests {
         .unwrap();
         assert_eq!(m.name.as_deref(), Some("Browser"));
         assert_eq!(m.runtime_ref(), Some(("tilo-runtime", "2026.07")));
-        assert_eq!(m.optional_runtimes, ["tilo-runtime/2026.10.0-chromium"]);
+        assert_eq!(m.required_runtimes, ["tilo-runtime/2026.10.0-chromium"]);
         assert_eq!(m.sandbox.net.mode, "allowlist");
         assert_eq!(m.sandbox.net.hosts, ["example.org"]);
         assert_eq!(

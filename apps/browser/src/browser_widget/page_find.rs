@@ -16,13 +16,13 @@ use super::BrowserWidget;
 
 impl BrowserWidget {
     /// Whether the window bar's search finds in the page: one is shown,
-    /// not the Library, Settings, a page that failed to open or the
-    /// engine's setup.
+    /// not the Library, Settings, a page that failed to open or an engine
+    /// that did not start.
     fn offers_page_find(&self) -> bool {
         !self.show_library
             && !self.show_settings
             && self.load_error.is_none()
-            && self.engine_problem.is_none()
+            && !self.engine_failed
     }
 
     /// What the browser offers its host, as [`ui::widget::Widget::provide`].
@@ -168,11 +168,11 @@ mod tests {
         );
 
         widget.show_library = false;
-        widget.engine_problem = Some(super::super::EngineProblem::NotInstalled);
+        widget.engine_failed = true;
         assert_eq!(
             InPlace::of(&mut widget),
             InPlace::Nothing,
-            "the engine's setup has no page to find in"
+            "an engine that did not start has no page to find in"
         );
     }
 }
