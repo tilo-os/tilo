@@ -2753,6 +2753,18 @@ impl TabBar {
             _ => false,
         }
     }
+    /// Mark `id` as waiting for the person, or not. `true` when that
+    /// changed what it paints.
+    pub fn set_attention(&mut self, id: u64, attention: bool) -> bool {
+        self.touch();
+        match self.tabs.iter_mut().find(|t| t.id == id) {
+            Some(tab) if tab.attention != attention => {
+                tab.attention = attention;
+                true
+            }
+            _ => false,
+        }
+    }
     /// Tint `id`'s leading marker. A tab with no `app_kind` paints a filled dot
     /// in the leading slot; one with both tints its app glyph instead. Pass a
     /// colour read off the `Theme` — see `Self::accent_ids`.

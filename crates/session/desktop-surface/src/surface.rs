@@ -139,6 +139,9 @@ struct Shared {
     /// Whoever holds each window someone else opened, by tab
     /// ([`DesktopHandle::set_holders`]).
     holders: HashMap<TabId, ui::widget::TabHolder>,
+    /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
+    /// until each has their focus.
+    asking: std::collections::BTreeSet<TabId>,
     /// Its person opens windows and tabs here ([`DesktopHandle::set_opens`]):
     /// the windows offer a new tab.
     opens: bool,
@@ -348,6 +351,25 @@ impl DesktopHandle {
         let changed = shared.opens != opens;
         shared.opens = opens;
         changed
+    }
+
+    /// Tab `tab`'s window is waiting for the person (refused the keyboard,
+    /// a dialog where they are not looking): its tab wears a dot until it
+    /// has their focus. False when the desktop holds no such tab or it is
+    /// the one they are looking at.
+    pub fn ask_attention(&self, tab: TabId) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        let looking = navigation::active_route(&shared.tree).map(|route| route.tab);
+        if looking == Some(tab) || route_of(&shared.tree, tab).is_none() {
+            return false;
+        }
+        shared.asking.insert(tab)
+    }
+
+    /// Whether tab `tab`'s window is waiting for the person.
+    #[must_use]
+    pub fn asks_attention(&self, tab: TabId) -> bool {
+        self.shared.borrow().asking.contains(&tab)
     }
 
     pub fn set_holders(&self, holders: HashMap<TabId, ui::widget::TabHolder>) -> bool {
@@ -776,6 +798,7 @@ impl DesktopSurface {
         let shared = Rc::new(RefCell::new(Shared {
             tree,
             holders: HashMap::new(),
+            asking: std::collections::BTreeSet::new(),
             opens: true,
             revision: 1,
             queue: Vec::new(),
@@ -842,6 +865,14 @@ impl DesktopSurface {
     /// ([`DesktopHandle::set_holders`]). Whether that changed what one
     /// offers.
     fn apply_holders(&mut self) -> bool {
+        {
+            // The person is looking at the focused window, however they got
+            // there; a closed window waits for no one.
+            let mut shared = self.shared.borrow_mut();
+            let looking = navigation::active_route(&shared.tree).map(|route| route.tab);
+            let Shared { asking, tree, .. } = &mut *shared;
+            asking.retain(|tab| Some(*tab) != looking && route_of(tree, *tab).is_some());
+        }
         let shared = self.shared.borrow();
         let mut changed = false;
         for row in self.rows.values_mut() {
@@ -850,6 +881,7 @@ impl DesktopSurface {
                 changed |= group.set_new_tab(shared.opens);
                 for tab in tabs {
                     changed |= group.set_tab_holder(tab, shared.holders.get(&tab).cloned());
+                    changed |= group.set_tab_attention(tab, shared.asking.contains(&tab));
                 }
             }
         }

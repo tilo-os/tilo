@@ -2481,6 +2481,12 @@ impl WindowGroup {
         self.bar.tabs().iter().any(|tab| self.bar.is_held(tab.id))
     }
 
+    /// Mark tab `id` as waiting for the person, or not. `true` when that
+    /// changed what it paints.
+    pub fn set_tab_attention(&mut self, id: u64, attention: bool) -> bool {
+        self.bar.set_attention(id, attention)
+    }
+
     /// Replace tab `id`'s artwork. `true` when that changed what it paints.
     pub fn set_tab_icon(&mut self, id: u64, icon: Option<icons::AppImage>) -> bool {
         self.bar.set_icon(id, icon)
