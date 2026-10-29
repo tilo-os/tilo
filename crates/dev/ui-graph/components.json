@@ -277,6 +277,12 @@
           "type": "bool"
         }
       ],
+      "events": [
+        {
+          "name": "submit",
+          "doc": "Enter was pressed: what was typed is done (a quick add's entry). With it, Enter ends the text rather than breaking its line; Shift+Enter still breaks a wrapping field's line."
+        }
+      ],
       "bindings": [
         {
           "name": "value",

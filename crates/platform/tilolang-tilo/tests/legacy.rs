@@ -33,7 +33,7 @@ type Package = (&'static str, &'static str);
 /// needs.
 fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
     vec![
-        (include_str!("legacy/todo.hex"), vec![app!("todo")]),
+        (include_str!("legacy/todo.hex"), vec![app!("tasks")]),
         (include_str!("legacy/notes.hex"), vec![app!("notes")]),
         // Letters as it was when it wrote its room: it became Mail since, keeping its ids.
         (
@@ -47,7 +47,7 @@ fn fixtures() -> Vec<(&'static str, Vec<Package>)> {
         (include_str!("legacy/board.hex"), vec![app!("board")]),
         (
             include_str!("legacy/today.hex"),
-            vec![app!("notes"), app!("todo"), app!("chat"), app!("today")],
+            vec![app!("notes"), app!("tasks"), app!("chat"), app!("today")],
         ),
     ]
 }
@@ -279,11 +279,11 @@ fn field(replica: &Replica, app: &str, ty: &str, name: &str) -> (String, String)
 
 #[test]
 fn items_of_an_older_record_move_change_and_go_keeping_their_ids() {
-    let packages = vec![app!("todo")];
+    let packages = vec![app!("tasks")];
     let mut replica = open(include_str!("legacy/todo.hex"), &packages);
     let app = "so.tilo.lang.todo";
     let list = root(&replica, app);
-    let (items_field, item_ty) = field(&replica, app, "TodoList", "items");
+    let (items_field, item_ty) = field(&replica, app, "Tasks", "items");
     let before = listed(&replica, &list, &items_field);
     assert!(before.len() >= 3);
     let item = |id: &str| Value::resource(&list.item(id, item_ty.clone()));
@@ -493,7 +493,7 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
 /// Todo's package, published as Tasks: the same declarations and ids lock, under the id
 /// `so.tilo.lang.tasks`, declaring it was `so.tilo.lang.todo` before.
 fn todo_as_tasks() -> (String, &'static str) {
-    let (source, ids) = app!("todo");
+    let (source, ids) = app!("tasks");
     let (header, rest) = source.split_once('\n').unwrap();
     assert!(header.starts_with("app so.tilo.lang.todo "), "{header}");
     let renamed = format!(
@@ -523,7 +523,7 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
     // The root is the one Todo made, and its items read as before, by their ids.
     let list = root(&replica, app);
     assert!(before.iter().any(|(_, id)| *id == list.doc), "{list:?}");
-    let (items_field, item_ty) = field(&replica, app, "TodoList", "items");
+    let (items_field, item_ty) = field(&replica, app, "Tasks", "items");
     let items = listed(&replica, &list, &items_field);
     assert!(items.len() >= 3, "{items:?}");
     // Opening changed nothing in the record.

@@ -326,7 +326,7 @@ apps:
 ```
 grep(/\bChen\b/, in: notes + chat).count_by(.doc)      // counts first, then a row per note
 grep(/^- \[ \] (.*launch.*)/i, in: notes, not: .quote, changed: -14d)
-    .each(t -> todo.add(todo.todos, t.group(1)))
+    .each(t -> todo.add(todo.tasks, t.group(1)))
 find("standup chen")                                   // the palette's words, every app
 find(Note, pinned: true).sort_by(.title).take(3)       // a type and its filters
 find("groceries").single()                             // one, or an error listing them
