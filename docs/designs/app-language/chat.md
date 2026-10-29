@@ -143,15 +143,17 @@ view conversation(in: TextChannel | Thread, draft: lens RichText, replying: lens
     } composer: {
         if let r = replying { reply_banner(r, cancel: replying = .none) }
         rich_input(bind: draft, placeholder: "Message {in.name}") {
-            complete "@" from: [in.members, workspace.members]
-            complete "#" from: query(TextChannel)
-            complete ":" from: std.emoji
-            complete "/" from: actions(in)
-            on paste(files), drop(files): std.attach(draft, files)
-            key up when draft.is_empty: edit_last(in)
-            key escape when replying != .none: replying = .none
-            key enter: send(in, body: draft, reply_to: replying),
-                then: { draft = .empty; replying = .none }
+            ui.Completion(trigger: "@", from: [in.members, workspace.members])
+            ui.Completion(trigger: "#", from: query(TextChannel))
+            ui.Completion(trigger: ":", from: std.emoji)
+            ui.Completion(trigger: "/", from: actions(in))
+            on paste(files): std.attach(draft, files)
+            on drop(files): std.attach(draft, files)
+            ui.Key(chord: "up", when: draft.is_empty) { edit_last(in) }
+            ui.Key(chord: "escape", when: replying != .none) { set(replying, .none) }
+            ui.Key(chord: "enter") {
+                send(in, body: draft, reply_to: replying).then(set(draft, .empty)).then(set(replying, .none))
+            }
         }
     }
 }
@@ -163,22 +165,25 @@ view message_row(in: TextChannel | Thread, m: Message, replying: lens Option<Mes
     reactions(m.reactions, toggle: e -> react(m, e))
     if let t = m.thread { thread_chip(t, count: t.messages.count, last: t.messages.last()?.created.at) }
 
-    hover_toolbar {
+    ui.HoverToolbar {
         for e in std.frequent_emoji(limit: 3) { button(react(m, e), label: e) }
-        emoji_picker(pick: e -> react(m, e))
-        button(icon: .reply, label: "Reply", then: replying = .some(m))
+        ui.EmojiPicker { on pick(e): react(m, e) }
+        button(icon: .reply, label: "Reply") { on activate: set(replying, .some(m)) }
         if m.thread == .none { button(start_thread(m), icon_only: true) }
     }
-    swipe(trailing: { replying = .some(m) }, leading: react(m, .thumbs_up))
-    context_menu: {
-        emoji_bar(std.frequent_emoji(limit: 6), pick: e -> react(m, e), more: emoji_picker)
-        separator
-        item(icon: .reply, label: "Reply", then: replying = .some(m))
-        item(start_thread(m))
-        item(pin(m))
-        item(edit(m), when: m.created.by == me)
-        separator
-        item(delete(in, m))
+    ui.Swipe {
+        trailing: { button(icon: .reply, label: "Reply") { on activate: set(replying, .some(m)) } }
+        leading: { button(react(m, .thumbs_up)) }
+    }
+    ui.ContextMenu {
+        ui.EmojiBar(std.frequent_emoji(limit: 6)) { on pick(e): react(m, e) }
+        ui.MenuSeparator
+        ui.MenuItem(icon: .reply, label: "Reply") { on activate: set(replying, .some(m)) }
+        ui.MenuItem(start_thread(m))
+        ui.MenuItem(pin(m))
+        if m.created.by == me { ui.MenuItem(edit(m)) }
+        ui.MenuSeparator
+        ui.MenuItem(delete(in, m))
     }
 }
 
@@ -240,6 +245,10 @@ everything below is the system's drawer, the same in every input.
   bottom, never jumping while reading history, a "new messages" pill.
 - **Motion:** keyed inserts, removals, edits and reactions animate on the platform's springs;
   swipes follow the finger and commit or spring back; reduced motion is respected.
+- **Attached components:** `ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe`, `ui.Completion` and
+  `ui.Key` draw nothing where they stand and attach to the view or input they're in. No new
+  statement syntax; the same meaning everywhere. Destructive items are undone afterwards, not
+  confirmed first (the platform rule).
 - **Menus and input:** the menu's typing field (filter, or ask the agent), remaining allowed
   actions, keyboard navigation, long-press, phone sheets; completion lists, markdown shortcuts and
   uploads with progress. All of it runs in the UI host at frame rate; the app answers data and
@@ -266,6 +275,7 @@ everything below is the system's drawer, the same in every input.
 |---|---|
 | Union types, `Map`, roots as values, `type X = …`, key paths, `if let`, `?.`/`??`, lens parameters | language changes, in progress |
 | `RichText` with references | type, storage as tilo-doc rich text, merge, references (one form: the catalogue's resource reference), search and mention notices built; `rich_text` renders each reference as the reader's inline view (no-access shown as only existing, click opens) ; `rich_input` to build |
-| `context_menu:`, `hover_toolbar`, `swipe`, completion, key bindings, transitions, run in the UI host | to build |
+| `ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe` (attached, run in the UI host) | done |
+| `ui.Completion`, `ui.Key`, transitions, emoji picker, reactions, quote, reply banner, thread chip | to build |
 | Others' lens state (typing, read position) and delivery facts readable by `std` | to build |
 | `uses call`, `call.participants`, `std.call` over the native call stack | to build |
