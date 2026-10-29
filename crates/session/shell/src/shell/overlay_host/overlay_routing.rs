@@ -132,11 +132,33 @@ impl ShellOverlayHost {
 
     /// A drag along the now-playing card's playhead keeps the pointer
     /// until it is let go.
-    pub(super) fn route_now_playing_scrub(&mut self, event: &WindowEvent) -> bool {
+    pub(super) fn route_now_playing_scrub(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+    ) -> bool {
         if !self.now_playing_card.scrubbing() {
             return false;
         }
         match event {
+            // A finger that landed on the playhead scrubs it as the held
+            // pointer does: it follows the finger, and lifting it seeks.
+            WindowEvent::Touch(touch) => {
+                match touch.phase {
+                    winit::event::TouchPhase::Started => {}
+                    winit::event::TouchPhase::Moved => self.drag_now_playing_seek(Point::new(
+                        touch.location.x / scale_factor,
+                        touch.location.y / scale_factor,
+                    )),
+                    winit::event::TouchPhase::Ended => self.release_now_playing_seek(),
+                    // Taken away (a gesture claimed it): nothing seeks.
+                    winit::event::TouchPhase::Cancelled => {
+                        self.now_playing_card.reset();
+                        self.bump_chrome();
+                    }
+                }
+                true
+            }
             WindowEvent::CursorMoved { .. } => {
                 if let Some(point) = self.last_cursor {
                     self.drag_now_playing_seek(point);

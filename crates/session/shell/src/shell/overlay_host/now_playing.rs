@@ -345,9 +345,8 @@ impl ShellOverlayHost {
         };
         if !self.now_playing_card.focus_next(&view, backwards) {
             self.now_playing_card.reset();
-            if let Some(app) = self.quick_settings.app_mut() {
-                app.set_focus(true);
-            }
+            // Back past the card's first control lands on the panel's last.
+            self.quick_settings.enter_focus(backwards);
         }
         self.bump_chrome();
         true
@@ -582,6 +581,90 @@ mod tests {
                 .map(|view| view.player().identity.clone()),
             Some("Idle".to_string()),
             "the picked player is shown from now on"
+        );
+    }
+
+    #[test]
+    fn tab_runs_from_the_panel_through_the_card_and_back() {
+        use winit::keyboard::{Key, NamedKey};
+        let (mut host, _chrome, _) =
+            open_host(vec![player("music", "Music", PlaybackStatus::Playing)]);
+        let tab = |host: &mut ShellOverlayHost| {
+            let _ = ui::testing::dispatch(
+                host,
+                &ui::synthetic_input::key_press(Key::Named(NamedKey::Tab), None),
+            );
+            // The panel answers on its next frame, as it would on screen.
+            host.force_quick_settings_settled();
+        };
+        let mut steps = 0;
+        while !host.now_playing_card.has_focus() {
+            tab(&mut host);
+            steps += 1;
+            assert!(
+                steps < 64,
+                "Tab past the panel's last control reaches the card"
+            );
+        }
+        assert!(
+            host.quick_settings
+                .app()
+                .and_then(|app| app.accessibility())
+                .is_some_and(|panel| !holds_focus(&panel)),
+            "the panel no longer claims the reader's focus"
+        );
+        while host.now_playing_card.has_focus() {
+            tab(&mut host);
+            steps += 1;
+            assert!(
+                steps < 128,
+                "past the card's last control, Tab is the panel's again"
+            );
+        }
+    }
+
+    fn holds_focus(node: &ui::a11y::AccessNode) -> bool {
+        node.state.focused || node.children.iter().any(holds_focus)
+    }
+
+    #[test]
+    fn a_finger_scrubs_the_playhead_and_lifting_it_seeks() {
+        let (mut host, _chrome, source) =
+            open_host(vec![player("music", "Music", PlaybackStatus::Playing)]);
+        let seek = target(&host, "now_playing_seek");
+        let finger = |phase, at: Point| {
+            WindowEvent::Touch(winit::event::Touch {
+                device_id: winit::event::DeviceId::dummy(),
+                phase,
+                location: winit::dpi::PhysicalPosition::new(at.x, at.y),
+                force: None,
+                id: 7,
+            })
+        };
+        let start = Point::new(seek.x0 + seek.width() * 0.25, seek.center().y);
+        let end = Point::new(seek.x0 + seek.width() * 0.75, seek.center().y);
+        for event in [
+            finger(winit::event::TouchPhase::Started, start),
+            finger(winit::event::TouchPhase::Moved, end),
+        ] {
+            assert!(ui::testing::dispatch(&mut host, &event));
+        }
+        assert!(
+            host.now_playing_card.scrubbing(),
+            "the playhead follows the finger"
+        );
+        let sent = source.sent.borrow().len();
+        assert!(ui::testing::dispatch(
+            &mut host,
+            &finger(winit::event::TouchPhase::Ended, end)
+        ));
+        assert!(!host.now_playing_card.scrubbing());
+        assert!(
+            source.sent.borrow()[sent..]
+                .iter()
+                .any(|(_, command)| matches!(command, PlayerCommand::SetPosition { .. })),
+            "lifting the finger seeks: {:?}",
+            source.sent.borrow()
         );
     }
 

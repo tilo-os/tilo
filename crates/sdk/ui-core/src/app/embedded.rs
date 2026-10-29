@@ -305,6 +305,14 @@ impl EmbeddedApp {
         }
     }
 
+    /// Give the app keyboard focus from its host's focus order, coming
+    /// from after it with `backwards` (Shift+Tab): focus lands on its last
+    /// control then, else on its first.
+    pub fn enter_focus(&mut self, backwards: bool) {
+        self.entering_backwards = backwards;
+        Widget::set_focus(self, true);
+    }
+
     /// The root widget of the app's component: what an app's own tests
     /// reach into, as they would in the app's window.
     pub fn component_root_mut(&mut self) -> Option<&mut dyn Widget> {

@@ -170,6 +170,21 @@ impl QuickSettingsPanel {
         self.app.as_mut()
     }
 
+    /// Give the panel the keyboard from the card beside it: on its last
+    /// control coming back with Shift+Tab, else on its first.
+    pub(super) fn enter_focus(&mut self, backwards: bool) {
+        let Some(app) = self.app.as_mut() else {
+            return;
+        };
+        match app
+            .as_any_mut()
+            .and_then(|app| app.downcast_mut::<ui::app::EmbeddedApp>())
+        {
+            Some(embedded) => embedded.enter_focus(backwards),
+            None => app.set_focus(true),
+        }
+    }
+
     pub(super) fn app(&self) -> Option<&dyn ui::widget::AppWidget> {
         self.app.as_deref()
     }
@@ -1069,7 +1084,7 @@ impl ShellOverlayHost {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        if self.route_now_playing_scrub(event) {
+        if self.route_now_playing_scrub(event, ctx.scale_factor) {
             *ctx.handled = true;
             return true;
         }
