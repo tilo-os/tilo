@@ -20,8 +20,8 @@ mod common;
 
 tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
-#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
-mod steward;
+#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+mod participant;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 mod support;
 
@@ -159,7 +159,7 @@ async fn an_agent_asks_its_person_before_an_action_that_asks_first() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let agent_device = enrol(
         &root,
         "Agent: Careful",

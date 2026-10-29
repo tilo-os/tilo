@@ -192,10 +192,10 @@ pub struct GovernedAccess {
 /// [`PeerGovernance::withheld_record_readers`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordReaders {
-    /// Each channel whose record the steward can name, and the member
+    /// Each channel whose record the caller can name, and the member
     /// devices that may not read that record (possibly none).
     pub withheld: std::collections::HashMap<collab_types::ChannelId, BTreeSet<[u8; 32]>>,
-    /// The member devices kept out of every channel whose record the steward
+    /// The member devices kept out of every channel whose record the caller
     /// cannot name: those a Deny over a pattern of records could keep out.
     pub unrouted: BTreeSet<[u8; 32]>,
 }

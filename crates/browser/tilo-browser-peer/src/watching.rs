@@ -3,7 +3,7 @@
 //! A page that only watches a public room ([`crate::session::PeerConfig::watching`])
 //! is no member of the room's channels: it never asks for access over a
 //! channel, which would be a write the room refuses it. It takes a record's
-//! content keys from the room's steward over HTTPS instead, when a sealed
+//! content keys from the room's node over HTTPS instead, when a sealed
 //! document of the record arrives that its keys cannot open, or when the page
 //! opens the record. One request per record is in flight at a time, and a
 //! refused record is asked for again only after [`RETRY_MS`], so a private
@@ -33,7 +33,7 @@ impl WatchedKeys {
 
     /// The wanted records to ask for at `now_ms`, now marked in flight:
     /// only those the room holds a seat for this page in (`seated`), as the
-    /// steward hands keys to a seated spectator only.
+    /// node hands keys to a seated spectator only.
     pub(crate) fn due(
         &mut self,
         now_ms: u64,

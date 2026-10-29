@@ -194,13 +194,14 @@ impl ShellNetwork {
         })
     }
 
-    /// `channel`'s content keys from the steward of this device's own room
-    /// host, when `room` is hosted here: what this device's broker seals and
+    /// `channel`'s content keys from this device's own room host, which takes
+    /// part in the channel with this device's leaf, when `room` is hosted
+    /// here: what this device's broker seals and
     /// opens the room's records with. `None` for a room hosted elsewhere, or
     /// while the host is not open. Blocks on the host: call it off the frame
     /// loop.
     ///
-    /// The steward answers on this network's runtime, never on the caller's
+    /// The host answers on this network's runtime, never on the caller's
     /// thread: the broker asks from its connections' own runtime, where
     /// entering another runtime to wait panics and takes the asking app's
     /// connection with it.
@@ -227,7 +228,7 @@ impl ShellNetwork {
         runtime.spawn(async move {
             let keys = host
                 .rooms()
-                .steward_channel_keys(&room, channel, route.as_ref(), create)
+                .own_channel_keys(&room, channel, route.as_ref(), create)
                 .await;
             let _ = answer.send(keys);
         });

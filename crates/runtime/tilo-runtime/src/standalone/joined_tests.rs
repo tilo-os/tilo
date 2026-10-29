@@ -692,7 +692,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let channel = collab_types::document_channel_id("so.tilo.chat", &room.to_string(), "");
     let content = channel_crypto::ChannelGroup::create(
         channel,
-        channel_crypto::MemberKey::generate("steward").unwrap(),
+        channel_crypto::MemberKey::generate("governor").unwrap(),
     )
     .unwrap()
     .content_keys()
@@ -786,16 +786,17 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     }
 }
 
-const SDK_TEST: &str = "standalone::joined::tests::a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward";
+const SDK_TEST: &str =
+    "standalone::joined::tests::a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governor";
 const SDK_HELPER: &str = "TILO_JOINED_SDK_HELPER";
 const SDK_APP: &str = "so.tilo.chat";
 const SDK_WRITTEN: &str = "sealed by a live SDK app in a joined room";
 
 #[test]
-fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
+fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governor() {
     // Helper role: an ordinary SDK app in the joined room writes once. The
     // SDK holds the write until the runtime's channel service is admitted by
-    // the room's steward, then seals and sends it.
+    // the room's governor, then seals and sends it.
     if std::env::var_os(SDK_HELPER).is_some() {
         let mut manager = ui::collaboration::CollaborationManager::new();
         let started = std::time::Instant::now();
@@ -832,7 +833,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
     let (publisher, publisher_endpoint) = tilo_rt::app()
         .block_on(governing.publish_history(device.device_public_key))
         .unwrap();
-    let steward = Steward::open(&governor_root, &governing.governor_key, governing.room);
+    let governor_channels = Governor::open(&governor_root, &governing.governor_key, governing.room);
     // A member writes only into a record it holds, and joining brings the
     // room's governance alone: the chat record arrives through the room's
     // sync, once the host has kept the governor's history. The app opens
@@ -875,7 +876,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
     )
     .unwrap();
 
-    // The governor's steward answers the runtime's access request over the
+    // The governor answers the runtime's access request over the
     // room's relay session; the app's write then arrives sealed.
     let sealed = tilo_rt::app().block_on(tilo_test_env::within(
         "the SDK app's sealed write at the governor",
@@ -901,7 +902,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
                     },
                     _ = tick.tick() => {
                         let authority = governing.authority.lock().unwrap();
-                        steward.pump(
+                        governor_channels.pump(
                             authority.peer(),
                             &RelayGovernance {
                                 session: &publisher,
@@ -917,11 +918,13 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
     let _ = app.kill();
     let _ = app.wait();
 
-    // A key holder reads it: the steward opens what the app sealed.
+    // A key holder reads it: the governor opens what the app sealed.
     let metadata = sealed.encryption.unwrap();
-    let (ChannelAccess::Ready(keys), _) = steward.keys.access(governing.room, metadata.channel)
+    let (ChannelAccess::Ready(keys), _) = governor_channels
+        .keys
+        .access(governing.room, metadata.channel)
     else {
-        panic!("the steward holds the channel's keys")
+        panic!("the governor holds the channel's keys")
     };
     let plaintext = keys
         .open_content(sealed.artifact, &metadata, &sealed.payload)
@@ -957,27 +960,30 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
     }
 }
 
-/// The governor's steward of the room's encrypted channels: it admits every
-/// certified, unrevoked device the room's governance lets read.
-struct Steward {
+/// The governor's part in the room's encrypted channels: it creates them and
+/// admits every certified, unrevoked device the room's governance lets read.
+struct Governor {
     keys: ChannelKeyAccess,
     readers: Arc<std::sync::Mutex<BTreeSet<collab_types::Ed25519PublicKey>>>,
 }
 
-impl Steward {
+impl Governor {
     fn open(dir: &std::path::Path, device_key: &SigningKey, room: RoomId) -> Self {
         let readers = Arc::default();
         let service = ChannelEncryption::open(
             ChannelEncryptionConfig {
                 root: dir.join("channels"),
                 vault: channel_crypto::VaultKey::new(blake3::derive_key(
-                    "tilo joined test steward v1",
+                    "tilo joined test governor v1",
                     &device_key.to_bytes(),
                 )),
                 device_key: device_key.clone(),
             },
-            Box::new(StewardDirectory {
+            Box::new(GovernorDirectory {
                 room,
+                governor: collab_types::Ed25519PublicKey::from_bytes(
+                    device_key.verifying_key().to_bytes(),
+                ),
                 readers: Arc::clone(&readers),
             }),
             Arc::new(Mutex::new(BrokerChannels::default())),
@@ -1002,18 +1008,19 @@ impl Steward {
     }
 }
 
-struct StewardDirectory {
+struct GovernorDirectory {
     room: RoomId,
+    governor: collab_types::Ed25519PublicKey,
     readers: Arc<std::sync::Mutex<BTreeSet<collab_types::Ed25519PublicKey>>>,
 }
 
-impl ChannelDirectory for StewardDirectory {
+impl ChannelDirectory for GovernorDirectory {
     fn governs(&self, room: RoomId) -> bool {
         room == self.room
     }
 
-    fn steward_of(&self, _room: RoomId) -> Option<collab_types::Ed25519PublicKey> {
-        None
+    fn governor_of(&self, _room: RoomId) -> Option<collab_types::Ed25519PublicKey> {
+        Some(self.governor)
     }
 
     fn allowed_devices(
@@ -1030,7 +1037,7 @@ impl ChannelDirectory for StewardDirectory {
     }
 }
 
-/// The governor's relay session as the steward's transport: governance goes
+/// The governor's relay session as its channels' transport: governance goes
 /// to every member as room presence.
 struct RelayGovernance<'a> {
     session: &'a RelayCoeditSession,

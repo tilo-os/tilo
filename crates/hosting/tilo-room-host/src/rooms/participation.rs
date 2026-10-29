@@ -2,40 +2,41 @@
 //!
 //! A relay whose certificate lets it own workspaces is the person's node:
 //! the device that governs their rooms. Members never write a room's
-//! records in the clear; each record's channel is an MLS group, and the
-//! room's governor stewards it. So a node also stewards the channels of the
-//! rooms it governs: it admits exactly the room's governed member devices
-//! that ask for a channel, removes the ones governance removed, and sends
-//! each of them the channel's governance frames. A channel is one record's:
-//! a device a Read Deny on that record, its app or a pattern over it
-//! withholds ([`Readers`]) is kept out of that channel alone. A channel id
-//! is a hash of its record's route, so the steward keeps each route a device
-//! proved with its request ([`Steward::learn_route`]); a channel whose route
-//! it does not know is withheld from whoever a Deny over a pattern could
-//! keep out of it. A relay with a plain host
-//! certificate governs rooms without stewarding them; members accept a
-//! steward only from a device certified to own workspaces.
+//! records in the clear; each record's channel is an MLS group, and the node
+//! takes part in every one of the rooms it governs, as one participant among
+//! the room's member devices ([`channel_crypto::peer`]): it creates a
+//! channel's group when the first member asks or its own endpoint writes,
+//! admits the room's governed member devices that ask, removes the ones
+//! governance removed, and applies and checks the commits any other
+//! participant writes. A channel is one record's: a device a Read Deny on
+//! that record, its app or a pattern over it withholds ([`Readers`]) is kept
+//! out of that channel alone. A channel id is a hash of its record's route,
+//! so the node keeps each route a device proved with its request
+//! ([`Participant::learn_route`]); a channel whose route it does not know is
+//! withheld from whoever a Deny over a pattern could keep out of it. A relay
+//! with a plain host certificate governs rooms without taking part in their
+//! channels: it only keeps and forwards their sealed frames.
 //!
 //! Channel state is sealed on disk under a key derived from the node's
 //! device key, which already lives beside it.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use channel_crypto::{ChannelSteward, VaultKey};
+use channel_crypto::{ChannelPeer, VaultKey};
 use collab_types::{
-    ChannelId, ChannelRoute, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1,
+    ChannelId, ChannelRoute, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceFrame,
 };
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_lock::MutexRecover as _;
 
-/// Channels one room keeps a steward for.
+/// Channels one room takes part in.
 const MAX_CHANNELS: usize = 4096;
 
-/// Routes one room keeps: one per channel it may steward, and as many again
-/// for channels asked about that it never opened.
+/// Routes one room keeps: one per channel it may take part in, and as many
+/// again for channels asked about that it never opened.
 const MAX_ROUTES: usize = 2 * MAX_CHANNELS;
 
 /// The devices governance lets read a room's channels: every reader of the
@@ -44,11 +45,11 @@ const MAX_ROUTES: usize = 2 * MAX_CHANNELS;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Readers {
     room: BTreeSet<Ed25519PublicKey>,
-    /// Each channel whose record the steward can name, and who may not read
-    /// that record.
+    /// Each channel whose record the node can name, and who may not read that
+    /// record.
     withheld: HashMap<ChannelId, BTreeSet<Ed25519PublicKey>>,
-    /// Who is kept out of every channel whose record the steward cannot
-    /// name: whoever a Deny over a pattern of records could keep out of it.
+    /// Who is kept out of every channel whose record the node cannot name:
+    /// whoever a Deny over a pattern of records could keep out of it.
     unrouted: BTreeSet<Ed25519PublicKey>,
 }
 
@@ -72,7 +73,7 @@ impl Readers {
     }
 
     /// Whether a Read Deny keeps `channel`'s record from any device; a
-    /// channel whose record the steward cannot name counts as withheld when
+    /// channel whose record the node cannot name counts as withheld when
     /// a Deny over a pattern of records could reach it.
     #[cfg(feature = "web")]
     pub fn withholds(&self, channel: ChannelId) -> bool {
@@ -103,25 +104,19 @@ impl Readers {
     }
 }
 
-/// The stewards of one governed room's channels.
-pub(super) struct Stewardship {
+/// This node's state for one governed room's channels.
+pub(super) struct Participation {
     room: String,
     dir: PathBuf,
     key: SigningKey,
     vault: VaultKey,
-    stewards: HashMap<ChannelId, ChannelSteward>,
-    /// Each device's newest request per channel, kept until it is a member.
-    requests: HashMap<ChannelId, BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>>,
-    /// The frames of each channel's outbox already published. The host
-    /// retains them for whoever subscribes later and delivers them to
-    /// whoever is live, so each is published once.
-    published: HashMap<ChannelId, BTreeSet<[u8; 32]>>,
+    peers: HashMap<ChannelId, ChannelPeer>,
     delivery: u64,
 }
 
-/// A governed room's channel stewards, and the readers its governance lets
-/// in as the room last handed them over.
-pub(super) struct Steward {
+/// A governed room's channels, and the readers its governance lets in as the
+/// room last handed them over.
+pub(super) struct Participant {
     /// The newest governance generation handed over and its readers. Apart
     /// from the channels: governance that only lets devices in moves no
     /// channel, so the room hands its readers over without waiting for an
@@ -133,18 +128,18 @@ pub(super) struct Steward {
     routes: std::sync::Mutex<Routes>,
     /// Shared so a pass can take it to a blocking worker: its MLS work held
     /// a runtime worker for seconds when a crowd asked at once.
-    pub(super) channels: Arc<tokio::sync::Mutex<Stewardship>>,
+    pub(super) channels: Arc<tokio::sync::Mutex<Participation>>,
 }
 
-/// The routes a room's steward knows, and where it keeps them.
+/// The routes a room's node knows, and where it keeps them.
 struct Routes {
     room: String,
     dir: PathBuf,
     known: HashMap<ChannelId, ChannelRoute>,
 }
 
-impl Steward {
-    pub(super) fn new(channels: Stewardship) -> Self {
+impl Participant {
+    pub(super) fn new(channels: Participation) -> Self {
         let routes = Routes::load(&channels.room, &channels.dir);
         Self {
             readers: std::sync::Mutex::new(None),
@@ -157,7 +152,7 @@ impl Steward {
         self.routes.lock_recover()
     }
 
-    /// Every route this steward knows, for deciding Read on the records
+    /// Every route this node knows, for deciding Read on the records
     /// their channels carry.
     pub(super) fn routes(&self) -> Vec<ChannelRoute> {
         self.known_routes().known.values().cloned().collect()
@@ -235,7 +230,7 @@ impl Routes {
     }
 }
 
-impl Steward {
+impl Participant {
     fn handed_over(&self) -> std::sync::MutexGuard<'_, Option<(u64, Readers)>> {
         self.readers.lock_recover()
     }
@@ -269,10 +264,9 @@ impl Steward {
     }
 }
 
-impl Stewardship {
-    /// The stewardship of `room`, kept under `dir`, when `key`'s certificate
-    /// lets it own workspaces; channels already stewarded there are opened
-    /// as members ask for them.
+impl Participation {
+    /// The channels of `room`, kept under `dir`; channels already kept there
+    /// are opened as members ask for them.
     pub(super) fn new(room: &str, dir: PathBuf, key: &SigningKey) -> Self {
         let vault = VaultKey::new(blake3::derive_key(
             "tilo-relay governed room channel vault v1",
@@ -283,11 +277,50 @@ impl Stewardship {
             dir,
             key: key.clone(),
             vault,
-            stewards: HashMap::new(),
-            requests: HashMap::new(),
-            published: HashMap::new(),
+            peers: HashMap::new(),
             delivery: 0,
         }
+    }
+
+    fn device(&self) -> Ed25519PublicKey {
+        Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
+    }
+
+    /// The devices whose membership of `channel` governance backs: its
+    /// readers and this node.
+    fn allowed(&self, readers: &Readers, channel: ChannelId) -> BTreeSet<Ed25519PublicKey> {
+        let mut allowed = readers.of(channel);
+        allowed.insert(self.device());
+        allowed
+    }
+
+    /// Whether `channel`'s peer is open, opening it from disk when cold, or
+    /// creating it with its group when `create` and none is kept.
+    fn ensure(&mut self, channel: ChannelId, create: bool) -> Result<bool, String> {
+        if !self.peers.contains_key(&channel) {
+            if self.peers.len() >= MAX_CHANNELS {
+                return Err("the room takes part in too many channels".into());
+            }
+            let signer = Box::new(self.key.clone());
+            let opened = ChannelPeer::open(&self.dir, channel, signer, &self.vault)
+                .map_err(|error| error.to_string())?;
+            let peer = match opened {
+                Some(peer) => peer,
+                None if create => {
+                    std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
+                    ChannelPeer::create_now(
+                        Some(&self.dir),
+                        channel,
+                        Box::new(self.key.clone()),
+                        &self.vault,
+                    )
+                    .map_err(|error| error.to_string())?
+                }
+                None => return Ok(false),
+            };
+            self.peers.insert(channel, peer);
+        }
+        Ok(true)
     }
 
     /// Read keys for an existing channel, recovering its sealed state if cold.
@@ -296,20 +329,13 @@ impl Stewardship {
         &mut self,
         channel: ChannelId,
     ) -> Result<channel_crypto::ChannelContentKeys, String> {
-        if !self.stewards.contains_key(&channel) {
-            if self.stewards.len() >= MAX_CHANNELS {
-                return Err("the room stewards too many channels".into());
-            }
-            let steward =
-                ChannelSteward::open_existing(&self.dir, channel, self.key.clone(), &self.vault)
-                    .map_err(|error| error.to_string())?;
-            self.stewards.insert(channel, steward);
+        if !self.ensure(channel, false)? {
+            return Err("the source channel is not open on this host".into());
         }
-        self.stewards
+        self.peers
             .get(&channel)
-            .ok_or("the source channel is not open on this host")?
-            .content_keys()
-            .map_err(|error| error.to_string())
+            .and_then(ChannelPeer::content_keys)
+            .ok_or_else(|| "this host holds no key of the channel".into())
     }
 
     /// Open `channel` for this device's own endpoint, which is about to
@@ -321,43 +347,20 @@ impl Stewardship {
         channel: ChannelId,
         allowed: &Readers,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        self.reconcile(channel, &allowed.of(channel))
+        self.ensure(channel, true)?;
+        self.reconcile(channel, allowed)
     }
 
-    fn device(&self) -> Ed25519PublicKey {
-        Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
-    }
-
-    /// The members of `channel`'s group, when this room stewards it.
+    /// The members of `channel`'s group, when this room takes part in it.
     #[cfg(test)]
     pub(super) fn members(&self, channel: ChannelId) -> Option<BTreeSet<Ed25519PublicKey>> {
-        self.stewards.get(&channel).map(ChannelSteward::members)
-    }
-
-    fn steward<'a>(
-        stewards: &'a mut HashMap<ChannelId, ChannelSteward>,
-        dir: &std::path::Path,
-        key: &SigningKey,
-        vault: &VaultKey,
-        channel: ChannelId,
-    ) -> Result<&'a mut ChannelSteward, String> {
-        if !stewards.contains_key(&channel) {
-            if stewards.len() >= MAX_CHANNELS {
-                return Err("the room stewards too many channels".into());
-            }
-            std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-            let steward = ChannelSteward::open_or_create(dir, channel, key.clone(), vault)
-                .map_err(|error| error.to_string())?;
-            stewards.insert(channel, steward);
-        }
-        stewards
-            .get_mut(&channel)
-            .ok_or_else(|| "steward missing".into())
+        self.peers.get(&channel).map(ChannelPeer::members)
     }
 
     /// Take in `request`, which the authenticated device `author` sent, to
     /// be admitted by the next [`Self::admit_pending`] when governance lets
-    /// it read the channel's record.
+    /// it read the channel's record. The first request governance allows
+    /// creates the channel's group.
     pub(super) fn request(
         &mut self,
         author: [u8; 32],
@@ -374,44 +377,52 @@ impl Stewardship {
         if !allowed.of(request.channel).contains(&request.device) {
             return Ok(());
         }
-        // A device's latest request replaces any earlier one whatever its
-        // clock says: a device that started over, or whose clock went back,
-        // can no longer use the key package it asked with before. The
-        // steward refuses a package it already admitted.
-        self.requests
-            .entry(request.channel)
-            .or_default()
-            .insert(request.device, request);
-        Ok(())
+        let channel = request.channel;
+        self.ensure(channel, true)?;
+        let Some(peer) = self.peers.get_mut(&channel) else {
+            return Err("the channel could not be opened".into());
+        };
+        peer.learn_request(request, &self.vault)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
     }
 
-    /// Admit every device asking for a channel, one change per channel for
-    /// all of them. Returns the governance messages to publish.
+    /// Apply `frame`, a commit another participant wrote (the frame is
+    /// signed, so whoever relayed it does not matter), to the channel when
+    /// this room takes part in it.
+    pub(super) fn frame(
+        &mut self,
+        frame: MlsGovernanceFrame,
+        allowed: &Readers,
+    ) -> Result<(), String> {
+        let channel = frame.channel;
+        let members = self.allowed(allowed, channel);
+        if !self.ensure(channel, false)? {
+            return Ok(());
+        }
+        let Some(peer) = self.peers.get_mut(&channel) else {
+            return Ok(());
+        };
+        peer.receive(frame, &members, &self.vault)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Bring every channel that has a device asking in line with `allowed`,
+    /// one commit per channel for all of them. Returns the governance
+    /// messages to publish.
     pub(super) fn admit_pending(&mut self, allowed: &Readers) -> Result<Vec<NeighbourMsg>, String> {
-        let channels: Vec<ChannelId> = self.requests.keys().copied().collect();
+        let channels: Vec<ChannelId> = self
+            .peers
+            .iter()
+            .filter(|(channel, peer)| !peer.asking(&self.allowed(allowed, **channel)).is_empty())
+            .map(|(channel, _)| *channel)
+            .collect();
         let mut messages = Vec::new();
         for channel in channels {
-            messages.extend(self.reconcile(channel, &allowed.of(channel))?);
+            messages.extend(self.reconcile(channel, allowed)?);
         }
         Ok(messages)
-    }
-
-    /// Record members' acknowledgements of the frames they applied, each
-    /// `(author, ack)` sent by the authenticated device `author`.
-    pub(super) fn acknowledge(&mut self, acks: Vec<([u8; 32], MlsGovernanceAckV1)>) {
-        let mut by_channel: HashMap<ChannelId, Vec<MlsGovernanceAckV1>> = HashMap::new();
-        for (author, ack) in acks {
-            if ack.device.as_bytes() == &author {
-                by_channel.entry(ack.channel).or_default().push(ack);
-            }
-        }
-        for (channel, acks) in by_channel {
-            if let Some(steward) = self.stewards.get_mut(&channel)
-                && let Err(error) = steward.acknowledge_all(&acks)
-            {
-                tracing::debug!(room = %self.room, %error, "channel acknowledgements refused");
-            }
-        }
     }
 
     /// Move every open channel to the devices `allowed` lets read it, after
@@ -419,10 +430,10 @@ impl Stewardship {
     /// makes no commit, so a Read Deny on one record starts a new epoch in
     /// that record's channel alone.
     pub(super) fn reconcile_all(&mut self, allowed: &Readers) -> Result<Vec<NeighbourMsg>, String> {
-        let channels: Vec<ChannelId> = self.stewards.keys().copied().collect();
+        let channels: Vec<ChannelId> = self.peers.keys().copied().collect();
         let mut messages = Vec::new();
         for channel in channels {
-            messages.extend(self.reconcile(channel, &allowed.of(channel))?);
+            messages.extend(self.reconcile(channel, allowed)?);
         }
         Ok(messages)
     }
@@ -430,61 +441,32 @@ impl Stewardship {
     fn reconcile(
         &mut self,
         channel: ChannelId,
-        allowed: &BTreeSet<Ed25519PublicKey>,
+        readers: &Readers,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        let own = self.device();
-        let mut allowed = allowed.clone();
-        allowed.insert(own);
-        let pending = self.requests.remove(&channel).unwrap_or_default();
-        let steward = Self::steward(
-            &mut self.stewards,
-            &self.dir,
-            &self.key,
-            &self.vault,
-            channel,
-        )?;
-        steward
-            .reconcile(&allowed, &pending, &self.vault)
+        let allowed = self.allowed(readers, channel);
+        let room = self.room.clone();
+        if !self.ensure(channel, false)? {
+            return Ok(Vec::new());
+        }
+        let Some(peer) = self.peers.get_mut(&channel) else {
+            return Ok(Vec::new());
+        };
+        peer.reconcile_now(&allowed, &self.vault)
             .map_err(|error| error.to_string())?;
-        let members = steward.members();
-        let frames = steward.outbox_frames();
-        let journal: BTreeSet<[u8; 32]> = steward
-            .journal()
-            .frames()
-            .iter()
-            .filter_map(|frame| frame.digest().ok())
-            .collect();
-        // A request stays until its device is a member: one that could not
-        // be admitted yet is retried on the next change.
-        let waiting: BTreeMap<_, _> = pending
-            .into_iter()
-            .filter(|(device, _)| !members.contains(device))
-            .collect();
-        if !waiting.is_empty() {
-            self.requests.insert(channel, waiting);
-        }
-        // The journal holds only genesis and the head, so what is
-        // remembered as published stays as small.
-        let mut published = self.published.remove(&channel).unwrap_or_default();
-        published.retain(|digest| journal.contains(digest));
-        let mut messages = Vec::new();
+        let frames = peer.outbox().to_vec();
+        // The host retains them for whoever subscribes later and delivers
+        // them to whoever is live as soon as they are handed over.
+        peer.published(&self.vault)
+            .map_err(|error| error.to_string())?;
+        let mut messages = Vec::with_capacity(frames.len());
         for frame in frames {
-            let Ok(digest) = frame.digest() else { continue };
-            if !published.insert(digest) {
-                continue;
-            }
-            // An admission goes out twice: whole to the devices it adds,
-            // and without what they join from to everyone.
-            for frame in frame.into_deliveries().map_err(|error| error.to_string())? {
-                self.delivery = self.delivery.saturating_add(1);
-                messages.push(NeighbourMsg::MlsGovernance {
-                    room: self.room.clone(),
-                    frame: Box::new(frame),
-                    delivery: self.delivery,
-                });
-            }
+            self.delivery = self.delivery.saturating_add(1);
+            messages.push(NeighbourMsg::MlsGovernance {
+                room: room.clone(),
+                frame: Box::new(frame),
+                delivery: self.delivery,
+            });
         }
-        self.published.insert(channel, published);
         Ok(messages)
     }
 }
@@ -507,24 +489,24 @@ mod tests {
     #[test]
     fn only_a_removed_reader_moves_the_channels() {
         let tmp = tempfile::tempdir().unwrap();
-        let steward = Steward::new(Stewardship::new(
+        let participant = Participant::new(Participation::new(
             "room",
             tmp.path().join("room.channels"),
             &SigningKey::from_bytes(&[9; 32]),
         ));
         // Nothing handed over yet: the channels' published state is unknown.
-        assert!(steward.moves_channels(&readers(&[1])));
-        steward.hand_over(1, &readers(&[1]));
+        assert!(participant.moves_channels(&readers(&[1])));
+        participant.hand_over(1, &readers(&[1]));
         // A join only lets a device in.
-        assert!(!steward.moves_channels(&readers(&[1, 2])));
-        steward.hand_over(2, &readers(&[1, 2]));
-        assert!(steward.moves_channels(&readers(&[2])));
+        assert!(!participant.moves_channels(&readers(&[1, 2])));
+        participant.hand_over(2, &readers(&[1, 2]));
+        assert!(participant.moves_channels(&readers(&[2])));
         // An admission that read the room at generation 1 takes the readers
         // handed over since; one that read the newest keeps its own.
-        assert_eq!(steward.readers(1, readers(&[1])), readers(&[1, 2]));
-        assert_eq!(steward.readers(2, readers(&[1])), readers(&[1]));
-        steward.hand_over(1, &readers(&[1]));
-        assert_eq!(steward.readers(0, Readers::default()), readers(&[1, 2]));
+        assert_eq!(participant.readers(1, readers(&[1])), readers(&[1, 2]));
+        assert_eq!(participant.readers(2, readers(&[1])), readers(&[1]));
+        participant.hand_over(1, &readers(&[1]));
+        assert_eq!(participant.readers(0, Readers::default()), readers(&[1, 2]));
     }
 
     /// A Read Deny on one record withholds its channel from the denied
@@ -533,14 +515,14 @@ mod tests {
     #[test]
     fn a_device_withheld_from_one_record_moves_the_channels() {
         let tmp = tempfile::tempdir().unwrap();
-        let steward = Steward::new(Stewardship::new(
+        let participant = Participant::new(Participation::new(
             "room",
             tmp.path().join("room.channels"),
             &SigningKey::from_bytes(&[9; 32]),
         ));
         let (payroll, notes) = (ChannelId::new(), ChannelId::new());
         let room = readers(&[1, 2]);
-        steward.hand_over(1, &room);
+        participant.hand_over(1, &room);
         let denied = Readers::new(
             devices(&[1, 2]),
             HashMap::from([(payroll, devices(&[2]))]),
@@ -548,23 +530,23 @@ mod tests {
         );
         assert_eq!(denied.of(payroll), devices(&[1]));
         assert_eq!(denied.of(notes), devices(&[1, 2]));
-        assert!(steward.moves_channels(&denied));
-        steward.hand_over(2, &denied);
-        assert!(!steward.moves_channels(&denied));
-        assert!(!steward.moves_channels(&room));
-        assert!(!steward.moves_channels(&Readers::new(
+        assert!(participant.moves_channels(&denied));
+        participant.hand_over(2, &denied);
+        assert!(!participant.moves_channels(&denied));
+        assert!(!participant.moves_channels(&room));
+        assert!(!participant.moves_channels(&Readers::new(
             devices(&[1, 2, 3]),
             HashMap::from([(payroll, devices(&[2]))]),
             BTreeSet::new(),
         )));
-        assert!(steward.moves_channels(&Readers::new(
+        assert!(participant.moves_channels(&Readers::new(
             devices(&[1, 2]),
             HashMap::from([(payroll, devices(&[2])), (notes, devices(&[2]))]),
             BTreeSet::new(),
         )));
         // So does a Deny over an app: every channel whose record is
         // unknown may be one of it.
-        assert!(steward.moves_channels(&Readers::new(
+        assert!(participant.moves_channels(&Readers::new(
             devices(&[1, 2]),
             HashMap::from([(payroll, devices(&[2]))]),
             devices(&[2]),
@@ -577,7 +559,7 @@ mod tests {
     #[test]
     fn a_withheld_device_is_not_admitted_to_the_denied_records_channel() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut stewardship = Stewardship::new(
+        let mut participation = Participation::new(
             "room",
             tmp.path().join("room.channels"),
             &SigningKey::from_bytes(&[9; 32]),
@@ -592,34 +574,14 @@ mod tests {
         );
         std::fs::create_dir_all(tmp.path().join("member")).unwrap();
         for channel in [payroll, notes] {
-            let request = channel_crypto::ChannelMember::open(
-                &tmp.path().join("member"),
-                channel,
-                device_key,
-                Ed25519PublicKey::from_bytes(
-                    SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes(),
-                ),
-                &VaultKey::new([2; 32]),
-            )
-            .unwrap()
-            .access_request(&device, 1, &VaultKey::new([2; 32]))
-            .unwrap()
-            .unwrap();
-            stewardship
+            let request = access_request(&tmp.path().join("member"), &device, channel, 1);
+            participation
                 .request(device.verifying_key().to_bytes(), request, None, &allowed)
                 .unwrap();
         }
-        stewardship.admit_pending(&allowed).unwrap();
-        assert!(!stewardship.stewards.contains_key(&payroll));
-        assert!(!stewardship.requests.contains_key(&payroll));
-        assert!(
-            stewardship
-                .stewards
-                .get(&notes)
-                .unwrap()
-                .members()
-                .contains(&device_key)
-        );
+        participation.admit_pending(&allowed).unwrap();
+        assert!(participation.members(payroll).is_none());
+        assert!(participation.members(notes).unwrap().contains(&device_key));
     }
 
     /// The access request `device` makes for `channel` at second `at`, as a
@@ -631,18 +593,14 @@ mod tests {
         at: u64,
     ) -> MlsAccessRequestV1 {
         std::fs::create_dir_all(dir).unwrap();
-        let device_key = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
-        channel_crypto::ChannelMember::open(
-            dir,
+        ChannelPeer::waiting(
+            Some(dir),
             channel,
-            device_key,
-            Ed25519PublicKey::from_bytes(
-                SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes(),
-            ),
+            Box::new(device.clone()),
             &VaultKey::new([2; 32]),
         )
         .unwrap()
-        .access_request(device, at, &VaultKey::new([2; 32]))
+        .access_request_now(at, false, &VaultKey::new([2; 32]))
         .unwrap()
         .unwrap()
     }
@@ -653,7 +611,7 @@ mod tests {
     #[test]
     fn a_devices_latest_request_wins_whatever_its_clock() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut stewardship = Stewardship::new(
+        let mut participation = Participation::new(
             "room",
             tmp.path().join("room.channels"),
             &SigningKey::from_bytes(&[9; 32]),
@@ -670,23 +628,27 @@ mod tests {
         let fresh = access_request(&tmp.path().join("fresh"), &device, channel, 1);
         assert!(fresh.issued_at < ahead.issued_at);
         for request in [ahead, fresh.clone()] {
-            stewardship
+            participation
                 .request(device.verifying_key().to_bytes(), request, None, &allowed)
                 .unwrap();
         }
-        assert_eq!(stewardship.requests[&channel][&device_key], fresh);
-        stewardship.admit_pending(&allowed).unwrap();
-        assert!(stewardship.members(channel).unwrap().contains(&device_key));
+        participation.admit_pending(&allowed).unwrap();
+        assert!(
+            participation
+                .members(channel)
+                .unwrap()
+                .contains(&device_key)
+        );
     }
 
     /// "Finance: Deny Read" for one device, as `readers` hands it over: every
-    /// finance channel whose route the steward knows is withheld from it, as
+    /// finance channel whose route the node knows is withheld from it, as
     /// is a channel whose record it does not know; another app's routed
     /// channel is not. A route that is not its channel's refuses the request.
     #[test]
     fn a_read_deny_over_an_app_withholds_its_routed_and_its_unknown_channels() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut stewardship = Stewardship::new(
+        let mut participation = Participation::new(
             "room",
             tmp.path().join("room.channels"),
             &SigningKey::from_bytes(&[9; 32]),
@@ -729,14 +691,14 @@ mod tests {
                     channel,
                     1,
                 );
-                stewardship
+                participation
                     .request(device.verifying_key().to_bytes(), request, route, &allowed)
                     .unwrap();
             }
         }
         let forged = access_request(&member.join("forged"), &other, unknown, 1);
         assert!(
-            stewardship
+            participation
                 .request(
                     other.verifying_key().to_bytes(),
                     forged,
@@ -745,8 +707,8 @@ mod tests {
                 )
                 .is_err()
         );
-        stewardship.admit_pending(&allowed).unwrap();
-        let members = |channel: ChannelId| stewardship.stewards[&channel].members();
+        participation.admit_pending(&allowed).unwrap();
+        let members = |channel: ChannelId| participation.members(channel).unwrap();
         assert!(!members(payroll_channel).contains(&key(&denied)));
         assert!(members(payroll_channel).contains(&key(&other)));
         assert!(!members(unknown).contains(&key(&denied)));
@@ -755,7 +717,7 @@ mod tests {
         assert!(members(draft_channel).contains(&key(&other)));
     }
 
-    /// A route a device proved is kept with the room's channels: a steward
+    /// A route a device proved is kept with the room's channels: a node
     /// opened again knows it from the start, a route that does not prove its
     /// channel is never kept, and a kept file that no longer proves its
     /// channel names nothing.
@@ -764,7 +726,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("room.channels");
         let open = || {
-            Steward::new(Stewardship::new(
+            Participant::new(Participation::new(
                 "room",
                 dir.clone(),
                 &SigningKey::from_bytes(&[9; 32]),
@@ -772,16 +734,16 @@ mod tests {
         };
         let payroll = ChannelRoute::new("finance", "payroll");
         let channel = payroll.channel("room");
-        let steward = open();
-        assert!(steward.routes().is_empty());
-        assert!(!steward.learn_route(channel, &ChannelRoute::new("finance", "budget")));
-        assert!(!steward.learn_route(
+        let participant = open();
+        assert!(participant.routes().is_empty());
+        assert!(!participant.learn_route(channel, &ChannelRoute::new("finance", "budget")));
+        assert!(!participant.learn_route(
             ChannelRoute::new("notes", "x").channel("other"),
             &ChannelRoute::new("notes", "x")
         ));
-        assert!(steward.learn_route(channel, &payroll));
-        assert_eq!(steward.routes(), vec![payroll.clone()]);
-        drop(steward);
+        assert!(participant.learn_route(channel, &payroll));
+        assert_eq!(participant.routes(), vec![payroll.clone()]);
+        drop(participant);
 
         assert_eq!(open().routes(), vec![payroll]);
         let budget = ChannelRoute::new("finance", "budget");
@@ -793,16 +755,16 @@ mod tests {
         assert!(open().routes().is_empty());
     }
 
-    /// What a member seals in a channel opens with the content keys the
-    /// steward reads for a spectator, also from a stewardship that only
-    /// finds the channel on disk; a channel never created stays missing.
+    /// What a member seals in a channel opens with the content keys the node
+    /// reads for a spectator, also from a node that only finds the channel
+    /// on disk; a channel never created stays missing.
     #[cfg(any(feature = "agents", feature = "web"))]
     #[test]
-    fn a_members_content_opens_with_the_stewards_existing_keys() {
+    fn a_members_content_opens_with_the_nodes_existing_keys() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("room.channels");
-        let steward_key = SigningKey::from_bytes(&[9; 32]);
-        let mut stewardship = Stewardship::new("room", dir.clone(), &steward_key);
+        let node_key = SigningKey::from_bytes(&[9; 32]);
+        let mut participation = Participation::new("room", dir.clone(), &node_key);
         let device = SigningKey::from_bytes(&[2; 32]);
         let device_key = Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes());
         let channel = ChannelId::new();
@@ -811,25 +773,32 @@ mod tests {
             HashMap::new(),
             BTreeSet::new(),
         );
-        std::fs::create_dir_all(tmp.path().join("member")).unwrap();
-        let mut member = channel_crypto::ChannelMember::open(
-            &tmp.path().join("member"),
+        let mut member = ChannelPeer::waiting(
+            None,
             channel,
-            device_key,
-            Ed25519PublicKey::from_bytes(steward_key.verifying_key().to_bytes()),
+            Box::new(device.clone()),
             &VaultKey::new([2; 32]),
         )
         .unwrap();
         let request = member
-            .access_request(&device, 1, &VaultKey::new([2; 32]))
+            .access_request_now(1, false, &VaultKey::new([2; 32]))
             .unwrap()
             .unwrap();
-        stewardship
+        let members = BTreeSet::from([
+            device_key,
+            Ed25519PublicKey::from_bytes(node_key.verifying_key().to_bytes()),
+        ]);
+        participation
             .request(device.verifying_key().to_bytes(), request, None, &allowed)
             .unwrap();
-        for message in stewardship.admit_pending(&allowed).unwrap() {
+        for message in participation.admit_pending(&allowed).unwrap() {
             if let NeighbourMsg::MlsGovernance { frame, .. } = message {
-                member.receive(*frame, &VaultKey::new([2; 32])).unwrap();
+                let adds_me = frame.added().contains(&device_key);
+                if frame.join_material().is_some() == adds_me {
+                    member
+                        .receive(*frame, &members, &VaultKey::new([2; 32]))
+                        .unwrap();
+                }
             }
         }
         let artifact = collab_types::ArtifactId::new();
@@ -838,17 +807,17 @@ mod tests {
             .expect("the admitted member holds the channel's keys")
             .seal_content(artifact, collab_types::ContentRetention::Delta, b"hello")
             .unwrap();
-        let opened = |stewardship: &mut Stewardship| {
-            stewardship
+        let opened = |participation: &mut Participation| {
+            participation
                 .existing_keys(channel)
                 .unwrap()
                 .open_content(artifact, &metadata, &sealed)
                 .unwrap()
                 .to_vec()
         };
-        assert_eq!(opened(&mut stewardship), b"hello");
-        drop(stewardship);
-        let mut cold = Stewardship::new("room", dir, &steward_key);
+        assert_eq!(opened(&mut participation), b"hello");
+        drop(participation);
+        let mut cold = Participation::new("room", dir, &node_key);
         assert_eq!(opened(&mut cold), b"hello");
         assert!(cold.existing_keys(ChannelId::new()).is_err());
     }

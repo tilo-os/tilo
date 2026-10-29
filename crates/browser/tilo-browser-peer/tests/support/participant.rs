@@ -1,18 +1,19 @@
-//! A native device that stewards the room's channels, as a user's laptop
-//! does: it announces itself and the room's genesis, then admits every
-//! device of its user that asks for access to a channel. Browsers never
-//! write in the clear, so every test that edits a document runs one.
+//! A native participant of the room's channels, as a user's laptop is: it
+//! announces itself, creates the note's channel and publishes its genesis,
+//! then admits every device of its user that asks for access to a channel.
+//! Browsers write no commits and never write in the clear, so every test
+//! that edits a document runs one.
 
 #![allow(
     dead_code,
-    reason = "each test binary uses a different subset of the steward"
+    reason = "each test binary uses a different subset of the participant"
 )]
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 
-use channel_crypto::{ChannelContentKeys, ChannelSteward, VaultKey};
-use collab_types::{ChannelId, Ed25519PublicKey, MlsAccessRequestV1, document_channel_id};
+use channel_crypto::{ChannelContentKeys, ChannelPeer, VaultKey};
+use collab_types::{ChannelId, Ed25519PublicKey, MlsGovernanceFrame, document_channel_id};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_relay::{CoeditError, Inbound, RelayClient, RelayCoeditSession};
@@ -39,16 +40,36 @@ fn publish_result(session: &RelayCoeditSession, message: &NeighbourMsg) -> Resul
 struct Channels {
     dir: tempfile::TempDir,
     key: SigningKey,
-    stewards: HashMap<ChannelId, ChannelSteward>,
+    peers: HashMap<ChannelId, ChannelPeer>,
 }
 
 impl Channels {
-    fn steward(&mut self, channel: ChannelId) -> &mut ChannelSteward {
-        self.stewards.entry(channel).or_insert_with(|| {
+    /// The channel's peer, its group created on first use: this laptop is
+    /// the first of the room's devices to open every channel.
+    fn peer(&mut self, channel: ChannelId) -> &mut ChannelPeer {
+        self.peers.entry(channel).or_insert_with(|| {
             let dir = self.dir.path().join(hex::encode(channel.0));
             std::fs::create_dir_all(&dir).unwrap();
-            ChannelSteward::open_or_create(&dir, channel, self.key.clone(), &vault()).unwrap()
+            ChannelPeer::open(&dir, channel, Box::new(self.key.clone()), &vault())
+                .unwrap()
+                .unwrap_or_else(|| {
+                    ChannelPeer::create_now(
+                        Some(&dir),
+                        channel,
+                        Box::new(self.key.clone()),
+                        &vault(),
+                    )
+                    .unwrap()
+                })
         })
+    }
+
+    /// What `channel`'s peer queued to publish, taken.
+    fn take(&mut self, channel: ChannelId) -> Vec<MlsGovernanceFrame> {
+        let peer = self.peer(channel);
+        let frames = peer.outbox().to_vec();
+        peer.published(&vault()).unwrap();
+        frames
     }
 }
 
@@ -79,21 +100,22 @@ impl Drop for HeldAdmission {
     }
 }
 
-pub struct Steward {
+pub struct Participant {
     pub device: Device,
     channels: Arc<Mutex<Channels>>,
     admissions: AdmissionGates,
     task: tokio::task::JoinHandle<()>,
 }
 
-impl Steward {
-    /// Steward the room through `host` as a new primary device of `root`.
+impl Participant {
+    /// Take part in the room through `host` as a new primary device of
+    /// `root`.
     pub async fn start(host: &Relay, root: &SigningKey) -> Self {
-        let device = enrol(root, "steward", DeviceCapabilities::primary());
+        let device = enrol(root, "laptop", DeviceCapabilities::primary());
         let channels = Arc::new(Mutex::new(Channels {
             dir: scratch_dir(),
             key: device.key.clone(),
-            stewards: HashMap::new(),
+            peers: HashMap::new(),
         }));
         let session = join(host, root, &device).await;
         publish(
@@ -105,27 +127,21 @@ impl Steward {
             },
         );
         let note = route();
-        let genesis = channels
-            .lock()
-            .unwrap()
-            .steward(document_channel_id(
-                &note.app_id,
-                &note.cluster_id,
-                &note.record,
-            ))
-            .journal()
-            .frames()
-            .first()
-            .cloned()
-            .unwrap();
-        publish(
-            &session,
-            &NeighbourMsg::MlsGovernance {
-                room: ROOM.into(),
-                frame: Box::new(genesis),
-                delivery: 1,
-            },
-        );
+        let genesis = channels.lock().unwrap().take(document_channel_id(
+            &note.app_id,
+            &note.cluster_id,
+            &note.record,
+        ));
+        for frame in genesis {
+            publish(
+                &session,
+                &NeighbourMsg::MlsGovernance {
+                    room: ROOM.into(),
+                    frame: Box::new(frame),
+                    delivery: 1,
+                },
+            );
+        }
         let own = device.key.verifying_key().to_bytes();
         let admissions = AdmissionGates::default();
         let task = tokio::spawn(admit(session, channels.clone(), own, admissions.clone()));
@@ -137,7 +153,7 @@ impl Steward {
         }
     }
 
-    /// Steward on through a restarted `host`, which kept the room.
+    /// Take part on through a restarted `host`, which kept the room.
     pub async fn reconnect(&mut self, host: &Relay, root: &SigningKey) {
         self.task.abort();
         let _ = (&mut self.task).await;
@@ -179,7 +195,7 @@ impl Steward {
         self.channels
             .lock()
             .unwrap()
-            .steward(document_channel_id(
+            .peer(document_channel_id(
                 &route.app_id,
                 &route.cluster_id,
                 &route.record,
@@ -189,7 +205,7 @@ impl Steward {
     }
 }
 
-impl Drop for Steward {
+impl Drop for Participant {
     fn drop(&mut self) {
         self.task.abort();
     }
@@ -213,74 +229,56 @@ async fn join(host: &Relay, root: &SigningKey, device: &Device) -> RelayCoeditSe
     RelayCoeditSession::join(client, workspace(), device.key.verifying_key().to_bytes()).unwrap()
 }
 
-/// Admit every device that asks (the host admits only the user's own), and
-/// apply their acknowledgements.
+/// Admit every device that asks (the host admits only the user's own).
 ///
-/// Members already in a channel stay there. This loop's request map starts
-/// empty on every reconnect; reconciling against only the requests seen
-/// since then would remove everyone who has not asked again yet, and a
-/// peer that resumes cannot open edits sealed while it was out.
+/// Members already in a channel stay there: the devices the membership
+/// backs are this laptop, every device that asked and every member.
 async fn admit(
     session: RelayCoeditSession,
     channels: Arc<Mutex<Channels>>,
     own: [u8; 32],
     admissions: AdmissionGates,
 ) {
-    let mut requests: HashMap<ChannelId, BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>> =
-        HashMap::new();
+    let mut asked: HashMap<ChannelId, BTreeSet<Ed25519PublicKey>> = HashMap::new();
     let mut delivery = 1_u64;
     while let Some(inbound) = session.recv().await {
         let Inbound::Delta { data, .. } = inbound else {
             continue;
         };
         let message = postcard::from_bytes::<NeighbourMsg>(&data);
-        if let Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) = &message
-            && request.verify().is_ok()
-        {
-            let gate = admissions
-                .lock()
-                .unwrap()
-                .remove(&(request.channel, request.device));
-            if let Some(gate) = gate {
-                gate.entered.notify_one();
-                let permit = gate.release.acquire().await.unwrap();
-                drop(permit);
-            }
+        let Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) = message else {
+            continue;
+        };
+        if request.verify().is_err() {
+            continue;
+        }
+        let gate = admissions
+            .lock()
+            .unwrap()
+            .remove(&(request.channel, request.device));
+        if let Some(gate) = gate {
+            gate.entered.notify_one();
+            let permit = gate.release.acquire().await.unwrap();
+            drop(permit);
         }
         // A host may disconnect while a request is in flight. Never publish
-        // through that session while holding the steward's persistent channel
-        // state: a failed send must not poison the mutex used after reconnect.
+        // through that session while holding the persistent channel state:
+        // a failed send must not poison the mutex used after reconnect.
         let outgoing = {
             let mut channels = channels.lock().unwrap();
-            match message {
-                Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) => {
-                    if request.verify().is_err() {
-                        continue;
-                    }
-                    let pending = requests.entry(request.channel).or_default();
-                    pending.insert(request.device, *request.clone());
-                    let already = channels.steward(request.channel).members();
-                    let allowed: BTreeSet<Ed25519PublicKey> = pending
-                        .keys()
-                        .copied()
-                        .chain(already)
-                        .chain([Ed25519PublicKey::from_bytes(own)])
-                        .collect();
-                    let steward = channels.steward(request.channel);
-                    steward.reconcile(&allowed, pending, &vault()).unwrap();
-                    steward
-                        .outbox()
-                        .into_iter()
-                        .flat_map(|outgoing| outgoing.frames)
-                        .flat_map(|frame| frame.into_deliveries().unwrap())
-                        .collect::<Vec<_>>()
-                }
-                Ok(NeighbourMsg::MlsGovernanceAck { ack, .. }) if ack.verify().is_ok() => {
-                    let _ = channels.steward(ack.channel).acknowledge(&ack);
-                    Vec::new()
-                }
-                _ => Vec::new(),
-            }
+            let channel = request.channel;
+            let asking = asked.entry(channel).or_default();
+            asking.insert(request.device);
+            let peer = channels.peer(channel);
+            peer.learn_request(*request, &vault()).unwrap();
+            let allowed: BTreeSet<Ed25519PublicKey> = asking
+                .iter()
+                .copied()
+                .chain(peer.members())
+                .chain([Ed25519PublicKey::from_bytes(own)])
+                .collect();
+            peer.reconcile_now(&allowed, &vault()).unwrap();
+            channels.take(channel)
         };
         for frame in outgoing {
             delivery = delivery.checked_add(1).unwrap();
@@ -290,8 +288,7 @@ async fn admit(
                 delivery,
             };
             let sent = publish_result(&session, &message);
-            // The successor session replays the outbox when its member asks
-            // for keys. The old host can no longer deliver them.
+            // The successor session publishes again what this one could not.
             if matches!(&sent, Err(CoeditError::Disconnected)) {
                 return;
             }

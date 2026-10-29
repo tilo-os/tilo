@@ -44,7 +44,7 @@ pub trait ChannelKeySource: Send + Sync + 'static {
     /// The access this device has to the channel of `route`'s record in
     /// `room`, its generation, and the route's content keys when ready and
     /// newer than `known_generation`; `None` while no channel service runs.
-    /// The route goes to the channel's steward with this device's access
+    /// The route goes to the channel's participants with this device's access
     /// request, so it can decide Read on the record itself.
     ///
     /// # Errors
@@ -646,7 +646,7 @@ fn channel_keys(
         return Response::Denied("identity may not read this workspace".into());
     }
     // Only the room's canonical form: the channel is the hash of the route
-    // in it, which a steward checks the route against.
+    // in it, which a participant checks the route against.
     let Some(room) =
         RoomId::parse(route.workspace_id).filter(|room| room.to_string() == route.workspace_id)
     else {

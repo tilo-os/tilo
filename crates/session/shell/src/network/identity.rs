@@ -111,7 +111,7 @@ impl PeerIdentityStore {
             .insert(peer, identity.clone())
             .is_none_or(|previous| previous.device_cert != identity.device_cert);
         drop(inner);
-        // Channel stewards read the devices the session authenticated; a
+        // Channel participants read the devices the session authenticated; a
         // handshake that repeats what is known changes nothing they read.
         if changed {
             tilo_identity_host::policy_change::announce();
@@ -550,7 +550,7 @@ mod tests {
         }
     }
 
-    /// #4022: channel stewards read the authenticated devices without a
+    /// #4022: channel participants read the authenticated devices without a
     /// clock, so the store announces each change and names the instant its
     /// answer next changes by time alone.
     #[test]

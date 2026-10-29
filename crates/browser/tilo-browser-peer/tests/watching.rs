@@ -1,5 +1,5 @@
 //! A page that only watches a public room, as its spectator: it reads what
-//! the members seal in the room's records with the keys the room's steward
+//! the members seal in the room's records with the keys the room's node
 //! hands it, and writes nothing, not even a request for a channel's access.
 //! In a room that is not public it gets no keys and opens nothing.
 
@@ -106,7 +106,7 @@ async fn watching_page(root: &SigningKey, host: &DeviceCert, paths: Arc<Paths>) 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
-    // A room service's node, which stewards its rooms' channels.
+    // A room service's node, which takes part in its rooms' channels.
     let host = enrol(
         &alice,
         "rooms",
@@ -225,7 +225,7 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
     })
     .await;
 
-    // A watching page opens it with the keys the steward hands it.
+    // A watching page opens it with the keys the node hands it.
     let paths = Arc::new(Paths {
         inner: https.clone(),
         posted: Mutex::default(),

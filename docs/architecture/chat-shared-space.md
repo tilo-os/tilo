@@ -240,7 +240,7 @@ Settings' normal sign-in flow still needs to publish its public `tilo.identity`
 account entry. Link opening neither invents an account nor certifies a device.
 
 The governed HTTPS fixture now passes using an exact-source reader of the
-host's already-owned steward keys. It no longer opens a duplicate governor peer
+host's already-owned channel keys. It no longer opens a duplicate governor peer
 with empty MLS state to discover views. Current certified Read is checked under
 the governed room lock before key or ciphertext access, after bounded replay, and
 again in the metadata worker before descriptors or a locator can be delivered.
@@ -341,7 +341,7 @@ The implementation is confined to these owners:
   spanning channels is conservatively charged to the same 16 MiB read budget.
   Refuse incomplete transfers and recheck certified Read before returning an internal
   snapshot and revision. No plaintext document is returned as a browser API response.
-- `rooms/stewardship.rs`: expose existing content keys for an already-open exact
+- `rooms/participation.rs`: expose existing content keys for an already-open exact
   channel to the host's reader; absence refuses. Never call `open_or_create`, create
   a channel, change membership, or issue a certificate from this read path.
 - `browser-peer`: reuse its existing content-key cipher through a narrow exported

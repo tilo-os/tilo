@@ -651,17 +651,18 @@ The web desktop then makes workspaces on it, invites people into them and
 lets in who asks (`web/workspace-actions.mjs`; web-routing.md §6.4).
 
 Browsers accept a device as a room's governor when its certificate owns
-workspaces (`can_own_workspaces`), so such a node governs and stewards the
-person's rooms; a plain host certificate never does. A page whose host is
-such a node takes it as the governor of every room it joins there, also a
-room of another person it was invited to, unless a genesis frame from a
-device of its own person names another governor.
+workspaces (`can_own_workspaces`), so such a node governs the person's rooms
+and takes part in their channels; a plain host certificate never does. A
+page whose host is such a node takes it as the governor of every room it
+joins there, also a room of another person it was invited to, unless the
+room itself names another governor.
 
 The node governs the rooms created on it through `/rooms` (the company
-workspace) and stewards their channels (`tilo-relay` `rooms/stewardship.rs`):
-it admits to a channel exactly the room's governed member devices that ask
-for it, removes those governance removed, and retains the channel's
-governance frames as its own writes. Members' records reach the relay only
+workspace) and takes part in their channels (`tilo-room-host`
+`rooms/participation.rs`): like every participant it admits to a channel
+exactly the room's governed member devices that ask for it, removes those
+governance removed, checks the commits other participants write, and
+retains its own frames as its own writes. Members' records reach the relay only
 sealed; it keeps no copy of a sealed record. Channel state is sealed on disk
 under a key derived from the node's device key. `tests/node_workspace.rs`
 (`tilo-browser-peer`) runs the whole path: a passkey root in Chrome

@@ -35,7 +35,7 @@ use tilo_user_identity::{
 
 pub const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
-/// A test's scratch directory for a host's or a steward's state, removed
+/// A test's scratch directory for a host's or a participant's state, removed
 /// with it. It is in memory where the system has one
 /// ([`tilo_paths::memory_temp_dir`], `/dev/shm` on Linux), as `tilo-app`'s
 /// test profiles are. Every write still syncs as it does for a person, but a
@@ -384,9 +384,9 @@ pub async fn ready(peers: &[&PeerHandle]) {
     .await;
 }
 
-/// Wait until the room's steward admitted `peer` to the note's channel.
+/// Wait until a participant of the room admitted `peer` to the note's channel.
 pub async fn admitted(peer: &PeerHandle) {
-    wait_for("the steward to admit the page", || {
+    wait_for("a participant to admit the page", || {
         let ready = peer
             .status()
             .channels

@@ -343,7 +343,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
                 .filter(|at| *at > after);
             Ok(grants.into_iter().chain(custody).min())
         })?;
-        // The projection a steward reads for the same room: its grants and
+        // The projection a participant reads for the same room: its grants and
         // the certificates of the devices it admitted, the reader's among
         // them.
         let projected =
@@ -384,7 +384,7 @@ impl NativeOwnerCommitService {
     }
     /// `route`'s record in sealed `room`, as the sealed writes this device
     /// holds of it make it, opened with the keys of the record's channel.
-    /// Asking for them asks the channel's steward, as the app's own channel
+    /// Asking for them asks the channel's participants, as the app's own channel
     /// does; until they are here, or while a write it builds on has not
     /// arrived yet, the read is pending and the reader asks again.
     fn capture_sealed_writes(
@@ -449,7 +449,7 @@ impl NativeOwnerCommitService {
     }
     /// Have a reader waiting on a pending read of `channel`'s record check
     /// again once the channel's keys or access change from `seen`: its wait
-    /// is woken by announced changes, and the steward's answer is one. One
+    /// is woken by announced changes, and a participant's answer is one. One
     /// watch per channel at a time.
     fn recheck_when_keys_change(&self, channel: collab_types::ChannelId, seen: u64) {
         let (Some(provider), Some(runtime)) = (

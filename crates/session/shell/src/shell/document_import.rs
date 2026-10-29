@@ -118,7 +118,7 @@ impl NativeHostedRooms {
 impl HostedRooms for NativeHostedRooms {
     fn hosts(&self, room: RoomId) -> bool {
         match self.0.native_owner_status() {
-            // A room whose host stewards its channels is sealed: its
+            // A room whose host takes part in its channels is sealed: its
             // records are channels each app opens and keeps in its own
             // profile, never documents the owner commits or reads out.
             NativeOwnerStatus::Open(owner) => {
@@ -129,7 +129,7 @@ impl HostedRooms for NativeHostedRooms {
                                 .peer()
                                 .authority()
                                 .capabilities
-                                .stewards_room_channels())
+                                .takes_part_in_room_channels())
                         })
                         .unwrap_or(false)
             }

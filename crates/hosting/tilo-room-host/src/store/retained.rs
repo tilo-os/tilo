@@ -2407,12 +2407,13 @@ pub(super) mod tests {
         let channel = collab_types::ChannelId::new();
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8, timestamp: u64| {
-            let message = neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+            let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
                 room: "room".into(),
-                ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
+                request: Box::new(collab_types::MlsAccessRequestV1::unsigned(
                     channel,
                     device,
-                    [through; 32],
+                    vec![through],
+                    u64::from(through),
                 )),
                 delivery: 0,
             };
@@ -2466,19 +2467,20 @@ pub(super) mod tests {
         assert_eq!(store.load_retained().unwrap(), vec![third]);
     }
 
-    /// A standalone checkpoint of `author` (its acknowledgement of
-    /// `channel`'s governance), with its retention route.
+    /// A standalone checkpoint of `author` (its access request for
+    /// `channel`), with its retention route.
     fn standalone_checkpoint(
         channel: collab_types::ChannelId,
         author: u8,
         through: u8,
     ) -> ([u8; 32], Vec<u8>) {
-        let message = neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+        let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
             room: "room".into(),
-            ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
+            request: Box::new(collab_types::MlsAccessRequestV1::unsigned(
                 channel,
                 collab_types::Ed25519PublicKey::from_bytes([author; 32]),
-                [through; 32],
+                vec![through],
+                u64::from(through),
             )),
             delivery: 0,
         };
@@ -2721,20 +2723,21 @@ pub(super) mod tests {
 
     /// Checkpoint replacement asks the adapter the store was opened with,
     /// not a process-wide one: through an adapter that classifies nothing,
-    /// the governance acknowledgements the desktop adapter lets replace one
-    /// another are all kept.
+    /// the access requests the desktop adapter lets replace one another are
+    /// all kept.
     #[test]
     fn checkpoint_replacement_asks_the_stores_own_adapter() {
         let tmp = tempfile::tempdir().unwrap();
         let channel = collab_types::ChannelId::new();
         let device = collab_types::Ed25519PublicKey::from_bytes([3; 32]);
         let ack = |through: u8| {
-            let message = neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+            let message = neighbour_wire::NeighbourMsg::MlsAccessRequest {
                 room: "room".into(),
-                ack: Box::new(collab_types::MlsGovernanceAckV1::unsigned(
+                request: Box::new(collab_types::MlsAccessRequestV1::unsigned(
                     channel,
                     device,
-                    [through; 32],
+                    vec![through],
+                    u64::from(through),
                 )),
                 delivery: 0,
             };

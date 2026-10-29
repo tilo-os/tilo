@@ -666,9 +666,9 @@ pub fn document_node(room: &str, app: &str, record: &str) -> TreePath {
 /// or anywhere below it), as `(app, record)`, in grant order and possibly
 /// repeated.
 ///
-/// A record's channel id is a hash of its route, so a steward cannot turn a
-/// channel back into the record it carries. A grant that names a record
-/// gives the route itself, so a steward admitting devices per record can
+/// A record's channel id is a hash of its route, so a participant cannot turn
+/// a channel back into the record it carries. A grant that names a record
+/// gives the route itself, so a participant admitting devices per record can
 /// decide a Read Deny on that record from the first admission on, without
 /// having seen the record written and without any mapping of its own to
 /// lose on a restart. A pattern grant (every resource of an app, any depth)
@@ -716,13 +716,13 @@ const UNNAMED: &str = "\u{0}unnamed";
 /// names where it has them, an id no app or record carries where it leaves a
 /// level open.
 ///
-/// A steward that does not know which record a channel carries cannot decide
+/// A participant that does not know which record a channel carries cannot decide
 /// a pattern for it. It still can decide whether the pattern could matter to
 /// someone: a person whose read of every witness is allowed reads every
 /// record those patterns cover. Only grants naming the open levels decide a
 /// witness and the records it stands for differently, and those name a record
-/// (or its app and record), which a route claim then gives the steward
-/// ([`crate::ChannelRoute`]). So a steward withholds every channel whose
+/// (or its app and record), which a route claim then gives the participant
+/// ([`crate::ChannelRoute`]). So a participant withholds every channel whose
 /// route it does not know from whoever may not read a witness, and nobody
 /// else loses anything. A Deny below a record (an item, a field) covers no
 /// record and has no witness: no record's key can carry it.

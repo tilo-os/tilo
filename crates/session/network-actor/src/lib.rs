@@ -5481,7 +5481,6 @@ fn remember_governance(
         NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsRoutedAccessRequest { .. }
-            | NeighbourMsg::MlsGovernanceAck { .. }
     ) {
         return;
     }

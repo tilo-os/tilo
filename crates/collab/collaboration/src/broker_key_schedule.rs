@@ -15,8 +15,8 @@ const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
 /// The longest a route waiting for keys goes unasked while nothing changes,
 /// when nothing tells it about a change: an identity service that refused or
 /// could not take its question, or a removal whose rejoin it asks for.
-/// Admission, a channel service starting after the app and a steward this
-/// device learns of later are all pushed (see `KeySchedule`).
+/// Admission, a channel service starting after the app and a room's
+/// governance this device learns of later are all pushed (see `KeySchedule`).
 const CHANNEL_KEY_WAIT_LONGEST: Duration = Duration::from_secs(30);
 
 /// What makes an endpoint ask the identity service about a route's keys.
@@ -56,7 +56,7 @@ impl KeyRound {
 /// endpoint whose routes all hold keys therefore never wakes for them.
 ///
 /// Every channel change the identity service would answer differently is a
-/// commit the channel's steward makes within its reconcile interval (about a
+/// commit a participant of the channel makes within its reconcile interval (about a
 /// second) of the policy change: a key rotation, an invite, a removal, a
 /// role change that ends reading, a device's enrolment or revocation. The
 /// endpoint asks the moment that commit reaches this device, so a removed or
@@ -68,8 +68,8 @@ impl KeyRound {
 ///
 /// A route the channel service answered as waiting or unavailable is told
 /// as well when that answer may change: the service follows a member's
-/// access request to the steward's welcome, re-checks a room with no known
-/// steward whenever the workspace tree announces a change of its authority
+/// access request to a participant's welcome, re-checks a room whose
+/// governance is unknown whenever the workspace tree announces a change of its authority
 /// or governance, and retries a channel it failed to open on its own
 /// backoff, resolving the route's `channelKeysChanged` each time. So it is
 /// not asked on a timer either.

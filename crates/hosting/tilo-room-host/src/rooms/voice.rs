@@ -533,14 +533,14 @@ struct Policy {
 }
 
 impl Policy {
-    /// `room`'s policy. A relay that stewards the room's channels resolved
+    /// `room`'s policy. A relay that takes part in the room's channels resolved
     /// every call's binding through their keys when it opened the call, so
     /// a call bound to a Chat its members write sealed still stands; any
     /// other replica keeps such a Chat as ciphertext and fails closed.
     fn read(room: &GovernedRoom) -> Result<Self, String> {
         let peer = room.peer();
-        let calls = if room.stewardship.is_some() {
-            peer.media().stewarded_media_policy()?
+        let calls = if room.participation.is_some() {
+            peer.media().keyed_media_policy()?
         } else {
             peer.validated_media_policy()?
         };
@@ -697,7 +697,7 @@ fn validate_bridged(bridged: &Bridged) -> Result<(), String> {
 impl GovernedRoom {
     /// The call binding of voice channel `channel` of `record` of `app`. A
     /// Chat its members write sealed is read through the channel keys this
-    /// relay holds as the room's steward: members of a hosted room seal
+    /// relay holds as a member of the room's channels: members of a hosted room seal
     /// every write, so without that no one could open a call in any Chat
     /// somebody had written to.
     async fn call_binding(
@@ -716,7 +716,7 @@ impl GovernedRoom {
     }
 
     /// [`Self::call_binding`] of a sealed Chat, opened with the channel's
-    /// keys this relay holds as steward.
+    /// keys this relay holds as a member.
     #[cfg(any(feature = "agents", feature = "web"))]
     async fn sealed_call_binding(
         &self,
@@ -732,12 +732,12 @@ impl GovernedRoom {
         media::resolve_chat_binding(app, record, channel, &doc).map_err(|error| error.to_string())
     }
 
-    /// A relay built without the browser listener stewards no channels, so
+    /// A relay built without the browser listener takes part in no channels, so
     /// it cannot read a sealed Chat.
     #[cfg(not(any(feature = "agents", feature = "web")))]
     #[expect(
         clippy::unused_async,
-        reason = "the same call as the stewarding build's"
+        reason = "the same call as the build's that takes part in channels"
     )]
     async fn sealed_call_binding(
         &self,
@@ -745,7 +745,7 @@ impl GovernedRoom {
         _record: &str,
         _channel: &str,
     ) -> Result<media::ChatCallBindingV1, String> {
-        Err("the Chat is sealed and this relay does not steward its channel".into())
+        Err("the Chat is sealed and this relay does not take part in its channel".into())
     }
 }
 

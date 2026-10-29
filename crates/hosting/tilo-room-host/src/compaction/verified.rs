@@ -127,7 +127,7 @@ impl Signatures {
     }
 
     /// [`Self::check`], opening a sealed frame with `open` when the host
-    /// holds its channel's keys (it stewards the channel): the frame then
+    /// holds its channel's keys (it takes part in the channel): the frame then
     /// reads like a cleartext one.
     pub(super) fn check_opening<'a>(
         &mut self,
