@@ -9,6 +9,8 @@
 
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 
+pub use smithay::input::pointer::CursorIcon;
+
 use crate::input::HostKey;
 
 /// One buffer a hosted surface shows, at a position in the logical layout.
@@ -56,4 +58,10 @@ pub trait SurfaceHost {
 
     /// A frame is about to be drawn: bring the layers up to date.
     fn prepare_frame(&mut self) {}
+
+    /// The pointer shape while the pointer is over the surface (a text
+    /// beam over a field, a hand over a link).
+    fn cursor(&self) -> CursorIcon {
+        CursorIcon::Default
+    }
 }

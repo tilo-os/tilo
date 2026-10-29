@@ -59,7 +59,7 @@ pub use backend::{
     NestedConfig, Screenshot, TabletConfig,
 };
 pub use dim::Backlight;
-pub use host::{HostLayer, SurfaceHost};
+pub use host::{CursorIcon, HostLayer, SurfaceHost};
 pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
     GestureEvent, HostKey, InputEvent, KeyModifiers, Switch, TabletEvent, TabletPhase,

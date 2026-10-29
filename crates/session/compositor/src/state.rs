@@ -197,9 +197,12 @@ impl State {
         self.rearrange();
     }
 
-    /// Whether a hosted surface has the pointer (not a client).
-    pub(crate) fn pointer_over_host(&self) -> bool {
-        matches!(self.pointer_target, PointerTarget::Host(_))
+    /// The hosted surface that has the pointer.
+    pub(crate) fn host_under_pointer(&self) -> Option<&dyn SurfaceHost> {
+        match self.pointer_target {
+            PointerTarget::Host(index) => self.hosts.get(index).map(AsRef::as_ref),
+            PointerTarget::Clients => None,
+        }
     }
 
     /// The logical rectangles of every output.

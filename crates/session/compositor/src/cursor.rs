@@ -164,11 +164,10 @@ impl State {
         let scale = output.current_scale().fractional_scale();
         let at: Point<i32, Physical> =
             (self.pointer - geometry.loc.to_f64()).to_physical_precise_round(scale);
-        // A hosted surface under the pointer shows the default shape.
-        let status = if self.pointer_over_host() {
-            CursorImageStatus::default_named()
-        } else {
-            self.cursor.status.clone()
+        // A hosted surface under the pointer chooses its shape.
+        let status = match self.host_under_pointer() {
+            Some(host) => CursorImageStatus::Named(host.cursor()),
+            None => self.cursor.status.clone(),
         };
         match status {
             CursorImageStatus::Hidden => Vec::new(),
