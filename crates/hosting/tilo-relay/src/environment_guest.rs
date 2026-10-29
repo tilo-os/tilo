@@ -433,6 +433,8 @@ pub fn open_ush_session(
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
         runs: None,
+        // Native editor custody is participant-private and never relayed.
+        editor_protocol: None,
         end_report: false,
     };
     let mut line = serde_json::to_vec(&serve)
@@ -1052,6 +1054,7 @@ mod tests {
                 environment: "relay-key".into(),
                 relay_session: None,
                 runs: false,
+                editor_protocol: None,
             })
             .unwrap();
             reply.push(b'\n');

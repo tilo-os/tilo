@@ -765,7 +765,9 @@ impl InitialReadBridge {
     /// this device only once it asks
     /// ([`crate::record::RecordId::arrives_on_demand`]) is asked for and
     /// never waited on: [`RecordReadError::Arriving`] until it
-    /// is here, and the store's readers are woken when it arrives.
+    /// is here, and the store's readers are woken when it arrives. One the
+    /// app's own channel answers never arrives committed: it opens without a
+    /// committed read too, rather than arriving forever.
     pub fn record(
         &self,
         app: &str,
@@ -775,6 +777,9 @@ impl InitialReadBridge {
         if checkout.id.arrives_on_demand() {
             self.check_scope(app, Some(room))
                 .map_err(RecordReadError::Initialization)?;
+            if self.answered_by_own_channel(checkout) {
+                return Ok(None);
+            }
             return self
                 .arrived(checkout)
                 .map_err(RecordReadError::Initialization)?

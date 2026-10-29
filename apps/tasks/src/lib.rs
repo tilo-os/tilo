@@ -32,6 +32,7 @@ mod list;
 pub mod locales;
 pub mod model;
 mod note;
+mod program_step;
 mod project;
 mod runs;
 #[cfg(feature = "samples")]

@@ -510,6 +510,12 @@ impl std::io::Write for Tee {
 }
 
 fn prompt(history: &[&str]) -> Prompt {
+    prompt_with(history, None)
+}
+
+/// [`prompt`], with Terminal's native editor capability served at the
+/// prompt when `field` is given.
+fn prompt_with(history: &[&str], field: Option<&Arc<SessionField>>) -> Prompt {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let state = Arc::new(Mutex::new(brokered_state(&root)));
@@ -518,7 +524,11 @@ fn prompt(history: &[&str]) -> Prompt {
     std::fs::write(allowed.join("notes/plan.md"), "plan\n").unwrap();
     let (master, slave) = open_pty(100);
     let dup = |file: &std::fs::File| OwnedFd::from(file.try_clone().unwrap());
-    let place = Arc::new(DevicePlace::install().unwrap().on_terminal(dup(&slave)));
+    let mut place = DevicePlace::install().unwrap().on_terminal(dup(&slave));
+    if let Some(field) = field {
+        place = place.with_field(Arc::clone(field));
+    }
+    let place = Arc::new(place);
     let guest = Arc::new(SessionGuest::new(
         local_guest(),
         Box::new(|| false),
@@ -540,7 +550,10 @@ fn prompt(history: &[&str]) -> Prompt {
         stderr.clone(),
     );
     let io = Stdio {
-        stdin: Input::host(slave.try_clone().unwrap()),
+        stdin: match field {
+            Some(field) => Input::host(field.keys(slave.try_clone().unwrap())),
+            None => Input::host(slave.try_clone().unwrap()),
+        },
         stdout,
         stderr,
     };
@@ -761,4 +774,116 @@ fn the_guests_programs_are_named_from_its_images_along_path() {
     std::os::unix::fs::symlink("bash", runtime.join("usr/bin/sh")).unwrap();
     let names = programs_in(&[tool, runtime], "/run/ush/bin:/usr/bin:relative");
     assert_eq!(names, ["bash", "ls", "rg", "sh"]);
+}
+
+/// What Terminal's client was answered, for the test to wait on.
+struct Answered(std::sync::mpsc::Sender<Result<(), tilo_process::editor::Failure>>);
+
+impl tilo_process::editor::Completion for Answered {
+    fn send(
+        &self,
+        send: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> Result<(), tilo_process::editor::Failure> {
+        send().map_err(|_| tilo_process::editor::Failure::Retired)
+    }
+
+    fn finish(self: Box<Self>, result: Result<(), tilo_process::editor::Failure>) {
+        let _ = self.0.send(result);
+    }
+}
+
+/// Terminal's native editing and dictation at a ush prompt: Terminal's own
+/// client of the editor capability reads the line's lease, puts text in at
+/// the cursor as if typed, takes it back and makes it again; an edit of a
+/// line that changed since is refused, and Enter runs what the line holds.
+#[test]
+fn terminals_editor_client_edits_the_line_at_a_ush_prompt() {
+    use runtime_portal::editor::{Request, Status};
+    use tilo_process::editor::{Client, Failure, Snapshot};
+
+    let (app, producer) = runtime_portal::editor::Socket::pair().unwrap();
+    let field = SessionField::serve(Arc::new(producer)).unwrap();
+    let p = prompt_with(&[], Some(&field));
+    let client = Client::new(app, Arc::new(|| {})).unwrap();
+    let lease_at = |at: u32| -> Snapshot {
+        let asked = std::time::Instant::now();
+        loop {
+            if let Some(snapshot) = client.snapshot()
+                && snapshot.lease.focus == at
+            {
+                return snapshot;
+            }
+            assert!(
+                asked.elapsed() < std::time::Duration::from_secs(20),
+                "no lease with the cursor at {at}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    let submit = |request: Request, expected: Status| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        client.submit(client.epoch(), request, expected, Box::new(Answered(tx)));
+        rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap()
+    };
+
+    p.type_keys("echo hel");
+    let typed = lease_at(8);
+    assert_eq!(
+        submit(
+            Request::Replace {
+                lease: typed.lease,
+                transaction: 1,
+                text: "lo wörld".into(),
+            },
+            Status::Applied,
+        ),
+        Ok(())
+    );
+    p.wait_for("lo wörld");
+    let applied = lease_at(17);
+    assert!(applied.can_undo, "the edit can be taken back");
+    assert_eq!(
+        submit(
+            Request::Undo {
+                lease: applied.lease.clone(),
+                transaction: applied.transaction,
+            },
+            Status::Undone,
+        ),
+        Ok(())
+    );
+    let undone = lease_at(8);
+    assert!(undone.can_redo, "and made again");
+    assert_eq!(
+        submit(
+            Request::Redo {
+                lease: undone.lease.clone(),
+                transaction: undone.transaction,
+            },
+            Status::Redone,
+        ),
+        Ok(())
+    );
+    lease_at(17);
+
+    // A key makes the line the person's again: the old lease is stale.
+    p.type_keys("!");
+    lease_at(18);
+    assert_eq!(
+        submit(
+            Request::Replace {
+                lease: applied.lease,
+                transaction: 1,
+                text: "x".into(),
+            },
+            Status::Applied,
+        ),
+        Err(Failure::Rejected)
+    );
+
+    p.type_keys("\r");
+    p.wait_out("hello wörld!");
+    drop(client);
+    let (runs, printed) = p.exit();
+    assert_eq!(runs, ["echo hello wörld!"], "{printed}");
 }

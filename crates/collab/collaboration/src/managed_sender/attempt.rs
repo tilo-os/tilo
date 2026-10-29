@@ -358,5 +358,6 @@ impl ManagedAttemptResult {
         &self.shared().result
     }
 }
-#[cfg(test)]
+// Claiming and finishing an attempt is the broker transport's.
+#[cfg(all(test, feature = "broker-transport"))]
 mod tests;

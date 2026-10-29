@@ -192,6 +192,8 @@ tilo-content = { version = "0.1.0", path = "../../system/content", default-featu
 # (`launch.rs`).
 tilo-content-device = { version = "0.1.0", path = "../../system/content-device" }
 tilo-ui-graph = { version = "0.1.0", path = "../../dev/ui-graph" }
+# tilolang's own lexer colours its programs (`code_editor::tilolang`).
+tilolang = { version = "0.1.0", path = "../../lang/tilolang" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../font-catalog", features = ["faces"] }
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }

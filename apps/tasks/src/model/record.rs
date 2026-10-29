@@ -2,7 +2,7 @@
 
 use tilo_rich_text::RichText;
 use ui::tilo_actions::ActorKind;
-use ui::tilo_reference::ResourceAt;
+use ui::tilo_reference::{ProgramStep, ResourceAt};
 use ui::tilo_resource::{
     self, ActionCx, Collection, Counter, Id, Model, NonBlank, Refusal, Set, resource,
 };
@@ -1410,7 +1410,100 @@ impl Tracker {
                 kind: MessageKind::Lookup,
                 lookup: reference,
                 run: epoch,
-                incorporated: false,
+                ..Message::default()
+            },
+        );
+        Ok(())
+    }
+
+    /// Record a step the run took: the tilolang program it ran and what it
+    /// answered. The task's thread shows it as the code it was with its
+    /// answer, so its person follows the run step by step and sees what each
+    /// step read and changed.
+    ///
+    /// Recording a step is not a permission: the program already ran under
+    /// the run's own grants, and what it changed is in the apps' histories.
+    ///
+    /// # Errors
+    /// Refuses anyone but the run's own agent, or a step without a program.
+    #[action(item = issues, audience = "agents", writes = issues)]
+    pub fn record_step(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The step: its program and what it answered")] step: ProgramStep,
+    ) -> Result<(), Refusal> {
+        let step = step.bounded();
+        let program = NonBlank::parse(&step.program)
+            .ok_or_else(|| Refusal::new("A step names the program it ran"))
+            .and_then(message_text)?;
+        let recorded = serde_json::to_string(&step)
+            .map_err(|_| Refusal::new("A step names the program it ran"))?;
+        let at_ms = cx.now_ms();
+        let author = author(cx)?;
+        let target = self.issue_mut(issue)?;
+        let run = own_run(cx, target)?;
+        at_boundary(run)?;
+        let epoch = run.epoch;
+        push_message(
+            target,
+            cx,
+            Message {
+                author,
+                by_agent: true,
+                at_ms,
+                text: program,
+                kind: MessageKind::Step,
+                step: recorded,
+                run: epoch,
+                ..Message::default()
+            },
+        );
+        Ok(())
+    }
+
+    /// Record the run's answer as a view: the resource that keeps it, which
+    /// opens as a window beside what the request was about.
+    ///
+    /// # Errors
+    /// Refuses anyone but the run's own agent, or an answer that names no
+    /// resource.
+    #[action(item = issues, audience = "agents", writes = issues)]
+    pub fn record_answer(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("The resource that keeps the answer's view")] view: ResourceAt,
+    ) -> Result<(), Refusal> {
+        if view.reference.id.trim().is_empty()
+            || view.reference.id.chars().count() > MAX_READ_RESOURCE_CHARS
+            || view.app.trim().is_empty()
+        {
+            return Err(Refusal::new("An answer names the resource that keeps it"));
+        }
+        let title = NonBlank::parse(&view.reference.label)
+            .ok_or_else(|| Refusal::new("An answer names what it shows"))
+            .and_then(message_text)?;
+        let reference = serde_json::to_string(&view)
+            .map_err(|_| Refusal::new("An answer names the resource that keeps it"))?;
+        let at_ms = cx.now_ms();
+        let author = author(cx)?;
+        let target = self.issue_mut(issue)?;
+        let run = own_run(cx, target)?;
+        at_boundary(run)?;
+        let epoch = run.epoch;
+        push_message(
+            target,
+            cx,
+            Message {
+                author,
+                by_agent: true,
+                at_ms,
+                text: title,
+                kind: MessageKind::Answer,
+                lookup: reference,
+                run: epoch,
+                ..Message::default()
             },
         );
         Ok(())
