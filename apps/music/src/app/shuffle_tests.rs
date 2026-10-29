@@ -5,7 +5,7 @@ use super::*;
 
 /// A shuffled queue of the four seeded tracks, playing `tk_g1` with the
 /// order g1, g4, g2, g3.
-fn shuffled_four() -> (MusicApp, AutoCommit) {
+fn shuffled_four() -> (Music, AutoCommit) {
     let (mut app, doc) = app_with_doc();
     app.disconnect();
     app.pb.queue = ["tk_g1", "tk_g2", "tk_g3", "tk_g4"]
@@ -21,7 +21,7 @@ fn shuffled_four() -> (MusicApp, AutoCommit) {
 
 /// The tracks `advance` reaches from here until playback stops at the end
 /// of the shuffled order.
-fn rest_of_shuffle(app: &mut MusicApp) -> Vec<String> {
+fn rest_of_shuffle(app: &mut Music) -> Vec<String> {
     let mut heard = Vec::new();
     app.pb.playing = true;
     for _ in 0..10 {

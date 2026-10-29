@@ -210,6 +210,8 @@ pub(crate) struct HostDocument<'a> {
     pub(crate) state: &'a mut crate::State,
     pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
+    /// Who acts here: the author of what this host writes for its person.
+    pub(crate) author: &'a crate::permissions::UserId,
 }
 
 pub(crate) trait HostCore {

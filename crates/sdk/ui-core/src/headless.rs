@@ -9667,6 +9667,7 @@ impl crate::host_core::HostCore for FrameHarness {
             state: &mut self.state,
             bindings: &self.bindings,
             node_map: &self.node_map,
+            author: &self.author,
         }
     }
 

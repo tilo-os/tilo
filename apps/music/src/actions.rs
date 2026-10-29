@@ -1269,7 +1269,7 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<ResourceSpec> 
         .map(|playlist| playlist_resource(playlist, 0))
 }
 
-impl crate::app::MusicApp {
+impl crate::app::Music {
     /// The row `id` the surface shows — the player, the queue and its
     /// entries, a track, album, artist, playlist or membership, a view, the
     /// open file — resolved against what it shows now, so a stale address
@@ -1281,7 +1281,7 @@ impl crate::app::MusicApp {
 }
 
 #[cfg(test)]
-impl crate::app::MusicApp {
+impl crate::app::Music {
     /// What the palette and agents see of `doc` in a window showing this
     /// surface: the library as the framework publishes it, with the
     /// surface's live player, queue and open file beside its rows.
@@ -1334,7 +1334,7 @@ fn local_file_resource(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::MusicApp;
+    use crate::app::Music;
     use crate::model::{Library, Playlist};
     use automerge::AutoCommit;
     use tilo_actions::ActionKind;
@@ -1361,8 +1361,8 @@ mod tests {
     }
 
     /// A Music app with the sample library synced into a fresh document.
-    fn seeded() -> (MusicApp, AutoCommit) {
-        let mut app = MusicApp::new();
+    fn seeded() -> (Music, AutoCommit) {
+        let mut app = Music::new();
         let doc = crate::seed::sample_document();
         ui::widget::Widget::sync(&mut app, &doc, &automerge::ROOT);
         (app, doc)

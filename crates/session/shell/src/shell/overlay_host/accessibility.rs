@@ -38,7 +38,10 @@ impl ShellOverlayHost {
                 | LayerId::PowerMenu
                 | LayerId::Dictation => {}
                 LayerId::CommandPalette => {
-                    if let Some(mut palette) = self.palette.accessibility() {
+                    // The launcher publishes its own card, as its own child.
+                    if !self.launcher_shown()
+                        && let Some(mut palette) = self.palette.accessibility()
+                    {
                         // The query owns focus, not its synthetic parent dialog.
                         palette.state.focused = false;
                         // The filter band is the host's, painted over the

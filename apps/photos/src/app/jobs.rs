@@ -15,7 +15,7 @@ use vello::peniko::ImageData;
 use super::{
     ANALYSIS_QUEUE_LIMIT, AnalysisJob, AnalysisJobKind, AnalysisOutcome, AnalysisResult,
     ImageAnalysisComponent, LibraryAnalysisHit, LiveContent, PendingPeopleScan, PeopleScanProgress,
-    PhotosApp, THUMBNAIL_QUEUE_LIMIT, THUMBNAIL_SIZE, ThumbnailResult, decode_key, thumbnail_key,
+    Photos, THUMBNAIL_QUEUE_LIMIT, THUMBNAIL_SIZE, ThumbnailResult, decode_key, thumbnail_key,
     to_peniko,
 };
 
@@ -165,7 +165,7 @@ pub(super) fn thumbnail_request(
     }
 }
 
-impl PhotosApp {
+impl Photos {
     /// Keep the People scan's progress on this device; a failure waits for
     /// [`Self::report_state_save_failure`].
     pub(super) fn save_people_scan_progress(&mut self) {
@@ -606,7 +606,7 @@ impl PhotosApp {
     }
 }
 
-impl PhotosApp {
+impl Photos {
     pub(super) fn reconcile_content(&mut self) {
         let current = LiveContent {
             library: (*self.presented()).clone(),
@@ -831,7 +831,7 @@ impl PhotosApp {
     }
 }
 
-impl PhotosApp {
+impl Photos {
     /// Admit one fresh contiguous People slice plus a bounded, device-local
     /// anchor set from earlier local suggestions. Anchors use ordinary local
     /// pixels only to let the signed runtime bridge disjoint batches; they do

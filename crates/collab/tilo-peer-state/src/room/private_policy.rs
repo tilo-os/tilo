@@ -43,7 +43,7 @@ impl Error {
                 Rule::Read => "private policy read failed",
             }
             .into(),
-            error => format!("private policy resource refusal: {error:?}"),
+            Self::Capacity => "private policy resource refusal: Capacity".into(),
         }
     }
 }

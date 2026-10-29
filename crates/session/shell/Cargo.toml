@@ -220,6 +220,9 @@ runtime-portal = { path = "../../runtime/runtime-portal" }
 # `data_home()` — where per-user state lives, which is also where the
 # records apps wrote are found.
 tilo-cli-kit = { path = "../../runtime/cli" }
+# Search: the launcher the shell hosts as its search surface, always: it is
+# the shell's own surface, not a user app.
+launcher-app = { path = "../../../apps/launcher" }
 terminal = { path = "../../../apps/terminal", optional = true }
 messages = { path = "../../../apps/messages" }
 passwords = { path = "../../../apps/passwords" }

@@ -15597,6 +15597,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "launcher",
+ "launcher-app",
  "legacy-agent-protocol",
  "libc",
  "messages",

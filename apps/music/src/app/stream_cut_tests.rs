@@ -171,7 +171,7 @@ fn a_song_cut_off_by_its_source_resumes_where_it_stopped() {
     let cut_s = 1;
     let base = serve_song(tone_wav(song_s), cut_s);
 
-    let mut app = MusicApp::new();
+    let mut app = Music::new();
     let doc = crate::seed::sample_document();
     app.reload(&doc);
     app.disconnect();

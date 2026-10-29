@@ -1,6 +1,6 @@
 //! Spotify jobs act on the provider and return its observed state. They are
 //! not document mutations and never claim that remote audio played locally.
-use super::MusicApp;
+use super::Music;
 use crate::{
     actions::MusicEffect,
     backend::{SpotifyOperation, SpotifyReply},
@@ -14,7 +14,7 @@ pub(super) struct PendingJob {
 }
 use ui::widget::Widget as _;
 
-impl MusicApp {
+impl Music {
     pub(super) fn open_sources_menu(&mut self) {
         self.context = ui::widget::context_menu::ContextMenu::new();
         self.menu_actions.clear();
@@ -58,14 +58,16 @@ impl MusicApp {
                 super::Action::SpotifyEffect(MusicEffect::SpotifyLibraryMore),
             );
         }
+        // The button's place as last drawn: the effect may run while the
+        // window holds the page's widgets.
         let anchor = self
+            .page
             .source_buttons
             .iter()
             .find(|button| button.test_id() == Some("music-sources"))
-            .map_or_else(
-                || vello::kurbo::Rect::from_origin_size(self.mouse, (0.0, 0.0)),
-                ui::widget::Widget::get_rect,
-            );
+            .map(ui::widget::Widget::get_rect)
+            .or(self.sources_anchor)
+            .unwrap_or_else(|| vello::kurbo::Rect::from_origin_size(self.mouse, (0.0, 0.0)));
         self.context.set_text_scale(self.context_text_scale);
         self.context.open_anchored(anchor, self.rect);
         self.dirty = true;
@@ -96,7 +98,7 @@ impl MusicApp {
                 .spotify_jobs
                 .values()
                 .any(|job| job.library_page.is_some());
-        for button in &mut self.source_buttons {
+        for button in &mut self.page.source_buttons {
             match button.test_id() {
                 Some("music-spotify-library-more") => button.set_enabled(page_ready),
                 Some("music-spotify-create-playlist") => button.set_enabled(self.spotify_catalogue),
@@ -828,7 +830,7 @@ pub(super) fn remote_item_label(item: &serde_json::Value) -> String {
     }
 }
 
-impl ui::widget::controls::ActionControls for MusicApp {
+impl ui::widget::controls::ActionControls for Music {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
@@ -850,7 +852,7 @@ impl ui::widget::controls::ActionControls for MusicApp {
         self.control_domain = Some(domain.clone());
         // These retained controls appear on different destinations. Install the
         // same owner custody before a hidden control joins the physical tree.
-        for button in &mut self.source_buttons {
+        for button in &mut self.page.source_buttons {
             ui::widget::controls::install_control_custody(button, domain, attachment);
         }
 
@@ -962,7 +964,7 @@ mod tests {
 
     #[test]
     fn spotify_status_and_provider_page_titles_are_accessible_without_shared_metadata() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
         app.source_error = Some("Reconnect Spotify to grant library access".into());
         let tree = app.accessibility().unwrap();
@@ -1029,7 +1031,7 @@ mod tests {
     #[test]
     fn spotify_artist_follow_is_a_host_effect_and_provider_confirmation_only() {
         use ui::tilo_resource::Effect as _;
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         let id = "spotify:artist:1234567890123456789012";
         let page = crate::backend::ArtistPage {
             id: id.into(),
@@ -1122,7 +1124,7 @@ mod tests {
     fn spotify_queue_refresh_is_a_shared_host_control_at_large_text() {
         use ui::widget::Widget as _;
         for scale in [1.0, 2.0] {
-            let mut app = MusicApp::without_profile();
+            let mut app = Music::without_profile();
             app.snap_spotify("spotify-queue");
             let snapshot = &mut app.spotify_remote_queue.as_mut().unwrap().0;
             snapshot["remote_queue"]["queue"] = serde_json::Value::Array((0..20).map(|i| serde_json::json!({"name":format!("A conversation about music and collaborative listening {i}"),"type":"episode","show":{"name":"Example podcast"}})).collect());
@@ -1172,7 +1174,7 @@ mod tests {
     #[test]
     fn source_picker_only_emits_sign_in_when_a_choice_is_activated() {
         use ui::tilo_resource::Effect as _;
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         let effect = MusicEffect::Sources;
         app.begin_effect(tilo_actions::InvocationId::new(), effect)
             .unwrap();
@@ -1215,7 +1217,7 @@ mod tests {
 
     #[test]
     fn source_picker_labels_fit_a_narrow_window_at_double_text_size() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 360.0, 800.0);
         let theme = ui::theme::Theme::high_contrast().with_text_scale(2.0);
@@ -1242,7 +1244,7 @@ mod tests {
     #[test]
     fn spotify_creation_prompt_cancel_and_reopen_emit_one_host_intent() {
         use ui::tilo_resource::Effect as _;
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
         let mut doc = automerge::AutoCommit::new();
         let before = doc.get_heads();
@@ -1282,7 +1284,7 @@ mod tests {
 
     #[test]
     fn spotify_library_page_replay_and_bad_page_preserve_visible_state() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
         let mut page = app.home.clone().unwrap();
         page.sections[0]
@@ -1318,7 +1320,7 @@ mod tests {
 
     #[test]
     fn spotify_remote_refresh_publishes_readonly_rows_without_replacing_local_queue() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
         app.pb.queue = vec!["local-song".into()];
         let invocation = tilo_actions::InvocationId::new();
@@ -1372,7 +1374,7 @@ mod tests {
 
     #[test]
     fn spotify_large_library_only_paints_visible_targets_and_keeps_resources_reachable() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
         let template = app.home.as_ref().unwrap().sections[0].items[1].clone();
         let items = (0..2000)
@@ -1414,7 +1416,7 @@ mod tests {
 
     #[test]
     fn spotify_artist_release_beyond_the_published_page_remains_reachable_by_resource() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         let albums: Vec<_> = (0..25)
             .map(|number| crate::backend::ArtistAlbum {
                 id: format!("spotify:album:{number:022}"),
@@ -1455,7 +1457,7 @@ mod tests {
 
     #[test]
     fn spotify_jobs_expire_without_accepting_late_success_or_retrying_a_write() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         let invocation = tilo_actions::InvocationId::new();
         app.spotify_jobs.insert(
             7,
@@ -1485,7 +1487,7 @@ mod tests {
 
     #[test]
     fn spotify_home_playlist_has_a_painted_hit_and_opens_the_provider_collection() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 900.0);
         let mut text = ui::text_render::TextRenderer::new();
@@ -1499,6 +1501,7 @@ mod tests {
             "spotify:collection:liked".into(),
         ));
         let grid = app
+            .page
             .media_grids
             .iter()
             .find(|grid| grid.offers(&action))
@@ -1518,7 +1521,7 @@ mod tests {
     #[test]
     fn spotify_playlist_picker_emits_provider_edit_without_document_edits() {
         use ui::tilo_resource::Effect as _;
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
         let track = "spotify:track:2234567890123456789012";
         let playlist = "spotify:playlist:1234567890123456789012";
@@ -1550,7 +1553,7 @@ mod tests {
     #[test]
     fn spotify_playlist_rename_dialog_emits_provider_name_without_local_mutation() {
         use ui::tilo_resource::Effect as _;
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         app.snap_spotify("spotify-home");
         let playlist = "spotify:playlist:1234567890123456789012";
         app.open_spotify_playlist_menu(playlist);
@@ -1590,7 +1593,7 @@ mod tests {
 
     #[test]
     fn spotify_track_menu_queues_the_published_host_action_without_document_edits() {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         let track = "spotify:track:1234567890123456789012";
         app.absorb_tracks(&[crate::backend::TrackHit {
             video_id: track.into(),

@@ -75,7 +75,7 @@ fn continuation_and_media_handoff_restore_known_tracks_locally() {
 
     // Phase `media_handoff_waits_for_its_synced_resource`.
     {
-        let mut app = MusicApp::without_profile();
+        let mut app = Music::without_profile();
         let arguments = [crate::search_type::SearchHit::track_link(
             "not-hydrated-yet",
         )];
