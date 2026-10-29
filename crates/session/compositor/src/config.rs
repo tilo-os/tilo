@@ -56,6 +56,10 @@ pub struct DisplayConfig {
     pub color_profiles: HashMap<String, PathBuf>,
     /// Connectors driven in HDR, with what their displays report.
     pub hdr: HashMap<String, Hdr>,
+    /// Night light's colour temperature in kelvin while it is on (see
+    /// [`crate::Compositor::set_night_light`]); the session decides when
+    /// (a switch, a schedule).
+    pub night_light: Option<u32>,
 }
 
 /// An output driven in HDR (a PQ BT.2020 signal): where SDR white sits and
