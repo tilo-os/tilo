@@ -447,6 +447,20 @@ fields = [
   { path = "config.interaction_models", type = "BTreeMap<String, AgentModel>" },
 ]
 
+[[resources.verbs]]
+id = "set-providers"
+kind = "undoable"
+params = [
+  { name = "config", required = true, schema = {} },
+]
+
+[[resources.verbs]]
+id = "follow-local-models"
+kind = "undoable"
+params = [
+  { name = "profile", required = true, schema = {} },
+]
+
 [[resources]]
 kind = "settings.hosted-agent-providers"
 label = "Hosted agent model providers"
@@ -455,6 +469,13 @@ person = true
 fields = [
   { path = "hosted", type = "HostedProfiles", readonly = true, stored = "record" },
   { path = "hosted.profiles", type = "Vec<ProviderProfile>" },
+]
+
+[[resources.verbs]]
+id = "set-providers"
+kind = "undoable"
+params = [
+  { name = "hosted", required = true, schema = {} },
 ]
 
 [[resources]]
