@@ -190,14 +190,18 @@ impl<'a> OutputTarget<'a> {
 /// [`RetainedGpuTarget`] that differ between outputs.
 pub(super) struct OutputSurface {
     /// The view these pixels were rendered through; another view needs a full render.
-    transform: Affine,
+    pub(super) transform: Affine,
     texture: wgpu::Texture,
     view: wgpu::TextureView,
     pub(super) band: Option<(wgpu::Texture, wgpu::TextureView, u32)>,
     pub(super) size: (u32, u32),
-    retained_target_valid: bool,
-    last_successful_revision: Option<u64>,
-    owed_damage: Vec<FineDamageRect>,
+    pub(super) retained_target_valid: bool,
+    pub(super) last_successful_revision: Option<u64>,
+    pub(super) owed_damage: Vec<FineDamageRect>,
+    /// The surface's pixels on the CPU, for an output presented by readback
+    /// ([`VelloDrmBridge::refresh_output_image`]): tight RGBA, `size` pixels.
+    /// Not swapped with the bridge's target: it is this output's alone.
+    pub(super) image: super::output_image::OutputImage,
 }
 
 impl OutputSurface {
@@ -214,12 +218,13 @@ impl OutputSurface {
             retained_target_valid: false,
             last_successful_revision: None,
             owed_damage: Vec::new(),
+            image: super::output_image::OutputImage::default(),
         })
     }
 
     /// Exchange these pixels with the ones `target` renders into. Calling it twice
     /// restores both.
-    fn swap(&mut self, target: &mut RetainedGpuTarget) {
+    pub(super) fn swap(&mut self, target: &mut RetainedGpuTarget) {
         std::mem::swap(&mut self.texture, &mut target.texture);
         std::mem::swap(&mut self.view, &mut target.view);
         std::mem::swap(&mut self.band, &mut target.band);
@@ -235,16 +240,17 @@ impl OutputSurface {
         std::mem::swap(&mut self.owed_damage, &mut target.owed_damage);
     }
 
-    fn invalidate(&mut self) {
+    pub(super) fn invalidate(&mut self) {
         self.retained_target_valid = false;
         self.last_successful_revision = None;
         self.owed_damage.clear();
+        self.image.forget();
     }
 }
 
 /// The most regions a debt keeps: the sparse renderer's own rectangle limit. A longer one is
 /// merged ([`super::coalesce_damage`]) rather than dropped.
-const MAX_OWED_RECTS: usize = super::MAX_DAMAGE_RECTS;
+pub(super) const MAX_OWED_RECTS: usize = super::MAX_DAMAGE_RECTS;
 
 /// The revision an output's retained pixels hold, and the damage skipped frames owe them.
 struct RetainedPixels<'a> {
@@ -253,7 +259,7 @@ struct RetainedPixels<'a> {
 }
 
 /// `frame`'s backdrops as `transform` sees them.
-fn backdrop_through(
+pub(super) fn backdrop_through(
     frame: &ui::backdrop::BackdropFrame,
     transform: Affine,
 ) -> ui::backdrop::BackdropFrame {
@@ -389,7 +395,10 @@ impl VelloDrmBridge {
     /// The output's surface, removed from the list for the render; a new one when the
     /// output has none or changed size. A surface rendered through another view (the
     /// output moved) keeps its texture but renders in full.
-    fn take_output_surface(&mut self, view: &OutputView) -> Result<OutputSurface, BridgeError> {
+    pub(super) fn take_output_surface(
+        &mut self,
+        view: &OutputView,
+    ) -> Result<OutputSurface, BridgeError> {
         if let Some(index) = self
             .output_surfaces
             .iter()

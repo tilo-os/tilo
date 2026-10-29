@@ -1257,7 +1257,7 @@ impl VelloDrmBridge {
 
     /// Take an uncaptured wgpu error raised since the last check, poisoning the target so the
     /// next render rebuilds it.
-    fn take_device_error(&mut self) -> Option<BridgeError> {
+    pub(super) fn take_device_error(&mut self) -> Option<BridgeError> {
         let error = self.device_errors.take()?;
         tracing::error!(%error, "DRM paint: wgpu reported an error; rebuilding the renderer");
         self.target.poisoned = true;

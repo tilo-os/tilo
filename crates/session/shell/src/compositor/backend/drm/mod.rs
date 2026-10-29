@@ -880,6 +880,18 @@ struct PaintScanoutSample {
     cpu_pixel_passes: u64,
 }
 
+impl PaintScanoutSample {
+    /// Fold another output's readback work of the same frame into this one.
+    fn add(&mut self, other: Self) {
+        self.direct_queued |= other.direct_queued;
+        self.overlapped = self.overlapped.or(other.overlapped);
+        self.legacy_attempted |= other.legacy_attempted;
+        self.bridge_us = self.bridge_us.saturating_add(other.bridge_us);
+        self.scanout_us = self.scanout_us.saturating_add(other.scanout_us);
+        self.cpu_pixel_passes = self.cpu_pixel_passes.saturating_add(other.cpu_pixel_passes);
+    }
+}
+
 /// Apply one reconfiguration to a scanout set. Shared by the presenter (normal case, render
 /// thread) and by [`DrmBackend`] itself for the inline path before the presenter splits off — one implementation, so hotplug behaves the same on either side.
 pub(super) fn apply_scanout_command(
@@ -1179,11 +1191,26 @@ fn ensure_bridge(paint: &mut Option<paint::VelloDrmBridge>, target_size: (u32, u
 }
 
 /// Whether the bridge's target should span the desktop this frame: some powered output
-/// presented through the combined readback last frame, or cannot render direct.
+/// presented through the combined readback last frame, or cannot render direct, and does
+/// not show its own image ([`shows_own_image`]).
 fn expects_readback(scanouts: &[ScanoutEntry]) -> bool {
     scanouts.iter().any(|entry| {
-        !entry.dark() && (entry.present_by_readback || entry.direct_ineligible.is_some())
+        !entry.dark()
+            && (entry.present_by_readback || entry.direct_ineligible.is_some())
+            && !(scanouts.len() > 1 && shows_own_image(entry))
     })
+}
+
+/// Whether an output presented by readback, beside other outputs, is rendered and read back
+/// alone ([`present_own_image`]) rather than cut out of the combined desktop. An HDR output
+/// stays on the combined readback, which composites its HDR layers on the CPU.
+fn shows_own_image(entry: &ScanoutEntry) -> bool {
+    !entry.hdr_wanted() && !entry.scanout.format().is_hdr()
+}
+
+/// Whether `entry` presents through the combined readback this frame.
+fn on_combined_readback(entry: &ScanoutEntry, outputs: usize) -> bool {
+    entry.present_by_readback && !(outputs > 1 && shows_own_image(entry))
 }
 
 /// The extent of the bridge's own target. The combined readback renders the bounding box of
@@ -1412,16 +1439,47 @@ fn paint_scanouts_with(
         if let Some(window) = phase_window {
             render_totals.record(window);
         }
-        // Only outputs on the direct path keep a retained surface.
+        // Only outputs on the direct path, or showing their own image, keep a retained
+        // surface.
+        let count = scanouts.len();
         let live: Vec<OutputId> = scanouts
             .iter()
-            .filter(|entry| !entry.dark() && entry.direct_targets.is_some())
+            .filter(|entry| {
+                !entry.dark()
+                    && (entry.direct_targets.is_some()
+                        || (entry.present_by_readback && !on_combined_readback(entry, count)))
+            })
             .map(|entry| entry.id)
             .collect();
         bridge.retain_output_views(&live);
     }
     if !readback {
         return direct;
+    }
+    // Beside other outputs, an SDR output on the readback renders and reads back alone.
+    let mut own = PaintScanoutSample::default();
+    if scanouts.len() > 1
+        && let Some(bridge) = paint.as_mut()
+    {
+        for entry in scanouts
+            .iter_mut()
+            .filter(|entry| entry.present_by_readback)
+        {
+            entry.sync_hdr_readback();
+            if shows_own_image(entry) {
+                own.add(present_own_image(entry, outputs, bridge, pointer, &frame));
+            }
+        }
+        if !scanouts
+            .iter()
+            .any(|entry| on_combined_readback(entry, scanouts.len()))
+        {
+            return PaintScanoutSample {
+                direct_queued: direct.direct_queued,
+                overlapped: direct.overlapped,
+                ..own
+            };
+        }
     }
     // An output fell back to the readback while the bridge's target was one output's: the
     // readback renders the bounding box of every output, so the target grows to it, and the
@@ -1471,9 +1529,10 @@ fn paint_scanouts_with(
     // remaining output's sub-rect out of it on the CPU.
     // A target grown this frame holds no readback image to patch.
     let mut stale = resized_for_readback;
+    let count = scanouts.len();
     for entry in scanouts
         .iter_mut()
-        .filter(|entry| entry.present_by_readback)
+        .filter(|entry| on_combined_readback(entry, count))
     {
         let format = entry.scanout.format();
         entry.sync_hdr_readback();
@@ -1496,13 +1555,14 @@ fn paint_scanouts_with(
     };
     for entry in scanouts
         .iter_mut()
-        .filter(|entry| entry.present_by_readback)
+        .filter(|entry| on_combined_readback(entry, count))
     {
         entry.readback_current = true;
     }
+    own.add(sample);
     PaintScanoutSample {
         direct_queued: direct.direct_queued,
-        ..sample
+        ..own
     }
 }
 
@@ -2246,7 +2306,18 @@ fn paint_scanouts_cpu(
     let size = (target_size.0 as usize, target_size.1 as usize);
     for entry in scanouts.iter_mut().filter(|entry| !entry.dark()) {
         // The CPU renderer has no readback; its own profile covers this copy.
-        paint_one_scanout(entry, outputs, rgba, size, pointer, None, None);
+        paint_one_scanout(
+            entry,
+            outputs,
+            CombinedPixels {
+                rgba,
+                size,
+                origin: (0, 0),
+            },
+            pointer,
+            None,
+            None,
+        );
     }
     let pixels = u64::from(target_size.0).saturating_mul(u64::from(target_size.1));
     renderer.record_present(started.elapsed(), pixels, scanouts.len());
@@ -2432,9 +2503,10 @@ fn present_sparse_combined(
     let bounds = damage_bounds(regions)?;
     // Damage is in scene pixels. A head that rotates or scales its part of the
     // scene maps it to other scanout pixels, so every head copies whole there.
+    let count = scanouts.len();
     let copied = scanouts
         .iter()
-        .filter(|entry| entry.present_by_readback)
+        .filter(|entry| on_combined_readback(entry, count))
         .all(|entry| {
             entry.transform == settings_store::hardware::OutputTransform::Normal
                 && outputs
@@ -2494,9 +2566,9 @@ fn upload_combined_scene(
     let hdr_layers = upload.hdr_layers;
     let bridge_started = Instant::now();
     let composite = !hdr_layers.is_empty()
-        && scanouts
-            .iter()
-            .any(|entry| entry.present_by_readback && entry.scanout.format().is_hdr());
+        && scanouts.iter().any(|entry| {
+            on_combined_readback(entry, scanouts.len()) && entry.scanout.format().is_hdr()
+        });
     let painted = if composite {
         bridge
             .paint_with_hdr_layers(scene, hdr_layers)
@@ -2530,15 +2602,19 @@ fn upload_combined_scene(
         layers: hdr_layers,
     });
     let mut cpu_pixel_passes: u64 = 0;
+    let count = scanouts.len();
     for entry in scanouts
         .iter_mut()
-        .filter(|entry| entry.present_by_readback)
+        .filter(|entry| on_combined_readback(entry, count))
     {
         cpu_pixel_passes = cpu_pixel_passes.saturating_add(paint_one_scanout(
             entry,
             outputs,
-            rgba,
-            (cw, ch),
+            CombinedPixels {
+                rgba,
+                size: (cw, ch),
+                origin: (0, 0),
+            },
             pointer,
             hdr,
             None,
@@ -2567,15 +2643,19 @@ fn present_composed_readback(
         usize::try_from(target_size.1).unwrap_or(0),
     );
     let mut cpu_pixel_passes: u64 = 0;
+    let count = scanouts.len();
     for entry in scanouts
         .iter_mut()
-        .filter(|entry| entry.present_by_readback)
+        .filter(|entry| on_combined_readback(entry, count))
     {
         cpu_pixel_passes = cpu_pixel_passes.saturating_add(paint_one_scanout(
             entry,
             outputs,
-            rgba,
-            (cw, ch),
+            CombinedPixels {
+                rgba,
+                size: (cw, ch),
+                origin: (0, 0),
+            },
             pointer,
             None,
             damage,
@@ -2787,24 +2867,141 @@ fn output_local_cursor(
     Some((f64::from(x), f64::from(y)))
 }
 
+/// Tight RGBA pixels an output's dumb buffer is filled from: the combined desktop at the
+/// scene origin, or one output's own image at its position.
+#[derive(Clone, Copy)]
+struct CombinedPixels<'a> {
+    rgba: &'a [u8],
+    /// Width and height in pixels.
+    size: (usize, usize),
+    /// Where the pixels' top-left corner sits in the scene.
+    origin: (i32, i32),
+}
+
+/// Present an output on the readback from its own image: render it alone and read back what
+/// changed on it ([`paint::VelloDrmBridge::refresh_output_image`]), then fill its dumb
+/// buffer. Nothing is rendered, read or written while its previous flip is pending (it could
+/// not show the frame; its damage is owed to the next), nor for a frame that changes nothing
+/// on it while it shows its image and the cursor is on its own plane.
+fn present_own_image(
+    entry: &mut ScanoutEntry,
+    outputs: &[Output],
+    bridge: &mut paint::VelloDrmBridge,
+    pointer: (f64, f64),
+    frame: &ScanoutFrame<'_>,
+) -> PaintScanoutSample {
+    let view = output_view(entry, outputs);
+    if entry.scanout.event_pageflips_available() && entry.scanout.ring_flip_pending() {
+        bridge.defer_output_image(&view, frame.damage);
+        return PaintScanoutSample::default();
+    }
+    let started = Instant::now();
+    let damage = frame.damage.unwrap_or(SceneDamage {
+        revision: 1,
+        previous_revision: None,
+        regions: None,
+    });
+    let deadline = started
+        .checked_add(DIRECT_FRAME_DEADLINE)
+        .unwrap_or(started);
+    let change = match bridge.refresh_output_image(frame.scene, &view, damage, deadline) {
+        Ok(change) => change,
+        Err(error) => {
+            match error {
+                paint::BridgeError::RecoveryBackoff { .. } => {
+                    tracing::debug!("DRM backend: paint recovery is cooling down: {error}");
+                }
+                error => {
+                    tracing::error!(output = entry.id.0, "DRM backend: paint (output): {error}");
+                }
+            }
+            entry.readback_current = false;
+            return PaintScanoutSample {
+                legacy_attempted: true,
+                bridge_us: started.elapsed().as_micros(),
+                ..PaintScanoutSample::default()
+            };
+        }
+    };
+    let bridge_us = started.elapsed().as_micros();
+    if change == paint::OutputImageChange::Unchanged
+        && entry.readback_current
+        && entry.scanout.hardware_cursor_active()
+    {
+        return PaintScanoutSample {
+            bridge_us,
+            ..PaintScanoutSample::default()
+        };
+    }
+    let Some(rgba) = bridge.output_image(entry.id) else {
+        entry.readback_current = false;
+        return PaintScanoutSample {
+            legacy_attempted: true,
+            bridge_us,
+            ..PaintScanoutSample::default()
+        };
+    };
+    let (px, py) = entry.position;
+    // The changed region in scene pixels, for an output whose buffer takes a clip. A rotated
+    // head maps it to other scanout pixels, so it is written whole, as on the combined path.
+    let upright = entry.transform == settings_store::hardware::OutputTransform::Normal
+        && view.size == entry.scanout.size();
+    let damage = match change {
+        paint::OutputImageChange::Region(rect) if entry.readback_current && upright => {
+            Some(vello::FineDamageRect {
+                x: rect.x.saturating_add(u32::try_from(px.max(0)).unwrap_or(0)),
+                y: rect.y.saturating_add(u32::try_from(py.max(0)).unwrap_or(0)),
+                ..rect
+            })
+        }
+        _ => None,
+    };
+    let size = view.size;
+    let scanout_started = Instant::now();
+    let passes = paint_one_scanout(
+        entry,
+        outputs,
+        CombinedPixels {
+            rgba,
+            size: (size.0 as usize, size.1 as usize),
+            origin: entry.position,
+        },
+        pointer,
+        None,
+        damage,
+    );
+    // The flip was free above, so the write either queued one or, failing to map the
+    // buffer, left it behind the image.
+    entry.readback_current =
+        !entry.scanout.event_pageflips_available() || entry.scanout.ring_flip_pending();
+    PaintScanoutSample {
+        legacy_attempted: true,
+        bridge_us,
+        scanout_us: scanout_started.elapsed().as_micros(),
+        cpu_pixel_passes: passes,
+        ..PaintScanoutSample::default()
+    }
+}
+
 /// Body of [`paint_scanouts`]'s per-scanout multi-output loop, split out to
 /// keep that function short. Computes the software-cursor position and the
 /// (possibly colour-transformed) sub-rect for `e`, then presents it —
 /// unchanged from the inline version, so the present call still lands at
 /// exactly the same point in the per-output iteration.
-/// `rgba` is the combined frame, `(cw, ch)` pixels.
+/// `pixels` are the combined frame, or the output's own image.
 ///
 /// Returns how many passes it made over the output's pixels on the CPU: the rotate and
 /// swizzle (or PQ encode), plus the sub-rect copy and the qcms pass of an ICC profile.
+/// The write into the dumb buffer is one of them, missing when a pending flip refused it.
 fn paint_one_scanout(
     e: &mut ScanoutEntry,
     outputs: &[Output],
-    rgba: &[u8],
-    (cw, ch): (usize, usize),
+    pixels: CombinedPixels<'_>,
     pointer: (f64, f64),
     hdr_layers: Option<CpuComposite<'_>>,
     damage: Option<vello::FineDamageRect>,
 ) -> u64 {
+    let (rgba, (cw, ch), origin) = (pixels.rgba, pixels.size, pixels.origin);
     let (px, py) = e.position;
     let (physical_w, physical_h) = e.scanout.size();
     let logical_size = outputs
@@ -2812,8 +3009,8 @@ fn paint_one_scanout(
         .find(|output| output.id == e.id)
         .map_or((physical_w, physical_h), |output| output.size);
     let local_cursor = output_local_cursor((px, py), logical_size, pointer, e.transform);
-    let sx = usize::try_from(px.max(0)).unwrap_or(0);
-    let sy = usize::try_from(py.max(0)).unwrap_or(0);
+    let sx = usize::try_from(px.saturating_sub(origin.0).max(0)).unwrap_or(0);
+    let sy = usize::try_from(py.saturating_sub(origin.1).max(0)).unwrap_or(0);
     let hdr = e.scanout.format().is_hdr();
     let dim = e.sync_cpu_dim(hdr);
     let copied = (e.color_transform.is_some() || dim.is_some()) && !hdr;
@@ -2857,8 +3054,12 @@ fn paint_one_scanout(
     };
     let transform = e.transform;
     // Scene position of the source buffer's origin: the output's own copy
-    // starts at the output, the combined frame at the scene's origin.
-    let scene_origin = if copied { (sx, sy) } else { (0, 0) };
+    // starts at the output, the pixels handed in at their origin.
+    let (ox, oy) = if copied { (px, py) } else { origin };
+    let scene_origin = (
+        usize::try_from(ox.max(0)).unwrap_or(0),
+        usize::try_from(oy.max(0)).unwrap_or(0),
+    );
     let composite = hdr_layers.map(|layers| (layers, scene_origin));
     let local = damage.map(|rect| output_local_clip(px, py, logical_size, rect));
     let pageflip = e.scanout.event_pageflips_available();
