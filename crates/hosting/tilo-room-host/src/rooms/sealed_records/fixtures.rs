@@ -269,6 +269,7 @@ pub async fn governor_published(
     published
         .iter()
         .rev()
+        // optional-decode: test support (compiled only for tests); other publications are skipped
         .filter_map(|bytes| postcard::from_bytes::<NeighbourMsg>(bytes).ok())
         .find_map(|message| match message {
             NeighbourMsg::AppDocument {

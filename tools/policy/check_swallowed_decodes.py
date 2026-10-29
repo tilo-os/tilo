@@ -23,8 +23,8 @@ error is discarded in the same statement:
   returns an error.
 
 A decode whose absence is genuinely fine (a hint, a cache, an optional
-environment override) says why with an allow comment on the line of the
-match or the line above it::
+environment override) says why with an allow comment above the statement,
+or on one of its lines up to the call::
 
     // optional-decode: a stale cache entry is rebuilt from the source
 
@@ -222,7 +222,11 @@ def findings_in(text: str) -> list[tuple[int, str]]:
         if how is None:
             continue
         line = code.count("\n", 0, call.start()) + 1
-        nearby = lines[max(0, line - 2) : line]
+        first = start + len(code[start : call.start()]) - len(code[start : call.start()].lstrip())
+        opening = code.count("\n", 0, first) + 1
+        # The comment may sit above the statement or on any of its lines up
+        # to the call.
+        nearby = lines[max(0, min(opening, line) - 2) : line]
         if any(ALLOW.search(entry) for entry in nearby):
             continue
         found.append((line, f"{name}: {how}"))

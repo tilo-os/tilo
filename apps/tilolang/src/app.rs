@@ -216,12 +216,13 @@ impl ResourceApp for TlApp {
 
 /// Where windows keep their rooms' indexes: in the app's cache area, which its host gives it.
 pub fn indexes(files: &ui::storage::AppFiles) -> Option<std::path::PathBuf> {
-    files
-        .paths()
-        .cache()
-        .native_path()
-        .ok()
-        .map(|cache| cache.join("indexes"))
+    match files.paths().cache().native_path() {
+        Ok(cache) => Some(cache.join("indexes")),
+        Err(error) => {
+            tracing::warn!(%error, "no cache area for the rooms' indexes: they are kept in memory");
+            None
+        }
+    }
 }
 
 /// The built-in packages, compiled in the test process, which the window's tests run side by

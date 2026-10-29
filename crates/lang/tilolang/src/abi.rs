@@ -93,6 +93,8 @@ imports! {
     SetRemove = "set_remove" ([H, H, H] -> []);
     MapPut = "map_put" ([H, H, H, H] -> []);
     MapRemove = "map_remove" ([H, H, H] -> []);
+    MapSetAdd = "map_set_add" ([H, H, H, H] -> []);
+    MapSetRemove = "map_set_remove" ([H, H, H, H] -> []);
     MapGetH = "map_get_h" ([H, H, H] -> [H]);
     MapKeys = "map_keys" ([H, H] -> [H]);
     RecNew = "rec_new" ([H] -> [H]);
@@ -186,6 +188,8 @@ imports! {
     RichTime = "rich_time" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
     Dated = "dated" ([H, H] -> [H]);
+    EventPart = "event_part" ([I32] -> [H]);
+    CollMoveAmong = "coll_move_among" ([H, H, H, I64, H] -> []);
     UiActions = "ui_actions" ([H, H, H] -> []);
 
     SpaceI = "space_i" ([H] -> [I64]);
