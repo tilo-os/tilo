@@ -22,7 +22,7 @@ impl ShellOverlayHost {
                 onboarding: self.onboarding.is_some(),
                 onboarding_animating: self
                     .onboarding
-                    .as_ref()
+                    .as_deref()
                     .is_some_and(Widget::needs_animation_frame),
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.overview_zoom_moving(now),
@@ -130,9 +130,9 @@ impl ShellOverlayHost {
         } = &mut *sections;
         let contextual_tour = self
             .onboarding
-            .as_ref()
+            .as_deref()
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
-        if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+        if !contextual_tour && let Some(onboarding) = self.onboarding.as_deref_mut() {
             onboarding.draw(backdrop, transform, text_renderer, theme, presence);
             let desktop = transform.transform_rect_bbox(self.rect);
             overlay_part(
@@ -490,7 +490,7 @@ impl ShellOverlayHost {
             },
         );
         overlay_part(above_quick_settings, "shell.tour", desktop, |scene| {
-            if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+            if contextual_tour && let Some(onboarding) = self.onboarding.as_deref_mut() {
                 onboarding.draw(scene, transform, text_renderer, theme, presence);
                 self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
             }
@@ -777,7 +777,7 @@ impl ShellOverlayHost {
             (
                 "onboarding",
                 self.onboarding
-                    .as_ref()
+                    .as_deref()
                     .and_then(Widget::next_wake_deadline),
             ),
             ("people", self.people_wake_deadline()),

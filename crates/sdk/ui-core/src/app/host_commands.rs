@@ -322,7 +322,7 @@ impl App {
     pub(super) fn palette_presented(&self) -> bool {
         self.actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|palette| palette.is_presented())
     }
 }
