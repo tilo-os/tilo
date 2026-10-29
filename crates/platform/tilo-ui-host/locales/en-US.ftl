@@ -31,6 +31,8 @@ tilolang-none-selected = No { $kind } selected
 tilolang-sort = Sort
 tilolang-more = More actions
 tilolang-undo = Undo
+# Typed while the window was busy with a press that opened no field, and no field had the keyboard.
+tilolang-typing-unplaced = Nothing took what you typed: “{ $typed }”
 tilolang-did = { $action }: { $title }
 tilolang-replying-to = Replying to
 tilolang-thread-replies = { $count ->
@@ -40,3 +42,4 @@ tilolang-thread-replies = { $count ->
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+tilolang-form-cancel = Cancel

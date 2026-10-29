@@ -3794,9 +3794,15 @@ impl TextInput {
     /// (Shift+Enter still breaks a wrapping field's line).
     #[must_use]
     pub fn on_submit(mut self, callback: impl FnMut(&str) + 'static) -> Self {
-        self.enter_submits = true;
-        self.on_submit = Some(Box::new(callback));
+        self.set_on_submit(Some(Box::new(callback)));
         self
+    }
+
+    /// Run `callback` on a submitting Enter (Shift+Enter still breaks a wrapping field's
+    /// line), or, given none, let Enter break the line again.
+    pub fn set_on_submit(&mut self, callback: Option<Box<dyn FnMut(&str)>>) {
+        self.enter_submits = callback.is_some();
+        self.on_submit = callback;
     }
 
     /// Route Enter through an exported resource action with the text as its

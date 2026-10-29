@@ -92,7 +92,7 @@ impl DateControl {
                 .map(|day| day.format("%Y-%m-%d").to_string())
                 .unwrap_or_default();
             reported.set(text.clone());
-            sink.borrow_mut().push(UiEvent::Edit(edited.clone(), text));
+            sink.push(UiEvent::Edit(edited.clone(), text));
         });
         Self {
             field,
@@ -176,6 +176,6 @@ mod tests {
         value.set("2026-11-02".to_owned());
         assert!(control.follow_value());
         assert_eq!(control.field.value(), NaiveDate::from_ymd_opt(2026, 11, 2));
-        assert!(sink.borrow().is_empty(), "showing a value reports no edit");
+        assert!(sink.is_empty(), "showing a value reports no edit");
     }
 }

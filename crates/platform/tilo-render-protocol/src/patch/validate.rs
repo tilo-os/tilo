@@ -173,6 +173,7 @@ impl<'a> Validator<'a> {
             | ToUi::Close
             | ToUi::Front(_)
             | ToUi::Ask(None)
+            | ToUi::Form(None)
             | ToUi::Activate
             | ToUi::Took { .. } => Ok(()),
             ToUi::Open { target, tree, .. } => {
@@ -227,6 +228,27 @@ impl<'a> Validator<'a> {
             ToUi::Ask(Some(ask)) => {
                 self.string(&ask.action)?;
                 self.string(&ask.invoker)
+            }
+            ToUi::Form(Some(form)) => {
+                self.string(&form.title)?;
+                self.string(&form.submit)?;
+                if let Some(error) = &form.error {
+                    self.string(error)?;
+                }
+                if let Some((_, key)) = &form.from {
+                    self.key(key)?;
+                }
+                if form.fields.len() > self.limits.messages as usize {
+                    return Err(Refused::invalid(concat!(
+                        "over the limit of ",
+                        "fields in a form"
+                    )));
+                }
+                form.fields.iter().try_for_each(|(key, text)| {
+                    self.key(key)?;
+                    self.string(text)
+                })?;
+                self.node(&form.tree, 1)
             }
         }
     }
@@ -648,7 +670,22 @@ impl<'a> Validator<'a> {
                         self.string(name)?;
                     }
                 }
-                ToApp::Back | ToApp::Answer(_) | ToApp::Undo | ToApp::Composing(_) => {}
+                ToApp::Space { width, height, .. } => {
+                    if !(width.is_finite() && height.is_finite() && *width >= 0.0 && *height >= 0.0)
+                    {
+                        return Err(Refused::invalid("a space is no size"));
+                    }
+                }
+                ToApp::FormEdit { field, text, .. } => {
+                    self.key(field)?;
+                    self.string(text)?;
+                }
+                ToApp::Back
+                | ToApp::Answer(_)
+                | ToApp::Undo
+                | ToApp::Composing(_)
+                | ToApp::FormSubmit { .. }
+                | ToApp::FormCancel { .. } => {}
             }
         }
         Ok(())
