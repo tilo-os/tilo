@@ -3551,24 +3551,6 @@ fn typing_in_the_open_palette_repaints_the_palette_not_the_output() {
 }
 
 #[test]
-fn nested_damage_regions_are_rasterised_once() {
-    let region = |x, y, width, height| FineDamageRect {
-        x,
-        y,
-        width,
-        height,
-    };
-    let card = region(100, 100, 300, 200);
-    let grown = region(100, 100, 300, 400);
-    let blur = region(120, 120, 200, 100);
-    let elsewhere = region(900, 0, 10, 10);
-    assert_eq!(
-        without_contained_regions(&[card, grown, blur, elsewhere, grown]),
-        vec![grown, elsewhere]
-    );
-}
-
-#[test]
 fn a_notification_appearing_repaints_its_card() {
     let mut oracle = ChangeOracle::new();
     for (name, theme) in THEMES {

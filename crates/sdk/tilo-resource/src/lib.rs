@@ -101,6 +101,7 @@
 // The derives name this crate by its path, here as in an app.
 extern crate self as tilo_resource;
 
+mod absolute_path;
 pub mod action;
 mod apply_cache;
 pub mod batch;
@@ -151,6 +152,7 @@ mod upsert;
 mod value;
 pub mod vocabulary;
 
+pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
     Outcome, Params, Refusal, Reverting, Stamped, Undoing, fresh_uuid, minted_ids, minted_keys,

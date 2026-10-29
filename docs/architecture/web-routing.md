@@ -108,7 +108,7 @@ home workspace's full link once admitted. There is no global room namespace.
 link        = entry [ "app/" ] [ "#" route ]
 route       = [ scope ] [ target ] [ "?" params ]
 
-scope       = "/me"                                   ; the person's own room
+scope       = "/me"                                   ; the browser's own desktop
             / [ "/@" host ] "/w/" [ slug "~" ] room   ; a workspace room
 host        = [ "https:" ] reg-name [ ":" port ]
                                           ; HTTPS origin of the room's host;
@@ -182,7 +182,7 @@ https://tilo.so/#/@ada.tilo.cloud/w/reading-group~6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e
     A passage in a private workspace's document, on the desktop.
 
 https://tilo.so/app/#/me/so.tilo.calculator
-    Calculator full tab in the person's own room; what `tilo-app dev` opens.
+    Calculator full tab in the browser's own desktop; what `tilo-app dev` opens.
 
 https://tilo.so/app/#/@ada.tilo.cloud/w/reading-group~6f1c…/so.tilo.word-processor/uuid:3e0d…?invite=AAECAwQF…
     The document full tab, with an invitation for someone not yet a member.

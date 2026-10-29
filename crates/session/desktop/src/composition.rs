@@ -118,6 +118,23 @@ fn child_mut<'a>(root: &'a mut dyn Widget, path: &[usize]) -> Option<&'a mut dyn
         Some((first, tail)) => child_mut(root.children_mut().into_iter().nth(*first)?, tail),
     }
 }
+/// The strip each display shows, as an index into the active workspace's
+/// strips, while the desktop spans several displays; empty on one.
+fn strips_shown_per_display(tree: &DesktopTree) -> Vec<(u32, usize)> {
+    let Some(workspace) = tree.active_workspace().filter(|_| tree.is_partitioned()) else {
+        return Vec::new();
+    };
+    tree.outputs
+        .displays
+        .iter()
+        .filter_map(|display| {
+            let strip = tree.strip_shown_on(display.id)?;
+            let index = workspace.strips.iter().position(|s| s.id == strip)?;
+            Some((display.id, index))
+        })
+        .collect()
+}
+
 /// A strip's groups in the order its row lays them out: display by display
 /// in reading order, each display's in strip order. The strip's own order
 /// when it isn't partitioned.
@@ -294,7 +311,11 @@ impl DesktopSurface {
             }
         }
         let deck_index = row_offset;
-        column = column.push(Box::new(StripDeck::new(deck_rows, active_strip)));
+        let mut deck = StripDeck::new(deck_rows, active_strip);
+        for (display, index) in strips_shown_per_display(tree) {
+            deck.jump_to(Some(display), index);
+        }
+        column = column.push(Box::new(deck));
         let mut foreground = Column::new().with_no_padding();
         if matches!(chrome.work_area, WorkArea::Flush { .. }) {
             foreground = foreground.with_gap(0.0);
@@ -699,7 +720,7 @@ impl DesktopSurface {
             }
         }
         // A drag carried to the deck's edge went to another strip.
-        if let Some(index) = self
+        if let Some((_, index)) = self
             .strip_deck_mut()
             .and_then(StripDeck::take_requested_strip)
             && let Some(id) = self.order.get(index).copied()
@@ -786,17 +807,39 @@ impl DesktopSurface {
             .navigation
             .transition
             .or_else(|| ui::motion::recent_input(ui::motion::frame_now()));
-        if let Some(deck) = self.strip_deck_mut()
-            && deck.shown() != shown
-        {
-            // Going to another strip slides the deck to it: a hand gets the
-            // paged-strip settle, a shortcut the same within `fast`. A change
-            // nobody's hand made (an agent's turn, a script) lands at once.
-            match source {
-                Some(source) => deck.show(shown, source),
-                None => deck.jump_to(shown),
+        let per_display = strips_shown_per_display(tree);
+        if let Some(deck) = self.strip_deck_mut() {
+            // Each display shows a strip of its own: the displays the deck
+            // stands on, and any the desktop spans that it has yet to.
+            let mut targets: Vec<(Option<u32>, usize)> = deck
+                .displays()
+                .into_iter()
+                .map(|display| {
+                    let index = display
+                        .and_then(|d| per_display.iter().find(|(id, _)| *id == d))
+                        .map_or(shown, |(_, index)| *index);
+                    (display, index)
+                })
+                .collect();
+            for &(display, index) in &per_display {
+                if !targets.iter().any(|(d, _)| *d == Some(display)) {
+                    targets.push((Some(display), index));
+                }
             }
-            changed = true;
+            for (display, index) in targets {
+                if deck.shown(display) == index {
+                    continue;
+                }
+                // Going to another strip slides the deck to it: a hand gets
+                // the paged-strip settle, a shortcut the same within `fast`.
+                // A change nobody's hand made (an agent's turn, a script)
+                // lands at once.
+                match source {
+                    Some(source) => deck.show(display, index, source),
+                    None => deck.jump_to(display, index),
+                }
+                changed = true;
+            }
         }
         if let Some(view) = (!self.external_navigation)
             .then(|| child_mut(self.root.as_mut(), &[0, 1, 1, 0]))

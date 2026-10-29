@@ -5691,7 +5691,7 @@ impl PdfApp {
     /// nothing yet.
     pub(crate) fn open_effect(
         &mut self,
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
         cx: &mut ui::framework::EffectCx<crate::PdfMarkup, Self>,
     ) -> ui::framework::EffectAnswer {
         if self.portal_action.is_some()
@@ -5701,7 +5701,7 @@ impl PdfApp {
             return Err("another PDF open is already in progress".into());
         }
         if let Some(path) = path {
-            return self.open_here_effect(path.into(), cx);
+            return self.open_here_effect(path.into_path_buf(), cx);
         }
         if tilo_paths::available(tilo_paths::Feature::NativePaths) {
             return Ok(
@@ -5895,7 +5895,7 @@ impl PdfApp {
         }
         match effect {
             PdfEffect::SaveAs { path: Some(file) } => {
-                let file = ensure_pdf_extension(file.into());
+                let file = ensure_pdf_extension(file.to_path_buf());
                 if !self.save_annotated_to(&file) {
                     return Err("PDF could not be saved".into());
                 }
@@ -6322,7 +6322,7 @@ pub(crate) mod tests {
         eprintln!("phase the_apps_open_shows_the_chosen_document_on_its_own_record");
         {
             let open = |path: &std::path::Path| PdfEffect::OpenPdf {
-                path: Some(path.display().to_string()),
+                path: Some(path.try_into().expect("an absolute path")),
             };
             let (_dir, a, b) = two_documents();
             let mut app = launched(&a);

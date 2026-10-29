@@ -941,7 +941,7 @@ impl Device {
 
     /// Let the notes app keep records in `room`, as opening the app there
     /// first does: the room's host lets it author, and the note's record is
-    /// its sealed channel, which this device asks the room's steward for.
+    /// its sealed channel, which this device asks the room's participants for.
     /// Every hosted room is sealed, wherever it is hosted. Whoever opens
     /// the app later finds the record.
     pub(crate) fn open_notes_first(&self, room: RoomId) {
@@ -1068,14 +1068,14 @@ impl Device {
         assert!(
             sealed,
             "{} holds {room} as a sealed room (its records committed instead: {committed}; \
-             its enrollment names a governor that stewards them: {}, the governor {governor}; \
+             its enrollment names a governor that takes part in them: {}, the governor {governor}; \
              its native owner is {standing} {failure})",
             self.label,
             self.net().native_room_seals_records(room)
         );
     }
 
-    /// The note's channel keys in `room`, once the room's steward admitted
+    /// The note's channel keys in `room`, once a participant admitted
     /// this device: what the identity service answers the notes app.
     fn note_keys(&self, room: RoomId) -> Option<channel_crypto::ChannelContentKeys> {
         let Some((channels, _)) = self.channels.as_ref() else {

@@ -265,7 +265,7 @@ pub struct Export {
     #[schema(range(min = 1, max = 100))]
     pub quality: Option<u8>,
     /// An absolute `.png`, `.jpg` or `.webp` path to write it to.
-    pub path: Option<String>,
+    pub path: Option<ui::tilo_resource::AbsolutePath>,
 }
 
 /// Find an area in the picture of the artwork: like colour touching a
@@ -303,7 +303,7 @@ pub struct ExportSvg {
     /// Text along a path is always outlined.
     pub outline_text: Option<bool>,
     /// An absolute `.svg` path to write it to.
-    pub path: Option<String>,
+    pub path: Option<ui::tilo_resource::AbsolutePath>,
 }
 
 /// Save the artwork as a `.artwork` file.
@@ -311,7 +311,7 @@ pub struct ExportSvg {
 #[serde(deny_unknown_fields)]
 pub struct SaveArtwork {
     /// An absolute `.artwork` path to write; else kept as content.
-    pub path: Option<String>,
+    pub path: Option<ui::tilo_resource::AbsolutePath>,
 }
 
 /// What the canvas answers to look at, measure, compare and write out the

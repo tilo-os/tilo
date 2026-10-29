@@ -208,3 +208,39 @@ fn busy_frames_of_128_256_and_512_rectangles_merge_to_the_dispatch_limit() {
         }
     }
 }
+
+#[test]
+fn damage_regions_merge_only_when_that_saves_raster_work() {
+    assert_eq!(
+        coalesce_regions(vec![rect(10, 76, 100, 40), rect(10, 96, 100, 40)]),
+        vec![rect(10, 76, 100, 60)]
+    );
+    assert_eq!(
+        coalesce_regions(vec![rect(0, 0, 10, 10), rect(12, 0, 10, 10)]).len(),
+        2
+    );
+    assert_eq!(
+        coalesce_regions(vec![rect(0, 0, 20, 20), rect(3_800, 2_000, 20, 20)]).len(),
+        2
+    );
+}
+
+#[test]
+fn a_pixel_rect_rounds_out_and_clamps_to_the_target() {
+    let target = |x0, y0, x1, y1| pixel_rect(Rect::new(x0, y0, x1, y1), 100, 50);
+    assert_eq!(target(1.5, 2.5, 10.2, 20.0), Some(rect(1, 2, 10, 18)));
+    assert_eq!(target(-5.0, -5.0, 500.0, 500.0), Some(rect(0, 0, 100, 50)));
+    assert_eq!(target(120.0, 0.0, 130.0, 10.0), None);
+}
+
+#[test]
+fn nested_damage_regions_are_rasterised_once() {
+    let card = rect(100, 100, 300, 200);
+    let grown = rect(100, 100, 300, 400);
+    let blur = rect(120, 120, 200, 100);
+    let elsewhere = rect(900, 0, 10, 10);
+    assert_eq!(
+        without_contained(vec![card, grown, blur, elsewhere, grown]),
+        vec![grown, elsewhere]
+    );
+}

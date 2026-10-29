@@ -332,6 +332,11 @@ impl WorkspaceStore {
         fs::create_dir_all(root.join(COMPUTE_DIR))?;
         fs::create_dir_all(root.join(COMPUTE_PENDING_DIR))?;
         remove_legacy_delta_log(&root);
+        // The store's directory and its own entries are durable from here on.
+        for directory in root.ancestors().take(3) {
+            retained::sync_dir_once(directory)?;
+        }
+        retained::journal::recover(&root.join(RETAINED_DIR).join("v2"))?;
         Ok(Self {
             tail_cache: SharedTailCache::for_root(&root),
             capture_leases: replay::CaptureLeases::for_root(&root),

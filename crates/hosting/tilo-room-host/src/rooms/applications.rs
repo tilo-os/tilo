@@ -100,7 +100,8 @@ impl Rooms {
     /// # Errors
     /// Refuses other certificates, stale custody, undeclared apps, a primary
     /// of an app without one, missing records, sealed records whose channel
-    /// this relay does not steward, failed changes or oversized publication.
+    /// this relay does not take part in, failed changes or oversized
+    /// publication.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the governor record stays locked through durable signed publication"
@@ -210,7 +211,7 @@ impl Rooms {
     ///
     /// # Errors
     /// Refuses other certificates, stale custody, incomplete records, sealed
-    /// ones whose channel this relay does not steward, failed changes or
+    /// ones whose channel this relay does not take part in, failed changes or
     /// oversized publication.
     #[expect(
         clippy::significant_drop_tightening,
@@ -309,7 +310,7 @@ impl Rooms {
     /// # Errors
     /// Refuses another governor's certificate, stale custody, undeclared
     /// apps, missing records, sealed ones whose channel this relay does not
-    /// steward, a bot the room does not let act, a change outside its
+    /// take part in, a bot the room does not let act, a change outside its
     /// grants, or oversized publication.
     #[expect(
         clippy::significant_drop_tightening,

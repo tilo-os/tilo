@@ -3,8 +3,6 @@
 //! History. The editor draws no header row and none of those controls; each
 //! bar control runs the editor's published action for it.
 
-use std::path::PathBuf;
-
 use ui::framework::testing::TestApp;
 use ui::widget::{SplitLayout, Widget};
 use ui::window_toolbar::ToolbarEvent;
@@ -147,35 +145,17 @@ fn the_bar_splits_exports_and_imports_through_the_editors_handlers() {
 }
 
 #[test]
-fn the_project_picker_lists_open_save_and_the_recent_projects() {
-    let mut app = sample(1280.0);
-    let open = PathBuf::from("/home/you/Videos/Open.qvp");
-    let other = PathBuf::from("/home/you/Videos/Reel.qvp");
-    app.project_path = Some(open.clone());
-    app.recents = [open, other].into_iter().collect();
+fn the_project_picker_offers_a_project_file_in_and_out() {
+    let app = sample(1280.0);
     let location = app.window_toolbar().location.expect("the project");
-    let rows: Vec<(&str, bool)> = location
+    let rows: Vec<&str> = location
         .choices
         .iter()
-        .map(|choice| (choice.label.as_str(), choice.separated))
+        .map(|choice| choice.label.as_str())
         .collect();
-    assert_eq!(
-        rows,
-        [
-            ("Open…", false),
-            ("Save", false),
-            ("Save as…", false),
-            ("Reel", true)
-        ],
-        "the project already open is not offered as somewhere to go"
-    );
+    assert_eq!(rows, ["Open project file…", "Export project file…"]);
+    assert!(!location.edited, "the project is kept as it is edited");
     assert!(location.choices.iter().all(|choice| !choice.current));
-
-    // A value naming no recent project opens nothing.
-    app.run_window_bar_event(&ToolbarEvent::Commit {
-        text: "project:recent:/elsewhere/Other.qvp".into(),
-    });
-    assert!(app.pending_open.is_none() && app.project_rx.is_none());
 }
 
 #[test]
@@ -243,78 +223,6 @@ fn history_is_the_window_bars_control() {
     );
 }
 
-#[test]
-fn the_location_says_when_the_project_has_unsaved_edits() {
-    let mut app = sample(1280.0);
-    let location = |app: &VideoEditorApp| {
-        app.window_toolbar()
-            .location
-            .expect("the project is the window's location")
-    };
-    app.project_path = Some(PathBuf::from("/home/you/Videos/Harbour.tvp"));
-    // The sample has content the file does not hold yet.
-    let unsaved = location(&app);
-    assert!(unsaved.edited, "unsaved work reads as edited");
-    assert_eq!(
-        unsaved.label,
-        app.project_label(),
-        "the label is the name alone"
-    );
-    assert_eq!(unsaved.name, app.project_status_line());
-
-    app.saved_heads = Some(app.doc_heads.clone());
-    let saved = location(&app);
-    assert!(!saved.edited, "a saved project does not");
-    assert_eq!(saved.label, unsaved.label);
-    assert_eq!(saved.name, app.project_status_line());
-    assert_ne!(
-        saved.name, unsaved.name,
-        "a screen reader hears the difference"
-    );
-}
-
-/// A failed save's Try again stands in the window's bar right after the
-/// failure, wide and compact: it names itself where the row has room and
-/// never goes into the overflow menu, and the failure is cut short only
-/// where nothing that yields to it stands beside it.
-#[test]
-fn a_failed_saves_try_again_stays_in_the_window_bar_wide_and_compact() {
-    let mut app = opened();
-    app.harness().present_in_window_bar();
-    {
-        let editor = app.surface_mut::<VideoEditorApp>();
-        editor.project_path = Some(PathBuf::from("/definitely/not/a/directory/x.qvp"));
-        editor.queue_save_project();
-    }
-    app.settle();
-    let held = ui::window_toolbar::notice().expect("the failure is in the bar");
-    assert_eq!(
-        held.actions.first().map(|action| action.id.as_str()),
-        Some(crate::app::notices::SAVE_RETRY_ACTION),
-        "with Try again beside it: {held:?}"
-    );
-    for width in [1280.0, 420.0] {
-        let shown = app
-            .harness()
-            .window_bar_notice(width)
-            .expect("the failure is up in the bar");
-        let button = shown.buttons.first().expect("Try again stands in the row");
-        assert_eq!(button.name, "Try again");
-        assert!(
-            button.bounds.x0 > shown.text_bounds.x1,
-            "{width} px: {shown:?}"
-        );
-        // Wide, inline; compact, in a strip of its own under the row,
-        // its text whole.
-        assert_eq!(
-            shown.strip.is_some(),
-            width < 1280.0,
-            "{width} px: {shown:?}"
-        );
-        assert!(shown.whole && button.labelled, "{width} px: {shown:?}");
-    }
-}
-
 /// Press the notice's action `index` in a bar `width` wide, by pointer or
 /// through its semantic action.
 fn press_notice(app: &mut TestApp<crate::VideoEditor>, width: f64, index: usize, semantic: bool) {
@@ -345,34 +253,6 @@ const WAYS: [(f64, bool); 4] = [
     (420.0, false),
     (420.0, true),
 ];
-
-/// A failed save's Try again, pressed by pointer or through its semantic
-/// action, wide or compact, saves the project, and the failure leaves.
-#[test]
-fn a_failed_saves_try_again_saves() {
-    for (width, semantic) in WAYS {
-        let dir = std::env::temp_dir().join(format!("tilo-ve-retry-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut app = opened();
-        app.harness().present_in_window_bar();
-        {
-            let editor = app.surface_mut::<VideoEditorApp>();
-            editor.project_path = Some(PathBuf::from("/definitely/not/a/directory/x.qvp"));
-            editor.queue_save_project();
-        }
-        app.settle();
-        assert_eq!(notice_buttons(&mut app, width), ["Try again"]);
-        let saved = dir.join("Retried.qvp");
-        app.surface_mut::<VideoEditorApp>().project_path = Some(saved.clone());
-        press_notice(&mut app, width, 0, semantic);
-        assert!(
-            saved.is_file(),
-            "Try again saved ({width}, semantic: {semantic})"
-        );
-        assert_eq!(ui::window_toolbar::notice(), None, "and the failure left");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-}
 
 /// An import whose files were refused carries Choose media…, which opens
 /// the media chooser again.
@@ -411,13 +291,19 @@ fn an_opens_undo_brings_the_timeline_back() {
         let dir = std::env::temp_dir().join(format!("tilo-ve-undo-open-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let other = dir.join("Other.qvp");
-        crate::project_file::save(&other, &Project::new("Other")).unwrap();
+        std::fs::write(
+            &other,
+            crate::project_file::encode(&Project::new("Other")).unwrap(),
+        )
+        .unwrap();
         let mut app = opened();
         app.harness().present_in_window_bar();
         let before = app.surface_mut::<VideoEditorApp>().project.clips.len();
         assert!(before > 0, "the sample has a timeline to replace");
-        app.surface_mut::<VideoEditorApp>()
-            .load_project_file(other.clone(), None);
+        app.effect(&VideoEditorEffect::OpenProjectFile {
+            path: Some(ui::tilo_resource::AbsolutePath::new(&other).unwrap()),
+        })
+        .expect("the project file opens");
         app.settle();
         assert_eq!(app.surface_mut::<VideoEditorApp>().project.clips.len(), 0);
         assert_eq!(notice_buttons(&mut app, width), ["Undo"]);

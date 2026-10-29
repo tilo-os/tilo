@@ -1,16 +1,11 @@
 //! Print Centre as a resource: the print and scan defaults a person keeps
 //! across their devices. Printers, documents in the queues and scanners are
 //! this machine's live state, published as live rows; printing, scanning and
-//! the pages are the surface's [`PrintCentreEffect`]s.
+//! the pages are the view's [`PrintCentreEffect`]s.
 
-use ui::framework::{
-    Effect, EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    RunMode, SurfaceCx, ViewCx,
-};
+use ui::framework::{Effect, Fixture, ResourceApp, ViewCx};
 use ui::prelude::*;
 use ui::tilo_resource::{self, Atom, Invoke};
-
-use crate::surface::PrintCentre;
 
 /// Scan resolutions offered, in dots per inch.
 pub const SCAN_RESOLUTIONS: [u16; 3] = [150, 300, 600];
@@ -324,7 +319,7 @@ impl ResourceApp for PrintCentreShell {
     }
 
     fn view(cx: &mut ViewCx<PrintDefaults>) -> Element {
-        cx.surface(PrintCentre::new())
+        crate::surface::window(cx)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -365,47 +360,6 @@ impl ResourceApp for PrintCentreShell {
         } else {
             Vec::new()
         }
-    }
-}
-
-impl ResourceSurface<PrintDefaults, PrintCentreEffect> for PrintCentre {
-    fn present(&mut self, state: &std::rc::Rc<PrintDefaults>) {
-        self.present_defaults(state);
-    }
-
-    /// A live window asks CUPS and SANE; a screenshot shows its scenario's
-    /// made-up devices, or none.
-    fn attach(&mut self, cx: SurfaceCx<PrintDefaults>) {
-        self.controls = Some(cx.actions());
-        self.dispatcher = Some(cx.dispatcher());
-        self.bar = Some(ui::framework::BarActions::new(cx.dispatcher()));
-        match cx.mode() {
-            RunMode::Live => self.refresh(),
-            RunMode::Capture => self.show(cx.fixture::<crate::surface::Snapshot>().as_deref()),
-            RunMode::Past => self.show(None),
-        }
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: PrintCentreEffect,
-        cx: &mut EffectCx<PrintDefaults, Self>,
-    ) -> EffectAnswer {
-        self.perform(effect, cx)
-    }
-
-    /// The scan and print steps that have nothing to act on right now.
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
-
-    /// The printers, documents and scanners CUPS and SANE reported.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.device_rows()
     }
 }
 

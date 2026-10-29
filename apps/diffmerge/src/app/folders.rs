@@ -5,10 +5,9 @@
 //! it opens is in the document. The walk runs off the UI thread, so a folder
 //! that turns out to be a whole disk cannot freeze the window.
 
-use std::path::Path;
-
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::portal::PickRequest;
+use ui::tilo_resource::AbsolutePath;
 
 use crate::actions::DiffmergeEffect;
 use crate::app::DiffMergeApp;
@@ -20,8 +19,8 @@ impl DiffMergeApp {
     /// for the left one and then the right one through the host's chooser.
     pub(super) fn answer_compare_folders(
         cx: &mut EffectCx<Session, Self>,
-        left: Option<String>,
-        right: Option<String>,
+        left: Option<AbsolutePath>,
+        right: Option<AbsolutePath>,
     ) -> EffectAnswer {
         match (left, right) {
             (Some(left), Some(right)) => Ok(Self::read_folders(cx, left, right)),
@@ -52,8 +51,8 @@ impl DiffMergeApp {
             match left {
                 None => Ok(Self::choose_folder(cx, Some(path))),
                 Some(left) => {
-                    let left = left.to_string_lossy().into_owned();
-                    let right = path.to_string_lossy().into_owned();
+                    let left = AbsolutePath::new(left)?;
+                    let right = AbsolutePath::new(path)?;
                     Ok(Self::read_folders(cx, left, right))
                 }
             }
@@ -61,9 +60,13 @@ impl DiffMergeApp {
     }
 
     /// Read both trees off the UI thread and show the listing.
-    fn read_folders(cx: &mut EffectCx<Session, Self>, left: String, right: String) -> Effected {
+    fn read_folders(
+        cx: &mut EffectCx<Session, Self>,
+        left: AbsolutePath,
+        right: AbsolutePath,
+    ) -> Effected {
         cx.thread(
-            move |_progress| crate::folder::compare(Path::new(&left), Path::new(&right)),
+            move |_progress| crate::folder::compare(&left, &right),
             |app: &mut Self, result, _| app.finish_folders(result),
         )
     }

@@ -38,12 +38,12 @@
 //!
 //! The service joins each room as the host's own device ([`RoomMember`], from
 //! the [`RoomRecordsLink`] the host supplies): a member of the room's
-//! channels like any other, admitted by the room's steward. It reads only
-//! records it holds keys for and writes nothing in the clear. When the host
-//! device is itself the steward of the room's channels (a room the host
+//! channels like any other, admitted by the room's participants. It reads
+//! only records it holds keys for and writes nothing in the clear. When the
+//! host device itself takes part in the room's channels (a room the host
 //! governs), it cannot be admitted to them a second time; the host hands the
-//! service the keys its steward holds instead
-//! ([`RoomRecordsLink::steward_keys`]), for each record a request reads or
+//! service the keys it holds instead
+//! ([`RoomRecordsLink::host_keys`]), for each record a request reads or
 //! acts on, fresh for every act.
 
 mod feedback;
@@ -97,7 +97,7 @@ const REMEMBERED: usize = 1024;
 
 /// How the service takes part in the host's rooms: as the host's own
 /// device, a member of each room's channels like any other. It opens only
-/// what a room's steward admitted it to and seals everything it writes.
+/// what a room's participants admitted it to and seals everything it writes.
 #[derive(Clone)]
 pub struct RoomMember {
     /// The host's endpoint and certificate; the member is the host device.
@@ -171,16 +171,17 @@ pub trait RoomRecordsLink: Send + Sync {
         Err("existing view documents unavailable".into())
     }
     /// The content keys of `route`'s channel, when the host device itself
-    /// stewards the channels of `route`'s room: it is then already the
+    /// takes part in the channels of `route`'s room: it is then already the
     /// channel's member, and the service, which joins as that device, can
-    /// only be handed the keys the steward holds. `create` opens the channel
-    /// of a record the service is about to write for the first time.
+    /// only be handed the keys the host holds. `create` opens the channel of
+    /// a record the service is about to write for the first time.
     ///
-    /// `None` when the host does not steward the room: the service waits for
-    /// the room's steward to admit it over the channel, like any member.
+    /// `None` when the host does not take part in the room's channels: the
+    /// service waits for a participant to admit it over the channel, like
+    /// any member.
     /// `Some(Err)` when the host refused the hand-off or holds no such
     /// channel. Called only on behalf of a caller the service serves.
-    fn steward_keys(
+    fn host_keys(
         &self,
         _route: &DocumentRoute,
         _create: bool,
@@ -836,7 +837,7 @@ impl Room {
         let keyed = Instant::now()
             .checked_add(KEYS_WAIT)
             .unwrap_or_else(Instant::now);
-        // Keys the host's own steward holds are handed over as soon as a
+        // Keys the host device holds are handed over as soon as a
         // route needs them: the record acted on at once (fresh every time),
         // and every route that arrives sealed while this waits.
         let mut handed = HashSet::new();
@@ -849,7 +850,7 @@ impl Room {
                 cluster_id: room,
                 record: record.to_owned(),
             };
-            self.take_steward_keys(vec![route], needs, link, &mut handed)?;
+            self.take_host_keys(vec![route], needs, link, &mut handed)?;
         }
         loop {
             self.settle(workspace_id, keyed, |room| {
@@ -864,7 +865,7 @@ impl Room {
                 .collect();
             match link {
                 Some(link) if !unhanded.is_empty() => {
-                    self.take_steward_keys(unhanded, needs, link, &mut handed)?;
+                    self.take_host_keys(unhanded, needs, link, &mut handed)?;
                 }
                 _ => break,
             }
@@ -895,12 +896,12 @@ impl Room {
         }
     }
 
-    /// Hold the keys the host's own steward hands over for `routes`
-    /// ([`RoomRecordsLink::steward_keys`]), noting each in `handed`. The
+    /// Hold the keys the host device hands over for `routes`
+    /// ([`RoomRecordsLink::host_keys`]), noting each in `handed`. The
     /// session then opens what it held for them and wakes the wait. A record
     /// to act on whose keys the host refuses is refused at once; a listing
     /// goes on without it.
-    fn take_steward_keys(
+    fn take_host_keys(
         &self,
         routes: Vec<DocumentRoute>,
         needs: Needs<'_>,
@@ -909,7 +910,7 @@ impl Room {
     ) -> Result<(), ActionHostError> {
         for route in routes {
             handed.insert(route.clone());
-            match link.steward_keys(&route, false) {
+            match link.host_keys(&route, false) {
                 None => {}
                 Some(Ok(keys)) => {
                     self.peer
@@ -1963,14 +1964,14 @@ impl Worker {
             cluster_id: room.to_owned(),
             record: hosted.wire_record().to_owned(),
         };
-        // A new record's channel is opened by the steward; when that is the
-        // host itself, it opens it for the member and hands it the keys, so
-        // the first change goes out sealed instead of waiting for keys.
+        // When the host device takes part in the room's channels, it opens a
+        // new record's channel for the member and hands it the keys, so the
+        // first change goes out sealed instead of waiting for keys.
         if let Some(keys) = self
             .shared
             .link
             .get()
-            .and_then(|link| link.steward_keys(&route, true))
+            .and_then(|link| link.host_keys(&route, true))
         {
             let keys = keys.map_err(|reason| {
                 Outcome::Rejected(ActionHostError::Unavailable {
@@ -2001,7 +2002,7 @@ impl Worker {
     }
 
     /// Publish `mutation` as the member: sealed with the record's channel
-    /// keys, or held until the room's steward admits the member to it.
+    /// keys, or held until a participant admits the member to it.
     fn commit(
         &mut self,
         workspace_id: u64,

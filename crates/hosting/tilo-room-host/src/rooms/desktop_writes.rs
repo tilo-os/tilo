@@ -90,7 +90,7 @@ impl GovernedRoom {
         envelope: &collab_types::SignedOp,
     ) -> Result<Readable, String> {
         let payload = if envelope.encryption.is_some() {
-            // A sealed write of a channel this relay does not steward (it
+            // A sealed write of a channel this relay does not take part in (it
             // holds no keys for it) is the one write it cannot read: the
             // room's devices, which open it, decide it on receipt.
             #[cfg(any(feature = "agents", feature = "web"))]

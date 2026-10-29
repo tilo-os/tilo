@@ -2059,12 +2059,13 @@ impl TypstApp {
         // "Try again" on the window's save status: save to where the failed
         // save went.
         if self.saves.take_retry()
-            && let Some(path) = self.save_path.clone()
+            && let Some(Ok(path)) = self
+                .save_path
+                .clone()
+                .map(ui::tilo_resource::AbsolutePath::new)
             && let Some(dispatcher) = &self.actions
         {
-            dispatcher.effect(&crate::actions::TypstEffect::Save {
-                path: Some(path.to_string_lossy().into_owned()),
-            });
+            dispatcher.effect(&crate::actions::TypstEffect::Save { path: Some(path) });
         }
         if let Some(operation) = self.pending_resource_io.take() {
             let result = match operation {

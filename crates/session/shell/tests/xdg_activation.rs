@@ -339,7 +339,7 @@ fn an_app_activating_another_with_a_valid_token_brings_it_forward() {
     let _ = h.state.leave_fullscreen_when_focus_moved(None);
     source_top.set_fullscreen(None);
     h.pump();
-    let mail_group = h.state.fullscreen_group;
+    let mail_group = h.state.client_fullscreen_group();
     let mail_strip = {
         let tree = h.state.workspace_tree.read();
         tree.desktop.active_strip.get(&tree.desktop.active).copied()
@@ -359,7 +359,7 @@ fn an_app_activating_another_with_a_valid_token_brings_it_forward() {
     h.pump();
     let after_background = (
         shell::compositor::client_input::active_foreign_surface(&h.state.workspace_tree.read()),
-        h.state.fullscreen_group,
+        h.state.client_fullscreen_group(),
     );
 
     // A link clicked in Mail opens in the browser: Mail hands it a token
@@ -394,7 +394,11 @@ fn an_app_activating_another_with_a_valid_token_brings_it_forward() {
     assert_eq!(in_front, Some(target_id), "the browser is in front");
     assert_eq!(h.state.client_input.keyboard_focus(), Some(target_id));
     assert_eq!(active_strip, Some(elsewhere), "the view goes to its strip");
-    assert_eq!(h.state.fullscreen_group, None, "Mail leaves full screen");
+    assert_eq!(
+        h.state.client_fullscreen_group(),
+        None,
+        "Mail leaves full screen"
+    );
 }
 
 // The interim proof that the person is behind an app's open: their own

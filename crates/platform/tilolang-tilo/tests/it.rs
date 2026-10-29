@@ -11,6 +11,7 @@
 )]
 
 mod bundle;
+mod chat;
 mod collab;
 mod columns;
 mod composer;

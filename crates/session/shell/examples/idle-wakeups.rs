@@ -116,7 +116,7 @@ fn main() -> std::process::ExitCode {
 /// 6/s.
 ///
 /// Those were the last wakers. The channel service now tells a route whose
-/// room has no known steward when one is learned (and retries a channel it
+/// room's governance is unknown when it is learned (and retries a channel it
 /// failed to open on its own backoff), so a route it answered waits for
 /// that push instead of asking on the timer; the authority worker waits for
 /// its publisher with a creation-only watch instead of retrying it. The

@@ -861,9 +861,10 @@ impl TerminalWidget {
         self.environments_panel.picker = None;
         match outcome {
             ui::portal::PortalOutcome::Opened(path) => {
-                let path = path.display().to_string();
-                self.environments_panel.error =
-                    self.sessions.grant_folder(&record, &path, true).err();
+                self.environments_panel.error = ui::tilo_resource::AbsolutePath::new(path)
+                    .map_err(String::from)
+                    .and_then(|path| self.sessions.grant_folder(&record, &path, true))
+                    .err();
             }
             ui::portal::PortalOutcome::Cancelled => {}
             ui::portal::PortalOutcome::Failed(reason) => {

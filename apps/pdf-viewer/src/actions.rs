@@ -228,14 +228,14 @@ pub enum PdfEffect {
     /// Opens a PDF on its own markup record, in this window.
     #[effect(job, cancellable, destructive)]
     OpenPdf {
-        #[param("Filesystem path; omit to use the system picker")]
-        path: Option<String>,
+        #[param("Absolute path; omit to use the system picker")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Save annotated PDF
     #[effect(job, cancellable, destructive)]
     SaveAs {
-        #[param("Filesystem path; omit to use the system picker")]
-        path: Option<String>,
+        #[param("Absolute path; omit to use the system picker")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
 }
 

@@ -9,11 +9,11 @@ use crate::resource::FirewallShell;
 
 /// The bare widget showing the sample ruleset, framed in a window of
 /// `w`×`h`: for its layout and pointer input.
-fn framed(w: f64, h: f64) -> Framed<FirewallApp> {
-    framed_app(FirewallApp::new_demo(), w, h)
+fn framed(w: f64, h: f64) -> Framed<FirewallWindow> {
+    framed_app(FirewallWindow::bare(Store::demo()), w, h)
 }
 
-fn framed_app(app: FirewallApp, w: f64, h: f64) -> Framed<FirewallApp> {
+fn framed_app(app: FirewallWindow, w: f64, h: f64) -> Framed<FirewallWindow> {
     let mut state = ui::State::new();
     assert!(state.adopt_doc(AutoCommit::new()));
     Framed::new(state, app, ui::headless::viewport((w, h)), Theme::dark())
@@ -38,11 +38,11 @@ fn find_target(harness: &ui::headless::FrameHarness, suffix: &str) -> Rect {
     found.unwrap_or_else(|| panic!("no widget {suffix} in {:?}", targets.keys()))
 }
 
-fn target(app: &Framed<FirewallApp>, suffix: &str) -> Rect {
+fn target(app: &Framed<FirewallWindow>, suffix: &str) -> Rect {
     find_target(Framed::harness(app), suffix)
 }
 
-fn click(app: &mut Framed<FirewallApp>, rect: Rect) {
+fn click(app: &mut Framed<FirewallWindow>, rect: Rect) {
     let c = rect.center();
     Framed::harness_mut(app).click_at(c.x, c.y);
 }
@@ -136,35 +136,36 @@ fn populated_firewall_passes_native_certification() {
 fn backend_availability_governs_what_is_shown_and_announced() {
     // --- phase: nothing_shown_is_fabricated ---
     {
-        // Before the resource presents a configuration the surface shows
+        // Before the document's configuration is shown the window shows
         // none, never the fabricated sample.
-        let live = FirewallApp::new();
+        let live = Store::new();
         assert!(!live.available);
         assert!(live.config.zones.is_empty());
     }
 
     // --- phase: failed_recovery_changes_nothing_and_says_why ---
     {
-        let mut app = FirewallApp::new();
+        let mut app = Store::new();
         let failed = app.finish_retry(Err(
             "Firewalld is still not reachable. Start the service, then try again.".into(),
         ));
         assert!(failed.is_err());
         assert!(!app.available);
         assert!(app.config.zones.is_empty());
-        assert_eq!(
-            app.unavailable_detail(),
-            Some("Firewalld is still not reachable. Start the service, then try again.")
+        let detail = Some("Firewalld is still not reachable. Start the service, then try again.");
+        assert_eq!(app.unavailable_detail(), detail);
+        let semantics = FirewallWindow::bare(app).accessibility().expect("a window");
+        assert!(
+            semantics
+                .children
+                .iter()
+                .any(|child| child.name.as_deref() == detail && child.live.is_some())
         );
-        let semantics = app.accessibility().expect("a window");
-        assert!(semantics.children.iter().any(|child| {
-            child.name.as_deref() == app.unavailable_detail() && child.live.is_some()
-        }));
     }
 
     // --- phase: the_unavailable_window_is_one_empty_state_with_one_action ---
     {
-        let app = framed_app(FirewallApp::new(), 1280.0, 800.0);
+        let app = framed_app(FirewallWindow::bare(Store::new()), 1280.0, 800.0);
         assert_eq!(app.shell.geometry().sidebar, SidebarPlacement::None);
         let retry = target(&app, "EmptyState");
         assert!(retry.width() > 0.0);
@@ -210,8 +211,9 @@ fn choosing_a_zone_in_the_list_opens_its_page() {
     let mut opened = Vec::new();
     for y in rows {
         Framed::harness_mut(&mut app).click_at(list.x0 + 60.0, y);
-        if !opened.contains(&app.selected_zone) {
-            opened.push(app.selected_zone);
+        let zone = app.store.borrow().selected_zone;
+        if !opened.contains(&zone) {
+            opened.push(zone);
         }
     }
     assert!(opened.contains(&ZoneKind::Drop), "{opened:?}");
@@ -223,7 +225,7 @@ fn choosing_a_zone_in_the_list_opens_its_page() {
 fn presentation_changes_do_not_create_document_versions() {
     // --- phase: intents_change_only_the_view ---
     {
-        let mut app = FirewallApp::new_demo();
+        let mut app = Store::demo();
         for intent in [
             Intent::SelectZone(ZoneKind::Home),
             Intent::SetTab(Tab::Services),
@@ -252,7 +254,7 @@ fn presentation_changes_do_not_create_document_versions() {
 /// Rules are added from the draft only when valid, and the field says what is wrong.
 #[test]
 fn the_add_rule_form_validates_each_field() {
-    let mut app = FirewallApp::new_demo();
+    let mut app = Store::demo();
     app.adding = true;
     app.draft.service = false;
     app.draft.port.set("70000".into());
@@ -283,7 +285,7 @@ fn the_add_rule_form_validates_each_field() {
 fn deleting_a_rule_asks_first() {
     // --- phase: cancel_keeps_the_rule ---
     {
-        let mut app = FirewallApp::new_demo();
+        let mut app = Store::demo();
         let id = app.config.zone(ZoneKind::Public).unwrap().rules[0].id;
         app.intents.push(Intent::AskDelete(id));
         app.drain();
@@ -387,10 +389,17 @@ fn making_a_zone_active_changes_the_default() {
 #[test]
 fn the_row_delete_button_opens_the_confirmation() {
     let mut app = framed(1280.0, 800.0);
-    let first = app.config.zone(ZoneKind::Public).unwrap().rules[0].id;
+    let first = app
+        .store
+        .borrow()
+        .config
+        .zone(ZoneKind::Public)
+        .unwrap()
+        .rules[0]
+        .id;
     let button = target(&app, &format!("firewall-rule-delete-{first}"));
     click(&mut app, button);
-    assert_eq!(app.pending_delete, Some(first));
+    assert_eq!(app.store.borrow().pending_delete, Some(first));
 }
 
 /// Applying now runs through the same door as the palette and reports how
@@ -409,8 +418,15 @@ fn apply_now_reports_the_checked_changes() {
 #[test]
 fn the_rules_are_one_list_sorted_from_its_headers() {
     let mut app = framed(1280.0, 800.0);
-    let rules = app.config.zone(ZoneKind::Public).unwrap().rules.clone();
-    let rows = |app: &Framed<FirewallApp>| {
+    let rules = app
+        .store
+        .borrow()
+        .config
+        .zone(ZoneKind::Public)
+        .unwrap()
+        .rules
+        .clone();
+    let rows = |app: &Framed<FirewallWindow>| {
         let mut rows: Vec<(f64, Action)> = rules
             .iter()
             .map(|rule| {
@@ -432,7 +448,7 @@ fn the_rules_are_one_list_sorted_from_its_headers() {
     Framed::harness_mut(&mut app).click_at(header.x, header.y);
     Framed::harness_mut(&mut app).poll_frame().unwrap();
     assert_eq!(
-        app.rule_sort.with(Clone::clone),
+        app.store.borrow().rule_sort.with(Clone::clone),
         Some(TableSort {
             key: "action".into(),
             ascending: false

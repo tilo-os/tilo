@@ -97,7 +97,14 @@ impl Checker<'_> {
                     );
                     return true;
                 }
-                self.prop(node, name, v, value.span);
+                // The card is named after its resource, as a native dashboard card is: the
+                // resource's title heads it, beside the count.
+                let r = self.fresh(v.ty.clone());
+                self.emit(Stmt::Set(r, v.clone()));
+                let item = Ex::local(r, v.ty);
+                self.prop(node.clone(), name, item.clone(), value.span);
+                let title = self.meta_field(item, "title", Ty::Text);
+                self.prop(node, "title", title, value.span);
                 return true;
             }
             ("avatar", "who") => Ty::Principal,
@@ -601,25 +608,11 @@ impl Checker<'_> {
                 m,
                 Ex::host(Imp::MetaOf, vec![item], meta_ty.clone()),
             ));
-            let field = |at: i32, ty: Ty| {
-                Ex::host(
-                    Imp::TupleGetH,
-                    vec![
-                        Ex::local(m, meta_ty.clone()),
-                        Ex::new(Ek::I32(at), Ty::Bool),
-                    ],
-                    ty,
-                )
-            };
-            let at = |name: &str| {
-                crate::host::value_field("Meta", name)
-                    .and_then(|at| i32::try_from(at).ok())
-                    .unwrap_or(0)
-            };
-            let title = field(at("title"), Ty::Text);
+            let meta = Ex::local(m, meta_ty);
+            let title = Self::field_of_meta(meta.clone(), "title", Ty::Text);
             self.prop(node.clone(), "title", title, value.span);
             let icon_ty = Ty::Option(Box::new(Ty::Text));
-            let icon = field(at("icon"), icon_ty);
+            let icon = Self::field_of_meta(meta, "icon", icon_ty);
             self.set_when_some(node, "icon", icon, &Ty::Text, value.span);
             return None;
         }
@@ -636,6 +629,29 @@ impl Checker<'_> {
             value.span,
         );
         Some(title)
+    }
+
+    /// The field `name` of what the platform shows of the resource `item` (its `host.Meta`).
+    fn meta_field(&mut self, item: Ex, name: &str, ty: Ty) -> Ex {
+        let meta_ty = super::platform::host_ty("Meta");
+        let m = self.fresh(meta_ty.clone());
+        self.emit(Stmt::Set(
+            m,
+            Ex::host(Imp::MetaOf, vec![item], meta_ty.clone()),
+        ));
+        Self::field_of_meta(Ex::local(m, meta_ty), name, ty)
+    }
+
+    /// The field `name` of the `host.Meta` `meta`.
+    fn field_of_meta(meta: Ex, name: &str, ty: Ty) -> Ex {
+        let at = crate::host::value_field("Meta", name)
+            .and_then(|at| i32::try_from(at).ok())
+            .unwrap_or(0);
+        Ex::host(
+            Imp::TupleGetH,
+            vec![meta, Ex::new(Ek::I32(at), Ty::Bool)],
+            ty,
+        )
     }
 
     fn text_arg(&mut self, node: &Ex, name: &str, value: &ast::Expr) {
@@ -876,7 +892,9 @@ impl Checker<'_> {
             return None;
         };
         let sig = callee.signature(&self.env.app);
-        let bound = self.bind_args_or_default(&callee.name, &callee.params, args, call.span, &sig);
+        // The label is read as the view draws.
+        let bound =
+            self.bind_args_or_default(&callee.name, &callee.params, args, call.span, &sig, false);
         self.push_sink();
         for (p, v) in callee.params.iter().zip(bound) {
             if let Some(v) = v {

@@ -32,6 +32,11 @@
 //! runs where it was invoked, and what it changes in the document it changes
 //! through ordinary actions. `tilo-app` runs the handler.
 //!
+//! A parameter naming a file or folder on this device is an
+//! [`AbsolutePath`](crate::AbsolutePath): a relative one is refused as the
+//! arguments are decoded, so no effect writes where its process happens to
+//! run.
+//!
 //! A variant that only changes what this participant sees — open a snippet,
 //! reveal a tag, show a result — is a `view`: published as a `View`
 //! operation (any reader may invoke it, a collaborator may not move someone
@@ -1232,6 +1237,44 @@ mod tests {
         };
         let encoded = specs[0].build_json(&value.arguments()).unwrap();
         assert_eq!(Pairing::from_payload(&encoded.payload).unwrap(), value);
+    }
+
+    #[derive(Clone, Debug, PartialEq, Effect)]
+    #[effect(operation = "test.files")]
+    enum Files {
+        /// Save a copy.
+        SaveCopy {
+            #[param("Where to write it")]
+            path: crate::AbsolutePath,
+            folder: Option<crate::AbsolutePath>,
+        },
+    }
+
+    #[test]
+    fn a_path_parameter_refuses_a_relative_path() {
+        let specs = Files::specs();
+        let params = specs[0].params();
+        assert_eq!(params[0].ty, tilo_actions::ParamType::Text);
+        assert!(params[0].required);
+        assert_eq!(params[1].ty, tilo_actions::ParamType::Text);
+        assert!(!params[1].required);
+        let arguments = |path: &str, folder: Option<&str>| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("path".into(), path.into());
+            if let Some(folder) = folder {
+                arguments.insert("folder".into(), folder.into());
+            }
+            arguments
+        };
+        let error = Files::decode("save-copy", &arguments("copy.txt", None)).unwrap_err();
+        assert!(
+            error.contains("`path`") && error.contains("absolute"),
+            "{error}"
+        );
+        assert!(Files::decode("save-copy", &arguments("/a/copy.txt", Some("b"))).is_err());
+        let value = Files::decode("save-copy", &arguments("/a/copy.txt", Some("/b"))).unwrap();
+        let encoded = specs[0].build_json(&value.arguments()).unwrap();
+        assert_eq!(Files::from_payload(&encoded.payload).unwrap(), value);
     }
 
     #[test]

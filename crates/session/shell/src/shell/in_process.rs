@@ -38,6 +38,10 @@ pub struct InProcessApps {
     feedback_subject: Option<tilo_desktop::feedback::Subject>,
     store: Rc<dyn durable_store::DurableStore>,
     owners: RecordOwners,
+    /// Where the apps' records beside their own are kept: apart from the
+    /// records the apps show, so an app edits one while its own is being
+    /// changed.
+    person_owners: RecordOwners,
     views: HashMap<String, Rc<InstanceViewStore>>,
     device_id: String,
     author: UserId,
@@ -137,6 +141,7 @@ impl InProcessApps {
             feedback_destination: None,
             feedback_subject: None,
             owners: RecordOwners::with_store(Rc::clone(&store)),
+            person_owners: RecordOwners::with_store(Rc::clone(&store)),
             store,
             views: HashMap::new(),
             device_id: device_id.to_owned(),
@@ -622,7 +627,7 @@ impl InProcessApps {
             .person_records()
             .map_err(LaunchError::Operation)?;
         if let Ok(person) = ui::record::person::PersonRecords::open(
-            &mut self.owners,
+            &mut self.person_owners,
             definition.app_id(),
             self.author.clone(),
         ) {

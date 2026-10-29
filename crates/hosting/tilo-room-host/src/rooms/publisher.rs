@@ -199,7 +199,7 @@ impl RoomPublisher {
 
     /// Wait until every change handed over so far is admitted to the
     /// host's order, or dropped. Whoever admits a change of the room's
-    /// channels on its own waits for this first, under the steward, so a
+    /// channels on its own waits for this first, under the channels' lock, so a
     /// channel change a settle handed over keeps its place before theirs.
     pub(super) async fn flushed(&self) {
         let target = self.shared.progress().pushed;
@@ -213,7 +213,7 @@ impl RoomPublisher {
 /// failure, which drops every batch handed over before it; a batch dropped
 /// for an earlier failure only adds its positions.
 ///
-/// A channel change has no position: the steward moved on when it handed
+/// A channel change has no position: the node moved on when it handed
 /// the change over, so a dropped one is gone, as one whose own admission
 /// failed always was. Say so.
 fn unretained(shared: &Shared, positions: impl IntoIterator<Item = Option<usize>>, failed: bool) {

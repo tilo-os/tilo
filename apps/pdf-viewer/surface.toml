@@ -212,7 +212,6 @@ params = [
 kind = "pdf.signature-profile"
 label = "Signature"
 version = 2
-person = true
 fields = [
   { path = "signer", type = "String" },
   { path = "strokes", type = "Vec<Stroke>" },

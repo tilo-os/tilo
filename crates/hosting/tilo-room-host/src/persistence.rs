@@ -11,18 +11,18 @@
 //!
 //! An admitted delta is fanned out to other sessions, and a `Commit` is
 //! answered with `Committed`, only after its retained record (or pending
-//! fallback) and every directory entry leading to it have been fsynced. So
+//! fallback) and every directory entry leading to it have been fsynced, or
+//! the generation journal that restores them on open has. So
 //! an edit any peer has received, or any author was told is committed,
 //! survives a crash or power loss in retained history, in order.
 //!
 //! Commits share their barriers ([`Group`]): the owner runs every commit
-//! already queued, each appending its record unsynced, then syncs all their
-//! records at once, renames them into place and syncs each generation
-//! directory once, and only then completes them, in order. No commit waits
-//! for one not yet queued, and none is published before the barrier that
-//! covers it. Alone, an edit costs two fsyncs (the record, then its
-//! directory); N queued edits cost their N file barriers, issued together,
-//! and one directory barrier. Add [`State::next_sequence`]'s reservation
+//! already queued, each appending its record unsynced, then appends all
+//! their records to their generation's journal, syncs it once, renames the
+//! records into place, and only then completes them, in order. No commit
+//! waits for one not yet queued, and none is published before the barrier
+//! that covers it. N queued edits cost one fsync, the journal's (two for
+//! the group that creates a generation's journal). Add [`State::next_sequence`]'s reservation
 //! renewal at most once per [`SEQUENCE_RESERVATION_NS`] of host clock per
 //! workspace. A checkpoint that starts its lineage (each
 //! newcomer's first record), or stands alone and replaces the whole of it
@@ -67,10 +67,10 @@ const GLOBAL_MESSAGES: usize = 128;
 const GLOBAL_BYTES: usize = 256 * 1024 * 1024;
 const REPLAY_MESSAGES: usize = crate::store::replay::DEFAULT_REPLAY_TICKETS;
 const REPLAY_BYTES: usize = 64 * 1024;
-/// Host-authored commits (room governance, the channel steward's frames)
-/// take their own share of the global totals, so a crowd's member traffic
-/// never holds them back: a steward pass waits for its own commits, and
-/// every member waiting for a channel key waits for that pass.
+/// Host-authored commits (room governance, the node's channel frames) take
+/// their own share of the global totals, so a crowd's member traffic never
+/// holds them back: a channels pass waits for its own commits, and every
+/// member waiting for a channel key waits for that pass.
 const HOST_MESSAGES: usize = 16;
 /// Enough for the largest host checkpoint (a compacted record) as charged.
 const HOST_BYTES: usize = 64 * 1024 * 1024;
@@ -117,8 +117,8 @@ const MAX_GROUP: usize = 64;
 /// records they appended unsynced. The owner runs every commit already
 /// queued, then makes all their records durable at once and only then
 /// releases their completions, in order: no commit is acknowledged or fanned
-/// out before the barrier covering it, and N queued commits share one round
-/// of barriers instead of paying two each.
+/// out before the barrier covering it, and N queued commits share one
+/// barrier instead of paying two each.
 #[derive(Default)]
 pub(crate) struct Group {
     records: crate::store::retained::SharedGroup,

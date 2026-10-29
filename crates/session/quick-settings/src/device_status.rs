@@ -15,7 +15,7 @@ impl QuickSettingsState {
     /// Show the output at `level`, as a slider being dragged or a readout
     /// shows it; mute stays as it is.
     pub fn set_volume_level(&mut self, level: f32) {
-        self.status.volume = Some(os_actions::VolumeState {
+        self.status.volume = Some(media::audio::default_node::VolumeState {
             level,
             muted: self.volume_muted(),
         });

@@ -1,6 +1,6 @@
 //! OS-level action wrappers (brightness, audio, Wi-Fi, Bluetooth, power-profile) shared
 //! between the Tilo compositor (`shell`) and the standalone Settings app (`apps/settings`).
-//! Both needed the same brightnessctl/wpctl/powerprofilesctl bindings and network and
+//! Both needed the same brightnessctl/powerprofilesctl bindings and network and
 //! Bluetooth clients, and
 //! the Settings app must not depend on the compositor (they're peers, not parent/child), so
 //! the bindings live here as a single source of truth for both.
@@ -37,7 +37,6 @@
     )
 )]
 
-pub mod audio;
 pub mod backlight_events;
 pub mod battery;
 pub mod bluetooth;
@@ -75,10 +74,6 @@ pub mod time;
 pub mod users;
 pub mod windows_compat;
 
-pub use audio::{
-    VolumeState, get_source_state, get_volume, get_volume_state, has_output_device, set_mute,
-    set_volume, toggle_mute, toggle_source_mute,
-};
 pub use battery::{
     BatteryHistory, BatteryHistoryPoint, BatteryInfo, CapacityUnit, ChargeCapBackend,
     ChargeCapCapability, PowerDevice, PowerSupplyKind, charge_capability, load_battery_history,
@@ -112,6 +107,7 @@ pub use linux_virtual_gamepad::{
     LinuxGamepadDevice, LinuxGamepadDeviceProvider, LinuxVirtualGamepadFactory,
     UinputGamepadDeviceProvider,
 };
+use media::audio::default_node::{self, DefaultNode};
 pub use modem::{
     MobileProfile, MobileReading, ModemChange, ModemError, ModemFailure, ModemInfo, ModemState,
     NetworkModes, Registration, SimCard, SimKind, SimLock, Technology, Traffic, UnlockRetries,
@@ -383,13 +379,13 @@ pub trait Dispatcher {
     /// fails.
     fn set_power_profile(&self, profile: PowerProfile) -> Result<(), String>;
     /// Toggle the default audio sink mute state. Default impl delegates to
-    /// [`audio::toggle_mute`]; has a default body so existing shell-crate impls keep compiling.
+    /// [`default_node::toggle_mute`]; has a default body so existing shell-crate impls keep compiling.
     ///
     /// # Errors
     ///
     /// Returns an error message if the audio mixer is unavailable or the underlying call fails.
     fn toggle_mute(&self) -> Result<(), String> {
-        audio::toggle_mute()
+        default_node::toggle_mute(DefaultNode::Sink)
     }
     /// Set the sink mute state explicitly. Distinct from [`Self::toggle_mute`] because the
     /// volume-up key needs to *clear* mute regardless of prior state — toggling could silence an
@@ -399,7 +395,7 @@ pub trait Dispatcher {
     ///
     /// Returns an error message if the audio mixer is unavailable or the underlying call fails.
     fn set_mute(&self, muted: bool) -> Result<(), String> {
-        audio::set_mute(muted)
+        default_node::set_mute(DefaultNode::Sink, muted)
     }
     /// Read the display backlight as a `0.0..=1.0` fraction.
     ///
@@ -451,7 +447,7 @@ impl Dispatcher for RealDispatcher {
         display::set_brightness(pct)
     }
     fn set_volume(&self, pct: f32) -> Result<(), String> {
-        audio::set_volume(pct)
+        default_node::set_volume(DefaultNode::Sink, pct)
     }
     fn set_wifi(&self, enabled: bool) -> Result<(), String> {
         network::set_wifi(enabled)
@@ -475,7 +471,7 @@ impl Dispatcher for RealDispatcher {
         power::set_power_profile(profile)
     }
     fn toggle_mute(&self) -> Result<(), String> {
-        audio::toggle_mute()
+        default_node::toggle_mute(DefaultNode::Sink)
     }
 }
 

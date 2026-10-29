@@ -21,6 +21,8 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 uuid.workspace = true
 bounded-command = { path = "../bounded-command" }
+# The default audio device controls the dispatcher drives.
+media = { package = "tilo-media", path = "../../platform/tilo-media" }
 libc.workspace = true
 rustix = { workspace = true, features = ["fs", "net", "process"] }
 tracing.workspace = true

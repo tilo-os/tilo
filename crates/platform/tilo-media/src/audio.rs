@@ -35,6 +35,12 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+pub mod default_node;
+
+/// How long one `wpctl`/`pw-metadata` change may take.
+#[cfg(not(target_arch = "wasm32"))]
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// `node.name` of the private sink a speaker group plays from while it is
 /// this device's output (the shell's speaker-group tap). It is how a set is
 /// played, never an output of its own: Sound lists the set instead.
@@ -649,7 +655,7 @@ pub trait GraphControl: Send + Sync {
 fn run(bin: &str, args: &[String]) -> Result<(), String> {
     let mut command = Command::new(bin);
     command.args(args);
-    let out = bounded_command::run_prepared(command, None, 64 * 1024, Duration::from_secs(3))
+    let out = bounded_command::run_prepared(command, None, 64 * 1024, CONTROL_TIMEOUT)
         .map_err(|e| format!("{bin} control failed: {e}"))?;
     if out.status.success() {
         Ok(())

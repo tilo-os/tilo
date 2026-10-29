@@ -218,7 +218,7 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
-        let accounts = cx.person::<accounts::person::PersonAccounts>();
+        let accounts = cx.shared_person::<accounts::person::PersonAccounts>();
         self.attach_host(PaneCx::attached(&cx), accounts);
     }
 

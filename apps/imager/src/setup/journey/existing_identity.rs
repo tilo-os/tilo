@@ -53,16 +53,12 @@ impl ExistingIdentity {
     pub fn ready(&self) -> bool {
         self.prepared.is_some()
     }
-    pub fn select(&mut self, path: String) -> Result<(), &'static str> {
+    pub fn select(&mut self, path: ui::tilo_resource::AbsolutePath) -> Result<(), &'static str> {
         if self.busy() {
             return Err("installer-existing-busy");
         }
-        let path = PathBuf::from(path);
-        if !path.is_absolute() {
-            return Err("installer-existing-file-invalid");
-        }
         self.prepared = None;
-        self.source = Some(path);
+        self.source = Some(path.into());
         self.clear_password();
         self.state = "selected";
         Ok(())
@@ -196,7 +192,12 @@ impl ExistingIdentity {
             match picker.try_recv() {
                 Ok(ui::PortalOutcome::Opened(path)) => {
                     self.picker = None;
-                    let _ = self.select(path.to_string_lossy().into_owned());
+                    match ui::tilo_resource::AbsolutePath::new(path) {
+                        Ok(path) => {
+                            let _ = self.select(path);
+                        }
+                        Err(_) => self.state = "failed",
+                    }
                     changed = true;
                 }
                 Ok(ui::PortalOutcome::Cancelled) => {

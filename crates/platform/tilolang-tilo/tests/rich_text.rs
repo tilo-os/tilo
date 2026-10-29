@@ -166,7 +166,7 @@ fn two_writers_edits_with_references_merge_in_a_room() {
             tilolang_runtime::rich::resource_id(&reference).map(str::to_owned)
         })
         .collect();
-    assert_eq!(referred, [Some(task.clone())]);
+    assert_eq!(referred, [Some(task)]);
 }
 
 #[test]

@@ -2,15 +2,13 @@
 //! shows it, the effects that change only this device, and what the window
 //! adds to the published tree.
 
-use std::rc::Rc;
-
 use chrono::Utc;
-use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::framework::{EffectAnswer, Effected, Publishes};
 use ui::prelude::*;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::items::item_resource_id;
 
-use crate::app::{ClocksApp, Controls, Shown, duration, repeat_summary, wall_now};
+use crate::app::{ClocksApp, Controls, Shown, Store, duration, repeat_summary, wall_now};
 use crate::model::Clocks;
 use crate::schedule::OnThisDevice;
 
@@ -133,11 +131,35 @@ impl ResourceApp for ClocksShell {
             actions: cx.actions(),
             dispatcher: cx.dispatcher(),
         };
-        cx.surface(ClocksApp::new(
+        let app = ClocksApp::new(
             controls,
             cx.settings::<OnThisDevice>(),
+            cx.live().clone(),
             cx.mode().is_live(),
-        ))
+            (cx.record_id().cloned(), cx.opener()),
+        );
+        let store = app.store.clone();
+        if let Some(now) = cx.fixture::<ShotNow>() {
+            store.state.update(|shown| shown.pinned_now = Some(now.0));
+        }
+        {
+            let store = store.clone();
+            cx.effects(move |effect: ClocksEffect, cx| {
+                store.present(&cx.live().get());
+                store.answer(effect)
+            });
+        }
+        {
+            let (store, live) = (store.clone(), cx.live().clone());
+            cx.on_stage(move |scenario| {
+                store.present(&live.get());
+                store.stage(scenario);
+            });
+        }
+        cx.publishing(
+            Publishes::new().live_rows(move || store.state.with(live_rows)),
+            Box::new(app),
+        )
     }
 
     fn launch_record(input: &LaunchInput<'_>) -> Option<ui::record::RecordId> {
@@ -200,20 +222,10 @@ impl ResourceApp for ClocksShell {
     }
 }
 
-impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
-    fn present(&mut self, state: &Rc<Clocks>) {
-        self.show(state);
-    }
-
-    fn attach(&mut self, cx: ui::framework::SurfaceCx<Clocks>) {
-        self.record = cx.record().cloned();
-        self.opener = cx.opener();
-        if let Some(now) = cx.fixture::<ShotNow>() {
-            self.state.update(|shown| shown.pinned_now = Some(now.0));
-        }
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
+impl Store {
+    /// Stage a capture's scene: its section, and what it shows ringing or
+    /// floating.
+    pub(crate) fn stage(&self, scenario: Option<&str>) {
         match scene(scenario) {
             "world" => self.set_mode(crate::app::WORLD),
             "alarms" => self.set_mode(crate::app::ALARMS),
@@ -247,7 +259,8 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
         }
     }
 
-    fn effect(&mut self, effect: ClocksEffect, _cx: &mut EffectCx<Clocks, Self>) -> EffectAnswer {
+    /// Answer `effect`, from a control, the palette, an agent or a script.
+    fn answer(&self, effect: ClocksEffect) -> EffectAnswer {
         match effect {
             ClocksEffect::OpenAlarm { alarm } => {
                 let id = Id::from_raw(alarm.as_str());
@@ -304,10 +317,6 @@ impl ResourceSurface<Clocks, ClocksEffect> for ClocksApp {
             }
         }
         Ok(Effected::done())
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.state.with(live_rows)
     }
 }
 

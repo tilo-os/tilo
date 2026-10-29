@@ -34,6 +34,7 @@ const CHANGES: &[&str] = &[
     "keystroke",
     "press",
     "peer_edit",
+    "peer_post",
     "scroll",
     "thread_keystroke",
     "thread_post",

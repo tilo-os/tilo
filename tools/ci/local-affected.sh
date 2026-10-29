@@ -46,7 +46,20 @@ base=$(git merge-base "$base" HEAD)
 
 echo "==> select (base $base)"
 plan=$(mktemp)
-python3 tools/ci/affected_packages.py --base "$base" --shards 2 --allow-security-skip >"$plan" || exit 1
+# The planner reads the workspace graph only from verified metadata: cargo's
+# export of this worktree, sealed to its clean commit, tree and manifest bytes
+# and validated against it (tools/ci/current_source_metadata.py), so a dirty
+# tree or a manifest changed under the run fails instead of planning from a
+# graph that is not HEAD's.
+metadata_dir=$(mktemp -d)
+trap 'rm -rf -- "$metadata_dir" "$plan"' EXIT
+cargo metadata --locked --no-deps --format-version 1 >"$metadata_dir/cargo.json" || exit 1
+python3 tools/ci/current_source_metadata.py seal --root . \
+  --input "$metadata_dir/cargo.json" --output "$metadata_dir/bundle.json" >/dev/null || exit 1
+python3 tools/ci/current_source_metadata.py validate --root . \
+  --input "$metadata_dir/bundle.json" --output "$metadata_dir/metadata.json" >/dev/null || exit 1
+python3 tools/ci/affected_packages.py --metadata "$metadata_dir/metadata.json" \
+  --base "$base" --shards 2 --allow-security-skip >"$plan" || exit 1
 # The filters come as KEY=value lines (the $GITHUB_ENV format CI appends them
 # in); the values are nextest filtersets, not shell words, so export them as
 # data rather than eval-ing them.

@@ -11,8 +11,8 @@ use crate::resource::read_mail;
 impl MailApp {
     /// Keep the mail this window fetches for the person's other devices,
     /// and take what they kept, through their copies record. Where the
-    /// person has no room of their own the record keeps no content, and
-    /// nothing is shared.
+    /// record is kept on this device only it keeps no content, and nothing
+    /// is shared.
     pub(crate) fn share_copies(&mut self, record: PersonRecord<crate::copies::MailCopies>) {
         if let Some(content) = record.content() {
             self.copies = Some(crate::copies::Copies::new(record, content));

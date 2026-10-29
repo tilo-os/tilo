@@ -12,8 +12,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-#[path = "support/steward.rs"]
-mod steward;
+#[path = "support/participant.rs"]
+mod participant;
 mod support;
 
 use std::sync::Arc;
@@ -30,7 +30,7 @@ use support::{
 
 /// An edit published before the page holds its route's keys waits for
 /// them; a barrier called meanwhile waits with it until the host has made it
-/// durable, however late the steward admits the page.
+/// durable, however late a participant admits the page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_barrier_covers_an_edit_held_for_the_rooms_replay() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -44,7 +44,7 @@ async fn a_barrier_covers_an_edit_held_for_the_rooms_replay() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let peer = start_peer(
         Host::Https(host.https()),
         browser.cert.clone(),
@@ -89,7 +89,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let mut steward = steward::Steward::start(&host.relay, &root).await;
+    let mut laptop = participant::Participant::start(&host.relay, &root).await;
     let listen = host.web.addr;
     let https = host.https();
 
@@ -135,7 +135,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     );
 
     let host = start_host(&root, &host_device, state.path(), listen).await;
-    steward.reconnect(&host.relay, &root).await;
+    laptop.reconnect(&host.relay, &root).await;
     peer.reconnect().unwrap();
     let receipt = peer.barrier().unwrap();
     wait_for("the replayed commits to be durable", || async {

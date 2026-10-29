@@ -484,7 +484,7 @@ impl FramePaint {
             (Some(newer), Some(earlier)) if chained => {
                 let mut union = earlier.clone();
                 union.extend_from_slice(newer);
-                Some(without_contained_regions(&union))
+                Some(ui::damage::without_contained(union))
             }
             _ => None,
         };
@@ -2952,7 +2952,7 @@ impl FrameBuilder {
         };
         let damage_regions = self
             .with_backdrop_damage(damage_regions, &backdrop_surfaces)
-            .map(|regions| without_contained_regions(&regions));
+            .map(ui::damage::without_contained);
         phases.mark("scene/damage");
         // A backdrop-dependent section is never independently composited.
         let separable = backdrop_surfaces.is_empty()
@@ -3300,7 +3300,7 @@ impl FrameBuilder {
             Some(changed),
             Some(ScrollCopies {
                 copies: presented.copies,
-                raster: without_contained_regions(&raster),
+                raster: ui::damage::without_contained(raster),
             }),
         )
     }
@@ -10744,33 +10744,6 @@ pub(super) use native_tab_scenarios::rect_named;
 )]
 #[path = "frame_transition_tests.rs"]
 mod transition_tests;
-
-/// `regions` without any region another one contains (the first of two
-/// equal ones stays): the same pixels, rasterised once. A changed card's
-/// old and new bounds and the blurred surface on it often nest.
-fn without_contained_regions(regions: &[FineDamageRect]) -> Vec<FineDamageRect> {
-    let rect = |region: &FineDamageRect| {
-        Rect::new(
-            f64::from(region.x),
-            f64::from(region.y),
-            f64::from(region.x) + f64::from(region.width),
-            f64::from(region.y) + f64::from(region.height),
-        )
-    };
-    let contains = |outer: &FineDamageRect, inner: &FineDamageRect| {
-        rect(outer).union(rect(inner)) == rect(outer)
-    };
-    regions
-        .iter()
-        .enumerate()
-        .filter(|&(index, region)| {
-            !regions.iter().enumerate().any(|(other, outer)| {
-                other != index && contains(outer, region) && (outer != region || other < index)
-            })
-        })
-        .map(|(_, region)| *region)
-        .collect()
-}
 
 /// `scene`, drawn in logical coordinates, magnified by `to_scene` into
 /// scene pixels without clipping it to the display: a strip's canvas runs

@@ -167,7 +167,7 @@ impl View<'_> {
                 }
                 (Some(_), None) => false,
             };
-            if in_order && (touched.is_empty() || !descending) {
+            if in_order {
                 let list = scope_list(resource, field, &a.column);
                 let pages = self.snapshot.pages(&list).map_err(index_error)?;
                 let (start, end) =
@@ -184,7 +184,10 @@ impl View<'_> {
                     (&a.column, conj.get(*at).copied()),
                     &touched,
                 )?;
-                return Ok(Listing::paged(Rc::new(Merged::new(base, added, &removed))));
+                let locate = self.locate((resource, field), Some((&schema.id, &a.column)));
+                return Ok(Listing::paged(Rc::new(
+                    Merged::new(base, added, &removed).locating(locate),
+                )));
             }
         }
         // Every item in an order a column keeps.
@@ -192,22 +195,27 @@ impl View<'_> {
             let Some(order) = order else {
                 return self.listing(resource, field).map_err(index_error);
             };
-            if let Some(oc) = order_column.filter(|oc| !oc.many && ordered_or_text(oc.kind))
-                && touched.is_empty()
-            {
+            // The column's list, with the items the open writes moved in it moved.
+            if let Some(oc) = order_column.filter(|oc| !oc.many && ordered_or_text(oc.kind)) {
                 let list = scope_list(resource, field, &oc.name);
                 let pages = self.snapshot.pages(&list).map_err(index_error)?;
                 let end = pages.len();
-                return Ok(Listing::paged(Rc::new(Merged::new(
-                    Base::Slice {
-                        pages,
-                        start: 0,
-                        end,
-                        reversed: order.descending,
-                    },
-                    Vec::new(),
-                    &[],
-                ))));
+                let (added, removed) =
+                    self.moved_in_run((resource, field), schema, (&oc.name, None), &touched)?;
+                let locate = self.locate((resource, field), Some((&schema.id, &oc.name)));
+                return Ok(Listing::paged(Rc::new(
+                    Merged::new(
+                        Base::Slice {
+                            pages,
+                            start: 0,
+                            end,
+                            reversed: order.descending,
+                        },
+                        added,
+                        &removed,
+                    )
+                    .locating(locate),
+                )));
             }
         }
         self.read_whole(
@@ -390,18 +398,9 @@ impl View<'_> {
                 .unwrap_or_default();
             let now_key = self.text(&path, KEY).map_err(index_error)?;
             let now = match &now_key {
-                Some(_) => columns::values(spec, schema, &mut |f| {
-                    if f.kind == crate::schema::MergeKind::Collection {
-                        let len = self.list(&path, &f.id)?.len();
-                        return Ok(tilolang_runtime::store::FieldValue::Counter(
-                            i64::try_from(len).unwrap_or(i64::MAX),
-                        ));
-                    }
-                    Ok(self
-                        .field(&path, &f.id)?
-                        .unwrap_or_else(|| crate::reads::default_value(f)))
-                })
-                .map_err(index_error)?,
+                Some(_) => self
+                    .column_values(&path, schema, spec)
+                    .map_err(index_error)?,
                 None => Vec::new(),
             };
             // Where it was is where it is: the writes moved nothing in the column.

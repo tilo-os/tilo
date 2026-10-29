@@ -317,7 +317,7 @@ fn stamp(info: &mut Value, revision: &str, shown: Option<&str>) {
 fn written(
     picture: &view_ops::Picture,
     mut info: Value,
-    path: Option<&str>,
+    path: Option<&std::path::Path>,
 ) -> Result<Value, String> {
     let Some(path) = path else {
         return Ok(info);
@@ -391,7 +391,11 @@ fn svg(
 
 /// What an SVG export answers: its markup kept as content, written to
 /// `path` when named, and inline when small and not written.
-fn svg_output(svg: &str, revision: &str, path: Option<&str>) -> Result<ActionOutput, String> {
+fn svg_output(
+    svg: &str,
+    revision: &str,
+    path: Option<&std::path::Path>,
+) -> Result<ActionOutput, String> {
     let address = crate::resource::store(svg.as_bytes())?;
     let mut value = json!({
         "format": "svg",

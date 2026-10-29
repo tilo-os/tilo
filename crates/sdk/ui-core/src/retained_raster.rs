@@ -4,7 +4,7 @@
 //! the native app's render worker, the room's render service and the
 //! browser desktop, so they produce the same pixels from the same frame.
 
-use crate::damage::{Region, coalesce_regions};
+use crate::damage::{FineDamageRect, area, coalesce_regions, pixel_rect};
 use crate::offscreen::{
     damage_geometric_capacity_enabled, damage_texture_extent,
     damage_texture_geometric_needs_replacement, damage_texture_geometric_width_extent,
@@ -409,45 +409,21 @@ fn repaint_damage(
         return Ok(0);
     }
 
-    let mut damage_pixels = 0u64;
-    let mut damage_region_count = 0usize;
-    for rect in damage_regions {
-        let x0 = rect.x0.floor().max(0.0).min(f64::from(width)) as u32;
-        let y0 = rect.y0.floor().max(0.0).min(f64::from(height)) as u32;
-        let x1 = rect.x1.ceil().max(0.0).min(f64::from(width)) as u32;
-        let y1 = rect.y1.ceil().max(0.0).min(f64::from(height)) as u32;
-        let region_width = x1.saturating_sub(x0);
-        let region_height = y1.saturating_sub(y0);
-        damage_pixels = damage_pixels
-            .saturating_add(u64::from(region_width).saturating_mul(u64::from(region_height)));
-        damage_region_count = damage_region_count
-            .saturating_add(usize::from(region_width != 0 && region_height != 0));
-    }
+    let pixel_rects: Vec<FineDamageRect> = damage_regions
+        .iter()
+        .filter_map(|rect| pixel_rect(*rect, width, height))
+        .collect();
+    let damage_pixels = pixel_rects
+        .iter()
+        .fold(0u64, |sum, rect| sum.saturating_add(area(*rect)));
+    let damage_region_count = pixel_rects.len();
     // A large union costs less as one Vello pass and must not retain a second
     // near-window-sized texture. This is both the time and memory bound.
     if damage_pixels == 0 || damage_pixels >= full_pixels.saturating_div(2) {
         return render_full(renderer, damage_cache);
     }
 
-    let regions = coalesce_regions(
-        damage_regions
-            .iter()
-            .filter_map(|rect| {
-                let x0 = rect.x0.floor().max(0.0).min(f64::from(width)) as u32;
-                let y0 = rect.y0.floor().max(0.0).min(f64::from(height)) as u32;
-                let x1 = rect.x1.ceil().max(0.0).min(f64::from(width)) as u32;
-                let y1 = rect.y1.ceil().max(0.0).min(f64::from(height)) as u32;
-                let region_width = x1.saturating_sub(x0);
-                let region_height = y1.saturating_sub(y0);
-                (region_width != 0 && region_height != 0).then_some(Region {
-                    x: x0,
-                    y: y0,
-                    width: region_width,
-                    height: region_height,
-                })
-            })
-            .collect(),
-    );
+    let regions = coalesce_regions(pixel_rects);
     let prefix_width = regions
         .iter()
         .map(|r| r.x.saturating_add(r.width))
@@ -470,15 +446,6 @@ fn repaint_damage(
             renderer.trim_pooled_buffers();
             damage_cache.coarse_pool_high_water_pixels = 0;
         }
-        let fine_damage: Vec<vello::FineDamageRect> = regions
-            .iter()
-            .map(|region| vello::FineDamageRect {
-                x: region.x,
-                y: region.y,
-                width: region.width,
-                height: region.height,
-            })
-            .collect();
         if let Some(stats) = renderer.render_to_texture_with_damage(
             device,
             queue,
@@ -490,7 +457,7 @@ fn repaint_damage(
                 height: prefix_height,
                 antialiasing_method: vello::AaConfig::Area,
             },
-            &fine_damage,
+            &regions,
         )? {
             while let Some(target) = damage_cache.targets.pop() {
                 renderer.invalidate_texture_bindings(&target.view);
@@ -505,7 +472,7 @@ fn repaint_damage(
     // The window around the damage, from a tile corner so its tiles are the
     // full frame's and its pixels the same: rendered alone, shifted to the
     // target's origin, then copied into place region by region.
-    let origin = |at: fn(&Region) -> u32| {
+    let origin = |at: fn(&FineDamageRect) -> u32| {
         regions.iter().map(at).min().unwrap_or(0) / RASTER_TILE * RASTER_TILE
     };
     let (origin_x, origin_y) = (origin(|r| r.x), origin(|r| r.y));

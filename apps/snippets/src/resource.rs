@@ -10,14 +10,11 @@
 //! What the window shows (a tag's snippets, a folder's, the search) are
 //! [`SnippetsView`]s, which change no document.
 
-use std::rc::Rc;
-
-use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, ActionCx, Atom, Derived, Effect, Id, Invoke, Refusal, resource};
 use ui::widget::Element;
 
-use crate::app::SnippetsApp;
 use crate::model::{Snippet, Snippets};
 
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
@@ -209,10 +206,7 @@ impl ResourceApp for SnippetsShell {
     const ICON: Option<&'static str> = Some("snippets");
 
     fn view(cx: &mut ViewCx<Snippets>) -> Element {
-        let app = SnippetsApp::new();
-        // A search hit, or an agent's `open`, shows the snippet it names.
-        cx.on_open_item(app.opener());
-        cx.surface(app)
+        crate::app::window(cx)
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -247,24 +241,6 @@ impl ResourceApp for SnippetsShell {
                 Invoke::edit(&Snippets::paths().snippets.insert(at, snippet)).ok()
             })
             .collect()
-    }
-}
-
-impl ResourceSurface<Snippets, SnippetsView> for SnippetsApp {
-    fn present(&mut self, state: &Rc<Snippets>) {
-        self.show_library(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Snippets>) {
-        self.attach_dispatcher(cx.dispatcher());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(&mut self, view: SnippetsView, _: &mut EffectCx<Snippets, Self>) -> EffectAnswer {
-        self.show(view)
     }
 }
 

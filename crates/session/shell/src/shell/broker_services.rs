@@ -401,7 +401,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         })
     }
 
-    /// A room its node stewards: this owner forwards an opening app's
+    /// A room whose channels its node takes part in: this owner forwards an opening app's
     /// authorship to that host ([`host_membership::commit_membership_at_host`]).
     fn grants_authorship_at_host(&self, room: &str) -> bool {
         super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().seals_records(room))

@@ -1,11 +1,10 @@
-//! Media import, project open/save, and the export destination — everything
-//! the editor reaches through the host file chooser.
+//! Media import, project files in and out, and the export destination:
+//! everything the editor reaches through the host file chooser.
 //!
 //! The portal client — the worker thread, the Tokio runtime, the `ashpd`
 //! round-trip, and the URI→path rule that makes this the file-access security
 //! boundary — lives in [`ui::portal`]. All this module carries is the filter
-//! sets, the labels this app wants on each dialog, and the open-vs-save
-//! distinction the project flow needs when a chosen path comes back.
+//! sets and the labels this app wants on each dialog.
 //!
 //! Import is *multi-select*: the user picks arbitrarily many clips at once and
 //! every local one comes back to be probed and added to the media bin. A
@@ -152,139 +151,27 @@ fn project_filter() -> FileFilter {
         .mimetype("application/x-tilo-video-project")
 }
 
-/// Which of the two project dialogs a chosen path came back from.
-///
-/// The portal hands back the same shape either way — one path — and the two
-/// mean opposite things: one is a file to read, the other a file to write.
-/// Getting them the wrong way round would overwrite the project the user
-/// meant to open, so the distinction is carried in the type rather than
-/// remembered in a flag beside it.
-#[derive(Debug)]
-pub enum ProjectOutcome {
-    Open(std::path::PathBuf),
-    Save(std::path::PathBuf),
-    /// Where to save, chosen where it has no path here (a browser page's
-    /// Save dialog file, or a download): kept for every later Save.
-    SaveTo(ui::portal::SaveDestination),
-    /// A project file chosen where files have no paths (a browser page):
-    /// its name and contents.
-    OpenContents {
-        name: String,
-        bytes: Vec<u8>,
-    },
-    /// The project's bytes were written to a [`Self::SaveTo`] destination.
-    Saved,
-    Cancelled,
-    Failed(String),
-}
-
-/// Receiver the UI thread drains for an in-flight project open/save.
-pub enum ProjectChannel {
-    /// A chooser answering with a path, to read (`save == false`) or write.
-    Path {
-        rx: ui::portal::PortalChannel,
-        save: bool,
-    },
-    /// An Open chooser answering with the file's contents.
-    Contents(ui::portal::ContentsChannel),
-    /// A Save chooser answering with where to save.
-    Destination(ui::portal::DestinationChannel),
-    /// The project's bytes being written to a kept destination.
-    Saving(ui::portal::SaveChannel),
-}
-
-impl ProjectChannel {
-    /// Whether this round-trip saves the project (its chooser or its
-    /// write), rather than opening one.
-    #[must_use]
-    pub fn is_save(&self) -> bool {
-        match self {
-            Self::Path { save, .. } => *save,
-            Self::Contents(_) => false,
-            Self::Destination(_) | Self::Saving(_) => true,
-        }
-    }
-
-    /// Non-blocking drain, mirroring [`std::sync::mpsc::Receiver::try_recv`].
-    ///
-    /// # Errors
-    ///
-    /// [`std::sync::mpsc::TryRecvError::Empty`] while the dialog is still
-    /// open, and `Disconnected` once it can no longer answer.
-    pub fn try_recv(&self) -> Result<ProjectOutcome, std::sync::mpsc::TryRecvError> {
-        use ui::portal::{ContentsOutcome, DestinationOutcome, PortalOutcome, SaveOutcome};
-        match self {
-            Self::Path { rx, save } => rx.try_recv().map(|outcome| match outcome {
-                PortalOutcome::Opened(p) if *save => ProjectOutcome::Save(p),
-                PortalOutcome::Opened(p) => ProjectOutcome::Open(p),
-                PortalOutcome::Cancelled => ProjectOutcome::Cancelled,
-                PortalOutcome::Failed(e) => ProjectOutcome::Failed(e),
-            }),
-            Self::Contents(rx) => rx.try_recv().map(|outcome| match outcome {
-                ContentsOutcome::Picked(files) => match files.into_iter().next() {
-                    Some(file) => ProjectOutcome::OpenContents {
-                        name: file.name,
-                        bytes: file.bytes,
-                    },
-                    None => ProjectOutcome::Cancelled,
-                },
-                ContentsOutcome::Cancelled => ProjectOutcome::Cancelled,
-                ContentsOutcome::Failed(e) => ProjectOutcome::Failed(e),
-            }),
-            Self::Destination(rx) => rx.try_recv().map(|outcome| match outcome {
-                DestinationOutcome::Chosen(destination) => match destination.location() {
-                    Some(path) => ProjectOutcome::Save(path.to_path_buf()),
-                    None => ProjectOutcome::SaveTo(destination),
-                },
-                DestinationOutcome::Cancelled => ProjectOutcome::Cancelled,
-                DestinationOutcome::Failed(e) => ProjectOutcome::Failed(e),
-            }),
-            Self::Saving(rx) => rx.try_recv().map(|outcome| match outcome {
-                SaveOutcome::Saved => ProjectOutcome::Saved,
-                SaveOutcome::Cancelled => ProjectOutcome::Cancelled,
-                SaveOutcome::Failed(e) => ProjectOutcome::Failed(e),
-            }),
-        }
-    }
-}
-
-/// Open the host chooser for a project file to load: by path where files
-/// have paths (relative media resolves beside the file), else by contents.
-pub fn request_open_project() -> ProjectChannel {
-    let request = PickRequest::open("Open project", "Open")
+/// The Open chooser for a project file to bring in. Keeps "All files": a
+/// project someone renamed away from `.qvp` is still openable, and its
+/// header is what decides.
+pub fn open_project_request() -> PickRequest {
+    PickRequest::open("Open project file", "Open")
         .thread_name("video-editor-open-project")
         .filter(project_filter())
-        .all_files();
-    if tilo_files::available(tilo_files::Feature::NativePaths) {
-        ProjectChannel::Path {
-            rx: request.send(),
-            save: false,
-        }
-    } else {
-        ProjectChannel::Contents(request.send_contents())
-    }
+        .all_files()
 }
 
-/// Open the host Save dialog for a project file.
+/// The Save chooser a project file is exported through, seeded with
+/// `suggested_name`. Deliberately without "All files": a project file is
+/// always written as `.qvp`, and an extensionless one is a file the Open
+/// chooser then hides.
 ///
-/// Under `landlock = "strict"` this round-trip is not a nicety — the app has
-/// no standing grant to write anywhere, so the grant that follows the file
-/// the user picked is what *earns* the write. Exactly the boundary
-/// [`request_import`] relies on for reads and
-/// [`request_export_destination`] for the rendered video.
-///
-/// `suggested_name` seeds the filename field with the project's name plus
-/// the project extension, so the user is not made to invent either.
-///
-/// Where files have no paths (a browser page), the answer is a destination
-/// the host keeps, which the project writes to on this and every later Save.
-pub fn request_save_project(suggested_name: &str) -> ProjectChannel {
-    ProjectChannel::Destination(
-        PickRequest::save("Save project", "Save", suggested_name)
-            .thread_name("video-editor-save-project")
-            .filter(project_filter())
-            .send_save_destination(),
-    )
+/// Under `landlock = "strict"` this round-trip is what earns the write: the
+/// grant follows the file the person picked.
+pub fn export_project_request(suggested_name: &str) -> PickRequest {
+    PickRequest::save("Export project file", "Export", suggested_name)
+        .thread_name("video-editor-export-project")
+        .filter(project_filter())
 }
 
 #[cfg(test)]
@@ -292,103 +179,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn project_dialogs_are_configured_and_drain_their_channel() {
-        {
-            let open = PickRequest::open("Open project", "Open")
-                .filter(project_filter())
-                .all_files();
-            assert_eq!(open.title(), "Open project");
-            assert!(!open.is_multiple(), "one project is opened at a time");
-            assert_eq!(open.suggested_name(), None);
-            // The escape hatch stays on Open: a project someone renamed away from
-            // .qvp is still openable, and the header is what decides.
-            assert_eq!(open.filter_names(), vec!["Video project", "All files"]);
+    fn project_file_dialogs_offer_the_project_format() {
+        let open = open_project_request();
+        assert_eq!(open.title(), "Open project file");
+        assert!(!open.is_multiple(), "one project is opened at a time");
+        assert_eq!(open.suggested_name(), None);
+        assert_eq!(open.filter_names(), vec!["Video project", "All files"]);
 
-            // Save deliberately has no "All files": a project is always written as
-            // .qvp, and an extensionless save is a file the Open dialog then hides.
-            let save = PickRequest::save("Save project", "Save", "Coastline_Doc_v3.qvp")
-                .filter(project_filter());
-            assert_eq!(save.suggested_name(), Some("Coastline_Doc_v3.qvp"));
-            assert_eq!(save.filter_names(), vec!["Video project"]);
-        }
-        {
-            // The same chosen path means "load this" for one flow and "write
-            // here" for the other. Confusing them destroys the file the user
-            // meant to read, so the channel is what keeps them apart.
-            let p = std::path::PathBuf::from("/home/alice/Holiday.qvp");
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
-            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(p.clone()));
-            assert!(matches!(
-                request_open_project().try_recv(),
-                Ok(ProjectOutcome::Open(opened)) if opened == p,
-            ));
-            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(p.clone()));
-            assert!(matches!(
-                request_save_project("Holiday.qvp").try_recv(),
-                Ok(ProjectOutcome::Save(saved)) if saved == p,
-            ));
-            assert!(matches!(
-                request_open_project().try_recv(),
-                Ok(ProjectOutcome::Cancelled),
-            ));
-            let titles: Vec<String> = recorder
-                .pick_requests()
-                .iter()
-                .map(|r| r.title().to_string())
-                .collect();
-            assert_eq!(titles, ["Open project", "Save project", "Open project"]);
-        }
-        {
-            let (_tx, rx) = std::sync::mpsc::channel::<ui::portal::PortalOutcome>();
-            let ch = ProjectChannel::Path { rx, save: false };
-            assert!(matches!(
-                ch.try_recv(),
-                Err(std::sync::mpsc::TryRecvError::Empty)
-            ));
-        }
-        // Case `a_host_without_paths_answers_with_contents_or_a_kept_save`:
-        // a browser page hands over the chosen project's contents and keeps
-        // a saved one itself, so Open and Save work there too.
-        {
-            let (tx, rx) = std::sync::mpsc::channel();
-            tx.send(ui::portal::ContentsOutcome::Picked(vec![
-                ui::portal::PickedContents {
-                    name: "Holiday.qvp".into(),
-                    media_type: None,
-                    bytes: b"project".to_vec(),
-                    location: None,
-                },
-            ]))
-            .unwrap();
-            assert!(matches!(
-                ProjectChannel::Contents(rx).try_recv(),
-                Ok(ProjectOutcome::OpenContents { name, bytes })
-                    if name == "Holiday.qvp" && bytes == b"project",
-            ));
-            let (tx, rx) = std::sync::mpsc::channel();
-            tx.send(ui::portal::DestinationOutcome::Chosen(
-                ui::portal::SaveDestination::kept("Holiday.qvp", |_| {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let _ = tx.send(ui::portal::SaveOutcome::Saved);
-                    rx
-                }),
-            ))
-            .unwrap();
-            assert!(matches!(
-                ProjectChannel::Destination(
-                    ui::portal::DestinationChannel::from_outcomes(rx)
-                )
-                .try_recv(),
-                Ok(ProjectOutcome::SaveTo(kept)) if kept.name() == "Holiday.qvp",
-            ));
-            let (tx, rx) = std::sync::mpsc::channel();
-            tx.send(ui::portal::SaveOutcome::Saved).unwrap();
-            assert!(matches!(
-                ProjectChannel::Saving(rx).try_recv(),
-                Ok(ProjectOutcome::Saved)
-            ));
-        }
+        let export = export_project_request("Coastline_Doc_v3.qvp");
+        assert_eq!(export.suggested_name(), Some("Coastline_Doc_v3.qvp"));
+        assert_eq!(export.filter_names(), vec!["Video project"]);
     }
 
     #[test]

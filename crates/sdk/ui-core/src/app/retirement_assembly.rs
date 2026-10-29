@@ -94,7 +94,7 @@ pub(super) struct AppAssemblyValues {
     pub presence_ctx: Option<PresenceCtx>,
     pub permission_ctx: Option<PermissionContext>,
     pub presence: Option<PresenceRuntime>,
-    pub accessibility: Option<AccessibilityRuntime>,
+    pub accessibility: Option<Box<AccessibilityRuntime>>,
     pub window: Option<WindowRuntime>,
     pub document_routes: Option<crate::history_mode::routes::OwnerDocumentRoutes>,
     pub committed_documents: Option<
@@ -103,9 +103,9 @@ pub(super) struct AppAssemblyValues {
             crate::collaboration::CommittedDocument,
         )>,
     >,
-    pub persistence: Option<PersistenceRuntime>,
+    pub persistence: Option<Box<PersistenceRuntime>>,
     pub autosave_generation: Option<u64>,
-    pub actions: Option<ActionRuntime>,
+    pub actions: Option<Box<ActionRuntime>>,
     pub document_history: Option<Box<crate::standalone_history_host::StandaloneHistoryHost>>,
     pub history_chrome_enabled: Option<bool>,
     pub native_document_chrome: Option<bool>,
@@ -117,7 +117,7 @@ pub(super) struct AppAssemblyValues {
     pub continuation: Option<ContinuationRuntime>,
     pub profiler: Option<Option<crate::profiling::FrameProfiler>>,
     pub native_input_probe: Option<Option<Box<dyn Fn() -> serde_json::Value>>>,
-    pub floating: Option<FloatingRuntime>,
+    pub floating: Option<Box<FloatingRuntime>>,
 }
 
 pub(super) struct ValidationRetirement<'a>(pub &'a Option<RootRetirementPrelude>, pub bool);
@@ -213,17 +213,17 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         assembly.retire();
         unreachable!("the theme and screen reader were staged above");
     };
-    assembly.values.accessibility = Some(AccessibilityRuntime::new(
+    assembly.values.accessibility = Some(Box::new(AccessibilityRuntime::new(
         accessibility_theme,
         screen_reader,
-    ));
+    )));
     assembly.values.window = Some(WindowRuntime::new());
     assembly.values.document_routes =
         Some(crate::history_mode::routes::OwnerDocumentRoutes::default());
     assembly.values.committed_documents = Some(Vec::new());
-    assembly.values.persistence = Some(PersistenceRuntime::new());
+    assembly.values.persistence = Some(Box::new(PersistenceRuntime::new()));
     assembly.values.autosave_generation = Some(0);
-    assembly.values.actions = Some(ActionRuntime::new());
+    assembly.values.actions = Some(Box::new(ActionRuntime::new()));
     assembly.values.document_history = Some(Box::new(
         crate::standalone_history_host::StandaloneHistoryHost::new(),
     ));
@@ -248,7 +248,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         // The shell says where this window's room stands.
         crate::room_sync::hosted_by_shell();
     }
-    assembly.values.floating = Some(FloatingRuntime::new(floating));
+    assembly.values.floating = Some(Box::new(FloatingRuntime::new(floating)));
     // No callbacks or allocation remain in the transfer. Missing internal
     // slots retire before any extracted value can be dropped.
     let AppAssemblyValues {
@@ -326,7 +326,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         startup_renderer,
         control_domain,
         wake_scope,
-        state,
+        state: Box::new(state),
         root_widget,
         history,
         #[cfg(any(test, feature = "test-support"))]

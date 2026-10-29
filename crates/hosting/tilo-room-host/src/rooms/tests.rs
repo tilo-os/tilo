@@ -278,8 +278,8 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
             .await
             .err()
             .unwrap(),
-        "source stewardship unavailable",
-        "the authorized reader reaches the existing-key boundary without creating stewardship"
+        "this relay takes part in no channel of the source's room",
+        "the authorized reader reaches the existing-key boundary without creating channel state"
     );
     assert_eq!(
         rooms
@@ -1493,12 +1493,16 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     let vault = channel_crypto::VaultKey::new([3; 32]);
     let member_dir = dir.path().join("member");
     std::fs::create_dir_all(&member_dir).unwrap();
-    let request =
-        channel_crypto::ChannelMember::open(&member_dir, channel, device, governor, &vault)
-            .unwrap()
-            .access_request(&member_key, 1, &vault)
-            .unwrap()
-            .expect("a member waiting for the channel asks for it");
+    let request = channel_crypto::ChannelPeer::waiting(
+        Some(&member_dir),
+        channel,
+        Box::new(member_key.clone()),
+        &vault,
+    )
+    .unwrap()
+    .access_request_now(1, false, &vault)
+    .unwrap()
+    .expect("a member waiting for the channel asks for it");
     let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::MlsAccessRequest {
         room: created.room.clone(),
         request: Box::new(request),
@@ -1518,16 +1522,16 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
         member: device,
         channel,
     };
-    // Nothing yielded since: the steward pass `absorb` spawned has not run.
+    // Nothing yielded since: the channels pass `absorb` spawned has not run.
     assert!(
         asked.waiting(),
-        "the room queued the member's request for its steward"
+        "the room queued the member's request for its channels"
     );
     asked
 }
 
 impl AskedForAChannel {
-    /// Whether the member's request still waits for the room's steward pass.
+    /// Whether the member's request still waits for the room's channels pass.
     fn waiting(&self) -> bool {
         self.rooms
             .inner
@@ -1537,15 +1541,15 @@ impl AskedForAChannel {
             .contains_key(&self.room)
     }
 
-    /// The room's channel stewards on its governor.
-    async fn stewardship(&self) -> Option<Arc<stewardship::Steward>> {
+    /// The governor's part in the room's channels.
+    async fn participation(&self) -> Option<Arc<participation::Participant>> {
         self.rooms
             .room(&self.room)
             .await
             .unwrap()
             .lock()
             .await
-            .stewardship
+            .participation
             .clone()
     }
 
@@ -1569,22 +1573,22 @@ impl AskedForAChannel {
 }
 
 /// security.md, "What a workspace host reads and originates": a host
-/// certified only to host rooms governs them without stewarding their
+/// certified only to host rooms governs them without taking part in their
 /// channels and holds no channel key. A member's request for a record's key
-/// reaches the room's steward pass and finds no steward: no MLS group, no
-/// channel state on disk, nothing to lend.
+/// reaches the room's channels pass and finds no participant: no MLS group,
+/// no channel state on disk, nothing to lend.
 #[tokio::test]
-async fn a_plain_host_governs_a_room_without_stewarding_its_channels() {
+async fn a_plain_host_governs_a_room_without_taking_part_in_its_channels() {
     let asked = a_member_asks_for_a_channel(DeviceCapabilities::host()).await;
-    tilo_test_env::within("the room's steward pass takes the request", async {
+    tilo_test_env::within("the room's channels pass takes the request", async {
         while asked.waiting() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await;
     assert!(
-        asked.stewardship().await.is_none(),
-        "a plain host certificate must never steward a governed room's channels"
+        asked.participation().await.is_none(),
+        "a plain host certificate must never take part in a governed room's channels"
     );
     assert!(
         !asked.channels_dir().exists(),
@@ -1594,21 +1598,21 @@ async fn a_plain_host_governs_a_room_without_stewarding_its_channels() {
 }
 
 /// The other half of the same claim, so the plain host's test observes its
-/// subject: a node certified to own workspaces stewards the channel of every
-/// record in the rooms it governs, is a member of each group beside the
+/// subject: a node certified to own workspaces takes part in the channel of
+/// every record in the rooms it governs, is a member of each group beside the
 /// member devices governance lets read it, and seals its state on disk.
 #[tokio::test]
-async fn an_owner_capable_node_stewards_the_channels_of_the_rooms_it_governs() {
+async fn an_owner_capable_node_takes_part_in_the_channels_of_the_rooms_it_governs() {
     let asked =
         a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
             .await;
-    let steward = asked
-        .stewardship()
+    let participant = asked
+        .participation()
         .await
-        .expect("a node that may own workspaces stewards its rooms' channels");
+        .expect("a node that may own workspaces takes part in its rooms' channels");
     let members = tilo_test_env::within("the node admits the member to the channel", async {
         loop {
-            let members = steward.channels.lock().await.members(asked.channel);
+            let members = participant.channels.lock().await.members(asked.channel);
             if let Some(members) = members.filter(|members| members.contains(&asked.member)) {
                 break members;
             }
@@ -1618,14 +1622,14 @@ async fn an_owner_capable_node_stewards_the_channels_of_the_rooms_it_governs() {
     .await;
     assert!(
         members.contains(&asked.governor),
-        "the node is a member of the group it stewards, so it holds the channel's keys"
+        "the node is a member of the group, so it holds the channel's keys"
     );
     assert!(asked.channels_dir().exists());
-    drop(steward);
+    drop(participant);
     asked.shut_down().await;
 }
 
-/// What a test runs inside a room's steward pass, by room.
+/// What a test runs inside a room's channels pass, by room.
 type PassHooks = std::sync::Mutex<HashMap<String, Arc<dyn Fn() + Send + Sync>>>;
 
 fn pass_hooks() -> &'static PassHooks {
@@ -1633,21 +1637,21 @@ fn pass_hooks() -> &'static PassHooks {
     HOOKS.get_or_init(PassHooks::default)
 }
 
-/// Run the hook a test installed for `room`'s steward pass, where the pass
+/// Run the hook a test installed for `room`'s channels pass, where the pass
 /// does its MLS work.
-pub(crate) fn steward_pass_hook(room: &str) {
+pub(crate) fn channels_pass_hook(room: &str) {
     let hook = pass_hooks().lock().unwrap().get(room).cloned();
     if let Some(hook) = hook {
         hook();
     }
 }
 
-/// A steward pass's MLS work holds no runtime worker. The pass stalls in
+/// A channels pass's MLS work holds no runtime worker. The pass stalls in
 /// its MLS work until the test, on a runtime with a single worker, lets it
 /// go: run on that worker, the pass would stall the test with it, and give
 /// up waiting unreleased.
 #[tokio::test]
-async fn a_steward_pass_does_its_mls_work_off_the_runtime_workers() {
+async fn a_channels_pass_does_its_mls_work_off_the_runtime_workers() {
     let asked =
         a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
             .await;
@@ -1669,7 +1673,7 @@ async fn a_steward_pass_does_its_mls_work_off_the_runtime_workers() {
             observed.store(in_time, std::sync::atomic::Ordering::SeqCst);
         }),
     );
-    tilo_test_env::within("the steward pass starts its MLS work", async {
+    tilo_test_env::within("the channels pass starts its MLS work", async {
         while entered.try_recv().is_err() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -1677,9 +1681,9 @@ async fn a_steward_pass_does_its_mls_work_off_the_runtime_workers() {
     .await;
     // Only this runtime's one worker can get here while the pass stalls.
     release.send(()).unwrap();
-    let steward = asked.stewardship().await.expect("the node stewards");
+    let participant = asked.participation().await.expect("the node takes part");
     tilo_test_env::within("the node admits the member to the channel", async {
-        while !steward
+        while !participant
             .channels
             .lock()
             .await
@@ -1695,7 +1699,7 @@ async fn a_steward_pass_does_its_mls_work_off_the_runtime_workers() {
         released.load(std::sync::atomic::Ordering::SeqCst),
         "the runtime's worker was free while the pass did its MLS work"
     );
-    drop(steward);
+    drop(participant);
     asked.shut_down().await;
 }
 

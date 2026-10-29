@@ -1,8 +1,7 @@
-//! What the person is writing and has not sent: their own record, kept in
-//! their own room.
+//! What is being written and has not been sent: a record of Messages'
+//! beside the conversations, kept in the workspace it is open in.
 //!
-//! A draft is the writer's alone. It follows them to their other devices, it
-//! survives the window closing, and it never enters a conversation's record:
+//! A draft survives the window closing, and it never enters a conversation's record:
 //! nothing here is sent, queued or shown to anyone else. What a person typed
 //! and did not send is theirs until they send it.
 //!

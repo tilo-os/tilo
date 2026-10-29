@@ -46,10 +46,10 @@ impl AudioSource {
         }
     }
 
-    fn default_token(self) -> &'static str {
+    fn default_node(self) -> media::audio::default_node::DefaultNode {
         match self {
-            Self::System => "@DEFAULT_AUDIO_SINK@",
-            Self::Microphone => "@DEFAULT_AUDIO_SOURCE@",
+            Self::System => media::audio::default_node::DefaultNode::Sink,
+            Self::Microphone => media::audio::default_node::DefaultNode::Source,
         }
     }
 }
@@ -349,28 +349,8 @@ fn capture_args(source: AudioSource, target: &str) -> Vec<String> {
 }
 
 fn default_target(source: AudioSource) -> Result<String, String> {
-    let mut command = Command::new("wpctl");
-    command.args(["inspect", source.default_token()]);
-    let output = bounded_command::run_prepared(command, None, PROBE_OUTPUT_LIMIT, PROBE_TIMEOUT)
-        .map_err(|error| format!("inspect default {}: {error}", source.track_name()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "inspect default {} exited with {}",
-            source.track_name(),
-            output.status
-        ));
-    }
-    parse_object_serial(&String::from_utf8_lossy(&output.stdout))
-        .ok_or_else(|| format!("default {} has no object serial", source.track_name()))
-}
-
-fn parse_object_serial(inspect: &str) -> Option<String> {
-    inspect.lines().find_map(|line| {
-        let (_, value) = line.trim().split_once("object.serial =")?;
-        let serial = value.trim().trim_matches('"');
-        (!serial.is_empty() && serial.chars().all(|ch| ch.is_ascii_digit()))
-            .then(|| serial.to_string())
-    })
+    media::audio::default_node::object_serial(source.default_node())
+        .map_err(|error| format!("default {}: {error}", source.track_name()))
 }
 
 #[cfg(test)]
@@ -503,15 +483,6 @@ mod tests {
 
     #[test]
     fn pipewire_sources_come_from_server_assigned_identity() {
-        {
-            let inspect = r#"
-                node.name = "spoofable-name"
-              * object.serial = "314"
-                media.class = "Audio/Sink"
-            "#;
-            assert_eq!(parse_object_serial(inspect).as_deref(), Some("314"));
-            assert_eq!(parse_object_serial("object.serial = hacked"), None);
-        }
         {
             let desktop = capture_args(AudioSource::System, "314").join(" ");
             let microphone = capture_args(AudioSource::Microphone, "271").join(" ");

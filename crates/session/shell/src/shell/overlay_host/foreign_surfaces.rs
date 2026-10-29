@@ -20,7 +20,7 @@ impl ShellOverlayHost {
         let now = Instant::now();
         if let Some(rect) = self
             .onboarding
-            .as_ref()
+            .as_deref()
             .and_then(crate::onboarding_view::OnboardingView::secret_rect)
         {
             rects.push(rect);
@@ -65,7 +65,7 @@ impl ShellOverlayHost {
         &mut self,
         queue: crate::shell::portal_dialog::PortalDialogQueue,
     ) {
-        self.portal_dialogs = PortalDialogController::new(queue);
+        *self.portal_dialogs = PortalDialogController::new(queue);
         self.register_authentication_actions();
     }
 

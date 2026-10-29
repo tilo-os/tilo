@@ -10,7 +10,6 @@ mod extension_omnibox;
 mod extension_permissions;
 mod extension_sign_in;
 mod frame_memory;
-pub mod install;
 mod menus;
 mod page_clipboard;
 mod protocol;

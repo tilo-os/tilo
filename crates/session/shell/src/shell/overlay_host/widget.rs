@@ -45,13 +45,13 @@ impl Widget for ShellOverlayHost {
                 state.overlays.desktop_tour = false;
                 state.bump();
             }
-            self.onboarding = Some(crate::onboarding_view::OnboardingView::new_tour());
+            self.onboarding = Some(Box::new(crate::onboarding_view::OnboardingView::new_tour()));
             self.register_onboarding_actions();
             self.onboarding_released = false;
             self.onboarding_focus_reset = false;
         }
         self.start_requested_identity_setup();
-        if let Some(onboarding) = self.onboarding.as_mut() {
+        if let Some(onboarding) = self.onboarding.as_deref_mut() {
             let had_identity = onboarding.flow().is_done();
             onboarding.sync(s, p);
             let acquired_identity = !had_identity && onboarding.flow().is_done();
@@ -186,7 +186,7 @@ impl Widget for ShellOverlayHost {
             let dialog_dirty = self.pump_portal_dialogs();
             let onboarding_dirty = self
                 .onboarding
-                .as_mut()
+                .as_deref_mut()
                 .is_some_and(|onboarding| onboarding.update(doc, path));
             return onboarding_dirty || dialog_dirty;
         }
@@ -469,9 +469,9 @@ impl Widget for ShellOverlayHost {
     ) -> NodeId {
         let contextual_tour = self
             .onboarding
-            .as_ref()
+            .as_deref()
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
-        if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+        if !contextual_tour && let Some(onboarding) = self.onboarding.as_deref_mut() {
             let onboarding_node = onboarding.build_layout(taffy, theme, node_map);
             self.onboarding_node = Some(onboarding_node);
             // Setup remains an independent modal workflow, but Print Screen
@@ -635,7 +635,7 @@ impl Widget for ShellOverlayHost {
             children.push(markup_node);
         }
         children.extend(self.capture_mirror_nodes.iter().copied());
-        if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+        if contextual_tour && let Some(onboarding) = self.onboarding.as_deref_mut() {
             let onboarding_node = onboarding.build_layout(taffy, theme, node_map);
             // The desktop already consumes the root flex row. The tutorial is
             // modal chrome above that desktop, not another sibling pane: make
@@ -689,9 +689,9 @@ impl Widget for ShellOverlayHost {
         self.workspace_settings_overlay.layout(self.overlay_area());
         let contextual_tour = self
             .onboarding
-            .as_ref()
+            .as_deref()
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
-        if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+        if !contextual_tour && let Some(onboarding) = self.onboarding.as_deref_mut() {
             if let Some(onboarding_node) = self.onboarding_node {
                 onboarding.apply_layout(
                     taffy,
@@ -781,7 +781,7 @@ impl Widget for ShellOverlayHost {
         }
         if contextual_tour
             && let (Some(onboarding), Some(onboarding_node)) =
-                (self.onboarding.as_mut(), self.onboarding_node)
+                (self.onboarding.as_deref_mut(), self.onboarding_node)
         {
             onboarding.apply_layout(
                 taffy,
@@ -1042,7 +1042,7 @@ impl Widget for ShellOverlayHost {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        if let Some(onboarding) = self.onboarding.as_ref() {
+        if let Some(onboarding) = self.onboarding.as_deref() {
             return vec![onboarding, &self.capture_studio];
         }
         let mut out: Vec<&dyn Widget> =
@@ -1064,7 +1064,7 @@ impl Widget for ShellOverlayHost {
             out.push(pairing);
         }
         if self.agent_quick_composer.is_open() {
-            out.push(&self.agent_quick_composer);
+            out.push(&*self.agent_quick_composer);
         }
         if self.bar_popovers.workspace_menu.is_open() {
             out.push(&self.bar_popovers.workspace_menu);
@@ -1074,11 +1074,11 @@ impl Widget for ShellOverlayHost {
         }
         out.extend(self.agent_markers.children());
         if self.person_quick_composer.is_open() {
-            out.push(&self.person_quick_composer);
+            out.push(&*self.person_quick_composer);
         }
         out.extend(self.person_markers.children());
         if self.peer_sync_node.is_some() {
-            out.push(&self.peer_sync_overlay);
+            out.push(&*self.peer_sync_overlay);
         }
         if let (Some(sheet), Some(_)) = (&self.app_sheet, self.app_sheet_nodes) {
             out.push(sheet.dialog());
@@ -1087,7 +1087,7 @@ impl Widget for ShellOverlayHost {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if let Some(onboarding) = self.onboarding.as_mut() {
+        if let Some(onboarding) = self.onboarding.as_deref_mut() {
             return vec![onboarding, &mut self.capture_studio];
         }
         let mut out: Vec<&mut (dyn Widget + '_)> =
@@ -1109,7 +1109,7 @@ impl Widget for ShellOverlayHost {
             out.push(pairing);
         }
         if self.agent_quick_composer.is_open() {
-            out.push(&mut self.agent_quick_composer);
+            out.push(&mut *self.agent_quick_composer);
         }
         if self.bar_popovers.workspace_menu.is_open() {
             out.push(&mut self.bar_popovers.workspace_menu);
@@ -1119,11 +1119,11 @@ impl Widget for ShellOverlayHost {
         }
         out.extend(self.agent_markers.children_mut());
         if self.person_quick_composer.is_open() {
-            out.push(&mut self.person_quick_composer);
+            out.push(&mut *self.person_quick_composer);
         }
         out.extend(self.person_markers.children_mut());
         if self.peer_sync_node.is_some() {
-            out.push(&mut self.peer_sync_overlay);
+            out.push(&mut *self.peer_sync_overlay);
         }
         if let (Some(sheet), Some(_)) = (&mut self.app_sheet, self.app_sheet_nodes) {
             out.push(sheet.dialog_mut());
@@ -1144,7 +1144,7 @@ impl Widget for ShellOverlayHost {
             | std::mem::take(&mut self.onboarding_focus_reset)
             | self
                 .onboarding
-                .as_mut()
+                .as_deref_mut()
                 .is_some_and(Widget::take_focus_reset)
     }
 
@@ -1179,7 +1179,7 @@ impl Widget for ShellOverlayHost {
         if std::mem::take(&mut self.onboarding_released) {
             return true;
         }
-        if let Some(onboarding) = self.onboarding.as_mut() {
+        if let Some(onboarding) = self.onboarding.as_deref_mut() {
             return onboarding.take_structure_dirty();
         }
         // A drag carried to the strip deck's edge went to another strip:
@@ -1418,7 +1418,7 @@ impl ShellOverlayHost {
         {
             return;
         }
-        if let Some(onboarding) = self.onboarding.as_mut() {
+        if let Some(onboarding) = self.onboarding.as_deref_mut() {
             // A first-login ceremony is the first child of its dedicated
             // tree, but a tour reopened from Search is appended after the
             // live desktop so that the desktop remains visible beneath it.

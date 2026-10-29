@@ -27,24 +27,24 @@ pub enum WordProcessorEffect {
     /// Replaces the document with a file's content; Undo takes it back.
     #[effect(job, destructive)]
     OpenDocument {
-        #[param("Direct filesystem path; omit to choose one")]
-        path: Option<String>,
+        #[param("Absolute filesystem path; omit to choose one")]
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save document.
     ///
     /// Writes the document to its file, or to the one given.
     #[effect(job, destructive)]
     Save {
-        #[param("Direct filesystem path; omit to save to the document's file")]
-        path: Option<String>,
+        #[param("Absolute filesystem path; omit to save to the document's file")]
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save document as.
     ///
     /// Writes the document to a file, in the format its name says.
     #[effect(job, destructive)]
     SaveAs {
-        #[param("Direct filesystem path; omit to choose one")]
-        path: Option<String>,
+        #[param("Absolute filesystem path; omit to choose one")]
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Read a file.
     ///
@@ -55,7 +55,7 @@ pub enum WordProcessorEffect {
     #[effect(kind = "read", returns, idempotent, audience = "agents")]
     ReadFile {
         #[param("Absolute path of the file")]
-        file: String,
+        file: ui::tilo_resource::AbsolutePath,
         #[param("The character to read from; the start when none")]
         from: Option<usize>,
     },
@@ -109,7 +109,7 @@ pub enum WordProcessorEffect {
     #[effect(returns)]
     ConvertFile {
         #[param("Absolute path of the file")]
-        file: String,
+        file: ui::tilo_resource::AbsolutePath,
         #[param(
             "The format to write",
             choices = crate::file_convert::CONVERSIONS.iter().copied()

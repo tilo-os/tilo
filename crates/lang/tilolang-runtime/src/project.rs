@@ -67,7 +67,9 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
             Ok(items) => project(core, &Value::List(items), opts),
             Err(error) => json!({ "error": error }),
         },
-        Value::Node(_) | Value::Rec(_) | Value::Event => json!({ "kind": v.kind_name() }),
+        Value::Node(_) | Value::Rec(_) | Value::Event | Value::State { .. } => {
+            json!({ "kind": v.kind_name() })
+        }
     }
 }
 

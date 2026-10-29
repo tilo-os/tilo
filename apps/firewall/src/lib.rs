@@ -21,7 +21,7 @@
     clippy::arithmetic_side_effects,
     reason = "app-local arithmetic; see the note above"
 )]
-pub mod app;
+mod app;
 pub mod backend;
 pub mod blocked;
 pub mod locales;
@@ -32,7 +32,6 @@ pub mod sample;
 
 mod view;
 
-pub use app::FirewallApp;
 pub use resource::{Firewall, FirewallShell};
 
 /// The app as every host mounts it.

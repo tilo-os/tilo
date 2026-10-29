@@ -7,8 +7,8 @@
 path = "crates/packaging/app-host"
 src_prefix = "schema"
 schemas = ["schema/app-host.capnp"]
-schema_sha256 = "f25174b1d0882999efccf813c0c45dc92bfba2f08996606072459dbb3d93e720"
-bindings_sha256 = "56bb732cd4bb1bb5abf3c1096af4c471676c67a1da2fb805b08fa5c99fc95adc"
+schema_sha256 = "34c916573dd7a7bbc3b947902d85dbde55130b31054f5be94d57036b63486afb"
+bindings_sha256 = "efda1d119557ae5c80d17a7b45c879606d0e5b20cb58878b4ec729cd9a6dabed"
 
 [[crate]]
 path = "crates/runtime/runtime-collab"

@@ -30,7 +30,7 @@ impl App {
             screen_reader,
             reading_order,
             ..
-        } = &mut self.accessibility;
+        } = &mut *self.accessibility;
         let (reader, (_, order)) = screen_reader.as_mut().zip(reading_order.as_ref())?;
         Some(read(reader, order))
     }

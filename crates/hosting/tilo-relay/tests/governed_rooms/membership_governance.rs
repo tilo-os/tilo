@@ -1,4 +1,4 @@
-//! A room whose host stewards its channels offers the same membership
+//! A room whose host takes part in its channels offers the same membership
 //! actions as one a device governs itself: adding and removing an agent and
 //! giving and taking back a grant, asked as the room's own governance on the
 //! room's governance resource, decided by the same room policy and committed
@@ -46,7 +46,7 @@ async fn a_hosted_room_adds_and_removes_an_agent_and_gives_and_takes_back_a_gran
     members::admit(&relay, &host, &member, &room.room).await;
     let owner = subscribed(&relay, &laptop, workspace).await;
 
-    // The member's replica, as it sees the room the host stewards.
+    // The member's replica, as it sees the room whose channels the host takes part in.
     let state_session = session(&relay, &member, workspace).await;
     let mut peer = StatePeer::new(
         &room.room,

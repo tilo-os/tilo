@@ -5482,6 +5482,16 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
         if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
             continue;
         }
+        // Only the fullscreen client and an audience surface are shown full
+        // screen; any other toplevel's configure says it is not, so no client
+        // is ever left told it is while it is drawn in its tile.
+        if fullscreen != Some(id) && !state.is_output_presentation_surface(id) {
+            toplevel.with_pending_state(|pending| {
+                pending.states.unset(
+                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                );
+            });
+        }
         // A window only the person's other devices show renders at the
         // size they show it, not at its hidden tab's.
         if toplevel.is_initial_configure_sent()

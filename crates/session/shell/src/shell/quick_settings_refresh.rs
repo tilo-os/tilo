@@ -19,6 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
+use media::audio::default_node::{self, DefaultNode, VolumeState};
 use os_actions as qs;
 use tilo_power_mgmt::BatterySnapshot;
 
@@ -35,7 +36,7 @@ pub struct FastReading {
     pub displays: Option<Vec<DisplayBrightness>>,
     /// Whether the default sink is a real output with a readable level.
     pub volume_available: Option<bool>,
-    pub volume: Option<qs::VolumeState>,
+    pub volume: Option<VolumeState>,
     pub bluetooth: Option<bool>,
     /// A successful `BlueZ` state query proves that an adapter exists.
     pub bluetooth_available: bool,
@@ -167,7 +168,7 @@ pub enum FieldReading {
     Power(Option<qs::PowerProfile>),
     Vpns(Option<Vec<qs::VpnConnectionInfo>>),
     Brightness(Option<f32>, Vec<DisplayBrightness>),
-    Volume(Option<qs::VolumeState>),
+    Volume(Option<VolumeState>),
 }
 
 impl FieldReading {
@@ -210,7 +211,7 @@ pub(crate) struct ReadFns {
     pub(crate) brightness: fn() -> Option<f32>,
     pub(crate) displays: fn() -> Vec<DisplayBrightness>,
     pub(crate) output_device: fn() -> bool,
-    pub(crate) volume: fn() -> Option<qs::VolumeState>,
+    pub(crate) volume: fn() -> Option<VolumeState>,
     pub(crate) bluetooth: fn() -> Option<bool>,
     pub(crate) power: fn() -> Option<qs::PowerProfile>,
     pub(crate) power_profiles: fn() -> Option<Vec<qs::PowerProfile>>,
@@ -226,7 +227,7 @@ impl ReadFns {
     pub(crate) const OS: Self = Self {
         brightness: os_brightness,
         displays: os_displays,
-        output_device: qs::has_output_device,
+        output_device: default_node::has_output_device,
         volume: os_volume,
         bluetooth: os_bluetooth,
         power: os_power,
@@ -285,8 +286,11 @@ fn os_displays() -> Vec<DisplayBrightness> {
     )
 }
 
-fn os_volume() -> Option<qs::VolumeState> {
-    qs::log_get("get_volume_state", qs::get_volume_state())
+fn os_volume() -> Option<VolumeState> {
+    qs::log_get(
+        "get_volume_state",
+        default_node::volume_state(DefaultNode::Sink),
+    )
 }
 
 fn os_bluetooth() -> Option<bool> {
@@ -1145,7 +1149,7 @@ mod tests {
             },
             volume: || {
                 hit(3);
-                Some(qs::VolumeState {
+                Some(VolumeState {
                     level: 0.5,
                     muted: false,
                 })

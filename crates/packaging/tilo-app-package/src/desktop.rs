@@ -23,12 +23,12 @@ pub fn runtime_dependency(manifest: &Manifest) -> Option<&str> {
     }
 }
 
-/// The optional runtimes (`[package].optional-runtimes`) a Tilo OS app mounts
-/// when present, such as a browser's engine. The app pins them by exact
-/// version, so whatever installs the app must bring them; a desktop target
-/// carries its own engine and names none.
+/// The further runtimes (`[package].optional-runtimes`) a Tilo OS app
+/// requires, such as a browser's engine. The app pins them by exact version,
+/// so whatever installs or updates the app brings them in the same step or
+/// refuses; a desktop target carries its own engine and names none.
 #[must_use]
-pub fn optional_runtime_dependencies(manifest: &Manifest) -> &[String] {
+pub fn required_runtime_dependencies(manifest: &Manifest) -> &[String] {
     if manifest
         .target
         .as_ref()
@@ -36,7 +36,7 @@ pub fn optional_runtime_dependencies(manifest: &Manifest) -> &[String] {
     {
         &[]
     } else {
-        &manifest.package.optional_runtimes
+        &manifest.package.required_runtimes
     }
 }
 

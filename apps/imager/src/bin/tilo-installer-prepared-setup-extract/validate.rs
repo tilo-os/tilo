@@ -155,7 +155,7 @@ pub fn expectation(value: &Value, kind: &str) -> Result<()> {
     )?;
     if kind != "home" {
         require(
-            imager_backend::is_operation_id(operation),
+            staging_handoff_model::is_operation_id(operation),
             "portable application operation is invalid",
         )?;
         require(
@@ -233,7 +233,7 @@ fn scope_fields<'a>(authenticated: &Value, scope: &'a Value) -> Result<&'a str> 
         "staging_operation",
     ] {
         require(
-            imager_backend::is_operation_id(text(scope, key)?),
+            staging_handoff_model::is_operation_id(text(scope, key)?),
             "Computer applications operation is not canonical",
         )?;
     }

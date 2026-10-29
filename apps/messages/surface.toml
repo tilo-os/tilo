@@ -257,7 +257,6 @@ params = [
 kind = "messages.drafts"
 label = "Message drafts"
 version = 1
-person = true
 fields = [
   { path = "drafts", type = "BTreeMap<String, String>" },
 ]

@@ -1169,14 +1169,6 @@ pub struct State {
     pub surface_scales: HashMap<u64, f64>,
     /// Where each placed client surface's tile sits, in the logical desktop.
     surface_origins: HashMap<u64, (f64, f64)>,
-    /// **Transient fullscreen surface** — the window group id of the
-    /// toplevel currently holding the output fullscreen via
-    /// `xdg_toplevel.set_fullscreen`, or `None`. Set by
-    /// [`XdgShellHandler::fullscreen_request`], cleared by
-    /// `unfullscreen_request` (or surface destroy). The native render loop
-    /// mirrors this into the `FrameBuilder` each frame; deliberately NOT
-    /// part of the persisted `WorkspaceTree` (a live presentation must never survive a reboot).
-    pub fullscreen_group: Option<u64>,
     /// Physical/virtual output requested by the fullscreen client. Kept
     /// separately from the group because hotplug can invalidate the output
     /// while the toplevel still exists; the native loop then reconciles to a
@@ -2213,7 +2205,6 @@ impl State {
             presenter_pin: None,
             surface_scales: HashMap::new(),
             surface_origins: HashMap::new(),
-            fullscreen_group: None,
             fullscreen_output: None,
             output_presentation_surfaces: Vec::new(),
             pending_presentation_outputs: HashMap::new(),
@@ -7064,6 +7055,18 @@ fn logical_extent(px: f64, scale: f64) -> i32 {
     (px / scale).round().clamp(1.0, f64::from(i32::MAX)) as i32
 }
 
+/// Tell `surface` it is no longer full screen. With no `size` the client
+/// keeps its extent until the configure pass hands its tile's size back.
+fn send_left_fullscreen(surface: &ToplevelSurface, size: Option<(i32, i32)>) {
+    surface.with_pending_state(|state| {
+        state.states.unset(
+            smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+        );
+        state.size = size.map(Into::into);
+    });
+    surface.send_configure();
+}
+
 impl State {
     /// Give a new toplevel its tab in the workspace tree: in the room its
     /// launch is attributed to, or in the focused one. Whether it was
@@ -7293,20 +7296,13 @@ impl XdgShellHandler for State {
                 });
         }
         // If the destroyed surface held the output fullscreen, drop the transient promotion so layout restores instead of staying collapsed.
-        let fullscreen_group_matches = {
-            let tree = self.workspace_tree.read();
-            self.fullscreen_group == tab_binding::group_id_for_surface(&tree, surface_id)
-        };
-        if fullscreen_group_matches {
-            self.fullscreen_group = None;
-            self.fullscreen_output = None;
-        }
         if self
             .fullscreen_target
             .as_ref()
             .is_some_and(|target| target.surface_id == surface_id)
         {
             self.fullscreen_target = None;
+            self.fullscreen_output = None;
         }
         if let Some(before) = self.provisional_focus.remove(&surface_id) {
             // Gone before it ever showed a frame: nobody saw it to focus.
@@ -7394,20 +7390,13 @@ impl XdgShellHandler for State {
             if is_output_presentation_app_id(&app_id)
                 && self.promote_output_presentation_toplevel(surface_id, app_id.clone())
             {
-                let provisional_group = {
-                    let tree = self.workspace_tree.read();
-                    tab_binding::group_id_for_surface(&tree, surface_id)
-                };
                 // The provisional anonymous tab must never share the
                 // presenter's workspace with the clean audience surface.
                 self.withdraw_provisional_tab(surface_id);
                 // `set_fullscreen` is permitted to arrive before
-                // `set_app_id`; undo that provisional group promotion now
-                // that the toplevel has become output-scoped.
-                if self.fullscreen_group == provisional_group {
-                    self.fullscreen_group = None;
-                    self.fullscreen_output = None;
-                }
+                // `set_app_id`; undo that provisional promotion now that the
+                // toplevel has become output-scoped.
+                let _ = self.take_client_fullscreen(surface_id);
                 return;
             }
             // A system prompt announces itself here (GTK sets the id after
@@ -7559,13 +7548,17 @@ impl XdgShellHandler for State {
     }
 
     /// A client asked to occupy its output fullscreen
-    /// (`xdg_toplevel.set_fullscreen`). We honor it: record which window
-    /// group the surface belongs to (so the native render loop promotes it,
-    /// suppressing top bar/sidebar/other strips, and restores exactly on
-    /// exit), and send a configure carrying `Fullscreen` + the full output
-    /// size. A valid `wl_output` hint selects that physical/virtual output;
-    /// an absent or stale hint falls back to the combined-session configure
-    /// until the native placement path can choose a viable display.
+    /// (`xdg_toplevel.set_fullscreen`). We honor it, always: the surface
+    /// becomes the [`FullscreenTarget`], which the native render loop draws
+    /// over the whole output it is on (above the top bar, its tab's header
+    /// and frame), and whose tile the configure pass leaves alone. The
+    /// configure carrying `Fullscreen` names the output's own size: the
+    /// requested `wl_output`, else the one the window is on.
+    ///
+    /// The target is the surface itself, not the window group its tab is
+    /// in. A surface with no tab, or whose tab moves to another group while
+    /// it is full screen, is still promoted and still left on exit; a
+    /// client is never told `Fullscreen` without being shown that way.
     fn fullscreen_request(&mut self, surface: ToplevelSurface, wl_output: Option<WlOutput>) {
         crate::shell::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
@@ -7597,18 +7590,35 @@ impl XdgShellHandler for State {
             }
             self.pending_presentation_outputs
                 .insert(surface_id, requested);
-            self.fullscreen_group = {
-                let tree = self.workspace_tree.read();
-                tab_binding::group_id_for_surface(&tree, surface_id)
-            };
+            // One client holds the output at a time: one it displaces is
+            // told it left, and gets its tile back.
+            if let Some(displaced) = self
+                .fullscreen_target
+                .take()
+                .filter(|target| target.surface_id != surface_id && target.pinned_output.is_none())
+            {
+                tracing::info!(
+                    surface_id = displaced.surface_id,
+                    by = surface_id,
+                    "client full screen displaced"
+                );
+                crate::shell::foreign::store().resend_configure(displaced.surface_id);
+                send_left_fullscreen(&displaced.surface, None);
+            }
             self.fullscreen_output = requested;
-            self.fullscreen_target = self.fullscreen_group.map(|_| FullscreenTarget {
+            self.fullscreen_target = Some(FullscreenTarget {
                 surface_id,
-                requested_output: wl_output.clone(),
+                requested_output: wl_output,
                 surface: surface.clone(),
                 configured_size: None,
                 pinned_output: None,
             });
+            tracing::info!(
+                surface_id,
+                group = ?self.client_fullscreen_group(),
+                output = ?requested.map(|output| output.0),
+                "client full screen entered"
+            );
         }
         let (w, h) = if presentation {
             self.output_presentation_surfaces
@@ -7617,7 +7627,9 @@ impl XdgShellHandler for State {
                 .and_then(|candidate| self.output_sizes.get(&candidate.output).copied())
                 .unwrap_or(self.output_size)
         } else {
-            self.fullscreen_output_size().unwrap_or(self.output_size)
+            self.fullscreen_output_size()
+                .or_else(|| self.output_size_under(surface_id))
+                .unwrap_or(self.output_size)
         };
         surface.with_pending_state(|state| {
             state.states.set(
@@ -7644,35 +7656,17 @@ impl XdgShellHandler for State {
         // single-screen fullscreen next; the presenter view stays on the
         // screen it was moved to, sized to that screen.
         if let Some(size) = self.pinned_presenter_size(surface_id) {
-            surface.with_pending_state(|state| {
-                state.states.unset(
-                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
-                );
-                state.size = Some(size.into());
-            });
-            surface.send_configure();
+            send_left_fullscreen(&surface, Some(size));
             return;
         }
         // Only clear if THIS surface was the fullscreen one — a stale request from a background toplevel must not steal another's.
-        let fullscreen_group_matches = {
-            let tree = self.workspace_tree.read();
-            self.fullscreen_group == tab_binding::group_id_for_surface(&tree, surface_id)
-        };
-        if fullscreen_group_matches {
-            self.fullscreen_group = None;
-            self.fullscreen_output = None;
-            self.fullscreen_target = None;
+        if self.take_client_fullscreen(surface_id) {
+            tracing::info!(surface_id, "client full screen left");
         }
         // The tab's size was withheld while fullscreen; the next configure
         // pass hands it back.
         crate::shell::foreign::store().resend_configure(surface_id);
-        surface.with_pending_state(|state| {
-            state.states.unset(
-                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
-            );
-            state.size = None;
-        });
-        surface.send_configure();
+        send_left_fullscreen(&surface, None);
     }
 }
 
@@ -7847,10 +7841,43 @@ impl State {
     /// (`xdg_toplevel.set_fullscreen`). A presenter view the compositor
     /// placed is not a full screen of the person's.
     pub fn client_fullscreen_group(&self) -> Option<u64> {
+        let surface = self.client_fullscreen_surface()?;
+        let tree = self.workspace_tree.read();
+        tab_binding::group_id_for_surface(&tree, surface)
+    }
+
+    /// The surface in its own full screen (`xdg_toplevel.set_fullscreen`),
+    /// whether or not it has a tab. A presenter view the compositor placed
+    /// is not one.
+    pub fn client_fullscreen_surface(&self) -> Option<u64> {
         self.fullscreen_target
             .as_ref()
             .filter(|target| target.pinned_output.is_none())
-            .and(self.fullscreen_group)
+            .map(|target| target.surface_id)
+    }
+
+    /// Drop `surface_id`'s own full screen, if it holds one. Says whether it
+    /// did; the caller tells the client.
+    fn take_client_fullscreen(&mut self, surface_id: u64) -> bool {
+        if self.client_fullscreen_surface() != Some(surface_id) {
+            return false;
+        }
+        self.fullscreen_target = None;
+        self.fullscreen_output = None;
+        true
+    }
+
+    /// The logical size of the output `surface_id`'s tile is on, for the
+    /// first fullscreen configure before the render loop has placed it.
+    fn output_size_under(&self, surface_id: u64) -> Option<(i32, i32)> {
+        let centre = crate::shell::foreign::store()
+            .placement(surface_id)?
+            .center();
+        let (output, _) = self
+            .output_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(centre))?;
+        self.output_sizes.get(output).copied()
     }
 
     /// End full screen once the person is taken to another window: one
@@ -7909,6 +7936,10 @@ impl State {
         if client_left
             && let Some(surface) = self.fullscreen_target.as_ref().map(|t| t.surface.clone())
         {
+            tracing::info!(
+                surface_id = crate::compositor::state::surface_id(surface.wl_surface()),
+                "client full screen ends: focus moved to another window"
+            );
             self.unfullscreen_request(surface);
         }
         user_left

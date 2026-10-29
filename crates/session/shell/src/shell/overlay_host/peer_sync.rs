@@ -1029,7 +1029,7 @@ impl ShellOverlayHost {
             return;
         };
         ui::widget::Widget::handle_event(
-            &mut self.peer_sync_overlay,
+            &mut *self.peer_sync_overlay,
             event,
             &mut ctx.reborrow(ctx.path, node),
         );
@@ -1058,7 +1058,7 @@ impl ShellOverlayHost {
             return None;
         }
         let node =
-            ui::widget::Widget::build_layout(&mut self.peer_sync_overlay, taffy, theme, node_map);
+            ui::widget::Widget::build_layout(&mut *self.peer_sync_overlay, taffy, theme, node_map);
         let area = self.overlay_area();
         if let Ok(style) = taffy.style(node) {
             let mut placed = style.clone();

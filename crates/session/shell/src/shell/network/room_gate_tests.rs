@@ -56,8 +56,8 @@ fn envelope() -> Box<collab_types::SignedOp> {
 )]
 fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
     use collab_types::{
-        ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
-        MlsGovernanceFrameV1, PeerPresence, PeerPresencePayload, Signature,
+        ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAction, MlsGovernanceFrame,
+        PeerPresence, PeerPresencePayload, Signature,
     };
     let channel = ChannelId(uuid::Uuid::from_bytes([0x55; 16]));
     let artifact = collab_types::document_artifact_id("so.tilo.notes", ROOM, "notes");
@@ -250,16 +250,16 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
         (
             NeighbourMsg::MlsGovernance {
                 room: ROOM.into(),
-                frame: Box::new(MlsGovernanceFrameV1 {
-                    version: 1,
-                    transaction_id: [6; 32],
+                frame: Box::new(MlsGovernanceFrame {
+                    version: 2,
                     channel,
-                    membership_revision: 1,
                     previous_frame_digest: [7; 32],
                     epoch: 1,
-                    action: MlsGovernanceAction::Remove {
-                        removed: Ed25519PublicKey::from_bytes([8; 32]),
+                    action: MlsGovernanceAction::Commit {
+                        removed: vec![Ed25519PublicKey::from_bytes([8; 32])],
+                        added: Vec::new(),
                         commit: Vec::new(),
+                        joining: None,
                     },
                     signed_by: Ed25519PublicKey::from_bytes([9; 32]),
                     signature: Signature::from_bytes([0xAB; 64]),
@@ -278,20 +278,6 @@ fn every_variant() -> Vec<(NeighbourMsg, Option<RoomAction>)> {
                     key_package: Vec::new(),
                     issued_at: 0,
                     signature: Signature::from_bytes([0xCD; 64]),
-                }),
-                delivery: 0,
-            },
-            Some(read()),
-        ),
-        (
-            NeighbourMsg::MlsGovernanceAck {
-                room: ROOM.into(),
-                ack: Box::new(MlsGovernanceAckV1 {
-                    version: 1,
-                    channel,
-                    device: Ed25519PublicKey::from_bytes([2; 32]),
-                    through_digest: [0xEE; 32],
-                    signature: Signature::from_bytes([0xEF; 64]),
                 }),
                 delivery: 0,
             },

@@ -26,7 +26,7 @@ const OPS: [RoomOperation; 13] = [
     RoomOperation::Compute,
     RoomOperation::Environment,
     RoomOperation::RemoteAction,
-    RoomOperation::StewardedChannelKeys,
+    RoomOperation::OwnChannelKeys,
     RoomOperation::DelegateMembership,
     RoomOperation::Publish,
     RoomOperation::Watch,
@@ -46,7 +46,7 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::AgentWithdrawn) => 'w',
         Decision::Deny(DenyReason::AgentExpired) => 'e',
         Decision::Deny(DenyReason::AgentOutOfScope) => 'o',
-        Decision::Deny(DenyReason::NotTheSteward) => 's',
+        Decision::Deny(DenyReason::NotTheGovernor) => 's',
         Decision::Deny(DenyReason::NotADelegatedAgent) => 'd',
         Decision::Deny(DenyReason::WatchOnly) => 'W',
         Decision::Deny(DenyReason::SpectatorsFull) => 'S',
@@ -208,7 +208,7 @@ fn decide_matrix() {
         });
     };
     // Subscribe, State, Replay, Live, ContentDiscovery, Compute, Environment, RemoteAction,
-    // StewardedChannelKeys, DelegateMembership, Publish, Watch, ChannelReadKeys
+    // OwnChannelKeys, DelegateMembership, Publish, Watch, ChannelReadKeys
     let cases = vec![
         Case {
             name: "owner's member device",
@@ -598,7 +598,7 @@ fn replay_reads_listed_devices_within_the_ceiling() {
 }
 
 #[test]
-fn only_the_current_governor_takes_the_steward_keys() {
+fn only_the_current_governor_takes_its_own_channel_keys() {
     let relay = Relay::new();
     let tmp = tempfile::tempdir().unwrap();
     let mut runtime = room(tmp.path());
@@ -608,7 +608,7 @@ fn only_the_current_governor_takes_the_steward_keys() {
             Room::current(runtime),
             &relay.trust(),
             peer,
-            RoomOperation::StewardedChannelKeys,
+            RoomOperation::OwnChannelKeys,
             NOW,
         )
     };
@@ -616,7 +616,7 @@ fn only_the_current_governor_takes_the_steward_keys() {
     runtime.admission = AdmissionMode::Governed;
     assert_eq!(
         decide(&runtime, &governor),
-        Decision::Deny(DenyReason::NotTheSteward)
+        Decision::Deny(DenyReason::NotTheGovernor)
     );
     runtime.room_authority = Some(crate::rooms::RoomAuthority::governed_by(ROOM, [80; 32]));
     assert_eq!(decide(&runtime, &governor), Decision::Admit);
@@ -627,7 +627,7 @@ fn only_the_current_governor_takes_the_steward_keys() {
     runtime.known_peer_relays.insert([81; 32]);
     assert_eq!(
         decide(&runtime, &other),
-        Decision::Deny(DenyReason::NotTheSteward)
+        Decision::Deny(DenyReason::NotTheGovernor)
     );
     // The governor's certificate must still be current.
     let expired = peer(relay.owner, [80; 32], true, Some(NOW));

@@ -3226,7 +3226,7 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        self.actions.action_palette = Some(palette);
+        self.actions.action_palette = Some(Box::new(palette));
         self.rebuild_action_palette_admission();
     }
 
@@ -3258,7 +3258,7 @@ impl App {
             return;
         }
         self.open_action_palette();
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             palette.set_scope(request.resource_scope().cloned());
             if let Some(query) = &request.query {
                 palette.set_query(query);
@@ -3488,13 +3488,13 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             palette.activate_ordinary(request);
         }
         if self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(crate::action_palette::ActionPalette::went_ahead)
         {
             return self.finish_action_palette_input(true);
@@ -3529,7 +3529,7 @@ impl App {
                 });
         }
         self.open_action_palette();
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             palette.show_refusal("", &reason);
         }
     }
@@ -3538,7 +3538,7 @@ impl App {
         let Some(pending) = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .and_then(|p| p.ordinary_capture_request())
         else {
             return;
@@ -3566,7 +3566,7 @@ impl App {
                 arguments,
             )
         })();
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             match result {
                 Ok(request) => palette.retain_ordinary(request),
                 Err(_) => palette.close(),
@@ -3581,7 +3581,7 @@ impl App {
         match crate::host_palette::take() {
             Some(crate::host_palette::PaletteRequest::Search(query)) => {
                 self.open_action_palette();
-                if let Some(palette) = self.actions.action_palette.as_mut() {
+                if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                     palette.set_query(&query);
                 }
                 true
@@ -3595,10 +3595,11 @@ impl App {
 
     fn open_action_palette_at(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         self.open_action_palette();
-        let activated =
-            self.actions.action_palette.as_mut().is_some_and(|palette| {
-                palette.activate_address(&address.resource, &address.action)
-            });
+        let activated = self
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .is_some_and(|palette| palette.activate_address(&address.resource, &address.action));
         if activated {
             self.capture_ordinary_palette_request();
         } else {
@@ -3667,7 +3668,7 @@ impl App {
     }
 
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
-        self.actions.action_palette.as_ref()
+        self.actions.action_palette.as_deref()
     }
 
     /// The action the host's confirmation is asking about, and the
@@ -3676,7 +3677,7 @@ impl App {
     pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
         self.actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .and_then(crate::action_palette::ActionPalette::asking)
             .map(|(address, expected)| (address.clone(), expected.to_owned()))
     }
@@ -3690,7 +3691,7 @@ impl App {
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         let (address, _question) = self.asking()?;
         self.refresh_action_palette_resources();
-        let palette = self.actions.action_palette.as_mut()?;
+        let palette = self.actions.action_palette.as_deref_mut()?;
         let target = palette.confirming_target()?;
         self.bindings.clear();
         self.layout.node_map.clear();
@@ -3736,7 +3737,7 @@ impl App {
         let lazy_resource_ids = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .map(crate::action_palette::ActionPalette::referenced_action_resource_ids)
             .unwrap_or_default();
         for id in lazy_resource_ids {
@@ -3760,7 +3761,7 @@ impl App {
         let targets = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .map(crate::action_palette::ActionPalette::referenced_bound_targets)
             .unwrap_or_default();
         for target in targets {
@@ -3780,7 +3781,7 @@ impl App {
                 snapshot.extend([resource]);
             }
         }
-        if let Some(palette) = self.actions.action_palette.as_mut() {
+        if let Some(palette) = self.actions.action_palette.as_deref_mut() {
             palette.refresh_open_resources(&resources);
             palette.load_bound_resources(bound);
         }
@@ -3794,7 +3795,7 @@ impl App {
         if !self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|palette| palette.is_presented())
         {
             return false;
@@ -3803,15 +3804,19 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
-        let consumed = self.actions.action_palette.as_mut().is_some_and(|palette| {
-            palette.route_event(
-                event,
-                scale,
-                self.input.modifiers,
-                &mut crate::widget::Edits::lend(&mut self.state.doc),
-                &self.state.root,
-            )
-        });
+        let consumed = self
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .is_some_and(|palette| {
+                palette.route_event(
+                    event,
+                    scale,
+                    self.input.modifiers,
+                    &mut crate::widget::Edits::lend(&mut self.state.doc),
+                    &self.state.root,
+                )
+            });
         self.finish_action_palette_input(consumed)
     }
 
@@ -3821,7 +3826,7 @@ impl App {
             return false;
         }
         self.refresh_action_palette_resources();
-        let Some(palette) = self.actions.action_palette.as_mut() else {
+        let Some(palette) = self.actions.action_palette.as_deref_mut() else {
             return false;
         };
         self.bindings.clear();
@@ -3847,7 +3852,7 @@ impl App {
         let exact_capture = self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .and_then(crate::action_palette::ActionPalette::history_exact_capture_request);
         if let Some((target, invocation, original_arguments)) = exact_capture {
             let witness = crate::bound_dispatch::control_witness_with_arguments(
@@ -3858,7 +3863,7 @@ impl App {
                 &original_arguments,
             )
             .map_err(|error| error.to_string());
-            if let Some(palette) = self.actions.action_palette.as_mut() {
+            if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                 palette.retain_history_exact_witness(witness);
             }
         }
@@ -3867,7 +3872,7 @@ impl App {
         let pending = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .and_then(crate::action_palette::ActionPalette::take_operation);
         if let Some(pending) = pending {
             // Projected View actions resolve their retained widget through the
@@ -4036,7 +4041,7 @@ impl App {
             if let Err(error) = result {
                 tracing::warn!(%error, "resource operation failed");
                 if pending.history_target.is_some() {
-                    if let Some(palette) = self.actions.action_palette.as_mut() {
+                    if let Some(palette) = self.actions.action_palette.as_deref_mut() {
                         palette.retain_history_refusal(pending, error.to_string());
                     }
                 } else {
@@ -4051,7 +4056,7 @@ impl App {
         let navigation = self
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .and_then(super::action_palette::ActionPalette::take_scoped_navigation);
         if let Some((action_id, binding)) = navigation {
             if let Some(binding) = binding {
@@ -4080,7 +4085,7 @@ impl App {
         if self
             .actions
             .action_palette
-            .as_ref()
+            .as_deref()
             .is_some_and(|p| !p.is_open())
         {
             self.close_action_palette();
