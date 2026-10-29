@@ -414,7 +414,7 @@ pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::record::{chain_of_resource_id, chain_resource_id};
-pub use view::{Bindable, EffectsHandle, ViewCx};
+pub use view::{Bindable, EffectsHandle, Mounts, ViewCx};
 pub use workspace::WorkspaceRecord;
 
 /// Record content, canonical hashing and picture headers. Use the store

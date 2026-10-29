@@ -70,7 +70,7 @@ impl SurfaceScope {
         scope
     }
 
-    fn new(parent: Weak<()>) -> Rc<Self> {
+    pub(crate) fn new(parent: Weak<()>) -> Rc<Self> {
         Rc::new(Self {
             token: RefCell::new(Some(Rc::new(()))),
             parent,
@@ -99,7 +99,7 @@ impl SurfaceScope {
             cancelled.store(true, Ordering::Release);
         }
     }
-    fn retire(&self) {
+    pub(crate) fn retire(&self) {
         self.token.borrow_mut().take();
         for child in self
             .children

@@ -387,6 +387,18 @@ fn with_app_view_mut<R>(content: &mut Element, visit: impl FnOnce(&mut dyn Widge
     }
 }
 
+/// The view effects answer on: the app's `content`, or what stands in for
+/// it while the resource is `unreadable`.
+fn effect_view<'a>(
+    unreadable: &'a mut Option<(String, Element)>,
+    content: &'a mut Element,
+) -> &'a mut dyn Widget {
+    match unreadable {
+        Some((_, shown)) => shown.as_mut(),
+        None => content.as_mut(),
+    }
+}
+
 impl ResourceRoot {
     /// Once the window's arrival settled (the app's view shows, its
     /// cross-fade over), the view stands in the arrival's place: the root
@@ -1576,6 +1588,8 @@ impl RootModel for ResourceRoot {
         }
         self.follow_readability();
         self.storage.refresh();
+        self.typed
+            .poll_window_jobs(effect_view(&mut self.unreadable, &mut self.content));
         {
             let _profile = tilo_resource::profiling::Phase::start("framework.content_sync");
             self.content.sync(state, path);
@@ -1704,7 +1718,11 @@ impl RootModel for ResourceRoot {
             return Some(update);
         }
         self.typed
-            .poll_effect(invocation, cancellation_requested)
+            .poll_effect(
+                invocation,
+                cancellation_requested,
+                effect_view(&mut self.unreadable, &mut self.content),
+            )
             .or_else(|| {
                 with_app_view_mut(&mut self.content, |view| {
                     ui_core::host_operation::poll_resource_operation(
@@ -1800,11 +1818,11 @@ impl RootModel for ResourceRoot {
         if let Err(error) = self.typed.sync(doc) {
             tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
-        let view: &mut dyn Widget = match &mut self.unreadable {
-            Some((_, shown)) => shown.as_mut(),
-            None => self.content.as_mut(),
-        };
-        if let Some(started) = self.typed.start_effect(op, doc.doc(), view)? {
+        if let Some(started) = self.typed.start_effect(
+            op,
+            doc.doc(),
+            effect_view(&mut self.unreadable, &mut self.content),
+        )? {
             return Ok(Some(started));
         }
         if let Some(started) =

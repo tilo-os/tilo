@@ -249,7 +249,11 @@ pub(crate) trait TypedRoot {
         &self,
         invocation: tilo_actions::InvocationId,
         cancel: bool,
+        view: &mut dyn ui_core::widget::Widget,
     ) -> Option<tilo_actions::InvocationUpdate>;
+
+    /// Finish the jobs the view's windows started.
+    fn poll_window_jobs(&self, view: &mut dyn ui_core::widget::Widget);
 
     /// Apply what finished effects settle.
     fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>);
@@ -565,8 +569,13 @@ impl<R: Resource> TypedRoot for Typed<R> {
         &self,
         invocation: tilo_actions::InvocationId,
         cancel: bool,
+        view: &mut dyn ui_core::widget::Widget,
     ) -> Option<tilo_actions::InvocationUpdate> {
-        self.effects.poll(invocation, cancel)
+        self.effects.poll(invocation, cancel, view)
+    }
+
+    fn poll_window_jobs(&self, view: &mut dyn ui_core::widget::Widget) {
+        self.effects.poll_window_jobs(view);
     }
 
     fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>) {

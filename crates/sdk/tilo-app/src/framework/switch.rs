@@ -54,6 +54,11 @@ impl Switch {
         )
     }
 
+    /// `part`, built once, whose bindings `alive` keeps until the part goes.
+    pub(crate) fn mounted(alive: Rc<()>, part: Element) -> Element {
+        Self::element(Box::new(|_| None), alive, part)
+    }
+
     /// The switch as an element, its widget table compiled once whatever
     /// the key.
     fn element(rebuild: Rebuild, alive: Rc<()>, part: Element) -> Element {
