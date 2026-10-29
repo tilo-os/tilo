@@ -40,7 +40,7 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, block, error_row, note, rows, section, value_row};
+use provider_settings_ui::widgets::{Item, block, error_row, note, rows, section, value_row};
 use tilo_locale::Locale;
 use ui::i18n::ArgValue;
 use ui::lock::MutexRecover as _;
@@ -84,7 +84,7 @@ pub(crate) mod values {
     use crate::resource::Settings;
     use crate::setting::{Follows, Read};
     use crate::settings_app::SettingsApp;
-    use crate::widgets::Item;
+    use provider_settings_ui::widgets::Item;
 
     /// Automatic time, a switch once the clock was read and said whether
     /// it is on.
@@ -943,7 +943,7 @@ fn page(
             section(&t("time-notice-title"), rows(vec![note(&notice)])),
         );
     }
-    crate::widgets::page(cards)
+    provider_settings_ui::widgets::page(cards)
 }
 
 /// The Time & Date page as view code over the person's formats
@@ -991,12 +991,12 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
                         let _followed = &following;
                         match area(&app) {
                             Some(area) => page(cx, &actions, area, formats, automatic),
-                            None => crate::widgets::page(Vec::new()),
+                            None => provider_settings_ui::widgets::page(Vec::new()),
                         }
                     })
                 })
             })
-            .unwrap_or_else(|| crate::widgets::page(Vec::new()))
+            .unwrap_or_else(|| provider_settings_ui::widgets::page(Vec::new()))
         })
     })
 }

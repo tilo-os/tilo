@@ -1,10 +1,10 @@
 //! Configured sources are the selection model; discovery only supplies edit scopes.
 
 use super::*;
-use crate::widgets::{
+use provider_settings_ui::bound::SettingRows as _;
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, block_section, note, status_pill, untitled,
 };
-use provider_settings_ui::bound::SettingRows as _;
 use settings_store::keyboard_sources::{ALL, KeyboardProfile, OSK, SourceOptions};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

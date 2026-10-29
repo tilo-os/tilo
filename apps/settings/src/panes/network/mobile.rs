@@ -44,7 +44,7 @@ use crate::resource::Settings;
 use crate::scenarios::MobileSample;
 use crate::setting::{Follows, Read};
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     El, Item, SettingsSection, error_caption, field_row, note, row, rows, section, section_with,
     value_row,
 };

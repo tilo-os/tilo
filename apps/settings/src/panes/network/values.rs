@@ -13,7 +13,7 @@ use crate::i18n::t;
 use crate::resource::Settings;
 use crate::setting::{Follows, Read, on_off};
 use crate::settings_app::SettingsApp;
-use crate::widgets::Item;
+use provider_settings_ui::widgets::Item;
 
 fn read<V>(app: &SettingsApp, read: impl FnOnce(&NetworkModel) -> Option<V>) -> Option<V> {
     let model = area(app)?.read()?;

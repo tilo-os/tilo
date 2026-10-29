@@ -28,7 +28,7 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, block, error_caption, note, row, rows, section, section_action, untitled,
 };
 
@@ -1020,7 +1020,7 @@ impl BluetoothModel {
             ));
         }
         if d.icon.starts_with("audio-") {
-            items.push(crate::widgets::caption(&t(
+            items.push(provider_settings_ui::widgets::caption(&t(
                 "settings-bluetooth-audio-caption",
             )));
         }
@@ -1043,7 +1043,7 @@ impl BluetoothModel {
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_extra_bottom_padding(crate::widgets::spacing().rhythm.sibling)
+                .with_extra_bottom_padding(provider_settings_ui::widgets::spacing().rhythm.sibling)
                 .push(Box::new(ui::widget::Section::new(items))),
         )
     }
@@ -1110,7 +1110,7 @@ impl BluetoothModel {
     /// The pane of a device without an adapter: the switch off and
     /// disabled, and why.
     fn without_adapter(cx: &ViewCx<Settings>) -> Element {
-        crate::widgets::page(vec![untitled(rows(vec![radio_row(
+        provider_settings_ui::widgets::page(vec![untitled(rows(vec![radio_row(
             cx,
             false,
             false,
@@ -1135,7 +1135,7 @@ impl BluetoothModel {
                 "settings-bluetooth-read-error",
                 &[("error", error.as_str().into())],
             ))));
-            return crate::widgets::page(vec![untitled(rows(radio))]);
+            return provider_settings_ui::widgets::page(vec![untitled(rows(radio))]);
         }
         let mut sections = vec![untitled(rows(radio))];
         let addresses: Vec<&str> = self
@@ -1157,7 +1157,7 @@ impl BluetoothModel {
             sections.push(section(&t("settings-bluetooth-my-devices"), rows(paired)));
         }
         if !self.powered {
-            return crate::widgets::page(sections);
+            return provider_settings_ui::widgets::page(sections);
         }
         let mut nearby: Vec<Item> = self
             .devices
@@ -1186,7 +1186,7 @@ impl BluetoothModel {
             ),
             rows(nearby),
         ));
-        crate::widgets::page(sections)
+        provider_settings_ui::widgets::page(sections)
     }
 }
 

@@ -28,7 +28,7 @@ use crate::categories::Category;
 use crate::effects::{NavigationEffect, SettingsEffect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::t;
-use crate::widgets::{Item, SettingsSection, rows, section_action};
+use provider_settings_ui::widgets::{Item, SettingsSection, rows, section_action};
 
 /// One setting, as search shows it.
 pub struct SettingEntry {
@@ -454,7 +454,7 @@ impl Found {
                     .with_accessible_name(&format!("{}: {name}", t("settings-found-show")));
                 let row = ui::widget::ListRow::new(format!("settings.found:{}", setting.id), &name)
                     .trailing(Box::new(show));
-                crate::widgets::row(Box::new(match value {
+                provider_settings_ui::widgets::row(Box::new(match value {
                     Some(value) => row.value(value),
                     None => row,
                 }))
@@ -485,7 +485,7 @@ impl Found {
                 None => pages.push((setting.page, vec![at])),
             }
         }
-        crate::widgets::page(
+        provider_settings_ui::widgets::page(
             pages
                 .iter()
                 .filter_map(|(page, settings)| self.group(page, settings))

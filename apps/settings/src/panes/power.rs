@@ -45,7 +45,7 @@ use crate::i18n::{english, t, t_args};
 use crate::prefs::{PowerActionPref, PowerPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, block, error_caption, note, row, rows, section, value_row,
 };
 use ui::i18n::ArgValue;
@@ -858,7 +858,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
                 let _followed = &following;
                 match area(&app) {
                     Some(area) => page(cx, &actions, area, &prefs),
-                    None => crate::widgets::page(Vec::new()),
+                    None => provider_settings_ui::widgets::page(Vec::new()),
                 }
             })
         })
@@ -889,7 +889,7 @@ fn page(
     let has_battery = state.as_ref().is_some_and(|state| state.battery.present);
     cards.push(idle_card(cx, prefs, has_battery));
     cards.push(actions_card(cx, prefs));
-    crate::widgets::page(cards)
+    provider_settings_ui::widgets::page(cards)
 }
 
 fn battery_card(

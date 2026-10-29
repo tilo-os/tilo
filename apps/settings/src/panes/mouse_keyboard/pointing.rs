@@ -10,7 +10,7 @@ use ui::widget::{Picture, TouchpadGesture};
 
 use super::{CLICK_METHOD_CHOICES, InputPrefs, SCROLL_METHOD_CHOICES};
 use crate::i18n::t;
-use crate::widgets::Item;
+use provider_settings_ui::widgets::Item;
 
 /// The localized label of `value` among `choices`.
 fn choice_label<T: PartialEq>(choices: &[(&str, &str, T)], value: &T) -> String {

@@ -191,9 +191,11 @@ fn assert_private(app: &mut TestApp<SettingsShell>) {
     .unwrap();
     app.settle();
     assert!(
-        !crate::widgets::announced_text(crate::effects::page_of(app.harness().root_widget()))
-            .join(" ")
-            .contains("private-key-draft")
+        !provider_settings_ui::widgets::announced_text(crate::effects::page_of(
+            app.harness().root_widget()
+        ))
+        .join(" ")
+        .contains("private-key-draft")
     );
     let document = app
         .read_document(|doc| serde_json::to_string(&ui::automerge::AutoSerde::from(doc)).unwrap());

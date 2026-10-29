@@ -38,7 +38,7 @@ use crate::speaker_setup::{
     Arrangement, BrokerSpeakers, SpeakerService, SpeakerSetup, Step, member_status_text,
     playback_text, role_answer, role_text,
 };
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, block, note, page, row, rows, section, semantic_status_pill,
     setting_row, setting_row_described, thing_row, value_row,
 };
@@ -2284,7 +2284,9 @@ mod tests {
                     .sum::<usize>()
         }
         let mut app = at_room_layout();
-        let said = |app: &mut App| crate::widgets::announced_text(app.harness().root_widget());
+        let said = |app: &mut App| {
+            provider_settings_ui::widgets::announced_text(app.harness().root_widget())
+        };
         let text = said(&mut app);
         let lines = |text: &[String], needle: &str| -> Vec<String> {
             text.iter()

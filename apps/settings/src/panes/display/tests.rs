@@ -703,7 +703,7 @@ fn the_brightness_probe_lands_once_and_a_failure_is_shown() {
         model.brightness_error = Some("no backlight device".into());
     });
     frame(&mut app);
-    let text = crate::widgets::announced_text(app.harness().root_widget());
+    let text = provider_settings_ui::widgets::announced_text(app.harness().root_widget());
     assert!(
         text.iter()
             .any(|line| line == "Can't read the brightness: no backlight device"),
@@ -1457,7 +1457,7 @@ fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
         .build_device_arrangement_card(&dispatcher())
         .expect("discovered peer has a real canvas");
     let mut names = Vec::new();
-    let arrangement = crate::widgets::page(vec![card]);
+    let arrangement = provider_settings_ui::widgets::page(vec![card]);
     accessible_names(arrangement.as_ref(), &mut names);
     assert!(
         names

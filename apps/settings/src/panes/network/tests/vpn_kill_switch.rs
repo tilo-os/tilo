@@ -47,7 +47,7 @@ fn checked(widget: &dyn Widget, id: &str) -> Option<bool> {
 /// Whether the page says `text`.
 fn draws(app: &mut App, text: &str) -> bool {
     app.settle();
-    crate::widgets::announced_text(app.harness().root_widget())
+    provider_settings_ui::widgets::announced_text(app.harness().root_widget())
         .iter()
         .any(|line| line.contains(text))
 }

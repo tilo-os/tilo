@@ -10,7 +10,7 @@ use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, SettingsSection, caption, note, row, rows, section_with};
+use provider_settings_ui::widgets::{El, SettingsSection, caption, note, row, rows, section_with};
 
 pub(super) fn discover(
     app: &SettingsApp,

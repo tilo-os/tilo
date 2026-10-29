@@ -13,7 +13,7 @@ use crate::i18n::{t, t_args};
 use crate::panes::agent_sign_in::{self, SignInSetup, SignedIn};
 use crate::panes::agent_vertex::VertexSetup;
 use crate::resource::Settings;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, note, row, rows, section, semantic_status_pill, value_row,
 };
 
@@ -252,7 +252,7 @@ impl AgentModelsModel {
                 .is_some_and(|setup| setup.profile_id == profile_id);
         let state = self.vertex_keys.get(&profile_id);
         if let Some(Err(error)) = state {
-            body.push(row(crate::widgets::error_caption(&t_args(
+            body.push(row(provider_settings_ui::widgets::error_caption(&t_args(
                 "agent-sign-in-read-error",
                 &[("error", error.as_str().into())],
             ))));
@@ -274,7 +274,7 @@ impl AgentModelsModel {
             Box::new(Text::new(&t("agent-sign-in-unknown")).dimmed())
         }));
         if let Some(message) = vertex.and_then(VertexSetup::message) {
-            body.push(row(crate::widgets::error_caption(message)));
+            body.push(row(provider_settings_ui::widgets::error_caption(message)));
         }
         body.push(Self::sign_in_controls(actions, profile, waiting));
         // Vertex AI's model is typed above; every other one is chosen from
@@ -327,7 +327,9 @@ impl AgentModelsModel {
         }
         row(Box::new(
             controls
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ))
                 .push(Box::new(invoking(
                     actions,
                     Button::new(
@@ -343,7 +345,9 @@ impl AgentModelsModel {
                         on: !profile.enabled,
                     },
                 )))
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ))
                 .push(Box::new(invoking(
                     actions,
                     Button::new(
@@ -381,7 +385,9 @@ impl AgentModelsModel {
             .enumerate()
         {
             if index > 0 {
-                services = services.push(crate::widgets::gap(ui::tokens::SpacingStep::S2));
+                services = services.push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ));
             }
             services = services.push(Box::new(invoking(
                 actions,
@@ -403,7 +409,9 @@ impl AgentModelsModel {
                     Button::new("agent-models-add-vertex", &t("agent-add-vertex")),
                     AgentModelsEffect::AddGoogleVertex,
                 )))
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ))
                 .push(Box::new(invoking(
                     actions,
                     Button::new("agent-models-add-gemini", &t("agent-add-gemini")),

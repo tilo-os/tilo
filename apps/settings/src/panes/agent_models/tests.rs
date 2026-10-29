@@ -73,7 +73,7 @@ pub(super) fn rendered<T>(model: &mut AgentModelsModel, read: impl FnOnce(&dyn W
 
 /// Every line the Agent Models page showing `model` announces.
 pub(super) fn announced(model: &mut AgentModelsModel) -> Vec<String> {
-    rendered(model, crate::widgets::announced_text)
+    rendered(model, provider_settings_ui::widgets::announced_text)
 }
 
 pub(super) fn rendered_names(model: &mut AgentModelsModel) -> Vec<String> {

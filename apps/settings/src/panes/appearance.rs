@@ -41,7 +41,9 @@ use crate::prefs::AppearancePrefs;
 use crate::prefs::{AppearanceDevicePrefs, DesktopControlsDevice};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{Item, SettingsSection, block, note, page_of, rows, section, value_row};
+use provider_settings_ui::widgets::{
+    Item, SettingsSection, block, note, page_of, rows, section, value_row,
+};
 
 mod theme_tiles;
 use theme_tiles::ThemeTiles;

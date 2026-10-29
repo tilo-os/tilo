@@ -36,7 +36,7 @@ use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use crate::panes::accounts::BrowserOpener;
 use crate::resource::Settings;
-use crate::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
+use provider_settings_ui::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
 
 /// The use a Vertex AI grant is signed in and refreshed through.
 pub(crate) const GOOGLE_MODELS: OAuthUse = OAuthUse::new(OAuthIssuer::Google, Capability::Models);
@@ -334,7 +334,9 @@ impl VertexSetup {
                             Button::new("agent-models-vertex-sign-in", &t("agent-vertex-sign-in")),
                             AgentModelsEffect::SignInWithGoogle { provider: None },
                         )))
-                        .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                        .push(provider_settings_ui::widgets::gap(
+                            ui::tokens::SpacingStep::S2,
+                        ))
                         .push(cancel()),
                 )));
             }
@@ -377,13 +379,15 @@ impl VertexSetup {
                 body.push(row(Box::new(
                     Row::new()
                         .push(Box::new(add))
-                        .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                        .push(provider_settings_ui::widgets::gap(
+                            ui::tokens::SpacingStep::S2,
+                        ))
                         .push(cancel()),
                 )));
             }
         }
         if let Some(message) = &self.message {
-            body.push(row(crate::widgets::error_caption(message)));
+            body.push(row(provider_settings_ui::widgets::error_caption(message)));
         }
         section(
             &t(if self.gemini {
@@ -410,7 +414,9 @@ impl VertexSetup {
         let mut buttons = Row::new();
         for (index, project) in self.projects.iter().take(SHOWN_PROJECTS).enumerate() {
             if index > 0 {
-                buttons = buttons.push(crate::widgets::gap(ui::tokens::SpacingStep::S2));
+                buttons = buttons.push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ));
             }
             let label = if project.name.is_empty() || project.name == project.id {
                 project.id.clone()

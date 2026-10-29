@@ -21,7 +21,7 @@ use ui::widget::{
 
 use crate::effects::SettingsEffect;
 use crate::host::{Followed, PaneCx, Section};
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     El, Item, choice_row_stacked, field_row_described, nested_setting_row, setting_row,
     setting_row_described,
 };
@@ -363,7 +363,9 @@ impl Row<'_> {
         if self.stacked {
             return self.control(Box::new(slider));
         }
-        self.control(crate::widgets::trailing_slider(Box::new(slider)))
+        self.control(provider_settings_ui::widgets::trailing_slider(Box::new(
+            slider,
+        )))
     }
 
     fn toggle_widget(&self, on: &LocalState<bool>) -> Toggle {

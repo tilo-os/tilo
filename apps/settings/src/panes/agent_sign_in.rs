@@ -36,7 +36,7 @@ use crate::channel::{self, Receiver, TryRecvError};
 use crate::i18n::{t, t_args};
 use crate::panes::accounts::BrowserOpener;
 use crate::resource::Settings;
-use crate::widgets::{Item, SettingsSection, note, row, rows, section};
+use provider_settings_ui::widgets::{Item, SettingsSection, note, row, rows, section};
 
 /// A provider set up by signing in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

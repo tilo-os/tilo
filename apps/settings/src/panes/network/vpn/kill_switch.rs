@@ -17,7 +17,7 @@ use super::VpnEffect;
 use crate::effects::effect;
 use crate::i18n::t;
 use crate::prefs::DeviceVpnPrefs;
-use crate::widgets::{Item, error_caption, row, setting_row_described};
+use provider_settings_ui::widgets::{Item, error_caption, row, setting_row_described};
 
 impl NetworkModel {
     /// The kill switch of the profile `uuid`, while it is on.

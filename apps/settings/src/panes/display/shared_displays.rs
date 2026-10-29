@@ -321,7 +321,7 @@ impl DisplayModel {
 
 /// The switch that lets a display nearby offer itself as this device's
 /// input.
-fn automatic_input(cx: &ViewCx<AutomaticDisplayPrefs>) -> crate::widgets::Item {
+fn automatic_input(cx: &ViewCx<AutomaticDisplayPrefs>) -> provider_settings_ui::widgets::Item {
     cx.setting(t("display-shared-auto-input"))
         .described(t("display-shared-auto-description"))
         .toggle_verb(
@@ -441,7 +441,7 @@ mod tests {
         read_model(app, |model| {
             let mut found = Vec::new();
             visit(
-                crate::widgets::page(vec![
+                provider_settings_ui::widgets::page(vec![
                     model.build_device_arrangement_card(&dispatcher()).unwrap(),
                 ])
                 .as_ref(),
@@ -456,7 +456,7 @@ mod tests {
         read_model(app, |model| {
             let mut found = Vec::new();
             names(
-                crate::widgets::page(vec![
+                provider_settings_ui::widgets::page(vec![
                     model.build_device_arrangement_card(&dispatcher()).unwrap(),
                 ])
                 .as_ref(),

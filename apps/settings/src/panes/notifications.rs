@@ -35,7 +35,7 @@ use crate::i18n::{english, t, t_args};
 use crate::prefs::{MUTE_OPTIONS, NotificationPrefs, mute_shown, valid_app_id};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, error_row, note, row, rows, section, semantic_status_pill,
     setting_row, value_row,
 };
@@ -523,7 +523,7 @@ fn page(
         section(&t("notif-apps-title"), rows(app_rows))
     });
     cards.push(priority_contacts_card());
-    crate::widgets::page(cards)
+    provider_settings_ui::widgets::page(cards)
 }
 
 /// A one-word delivery status, so the effect of the toggles reads at a
@@ -667,7 +667,9 @@ fn app_card(
         })
         .collect();
     rules.extend([mute, value_row(&t("notif-app-verified"), &app.id)]);
-    let rules = crate::widgets::page(vec![crate::widgets::untitled(rows(rules))]);
+    let rules = provider_settings_ui::widgets::page(vec![provider_settings_ui::widgets::untitled(
+        rows(rules),
+    )]);
     row(Box::new(
         ui::widget::DisclosureRow::keyed(
             app.name.clone(),
@@ -675,7 +677,9 @@ fn app_card(
                 ui::widget::Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .with_extra_bottom_padding(crate::widgets::spacing().rhythm.sibling)
+                    .with_extra_bottom_padding(
+                        provider_settings_ui::widgets::spacing().rhythm.sibling,
+                    )
                     .push(rules),
             ),
             app_rules,

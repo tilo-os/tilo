@@ -34,7 +34,7 @@ use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     El, Item, SettingsSection, block, card, error_caption, field_row, note, row, rows, setting_row,
     setting_row_described, value_row,
 };

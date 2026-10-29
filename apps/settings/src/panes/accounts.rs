@@ -43,7 +43,7 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Body, El, Item, SettingsSection, StatusTone, field_row, note, row, rows, section, setting_row,
     setting_row_described, thing_row, untitled, value_row,
 };
@@ -1929,7 +1929,7 @@ impl AccountsPane {
             panel.push(self.browser_identity_card(cx));
         }
 
-        crate::widgets::page(panel)
+        provider_settings_ui::widgets::page(panel)
     }
 
     fn browser_service_sessions(&self) -> Vec<accounts::Account> {

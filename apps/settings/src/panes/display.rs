@@ -42,7 +42,7 @@ use crate::i18n::{t, t_args};
 use crate::prefs::{DisplayPrefs, NightLightPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, block, note, rows, section, setting_row, setting_row_described,
 };
 use settings_store::hardware::{

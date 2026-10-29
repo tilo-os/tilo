@@ -12,8 +12,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use provider_settings_ui::widgets::spacing;
 use settings::categories::Category;
-use settings::widgets::spacing;
 use ui::headless::FrameHarness;
 use ui::widget::Widget;
 use vello::kurbo::Rect;
@@ -227,7 +227,7 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
     {
         let hero = FrameHarness::new(
             ui::State::new(),
-            settings::widgets::hero(ui::icons::Icon::Monitor, "Device name"),
+            provider_settings_ui::widgets::hero(ui::icons::Icon::Monitor, "Device name"),
             (600, 200),
         );
         let icon = by_widget_name(hero.root_widget(), "IconWidget")[0];

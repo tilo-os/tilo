@@ -27,7 +27,7 @@ use crate::i18n::{t, t_args};
 use crate::prefs::DeviceVpnPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     El, Item, SettingsSection, block, card, card_with_action, error_caption, error_row, field_row,
     note, row, rows, setting_row, setting_row_described, value_row,
 };
@@ -170,7 +170,10 @@ impl Page<'_> {
             if let Some(notice) = &self.notice {
                 pending.push(note(notice));
             }
-            return crate::widgets::cards(vec![card(&t("net-pending-title"), rows(pending))]);
+            return provider_settings_ui::widgets::cards(vec![card(
+                &t("net-pending-title"),
+                rows(pending),
+            )]);
         }
         let page = self.page_key();
         let sections = match page.as_deref() {
@@ -185,7 +188,7 @@ impl Page<'_> {
                 None => self.vpn_pages(key).unwrap_or_else(|| self.first_page()),
             },
         };
-        crate::widgets::cards(sections)
+        provider_settings_ui::widgets::cards(sections)
     }
 
     /// A button invoking `effect`.
@@ -530,7 +533,7 @@ impl Page<'_> {
             ))));
         }
         content.push(block(Box::new(ui::widget::Section::new(lines))));
-        crate::widgets::untitled(rows(content))
+        provider_settings_ui::widgets::untitled(rows(content))
     }
 
     /// Wired card. `NetworkManager` applies the switch to this interface
@@ -853,9 +856,10 @@ impl Page<'_> {
         let setup = ui::widget::Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_extra_bottom_padding(crate::widgets::spacing().rhythm.sibling)
+            .with_extra_bottom_padding(provider_settings_ui::widgets::spacing().rhythm.sibling)
             .push(Box::new(
-                crate::widgets::untitled(rows(self.enterprise_rows())).into_section(),
+                provider_settings_ui::widgets::untitled(rows(self.enterprise_rows()))
+                    .into_section(),
             ));
         let enterprise = ui::widget::DisclosureRow::new(t("net-enterprise-entry"), Box::new(setup))
             .with_state(&self.enterprise_setup)

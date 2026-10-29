@@ -178,12 +178,14 @@ fn pane_body(app: &Rc<SettingsApp>, category: Category, cx: Option<&ViewCx<Setti
         category == Category::Keyboard && app.areas().iter().any(crate::area::PaneArea::partial),
     );
     if reading {
-        return crate::widgets::page(vec![crate::widgets::untitled(crate::widgets::rows(vec![
-            crate::widgets::note(&crate::i18n::t("settings-pane-reading")),
-        ]))]);
+        return provider_settings_ui::widgets::page(vec![provider_settings_ui::widgets::untitled(
+            provider_settings_ui::widgets::rows(vec![provider_settings_ui::widgets::note(
+                &crate::i18n::t("settings-pane-reading"),
+            )]),
+        )]);
     }
     cx.and_then(|cx| crate::panes::view(cx, app, category))
-        .unwrap_or_else(|| crate::widgets::page(Vec::new()))
+        .unwrap_or_else(|| provider_settings_ui::widgets::page(Vec::new()))
 }
 
 /// The person's appearance, followed while the view lives: the look the
@@ -875,7 +877,7 @@ impl Widget for SettingsWindow {
         // Create the shell once and reuse it so its collapse/overlay state
         // survives category switches. The panes compose for the text scale:
         // a change of it builds the content column anew.
-        crate::widgets::set_compose_text_growth(theme.text_growth());
+        provider_settings_ui::widgets::set_compose_text_growth(theme.text_growth());
         if self.shell.is_none() {
             self.shell_text_scale = theme.text_scale;
             self.shell = Some(self.build_shell());

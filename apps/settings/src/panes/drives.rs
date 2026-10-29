@@ -36,7 +36,7 @@ use crate::i18n::{t, t_args};
 use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, block, error_caption, note, row, rows, section,
     setting_row_described, thing_row,
 };
@@ -460,7 +460,7 @@ impl DrivesModel {
         // A machine that never remembered a drive, or has no mount service,
         // has nothing to say about drives.
         if self.shown().is_empty() && self.outcome.is_none() {
-            return crate::widgets::page(Vec::new());
+            return provider_settings_ui::widgets::page(Vec::new());
         }
         let busy = self.change_rx.is_some();
         let mut body: Vec<Item> = vec![note(&t("settings-drives-intro"))];
@@ -479,7 +479,7 @@ impl DrivesModel {
             None => {}
         }
         let sections: Vec<SettingsSection> = vec![section(&t("settings-drives-title"), rows(body))];
-        crate::widgets::page(sections)
+        provider_settings_ui::widgets::page(sections)
     }
 
     fn drive_rows(cx: &ViewCx<Settings>, drive: &RememberedDrive, busy: bool) -> Vec<Item> {
@@ -685,7 +685,7 @@ mod tests {
         .unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Storage);
         app.settle();
-        crate::widgets::announced_text(app.harness().root_widget())
+        provider_settings_ui::widgets::announced_text(app.harness().root_widget())
     }
 
     #[test]

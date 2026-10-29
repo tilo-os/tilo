@@ -40,7 +40,9 @@ use crate::i18n::{t, t_args};
 use crate::replies::Replies;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{SettingsSection, note, rows, section, section_with, value_row};
+use provider_settings_ui::widgets::{
+    SettingsSection, note, rows, section, section_with, value_row,
+};
 
 crate::effects::effect_family!(StorageEffect => answer);
 
@@ -544,8 +546,8 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     // page is built.
     held.poll();
     let storage = cx.switch(&held.shown, move |cx, _| model.borrow().page(cx));
-    let drives =
-        crate::panes::drives::view(cx, app).unwrap_or_else(|| crate::widgets::page(Vec::new()));
+    let drives = crate::panes::drives::view(cx, app)
+        .unwrap_or_else(|| provider_settings_ui::widgets::page(Vec::new()));
     Some(build_with_drives(storage, drives))
 }
 
@@ -990,7 +992,7 @@ impl StorageModel {
             self.cleanup_card(&actions),
             Self::tools_card(cx),
         ]);
-        crate::widgets::page(sections)
+        provider_settings_ui::widgets::page(sections)
     }
 
     /// This device's disk first: how big it is and how full, as the
@@ -1012,7 +1014,7 @@ impl StorageModel {
                         ("total", ui::format::size(capacity.total_bytes).into()),
                     ],
                 );
-                items.push(crate::widgets::block(Box::new(
+                items.push(provider_settings_ui::widgets::block(Box::new(
                     ui::widget::ProgressBar::new(capacity.used_fraction())
                         .level(ui::widget::GaugeThresholds {
                             warning: 0.8,
@@ -1417,7 +1419,7 @@ mod tests {
 
     /// What the window says, line by line.
     fn said(app: &mut ui::prelude::TestApp<crate::SettingsShell>) -> Vec<String> {
-        crate::widgets::announced_text(app.harness().root_widget())
+        provider_settings_ui::widgets::announced_text(app.harness().root_widget())
     }
 
     /// Each device's card names its workspaces and what of them no other

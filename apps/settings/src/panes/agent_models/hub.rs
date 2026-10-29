@@ -37,7 +37,7 @@ use crate::i18n::{t, t_args};
 use crate::panes::agent_sign_in::{self, SignInWait, Waited};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, field_row, note, row, rows, section, section_with, semantic_status_pill,
     thing_row, value_row,
 };
@@ -291,10 +291,9 @@ impl HubBrowser {
                 Ok(offer) => self.offer_section(actions, offer),
                 Err(error) => section(
                     &t("agent-hub-model-title"),
-                    rows(vec![row(crate::widgets::error_caption(&t_args(
-                        "agent-hub-model-error",
-                        &[("error", error.as_str().into())],
-                    )))]),
+                    rows(vec![row(provider_settings_ui::widgets::error_caption(
+                        &t_args("agent-hub-model-error", &[("error", error.as_str().into())]),
+                    ))]),
                 ),
             });
         }
@@ -358,10 +357,12 @@ impl HubBrowser {
         }
         match &self.results {
             None => {}
-            Some(Err(error)) => body.push(row(crate::widgets::error_caption(&t_args(
-                "agent-hub-search-error",
-                &[("error", error.as_str().into())],
-            )))),
+            Some(Err(error)) => {
+                body.push(row(provider_settings_ui::widgets::error_caption(&t_args(
+                    "agent-hub-search-error",
+                    &[("error", error.as_str().into())],
+                ))))
+            }
             Some(Ok(results)) if results.is_empty() => body.push(note(&t("agent-hub-no-results"))),
             Some(Ok(results)) => {
                 for result in results {
@@ -439,7 +440,9 @@ impl HubBrowser {
                     &fit_label(variant.fit.fit),
                     fit_tone(variant.fit.fit),
                 ))
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ))
                 .push(Box::new(invoking(
                     actions,
                     Button::new(
@@ -471,7 +474,7 @@ impl HubBrowser {
         let state = match &self.token_state {
             Ok(state) => state.clone(),
             Err(error) => {
-                body.push(row(crate::widgets::error_caption(&t_args(
+                body.push(row(provider_settings_ui::widgets::error_caption(&t_args(
                     "agent-hub-token-read-error",
                     &[("error", error.as_str().into())],
                 ))));
@@ -511,7 +514,9 @@ impl HubBrowser {
                         .role(ButtonRole::Primary),
                     AgentModelsEffect::SignInWithHuggingFace,
                 )))
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                .push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ))
                 .push(Box::new(invoking(
                     actions,
                     Button::new(
@@ -527,7 +532,9 @@ impl HubBrowser {
                     "agent-hub-sign-out"
                 };
                 buttons = buttons
-                    .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+                    .push(provider_settings_ui::widgets::gap(
+                        ui::tokens::SpacingStep::S2,
+                    ))
                     .push(Box::new(invoking(
                         actions,
                         Button::new("agent-models-hub-token-remove", &t(remove)),
@@ -828,7 +835,9 @@ fn push_confirm(
                     variant: name.clone(),
                 },
             )))
-            .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
+            .push(provider_settings_ui::widgets::gap(
+                ui::tokens::SpacingStep::S2,
+            ))
             .push(Box::new(invoking(
                 actions,
                 Button::new(

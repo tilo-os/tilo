@@ -20,7 +20,9 @@ use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{note, rows, section, setting_row, setting_row_described, untitled};
+use provider_settings_ui::widgets::{
+    note, rows, section, setting_row, setting_row_described, untitled,
+};
 
 crate::effects::effect_family!(DefaultAppsEffect => answer);
 
@@ -400,7 +402,7 @@ fn page(actions: &Actions<Settings>, candidates: &[AppCandidate], apps: &Default
             &SettingsEffect::from(DefaultAppsEffect::OpenWorkspaceDefaults),
         )),
     )]));
-    crate::widgets::page(vec![
+    provider_settings_ui::widgets::page(vec![
         section(&t("settings-personal-apps-files-title"), rows(file_rows)),
         workspace,
     ])

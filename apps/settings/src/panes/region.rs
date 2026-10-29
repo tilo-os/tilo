@@ -24,7 +24,7 @@ use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 
 pub mod language;
-use crate::widgets::{Item, SettingsSection, note, page_of, rows, section};
+use provider_settings_ui::widgets::{Item, SettingsSection, note, page_of, rows, section};
 use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
 use ui::clock::TimeStyle;
 
@@ -143,7 +143,7 @@ fn language_card<R: ui::tilo_resource::Resource<State = R> + ui::tilo_resource::
                 &[("language", language::name(Some(&installing)).into())],
             )));
         } else if let Some(failed) = languages.failed.with(Clone::clone) {
-            items.push(crate::widgets::error_row(
+            items.push(provider_settings_ui::widgets::error_row(
                 &t("settings-region-language"),
                 &crate::i18n::t_args(
                     "settings-region-language-failed",
@@ -260,7 +260,7 @@ pub(crate) fn first_day(cx: &ViewCx<Locale>) -> Item {
 }
 
 fn preview_line(label: &str, value: &str) -> Item {
-    crate::widgets::value_row(label, value)
+    provider_settings_ui::widgets::value_row(label, value)
 }
 
 #[cfg(test)]

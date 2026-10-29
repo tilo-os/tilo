@@ -187,7 +187,7 @@ impl UnlockAuthority for DetachedAuthority {
 }
 
 use crate::i18n::{t, t_args};
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, error_caption, note, row, rows, section,
     semantic_status_pill, setting_row, setting_row_described, value_row,
 };
@@ -691,7 +691,7 @@ impl DiskUnlockModel {
         for volume in self.shown_volumes() {
             items.extend(self.volume_cards(&dispatcher, volume));
         }
-        crate::widgets::page(items)
+        provider_settings_ui::widgets::page(items)
     }
 
     /// One volume: how its secrets are kept, then the networks it may unlock over.

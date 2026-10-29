@@ -321,7 +321,7 @@ pub(super) fn tablet_cards(
     pads: &[InputDeviceSnapshot],
     configs: &std::collections::BTreeMap<String, TabletConfig>,
     outputs: &[(String, String)],
-) -> Vec<crate::widgets::SettingsSection> {
+) -> Vec<provider_settings_ui::widgets::SettingsSection> {
     let config =
         |snapshot: &InputDeviceSnapshot| configs.get(&snapshot.key).cloned().unwrap_or_default();
     tablet_devices(tablets, pads)
@@ -335,7 +335,9 @@ pub(super) fn tablet_cards(
                 items.extend(pad_rows(cx, pad, &config(pad)));
             }
             if items.is_empty() {
-                items.push(crate::widgets::note(&t("input-pad-no-buttons")));
+                items.push(provider_settings_ui::widgets::note(&t(
+                    "input-pad-no-buttons",
+                )));
             }
             section(&tablet.title(), rows(items))
         })
@@ -439,7 +441,7 @@ fn pen_rows(
         setting_row_described(
             &t("input-tablet-tip-feel"),
             &t("input-tablet-tip-feel-description"),
-            crate::widgets::trailing_slider(Box::new({
+            provider_settings_ui::widgets::trailing_slider(Box::new({
                 let key = key.clone();
                 verbs.bind(
                     Slider::from_state(&ui::LocalState::new(
@@ -564,7 +566,9 @@ fn pad_rows(
         }
     }
     if !pad_dials(device).is_empty() {
-        items.push(crate::widgets::note(&t("input-pad-dials-caption")));
+        items.push(provider_settings_ui::widgets::note(&t(
+            "input-pad-dials-caption",
+        )));
     }
     items
 }

@@ -24,7 +24,7 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     SettingsSection, StatusTone, error_caption, note, page_of, row, rows, section, value_row,
 };
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
@@ -1563,7 +1563,7 @@ impl Page<'_> {
         on: bool,
         row: &ui::tilo_actions::ResourceSpec,
         set: impl tilo_resource::Binds<SettingsEffect, bool>,
-    ) -> crate::widgets::Item {
+    ) -> provider_settings_ui::widgets::Item {
         let toggle = self.bind_on_row(
             row,
             ui::widget::Toggle::from_state(&LocalState::new(on)).with_id(id),
@@ -1584,7 +1584,7 @@ impl Page<'_> {
         id: String,
         on: bool,
         set: impl tilo_resource::Binds<SettingsEffect, bool>,
-    ) -> crate::widgets::Item {
+    ) -> provider_settings_ui::widgets::Item {
         self.cx
             .setting(label)
             .described(description)
@@ -1673,7 +1673,7 @@ impl Page<'_> {
         service: &'static str,
         id: &str,
         on: bool,
-    ) -> crate::widgets::Item {
+    ) -> provider_settings_ui::widgets::Item {
         self.switch(
             t(label),
             t(description),
@@ -2804,7 +2804,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut app = window_on(devices_and_a_home_server(dir.path()));
         let text = |app: &mut TestApp<SettingsShell>| {
-            crate::widgets::announced_text(app.harness().root_widget())
+            provider_settings_ui::widgets::announced_text(app.harness().root_widget())
         };
         let shown = text(&mut app);
         for name in ["Ada's Laptop", "Ada's Phone", "Kitchen NAS"] {

@@ -37,7 +37,7 @@ use crate::panes::agent_sign_in::SignInSetup;
 use crate::panes::agent_vertex::{self, Polled, VertexFields, VertexSetup};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, note, row, rows, section, section_with,
     semantic_status_pill, thing_row, value_row,
 };
@@ -2214,7 +2214,7 @@ impl AgentModelsModel {
     fn page(&self, cx: &ViewCx<Settings>) -> Element {
         let actions = cx.actions();
         self.panel.cx.lent(actions.clone(), || {
-            crate::widgets::page(self.cards(&actions))
+            provider_settings_ui::widgets::page(self.cards(&actions))
         })
     }
 

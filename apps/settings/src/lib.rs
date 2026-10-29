@@ -89,7 +89,6 @@ pub mod sidebar;
 #[cfg(test)]
 pub(crate) mod stall;
 pub mod watch;
-pub mod widgets;
 pub mod window;
 
 pub mod account_probe;

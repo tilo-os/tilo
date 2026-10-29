@@ -37,11 +37,11 @@ use crate::i18n::{t, t_args};
 use crate::prefs::UpdatePrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use crate::windows_compat::{Readiness as WindowsReadiness, WindowsSupportAction};
+use provider_settings_ui::widgets::{
     Body, El, Item, SettingsSection, block, error_caption, error_row, note, row, rows, section,
     setting_row_described, thing_row, value_row,
 };
-use crate::windows_compat::{Readiness as WindowsReadiness, WindowsSupportAction};
 
 crate::effects::effect_family!(UpdatesEffect => answer);
 
@@ -1533,7 +1533,7 @@ impl UpdatesModel {
         if self.first_read.is_some() {
             // Nothing read yet: say so rather than show placeholders a
             // person could take for the device's state.
-            return crate::widgets::page(vec![section(
+            return provider_settings_ui::widgets::page(vec![section(
                 &t("upd-software"),
                 rows(vec![note(&t("upd-reading"))]),
             )]);
@@ -1569,7 +1569,7 @@ impl UpdatesModel {
                 ),
             );
         }
-        crate::widgets::page(all)
+        provider_settings_ui::widgets::page(all)
     }
 
     /// Status card — current + staged + the primary action.
@@ -2785,7 +2785,7 @@ pub(crate) mod values {
     use crate::resource::Settings;
     use crate::setting::{Follows, Read};
     use crate::settings_app::SettingsApp;
-    use crate::widgets::Item;
+    use provider_settings_ui::widgets::Item;
 
     fn read<V>(app: &SettingsApp, read: impl FnOnce(&UpdatesModel) -> Option<V>) -> Option<V> {
         let model = area(app)?.model.get()?;

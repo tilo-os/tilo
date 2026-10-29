@@ -57,7 +57,7 @@ fn on_its_page<T>(model: &mut MobileModel, read: impl FnOnce(&dyn ui::widget::Wi
 
 /// What a Settings window shows on the modem's page over `model`.
 fn said(model: &mut MobileModel) -> Vec<String> {
-    on_its_page(model, crate::widgets::announced_text)
+    on_its_page(model, provider_settings_ui::widgets::announced_text)
 }
 
 fn says(model: &mut MobileModel, text: &str) -> bool {
@@ -279,7 +279,7 @@ fn settle_until(app: &mut App, done: impl Fn(&MobileModel) -> bool) {
 
 /// What the window shows, in reading order.
 fn shown(app: &mut App) -> Vec<String> {
-    crate::widgets::announced_text(app.harness().root_widget())
+    provider_settings_ui::widgets::announced_text(app.harness().root_widget())
 }
 
 fn lock(app: &mut App) -> Option<SimLock> {

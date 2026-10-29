@@ -27,7 +27,7 @@ use crate::prefs::InputPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::shortcut_settings::ShortcutPrefs;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, note, page_of, rows, section, section_action, setting_row,
 };
 use settings_store::paste_shortcut::{PasteShortcut, default_for};
@@ -307,7 +307,7 @@ fn entry_row(cx: &ViewCx<ShortcutPrefs>, config: &ShortcutConfig, entry: &Shortc
             setting_row(&label, Box::new(recorder))
         }
         None if entry.chords.is_empty() => {
-            crate::widgets::value_row(&label, &t("settings-shortcut-unassigned"))
+            provider_settings_ui::widgets::value_row(&label, &t("settings-shortcut-unassigned"))
         }
         None => setting_row(&label, chord_caps(&entry.chords)),
     }

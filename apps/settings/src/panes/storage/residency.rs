@@ -14,7 +14,9 @@ use ui::widget::{ChipStyle, RowMenu};
 use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
-use crate::widgets::{SettingsSection, StatusTone, note, row, rows, section, thing_row};
+use provider_settings_ui::widgets::{
+    SettingsSection, StatusTone, note, row, rows, section, thing_row,
+};
 
 use super::StorageEffect;
 
@@ -107,7 +109,7 @@ fn workspace_row(
     fleet: &Fleet,
     name: &str,
     busy: bool,
-) -> crate::widgets::Item {
+) -> provider_settings_ui::widgets::Item {
     fn held_by<'a>(device: &'a DeviceResidency, name: &str) -> Option<&'a WorkspaceResidency> {
         device
             .summary

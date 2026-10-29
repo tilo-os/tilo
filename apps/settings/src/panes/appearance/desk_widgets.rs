@@ -12,7 +12,7 @@ use ui::widget::Element;
 
 use crate::i18n::t;
 use crate::prefs::DeskWidgetsPrefs;
-use crate::widgets::{Item, note, rows, section};
+use provider_settings_ui::widgets::{Item, note, rows, section};
 
 fn show_label(mode: ShowMode) -> String {
     t(match mode {

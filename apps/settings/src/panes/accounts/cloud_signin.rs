@@ -22,7 +22,7 @@ use ui::widget::{Button, Checkbox, Dropdown, Row, Spacer, TextInput, TextInputKi
 use crate::accounts::AccountKind;
 use crate::channel::{self, Receiver, TryRecvError};
 use crate::i18n::t;
-use crate::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
+use provider_settings_ui::widgets::{Item, SettingsSection, field_row, note, row, rows, section};
 
 /// Opens a URL in the person's browser.
 pub trait BrowserOpener: Send + Sync {

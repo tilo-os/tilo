@@ -19,7 +19,7 @@ use ui::tilo_resource::Effect as _;
 use super::{DeviceMeshEffect, DeviceMeshModel, Page};
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
-use crate::widgets::{SettingsSection, error_caption, note, row, rows, section};
+use provider_settings_ui::widgets::{SettingsSection, error_caption, note, row, rows, section};
 
 /// What the section knows of the host's home-relay hosting.
 #[derive(Default)]

@@ -29,7 +29,7 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, block, error_caption, field_row, note, row, rows, section,
     thing_row, untitled,
 };
@@ -890,7 +890,7 @@ impl UsersModel {
         let identity_rows = if self.identities.is_empty() {
             identity_rows
         } else {
-            identity_rows.push(crate::widgets::setting_row_described(
+            identity_rows.push(provider_settings_ui::widgets::setting_row_described(
                 &t("settings-about-backup-card"),
                 &t("settings-about-backup-caption"),
                 Box::new(cx.actions().bind_effect_invocation(
@@ -923,7 +923,7 @@ impl UsersModel {
             &t("settings-users-identities-title"),
             identity_rows,
         ));
-        crate::widgets::page(sections)
+        provider_settings_ui::widgets::page(sections)
     }
 
     /// Adding a login account: a row that opens its form in place.
@@ -962,7 +962,7 @@ impl UsersModel {
                 )
             }),
         );
-        let form = crate::widgets::page(vec![untitled(rows(vec![
+        let form = provider_settings_ui::widgets::page(vec![untitled(rows(vec![
             field_row(&t("settings-users-full-name"), Box::new(full)),
             field_row(&t("settings-users-username"), Box::new(user)),
             field_row(&t("settings-users-password"), Box::new(password)),
@@ -976,7 +976,9 @@ impl UsersModel {
                     Column::new()
                         .with_no_padding()
                         .with_intrinsic_height()
-                        .with_vertical_padding(crate::widgets::spacing().rhythm.sibling)
+                        .with_vertical_padding(
+                            provider_settings_ui::widgets::spacing().rhythm.sibling,
+                        )
                         .push(form),
                 ),
             )

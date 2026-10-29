@@ -40,7 +40,7 @@ use crate::host::PaneCx;
 use crate::i18n::t;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     SettingsSection, block, block_section, hero, note, row, rows, section, thing_row, value_row,
 };
 
@@ -88,7 +88,7 @@ pub(crate) fn answer(
 }
 
 /// A fact's row, when the fact could be read.
-fn fact_row(label: &str, value: &str) -> Option<crate::widgets::Item> {
+fn fact_row(label: &str, value: &str) -> Option<provider_settings_ui::widgets::Item> {
     (value != "unknown").then(|| value_row(label, value))
 }
 
@@ -512,12 +512,12 @@ impl AboutModel {
             }
         };
         sections.push(section(&t("settings-about-problem-details"), rows(details)));
-        crate::widgets::page(sections)
+        provider_settings_ui::widgets::page(sections)
     }
 }
 
 /// A problem's row, opening its page.
-fn problem_row(cx: &ViewCx<Settings>, record: &CrashRecord) -> crate::widgets::Item {
+fn problem_row(cx: &ViewCx<Settings>, record: &CrashRecord) -> provider_settings_ui::widgets::Item {
     let line = thing_row(
         &format!("settings.about.problem.{}", record.id),
         &kind_label(record.kind),
@@ -557,7 +557,7 @@ fn reason_label(reason: StopReason) -> String {
 }
 
 /// The facts of `record`, each it knows on a row of its own.
-fn facts(record: &CrashRecord) -> Vec<crate::widgets::Item> {
+fn facts(record: &CrashRecord) -> Vec<provider_settings_ui::widgets::Item> {
     let mut facts = vec![
         value_row(&t("settings-about-problem-what"), &kind_label(record.kind)),
         value_row(&t("settings-about-problem-when"), &when(record)),
@@ -586,7 +586,7 @@ impl AboutModel {
         }
         let mut sections = fact_sections(&self.info);
         sections.push(self.problems_section(cx));
-        crate::widgets::page(sections)
+        provider_settings_ui::widgets::page(sections)
     }
 
     /// Take in the host's answers and follow the page shown; whether what
@@ -939,12 +939,14 @@ mod tests {
     /// What About's page announces for a device with the facts `info`.
     fn page_shown(info: AboutInfo) -> Vec<String> {
         let mut app = window_on(move |cx| AboutModel::new(cx, info, None));
-        crate::widgets::announced_text(crate::effects::page_of(app.harness().root_widget()))
+        provider_settings_ui::widgets::announced_text(crate::effects::page_of(
+            app.harness().root_widget(),
+        ))
     }
 
     /// What the window announces.
     fn shown(app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>) -> Vec<String> {
-        crate::widgets::announced_text(app.harness().root_widget())
+        provider_settings_ui::widgets::announced_text(app.harness().root_widget())
     }
 
     /// About lists a freeze and the computer stopping as the host answers

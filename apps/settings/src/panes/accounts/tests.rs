@@ -177,7 +177,7 @@ fn page_actions(pane: AccountsPane) -> Vec<String> {
 
 /// Every line the page of `app` announces.
 pub(super) fn announced(app: &mut TestApp<SettingsShell>) -> Vec<String> {
-    crate::widgets::announced_text(page_of(app.harness().root_widget()))
+    provider_settings_ui::widgets::announced_text(page_of(app.harness().root_widget()))
 }
 
 /// Sample directories are read-only, real ones get labelled destructive remove buttons, and empty stores stay empty.

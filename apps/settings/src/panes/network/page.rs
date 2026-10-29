@@ -17,7 +17,7 @@ use super::{
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     El, Item, SettingsSection, block, card, error_caption, note, row, rows, setting_row,
     setting_row_described, value_row,
 };

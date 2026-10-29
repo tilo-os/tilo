@@ -27,7 +27,9 @@ use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
 use crate::prefs::DeviceVpnPrefs;
 use crate::watch::Watched;
-use crate::widgets::{El, SettingsSection, block, card, rows, setting_row_described};
+use provider_settings_ui::widgets::{
+    El, SettingsSection, block, card, rows, setting_row_described,
+};
 
 /// What the VPN list knows of the person's devices as exits.
 #[derive(Default)]
@@ -411,7 +413,7 @@ impl NetworkModel {
 impl Page<'_> {
     /// The route through a device in use, and whether its traffic is
     /// blocked while the tunnel is down.
-    pub(super) fn kill_switch_row(&self) -> Option<crate::widgets::Item> {
+    pub(super) fn kill_switch_row(&self) -> Option<provider_settings_ui::widgets::Item> {
         let client = self.vpn.devices.status.as_ref()?.client.as_ref()?;
         let label = t("net-device-vpn-kill-switch");
         let toggle = self.bind(

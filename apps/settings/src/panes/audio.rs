@@ -56,7 +56,7 @@ pub(crate) use page::view;
 use crate::prefs::{AudioDevicePrefs, AudioPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::Item;
+use provider_settings_ui::widgets::Item;
 use speaker_sets::{NoSpeakerSets, SampleSpeakerSets, SpeakerSets, speaker_call};
 
 crate::effects::effect_family!(AudioEffect => answer);

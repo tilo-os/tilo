@@ -809,7 +809,7 @@ fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
                 .any(|id| id == network["resource"].as_str().unwrap())
         );
     }
-    let shown = crate::widgets::announced_text(app.harness().root_widget());
+    let shown = provider_settings_ui::widgets::announced_text(app.harness().root_widget());
     let show_all = before["labels"]["show_all"].as_str().unwrap().to_owned();
     assert!(
         shown.iter().any(|line| line.contains(&show_all)),
@@ -1038,7 +1038,7 @@ fn network_workers_complete_their_published_unit_jobs() -> Result<(), String> {
 }
 
 fn shown(model: &mut NetworkModel) -> Vec<String> {
-    rendered(model, crate::widgets::announced_text)
+    rendered(model, provider_settings_ui::widgets::announced_text)
 }
 
 /// The titles of the network rows shown, top to bottom.

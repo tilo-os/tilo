@@ -34,7 +34,7 @@ use crate::prefs::AppearancePrefs;
 use crate::resource::Settings;
 use crate::setting::choose;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, error_row, note, page_of, rows, section, section_with, value_row,
 };
 
@@ -400,7 +400,7 @@ pub(crate) mod values {
     use crate::i18n::t;
     use crate::setting::{Follows, Read, on_off};
     use crate::settings_app::SettingsApp;
-    use crate::widgets::Item;
+    use provider_settings_ui::widgets::Item;
 
     /// The screen reader, a switch where there is a speech engine for it.
     pub(crate) fn screen_reader(app: &SettingsApp, follows: &Follows) -> Read {

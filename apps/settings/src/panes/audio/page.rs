@@ -22,7 +22,7 @@ use crate::i18n::{t, t_args};
 use crate::prefs::AudioPrefs;
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, block, error_caption, error_row, note, row, rows, section, setting_row,
     setting_row_described,
 };
@@ -62,7 +62,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
                 let _followed = &following;
                 match area(&app) {
                     Some(area) => page(cx, &actions, &dispatcher, area, sounds_on),
-                    None => crate::widgets::page(Vec::new()),
+                    None => provider_settings_ui::widgets::page(Vec::new()),
                 }
             })
         })
@@ -86,7 +86,7 @@ fn page(
         &model.volume_error,
         &model.input_error,
     ) {
-        return crate::widgets::page(vec![
+        return provider_settings_ui::widgets::page(vec![
             section(
                 &t("sound-unavailable-title"),
                 rows(vec![row(error_caption(&t_args(
@@ -126,7 +126,7 @@ fn page(
     ));
     cards.push(speakers_card(actions));
     cards.push(system_sounds_card(cx, &model, sounds_on));
-    crate::widgets::page(cards)
+    provider_settings_ui::widgets::page(cards)
 }
 
 /// `control` (a button), bound to `effect`.
@@ -297,7 +297,7 @@ fn balance(cx: &ViewCx<AudioPrefs>) -> Item {
                 .set_binding(AudioPrefs::paths().balance, |balance: f64| {
                     Ok(balance as f32)
                 });
-            crate::widgets::trailing_slider(Box::new(bound(slider, binding)))
+            provider_settings_ui::widgets::trailing_slider(Box::new(bound(slider, binding)))
         },
     )
 }
@@ -406,7 +406,7 @@ fn hardware_card(
     }
     for sink in &model.graph.sinks {
         if let Some(codec) = &sink.codec {
-            hardware_rows.push(crate::widgets::value_row(
+            hardware_rows.push(provider_settings_ui::widgets::value_row(
                 &t_args(
                     "sound-codec",
                     &[("device", sink.description.as_str().into())],

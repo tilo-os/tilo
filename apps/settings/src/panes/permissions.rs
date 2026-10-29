@@ -20,11 +20,11 @@
 use ui::tokens::Rhythm;
 
 use crate::i18n::{t, t_args};
-use crate::widgets::{
+use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
+use provider_settings_ui::widgets::{
     El, Item, SettingsSection, StatusTone, block, error_row, note, page, row, rows, section,
     thing_row, untitled, value_row,
 };
-use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};

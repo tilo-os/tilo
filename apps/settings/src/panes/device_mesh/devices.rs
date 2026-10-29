@@ -13,7 +13,7 @@ use super::{
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     SettingsSection, StatusTone, error_caption, note, row, rows, section_with,
     semantic_status_pill, setting_row_described, value_row,
 };
@@ -249,12 +249,14 @@ impl Page<'_> {
         if removable || entry.peer.is_some() {
             items.extend(self.removal_rows(entry));
         }
-        crate::widgets::page(vec![crate::widgets::untitled(rows(items))])
+        provider_settings_ui::widgets::page(vec![provider_settings_ui::widgets::untitled(rows(
+            items,
+        ))])
     }
 
     /// This device's own settings: how available it is, what it keeps,
     /// which workspaces, and the services a serving device offers.
-    fn this_device_rows(&self) -> Vec<crate::widgets::Item> {
+    fn this_device_rows(&self) -> Vec<provider_settings_ui::widgets::Item> {
         let role_shown_value = role_shown(self.config.device_role);
         let role_state = ui::LocalState::new(role_shown_value.clone());
         let role = Dropdown::from_state(
@@ -309,7 +311,7 @@ impl Page<'_> {
     }
 
     /// What this device keeps of the workspaces it syncs.
-    fn files_row(&self) -> crate::widgets::Item {
+    fn files_row(&self) -> provider_settings_ui::widgets::Item {
         let files = t("mesh-files");
         if !self.config.device_role.can_serve() {
             return value_row(&files, &t("mesh-download-opened"));
@@ -338,7 +340,7 @@ impl Page<'_> {
     }
 
     /// The services a serving device offers, each a switch.
-    fn service_rows(&self) -> [crate::widgets::Item; 4] {
+    fn service_rows(&self) -> [provider_settings_ui::widgets::Item; 4] {
         [
             self.service_row(
                 "mesh-svc-relay",
@@ -376,7 +378,7 @@ impl Page<'_> {
     fn home_peer_rows(
         &self,
         peer: &tilo_relay_protocol::HomePeerRegistration,
-    ) -> Vec<crate::widgets::Item> {
+    ) -> Vec<provider_settings_ui::widgets::Item> {
         let device = peer.device_node_id.clone();
         let name = self.bind_on_row(
             &home_server_row(peer).into_resource(),
@@ -390,7 +392,7 @@ impl Page<'_> {
         let health = self.peer_health(peer);
         let badge = peer_health_badge(&health);
         vec![
-            crate::widgets::setting_row(&t("mesh-name"), Box::new(name)),
+            provider_settings_ui::widgets::setting_row(&t("mesh-name"), Box::new(name)),
             setting_row_described(
                 &t("mesh-availability"),
                 &health,
@@ -411,7 +413,7 @@ impl Page<'_> {
     /// Removing a device: a destructive button that asks first, in place.
     /// Asked, it says what removing does, takes the reason a trusted
     /// device's revocation signs, and offers Remove beside Cancel.
-    fn removal_rows(&self, entry: &DeviceEntry<'_>) -> Vec<crate::widgets::Item> {
+    fn removal_rows(&self, entry: &DeviceEntry<'_>) -> Vec<provider_settings_ui::widgets::Item> {
         let home = entry.peer.is_some();
         // The device's own row offers what removing it does: the personal
         // device's, else the home server's.
@@ -422,7 +424,7 @@ impl Page<'_> {
         }
         .into_resource();
         if self.removing.as_deref() != Some(entry.key.as_str()) {
-            return vec![crate::widgets::row(Box::new(
+            return vec![provider_settings_ui::widgets::row(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(
                         self.bind_row(
@@ -476,7 +478,7 @@ impl Page<'_> {
         );
         let mut out = Vec::new();
         if !home {
-            out.push(crate::widgets::setting_row(
+            out.push(provider_settings_ui::widgets::setting_row(
                 &t("mesh-why-ending"),
                 Box::new(
                     Dropdown::from_state(
@@ -488,7 +490,7 @@ impl Page<'_> {
                 ),
             ));
         }
-        out.push(crate::widgets::item_row(
+        out.push(provider_settings_ui::widgets::item_row(
             &t_args("mesh-remove-ask", &[("label", entry.label.as_str().into())]),
             Vec::new(),
             &[t(if home {

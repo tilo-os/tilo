@@ -50,7 +50,7 @@ use crate::input_sources::CatalogEntry;
 use crate::prefs::{InputDevicePrefs, InputPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Item, SettingsSection, caption, error_caption, field_row, rows, section, setting_row,
     setting_row_described,
 };
@@ -151,11 +151,11 @@ pub(crate) fn view(
                 // The part keeps the dictionary followed while shown.
                 let _shown = &showing;
                 match area(&app) {
-                    Some(area) => crate::widgets::page(vec![
+                    Some(area) => provider_settings_ui::widgets::page(vec![
                         spell_checker_card(cx),
                         dictionary_card(&actions, area),
                     ]),
-                    None => crate::widgets::page(Vec::new()),
+                    None => provider_settings_ui::widgets::page(Vec::new()),
                 }
             })
         });
@@ -199,7 +199,7 @@ pub(crate) fn view(
                         // The part keeps the devices followed while shown.
                         let _shown = &showing;
                         let Some(area) = area(&app) else {
-                            return crate::widgets::page(Vec::new());
+                            return provider_settings_ui::widgets::page(Vec::new());
                         };
                         let shown = PageOf {
                             cx,
@@ -211,7 +211,7 @@ pub(crate) fn view(
                         };
                         match page {
                             InputPage::Pointing => shown.pointing_page(),
-                            _ => crate::widgets::page(shown.keyboard_page()),
+                            _ => provider_settings_ui::widgets::page(shown.keyboard_page()),
                         }
                     })
                 })
@@ -1694,7 +1694,7 @@ impl PageOf<'_> {
             let configs = self.last.device.tablets.clone();
             if let Some(tablets) = self.cx.record(self.device, move |cx| {
                 let cards = tablet::tablet_cards(cx, &actions, &tablets, &pads, &configs, &outputs);
-                crate::widgets::page_of(
+                provider_settings_ui::widgets::page_of(
                     cards
                         .into_iter()
                         .map(SettingsSection::into_element)
@@ -1704,7 +1704,7 @@ impl PageOf<'_> {
                 cards.push(tablets);
             }
         }
-        crate::widgets::page_of(cards)
+        provider_settings_ui::widgets::page_of(cards)
     }
 
     /// Everything that is specific to a touchpad, starting with whether it
@@ -1910,7 +1910,7 @@ fn spell_checker_card(cx: &ViewCx<TextAssistancePrefs>) -> SettingsSection {
                         }
                     },
                 ),
-            crate::widgets::note(&t("input-spell-caption")),
+            provider_settings_ui::widgets::note(&t("input-spell-caption")),
         ]),
     )
 }
@@ -1923,7 +1923,7 @@ fn dictionary_card(actions: &Actions<Settings>, area: &InputArea) -> SettingsSec
     let Some(snapshot) = &dictionary.snapshot else {
         return section(
             &t("input-dictionary-title"),
-            rows(vec![crate::widgets::note(&t(
+            rows(vec![provider_settings_ui::widgets::note(&t(
                 "input-dictionary-unavailable",
             ))]),
         );
@@ -1937,7 +1937,7 @@ fn dictionary_card(actions: &Actions<Settings>, area: &InputArea) -> SettingsSec
             .map(move |()| (word.get(), language.get(), revision)),
     );
     let mut children = vec![
-        crate::widgets::note(&t("input-dictionary-caption")),
+        provider_settings_ui::widgets::note(&t("input-dictionary-caption")),
         field_row(
             &t("input-dictionary-word"),
             Box::new(
@@ -1949,7 +1949,7 @@ fn dictionary_card(actions: &Actions<Settings>, area: &InputArea) -> SettingsSec
                     .with_autocorrect(false),
             ),
         ),
-        crate::widgets::field_row_described(
+        provider_settings_ui::widgets::field_row_described(
             &t("input-dictionary-language"),
             &t("input-dictionary-language-caption"),
             Box::new(
@@ -1961,12 +1961,12 @@ fn dictionary_card(actions: &Actions<Settings>, area: &InputArea) -> SettingsSec
                     .with_autocorrect(false),
             ),
         ),
-        crate::widgets::row(Box::new(add)),
+        provider_settings_ui::widgets::row(Box::new(add)),
     ];
     for (index, entry) in snapshot.words.iter().enumerate() {
         children.push(dictionary_word_row(actions, area, index, entry, revision));
     }
-    children.push(crate::widgets::row(Box::new(
+    children.push(provider_settings_ui::widgets::row(Box::new(
         actions.bind_effect_invocation(
             Button::new("dictionary.reset", &t("input-dictionary-reset"))
                 .with_enabled(!snapshot.words.is_empty()),
@@ -2026,7 +2026,7 @@ fn dictionary_word_row(
         }),
     );
     // A word is edited in place: two fields and two actions on one line.
-    crate::widgets::row(Box::new(
+    provider_settings_ui::widgets::row(Box::new(
         Row::new()
             .push(Box::new(
                 TextInput::from_state(&word)

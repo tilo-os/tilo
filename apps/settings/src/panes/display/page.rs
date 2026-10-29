@@ -25,7 +25,7 @@ use crate::i18n::{t, t_args};
 use crate::prefs::{DisplayPrefs, NightLightPrefs, PendingDisplayChange, SharedDisplayPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{block, error_row, value_row};
+use provider_settings_ui::widgets::{block, error_row, value_row};
 
 /// The Displays page. The page is built again when the arrangement of the
 /// person's displays changes (the shared cards list and number them by
@@ -75,14 +75,14 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
                                 Some(area) => {
                                     page(cx, &actions, &dispatcher, &area.model().borrow())
                                 }
-                                None => crate::widgets::page(Vec::new()),
+                                None => provider_settings_ui::widgets::page(Vec::new()),
                             }
                         })
                     })
-                    .unwrap_or_else(|| crate::widgets::page(Vec::new()))
+                    .unwrap_or_else(|| provider_settings_ui::widgets::page(Vec::new()))
                 })
             })
-            .unwrap_or_else(|| crate::widgets::page(Vec::new()))
+            .unwrap_or_else(|| provider_settings_ui::widgets::page(Vec::new()))
         })
     })
 }
@@ -118,7 +118,7 @@ fn page(
     if let Some(tools) = model.trusted_tools_card(cx, dispatcher) {
         cards.push(tools);
     }
-    crate::widgets::page(cards)
+    provider_settings_ui::widgets::page(cards)
 }
 
 /// `control` (a button), bound to `effect`.
@@ -144,7 +144,7 @@ fn night_light_card(cx: &ViewCx<NightLightPrefs>) -> SettingsSection {
         Some(binding) => switch.bind_action(binding),
         None => switch.unavailable(),
     };
-    crate::widgets::section_with(
+    provider_settings_ui::widgets::section_with(
         &t("display-night-light"),
         Box::new(switch),
         rows(vec![
@@ -204,7 +204,7 @@ impl DisplayModel {
         } else {
             t("display-caption-port")
         };
-        crate::widgets::section_with(
+        provider_settings_ui::widgets::section_with(
             &t("display-card-title"),
             Box::new(identify),
             rows(vec![note(&caption), block(Box::new(canvas))]),
@@ -258,7 +258,7 @@ impl DisplayModel {
         let Some(level) = self.output_brightness.get(&output.connector) else {
             return Vec::new();
         };
-        let mut out_rows = vec![crate::widgets::choice_row_stacked(
+        let mut out_rows = vec![provider_settings_ui::widgets::choice_row_stacked(
             &t("display-brightness"),
             Box::new(self.slider(
                 dispatcher,
@@ -504,7 +504,7 @@ impl DisplayModel {
             out_rows.push(setting_row_described(
                 &crate::i18n::t("display-hdr-sdr-brightness"),
                 &crate::i18n::t("display-hdr-sdr-brightness-description"),
-                crate::widgets::trailing_slider(Box::new(self.slider(
+                provider_settings_ui::widgets::trailing_slider(Box::new(self.slider(
                     dispatcher,
                     &output.connector,
                     "sdr_brightness",
@@ -610,7 +610,7 @@ impl DisplayModel {
                 );
                 Some(section(
                     &t("display-keep-title"),
-                    rows(vec![crate::widgets::item_row(
+                    rows(vec![provider_settings_ui::widgets::item_row(
                         &t_args("display-keep-caption", &[("seconds", seconds.into())]),
                         Vec::new(),
                         &[],

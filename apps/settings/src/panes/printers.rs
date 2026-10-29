@@ -26,7 +26,7 @@ use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Body, Item, SettingsSection, StatusTone, block, error_caption, note, row, rows, section,
     section_action, thing_row,
 };
@@ -701,7 +701,7 @@ impl PrintersModel {
 
         let scanners = self.scanner_rows();
         sections.push(section(&t("settings-printers-scanners"), scanners));
-        crate::widgets::page(sections)
+        provider_settings_ui::widgets::page(sections)
     }
 
     fn scanner_rows(&self) -> Body {
