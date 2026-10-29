@@ -64,6 +64,8 @@ serde_json.workspace = true
 # A call's pictures travel in the local media lane's JSON as base64.
 base64.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
+# The collaboration wire's framing (`wire`).
+wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }

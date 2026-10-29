@@ -99,6 +99,7 @@ pub mod native_media;
 pub mod route;
 #[cfg(feature = "client")]
 pub mod settings;
+pub mod wire;
 #[cfg(feature = "client")]
 pub use live_activity::{LiveActivities, LiveActivityHandle};
 #[cfg(feature = "client")]

@@ -14181,6 +14181,7 @@ dependencies = [
  "tilo-user-identity",
  "tokio",
  "uuid",
+ "wire-frame",
  "workspace-hack",
  "zeroize",
 ]

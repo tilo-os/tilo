@@ -74,6 +74,7 @@ mod published_invocation;
 mod resolved_invocation;
 mod route_holds;
 mod tracker_runs;
+pub(crate) mod wire;
 #[path = "workspace_checkpoints.rs"]
 mod workspace_checkpoints;
 #[path = "workspace_memberships.rs"]
@@ -10538,13 +10539,13 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        let client: presence_handle::Client = capnp_rpc::new_client(CapnpPresenceHandle {
-            state: self.state.clone(),
-            channel_id: self.channel_id.clone(),
-            peer_id: self.connection_id,
-            verified_identity: self.verified_identity.clone(),
-            interaction_sequences: Mutex::new(HashMap::new()),
-        });
+        let client: presence_handle::Client =
+            capnp_rpc::new_client(CapnpPresenceHandle(wire::PresenceSession::new(
+                self.state.clone(),
+                self.channel_id.clone(),
+                self.connection_id,
+                self.verified_identity.clone(),
+            )));
         results.get().set_handle(client);
         Promise::ok(())
     }
@@ -12897,61 +12898,33 @@ fn fill_scrollback_batch(
 
 // Presence handle + streams
 
-struct CapnpPresenceHandle {
-    state: Arc<CapnpBrokerState>,
-    channel_id: String,
-    peer_id: u64,
-    verified_identity: AdmittedJoinIdentity,
-    /// Broker-owned monotonic sequence per invocation. Publishers describe
-    /// phases and targets but cannot reorder or resurrect their visual state.
-    interaction_sequences: Mutex<HashMap<tilo_actions::InvocationId, u64>>,
-}
+struct CapnpPresenceHandle(wire::PresenceSession);
 
 impl CapnpPresenceHandle {
-    /// Widened to room scope — presence is room-wide, only document
-    /// payloads are confined to a record.
-    fn route(&self) -> CrdtRoute {
-        self.full_route().to_cluster_scope()
-    }
-
-    /// Unwidened, so peer replication carries the full app/cluster route.
-    fn full_route(&self) -> CrdtRoute {
-        CrdtRoute::from_channel_key(&self.channel_id)
-    }
-
-    fn revalidate(&self) -> Result<(), capnp::Error> {
-        let route = if self.verified_identity.host_scope.is_some() {
-            self.full_route()
-        } else {
-            self.route()
-        };
-        self.state
-            .revalidate_admission(&route, &self.verified_identity)
-            .map(|_| ())
-    }
-
-    /// Publish one typed keyed-presence update. A malformed key is isolated
-    /// to this update rather than taking down the broker.
-    fn publish_keyed(&self, key_bytes: &[u8], payload: PresencePayload) {
+    /// Publish a keyed update whose key arrives as postcard bytes. A
+    /// malformed key is isolated to this update rather than taking down the
+    /// broker.
+    fn publish_keyed(
+        &self,
+        key_bytes: &[u8],
+        payload: PresencePayload,
+    ) -> Result<(), capnp::Error> {
         let Ok(key) = postcard::from_bytes::<PresenceKey>(key_bytes) else {
             tracing::debug!(
                 len = key_bytes.len(),
                 "capnp presence publish: key bytes not decodable — dropping",
             );
-            return;
+            return Ok(());
         };
-        let route = self.route();
-        self.state
-            .publish_presence(&self.full_route(), &key, &payload);
-        let event = CollabEvent::RemotePresenceUpdate {
-            user_id: CapnpBrokerState::participant_id(&self.verified_identity),
-            key,
-            payload,
-        };
-        if let Some(fanout) = self.state.fanout.upgrade() {
-            fanout.fanout_presence(&event, self.peer_id, &route, &self.full_route());
-        }
+        self.0.publish(key, payload).map_err(capnp::Error::failed)
     }
+}
+
+/// A peer-supplied offset as a local one; rejected rather than wrapped onto
+/// an unrelated position on a 32-bit target.
+fn presence_offset(value: u64, what: &str) -> Result<usize, capnp::Error> {
+    usize::try_from(value)
+        .map_err(|_| capnp::Error::failed(format!("{what} overflows usize on this platform")))
 }
 
 impl presence_handle::Server for CapnpPresenceHandle {
@@ -12960,32 +12933,11 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishCursorParams,
         _results: presence_handle::PublishCursorResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self.revalidate() {
-            return Promise::err(error);
-        }
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let route = self.route();
-        let full_route = self.full_route();
-        let verified_identity = self.verified_identity.clone();
         Promise::from_future(async move {
             let r = params.get()?;
-            let (x, y) = (r.get_x(), r.get_y());
-            // Cursor stream is keyless; full presence uses pointer_default().
-            let event = CollabEvent::RemoteCursorMoved {
-                user_id: CapnpBrokerState::participant_id(&verified_identity),
-                x,
-                y,
-            };
-            state.publish_presence(
-                &full_route,
-                &PresenceKey::pointer_default(),
-                &PresencePayload::Pointer { x, y },
-            );
-            if let Some(t) = state.fanout.upgrade() {
-                t.fanout_presence(&event, peer_id, &route, &full_route);
-            }
-            Ok(())
+            self.0
+                .publish_cursor(r.get_x(), r.get_y())
+                .map_err(capnp::Error::failed)
         })
     }
 
@@ -12994,20 +12946,13 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishPointerParams,
         _results: presence_handle::PublishPointerResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self.revalidate() {
-            return Promise::err(error);
-        }
         Promise::from_future(async move {
             let r = params.get()?;
-            let key_bytes = r.get_key_bytes()?.to_vec();
-            self.publish_keyed(
-                &key_bytes,
-                PresencePayload::Pointer {
-                    x: r.get_x(),
-                    y: r.get_y(),
-                },
-            );
-            Ok(())
+            let payload = PresencePayload::Pointer {
+                x: r.get_x(),
+                y: r.get_y(),
+            };
+            self.publish_keyed(r.get_key_bytes()?, payload)
         })
     }
 
@@ -13016,19 +12961,10 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishCaretParams,
         _results: presence_handle::PublishCaretResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self.revalidate() {
-            return Promise::err(error);
-        }
         Promise::from_future(async move {
             let r = params.get()?;
-            let key_bytes = r.get_key_bytes()?.to_vec();
-            // `pos` is a peer-supplied offset; reject rather than wrap it
-            // onto an unrelated position on a 32-bit target.
-            let pos = usize::try_from(r.get_pos()).map_err(|_| {
-                capnp::Error::failed("publishCaret: pos overflows usize on this platform".into())
-            })?;
-            self.publish_keyed(&key_bytes, PresencePayload::Caret { pos });
-            Ok(())
+            let pos = presence_offset(r.get_pos(), "publishCaret: pos")?;
+            self.publish_keyed(r.get_key_bytes()?, PresencePayload::Caret { pos })
         })
     }
 
@@ -13037,26 +12973,14 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishSelectionParams,
         _results: presence_handle::PublishSelectionResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self.revalidate() {
-            return Promise::err(error);
-        }
         Promise::from_future(async move {
             let r = params.get()?;
-            let key_bytes = r.get_key_bytes()?.to_vec();
-            // Both are peer-supplied offsets; reject rather than wrap
-            // them onto an unrelated range on a 32-bit target.
-            let start = usize::try_from(r.get_start()).map_err(|_| {
-                capnp::Error::failed(
-                    "publishSelection: start overflows usize on this platform".into(),
-                )
-            })?;
-            let end = usize::try_from(r.get_end()).map_err(|_| {
-                capnp::Error::failed(
-                    "publishSelection: end overflows usize on this platform".into(),
-                )
-            })?;
-            self.publish_keyed(&key_bytes, PresencePayload::Selection { start, end });
-            Ok(())
+            let start = presence_offset(r.get_start(), "publishSelection: start")?;
+            let end = presence_offset(r.get_end(), "publishSelection: end")?;
+            self.publish_keyed(
+                r.get_key_bytes()?,
+                PresencePayload::Selection { start, end },
+            )
         })
     }
 
@@ -13065,20 +12989,11 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishTypingParams,
         _results: presence_handle::PublishTypingResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self.revalidate() {
-            return Promise::err(error);
-        }
         Promise::from_future(async move {
             let r = params.get()?;
-            let key_bytes = r.get_key_bytes()?.to_vec();
-            let start = usize::try_from(r.get_start()).map_err(|_| {
-                capnp::Error::failed("publishTyping: start overflows usize on this platform".into())
-            })?;
-            let end = usize::try_from(r.get_end()).map_err(|_| {
-                capnp::Error::failed("publishTyping: end overflows usize on this platform".into())
-            })?;
-            self.publish_keyed(&key_bytes, PresencePayload::Typing { start, end });
-            Ok(())
+            let start = presence_offset(r.get_start(), "publishTyping: start")?;
+            let end = presence_offset(r.get_end(), "publishTyping: end")?;
+            self.publish_keyed(r.get_key_bytes()?, PresencePayload::Typing { start, end })
         })
     }
 
@@ -13087,12 +13002,8 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishInteractionParams,
         _results: presence_handle::PublishInteractionResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self.revalidate() {
-            return Promise::err(error);
-        }
         Promise::from_future(async move {
             let r = params.get()?;
-            let key_bytes = r.get_key_bytes()?.to_vec();
             let json = r.get_interaction_json()?.to_str().map_err(|error| {
                 capnp::Error::failed(format!("invalid interaction utf8: {error}"))
             })?;
@@ -13101,35 +13012,12 @@ impl presence_handle::Server for CapnpPresenceHandle {
                     "interaction payload exceeds 64 KiB".into(),
                 ));
             }
-            let mut update: tilo_actions::SemanticInteraction = serde_json::from_str(json)
+            let update: tilo_actions::SemanticInteraction = serde_json::from_str(json)
                 .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
-            let actor = self.verified_identity.broker_actor();
-            let normalized_actor = tilo_actions::InteractionActor::new(
-                CapnpBrokerState::participant_id(&self.verified_identity),
-                if actor.is_agent {
-                    tilo_actions::ActorKind::Agent
-                } else {
-                    tilo_actions::ActorKind::Person
-                },
-            );
-            let sequence = {
-                let mut sequences = self.interaction_sequences.lock().map_err(|_| {
-                    capnp::Error::failed("interaction sequence registry unavailable".into())
-                })?;
-                let current = sequences.entry(update.invocation).or_insert(0);
-                let next = current.saturating_add(1);
-                *current = next;
-                // Persist the monotonic sequence before validating and
-                // publishing the interaction outside this mutex.
-                drop(sequences);
-                next
-            };
-            update = update.normalized_by_broker(normalized_actor, sequence);
-            update
-                .validate()
-                .map_err(|error| capnp::Error::failed(format!("invalid interaction: {error}")))?;
-            self.publish_keyed(&key_bytes, PresencePayload::Interaction(Box::new(update)));
-            Ok(())
+            self.publish_keyed(
+                r.get_key_bytes()?,
+                PresencePayload::Interaction(Box::new(update)),
+            )
         })
     }
 
@@ -13138,30 +13026,20 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishStatusParams,
         _results: presence_handle::PublishStatusResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self.revalidate() {
-            return Promise::err(error);
-        }
         Promise::from_future(async move {
             let request = params.get()?;
-            let key_bytes = request.get_key_bytes()?.to_vec();
-            let raw = request
+            let text = request
                 .get_text()?
                 .to_str()
-                .map_err(|error| capnp::Error::failed(format!("invalid status utf8: {error}")))?;
-            let text = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-            if text.chars().count() > ui::MAX_STATUS_CHARS {
-                return Err(capnp::Error::failed(
-                    "status exceeds local protocol bound".into(),
-                ));
-            }
+                .map_err(|error| capnp::Error::failed(format!("invalid status utf8: {error}")))?
+                .to_owned();
             self.publish_keyed(
-                &key_bytes,
+                request.get_key_bytes()?,
                 PresencePayload::Status {
                     text,
                     automatic: request.get_automatic(),
                 },
-            );
-            Ok(())
+            )
         })
     }
 
@@ -13170,14 +13048,8 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishArrivedParams,
         _results: presence_handle::PublishArrivedResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self.revalidate() {
-            return Promise::err(error);
-        }
         Promise::from_future(async move {
-            let r = params.get()?;
-            let key_bytes = r.get_key_bytes()?.to_vec();
-            self.publish_keyed(&key_bytes, PresencePayload::Arrived);
-            Ok(())
+            self.publish_keyed(params.get()?.get_key_bytes()?, PresencePayload::Arrived)
         })
     }
 
@@ -13186,14 +13058,8 @@ impl presence_handle::Server for CapnpPresenceHandle {
         params: presence_handle::PublishLeftParams,
         _results: presence_handle::PublishLeftResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self.revalidate() {
-            return Promise::err(error);
-        }
         Promise::from_future(async move {
-            let r = params.get()?;
-            let key_bytes = r.get_key_bytes()?.to_vec();
-            self.publish_keyed(&key_bytes, PresencePayload::Left);
-            Ok(())
+            self.publish_keyed(params.get()?.get_key_bytes()?, PresencePayload::Left)
         })
     }
 
@@ -13202,19 +13068,12 @@ impl presence_handle::Server for CapnpPresenceHandle {
         _params: presence_handle::SubscribeAllParams,
         mut results: presence_handle::SubscribeAllResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self.revalidate() {
-            return Promise::err(error);
-        }
-        let rx = self
-            .state
-            .subscribe_presence(&self.channel_id, self.peer_id);
+        let feed = match self.0.subscribe() {
+            Ok(feed) => feed,
+            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        };
         let client: presence_stream::Client = capnp_rpc::new_client(PresenceStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
-            rx: Rc::new(AsyncMutex::new(rx)),
+            feed: Rc::new(AsyncMutex::new(feed)),
         });
         results.get().set_stream(client);
         Promise::ok(())
@@ -13300,8 +13159,7 @@ impl stream::Server for OpStreamServer {
 }
 
 struct PresenceStreamServer {
-    host_guard: Option<HostWorkerReadGuard>,
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<PresenceEnvelope>>>,
+    feed: Rc<AsyncMutex<wire::PresenceFeed>>,
 }
 
 struct RealtimeStreamServer {
@@ -13516,17 +13374,14 @@ impl presence_stream::Server for PresenceStreamServer {
         _params: presence_stream::ReadParams,
         mut results: presence_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
+        let feed = self.feed.clone();
         Promise::from_future(async move {
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            let mut guard = rx.lock().await;
-            let Some(env) = guard.recv().await else {
+            let next = feed.lock().await.next().await;
+            let Some(env) = next.map_err(capnp::Error::failed)? else {
                 return Err(capnp::Error::disconnected(
                     "presence stream fanout closed".into(),
                 ));
             };
-            drop(guard);
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
             let mut ev: presence_event::Builder = results.get().init_event();
             ev.set_user_id(&env.user_id);
             ev.set_key_bytes(&env.key_bytes);
