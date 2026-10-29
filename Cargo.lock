@@ -23585,6 +23585,7 @@ dependencies = [
  "tilo-app-package",
  "tilo-app-state",
  "tilo-clock",
+ "tilo-content",
  "tilo-egress",
  "tilo-environment",
  "tilo-files",
@@ -23617,6 +23618,7 @@ dependencies = [
 name = "ush-tilo"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "collab-types",
  "tempfile",
  "tilo-environment",
