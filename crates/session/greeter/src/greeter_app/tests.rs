@@ -2449,3 +2449,95 @@ fn keys_from_the_on_screen_keyboard_reach_the_passcode_a_delete_too() {
     app.take_touch_keys();
     assert_eq!(*app.password_buffer.lock_recover(), "13");
 }
+
+/// Run `operation` with the monotonic clock `t` ms after `zero` and the
+/// wall clock `t` ms after `wall_ms`.
+fn in_time<T>(zero: ui::time::Instant, wall_ms: u64, t: u64, operation: impl FnOnce() -> T) -> T {
+    let wall = ui::time::UNIX_EPOCH
+        .checked_add(Duration::from_millis(wall_ms.saturating_add(t)))
+        .expect("a wall time");
+    ui::time::testing::with_monotonic_time(after(zero, t), || {
+        ui::time::testing::with_wall(wall, operation)
+    })
+}
+
+/// The boot sign-in on the KMS host, at rest for ten minutes: the host
+/// sleeps until the deadline the app gives it, and the screen shows each
+/// minute as it turns, waking about once a minute and never on a tick of
+/// its own.
+#[test]
+fn at_rest_on_the_kms_host_the_clock_turns_each_minute_with_one_wake() {
+    use chrono::TimeZone as _;
+    let started = chrono::Local
+        .with_ymd_and_hms(2026, 6, 30, 10, 41, 20)
+        .earliest()
+        .expect("a local time");
+    let wall_ms = u64::try_from(started.timestamp_millis()).expect("after the epoch");
+    let zero = ui::time::now();
+    let shown = |app: &mut ui::App, t: u64| {
+        let time = in_time(zero, wall_ms, t, || {
+            ui::clock::time_of_day(&ui::clock::local_now())
+        });
+        app.refresh_semantic_tree();
+        app.semantic_tree()
+            .iter()
+            .any(|node| node.name.as_deref() == Some(time.as_str()))
+            .then_some(time)
+    };
+
+    let greeter = in_time(
+        zero,
+        wall_ms,
+        0,
+        || GreeterApp::with_sessions(one_session()),
+    );
+    let mut app = ui::App::new(ui::State::new(), Box::new(greeter));
+    let screen = Touchscreen::default();
+    let mut scene = vello::Scene::new();
+    // The host's loop as `ui_kms::Host::run` runs it with no input: a frame
+    // when one is due or the last asked for another, then a sleep until
+    // the next deadline.
+    let (mut t, mut wants) = (0_u64, true);
+    let (mut frame_wakes, mut idle_wakes, mut turns) = (0_u32, 0_u32, 0_u32);
+    let mut last = None;
+    while t < 600_000 {
+        let next = in_time(zero, wall_ms, t, || {
+            if wants || ui_kms::due(&app, ui::time::now()) {
+                scene.reset();
+                wants = app.surface_frame(&screen, &mut scene);
+            }
+            ui_kms::next_deadline(&app)
+        });
+        let now_shown = shown(&mut app, t);
+        assert!(
+            now_shown.is_some(),
+            "at {t} ms the screen shows the time it is"
+        );
+        if last.is_some() && now_shown != last {
+            turns += 1;
+        }
+        last = now_shown;
+        let next = next.expect("the clock always asks for a wake");
+        let wait = u64::try_from(next.saturating_duration_since(after(zero, t)).as_millis())
+            .expect("a wait in ms");
+        if wants || wait < 1_000 {
+            // Something moves: the host draws at the refresh rate.
+            frame_wakes += 1;
+            t = t.saturating_add(if wants { 16 } else { wait.max(1) });
+        } else {
+            idle_wakes += 1;
+            t = t.saturating_add(wait);
+        }
+    }
+    eprintln!("ten minutes at rest: {idle_wakes} idle wakes, {frame_wakes} frame wakes");
+    // 10:41:20 to 10:51:20 turns ten times, at 10:42 through 10:51.
+    assert_eq!(turns, 10, "each minute is shown as it turns");
+    assert!(
+        (10..=11).contains(&idle_wakes),
+        "about one wake a minute at rest, saw {idle_wakes}"
+    );
+    assert!(
+        frame_wakes < 200,
+        "only the first moments draw frame by frame, saw {frame_wakes}"
+    );
+}
