@@ -152,6 +152,7 @@ imports! {
     (RichEmpty, "rich_empty", "i", "i"),
     (RichTime, "rich_time", "i", "i"),
     (Phrase, "phrase", "ii", "i"),
+    (UiActions, "ui_actions", "iii", ""),
     (SpaceI, "space_i", "i", "l"),
     (SpaceF, "space_f", "i", "f"),
 

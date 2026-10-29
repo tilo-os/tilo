@@ -18,6 +18,7 @@ pub mod authority;
 pub mod background;
 pub mod bench;
 pub mod bundle;
+pub mod catalogue;
 pub mod effects;
 pub mod host;
 pub mod index;
