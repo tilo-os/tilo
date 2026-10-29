@@ -106,7 +106,7 @@ pub struct DesktopHost {
 /// The window policy answered by the desktop's strips.
 pub struct StripPolicy {
     desk: Rc<RefCell<Desk>>,
-    /// The windows given a tab, so one gone from the compositor closes
+    /// The windows given a place, so one gone from the compositor closes
     /// its tab.
     mapped: Vec<u64>,
     /// The touchpad gesture in flight, when the desktop took it.
@@ -114,6 +114,9 @@ pub struct StripPolicy {
     /// How far the fingers have carried the strip, or the strip deck, in
     /// the gesture in flight.
     travel: f64,
+    /// Those of them that have not shown a buffer yet: they wait in their
+    /// place, which the compositor does not list among its windows.
+    pending: Vec<u64>,
 }
 
 /// A desktop of one workspace with one empty strip (`salt` seeds its ids),
@@ -155,6 +158,7 @@ pub fn desktop_with(
             mapped: Vec::new(),
             tracker: GestureTracker::default(),
             travel: 0.0,
+            pending: Vec::new(),
         },
     )
 }
@@ -270,6 +274,9 @@ impl WindowPolicy for StripPolicy {
         outputs: &[Rectangle<i32, Logical>],
     ) -> Option<(i32, i32)> {
         self.map(window, outputs);
+        if !self.pending.contains(&window.id) {
+            self.pending.push(window.id);
+        }
         let rect = self.desk.borrow().shown(window.id)?;
         Some((rect.size.w, rect.size.h))
     }
@@ -281,6 +288,7 @@ impl WindowPolicy for StripPolicy {
         outputs: &[Rectangle<i32, Logical>],
     ) -> Point<i32, Logical> {
         self.map(window, outputs);
+        self.pending.retain(|id| *id != window.id);
         self.desk
             .borrow()
             .shown(window.id)
@@ -292,11 +300,16 @@ impl WindowPolicy for StripPolicy {
         windows: &[(WindowInfo, Rectangle<i32, Logical>)],
         outputs: &[Rectangle<i32, Logical>],
     ) -> Option<Vec<Arrangement>> {
+        // A window the compositor lists has shown its buffer.
+        self.pending
+            .retain(|id| !windows.iter().any(|(window, _)| window.id == *id));
         let gone: Vec<u64> = self
             .mapped
             .iter()
             .copied()
-            .filter(|id| !windows.iter().any(|(window, _)| window.id == *id))
+            .filter(|id| {
+                !self.pending.contains(id) && !windows.iter().any(|(window, _)| window.id == *id)
+            })
             .collect();
         {
             let mut desk = self.desk.borrow_mut();
@@ -335,6 +348,14 @@ impl WindowPolicy for StripPolicy {
                 })
                 .collect(),
         )
+    }
+
+    fn withdrawn(&mut self, window: &WindowInfo) {
+        self.pending.retain(|id| *id != window.id);
+        self.mapped.retain(|id| *id != window.id);
+        let mut desk = self.desk.borrow_mut();
+        desk.policy.unmap(window.id);
+        desk.host.relayout();
     }
 
     fn focus_on_click(&mut self, window: &WindowInfo) -> bool {
