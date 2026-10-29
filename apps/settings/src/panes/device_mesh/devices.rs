@@ -6,10 +6,10 @@ use tilo_relay_protocol::{DeviceRole, ReplicationIntent};
 use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
-    DeviceMeshEffect, DeviceMeshModel, PairingTarget, REVOKE_REASONS, RelayRuntimeStatus,
-    home_server_row, last_seen_label, mesh_status_shown, peer_health_badge, peer_key,
-    personal_device_key, personal_device_row, replication_description, replication_shown,
-    revoke_shown, role_shown, runtime_status_tone, shows_advanced_services,
+    DeviceMeshEffect, Page, PairingTarget, REVOKE_REASONS, RelayRuntimeStatus, home_server_row,
+    last_seen_label, mesh_status_shown, peer_health_badge, peer_key, personal_device_key,
+    personal_device_row, replication_description, replication_shown, revoke_shown, role_shown,
+    runtime_status_tone, shows_advanced_services,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -32,7 +32,7 @@ struct DeviceEntry<'a> {
     this: bool,
 }
 
-impl DeviceMeshModel {
+impl Page<'_> {
     /// The person's devices, each once: this device first, then the others
     /// with their home servers among them, then the ones whose access
     /// ended. A home server the device list also names is one entry.
@@ -129,7 +129,7 @@ impl DeviceMeshModel {
             t("mesh-add-device")
         };
         let add_device = Box::new(
-            self.cx.bind_invocation(
+            self.bind_invocation(
                 Button::new("device_mesh.approve_personal_device", &personal_label)
                     .with_enabled(!pairing),
                 DeviceMeshEffect::AddPersonalDevice,
@@ -182,7 +182,7 @@ impl DeviceMeshModel {
         items.push(setting_row_described(
             &t("mesh-home-nas"),
             &t("mesh-home-caption"),
-            Box::new(self.cx.bind_invocation(
+            Box::new(self.bind_invocation(
                 Button::new("device_mesh.approve_enrollment", &home_label).with_enabled(!pairing),
                 DeviceMeshEffect::PairHomeServer,
             )),
@@ -270,9 +270,7 @@ impl DeviceMeshModel {
         )
         .with_id("device_mesh.role")
         .with_placeholder(&role_shown_value);
-        let role = self
-            .cx
-            .bind(role, effect(DeviceMeshEffect::SET_DEVICE_ROLE));
+        let role = self.bind(role, effect(DeviceMeshEffect::SET_DEVICE_ROLE));
         let mut out = vec![setting_row_described(
             &t("mesh-this-device"),
             &t("mesh-this-device-desc"),
@@ -331,9 +329,7 @@ impl DeviceMeshModel {
         )
         .with_id("device_mesh.replication")
         .with_placeholder(&repl_shown);
-        let replication = self
-            .cx
-            .bind(replication, effect(DeviceMeshEffect::SET_REPLICATION));
+        let replication = self.bind(replication, effect(DeviceMeshEffect::SET_REPLICATION));
         setting_row_described(
             &files,
             &replication_description(&self.common_replication()),
@@ -382,7 +378,7 @@ impl DeviceMeshModel {
         peer: &tilo_relay_protocol::HomePeerRegistration,
     ) -> Vec<crate::widgets::Item> {
         let device = peer.device_node_id.clone();
-        let name = self.cx.bind_on_row(
+        let name = self.bind_on_row(
             &home_server_row(peer).into_resource(),
             EditableLabel::new(&peer.label)
                 .with_id(&peer_key("name", &peer.device_node_id))
@@ -429,7 +425,7 @@ impl DeviceMeshModel {
             return vec![crate::widgets::row(Box::new(
                 ui::widget::Row::new()
                     .push(Box::new(
-                        self.cx.bind_row(
+                        self.bind_row(
                             Button::new(
                                 &peer_key("review-remove", &entry.key),
                                 &t(if home {
@@ -449,7 +445,7 @@ impl DeviceMeshModel {
             ))];
         }
         let confirm: Button = if let Some(peer) = entry.peer {
-            self.cx.bind_row(
+            self.bind_row(
                 Button::new(
                     &peer_key("remove", &peer.device_node_id),
                     &t("mesh-remove-home-confirm"),
@@ -463,7 +459,7 @@ impl DeviceMeshModel {
         } else {
             let device = entry.key.clone();
             let reason = self.removal_reason.clone();
-            self.cx.bind_on_row(
+            self.bind_on_row(
                 &live,
                 Button::new(
                     &personal_device_key("revoke", &entry.key),
@@ -474,7 +470,7 @@ impl DeviceMeshModel {
                     .map(move |()| (device.clone(), reason.with(Clone::clone))),
             )
         };
-        let cancel = self.cx.bind_invocation(
+        let cancel = self.bind_invocation(
             Button::new(&peer_key("cancel-remove", &entry.key), &t("mesh-cancel")),
             DeviceMeshEffect::CancelRemoval,
         );

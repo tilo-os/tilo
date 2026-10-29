@@ -20,23 +20,24 @@
 //! disagree with it. Backing up the identity is offered there too; its
 //! action stays [`AboutEffect::BackUpIdentity`].
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
-use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::LocalState;
+use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
 use ui::tilo_actions::remote::crash_records::{
     self as records, CrashKind, CrashRecord, CrashRecordText, StopReason,
 };
 use ui::tilo_resource;
-use ui::widget::Widget;
+use ui::widget::{Element, Widget};
 
 use crate::categories::Category;
+use crate::effects::SettingsEffect;
 use crate::host::PaneCx;
 use crate::i18n::t;
-use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
@@ -219,6 +220,9 @@ crate::area::pane_area! {
     fn poll(&self) {
         AboutArea::poll(self);
     }
+    fn busy(&self) -> bool {
+        AboutArea::busy(self)
+    }
 }
 
 /// The window's [`AboutArea`].
@@ -268,7 +272,9 @@ pub struct AboutArea {
     /// The window's client for the action door, shared with the other
     /// areas that act through the host.
     remote: ui::RemoteActions,
-    model: OnceCell<Shared<AboutModel>>,
+    model: OnceCell<Rc<RefCell<AboutModel>>>,
+    /// Moves whenever what the page shows of the model does.
+    shown: LocalState<u64>,
 }
 
 impl AboutArea {
@@ -277,19 +283,28 @@ impl AboutArea {
             cx: cx.clone(),
             remote,
             model: OnceCell::new(),
+            shown: LocalState::new(0),
         }
+    }
+
+    /// The area over `model` in place of the one it would make: a test's.
+    #[cfg(test)]
+    fn over(cx: &PaneCx, model: AboutModel) -> Self {
+        let area = Self::new(cx, ui::RemoteActions::current());
+        let _ = area.model.set(Rc::new(RefCell::new(model)));
+        area
     }
 
     /// The model: this device's facts, and the problems it recorded when
     /// the window reaches the device.
-    pub fn model(&self) -> &Shared<AboutModel> {
+    pub fn model(&self) -> &Rc<RefCell<AboutModel>> {
         self.model.get_or_init(|| {
             let source = self.cx.reaches_devices().then(|| {
                 Rc::new(RemoteRecords {
                     remote: self.remote.clone(),
                 }) as Rc<dyn ProblemRecords>
             });
-            Rc::new(std::cell::RefCell::new(AboutModel::new(
+            Rc::new(RefCell::new(AboutModel::new(
                 self.cx.clone(),
                 AboutInfo::from_system(),
                 source,
@@ -297,11 +312,23 @@ impl AboutArea {
         })
     }
 
-    /// Take in what the host answered, if the model exists.
+    /// Take in what the host answered, if the model exists, and move what
+    /// the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().take_answers();
+        if let Some(model) = self.model.get()
+            && let Ok(mut model) = model.try_borrow_mut()
+            && model.poll()
+        {
+            self.shown.set(self.shown.get().wrapping_add(1));
         }
+    }
+
+    /// Whether the host still owes an answer the page waits for.
+    fn busy(&self) -> bool {
+        self.model
+            .get()
+            .and_then(|model| model.try_borrow().ok())
+            .is_some_and(|model| model.busy())
     }
 }
 
@@ -441,7 +468,7 @@ impl AboutModel {
         }
     }
 
-    fn problems_section(&self) -> SettingsSection {
+    fn problems_section(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let items = match &self.problems {
             Problems::Reading => vec![note(&t("settings-about-problems-reading"))],
             Problems::Unreadable => vec![note(&t("settings-about-problems-unreadable"))],
@@ -452,28 +479,13 @@ impl AboutModel {
                 let mut items: Vec<_> = records
                     .iter()
                     .take(LISTED)
-                    .map(|record| self.problem_row(record))
+                    .map(|record| problem_row(cx, record))
                     .collect();
                 items.push(note(&t("settings-about-problems-private")));
                 items
             }
         };
         section(&t("settings-about-problems-card"), rows(items))
-    }
-
-    fn problem_row(&self, record: &CrashRecord) -> crate::widgets::Item {
-        let line = thing_row(
-            &format!("settings.about.problem.{}", record.id),
-            &kind_label(record.kind),
-            &[when(record)],
-            None,
-        );
-        row(Box::new(self.cx.bind_invocation(
-            line,
-            AboutEffect::OpenProblem {
-                record: record.id.clone(),
-            },
-        )))
     }
 
     /// The page of the problem `opened`: what happened, then the record.
@@ -507,6 +519,22 @@ impl AboutModel {
         sections.push(section(&t("settings-about-problem-details"), rows(details)));
         crate::widgets::page(sections)
     }
+}
+
+/// A problem's row, opening its page.
+fn problem_row(cx: &ViewCx<Settings>, record: &CrashRecord) -> crate::widgets::Item {
+    let line = thing_row(
+        &format!("settings.about.problem.{}", record.id),
+        &kind_label(record.kind),
+        &[when(record)],
+        None,
+    );
+    row(Box::new(cx.actions().bind_effect_invocation(
+        line,
+        &SettingsEffect::from(AboutEffect::OpenProblem {
+            record: record.id.clone(),
+        }),
+    )))
 }
 
 /// When `record` happened, as the person's formats write it.
@@ -554,25 +582,26 @@ fn facts(record: &CrashRecord) -> Vec<crate::widgets::Item> {
     facts
 }
 
-impl PaneModel for AboutModel {
-    fn compose(&self) -> Box<dyn Widget> {
+impl AboutModel {
+    /// The page as the model shows it now: the facts and the problems, or
+    /// the page of the problem opened.
+    fn page(&self, cx: &ViewCx<Settings>) -> Element {
         if let Some(opened) = &self.opened {
             return self.problem_page(opened);
         }
         let mut sections = fact_sections(&self.info);
-        sections.push(self.problems_section());
+        sections.push(self.problems_section(cx));
         crate::widgets::page(sections)
     }
 
+    /// Take in the host's answers and follow the page shown; whether what
+    /// the page shows changed.
     fn poll(&mut self) -> bool {
         self.take_answers();
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "AboutPane"
-    }
-
+    /// Whether the host still owes an answer.
     fn busy(&self) -> bool {
         self.listing.is_some()
             || self
@@ -580,6 +609,15 @@ impl PaneModel for AboutModel {
                 .as_ref()
                 .is_some_and(|opened| opened.call.is_some())
     }
+}
+
+/// The About page as view code over what the area reads: built again
+/// whenever what it shows changes ([`AboutArea::poll`]).
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    let held = area(app)?;
+    let model = Rc::clone(held.model());
+    model.borrow_mut().poll();
+    Some(cx.switch(&held.shown, move |cx, _| model.borrow().page(cx)))
 }
 
 /// The system-on-chip's own name, where the kernel publishes it
@@ -875,29 +913,55 @@ mod tests {
         )
     }
 
+    /// A Settings window on About, whose area shows the model `model`
+    /// makes in the window's context.
+    fn window_on(
+        model: impl FnOnce(PaneCx) -> AboutModel + 'static,
+    ) -> ui::prelude::TestApp<crate::resource::SettingsShell> {
+        crate::area::replace_in_next_window(move |context| {
+            AboutArea::over(context.cx, model(context.cx.clone()))
+        });
+        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, Category::About);
+        app
+    }
+
+    /// The window's About model, changed by `change`; the page shows the
+    /// change once the window settles.
+    fn change_model<T: 'static>(
+        app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>,
+        change: impl FnOnce(&mut AboutModel) -> T + 'static,
+    ) -> T {
+        let changed = app
+            .with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+                change(&mut area(settings).unwrap().model().borrow_mut())
+            })
+            .expect("the Settings window is mounted");
+        app.settle();
+        changed
+    }
+
+    /// What the window announces.
+    fn shown(app: &mut ui::prelude::TestApp<crate::resource::SettingsShell>) -> Vec<String> {
+        crate::widgets::announced_text(app.harness().root_widget())
+    }
+
     /// About lists a freeze and the computer stopping as the host answers
     /// them, in the person's words and without their stacks; opening one
     /// reads its record, and only then.
     #[test]
     fn about_lists_the_problems_and_opens_one_to_its_record() {
-        let dir = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(dir.path().to_path_buf());
         let source = Rc::new(FixtureRecords {
             reads: std::cell::RefCell::default(),
         });
-        let mut model = AboutModel::new(
-            cx.clone(),
-            info(),
-            Some(Rc::clone(&source) as Rc<dyn ProblemRecords>),
-        );
-        let reading = crate::widgets::announced_text(model.compose().as_ref());
-        assert!(
-            reading.contains(&t("settings-about-problems-reading")),
-            "{reading:#?}"
-        );
+        let records = Rc::clone(&source) as Rc<dyn ProblemRecords>;
+        let mut app = window_on(move |cx| {
+            let model = AboutModel::new(cx, info(), Some(records));
+            assert_eq!(model.problems, Problems::Reading, "read once asked");
+            model
+        });
 
-        assert!(model.poll(), "the list arrived");
-        let listed = crate::widgets::announced_text(model.compose().as_ref());
+        let listed = shown(&mut app);
         for shown in [
             t("settings-about-problems-card"),
             t("settings-about-problem-froze"),
@@ -919,14 +983,16 @@ mod tests {
         );
         assert!(source.reads.borrow().is_empty());
 
-        assert!(model.open_problem("2026-10-20-000000-1.log").is_err());
-        model.open_problem(STOPPED).unwrap();
-        assert_eq!(
-            cx.pages().top(Category::About).map(|page| page.title),
-            Some(t("settings-about-problem-computer-stopped"))
-        );
-        model.poll();
-        let page = crate::widgets::announced_text(model.compose().as_ref());
+        assert!(change_model(&mut app, |model| model
+            .open_problem("2026-10-20-000000-1.log")
+            .is_err()));
+        let title = change_model(&mut app, |model| {
+            model.open_problem(STOPPED).unwrap();
+            model.cx.pages().top(Category::About).map(|page| page.title)
+        });
+        assert_eq!(title, Some(t("settings-about-problem-computer-stopped")));
+        app.settle();
+        let page = shown(&mut app);
         for shown in [
             t("settings-about-problem-card"),
             t("settings-about-problem-reason-panic"),
@@ -939,9 +1005,9 @@ mod tests {
         }
         assert_eq!(*source.reads.borrow(), [STOPPED.to_owned()]);
 
-        cx.pages().back();
-        model.poll();
-        let back = crate::widgets::announced_text(model.compose().as_ref());
+        change_model(&mut app, |model| model.cx.pages().back());
+        app.settle();
+        let back = shown(&mut app);
         assert!(
             back.contains(&t("settings-about-problem-froze")),
             "{back:#?}"
@@ -952,10 +1018,8 @@ mod tests {
     /// recorded rather than inventing any.
     #[test]
     fn about_without_records_says_none_were_recorded() {
-        let dir = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(dir.path().to_path_buf());
-        let model = AboutModel::new(cx, info(), None);
-        let text = crate::widgets::announced_text(model.compose().as_ref());
+        let mut app = window_on(|cx| AboutModel::new(cx, info(), None));
+        let text = shown(&mut app);
         assert!(
             text.contains(&t("settings-about-problems-none")),
             "{text:#?}"

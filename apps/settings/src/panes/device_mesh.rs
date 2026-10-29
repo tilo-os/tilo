@@ -3,6 +3,7 @@
 //! The pane reads and writes the same `RelayConfig` consumed by `tilo-relay`
 //! and reads the daemon's once-per-second metrics snapshot for live status.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -10,19 +11,22 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use ui::time::{Duration, Instant, SystemTime};
 
+use provider_settings_ui::bound::SettingRows as _;
 use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
-use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
+use ui::LocalState;
+use ui::framework::{Actions, EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{DisclosureGroup, Widget};
+use ui::widget::{DisclosureGroup, Element};
 
 use crate::continuity::{self, Capability, ContinuityPrivacy};
 use crate::effects::{SettingsEffect, effect};
-use crate::host::{Followed, PaneCx};
+use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{StatusTone, error_caption, note, page, row, rows, section, value_row};
+use crate::widgets::{
+    SettingsSection, StatusTone, error_caption, note, page_of, row, rows, section, value_row,
+};
 use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
 mod devices;
@@ -36,6 +40,12 @@ crate::area::pane_area! {
     DeviceMeshArea;
     fn poll(&self) {
         DeviceMeshArea::poll(self);
+    }
+    fn next_wake(&self) -> Option<Instant> {
+        DeviceMeshArea::next_wake(self)
+    }
+    fn busy(&self) -> bool {
+        DeviceMeshArea::busy(self)
     }
     fn take_collab_requests(&self) -> Vec<ui::collaboration::CollabRequest> {
         ui::widget::Collaborative::take_collab_requests(&mut self.remote())
@@ -493,13 +503,15 @@ pub(crate) fn answer(
 /// first needed.
 pub struct DeviceMeshArea {
     cx: PaneCx,
-    model: std::cell::OnceCell<Shared<DeviceMeshModel>>,
+    model: std::cell::OnceCell<Rc<RefCell<DeviceMeshModel>>>,
     /// The relay's configuration and state, read off the UI thread after
     /// the window's first frame ([`Self::start_read`]).
     read: crate::device_read::DeviceRead<MeshRead>,
     /// The area's client for the action door, shared with its model: the
     /// window carries its requests and answers on the app's connection.
     remote: ui::RemoteActions,
+    /// Moves whenever what the page shows of the model does.
+    shown: LocalState<u64>,
 }
 
 impl DeviceMeshArea {
@@ -509,7 +521,16 @@ impl DeviceMeshArea {
             model: std::cell::OnceCell::new(),
             read: crate::device_read::DeviceRead::default(),
             remote: ui::RemoteActions::current(),
+            shown: LocalState::new(0),
         }
+    }
+
+    /// The area over `model` in place of the one it would read: a test's.
+    #[cfg(test)]
+    fn over(cx: &PaneCx, model: DeviceMeshModel) -> Self {
+        let area = Self::new(cx);
+        let _ = area.model.set(Rc::new(RefCell::new(model)));
+        area
     }
 
     /// The same client, for another area that acts through the host.
@@ -532,7 +553,7 @@ impl DeviceMeshArea {
     /// screenshot, over an unconfigured one with nothing paired: from the
     /// read `Self::start_read` started, waiting for it if it still runs,
     /// else read here.
-    pub fn model(&self) -> &Shared<DeviceMeshModel> {
+    pub fn model(&self) -> &Rc<RefCell<DeviceMeshModel>> {
         self.model.get_or_init(|| {
             let read = self.read.take().unwrap_or_else(|| {
                 let (path, devices) = self.source();
@@ -561,7 +582,7 @@ impl DeviceMeshArea {
                     model.follow_removal(&DeviceMeshEffect::ReviewRemoval { device });
                 }
             }
-            Rc::new(std::cell::RefCell::new(model))
+            Rc::new(RefCell::new(model))
         })
     }
 
@@ -586,11 +607,37 @@ impl DeviceMeshArea {
         self.read.wait()
     }
 
-    /// Take in finished background commands, if the model exists.
+    /// Take in finished background commands, if the model exists. While a
+    /// page shows the model, also take in what it follows and move what
+    /// the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().poll_background_tasks();
+        let Some(model) = self.model.get() else {
+            return;
+        };
+        let Ok(mut model) = model.try_borrow_mut() else {
+            return;
+        };
+        if !model.shown() {
+            model.poll_background_tasks();
+            return;
         }
+        if model.poll() {
+            self.shown.set(self.shown.get().wrapping_add(1));
+        }
+    }
+
+    /// When the model next looks again, while a page shows it.
+    fn next_wake(&self) -> Option<Instant> {
+        let model = self.model.get()?.try_borrow().ok()?;
+        model.shown().then(|| model.next_wake()).flatten()
+    }
+
+    /// Whether a command the shown page waits for runs.
+    fn busy(&self) -> bool {
+        self.model
+            .get()
+            .and_then(|model| model.try_borrow().ok())
+            .is_some_and(|model| model.shown() && model.busy())
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -694,10 +741,6 @@ pub struct DeviceMeshModel {
     home_peer_last_seen: HashMap<String, u64>,
     personal_devices: Vec<crate::device_fleet::DeviceView>,
     personal_device_error: Option<String>,
-    /// The continuity choices as last read, and the person's settings
-    /// holding them.
-    continuity: ContinuityPrivacy,
-    continuity_settings: Followed<ContinuityPrivacy>,
     /// The device rows, keyed by device, which open their settings.
     device_rows: DisclosureGroup,
     /// The device whose removal is being asked about, by its row's key.
@@ -736,6 +779,8 @@ pub struct DeviceMeshModel {
     /// While a pane shows the area: the relay's status and the files the
     /// pane shows, followed for it.
     following: std::rc::Weak<MeshFollow>,
+    /// Held by each page that shows the model.
+    pages: std::rc::Weak<()>,
     /// Home servers still to ask on opening, one after another.
     health_round: usize,
     /// Which workspaces the home relay hosts too, as the host answers.
@@ -1087,8 +1132,6 @@ impl DeviceMeshModel {
 
     /// The model over what `read` read of the device.
     fn from_read(cx: PaneCx, read: MeshRead) -> Self {
-        let continuity_settings = cx.follow::<ContinuityPrivacy>();
-        let continuity = continuity_settings.get().clone();
         let (roaming_provenance, roaming_provenance_status, roaming_provenance_stamp) =
             shown_roaming_provenance(read.roaming_provenance);
         Self {
@@ -1104,8 +1147,6 @@ impl DeviceMeshModel {
             home_peer_last_seen: read.home_peer_last_seen,
             personal_devices: Vec::new(),
             personal_device_error: None,
-            continuity,
-            continuity_settings,
             device_rows: DisclosureGroup::new(),
             removing: None,
             removal_reason: ui::LocalState::new(revoke_shown(DEFAULT_REVOKE_REASON)),
@@ -1129,6 +1170,7 @@ impl DeviceMeshModel {
             remote: ui::RemoteActions::current(),
             next_status_refresh: ui::time::now() + STATUS_REFRESH_INTERVAL,
             following: std::rc::Weak::new(),
+            pages: std::rc::Weak::new(),
             health_round: 0,
             removals_pending: false,
         }
@@ -1451,12 +1493,108 @@ impl DeviceMeshModel {
         self.next_status_refresh = ui::time::now();
         true
     }
+}
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the pane composition keeps the four device-mesh policy cards and their explanatory security text in one auditable hierarchy"
-    )]
-    fn build_composition(&self) -> Box<dyn Widget> {
+/// The page as view code over the model as it is now: its groups, and the
+/// actions their controls invoke.
+pub(super) struct Page<'a> {
+    model: &'a DeviceMeshModel,
+    pub(super) cx: &'a ViewCx<Settings>,
+    actions: Actions<Settings>,
+    dispatcher: ui::framework::Dispatcher<Settings>,
+}
+
+impl std::ops::Deref for Page<'_> {
+    type Target = DeviceMeshModel;
+
+    fn deref(&self) -> &DeviceMeshModel {
+        self.model
+    }
+}
+
+impl Page<'_> {
+    /// `control`, invoking `effect` with each committed value.
+    pub(super) fn bind<I: 'static, C: ui::framework::ActionControl<I>>(
+        &self,
+        control: C,
+        effect: impl tilo_resource::Binds<SettingsEffect, I>,
+    ) -> C {
+        self.actions.bind_effect(control, effect)
+    }
+
+    /// `control` (a button), invoking the fully specified `effect`.
+    pub(super) fn bind_invocation<C: ui::framework::ActionControl<()>>(
+        &self,
+        control: C,
+        effect: impl Into<SettingsEffect>,
+    ) -> C {
+        self.actions.bind_effect_invocation(control, &effect.into())
+    }
+
+    /// `control`, invoking `effect` with each committed value on the live
+    /// row `row`, which offers it; unavailable where it does not.
+    pub(super) fn bind_on_row<I: 'static, C: ui::framework::ActionControl<I>>(
+        &self,
+        row: &ui::tilo_actions::ResourceSpec,
+        control: C,
+        effect: impl tilo_resource::Binds<SettingsEffect, I>,
+    ) -> C {
+        crate::on_row::bind(&self.dispatcher, row, control, effect)
+    }
+
+    /// `control` (a button), invoking the fully specified `effect` on the
+    /// live row `row`; unavailable where it does not offer it.
+    pub(super) fn bind_row<C: ui::framework::ActionControl<()>>(
+        &self,
+        control: C,
+        row: &ui::tilo_actions::ResourceSpec,
+        effect: impl Into<SettingsEffect>,
+    ) -> C {
+        crate::on_row::bind_invocation(&self.dispatcher, row, control, effect)
+    }
+
+    /// A switch of one item, labelled `label`, showing `on`, invoking `set`
+    /// on the item's live row `row` with each flip.
+    pub(super) fn switch_on_row(
+        &self,
+        label: String,
+        description: String,
+        id: &str,
+        on: bool,
+        row: &ui::tilo_actions::ResourceSpec,
+        set: impl tilo_resource::Binds<SettingsEffect, bool>,
+    ) -> crate::widgets::Item {
+        let toggle = self.bind_on_row(
+            row,
+            ui::widget::Toggle::from_state(&LocalState::new(on)).with_id(id),
+            set,
+        );
+        self.cx
+            .setting(label)
+            .described(description)
+            .control(Box::new(toggle))
+    }
+
+    /// A switch labelled `label`, showing `on`, invoking `set` with each
+    /// flip.
+    pub(super) fn switch(
+        &self,
+        label: String,
+        description: String,
+        id: String,
+        on: bool,
+        set: impl tilo_resource::Binds<SettingsEffect, bool>,
+    ) -> crate::widgets::Item {
+        self.cx
+            .setting(label)
+            .described(description)
+            .id(id)
+            .toggle_effect(&LocalState::new(on), &self.actions, set)
+    }
+
+    /// The whole page: the person's devices, the home relay, continuing
+    /// work, what continuity may carry, roaming and the continuity audit.
+    fn page(&self) -> Element {
         let activity = t("mesh-activity");
         let sync_auto = t("mesh-sync-auto");
         let mut continuation_rows = vec![
@@ -1477,62 +1615,7 @@ impl DeviceMeshModel {
             .iter()
             .find(|device| !device.current && !device.revoked)
             .map_or_else(|| t("mesh-no-target"), |device| device.label.clone());
-        let mut privacy_rows = vec![
-            self.cx
-                .row(t("mesh-allow-continuity"))
-                .described(t("mesh-allow-continuity-desc"))
-                .id(CONTINUITY_ENABLED_KEY)
-                .toggle_verb(
-                    &ui::LocalState::new(self.continuity.enabled),
-                    ContinuityPrivacy::ALLOW_CONTINUITY,
-                ),
-        ];
-        for capability in Capability::ALL {
-            let key = continuity_key(capability);
-            let desc = continuity::description(capability);
-            let status = if self.continuity.effective(capability) {
-                t_args(
-                    "mesh-facet-active",
-                    &[
-                        ("desc", desc.as_str().into()),
-                        ("target", target_name.as_str().into()),
-                    ],
-                )
-            } else if self.continuity.allowed(capability) {
-                t_args("mesh-facet-prepared", &[("desc", desc.into())])
-            } else {
-                t_args("mesh-facet-off", &[("desc", desc.into())])
-            };
-            let facet = capability.key().to_owned();
-            privacy_rows.push(
-                self.cx
-                    .row(continuity::label(capability))
-                    .described(status)
-                    .id(key)
-                    .toggle_verb(
-                        &ui::LocalState::new(self.continuity.allowed(capability)),
-                        ContinuityPrivacy::ALLOW_CAPABILITY
-                            .map(move |on: bool| (facet.clone(), on)),
-                    ),
-            );
-        }
-        privacy_rows.push(note(&t("mesh-privacy-stay")));
 
-        let audit_rows = if self.continuity.audit.is_empty() {
-            vec![note(&t("mesh-audit-empty"))]
-        } else {
-            self.continuity
-                .audit
-                .iter()
-                .rev()
-                .take(6)
-                .map(|entry| {
-                    let change = t("mesh-audit-change");
-                    value_row(&change, &crate::continuity::summary(entry))
-                })
-                .chain(std::iter::once(note(&t("mesh-audit-caption"))))
-                .collect()
-        };
         let mut roaming_rows = self.roaming_provenance.as_ref().map_or_else(
             || vec![note(&t("mesh-roaming-empty"))],
             |provenance| {
@@ -1552,15 +1635,34 @@ impl DeviceMeshModel {
         }
         roaming_rows.push(note(&t("mesh-roaming-caption")));
 
-        let mut sections = vec![self.devices_section()];
-        sections.extend(self.home_relay_section());
-        sections.extend([
-            section(&t("mesh-continue-title"), rows(continuation_rows)),
-            section(&t("mesh-privacy-title"), rows(privacy_rows)),
-            section(&t("mesh-roaming-title"), rows(roaming_rows)),
-            section(&t("mesh-activity-title"), rows(audit_rows)),
-        ]);
-        page(sections)
+        let mut groups = vec![self.devices_section().into_element()];
+        groups.extend(self.home_relay_section().map(SettingsSection::into_element));
+        groups.push(section(&t("mesh-continue-title"), rows(continuation_rows)).into_element());
+        groups.extend(
+            self.continuity_group(move |cx, continuity| {
+                privacy_section(cx, continuity, &target_name)
+            }),
+        );
+        groups.push(section(&t("mesh-roaming-title"), rows(roaming_rows)).into_element());
+        groups.extend(self.continuity_group(|_, continuity| activity_section(continuity)));
+        page_of(groups)
+    }
+
+    /// A group `build` makes of the person's continuity choices, as a part
+    /// of the view over them: built again whenever they change.
+    fn continuity_group(
+        &self,
+        build: impl Fn(&ViewCx<ContinuityPrivacy>, &ContinuityPrivacy) -> SettingsSection + 'static,
+    ) -> Option<Element> {
+        let continuity = self.cx.settings::<ContinuityPrivacy>();
+        let build = Rc::new(build);
+        self.cx.record(&continuity, move |cx| {
+            let build = Rc::clone(&build);
+            cx.switch(
+                &cx.value(ContinuityPrivacy::clone),
+                move |cx, continuity| build(cx, continuity).into_element(),
+            )
+        })
     }
 
     /// The row switching the mesh service `service` of this device.
@@ -1572,17 +1674,82 @@ impl DeviceMeshModel {
         id: &str,
         on: bool,
     ) -> crate::widgets::Item {
-        self.cx
-            .row(t(label))
-            .described(t(description))
-            .id(id)
-            .toggle_effect(
-                &ui::LocalState::new(on),
-                effect(DeviceMeshEffect::SET_DEVICE_SERVICE)
-                    .map(move |on: bool| (service.to_owned(), on)),
-            )
+        self.switch(
+            t(label),
+            t(description),
+            id.to_owned(),
+            on,
+            effect(DeviceMeshEffect::SET_DEVICE_SERVICE)
+                .map(move |on: bool| (service.to_owned(), on)),
+        )
     }
+}
 
+/// What continuity may carry to `target`: continuity itself, then each
+/// capability, each the section's verb.
+fn privacy_section(
+    cx: &ViewCx<ContinuityPrivacy>,
+    continuity: &ContinuityPrivacy,
+    target: &str,
+) -> SettingsSection {
+    let mut privacy_rows = vec![
+        cx.setting(t("mesh-allow-continuity"))
+            .described(t("mesh-allow-continuity-desc"))
+            .id(CONTINUITY_ENABLED_KEY)
+            .toggle_verb(
+                |continuity: &ContinuityPrivacy| continuity.enabled,
+                ContinuityPrivacy::ALLOW_CONTINUITY,
+            ),
+    ];
+    for capability in Capability::ALL {
+        let key = continuity_key(capability);
+        let desc = continuity::description(capability);
+        let status = if continuity.effective(capability) {
+            t_args(
+                "mesh-facet-active",
+                &[("desc", desc.as_str().into()), ("target", target.into())],
+            )
+        } else if continuity.allowed(capability) {
+            t_args("mesh-facet-prepared", &[("desc", desc.into())])
+        } else {
+            t_args("mesh-facet-off", &[("desc", desc.into())])
+        };
+        let facet = capability.key().to_owned();
+        privacy_rows.push(
+            cx.setting(continuity::label(capability))
+                .described(status)
+                .id(key)
+                .toggle_verb(
+                    move |continuity: &ContinuityPrivacy| continuity.allowed(capability),
+                    ContinuityPrivacy::ALLOW_CAPABILITY.map(move |on: bool| (facet.clone(), on)),
+                ),
+        );
+    }
+    privacy_rows.push(note(&t("mesh-privacy-stay")));
+    section(&t("mesh-privacy-title"), rows(privacy_rows))
+}
+
+/// The last continuity changes, as the section's audit keeps them.
+fn activity_section(continuity: &ContinuityPrivacy) -> SettingsSection {
+    let audit_rows = if continuity.audit.is_empty() {
+        vec![note(&t("mesh-audit-empty"))]
+    } else {
+        continuity
+            .audit
+            .iter()
+            .rev()
+            .take(6)
+            .map(|entry| {
+                let change = t("mesh-audit-change");
+                value_row(&change, &crate::continuity::summary(entry))
+            })
+            .chain(std::iter::once(note(&t("mesh-audit-caption"))))
+            .collect()
+    };
+    section(&t("mesh-activity-title"), rows(audit_rows))
+}
+
+impl DeviceMeshModel {
     fn persist(&mut self) {
         if self.config_path == std::path::Path::new(DEFAULT_CONFIG) {
             if self.apply_child.is_some() {
@@ -1901,17 +2068,26 @@ impl DeviceMeshModel {
     }
 }
 
-impl PaneModel for DeviceMeshModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        self.build_composition()
+impl DeviceMeshModel {
+    /// Whether a page shows the model.
+    fn shown(&self) -> bool {
+        self.pages.strong_count() > 0
     }
 
+    /// What a page that shows the model holds for as long as it does.
+    fn show(&mut self) -> Rc<()> {
+        if let Some(held) = self.pages.upgrade() {
+            return held;
+        }
+        let held = Rc::new(());
+        self.pages = Rc::downgrade(&held);
+        held
+    }
+
+    /// Take in what background work finished and what the shown page
+    /// follows; whether what it shows changed.
     fn poll(&mut self) -> bool {
         self.poll_background_tasks();
-        if self.continuity_settings.refresh() {
-            self.continuity = self.continuity_settings.get().clone();
-            self.changed = true;
-        }
         if let Some(follow) = self.following.upgrade() {
             self.take_followed(&follow);
         } else if ui::time::now() >= self.next_status_refresh {
@@ -1921,14 +2097,12 @@ impl PaneModel for DeviceMeshModel {
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "DeviceMeshPane"
-    }
-
+    /// Whether a command the page waits for runs.
     fn busy(&self) -> bool {
         self.apply_child.is_some() || self.pairing_call.is_some() || self.management_child.is_some()
     }
 
+    /// When the model next looks again while nothing else happens.
     fn next_wake(&self) -> Option<Instant> {
         if !shows_advanced_services(self.config.device_role) {
             return None;
@@ -1944,8 +2118,11 @@ impl PaneModel for DeviceMeshModel {
         }
     }
 
-    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
-        // Only a serving device shows the relay's status; a pane opened
+    /// Follow the relay's status and the files the page shows, for a page
+    /// that shows the model, for as long as the answer is held; pages share
+    /// one follow.
+    fn follow(&mut self) -> Option<Rc<MeshFollow>> {
+        // Only a serving device shows the relay's status; a page opened
         // before the role changed reads it on its timer instead.
         if !self.cx.reaches_devices() || !shows_advanced_services(self.config.device_role) {
             return None;
@@ -1966,6 +2143,36 @@ impl PaneModel for DeviceMeshModel {
         self.next_status_refresh = ui::time::now();
         Some(follow)
     }
+
+    /// The page over the model as it is now, in `cx`.
+    fn page(&self, cx: &ViewCx<Settings>) -> Element {
+        Page {
+            model: self,
+            cx,
+            actions: cx.actions(),
+            dispatcher: cx.dispatcher(),
+        }
+        .page()
+    }
+}
+
+/// The Devices & Sync page as view code over what the area reads: built
+/// again whenever what it shows changes ([`DeviceMeshArea::poll`]), its
+/// continuity groups whenever the person's continuity choices do. The
+/// relay is followed while the page is shown.
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    let held = area(app)?;
+    let model = Rc::clone(held.model());
+    let showing = model.borrow_mut().show();
+    let following = model.borrow_mut().follow();
+    // What changed while no page showed the model is taken in before the
+    // page is built.
+    model.borrow_mut().poll();
+    Some(cx.switch(&held.shown, move |cx, _| {
+        // The part keeps the model shown and the relay followed while it is.
+        let _held = (&showing, &following);
+        model.borrow().page(cx)
+    }))
 }
 
 impl DeviceMeshModel {
@@ -1998,7 +2205,33 @@ impl DeviceMeshModel {
 mod tests {
     use super::*;
     use settings_store::roaming_provenance::{SCHEMA_VERSION, SettingResolution, WifiResolution};
-    use ui::widget::DisclosureRow;
+    use ui::prelude::TestApp;
+    use ui::widget::{DisclosureRow, Widget};
+
+    use crate::resource::SettingsShell;
+
+    /// A Settings window on Devices & Sync, whose area shows `model`.
+    fn window_on(model: DeviceMeshModel) -> TestApp<SettingsShell> {
+        crate::area::replace_in_next_window(move |context| DeviceMeshArea::over(context.cx, model));
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::DeviceMesh);
+        app
+    }
+
+    /// The window's Devices & Sync model, changed by `change`; the page
+    /// shows the change once the window settles.
+    fn change_model<T: 'static>(
+        app: &mut TestApp<SettingsShell>,
+        change: impl FnOnce(&mut DeviceMeshModel) -> T + 'static,
+    ) -> T {
+        let changed = app
+            .with_widget::<crate::window::SettingsWindow, _>(move |settings| {
+                change(&mut area(settings).unwrap().model().borrow_mut())
+            })
+            .expect("the Settings window is mounted");
+        app.settle();
+        changed
+    }
 
     /// `at` as milliseconds after the epoch, as the held clock reports it.
     fn millis_since_epoch(at: SystemTime) -> u64 {
@@ -2152,8 +2385,8 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-            let composition = pane.build_composition();
-            let ids = test_ids(composition.as_ref());
+            let mut app = window_on(pane);
+            let ids = test_ids(app.harness().root_widget());
 
             assert!(ids.iter().any(|id| id == CONTINUITY_ENABLED_KEY));
             for capability in Capability::ALL {
@@ -2567,12 +2800,13 @@ mod tests {
 
     #[test]
     fn each_device_is_one_row_whose_settings_open_under_it() {
+        let _settled = ui::motion::testing::settled();
         let dir = tempfile::tempdir().unwrap();
-        let mut pane = devices_and_a_home_server(dir.path());
-        let text = |pane: &DeviceMeshModel| {
-            crate::widgets::announced_text(pane.build_composition().as_ref())
+        let mut app = window_on(devices_and_a_home_server(dir.path()));
+        let text = |app: &mut TestApp<SettingsShell>| {
+            crate::widgets::announced_text(app.harness().root_widget())
         };
-        let shown = text(&pane);
+        let shown = text(&mut app);
         for name in ["Ada's Laptop", "Ada's Phone", "Kitchen NAS"] {
             let rows = shown
                 .iter()
@@ -2594,57 +2828,66 @@ mod tests {
         }
 
         // This device's settings are under its own row.
-        let composed = pane.build_composition();
-        let holder = |id: &str| row_holding(composed.as_ref(), id);
-        assert_eq!(holder("device_mesh.role").as_deref(), Some("Ada's Laptop"));
+        {
+            let composed = app.harness().root_widget();
+            let holder = |id: &str| row_holding(composed, id);
+            assert_eq!(holder("device_mesh.role").as_deref(), Some("Ada's Laptop"));
 
-        // The home server renames in place: the name itself is the field.
-        let rename = peer_key("name", NEARBY_DEVICE);
-        assert_eq!(holder(&rename).as_deref(), Some("Kitchen NAS"));
-        let field = ui::widget::find_test_id(composed.as_ref(), &rename).unwrap();
-        assert_eq!(
-            field.accessibility().and_then(|node| node.name).as_deref(),
-            Some(t("mesh-name").as_str()),
-            "the name is its own field"
-        );
-        let ids = test_ids(composed.as_ref());
-        assert!(
-            !ids.iter()
-                .any(|id| *id == peer_key("rename", NEARBY_DEVICE)),
-            "no separate button applies the name: {ids:?}"
-        );
-        drop(composed);
+            // The home server renames in place: the name itself is the field.
+            let rename = peer_key("name", NEARBY_DEVICE);
+            assert_eq!(holder(&rename).as_deref(), Some("Kitchen NAS"));
+            let field = ui::widget::find_test_id(composed, &rename).unwrap();
+            assert_eq!(
+                field.accessibility().and_then(|node| node.name).as_deref(),
+                Some(t("mesh-name").as_str()),
+                "the name is its own field"
+            );
+            let ids = test_ids(composed);
+            assert!(
+                !ids.iter()
+                    .any(|id| *id == peer_key("rename", NEARBY_DEVICE)),
+                "no separate button applies the name: {ids:?}"
+            );
+        }
 
         // Removing the phone asks first; Cancel keeps it.
         let review = peer_key("review-remove", PHONE);
         let confirm = personal_device_key("revoke", PHONE);
-        let has = |pane: &DeviceMeshModel, id: &str| {
-            test_ids(pane.build_composition().as_ref())
+        let has = |app: &mut TestApp<SettingsShell>, id: &str| {
+            test_ids(app.harness().root_widget())
                 .iter()
                 .any(|known| known == id)
         };
-        assert!(has(&pane, &review) && !has(&pane, &confirm));
-        pane.apply(&DeviceMeshEffect::ReviewRemoval {
-            device: PHONE.into(),
+        assert!(has(&mut app, &review) && !has(&mut app, &confirm));
+        change_model(&mut app, |pane| {
+            pane.apply(&DeviceMeshEffect::ReviewRemoval {
+                device: PHONE.into(),
+            })
         })
         .unwrap();
         assert!(
-            has(&pane, &confirm),
+            has(&mut app, &confirm),
             "asked, Remove device stands beside Cancel"
         );
-        let asked = text(&pane);
+        let asked = text(&mut app);
         assert!(
             asked
                 .iter()
                 .any(|line| line.contains("Remove Ada's Phone?")),
             "{asked:#?}"
         );
-        pane.apply(&DeviceMeshEffect::CancelRemoval).unwrap();
+        change_model(&mut app, |pane| {
+            pane.apply(&DeviceMeshEffect::CancelRemoval)
+        })
+        .unwrap();
         assert!(
-            !has(&pane, &confirm) && has(&pane, &review),
+            !has(&mut app, &confirm) && has(&mut app, &review),
             "cancelled, nothing changed"
         );
-        assert_eq!(pane.personal_devices.len(), 3);
+        assert_eq!(
+            change_model(&mut app, |pane| pane.personal_devices.len()),
+            3
+        );
     }
 
     /// Removing a home server and revoking a device ask first, and only

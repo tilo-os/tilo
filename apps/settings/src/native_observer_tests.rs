@@ -57,20 +57,6 @@ fn rebuild(h: &mut Framed<SettingsWindow>) {
     Framed::harness_mut(h).relayout();
 }
 
-fn select(h: &mut Framed<SettingsWindow>, category: Category) {
-    h.select(category);
-    rebuild(h);
-    // The keyboard is drawn off the UI thread; the page shows it once it is.
-    if category == Category::Keyboard {
-        assert!(
-            Framed::harness_mut(h).wait_until(tilo_test_env::hang_bound(), |harness| {
-                keyboard_map_value(harness.root_widget()).is_some()
-            }),
-            "the keyboard is drawn"
-        );
-    }
-}
-
 /// Type `query` into the window bar's search, as the bar hands it to the
 /// app: the search narrows the sidebar's list in place. Settings draws no
 /// search field of its own.
@@ -159,30 +145,61 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
     }
 }
 
-fn named_widget_identity(widget: &dyn Widget, name: &str) -> Option<usize> {
-    if widget.name() == name {
-        return Some(std::ptr::from_ref(widget).cast::<()>() as usize);
+/// The innermost widget in `widget`'s tree that announces `text`.
+fn announced_identity(widget: &dyn Widget, text: &str) -> Option<usize> {
+    fn announces(node: &ui::a11y::AccessNode, text: &str) -> bool {
+        node.name.as_deref() == Some(text)
+            || node.children.iter().any(|child| announces(child, text))
     }
     widget
         .children()
         .into_iter()
-        .find_map(|child| named_widget_identity(child, name))
+        .find_map(|child| announced_identity(child, text))
+        .or_else(|| {
+            widget
+                .accessibility()
+                .is_some_and(|node| announces(&node, text))
+                .then(|| std::ptr::from_ref(widget).cast::<()>() as usize)
+        })
 }
 
 #[test]
 fn search_preserves_the_pane_but_category_switch_replaces_it() {
-    let config = crate::prefs::test_env::ScratchConfig::new();
-    let mut h = wide(&config);
-    select(&mut h, Category::About);
-    let about = named_widget_identity(&*h, "AboutPane").unwrap();
+    let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    crate::effects::show_pane(&mut app, Category::About);
+    let heading = crate::i18n::t("settings-about-problems-card");
+    let about = announced_identity(app.harness().root_widget(), &heading).unwrap();
     // A query that finds no setting narrows the list and leaves the pane;
     // one that finds settings shows them instead.
-    bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "zqx");
-    assert!(h.found_settings().is_empty());
-    assert_eq!(named_widget_identity(&*h, "AboutPane"), Some(about));
-    select(&mut h, Category::Printers);
-    assert_eq!(h.selected(), super::Category::Printers);
-    assert_eq!(named_widget_identity(&*h, "AboutPane"), None);
+    app.with_widget::<SettingsWindow, _>(|settings| {
+        let mut search = ui::widget::SearchDriver::default();
+        search.open(ui::window_toolbar::SearchOffer::of(settings).into());
+        assert!(
+            search.drive(
+                settings,
+                "zqx",
+                ui::widget::FindOptions::default(),
+                None,
+                false
+            ),
+            "the bar's search reached the sidebar"
+        );
+    })
+    .expect("the Settings window is mounted");
+    app.settle();
+    assert!(
+        app.with_widget::<SettingsWindow, _>(|settings| settings.found_settings().is_empty())
+            .unwrap()
+    );
+    assert_eq!(
+        announced_identity(app.harness().root_widget(), &heading),
+        Some(about)
+    );
+    crate::effects::show_pane(&mut app, Category::Printers);
+    assert_eq!(
+        announced_identity(app.harness().root_widget(), &heading),
+        None
+    );
 }
 
 /// Searching from a narrow window's list narrows the list; what it finds

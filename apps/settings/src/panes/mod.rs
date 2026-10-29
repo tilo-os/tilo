@@ -90,6 +90,8 @@ pub(crate) fn view(
         crate::categories::Category::Displays => display::view(cx, app),
         crate::categories::Category::DefaultApps => personal_apps::view(cx, app),
         crate::categories::Category::TimeDate => time_date::view(cx, app),
+        crate::categories::Category::DeviceMesh => device_mesh::view(cx, app),
+        crate::categories::Category::About => about::view(cx, app),
         _ => None,
     }
 }

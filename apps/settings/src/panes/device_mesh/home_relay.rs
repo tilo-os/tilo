@@ -16,7 +16,7 @@ use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::home_relay_hosting::{self, HomeRelayHosting, HostedWorkspace};
 use ui::tilo_resource::Effect as _;
 
-use super::{DeviceMeshEffect, DeviceMeshModel};
+use super::{DeviceMeshEffect, DeviceMeshModel, Page};
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
 use crate::widgets::{SettingsSection, error_caption, note, row, rows, section};
@@ -38,6 +38,13 @@ impl HomeRelay {
     /// Whether the host still owes an answer.
     pub(super) const fn waiting(&self) -> bool {
         self.listing.is_some() || self.choosing.is_some()
+    }
+
+    /// The host's answer and the person's home relay, once the host
+    /// answered that they have one: the section shows nothing without.
+    pub(super) fn relay(&self) -> Option<(&HomeRelayHosting, &str)> {
+        let hosting = self.hosting.as_ref()?;
+        Some((hosting, hosting.relay.as_deref()?))
     }
 }
 
@@ -132,14 +139,13 @@ impl DeviceMeshModel {
             self.changed = true;
         }
     }
+}
 
+impl DeviceMeshModel {
     /// One row per workspace the home relay may host, once the host
     /// answered that the person has one, offering its switch.
     pub(super) fn home_relay_rows(&self) -> Vec<LiveRow> {
-        let Some(hosting) = &self.home_relay.hosting else {
-            return Vec::new();
-        };
-        let Some(relay) = hosting.relay.as_deref() else {
+        let Some((hosting, relay)) = self.home_relay.relay() else {
             return Vec::new();
         };
         hosting
@@ -148,27 +154,27 @@ impl DeviceMeshModel {
             .map(|workspace| home_relay_row(workspace, relay))
             .collect()
     }
+}
 
+impl Page<'_> {
     /// The section, once the host answered that the person has a home
     /// relay; nothing to show without one.
     pub(super) fn home_relay_section(&self) -> Option<SettingsSection> {
-        let hosting = self.home_relay.hosting.as_ref()?;
-        let relay = hosting.relay.as_deref()?;
+        let (hosting, relay) = self.home_relay.relay()?;
         let mut items: Vec<_> = hosting
             .workspaces
             .iter()
             .map(|workspace| {
                 let room = workspace.room.clone();
-                self.cx
-                    .row(workspace.name.clone())
-                    .described(t_args("mesh-home-relay-also", &[("relay", relay.into())]))
-                    .id(format!("device_mesh.home_relay.{}", workspace.room))
-                    .toggle_on_row(
-                        &ui::LocalState::new(workspace.on_relay),
-                        &home_relay_row(workspace, relay).into_resource(),
-                        effect(DeviceMeshEffect::SET_HOME_RELAY_HOSTING)
-                            .map(move |on: bool| (room.clone(), on)),
-                    )
+                self.switch_on_row(
+                    workspace.name.clone(),
+                    t_args("mesh-home-relay-also", &[("relay", relay.into())]),
+                    &format!("device_mesh.home_relay.{}", workspace.room),
+                    workspace.on_relay,
+                    &home_relay_row(workspace, relay).into_resource(),
+                    effect(DeviceMeshEffect::SET_HOME_RELAY_HOSTING)
+                        .map(move |on: bool| (room.clone(), on)),
+                )
             })
             .collect();
         if items.is_empty() {

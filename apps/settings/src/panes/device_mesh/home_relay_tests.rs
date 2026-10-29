@@ -22,7 +22,7 @@ fn a_workspace_is_put_on_the_home_relay_through_the_host() {
         ui::tilo_actions::remote::Caller::local_person("owner"),
     );
     assert!(
-        pane.home_relay_section().is_none(),
+        pane.home_relay.relay().is_none(),
         "nothing to show before the host answers"
     );
 
@@ -42,7 +42,7 @@ fn a_workspace_is_put_on_the_home_relay_through_the_host() {
         on_relay(&pane),
         [("Personal".to_owned(), true), ("Studio".to_owned(), false)]
     );
-    assert!(pane.home_relay_section().is_some());
+    assert!(pane.home_relay.relay().is_some());
 
     pane.apply(&DeviceMeshEffect::SetHomeRelayHosting {
         room: STUDIO_ROOM.into(),
