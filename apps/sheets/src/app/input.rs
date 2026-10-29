@@ -1,8 +1,8 @@
 //! What a press, a wheel or a key does: the targets the last paint recorded, the cell menu and its rows, the annotation cards, the palette and chrome clicks, and the clipboard chords a keyboard sends.
 
 use super::{
-    Addr, AnnotationClick, CellFormat, CellMenuRow, ChartKind, CommandEntry, ContextMenu, Edits,
-    ElementState, Id, Invoke, Modifiers, MouseButton, MouseScrollDelta, ObjId, PaletteRouteCtx,
+    Addr, AnnotationClick, CellFormat, CellMenuRow, ChartKind, ContextMenu, Edits,
+    ElementState, Id, Invoke, Modifiers, MouseButton, MouseScrollDelta, PaletteRouteCtx,
     Point, Rect, Row, SettingsPanel, SheetsApp, Widget, WindowEvent, Workbook, span, verbs,
 };
 
@@ -163,8 +163,8 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Ask in the palette for what the published action `action` of the
-    /// annotation `place` (`chart:<id>`, `comment:<id>`) takes, starting
+    /// Ask in the host's palette for what the published action `action` of
+    /// the annotation `place` (`chart:<id>`, `comment:<id>`) takes, starting
     /// from `prefill`; the palette invokes it as Ctrl+K does.
     pub(super) fn ask_annotation(&mut self, place: &str, action: &str, prefill: String) -> bool {
         let resources = self.published();
@@ -175,8 +175,13 @@ impl SheetsApp {
             self.status = "That is no longer there".into();
             return false;
         };
-        let entry = CommandEntry::from_flat_action(&flat);
-        self.palette.open_action_argument(entry, Some(prefill));
+        self.search.open(
+            ui::search::SearchRequest::asking(
+                ui::search::ScopeDecl::new(flat.resource_id.0.clone(), flat.resource_label.clone()),
+                action,
+            )
+            .with_query(prefill),
+        );
         self.pending.redraw = true;
         true
     }
@@ -338,40 +343,17 @@ impl SheetsApp {
         true
     }
 
-    /// The command palette (when open) owns the keyboard: arrows, Enter, Esc
-    /// and typing are consumed by it and never reach the grid behind. On
-    /// Enter it emits an outcome we dispatch here. Otherwise: Ctrl+K opens
-    /// the palette, Escape closes an overlay, clipboard chords route to either
+    /// Escape closes an overlay, clipboard chords route to either
     /// the grid selection or an in-progress edit's text selection, and
     /// anything left falls through to the grid's own key handling. Inline
     /// editors are routed before this method by [`Self::route_inline_editor`].
     pub(super) fn handle_keyboard_input(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
         modifiers: Modifiers,
         state: &mut Edits<'_>,
         handled: &mut bool,
-        ctx: &mut PaletteRouteCtx<'_>,
     ) {
-        if self.palette.is_open() {
-            self.palette.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    scale_factor,
-                    modifiers: &modifiers,
-                    state: state.reborrow(),
-                    path: ctx.path,
-                    handled,
-                    focus_target: ctx.focus_target,
-                    node_id: ctx.node_id,
-                    taffy: ctx.taffy,
-                },
-            );
-            self.pending.redraw = true;
-            *handled = true;
-            return;
-        }
         // Familiar spreadsheet navigation stays on the keyboard, whatever
         // the window bar has room for.
         if let WindowEvent::KeyboardInput { event: ke, .. } = event {
@@ -404,12 +386,6 @@ impl SheetsApp {
                 }
                 if modifiers.state().shift_key() && c.as_str().eq_ignore_ascii_case("f") {
                     self.toggle_formula_view();
-                    *handled = true;
-                    return;
-                }
-                // Ctrl+K opens the command palette.
-                if c.as_str().eq_ignore_ascii_case("k") {
-                    self.open_command_palette();
                     *handled = true;
                     return;
                 }
@@ -446,21 +422,17 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Left-press: routes to whichever modal surface is open (palette,
-    /// rename, name box, tab menu, settings panel, dropdown menu), then the
+    /// Left-press: routes to whichever modal surface is open (rename, name
+    /// box, tab menu, settings panel, dropdown menu), then the
     /// menu bar / name box / fx / formula field / sheet tabs, and finally the
     /// grid body, in priority order.
     pub(super) fn handle_left_press(
         &mut self,
         modifiers: Modifiers,
         state: &mut Edits<'_>,
-        path: &ObjId,
         handled: &mut bool,
     ) {
         let p = self.last_mouse;
-        if self.try_palette_click(p, state, path, handled) {
-            return;
-        }
         if self.try_settings_panel_click(p, state, handled) {
             return;
         }
@@ -736,7 +708,6 @@ impl SheetsApp {
         let shift = event_ctx.modifiers.state().shift_key();
         if key.state == ElementState::Pressed
             && ctrl
-            && !self.palette.is_open()
             && self.settings_panel == SettingsPanel::None
             && self.name_box_edit.is_none()
             && self.tab_rename.is_none()
@@ -1034,28 +1005,5 @@ impl SheetsApp {
         self.apply_cmds(state, out);
         self.pending.redraw = true;
         *handled = true;
-    }
-
-    /// The command palette is modal while open: a click on a row runs it, a
-    /// click elsewhere dismisses it.
-    pub(super) fn try_palette_click(
-        &mut self,
-        p: Point,
-        state: &mut Edits<'_>,
-        path: &ObjId,
-        handled: &mut bool,
-    ) -> bool {
-        if !self.palette.is_open() {
-            return false;
-        }
-        if let Some(i) = self.palette.row_at(p) {
-            self.palette.set_cursor(i);
-            self.palette.activate_selected(state, path);
-        } else if !Widget::get_rect(&self.palette).contains(p) {
-            self.palette.close();
-        }
-        self.pending.redraw = true;
-        *handled = true;
-        true
     }
 }

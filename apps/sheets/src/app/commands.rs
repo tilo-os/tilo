@@ -1,7 +1,7 @@
 //! The commands the bar, the menus and the palette run: sheets and tabs, document settings, the command palette, row and column verbs, navigation, and the effects an answer comes back as.
 
 use super::{
-    CellFormat, CommandEntry, Edits, Id, Invoke, MenuItem, PendingReveal, SettingKind,
+    CellFormat, Edits, Id, Invoke, MenuItem, PendingReveal, SettingKind,
     SettingsPanel, SheetsApp, Workbook, a1_to_addr, actions, date_label, time_label, verbs,
 };
 
@@ -58,64 +58,15 @@ impl SheetsApp {
         self.reload();
     }
 
-    /// Seed the Ctrl+K command palette with the current action set and open it.
-    /// Rebuilt each time so argument prefills (e.g. the active cell reference)
-    /// stay current. Every entry is wired to a real mutation in
-    /// [`dispatch_command`]; nothing here is a stub.
+    /// Open the host's search on the workbook's actions, as Ctrl+K does,
+    /// over any other overlay.
     pub(super) fn open_command_palette(&mut self) {
-        let resources = self.published();
-        self.open_palette_with(&resources);
-    }
-
-    /// Open the command palette on `resources`, the workbook as published.
-    pub(super) fn open_palette_with(&mut self, resources: &[tilo_actions::ResourceSpec]) {
-        // Close any other overlay so the palette owns the surface.
         self.settings_panel = SettingsPanel::None;
         self.tab_menu_target = None;
         self.name_box_edit = None;
         self.tab_rename = None;
-
-        let active_ref = {
-            let (c, r) = self.grid.active();
-            crate::model::addr_to_a1(c, r)
-        };
-        self.palette.clear();
-        let mut actions = tilo_actions::flatten(resources);
-        actions.sort_by_key(|action| usize::from(action.action.id != "go-to-cell"));
-        for action in actions {
-            if action.action.id == "commands" {
-                continue;
-            }
-            let mut entry = CommandEntry::from_flat_action(&action);
-            // The palette already says whose commands these are; the row is
-            // just the command.
-            entry.label.clone_from(&action.action.label);
-            if action.action.id == "go-to-cell" {
-                entry = entry.with_argument_prefill(active_ref.clone());
-            }
-            self.palette.push(entry);
-        }
-        self.palette.open();
+        self.search.open(ui::search::SearchRequest::this_app());
         self.pending.redraw = true;
-    }
-
-    #[cfg(test)]
-    pub(super) fn dispatch_palette_view_for_test(&mut self) {
-        let intent = ui::widget::controls::take_control_invocation(self)
-            .expect("palette emitted a resource action");
-        let resources = self.published();
-        let spec = tilo_actions::door::resolve(&resources, &intent.address)
-            .expect("palette address resolves");
-        assert_eq!(spec.kind, tilo_actions::OperationKind::View);
-        let encoded = spec.build_json(&intent.arguments).expect("valid arguments");
-        assert_eq!(
-            encoded.type_id,
-            <actions::SheetsEffect as ui::tilo_resource::Effect>::OPERATION
-        );
-        let effect =
-            <actions::SheetsEffect as ui::tilo_resource::Effect>::from_payload(&encoded.payload)
-                .expect("a workbook effect");
-        self.show(effect).expect("the view is shown");
     }
 
     /// Run the action the palette emitted, dispatching by id. `argument`
@@ -360,10 +311,7 @@ impl SheetsApp {
                     self.status = error;
                 }
             }
-            Ask::Commands => {
-                let resources = self.published();
-                self.open_palette_with(&resources);
-            }
+            Ask::Commands => self.open_command_palette(),
             Ask::Status(status) => self.status = status,
             Ask::Reveal(reveal) => self.pending_reveal = Some(reveal),
             Ask::Stage(scenario) => self.stage_scenario(scenario.as_deref()),
