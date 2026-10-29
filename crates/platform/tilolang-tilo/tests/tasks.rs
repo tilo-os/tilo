@@ -131,7 +131,7 @@ fn a_quick_add_adds_what_was_typed_and_nothing_for_an_empty_entry() {
     call(
         &ada,
         "quick_add",
-        vec![root.clone(), Value::text("Water the plants")],
+        vec![root, Value::text("Water the plants")],
     );
     ada.commit();
     let made = items(&ada);
@@ -169,7 +169,7 @@ fn a_quick_add_reads_when_it_is_due_in_the_persons_zone() {
         &ada,
         "quick_add",
         vec![
-            root.clone(),
+            root,
             Value::text("Buy oat milk"),
             Value::none(),
             Value::Bool(true),
