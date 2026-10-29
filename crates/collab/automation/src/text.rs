@@ -460,11 +460,6 @@ impl Walk<'_> {
                 StepKind::ForEach { body, .. } => {
                     self.widget_block(body, &here, BlockKind::Body, &naming)?;
                 }
-                StepKind::Invoke { .. }
-                | StepKind::SetVar { .. }
-                | StepKind::Ask { .. }
-                | StepKind::Ai { .. }
-                | StepKind::Task { .. } => {}
                 _ => {}
             }
         }
@@ -550,7 +545,6 @@ fn refer_name_step(shared: &Shared<'_>, step: &Step) -> Option<String> {
             }
             Some(reads_as(shared, step))
         }
-        StepKind::If { .. } => None,
         StepKind::ForEach { item, .. } | StepKind::SetVar { name: item, .. } => Some(item.clone()),
         StepKind::Ask { param } => Some(param.name.to_string()),
         StepKind::Ai { .. } => Some("its answer".to_owned()),
@@ -681,10 +675,6 @@ fn step_line(
             ));
         }
         StepKind::If { .. } | StepKind::Ask { .. } => return Ok((phrase, Vec::new())),
-        StepKind::Compute { .. }
-        | StepKind::Repeat { .. }
-        | StepKind::While { .. }
-        | StepKind::Return { .. } => {}
         _ => {}
     }
     let mut notes = Vec::new();
@@ -1262,7 +1252,6 @@ impl Targets {
     /// Note what a line's result is called, for the lines after it.
     fn note(&mut self, phrase: &str, step: &Step) {
         let binding = match &step.kind {
-            StepKind::If { .. } => return,
             StepKind::ForEach { item, .. } => Binding::Var(item.clone()),
             StepKind::SetVar { name, .. } => Binding::Var(name.clone()),
             StepKind::Ask { param } => Binding::Var(param.name.to_string()),
