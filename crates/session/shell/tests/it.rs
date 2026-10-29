@@ -147,6 +147,8 @@ mod key_repeat_wire;
 mod keyboard_focus_wire;
 #[path = "keyboard_layout_wire.rs"]
 mod keyboard_layout_wire;
+#[path = "launcher_search.rs"]
+mod launcher_search;
 #[path = "leak_probe.rs"]
 mod leak_probe;
 #[path = "legacy_window_between_devices.rs"]

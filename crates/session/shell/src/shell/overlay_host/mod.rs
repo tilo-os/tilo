@@ -71,6 +71,7 @@ mod history;
 // (docs/architecture/surfaces.md, "Migration"). Nothing reads the model to
 // make a decision yet, so the arms no overlay uses are declared here, once,
 // rather than per type; the last migration step removes this.
+mod launcher_host;
 #[allow(
     dead_code,
     reason = "the surface model's vocabulary, published before input, scrim and focus are served from it; docs/architecture/surfaces.md, Migration"
@@ -542,6 +543,12 @@ pub struct ShellOverlayHost {
     outputs: Vec<OutputGeometry>,
     palette: CommandPalette,
     palette_visible: bool,
+    /// Search as the launcher app shows it, once the session lends the apps
+    /// it mounts in its own process; until then (and in a host without
+    /// them) the palette above draws itself.
+    launcher: Option<launcher_host::LauncherHost>,
+    /// The launcher cannot be mounted here: the palette draws itself.
+    launcher_unavailable: bool,
     /// Search providers the palette fans out to. Built once at
     /// construction — providers are stateful (own background indexers),
     /// so re-registration would leak worker threads.
