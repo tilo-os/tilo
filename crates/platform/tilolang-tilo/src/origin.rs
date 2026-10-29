@@ -78,8 +78,11 @@ pub struct RoutingSink {
 impl OutsideSink for RoutingSink {
     fn deliver(&mut self, capability: &str, payload: &Json) -> Delivery {
         for origin in self.origins.borrow().iter() {
-            // Busy answering a poll: asked again on the next settle.
+            // Busy answering a poll: asked again on the next settle. The instance polls its
+            // origins and settles one after the other, so only a settle from within a poll
+            // gets here, and nothing then obliges another settle: it is said.
             let Ok(mut origin) = origin.try_borrow_mut() else {
+                tracing::warn!(capability, "an effect was handed to an origin busy polling");
                 return Delivery::Pending;
             };
             if origin.serves(capability) {

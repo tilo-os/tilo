@@ -14,8 +14,9 @@ use winit::event::WindowEvent;
 
 use crate::component::{Component, Described, Event, Person, Value};
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{
     Button, Decorator, EmojiPicker, EventCtx, PickerEvent, Popover, ReactionStripWidget, Widget,
 };
@@ -263,34 +264,24 @@ impl Described for Quote {
     type Props = QuoteProps;
 
     fn from_props(key: &str, props: QuoteProps) -> Self {
-        use crate::tokens::{Rhythm, TextRole};
-        use crate::widget::arrange::{Fit, Row, Stack};
+        use crate::tokens::Rhythm;
+        use crate::widget::arrange::{Fit, Row};
         let QuoteProps {
             excerpt,
             author,
             caption,
             dismiss,
         } = props;
-        let head = match (caption, author) {
-            (Some(caption), Some(author)) => Some(format!("{caption} {}", author.name)),
-            (Some(caption), None) => Some(caption),
-            (None, Some(author)) => Some(author.name),
-            (None, None) => None,
+        let said = QuoteLines {
+            caption,
+            author: author.map(|author| author.name),
+            excerpt,
+            rect: Rect::ZERO,
+            dirty: true,
+            layout_theme: Theme::dark(),
         };
-        let mut said = Stack::stack().gap(Rhythm::Tight);
-        if let Some(head) = head {
-            said = said.push(Box::new(
-                crate::widget::Text::new(&head).with_role(TextRole::Label),
-            ));
-        }
-        said = said.push(Box::new(
-            crate::widget::Text::new(&excerpt)
-                .with_role(TextRole::Caption)
-                .dimmed(),
-        ));
         let mut row = Row::row()
             .gap(Rhythm::Related)
-            .push(Box::new(crate::widget::Divider::vertical()))
             .push_fit(Box::new(said), Fit::fill(1.0));
         if let Some(close) = dismiss.handler() {
             let mut close = close;
@@ -307,6 +298,270 @@ impl Described for Quote {
         Self {
             row: row.with_id(key),
         }
+    }
+}
+
+/// What a quote says, behind a rule at its leading edge. Quoted in a message it is one line:
+/// who wrote it, then the start of what it says in secondary ink, cut short at the line's end,
+/// as Slack and Discord quote a reply. With a caption (the reply banner) the caption and the
+/// author are a line over the excerpt.
+struct QuoteLines {
+    caption: Option<String>,
+    author: Option<String>,
+    excerpt: String,
+    rect: Rect,
+    dirty: bool,
+    /// The theme the last layout was built with, for measuring.
+    layout_theme: Theme,
+}
+
+impl QuoteLines {
+    /// The rule's width: half the tight step.
+    fn rule(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.spacing.rhythm.tight) / 2.0
+    }
+
+    /// The text's leading edge from the rule's: the rule and the related step.
+    fn inset(theme: &Theme) -> f64 {
+        Self::rule(theme) + f64::from(theme.tokens.spacing.rhythm.related)
+    }
+
+    /// The gap between the author and the excerpt on one line, and between two lines.
+    fn gap(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.spacing.rhythm.tight)
+    }
+
+    /// The author's style and the excerpt's: both captions, the author's medium.
+    fn styles(theme: &Theme) -> (TextStyle, TextStyle) {
+        (
+            theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
+            theme.text(TextRole::Caption),
+        )
+    }
+
+    /// The head: the caption and the author, or the author alone.
+    fn head(&self) -> Option<String> {
+        match (&self.caption, &self.author) {
+            (Some(caption), Some(author)) => Some(format!("{caption} {author}")),
+            (Some(caption), None) => Some(caption.clone()),
+            (None, Some(author)) => Some(author.clone()),
+            (None, None) => None,
+        }
+    }
+
+    /// Whether the excerpt stands on a line of its own, under the head.
+    fn stacked(&self) -> bool {
+        self.caption.is_some()
+    }
+
+    fn line(text: &mut TextRenderer, theme: &Theme) -> f64 {
+        f64::from(text.measure_style("Ag", None, &Self::styles(theme).1).1)
+    }
+
+    fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        let line = Self::line(text, theme);
+        if self.stacked() {
+            line * 2.0 + Self::gap(theme)
+        } else {
+            line
+        }
+    }
+
+    fn natural_width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        let (strong, plain) = Self::styles(theme);
+        let head = self.head().map_or(0.0, |head| {
+            f64::from(text.measure_style(&head, None, &strong).0)
+        });
+        let excerpt = f64::from(text.measure_style(&self.excerpt, None, &plain).0);
+        let lines = if self.stacked() {
+            head.max(excerpt)
+        } else if head > 0.0 {
+            head + Self::gap(theme) + excerpt
+        } else {
+            excerpt
+        };
+        (Self::inset(theme) + lines).ceil()
+    }
+
+    fn spoken(&self) -> String {
+        [self.head(), Some(self.excerpt.clone())]
+            .into_iter()
+            .flatten()
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+/// `s` in `style` and `ink` at `at`, cut short at `right`; how wide it was drawn.
+fn draw_line(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    (s, style, ink): (&str, &TextStyle, vello::peniko::Color),
+    at: (f64, f64),
+    right: f64,
+) -> f64 {
+    let room = crate::num::f32_of_f64((right - at.0).max(0.0));
+    let shown = text.elide_to_width_style(s, room, style);
+    text.draw_style(
+        scene,
+        &shown,
+        ink,
+        transform.pre_translate(at.into()),
+        None,
+        style,
+    );
+    f64::from(text.measure_style(&shown, None, style).0)
+}
+
+impl Widget for QuoteLines {
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        use crate::widget::TaffyTreeExt as _;
+        if self.layout_theme != *theme {
+            self.layout_theme = theme.clone();
+            self.dirty = true;
+        }
+        let style = taffy::Style {
+            size: taffy::Size::auto(),
+            flex_shrink: 1.0,
+            min_size: taffy::Size {
+                width: taffy::Dimension::length(0.0),
+                height: taffy::Dimension::auto(),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let theme = self.layout_theme.clone();
+        let natural = crate::num::f32_of_f64(self.natural_width(text, &theme));
+        let width = match available.width {
+            taffy::AvailableSpace::Definite(w) => natural.min(w),
+            _ => natural,
+        };
+        taffy::Size {
+            width: known.width.unwrap_or(width),
+            height: known
+                .height
+                .unwrap_or(crate::num::f32_of_f64(self.height(text, &theme))),
+        }
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        origin: vello::kurbo::Point,
+    ) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let colors = &theme.tokens.colors;
+        let rect = self.rect;
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let height = self.height(text, theme);
+        let top = rect.y0 + (rect.height() - height) / 2.0;
+        // The rule runs the height of what is quoted, rounded at its ends.
+        let rule = vello::kurbo::RoundedRect::from_rect(
+            Rect::new(rect.x0, top, rect.x0 + Self::rule(theme), top + height),
+            Self::rule(theme) / 2.0,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.text_tertiary,
+            None,
+            &rule,
+        );
+        let (strong, plain) = Self::styles(theme);
+        let x = rect.x0 + Self::inset(theme);
+        let head = self.head();
+        if self.stacked() {
+            if let Some(head) = &head {
+                draw_line(
+                    scene,
+                    transform,
+                    text,
+                    (head, &strong, colors.text_primary),
+                    (x, top),
+                    rect.x1,
+                );
+            }
+            let below = top + Self::line(text, theme) + Self::gap(theme);
+            draw_line(
+                scene,
+                transform,
+                text,
+                (&self.excerpt, &plain, colors.text_dim),
+                (x, below),
+                rect.x1,
+            );
+        } else {
+            let mut at = x;
+            if let Some(head) = &head {
+                at += draw_line(
+                    scene,
+                    transform,
+                    text,
+                    (head, &strong, colors.text_primary),
+                    (x, top),
+                    rect.x1,
+                ) + Self::gap(theme);
+            }
+            if at < rect.x1 {
+                draw_line(
+                    scene,
+                    transform,
+                    text,
+                    (&self.excerpt, &plain, colors.text_dim),
+                    (at, top),
+                    rect.x1,
+                );
+            }
+        }
+    }
+
+    crate::redraw_flag!();
+
+    fn is_layout_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn name(&self) -> &'static str {
+        "QuoteLines"
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(AccessNode::new(Role::StaticText).with_name(self.spoken()))
     }
 }
 

@@ -111,6 +111,8 @@ impl ArtifactLog {
         let mut index = Vec::new();
         let mut known = std::collections::HashSet::new();
         let mut offset: usize = 0;
+        // Why the tail is cut, for the warning below.
+        let mut torn = "a record runs past the end of the file".to_owned();
         while let Some(header) = bytes.get(offset..offset.saturating_add(4)) {
             let len = u32::from_le_bytes(<[u8; 4]>::try_from(header).unwrap_or([0xff; 4]));
             let start = offset.saturating_add(4);
@@ -118,8 +120,12 @@ impl ArtifactLog {
             let Some(record) = bytes.get(start..end).filter(|_| len <= MAX_RECORD_BYTES) else {
                 break;
             };
-            let Ok(op) = postcard::from_bytes::<SignedOp>(record) else {
-                break;
+            let op = match postcard::from_bytes::<SignedOp>(record) {
+                Ok(op) => op,
+                Err(error) => {
+                    torn = format!("the record at byte {offset} does not decode: {error}");
+                    break;
+                }
             };
             index.push((op.seq, start as u64, len));
             known.insert((op.author.0, op.seq));
@@ -130,6 +136,7 @@ impl ArtifactLog {
                 path = %path.display(),
                 kept = offset,
                 found = bytes.len(),
+                reason = %torn,
                 "collab history: cutting off a torn or corrupt tail"
             );
             file.set_len(offset as u64)?;
@@ -375,12 +382,17 @@ impl CollabHistoryStore {
     }
 
     /// The records this store holds history of, read from disk on first
-    /// use. A file that does not parse (torn by a crash) names no record.
+    /// use. A file that does not parse (torn by a crash) names no record,
+    /// and the log says which.
     fn held_records(&mut self) -> &mut HashMap<ArtifactId, HeldRecord> {
         let root = &self.root;
         self.records.get_or_insert_with(|| {
-            let Ok(entries) = fs::read_dir(root) else {
-                return HashMap::new();
+            let entries = match fs::read_dir(root) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    tracing::warn!(root = %root.display(), %error, "collab history: held records cannot be listed");
+                    return HashMap::new();
+                }
             };
             entries
                 .filter_map(Result::ok)
@@ -392,8 +404,28 @@ impl CollabHistoryStore {
                     {
                         return None;
                     }
-                    let artifact = uuid::Uuid::parse_str(path.file_stem()?.to_str()?).ok()?;
-                    let held = HeldRecord::decode(&fs::read_to_string(&path).ok()?)?;
+                    let unreadable = |reason: &dyn std::fmt::Display| {
+                        tracing::warn!(path = %path.display(), %reason, "collab history: held record names no record");
+                    };
+                    let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
+                    let artifact = match uuid::Uuid::parse_str(stem) {
+                        Ok(artifact) => artifact,
+                        Err(error) => {
+                            unreadable(&format_args!("file name is not an artifact id: {error}"));
+                            return None;
+                        }
+                    };
+                    let text = match fs::read_to_string(&path) {
+                        Ok(text) => text,
+                        Err(error) => {
+                            unreadable(&error);
+                            return None;
+                        }
+                    };
+                    let Some(held) = HeldRecord::decode(&text) else {
+                        unreadable(&"contents are not room, app and record lines");
+                        return None;
+                    };
                     Some((ArtifactId(artifact), held))
                 })
                 .collect()

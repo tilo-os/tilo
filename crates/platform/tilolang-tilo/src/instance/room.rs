@@ -446,6 +446,18 @@ impl RoomRecord {
         None
     }
 
+    /// Hand the room the whole record, as the answer to a late joiner the broker asked this
+    /// replica to bring up to date. One the collab client does not take is said: the joiner
+    /// asks again while no holder answers.
+    fn send_snapshot(&mut self) {
+        if let Err(error) = self
+            .manager
+            .try_send(CollabRequest::document_snapshot(self.doc.save()))
+        {
+            tracing::warn!(%error, "room: the record's snapshot for a late joiner was not sent");
+        }
+    }
+
     /// Commit every change `instance` queued for the room, in order, as a step each, and send
     /// them on the record's route ([`Self::share`]); the instance hears each answered. Returns
     /// the tickets committed.
@@ -589,14 +601,22 @@ impl RoomRecord {
         let mut changed = false;
         let before = self.doc.get_heads();
         for event in self.manager.poll() {
-            let CollabEvent::Document {
-                envelope,
-                decrypted_payload,
-                ..
-            } = event
-            else {
-                other(event);
-                continue;
+            let (envelope, decrypted_payload) = match event {
+                CollabEvent::Document {
+                    envelope,
+                    decrypted_payload,
+                    ..
+                } => (envelope, decrypted_payload),
+                CollabEvent::DocumentSnapshotRequested { route } if route == self.route => {
+                    // The broker chose this connection as the one that answers a late joiner
+                    // of the record: nobody else does, so it is answered here.
+                    self.send_snapshot();
+                    continue;
+                }
+                event => {
+                    other(event);
+                    continue;
+                }
             };
             let Some(payload) =
                 validated_route_payload_with(&self.route, &envelope, decrypted_payload.as_deref())
@@ -604,12 +624,17 @@ impl RoomRecord {
                 tracing::warn!("room: a change for another route was not taken in");
                 continue;
             };
-            let Ok(mutation) =
-                decode_routed_mutation(&self.route, payload, decrypted_payload.as_deref())
-            else {
-                tracing::warn!("room: a change that does not decode was not taken in");
-                continue;
-            };
+            let mutation =
+                match decode_routed_mutation(&self.route, payload, decrypted_payload.as_deref()) {
+                    Ok(mutation) => mutation,
+                    Err(error) => {
+                        tracing::warn!(
+                            ?error,
+                            "room: a change that does not decode was not taken in"
+                        );
+                        continue;
+                    }
+                };
             let taken = match &mutation {
                 DocumentMutation::Incremental(bytes) => self.doc.load_incoming(bytes),
                 DocumentMutation::Snapshot(bytes) => self.doc.load_incoming_whole(bytes),

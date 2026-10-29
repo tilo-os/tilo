@@ -156,6 +156,7 @@ impl Signatures {
             }
         }
         self.current.insert(body);
+        // optional-decode: a frame that does not decode is kept, as Piece::Opaque, never dropped
         let frame = |payload: &[u8]| match DocumentFrame::decode(payload) {
             Ok(DocumentFrame::Whole(mutation)) => Piece::Whole(mutation),
             Ok(DocumentFrame::Segment(segment)) => Piece::Segment(segment),

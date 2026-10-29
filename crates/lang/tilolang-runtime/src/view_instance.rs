@@ -313,6 +313,69 @@ impl ViewInstance {
         self.run(&aref)
     }
 
+    /// The action the event `event` of the node `key` applies, with its arguments read now,
+    /// when it still lacks some it has no default for: an action waiting for its arguments,
+    /// whose form the window shows instead of running it (`share(n)` from a menu, which needs
+    /// whom to share with). `None` when the event runs as it is.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::fire_with`] reading the event's arguments.
+    pub fn wanting_arguments(
+        &self,
+        key: &str,
+        event: &str,
+        value: Option<&Value>,
+    ) -> Result<Option<ActionRef>, RuntimeError> {
+        let Some(mut aref) = self.event_action(key, event) else {
+            return Ok(None);
+        };
+        if self.core.missing_arguments(&aref).is_empty() {
+            return Ok(None);
+        }
+        fill_event(&mut aref, value).map_err(|()| {
+            RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
+        })?;
+        self.read_states(&mut aref)?;
+        Ok(Some(aref))
+    }
+
+    /// Run `aref` as this view's person, as a control of the view runs it: an invocation with
+    /// undo and history like any other.
+    ///
+    /// # Errors
+    ///
+    /// As an invocation.
+    pub fn invoke(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
+        self.run(aref)
+    }
+
+    /// The lens state `state` of this view's person in its window, when it was ever set.
+    #[must_use]
+    pub fn lens(&self, state: &str) -> Option<Value> {
+        self.core
+            .view_states
+            .borrow()
+            .get(&self.lens_key(state))
+            .cloned()
+    }
+
+    /// Set the lens state `state` of this view's person in its window.
+    pub fn set_lens(&self, state: &str, value: Value) {
+        self.core
+            .view_states
+            .borrow_mut()
+            .set(self.lens_key(state), value);
+    }
+
+    fn lens_key(&self, state: &str) -> StateKey {
+        StateKey {
+            window: self.live.window.clone(),
+            principal: Some(self.live.viewer.0.clone()),
+            state: state.to_owned(),
+        }
+    }
+
     /// Evaluate the arguments of `aref` that read view state (`send(c, draft)`, `set(open, not
     /// open)`) now, at the event, on the view state as it is: what was typed up to the press,
     /// and what an earlier press set, whether or not the view ran again since.
@@ -612,11 +675,18 @@ impl ViewInstance {
     }
 }
 
-/// Put the value an event carries where the action reference holds it, through `then`.
+/// Put the value an event carries where the action reference holds it, through `then`: the
+/// whole of it, or the part of `[value, at]` a place names.
 fn fill_event(aref: &mut ActionRef, value: Option<&Value>) -> Result<(), ()> {
     for arg in &mut aref.args {
         match arg {
             Value::Event => *arg = value.cloned().ok_or(())?,
+            Value::EventPart(part) => {
+                let Some(Value::List(parts)) = value else {
+                    return Err(());
+                };
+                *arg = parts.get(*part).cloned().ok_or(())?;
+            }
             Value::Action(inner) if aref.action == THEN_ACTION => fill_event(inner, value)?,
             _ => {}
         }

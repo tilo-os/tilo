@@ -161,7 +161,13 @@ UTF-8 selection. It verifies the resulting buffer before acknowledging it.
 Undo restores the original selection; Redo remains undoable. Exact duplicate
 requests query/replay their receipt without applying another edit.
 
-The admitted ush launch negotiates protocol version 1. Its descriptor bundle is
+**No longer offered (2026-10-29).** An environment session now runs ush's own
+shell on the Tilo side instead of a guest Bash, so the supervisor no longer
+negotiates the native editor, loads the module or binds it into a guest. What
+follows describes the Bash design as it was qualified. Native editing for ush
+sessions needs ush's own line editor to serve the protocol.
+
+The admitted ush launch negotiated protocol version 1. Its descriptor bundle is
 PTY first, native editor second; the original single-descriptor protocol stays
 valid. The app verifies both descriptor roles. The supervisor qualifies an
 OS-owned module through root-owned, non-writable ancestors, bounds its reads,

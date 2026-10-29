@@ -32,9 +32,19 @@ pub fn is_hosted() -> bool {
 #[must_use]
 pub fn window_instance() -> Option<u64> {
     ui::window_door::requested_instance().or_else(|| {
-        std::env::var("TILO_CONTINUITY_INSTANCE")
-            .ok()
-            .and_then(|value| value.parse().ok())
+        // Unset: the process was not launched for a window of its own.
+        let value = std::env::var("TILO_CONTINUITY_INSTANCE").ok()?;
+        match value.parse() {
+            Ok(instance) => Some(instance),
+            Err(error) => {
+                tracing::error!(
+                    value,
+                    %error,
+                    "the session named the window's instance as something that is not one"
+                );
+                None
+            }
+        }
     })
 }
 
@@ -80,6 +90,13 @@ impl Watch {
                         return;
                     }
                 }
+            })
+            .inspect_err(|error| {
+                tracing::error!(
+                    %error,
+                    "no thread watches the window's patch connection: it shows what arrives \
+                     only when something else wakes it"
+                );
             })
             .ok()?;
         Some(Self {

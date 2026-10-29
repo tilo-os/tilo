@@ -148,9 +148,12 @@ mod tests {
         let records = dir.path().join("terminal-sessions");
         // This test process stands for the Terminal that asked; a child of
         // it for the session's shell, and the shell's own child for a
-        // program typed in it.
+        // program typed in it. The program lives until the test closes its
+        // input (or the test process ends), never on a timer, so a slow
+        // machine can't end it before the test looks at it.
         let mut shell = std::process::Command::new("sh")
-            .args(["-c", "sleep 30 & echo $!; wait"])
+            .args(["-c", "exec 3<&0; cat <&3 >/dev/null & echo $!; wait"])
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("shell");
@@ -169,9 +172,7 @@ mod tests {
         assert_eq!(found.session, "s1");
         assert!(is_live(&found));
         assert_eq!(session_of(&records, std::process::id()), None);
-        let _ = std::process::Command::new("kill")
-            .arg(typed.to_string())
-            .status();
+        drop(shell.stdin.take());
         let _ = shell.wait();
         assert!(!is_live(&found));
         assert_eq!(session_of(&records, leader), None);

@@ -248,6 +248,10 @@ pub struct Event {
     /// The value the event carries (the key a list selected), when it carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub value: Option<Type>,
+    /// Where the value lands, when the event says: a drop's place among the other items of
+    /// what it was dropped on, counted from 0. An event with one carries `[value, at]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Type>,
 }
 
 /// A two-way binding to a resource field or view state.
