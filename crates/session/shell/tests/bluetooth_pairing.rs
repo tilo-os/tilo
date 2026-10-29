@@ -268,12 +268,8 @@ fn rejected_as(answer: &Answer, name: &str) -> bool {
 }
 
 #[test]
-fn pairing_questions_are_answered_only_in_the_shells_protected_dialog() {
-    // Every question here is answered; none may run into the unanswered
-    // timeout, however slow the runner.
+fn the_agent_is_the_default_agent() {
     let mut rig = Rig::new(tilo_test_env::hang_bound());
-
-    // Phase `the_agent_is_the_default_agent`.
     assert_eq!(
         rig.calls(),
         vec![
@@ -283,106 +279,110 @@ fn pairing_questions_are_answered_only_in_the_shells_protected_dialog() {
         "registered on the daemon it pairs through, and asked to be its default"
     );
     assert!(rig.prompt().is_none(), "nothing asked, nothing shown");
+}
 
-    // Phase `a_numeric_comparison_is_confirmed_in_the_dialog`.
-    {
-        let call = rig.ask("RequestConfirmation", (Rig::device(), 424_242_u32));
-        let comparison = PairingPrompt::ConfirmPasskey { passkey: 424_242 };
-        rig.wait_for_prompt(&comparison);
-        let title = rig
-            .fb
-            .host()
-            .pairing_prompt()
-            .and_then(|view| {
-                use ui::widget::Widget;
-                view.accessibility().and_then(|node| node.name)
-            })
-            .unwrap_or_default();
-        assert!(
-            title.contains(DEVICE_NAME),
-            "the dialog names the device: {title}"
-        );
-        // Captured, the dialog is only the placeholder; locally it is shown.
-        super::capture_protection::assert_secret_prompts_withheld(
-            &mut rig.fb,
-            "the Bluetooth pairing dialog",
-        );
-        rig.click("bluetooth.pair.accept");
-        rig.wait_for_no_prompt();
-        assert!(
-            rig.answer(call).is_ok(),
-            "They match returns success to the daemon"
-        );
-        assert!(
-            rig.fb.host().secret_prompt_rects().is_empty(),
-            "no dialog, nothing withheld"
-        );
-    }
+#[test]
+fn a_numeric_comparison_is_confirmed_in_the_dialog() {
+    let mut rig = Rig::new(tilo_test_env::hang_bound());
+    let call = rig.ask("RequestConfirmation", (Rig::device(), 424_242_u32));
+    let comparison = PairingPrompt::ConfirmPasskey { passkey: 424_242 };
+    rig.wait_for_prompt(&comparison);
+    let title = rig
+        .fb
+        .host()
+        .pairing_prompt()
+        .and_then(|view| {
+            use ui::widget::Widget;
+            view.accessibility().and_then(|node| node.name)
+        })
+        .unwrap_or_default();
+    assert!(
+        title.contains(DEVICE_NAME),
+        "the dialog names the device: {title}"
+    );
+    // Captured, the dialog is only the placeholder; locally it is shown.
+    super::capture_protection::assert_secret_prompts_withheld(
+        &mut rig.fb,
+        "the Bluetooth pairing dialog",
+    );
+    rig.click("bluetooth.pair.accept");
+    rig.wait_for_no_prompt();
+    assert!(
+        rig.answer(call).is_ok(),
+        "They match returns success to the daemon"
+    );
+    assert!(
+        rig.fb.host().secret_prompt_rects().is_empty(),
+        "no dialog, nothing withheld"
+    );
+}
 
-    // Phase `a_passkey_is_typed_into_the_dialog`.
-    {
-        let call = rig.ask("RequestPasskey", (Rig::device(),));
-        rig.wait_for_prompt(&PairingPrompt::RequestPasskey);
-        assert!(
-            rig.fb.widget_registry().contains_key(ENTRY_FIELD_ID),
-            "the entry field is on screen"
-        );
-        // Letters are not digits: the field refuses them.
-        rig.type_text("65x4321");
-        rig.key(Key::Named(NamedKey::Enter), None);
-        rig.wait_for_no_prompt();
-        let reply = rig.answer(call).expect("the typed passkey is returned");
-        assert_eq!(reply.body().deserialize::<u32>().unwrap(), 654_321);
-        assert!(
-            rig.doc.keys(&ROOT).all(|key| !key.contains("entry")),
-            "the typed code never enters a document"
-        );
-    }
+#[test]
+fn a_passkey_is_typed_into_the_dialog() {
+    let mut rig = Rig::new(tilo_test_env::hang_bound());
+    let call = rig.ask("RequestPasskey", (Rig::device(),));
+    rig.wait_for_prompt(&PairingPrompt::RequestPasskey);
+    assert!(
+        rig.fb.widget_registry().contains_key(ENTRY_FIELD_ID),
+        "the entry field is on screen"
+    );
+    // Letters are not digits: the field refuses them.
+    rig.type_text("65x4321");
+    rig.key(Key::Named(NamedKey::Enter), None);
+    rig.wait_for_no_prompt();
+    let reply = rig.answer(call).expect("the typed passkey is returned");
+    assert_eq!(reply.body().deserialize::<u32>().unwrap(), 654_321);
+    assert!(
+        rig.doc.keys(&ROOT).all(|key| !key.contains("entry")),
+        "the typed code never enters a document"
+    );
+}
 
-    // Phase `declining_rejects_the_pairing`.
-    {
-        let call = rig.ask("RequestAuthorization", (Rig::device(),));
-        rig.wait_for_prompt(&PairingPrompt::ConfirmPairing);
-        rig.key(Key::Named(NamedKey::Escape), None);
-        rig.wait_for_no_prompt();
-        let answer = rig.answer(call);
-        assert!(
-            rejected_as(&answer, "org.bluez.Error.Rejected"),
-            "Escape declines: {answer:?}"
-        );
-    }
+#[test]
+fn declining_rejects_the_pairing() {
+    let mut rig = Rig::new(tilo_test_env::hang_bound());
+    let call = rig.ask("RequestAuthorization", (Rig::device(),));
+    rig.wait_for_prompt(&PairingPrompt::ConfirmPairing);
+    rig.key(Key::Named(NamedKey::Escape), None);
+    rig.wait_for_no_prompt();
+    let answer = rig.answer(call);
+    assert!(
+        rejected_as(&answer, "org.bluez.Error.Rejected"),
+        "Escape declines: {answer:?}"
+    );
+}
 
-    // Phase `a_displayed_code_follows_typed_digits_and_cancels_the_pairing`.
-    {
-        for entered in [0_u16, 1, 2, 3] {
-            let answer =
-                rig.answer(rig.ask("DisplayPasskey", (Rig::device(), 12_345_u32, entered)));
-            assert!(answer.is_ok(), "a display call returns at once");
-        }
-        rig.wait_for_prompt(&PairingPrompt::DisplayPasskey {
-            passkey: 12_345,
-            entered: 3,
-        });
-        rig.click("bluetooth.pair.reject");
-        rig.wait_for_no_prompt();
-        tilo_test_env::wait_until("the pairing to be cancelled", || {
-            rig.calls().iter().any(|call| call == "CancelPairing")
-        });
+#[test]
+fn a_displayed_code_follows_typed_digits_and_cancels_the_pairing() {
+    let mut rig = Rig::new(tilo_test_env::hang_bound());
+    for entered in [0_u16, 1, 2, 3] {
+        let answer = rig.answer(rig.ask("DisplayPasskey", (Rig::device(), 12_345_u32, entered)));
+        assert!(answer.is_ok(), "a display call returns at once");
     }
+    rig.wait_for_prompt(&PairingPrompt::DisplayPasskey {
+        passkey: 12_345,
+        entered: 3,
+    });
+    rig.click("bluetooth.pair.reject");
+    rig.wait_for_no_prompt();
+    tilo_test_env::wait_until("the pairing to be cancelled", || {
+        rig.calls().iter().any(|call| call == "CancelPairing")
+    });
+}
 
-    // Phase `the_daemon_withdrawing_its_question_closes_the_dialog`.
-    {
-        let call = rig.ask("RequestConfirmation", (Rig::device(), 1_u32));
-        rig.wait_for_prompt(&PairingPrompt::ConfirmPasskey { passkey: 1 });
-        assert!(rig.answer(rig.ask("Cancel", ())).is_ok());
-        rig.wait_for_no_prompt();
-        let answer = rig.answer(call);
-        drop(rig);
-        assert!(
-            answer.is_err(),
-            "a withdrawn question is never answered yes: {answer:?}"
-        );
-    }
+#[test]
+fn the_daemon_withdrawing_its_question_closes_the_dialog() {
+    let mut rig = Rig::new(tilo_test_env::hang_bound());
+    let call = rig.ask("RequestConfirmation", (Rig::device(), 1_u32));
+    rig.wait_for_prompt(&PairingPrompt::ConfirmPasskey { passkey: 1 });
+    assert!(rig.answer(rig.ask("Cancel", ())).is_ok());
+    rig.wait_for_no_prompt();
+    let answer = rig.answer(call);
+    drop(rig);
+    assert!(
+        answer.is_err(),
+        "a withdrawn question is never answered yes: {answer:?}"
+    );
 }
 
 #[test]

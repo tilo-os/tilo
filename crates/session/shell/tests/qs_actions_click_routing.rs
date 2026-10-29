@@ -180,11 +180,7 @@ const SOUND_OUTPUT_READING: media::audio::default_node::VolumeState =
     };
 
 #[test]
-fn only_the_invite_button_opens_the_signed_composer() {
-    // Phase `workspace_settings_invite_button_opens_the_signed_composer`.
-    // The room is placed on this device's own host and governed here, as a
-    // booted desktop holds a workspace it made: only its host issues an
-    // invitation, so a room no host holds offers none.
+fn workspace_settings_invite_button_opens_the_signed_composer() {
     #[cfg(feature = "test-support")]
     {
         use shell::shell::chrome_state::WsTab;
@@ -222,34 +218,34 @@ fn only_the_invite_button_opens_the_signed_composer() {
         );
         assert!(!chrome.borrow().overlays.ws_settings);
     }
+}
 
-    // Phase `a_click_beside_the_invite_button_does_not_open_the_composer`.
-    // Guards against a hit rect widened until it swallows the rest of the tab.
+// Guards against a hit rect widened until it swallows the rest of the tab.
+#[test]
+fn a_click_beside_the_invite_button_does_not_open_the_composer() {
+    use shell::shell::chrome_state::WsTab;
+
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     {
-        use shell::shell::chrome_state::WsTab;
-
-        let tree = minimal_tree();
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-        {
-            let mut st = chrome.borrow_mut();
-            st.overlays.ws_settings = true;
-            st.ws_settings_tab = WsTab::General;
-            st.bump();
-        }
-        let (taffy, host_node) = layout_host(&mut host);
-        host.force_ws_settings_settled();
-        paint(&mut host);
-
-        let btn = host.ws_settings_invite_rect_for_tests();
-        assert!(btn.area() > 0.0, "the Create button is laid out");
-        let p = Point::new(btn.x1 + 160.0, btn.center().y);
-        click(&mut host, &taffy, host_node, p);
-
-        assert!(
-            !host.peer_sync_card_visible(),
-            "a click beside the Create button opened the composer anyway"
-        );
+        let mut st = chrome.borrow_mut();
+        st.overlays.ws_settings = true;
+        st.ws_settings_tab = WsTab::General;
+        st.bump();
     }
+    let (taffy, host_node) = layout_host(&mut host);
+    host.force_ws_settings_settled();
+    paint(&mut host);
+
+    let btn = host.ws_settings_invite_rect_for_tests();
+    assert!(btn.area() > 0.0, "the Create button is laid out");
+    let p = Point::new(btn.x1 + 160.0, btn.center().y);
+    click(&mut host, &taffy, host_node, p);
+
+    assert!(
+        !host.peer_sync_card_visible(),
+        "a click beside the Create button opened the composer anyway"
+    );
 }
 
 /// The ribbon's own geometry is unit-tested in `ui`, but geometry that

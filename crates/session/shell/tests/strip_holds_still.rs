@@ -409,80 +409,80 @@ impl Harness {
 }
 
 #[test]
-fn the_strip_moves_only_when_the_person_moves_it() {
+fn focus_stepped_to_a_window_stays_framed_while_apps_act() {
     let mut h = Harness::with_windows();
     let groups = h.groups();
+    let strip = h.strip;
+    let first = groups[0];
+    let tab = h.fb.chrome().tree().desktop.workspaces[0]
+        .strips
+        .iter()
+        .find(|s| s.id == strip)
+        .and_then(|s| s.window_groups.iter().find(|g| g.id == first))
+        .map(|g| g.active_tab)
+        .unwrap();
+    let _ = h.fb.host_mut().focus_window_on_strip(strip, first, tab);
+    h.settle();
+    assert!(h.fb.host_mut().step_focus_along_strip(2));
+    h.settle();
+    assert_eq!(h.active_group(), Some(groups[2]));
+    assert!(
+        h.scroll_x() > 0.0,
+        "precondition: stepping to the third window pans the strip"
+    );
+    h.assert_holds_still_while_apps_act("after stepping focus");
+}
 
-    // Phase `focus_stepped_to_a_window_stays_framed_while_apps_act`.
-    {
-        let strip = h.strip;
-        let first = groups[0];
-        let tab = h.fb.chrome().tree().desktop.workspaces[0]
-            .strips
-            .iter()
-            .find(|s| s.id == strip)
-            .and_then(|s| s.window_groups.iter().find(|g| g.id == first))
-            .map(|g| g.active_tab)
-            .unwrap();
-        let _ = h.fb.host_mut().focus_window_on_strip(strip, first, tab);
-        h.settle();
-        assert!(h.fb.host_mut().step_focus_along_strip(2));
-        h.settle();
-        assert_eq!(h.active_group(), Some(groups[2]));
-        assert!(
-            h.scroll_x() > 0.0,
-            "precondition: stepping to the third window pans the strip"
-        );
-        h.assert_holds_still_while_apps_act("after stepping focus");
-    }
+#[test]
+fn a_free_three_finger_pan_stays_where_the_fingers_left_it() {
+    let mut h = Harness::with_windows();
+    let groups = h.groups();
+    // Leave the strip between rest positions, with windows cut on both
+    // edges: exactly the framing a geometry-driven correction would
+    // "fix".
+    let before = h.scroll_x();
+    // One report, released at once: the fingers rest, nothing is thrown.
+    let at = Instant::now();
+    assert!(h.fb.host_mut().update_active_strip_pan(-173.0, true, at));
+    let _ = h.fb.host_mut().end_active_strip_pan(at, false);
+    h.settle();
+    let panned = h.scroll_x();
+    assert!(
+        (panned - (before - 173.0)).abs() <= 0.5,
+        "precondition: the pan stays where the fingers left it ({before} → {panned})"
+    );
+    h.assert_holds_still_while_apps_act("after a free pan");
+}
 
-    // Phase `a_free_three_finger_pan_stays_where_the_fingers_left_it`.
-    {
-        // Leave the strip between rest positions, with windows cut on both
-        // edges: exactly the framing a geometry-driven correction would
-        // "fix".
-        let before = h.scroll_x();
-        // One report, released at once: the fingers rest, nothing is thrown.
-        let at = Instant::now();
-        assert!(h.fb.host_mut().update_active_strip_pan(-173.0, true, at));
-        let _ = h.fb.host_mut().end_active_strip_pan(at, false);
-        h.settle();
-        let panned = h.scroll_x();
-        assert!(
-            (panned - (before - 173.0)).abs() <= 0.5,
-            "precondition: the pan stays where the fingers left it ({before} → {panned})"
-        );
-        h.assert_holds_still_while_apps_act("after a free pan");
-    }
-
-    // Phase `clicking_into_a_partly_visible_window_focuses_it_in_place`.
-    {
-        let row = h.row_rect();
-        let focused = h.active_group();
-        let partly = (0..h.windows.len()).find(|&n| {
-            let tile = h.tile(n);
-            let shown = tile.intersect(row);
-            Some(h.group_of(n)) != focused
-                && shown.width() > 40.0
-                && shown.height() > 40.0
-                && (tile.x0 < row.x0 || tile.x1 > row.x1)
-        });
-        let n = partly.expect("precondition: a window without focus is cut by an edge");
-        let shown = h.tile(n).intersect(row);
-        let before = h.scroll_x();
-        h.click(shown.center());
-        h.settle();
-        assert_eq!(
-            h.active_group(),
-            Some(h.group_of(n)),
-            "the click focuses the window it landed on"
-        );
-        let after = h.scroll_x();
-        assert!(
-            (after - before).abs() <= 0.5,
-            "a click into a partly visible window slid the strip from {before} to {after}, \
+#[test]
+fn clicking_into_a_partly_visible_window_focuses_it_in_place() {
+    let mut h = Harness::with_windows();
+    let groups = h.groups();
+    let row = h.row_rect();
+    let focused = h.active_group();
+    let partly = (0..h.windows.len()).find(|&n| {
+        let tile = h.tile(n);
+        let shown = tile.intersect(row);
+        Some(h.group_of(n)) != focused
+            && shown.width() > 40.0
+            && shown.height() > 40.0
+            && (tile.x0 < row.x0 || tile.x1 > row.x1)
+    });
+    let n = partly.expect("precondition: a window without focus is cut by an edge");
+    let shown = h.tile(n).intersect(row);
+    let before = h.scroll_x();
+    h.click(shown.center());
+    h.settle();
+    assert_eq!(
+        h.active_group(),
+        Some(h.group_of(n)),
+        "the click focuses the window it landed on"
+    );
+    let after = h.scroll_x();
+    assert!(
+        (after - before).abs() <= 0.5,
+        "a click into a partly visible window slid the strip from {before} to {after}, \
              dragging the window out from under the pointer"
-        );
-        h.assert_holds_still_while_apps_act("after a click");
-    }
+    );
+    h.assert_holds_still_while_apps_act("after a click");
 }

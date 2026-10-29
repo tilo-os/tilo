@@ -165,57 +165,54 @@ fn canonical(json: &str) -> serde_json::Value {
     serde_json::from_str(json).expect("state json")
 }
 
+// Rewrite the checked-in fixture from the current shape. Only for a
+// deliberate, reviewed format change; a refactor must never need it.
+#[test]
+fn state_file_fixture_is_current() {
+    let path = fixture_path();
+    let written = serde_json::to_string_pretty(&populated_tree()).expect("serialize");
+    if std::env::var_os("TILO_BLESS_STATE_FIXTURE").is_some() {
+        std::fs::create_dir_all(path.parent().expect("fixture dir")).expect("mkdir");
+        std::fs::write(&path, format!("{written}\n")).expect("write fixture");
+    }
+    let fixture = std::fs::read_to_string(&path).expect("read the state.json fixture");
+    assert_eq!(
+        canonical(&written),
+        canonical(&fixture),
+        "the persisted state shape changed; a changed state.json format needs a \
+         deliberate migration, not a refactor"
+    );
+}
+
+#[test]
+fn state_file_round_trips_unchanged() {
+    let fixture = std::fs::read_to_string(fixture_path()).expect("read the state.json fixture");
+    let tree: WorkspaceTree = serde_json::from_str(&fixture).expect("fixture loads");
+    let rewritten = serde_json::to_string_pretty(&tree).expect("serialize");
+    assert_eq!(canonical(&rewritten), canonical(&fixture));
+}
+
+// Phase `a_file_from_when_workspaces_kept_tasks_loads_and_keeps_them`:
+// the tree no longer reads a workspace's tasks, but a stored field it
+// does not read is kept exactly as it was, so saving loses nothing.
 #[test]
 fn state_file_fixture_is_current_and_round_trips_unchanged() {
-    // Phase `state_file_fixture_is_current`.
-    // Rewrite the checked-in fixture from the current shape. Only for a
-    // deliberate, reviewed format change; a refactor must never need it.
-    {
-        let path = fixture_path();
-        let written = serde_json::to_string_pretty(&populated_tree()).expect("serialize");
-        if std::env::var_os("TILO_BLESS_STATE_FIXTURE").is_some() {
-            std::fs::create_dir_all(path.parent().expect("fixture dir")).expect("mkdir");
-            std::fs::write(&path, format!("{written}\n")).expect("write fixture");
-        }
-        let fixture = std::fs::read_to_string(&path).expect("read the state.json fixture");
-        assert_eq!(
-            canonical(&written),
-            canonical(&fixture),
-            "the persisted state shape changed; a changed state.json format needs a \
-             deliberate migration, not a refactor"
-        );
-    }
-
-    // Phase `state_file_round_trips_unchanged`.
-    {
-        let fixture = std::fs::read_to_string(fixture_path()).expect("read the state.json fixture");
-        let tree: WorkspaceTree = serde_json::from_str(&fixture).expect("fixture loads");
-        let rewritten = serde_json::to_string_pretty(&tree).expect("serialize");
-        assert_eq!(canonical(&rewritten), canonical(&fixture));
-    }
-
-    // Phase `a_file_from_when_workspaces_kept_tasks_loads_and_keeps_them`:
-    // the tree no longer reads a workspace's tasks, but a stored field it
-    // does not read is kept exactly as it was, so saving loses nothing.
-    {
-        let mut old = canonical(
-            &std::fs::read_to_string(fixture_path()).expect("read the state.json fixture"),
-        );
-        old["workspaces"][0]["tasks"] = serde_json::json!([{
-            "id": "task-1",
-            "title": "Review",
-            "created_by": "owner-key",
-            "assigned_agent": null,
-            "route": "manual",
-            "status": "queued",
-            "resource": null,
-            "created_at": 10,
-            "updated_at": 20,
-            "audit": []
-        }]);
-        let tree: WorkspaceTree = serde_json::from_value(old.clone()).expect("an older file loads");
-        assert_eq!(serde_json::to_value(&tree).expect("serialize"), old);
-    }
+    let mut old =
+        canonical(&std::fs::read_to_string(fixture_path()).expect("read the state.json fixture"));
+    old["workspaces"][0]["tasks"] = serde_json::json!([{
+        "id": "task-1",
+        "title": "Review",
+        "created_by": "owner-key",
+        "assigned_agent": null,
+        "route": "manual",
+        "status": "queued",
+        "resource": null,
+        "created_at": 10,
+        "updated_at": 20,
+        "audit": []
+    }]);
+    let tree: WorkspaceTree = serde_json::from_value(old.clone()).expect("an older file loads");
+    assert_eq!(serde_json::to_value(&tree).expect("serialize"), old);
 }
 
 /// A room saved before the Commenter could react held a frozen copy of the

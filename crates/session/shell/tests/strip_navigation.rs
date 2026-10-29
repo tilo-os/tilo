@@ -878,375 +878,362 @@ fn group_close_closes_the_focused_window_and_reopen_brings_it_back() {
     );
 }
 
+// The strip must actually overflow, or nothing below is testing panning.
 #[test]
-fn the_plus_chip_opens_an_apps_picker_without_moving_the_wide_strip() {
-    // Phase `the_fixture_strip_is_wider_than_its_viewport`.
-    // The strip must actually overflow, or nothing below is testing panning.
-    {
-        let mut h = Harness::new();
-        let max = h
-            .host
-            .group_row_mut_for_tests(h.strip)
-            .expect("strip row must be live")
-            .max_scroll_x();
-        assert!(
-            max > 0.0,
-            "fixture must overflow the viewport, else every pan assertion \
-             passes because there is nowhere to pan (max_scroll_x = {max})"
-        );
-    }
+fn the_fixture_strip_is_wider_than_its_viewport() {
+    let mut h = Harness::new();
+    let max = h
+        .host
+        .group_row_mut_for_tests(h.strip)
+        .expect("strip row must be live")
+        .max_scroll_x();
+    assert!(
+        max > 0.0,
+        "fixture must overflow the viewport, else every pan assertion \
+         passes because there is nowhere to pan (max_scroll_x = {max})"
+    );
+}
 
-    // Phase `the_plus_chip_does_not_move_the_viewport`.
-    // Clicking a group's `+` opens the picker and leaves the desktop where it
-    // was. Reported from a live session as "if I click the + in a window
-    // group, somehow the viewport changes".
-    {
-        let mut h = Harness::new();
-        let parked = h.scroll_x();
-        // Group 1 straddles the right edge, so its `+` is fully clickable while
-        // the rest of the group is off screen — the shape that made the press pan
-        // the desktop.
-        let row_right = h
-            .host
-            .group_row_rect_for_tests(h.strip)
-            .expect("strip row must be laid out")
-            .x1;
-        let g1 = h
-            .host
-            .group_at_for_tests(h.strip, 1)
-            .expect("group 1 must be live")
-            .get_rect();
-        assert!(
-            g1.x0 < row_right && g1.x1 > row_right,
-            "fixture must leave group 1 straddling the viewport edge \
-             (group {g1:?}, viewport ends at {row_right}); otherwise the \
-             press has nothing to reveal and the test proves nothing"
-        );
-        let plus = h.plus_rect(1);
-        let row = h
-            .host
-            .group_row_rect_for_tests(h.strip)
-            .expect("strip row must be laid out");
-        let click = Point::new(plus.x0 + 1.0, plus.center().y);
-        assert!(
-            row.contains(click),
-            "fixture must leave group 1's + chip clickable ({plus:?} outside {row:?})"
-        );
-        h.click(click);
-        h.tick();
+// Clicking a group's `+` opens the picker and leaves the desktop where it
+// was. Reported from a live session as "if I click the + in a window
+// group, somehow the viewport changes".
+#[test]
+fn the_plus_chip_does_not_move_the_viewport() {
+    let mut h = Harness::new();
+    let parked = h.scroll_x();
+    // Group 1 straddles the right edge, so its `+` is fully clickable while
+    // the rest of the group is off screen — the shape that made the press pan
+    // the desktop.
+    let row_right = h
+        .host
+        .group_row_rect_for_tests(h.strip)
+        .expect("strip row must be laid out")
+        .x1;
+    let g1 = h
+        .host
+        .group_at_for_tests(h.strip, 1)
+        .expect("group 1 must be live")
+        .get_rect();
+    assert!(
+        g1.x0 < row_right && g1.x1 > row_right,
+        "fixture must leave group 1 straddling the viewport edge \
+         (group {g1:?}, viewport ends at {row_right}); otherwise the \
+         press has nothing to reveal and the test proves nothing"
+    );
+    let plus = h.plus_rect(1);
+    let row = h
+        .host
+        .group_row_rect_for_tests(h.strip)
+        .expect("strip row must be laid out");
+    let click = Point::new(plus.x0 + 1.0, plus.center().y);
+    assert!(
+        row.contains(click),
+        "fixture must leave group 1's + chip clickable ({plus:?} outside {row:?})"
+    );
+    h.click(click);
+    h.tick();
 
-        assert!(
-            (h.scroll_x() - parked).abs() <= f64::EPSILON,
-            "clicking + moved the strip from {parked} to {}",
-            h.scroll_x()
-        );
-        let (visible, ..) = h.host.palette_snapshot();
-        assert!(visible, "clicking + must open the picker");
-    }
+    assert!(
+        (h.scroll_x() - parked).abs() <= f64::EPSILON,
+        "clicking + moved the strip from {parked} to {}",
+        h.scroll_x()
+    );
+    let (visible, ..) = h.host.palette_snapshot();
+    assert!(visible, "clicking + must open the picker");
+}
 
-    // Phase `the_plus_chip_opens_the_picker_filtered_to_apps`.
-    // The picker offers apps, not everything the machine can find: "+ on a
-    // window group" is a request for a program.
-    {
-        let mut h = Harness::new();
-        let plus = h.plus_rect(0);
-        h.click(plus.center());
-        h.tick();
+// The picker offers apps, not everything the machine can find: "+ on a
+// window group" is a request for a program.
+#[test]
+fn the_plus_chip_opens_the_picker_filtered_to_apps() {
+    let mut h = Harness::new();
+    let plus = h.plus_rect(0);
+    h.click(plus.center());
+    h.tick();
 
-        let filter = h.host.palette_kind_filter();
-        assert_eq!(
-            filter,
-            vec!["Apps".to_string()],
-            "the + chip must pre-filter the picker to the kinds that can be a \
-             tab, and to nothing else"
-        );
-        let (visible, ..) = h.host.palette_snapshot();
-        assert!(visible, "clicking + must open the picker");
-    }
+    let filter = h.host.palette_kind_filter();
+    assert_eq!(
+        filter,
+        vec!["Apps".to_string()],
+        "the + chip must pre-filter the picker to the kinds that can be a \
+         tab, and to nothing else"
+    );
+    let (visible, ..) = h.host.palette_snapshot();
+    assert!(visible, "clicking + must open the picker");
+}
 
-    // Phase `the_apps_filter_does_not_outlive_the_picker`.
-    // The filter the `+` seeds belongs to the picker it opened; left standing
-    // it would silently decide what an unrelated later query can find.
-    {
-        let mut h = Harness::new();
-        let plus = h.plus_rect(0);
-        h.click(plus.center());
-        h.tick();
-        assert!(
-            !h.host.palette_kind_filter().is_empty(),
-            "precondition: the + seeded a filter"
-        );
+// The filter the `+` seeds belongs to the picker it opened; left standing
+// it would silently decide what an unrelated later query can find.
+#[test]
+fn the_apps_filter_does_not_outlive_the_picker() {
+    let mut h = Harness::new();
+    let plus = h.plus_rect(0);
+    h.click(plus.center());
+    h.tick();
+    assert!(
+        !h.host.palette_kind_filter().is_empty(),
+        "precondition: the + seeded a filter"
+    );
 
-        h.key(Key::Named(NamedKey::Escape), ModifiersState::empty());
-        h.tick();
-        let (visible, ..) = h.host.palette_snapshot();
-        assert!(!visible, "Escape must dismiss the picker");
-        assert!(
-            h.host.palette_kind_filter().is_empty(),
-            "the filter must go with it, got {:?}",
-            h.host.palette_kind_filter()
-        );
-    }
+    h.key(Key::Named(NamedKey::Escape), ModifiersState::empty());
+    h.tick();
+    let (visible, ..) = h.host.palette_snapshot();
+    assert!(!visible, "Escape must dismiss the picker");
+    assert!(
+        h.host.palette_kind_filter().is_empty(),
+        "the filter must go with it, got {:?}",
+        h.host.palette_kind_filter()
+    );
+}
+
+// A tab click mutates the widget-owned selection before the next regular
+// update. The compositor flushes that writeback between backend events so a
+// key already queued behind the click resolves to the newly visible tab.
+#[test]
+fn a_clicked_tab_can_be_flushed_before_the_next_input_event() {
+    let mut h = Harness::new();
+    let second = h.tabs[0][1];
+    let pill = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.tab_rects().get(1).copied())
+        .expect("the second tab must have a laid-out pill");
+
+    h.click(pill.center());
+    assert_eq!(
+        h.active_window().1,
+        h.tabs[0][0],
+        "the durable tree is intentionally stale until the input-boundary flush"
+    );
+    h.host.flush_active_tab_writeback();
+    assert_eq!(
+        h.active_window().1,
+        second,
+        "the next input event must see the tab selected by the click"
+    );
 }
 
 #[test]
-fn keyboard_edits_resize_reorder_and_toggle_the_guide_after_flushed_clicks() {
-    // Phase `a_clicked_tab_can_be_flushed_before_the_next_input_event`.
-    // A tab click mutates the widget-owned selection before the next regular
-    // update. The compositor flushes that writeback between backend events so a
-    // key already queued behind the click resolves to the newly visible tab.
-    {
-        let mut h = Harness::new();
-        let second = h.tabs[0][1];
-        let pill = h
-            .host
-            .group_at_for_tests(h.strip, 0)
-            .and_then(|group| group.tab_rects().get(1).copied())
-            .expect("the second tab must have a laid-out pill");
+fn keyboard_resize_changes_the_persisted_fraction() {
+    let mut h = Harness::new();
+    let before = {
+        let state = h.chrome.borrow();
+        state.tree().desktop.workspaces[0].strips[0].window_groups[0]
+            .width
+            .permille()
+    };
+    h.key(Key::Character("=".into()), ModifiersState::SUPER);
+    let after = {
+        let state = h.chrome.borrow();
+        state.tree().desktop.workspaces[0].strips[0].window_groups[0]
+            .width
+            .permille()
+    };
+    assert_eq!(after, before + 50);
+}
 
-        h.click(pill.center());
-        assert_eq!(
-            h.active_window().1,
-            h.tabs[0][0],
-            "the durable tree is intentionally stale until the input-boundary flush"
-        );
-        h.host.flush_active_tab_writeback();
-        assert_eq!(
-            h.active_window().1,
-            second,
-            "the next input event must see the tab selected by the click"
-        );
-    }
+#[test]
+fn shifted_arrow_reorders_the_focused_group() {
+    let mut h = Harness::new();
+    h.key(
+        Key::Named(NamedKey::ArrowRight),
+        ModifiersState::SUPER | ModifiersState::SHIFT,
+    );
+    let order: Vec<_> = {
+        let state = h.chrome.borrow();
+        state.tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .map(|group| group.id)
+            .collect()
+    };
+    assert_eq!(order[0], h.groups[1]);
+    assert_eq!(order[1], h.groups[0]);
+}
 
-    // Phase `keyboard_resize_changes_the_persisted_fraction`.
-    {
-        let mut h = Harness::new();
-        let before = {
-            let state = h.chrome.borrow();
-            state.tree().desktop.workspaces[0].strips[0].window_groups[0]
-                .width
-                .permille()
-        };
-        h.key(Key::Character("=".into()), ModifiersState::SUPER);
-        let after = {
-            let state = h.chrome.borrow();
-            state.tree().desktop.workspaces[0].strips[0].window_groups[0]
-                .width
-                .permille()
-        };
-        assert_eq!(after, before + 50);
-    }
-
-    // Phase `shifted_arrow_reorders_the_focused_group`.
-    {
-        let mut h = Harness::new();
-        h.key(
-            Key::Named(NamedKey::ArrowRight),
-            ModifiersState::SUPER | ModifiersState::SHIFT,
-        );
-        let order: Vec<_> = {
-            let state = h.chrome.borrow();
-            state.tree().desktop.workspaces[0].strips[0]
-                .window_groups
-                .iter()
-                .map(|group| group.id)
-                .collect()
-        };
-        assert_eq!(order[0], h.groups[1]);
-        assert_eq!(order[1], h.groups[0]);
-    }
-
-    // Phase `f1_toggles_the_desktop_guide`.
-    {
-        let mut h = Harness::new();
-        assert!(!h.chrome.borrow().overlays.shortcut_help);
-        h.key(Key::Named(NamedKey::F1), ModifiersState::empty());
-        assert!(h.chrome.borrow().overlays.shortcut_help);
-        h.key(Key::Named(NamedKey::F1), ModifiersState::empty());
-        assert!(!h.chrome.borrow().overlays.shortcut_help);
-    }
+#[test]
+fn f1_toggles_the_desktop_guide() {
+    let mut h = Harness::new();
+    assert!(!h.chrome.borrow().overlays.shortcut_help);
+    h.key(Key::Named(NamedKey::F1), ModifiersState::empty());
+    assert!(h.chrome.borrow().overlays.shortcut_help);
+    h.key(Key::Named(NamedKey::F1), ModifiersState::empty());
+    assert!(!h.chrome.borrow().overlays.shortcut_help);
 }
 
 // Travelling along the strip: three ways in, one operation.
 
+// Super+Right walks forward through the strip's windows and does not stop
+// at a group boundary — the strip is one sequence of windows, not a set
+// of independent tab bars.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
-    // Phase `super_right_walks_the_whole_strip`.
-    // Super+Right walks forward through the strip's windows and does not stop
-    // at a group boundary — the strip is one sequence of windows, not a set
-    // of independent tab bars.
-    {
-        let mut h = Harness::new();
-        assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+fn super_right_walks_the_whole_strip() {
+    let mut h = Harness::new();
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
 
-        // Built from the fixture so the expectation cannot drift out of step.
-        let expected: Vec<(GroupId, u64)> = h
-            .groups
-            .iter()
-            .zip(h.tabs.iter())
-            .flat_map(|(&g, ids)| [(g, ids[0]), (g, ids[1])])
-            .skip(1)
-            .collect();
-        for (step, want) in expected.iter().enumerate() {
-            h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
-            h.tick();
-            assert_eq!(
-                h.active_window(),
-                *want,
-                "step {} of Super+Right landed on the wrong window",
-                step + 1
-            );
-        }
-    }
-
-    // Phase `super_left_is_the_inverse_and_neither_wraps`.
-    // Super+Left is its inverse, and neither wraps: wrapping would teleport
-    // the viewport the whole length of the strip for what the user asked to
-    // be one step.
-    {
-        let mut h = Harness::new();
-        for _ in 0..GROUPS * 2 + 3 {
-            h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
-            h.tick();
-        }
-        assert_eq!(
-            h.active_window(),
-            (h.groups[GROUPS - 1], h.tabs[GROUPS - 1][1]),
-            "pushing past the end must clamp at the last window, not wrap"
-        );
-
-        for _ in 0..GROUPS * 2 + 3 {
-            h.key(Key::Named(NamedKey::ArrowLeft), ModifiersState::SUPER);
-            h.tick();
-        }
-        assert_eq!(
-            h.active_window(),
-            (h.groups[0], h.tabs[0][0]),
-            "pushing past the start must clamp at the first window, not wrap"
-        );
-    }
-
-    // Phase `stepping_to_an_offscreen_window_pans_the_strip`.
-    // Focus travelling off-screen brings the strip with it; without this the
-    // chord silently focuses a window the user cannot see.
-    {
-        let mut h = Harness::new();
-        // App's bounded composition settlement admits the final output-width
-        // basis before accepting input. This manual harness needs its next
-        // layout pass too, before advancing the resulting focus animation.
+    // Built from the fixture so the expectation cannot drift out of step.
+    let expected: Vec<(GroupId, u64)> = h
+        .groups
+        .iter()
+        .zip(h.tabs.iter())
+        .flat_map(|(&g, ids)| [(g, ids[0]), (g, ids[1])])
+        .skip(1)
+        .collect();
+    for (step, want) in expected.iter().enumerate() {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
         h.tick();
-        let home = h.scroll_x();
-        let g2 = h
-            .host
-            .group_at_for_tests(h.strip, GROUPS - 1)
-            .expect("the last group must be live")
-            .get_rect();
-        let row_right = h
-            .host
-            .group_row_rect_for_tests(h.strip)
-            .expect("strip row")
-            .x1;
-        assert!(
-            g2.x0 > row_right,
-            "fixture must start with its last group off screen (group {g2:?}, viewport ends {row_right})"
+        assert_eq!(
+            h.active_window(),
+            *want,
+            "step {} of Super+Right landed on the wrong window",
+            step + 1
         );
+    }
+}
 
-        for _ in 0..GROUPS * 2 {
+// Super+Left is its inverse, and neither wraps: wrapping would teleport
+// the viewport the whole length of the strip for what the user asked to
+// be one step.
+#[test]
+fn super_left_is_the_inverse_and_neither_wraps() {
+    let mut h = Harness::new();
+    for _ in 0..GROUPS * 2 + 3 {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.tick();
+    }
+    assert_eq!(
+        h.active_window(),
+        (h.groups[GROUPS - 1], h.tabs[GROUPS - 1][1]),
+        "pushing past the end must clamp at the last window, not wrap"
+    );
+
+    for _ in 0..GROUPS * 2 + 3 {
+        h.key(Key::Named(NamedKey::ArrowLeft), ModifiersState::SUPER);
+        h.tick();
+    }
+    assert_eq!(
+        h.active_window(),
+        (h.groups[0], h.tabs[0][0]),
+        "pushing past the start must clamp at the first window, not wrap"
+    );
+}
+
+// Focus travelling off-screen brings the strip with it; without this the
+// chord silently focuses a window the user cannot see.
+#[test]
+fn stepping_to_an_offscreen_window_pans_the_strip() {
+    let mut h = Harness::new();
+    // App's bounded composition settlement admits the final output-width
+    // basis before accepting input. This manual harness needs its next
+    // layout pass too, before advancing the resulting focus animation.
+    h.tick();
+    let home = h.scroll_x();
+    let g2 = h
+        .host
+        .group_at_for_tests(h.strip, GROUPS - 1)
+        .expect("the last group must be live")
+        .get_rect();
+    let row_right = h
+        .host
+        .group_row_rect_for_tests(h.strip)
+        .expect("strip row")
+        .x1;
+    assert!(
+        g2.x0 > row_right,
+        "fixture must start with its last group off screen (group {g2:?}, viewport ends {row_right})"
+    );
+
+    for _ in 0..GROUPS * 2 {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.tick();
+    }
+    assert_eq!(
+        h.active_window().0,
+        h.groups[GROUPS - 1],
+        "focus must have reached the last group"
+    );
+    assert!(
+        h.scroll_x() > home,
+        "the strip must follow focus off screen; still parked at {home}"
+    );
+}
+
+// A sideways two-finger swipe is the same operation as the chord —
+// literally. Two navigation models agreeing on the easy case and
+// diverging at a group boundary is the failure this pins.
+#[test]
+fn a_horizontal_swipe_and_the_chord_are_one_operation() {
+    let by_key = {
+        let mut h = Harness::new();
+        for _ in 0..3 {
             h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
             h.tick();
         }
-        assert_eq!(
-            h.active_window().0,
-            h.groups[GROUPS - 1],
-            "focus must have reached the last group"
-        );
-        assert!(
-            h.scroll_x() > home,
-            "the strip must follow focus off screen; still parked at {home}"
-        );
-    }
-
-    // Phase `a_horizontal_swipe_and_the_chord_are_one_operation`.
-    // A sideways two-finger swipe is the same operation as the chord —
-    // literally. Two navigation models agreeing on the easy case and
-    // diverging at a group boundary is the failure this pins.
-    {
-        let by_key = {
-            let mut h = Harness::new();
-            for _ in 0..3 {
-                h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
-                h.tick();
-            }
-            h.active_window()
-        };
-        let by_swipe = {
-            let mut h = Harness::new();
-            for _ in 0..3 {
-                h.scroll_horizontally(4.0);
-                h.tick();
-            }
-            h.active_window()
-        };
-        assert_eq!(
-            by_key, by_swipe,
-            "three swipes and three Super+Rights must land on the same window"
-        );
-        // …and across a group boundary, so this is not two implementations
-        // agreeing inside one tab bar.
-        let h = Harness::new();
-        assert_ne!(
-            by_key.0,
-            h.active_window().0,
-            "the fixture must carry the walk across a group boundary"
-        );
-    }
-
-    // Phase `ctrl_tab_cycles_tabs_inside_the_focused_group`.
-    // Ctrl+Tab belongs to the focused app first (77e9eebc32); the desktop's
-    // own spelling is Super+Ctrl+Tab.
-    {
+        h.active_window()
+    };
+    let by_swipe = {
         let mut h = Harness::new();
-        assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+        for _ in 0..3 {
+            h.scroll_horizontally(4.0);
+            h.tick();
+        }
+        h.active_window()
+    };
+    assert_eq!(
+        by_key, by_swipe,
+        "three swipes and three Super+Rights must land on the same window"
+    );
+    // …and across a group boundary, so this is not two implementations
+    // agreeing inside one tab bar.
+    let h = Harness::new();
+    assert_ne!(
+        by_key.0,
+        h.active_window().0,
+        "the fixture must carry the walk across a group boundary"
+    );
+}
 
-        let desktop_tab = ModifiersState::SUPER | ModifiersState::CONTROL;
-        h.key(Key::Named(NamedKey::Tab), desktop_tab);
-        assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+// Ctrl+Tab belongs to the focused app first (77e9eebc32); the desktop's
+// own spelling is Super+Ctrl+Tab.
+#[test]
+fn ctrl_tab_cycles_tabs_inside_the_focused_group() {
+    let mut h = Harness::new();
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
 
-        h.key(Key::Named(NamedKey::Tab), desktop_tab);
-        assert_eq!(
-            h.active_window(),
-            (h.groups[0], h.tabs[0][0]),
-            "tab cycling wraps within the group rather than leaving it"
-        );
-    }
+    let desktop_tab = ModifiersState::SUPER | ModifiersState::CONTROL;
+    h.key(Key::Named(NamedKey::Tab), desktop_tab);
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
 
-    // Phase `conventional_workspace_page_keys_use_the_same_clamped_workspace_axis`.
-    {
-        let mut h = Harness::new();
-        let first = h.chrome.borrow().tree().desktop.active;
-        let second = WorkspaceId::new();
-        h.chrome
-            .borrow_mut()
-            .tree_mut()
-            .desktop
-            .workspaces
-            .push(Workspace::new(second, "Second"));
+    h.key(Key::Named(NamedKey::Tab), desktop_tab);
+    assert_eq!(
+        h.active_window(),
+        (h.groups[0], h.tabs[0][0]),
+        "tab cycling wraps within the group rather than leaving it"
+    );
+}
 
-        h.key(Key::Named(NamedKey::PageDown), ModifiersState::SUPER);
-        assert_eq!(h.chrome.borrow().tree().desktop.active, second);
-        h.key(Key::Named(NamedKey::PageDown), ModifiersState::SUPER);
-        assert_eq!(
-            h.chrome.borrow().tree().desktop.active,
-            second,
-            "Super+PageDown clamps at the final workspace"
-        );
-        h.key(Key::Named(NamedKey::PageUp), ModifiersState::SUPER);
-        assert_eq!(h.chrome.borrow().tree().desktop.active, first);
-    }
+#[test]
+fn conventional_workspace_page_keys_use_the_same_clamped_workspace_axis() {
+    let mut h = Harness::new();
+    let first = h.chrome.borrow().tree().desktop.active;
+    let second = WorkspaceId::new();
+    h.chrome
+        .borrow_mut()
+        .tree_mut()
+        .desktop
+        .workspaces
+        .push(Workspace::new(second, "Second"));
+
+    h.key(Key::Named(NamedKey::PageDown), ModifiersState::SUPER);
+    assert_eq!(h.chrome.borrow().tree().desktop.active, second);
+    h.key(Key::Named(NamedKey::PageDown), ModifiersState::SUPER);
+    assert_eq!(
+        h.chrome.borrow().tree().desktop.active,
+        second,
+        "Super+PageDown clamps at the final workspace"
+    );
+    h.key(Key::Named(NamedKey::PageUp), ModifiersState::SUPER);
+    assert_eq!(h.chrome.borrow().tree().desktop.active, first);
 }
 
 // The rail: the thing that says there is more strip.
@@ -1373,329 +1360,318 @@ fn a_touchpad_pan_shows_the_position_indicators_once_it_rests() {
     );
 }
 
+// The rail reports what the strip holds and which part is on screen —
+// the fact whose absence produced "how do I change windows?".
 #[test]
-fn the_rail_maps_the_strip_and_travels_on_click() {
-    // Phase `the_rail_maps_the_strip_and_marks_what_is_on_screen`.
-    // The rail reports what the strip holds and which part is on screen —
-    // the fact whose absence produced "how do I change windows?".
-    {
-        let mut h = Harness::new();
-        let rail = h.host.strip_rail_for_tests();
-        assert_eq!(rail.count, GROUPS, "one segment per window group");
-        assert!(rail.is_meaningful(), "three groups is worth drawing");
-        assert_eq!(rail.focused, 0, "focus starts on the first group");
-        assert_eq!(
-            rail.visible,
-            vec![0, 1],
-            "at rest the viewport holds groups 0 and 1; the third is the \
-             one the rail exists to advertise"
-        );
+fn the_rail_maps_the_strip_and_marks_what_is_on_screen() {
+    let mut h = Harness::new();
+    let rail = h.host.strip_rail_for_tests();
+    assert_eq!(rail.count, GROUPS, "one segment per window group");
+    assert!(rail.is_meaningful(), "three groups is worth drawing");
+    assert_eq!(rail.focused, 0, "focus starts on the first group");
+    assert_eq!(
+        rail.visible,
+        vec![0, 1],
+        "at rest the viewport holds groups 0 and 1; the third is the \
+         one the rail exists to advertise"
+    );
 
-        for _ in 0..GROUPS * 2 {
-            h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
-            h.tick();
-        }
-        let rail = h.host.strip_rail_for_tests();
-        assert_eq!(rail.focused, GROUPS - 1, "focus reached the last group");
-        assert!(
-            rail.visible.contains(&(GROUPS - 1)),
-            "the group the user travelled to must read as on screen, got {:?}",
-            rail.visible
-        );
-        assert!(
-            !rail.visible.contains(&0),
-            "the group they left behind must not, got {:?}",
-            rail.visible
-        );
-    }
-
-    // Phase `clicking_a_rail_segment_travels_to_that_window`.
-    // And it is a control: clicking a segment goes there, including to an
-    // off-screen window — the one pointer action allowed to pan the strip,
-    // because its target may not be visible.
-    {
-        let mut h = Harness::new();
-        let home = h.scroll_x();
-        let seg = h
-            .host
-            .strip_rail_for_tests()
-            .hit_rect(GROUPS - 1)
-            .expect("the rail must offer a target for the last group");
-        h.click(seg.center());
+    for _ in 0..GROUPS * 2 {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
         h.tick();
-
-        assert_eq!(
-            h.active_window().0,
-            h.groups[GROUPS - 1],
-            "clicking the last segment must focus the last group"
-        );
-        assert!(
-            h.scroll_x() > home,
-            "and bring it into view; the strip is still parked at {home}"
-        );
     }
+    let rail = h.host.strip_rail_for_tests();
+    assert_eq!(rail.focused, GROUPS - 1, "focus reached the last group");
+    assert!(
+        rail.visible.contains(&(GROUPS - 1)),
+        "the group the user travelled to must read as on screen, got {:?}",
+        rail.visible
+    );
+    assert!(
+        !rail.visible.contains(&0),
+        "the group they left behind must not, got {:?}",
+        rail.visible
+    );
+}
+
+// And it is a control: clicking a segment goes there, including to an
+// off-screen window — the one pointer action allowed to pan the strip,
+// because its target may not be visible.
+#[test]
+fn clicking_a_rail_segment_travels_to_that_window() {
+    let mut h = Harness::new();
+    let home = h.scroll_x();
+    let seg = h
+        .host
+        .strip_rail_for_tests()
+        .hit_rect(GROUPS - 1)
+        .expect("the rail must offer a target for the last group");
+    h.click(seg.center());
+    h.tick();
+
+    assert_eq!(
+        h.active_window().0,
+        h.groups[GROUPS - 1],
+        "clicking the last segment must focus the last group"
+    );
+    assert!(
+        h.scroll_x() > home,
+        "and bring it into view; the strip is still parked at {home}"
+    );
+}
+
+// The visible close button must be the same durable operation as Super+W.
+// This was a separate widget-only path: it faded the tab, never removed it
+// from the tree and never sent `xdg_toplevel.close`, so the next unrelated
+// revision visibly restored the window.
+#[test]
+fn clicking_close_commits_the_exact_surface_and_survives_restart() {
+    let mut h = Harness::new();
+    let state_dir = tempfile::tempdir().expect("temporary state directory");
+    let state_path = state_dir.path().join("state.json");
+    let tab = h.tabs[0][0];
+    {
+        let state = h.chrome.borrow_mut();
+        let mut tree = state.tree_mut();
+        tree.persist_path = Some(state_path.clone());
+        tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
+            app_id: "com.openai.chatgpt".into(),
+            surface_id: 41,
+        };
+        // Real sessions always carry a room document. Lifecycle operations
+        // intentionally refuse a cache-only mutation because the next peer
+        // revision would undo it.
+        tree.seed_doc_from_cache();
+        tree.queue_save();
+    }
+
+    let close = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.close_rect_for_tests(tab))
+        .expect("active tab must expose a real close hit target after layout");
+    h.click(close.center());
+
+    {
+        let state = h.chrome.borrow();
+        let tree = state.tree();
+        let live_tabs = &tree.desktop.workspaces[0].strips[0].window_groups[0].tabs;
+        assert!(
+            live_tabs.iter().all(|candidate| candidate.id != tab),
+            "the pointer close must remove the tab from the durable tree in the same event"
+        );
+        drop(tree);
+    }
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![41],
+        "the close must address the exact surface, not an app id shared by other windows"
+    );
+
+    // Both historical resurrection edges: a later chrome revision and a
+    // fresh compositor load.
+    h.chrome.borrow_mut().bump();
+    h.tick();
+    assert!(
+        h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .all(|candidate| candidate.id != tab),
+        "an unrelated revision must not restore the clicked-close tab"
+    );
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("pointer close must atomically persist a loadable state");
+    assert!(
+        restarted.desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .all(|candidate| candidate.id != tab),
+        "a normal restart must keep the clicked-close tab absent"
+    );
+
+    // Close the remaining tab through its newly laid-out hit target: a
+    // window of one tab shows it as its title, so the window's own close
+    // control closes it. The whole group must disappear durably as one
+    // consequence of its last window closing; this is the live-session
+    // "closed group came back" failure, not merely the two-tabs case above.
+    let remaining = h.tabs[0][1];
+    let close = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .map(|group| {
+            assert!(
+                group.close_rect_for_tests(remaining).is_none(),
+                "a lone tab carries no close of its own; the window's close closes it"
+            );
+            group.bar_for_tests().window_controls().close
+        })
+        .filter(|rect| rect.area() > 0.0)
+        .expect("the window must expose its close control after resync");
+    h.click(close.center());
+    assert!(
+        h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .all(|group| group.id != h.groups[0]),
+        "closing the last tab must remove its whole group in the same event"
+    );
+    h.chrome.borrow_mut().bump();
+    h.tick();
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("last-tab close must atomically persist a loadable state");
+    assert!(
+        restarted.desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .all(|group| group.id != h.groups[0]),
+        "revision plus restart must not resurrect a group closed by pointer"
+    );
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn every_close_route_commits_the_exact_surface_durably() {
-    // Phase `clicking_close_commits_the_exact_surface_and_survives_restart`.
-    // The visible close button must be the same durable operation as Super+W.
-    // This was a separate widget-only path: it faded the tab, never removed it
-    // from the tree and never sent `xdg_toplevel.close`, so the next unrelated
-    // revision visibly restored the window.
+fn alt_f4_uses_the_same_exact_durable_close_as_the_frame_and_super_w() {
+    let mut h = Harness::new();
+    let first = h.tabs[0][0];
+    let second = h.tabs[0][1];
     {
-        let mut h = Harness::new();
-        let state_dir = tempfile::tempdir().expect("temporary state directory");
-        let state_path = state_dir.path().join("state.json");
-        let tab = h.tabs[0][0];
-        {
-            let state = h.chrome.borrow_mut();
-            let mut tree = state.tree_mut();
-            tree.persist_path = Some(state_path.clone());
-            tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].tile =
-                TileContent::Foreign {
-                    app_id: "com.openai.chatgpt".into(),
-                    surface_id: 41,
-                };
-            // Real sessions always carry a room document. Lifecycle operations
-            // intentionally refuse a cache-only mutation because the next peer
-            // revision would undo it.
-            tree.seed_doc_from_cache();
-            tree.queue_save();
-        }
-
-        let close = h
-            .host
-            .group_at_for_tests(h.strip, 0)
-            .and_then(|group| group.close_rect_for_tests(tab))
-            .expect("active tab must expose a real close hit target after layout");
-        h.click(close.center());
-
-        {
-            let state = h.chrome.borrow();
-            let tree = state.tree();
-            let live_tabs = &tree.desktop.workspaces[0].strips[0].window_groups[0].tabs;
-            assert!(
-                live_tabs.iter().all(|candidate| candidate.id != tab),
-                "the pointer close must remove the tab from the durable tree in the same event"
-            );
-            drop(tree);
-        }
-        assert_eq!(
-            h.chrome.borrow_mut().take_surface_close_requests(),
-            vec![41],
-            "the close must address the exact surface, not an app id shared by other windows"
-        );
-
-        // Both historical resurrection edges: a later chrome revision and a
-        // fresh compositor load.
-        h.chrome.borrow_mut().bump();
-        h.tick();
-        assert!(
-            h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
-                .tabs
-                .iter()
-                .all(|candidate| candidate.id != tab),
-            "an unrelated revision must not restore the clicked-close tab"
-        );
-        let restarted = shell::shell::persist::load_tree_from(&state_path)
-            .expect("pointer close must atomically persist a loadable state");
-        assert!(
-            restarted.desktop.workspaces[0].strips[0].window_groups[0]
-                .tabs
-                .iter()
-                .all(|candidate| candidate.id != tab),
-            "a normal restart must keep the clicked-close tab absent"
-        );
-
-        // Close the remaining tab through its newly laid-out hit target: a
-        // window of one tab shows it as its title, so the window's own close
-        // control closes it. The whole group must disappear durably as one
-        // consequence of its last window closing; this is the live-session
-        // "closed group came back" failure, not merely the two-tabs case above.
-        let remaining = h.tabs[0][1];
-        let close = h
-            .host
-            .group_at_for_tests(h.strip, 0)
-            .map(|group| {
-                assert!(
-                    group.close_rect_for_tests(remaining).is_none(),
-                    "a lone tab carries no close of its own; the window's close closes it"
-                );
-                group.bar_for_tests().window_controls().close
-            })
-            .filter(|rect| rect.area() > 0.0)
-            .expect("the window must expose its close control after resync");
-        h.click(close.center());
-        assert!(
-            h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
-                .window_groups
-                .iter()
-                .all(|group| group.id != h.groups[0]),
-            "closing the last tab must remove its whole group in the same event"
-        );
-        h.chrome.borrow_mut().bump();
-        h.tick();
-        let restarted = shell::shell::persist::load_tree_from(&state_path)
-            .expect("last-tab close must atomically persist a loadable state");
-        assert!(
-            restarted.desktop.workspaces[0].strips[0]
-                .window_groups
-                .iter()
-                .all(|group| group.id != h.groups[0]),
-            "revision plus restart must not resurrect a group closed by pointer"
-        );
+        let state = h.chrome.borrow_mut();
+        let ws = state.tree().desktop.active;
+        let mut tree = state.tree_mut();
+        let group = tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter_mut()
+            .find(|group| group.id == h.groups[0])
+            .expect("focused group");
+        group.tabs[0].tile = TileContent::Foreign {
+            surface_id: 0xF401,
+            app_id: "org.example.First".into(),
+        };
+        group.tabs[1].tile = TileContent::Foreign {
+            surface_id: 0xF402,
+            app_id: "org.example.Second".into(),
+        };
+        group.active_tab = first;
+        tree.desktop.active = ws;
     }
 
-    // Phase `alt_f4_uses_the_same_exact_durable_close_as_the_frame_and_super_w`.
+    h.key(Key::Named(NamedKey::F4), ModifiersState::ALT);
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![0xF401]
+    );
+    assert_eq!(h.active_window(), (h.groups[0], second));
+    assert!(
+        h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .all(|tab| tab.id != first),
+        "Alt+F4 must remove the exact durable tab before asking the client to close"
+    );
+}
+
+#[test]
+fn pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent() {
+    let mut h = Harness::new();
+    let state_dir = tempfile::tempdir().expect("temporary state directory");
+    let state_path = state_dir.path().join("state.json");
     {
-        let mut h = Harness::new();
-        let first = h.tabs[0][0];
-        let second = h.tabs[0][1];
-        {
-            let state = h.chrome.borrow_mut();
-            let ws = state.tree().desktop.active;
-            let mut tree = state.tree_mut();
-            let group = tree.desktop.workspaces[0].strips[0]
-                .window_groups
+        let state = h.chrome.borrow_mut();
+        let mut tree = state.tree_mut();
+        tree.persist_path = Some(state_path.clone());
+        for (tab, surface_id) in [(h.tabs[0][0], 0xA11CE_u64), (h.tabs[0][1], 0xA11CF_u64)] {
+            let tab = tree.desktop.workspaces[0].strips[0].window_groups[0]
+                .tabs
                 .iter_mut()
-                .find(|group| group.id == h.groups[0])
-                .expect("focused group");
-            group.tabs[0].tile = TileContent::Foreign {
-                surface_id: 0xF401,
-                app_id: "org.example.First".into(),
+                .find(|candidate| candidate.id == tab)
+                .expect("fixture tab");
+            tab.tile = TileContent::Foreign {
+                app_id: "org.example.ExternalEditor".into(),
+                surface_id,
             };
-            group.tabs[1].tile = TileContent::Foreign {
-                surface_id: 0xF402,
-                app_id: "org.example.Second".into(),
-            };
-            group.active_tab = first;
-            tree.desktop.active = ws;
         }
-
-        h.key(Key::Named(NamedKey::F4), ModifiersState::ALT);
-        assert_eq!(
-            h.chrome.borrow_mut().take_surface_close_requests(),
-            vec![0xF401]
-        );
-        assert_eq!(h.active_window(), (h.groups[0], second));
-        assert!(
-            h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
-                .tabs
-                .iter()
-                .all(|tab| tab.id != first),
-            "Alt+F4 must remove the exact durable tab before asking the client to close"
-        );
+        tree.seed_doc_from_cache();
+        tree.queue_save();
     }
 
-    // Phase `pointer_then_keyboard_close_leave_navigation_and_restart_state_coherent`.
-    {
-        let mut h = Harness::new();
-        let state_dir = tempfile::tempdir().expect("temporary state directory");
-        let state_path = state_dir.path().join("state.json");
-        {
-            let state = h.chrome.borrow_mut();
-            let mut tree = state.tree_mut();
-            tree.persist_path = Some(state_path.clone());
-            for (tab, surface_id) in [(h.tabs[0][0], 0xA11CE_u64), (h.tabs[0][1], 0xA11CF_u64)] {
-                let tab = tree.desktop.workspaces[0].strips[0].window_groups[0]
-                    .tabs
-                    .iter_mut()
-                    .find(|candidate| candidate.id == tab)
-                    .expect("fixture tab");
-                tab.tile = TileContent::Foreign {
-                    app_id: "org.example.ExternalEditor".into(),
-                    surface_id,
-                };
-            }
-            tree.seed_doc_from_cache();
-            tree.queue_save();
-        }
+    let first = h.tabs[0][0];
+    let close = h
+        .host
+        .group_at_for_tests(h.strip, 0)
+        .and_then(|group| group.close_rect_for_tests(first))
+        .expect("pointer close target");
+    h.click(close.center());
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![0xA11CE],
+        "the pointer path must issue one exact client close"
+    );
+    h.tick();
 
-        let first = h.tabs[0][0];
-        let close = h
-            .host
-            .group_at_for_tests(h.strip, 0)
-            .and_then(|group| group.close_rect_for_tests(first))
-            .expect("pointer close target");
-        h.click(close.center());
-        assert_eq!(
-            h.chrome.borrow_mut().take_surface_close_requests(),
-            vec![0xA11CE],
-            "the pointer path must issue one exact client close"
-        );
-        h.tick();
+    h.key(Key::Character("w".into()), ModifiersState::SUPER);
+    assert_eq!(
+        h.chrome.borrow_mut().take_surface_close_requests(),
+        vec![0xA11CF],
+        "Super+W must issue one exact client close for the remaining tab"
+    );
+    h.tick();
 
-        h.key(Key::Character("w".into()), ModifiersState::SUPER);
-        assert_eq!(
-            h.chrome.borrow_mut().take_surface_close_requests(),
-            vec![0xA11CF],
-            "Super+W must issue one exact client close for the remaining tab"
-        );
-        h.tick();
-
-        assert!(
-            !h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
-                .window_groups
-                .iter()
-                .any(|group| group.id == h.groups[0]),
-            "closing the last tab removes the complete group before later input"
-        );
-        assert_eq!(h.active_window().0, h.groups[1]);
-
-        h.key(
-            Key::Named(NamedKey::ArrowRight),
-            ModifiersState::SUPER | ModifiersState::SHIFT,
-        );
-        h.tick();
-        let reordered: Vec<_> = h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
+    assert!(
+        !h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
+            .any(|group| group.id == h.groups[0]),
+        "closing the last tab removes the complete group before later input"
+    );
+    assert_eq!(h.active_window().0, h.groups[1]);
+
+    h.key(
+        Key::Named(NamedKey::ArrowRight),
+        ModifiersState::SUPER | ModifiersState::SHIFT,
+    );
+    h.tick();
+    let reordered: Vec<_> = h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
+        .window_groups
+        .iter()
+        .map(|group| group.id)
+        .collect();
+    assert_eq!(&reordered[..2], &[h.groups[2], h.groups[1]]);
+    assert_eq!(h.active_window().0, h.groups[1]);
+
+    h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+    h.tick();
+    assert_eq!(
+        h.active_window(),
+        (h.groups[1], h.tabs[1][1]),
+        "focus first advances within the moved live group"
+    );
+    h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+    h.tick();
+    assert_eq!(
+        h.active_window().0,
+        h.groups[3],
+        "focus navigation must continue past the moved group, never a closed one"
+    );
+
+    h.chrome.borrow_mut().bump();
+    h.tick();
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("the complete interaction sequence persists a loadable state");
+    let restarted_groups = &restarted.desktop.workspaces[0].strips[0].window_groups;
+    assert!(restarted_groups.iter().all(|group| group.id != h.groups[0]));
+    assert_eq!(
+        restarted_groups
+            .iter()
             .map(|group| group.id)
-            .collect();
-        assert_eq!(&reordered[..2], &[h.groups[2], h.groups[1]]);
-        assert_eq!(h.active_window().0, h.groups[1]);
-
-        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
-        h.tick();
-        assert_eq!(
-            h.active_window(),
-            (h.groups[1], h.tabs[1][1]),
-            "focus first advances within the moved live group"
-        );
-        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
-        h.tick();
-        assert_eq!(
-            h.active_window().0,
-            h.groups[3],
-            "focus navigation must continue past the moved group, never a closed one"
-        );
-
-        h.chrome.borrow_mut().bump();
-        h.tick();
-        let restarted = shell::shell::persist::load_tree_from(&state_path)
-            .expect("the complete interaction sequence persists a loadable state");
-        let restarted_groups = &restarted.desktop.workspaces[0].strips[0].window_groups;
-        assert!(restarted_groups.iter().all(|group| group.id != h.groups[0]));
-        assert_eq!(
-            restarted_groups
-                .iter()
-                .map(|group| group.id)
-                .take(2)
-                .collect::<Vec<_>>(),
-            vec![h.groups[2], h.groups[1]],
-            "restart retains keyboard reorder after pointer and keyboard closes"
-        );
-        let active = restarted
-            .desktop
-            .active_group_for(h.strip)
-            .expect("restart keeps an active group");
-        assert!(restarted_groups.iter().any(|group| group.id == active));
-    }
+            .take(2)
+            .collect::<Vec<_>>(),
+        vec![h.groups[2], h.groups[1]],
+        "restart retains keyboard reorder after pointer and keyboard closes"
+    );
+    let active = restarted
+        .desktop
+        .active_group_for(h.strip)
+        .expect("restart keeps an active group");
+    assert!(restarted_groups.iter().any(|group| group.id == active));
 }
 
 /// Ctrl+Super+N focuses the Nth window group of the current strip, on the tab it

@@ -53,14 +53,17 @@ fn hdr_monitor_edid(pq: bool) -> Vec<u8> {
 }
 
 #[test]
-fn capabilities_come_from_the_edid_and_the_active_signal() {
+fn an_hdr_sink_not_yet_driven_in_hdr_is_sdr() {
     let hdr = parse_hdr_display_info(&hdr_monitor_edid(true));
-    // Phase `an_hdr_sink_not_yet_driven_in_hdr_is_sdr`.
     assert_eq!(
         DisplayCapabilities::from_edid(&hdr, false),
         DisplayCapabilities::sdr_default()
     );
-    // Phase `the_driven_hdr_output_reports_the_edid_peak`.
+}
+
+#[test]
+fn the_driven_hdr_output_reports_the_edid_peak() {
+    let hdr = parse_hdr_display_info(&hdr_monitor_edid(true));
     let caps = DisplayCapabilities::from_edid(&hdr, true);
     assert!(caps.supports_pq_output);
     assert!(caps.bt2020_gamut);
@@ -69,13 +72,21 @@ fn capabilities_come_from_the_edid_and_the_active_signal() {
         "EDID peak, got {}",
         caps.max_luminance_nits
     );
-    // Phase `an_sdr_sink_never_claims_pq`.
+}
+
+#[test]
+fn an_sdr_sink_never_claims_pq() {
+    let hdr = parse_hdr_display_info(&hdr_monitor_edid(true));
     let sdr = parse_hdr_display_info(&hdr_monitor_edid(false));
     assert_eq!(
         DisplayCapabilities::from_edid(&sdr, true),
         DisplayCapabilities::sdr_default()
     );
-    // Phase `garbage_edid_is_sdr`.
+}
+
+#[test]
+fn garbage_edid_is_sdr() {
+    let hdr = parse_hdr_display_info(&hdr_monitor_edid(true));
     assert_eq!(
         DisplayCapabilities::from_edid(&parse_hdr_display_info(&[0xAB; 40]), true),
         DisplayCapabilities::sdr_default()

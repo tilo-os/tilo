@@ -460,111 +460,112 @@ pub(crate) fn assert_secret_prompts_withheld(fb: &mut FrameBuilder, what: &str) 
 }
 
 #[test]
-fn the_shells_secret_prompts_are_never_captured() {
+fn administrator_authentication() {
     use shell::shell::portal_dialog::{
         AuthenticationRequest, NetworkSecretsRequest, PortalDialogQueue, SecretFieldRule,
         SecretFieldSpec,
     };
+    let mut fb = FrameBuilder::new((W, H));
+    let queue = PortalDialogQueue::default();
+    fb.host_mut().set_portal_dialog_queue(queue.clone());
+    let _reply = queue
+        .enqueue_authentication(AuthenticationRequest {
+            handle: "/capture-protection/authentication".into(),
+            message: "Authentication is required to change the system time".into(),
+            action_id: "org.example.capture-protection.set-time".into(),
+            identities: vec!["alice".into()],
+            identity: 0,
+            prompt: "Password:".into(),
+            echo: false,
+            notice: None,
+        })
+        .expect("the sheet is queued");
+    fb.host_mut().pump_portal_dialogs();
+    assert_secret_prompts_withheld(&mut fb, "administrator authentication");
+}
 
-    // Phase `administrator_authentication`.
+#[test]
+fn network_secrets() {
+    use shell::shell::portal_dialog::{
+        AuthenticationRequest, NetworkSecretsRequest, PortalDialogQueue, SecretFieldRule,
+        SecretFieldSpec,
+    };
+    let mut fb = FrameBuilder::new((W, H));
+    let queue = PortalDialogQueue::default();
+    fb.host_mut().set_portal_dialog_queue(queue.clone());
+    let _reply = queue
+        .enqueue_network_secrets(NetworkSecretsRequest {
+            handle: "/capture-protection/network".into(),
+            title: "Wi-Fi network \"Cafe\"".into(),
+            detail: "A passphrase is required to connect.".into(),
+            fields: vec![SecretFieldSpec {
+                key: "psk".into(),
+                label: "Passphrase".into(),
+                masked: true,
+                required: true,
+                initial: String::new(),
+                rule: SecretFieldRule::WpaPassphrase,
+            }],
+            remember: Some(true),
+            sim: None,
+        })
+        .expect("the sheet is queued");
+    fb.host_mut().pump_portal_dialogs();
+    assert_secret_prompts_withheld(&mut fb, "network secrets");
+}
+
+#[test]
+fn wifi_passphrase() {
+    let mut fb = FrameBuilder::new((W, H));
+    fb.with_chrome(|chrome| {
+        chrome.overlays.quick_settings = true;
+        chrome.quick_settings.wifi_password =
+            Some(tilo_quick_settings::WifiPasswordPrompt::new("Cafe"));
+        chrome.bump();
+    });
+    fb.host_mut().force_quick_settings_settled();
+    assert_secret_prompts_withheld(&mut fb, "the Wi-Fi passphrase");
+    drop(fb);
+}
+
+// Phase `identity_restore_and_backup`: the steps that take a backup's
+// passphrase (and show a nearby device's pairing code) or set a new one.
+// The steps around them hold no secret and are captured as they are.
+#[test]
+fn the_shells_secret_prompts_are_never_captured() {
+    use shell::onboarding_view::OnboardingVisualState;
+    let identity = tempfile::tempdir().expect("identity dir");
+    let mut fb = FrameBuilder::new((W, H));
     {
-        let mut fb = FrameBuilder::new((W, H));
-        let queue = PortalDialogQueue::default();
-        fb.host_mut().set_portal_dialog_queue(queue.clone());
-        let _reply = queue
-            .enqueue_authentication(AuthenticationRequest {
-                handle: "/capture-protection/authentication".into(),
-                message: "Authentication is required to change the system time".into(),
-                action_id: "org.example.capture-protection.set-time".into(),
-                identities: vec!["alice".into()],
-                identity: 0,
-                prompt: "Password:".into(),
-                echo: false,
-                notice: None,
-            })
-            .expect("the sheet is queued");
-        fb.host_mut().pump_portal_dialogs();
-        assert_secret_prompts_withheld(&mut fb, "administrator authentication");
+        // The view takes this login's home and identity root from the
+        // environment once, here; other tests change both under the lock.
+        let _env = tilo_test_env::lock();
+        fb.enable_host_desktop_onboarding(identity.path().to_path_buf());
     }
-
-    // Phase `network_secrets`.
-    {
-        let mut fb = FrameBuilder::new((W, H));
-        let queue = PortalDialogQueue::default();
-        fb.host_mut().set_portal_dialog_queue(queue.clone());
-        let _reply = queue
-            .enqueue_network_secrets(NetworkSecretsRequest {
-                handle: "/capture-protection/network".into(),
-                title: "Wi-Fi network \"Cafe\"".into(),
-                detail: "A passphrase is required to connect.".into(),
-                fields: vec![SecretFieldSpec {
-                    key: "psk".into(),
-                    label: "Passphrase".into(),
-                    masked: true,
-                    required: true,
-                    initial: String::new(),
-                    rule: SecretFieldRule::WpaPassphrase,
-                }],
-                remember: Some(true),
-                sim: None,
-            })
-            .expect("the sheet is queued");
-        fb.host_mut().pump_portal_dialogs();
-        assert_secret_prompts_withheld(&mut fb, "network secrets");
-    }
-
-    // Phase `wifi_passphrase`.
-    {
-        let mut fb = FrameBuilder::new((W, H));
-        fb.with_chrome(|chrome| {
-            chrome.overlays.quick_settings = true;
-            chrome.quick_settings.wifi_password =
-                Some(tilo_quick_settings::WifiPasswordPrompt::new("Cafe"));
-            chrome.bump();
-        });
-        fb.host_mut().force_quick_settings_settled();
-        assert_secret_prompts_withheld(&mut fb, "the Wi-Fi passphrase");
-        drop(fb);
-    }
-
-    // Phase `identity_restore_and_backup`: the steps that take a backup's
-    // passphrase (and show a nearby device's pairing code) or set a new one.
-    // The steps around them hold no secret and are captured as they are.
-    {
-        use shell::onboarding_view::OnboardingVisualState;
-        let identity = tempfile::tempdir().expect("identity dir");
-        let mut fb = FrameBuilder::new((W, H));
-        {
-            // The view takes this login's home and identity root from the
-            // environment once, here; other tests change both under the lock.
-            let _env = tilo_test_env::lock();
-            fb.enable_host_desktop_onboarding(identity.path().to_path_buf());
+    for (state, secret) in [
+        (OnboardingVisualState::Intro, false),
+        (OnboardingVisualState::Existing, false),
+        (OnboardingVisualState::NearbyCode, true),
+        (OnboardingVisualState::Restore, true),
+        (OnboardingVisualState::Protect, false),
+        (OnboardingVisualState::Backup, true),
+        (OnboardingVisualState::BackupVerified, true),
+        (OnboardingVisualState::Ready, false),
+    ] {
+        fb.host_mut()
+            .set_onboarding_visual_state_for_snapshot(state);
+        fb.relayout();
+        if secret {
+            assert_secret_prompts_withheld(&mut fb, &format!("setup step {state:?}"));
+        } else {
+            let _ = frame(&mut fb);
+            assert!(
+                fb.host().secret_prompt_rects().is_empty(),
+                "setup step {state:?} shows no secret"
+            );
         }
-        for (state, secret) in [
-            (OnboardingVisualState::Intro, false),
-            (OnboardingVisualState::Existing, false),
-            (OnboardingVisualState::NearbyCode, true),
-            (OnboardingVisualState::Restore, true),
-            (OnboardingVisualState::Protect, false),
-            (OnboardingVisualState::Backup, true),
-            (OnboardingVisualState::BackupVerified, true),
-            (OnboardingVisualState::Ready, false),
-        ] {
-            fb.host_mut()
-                .set_onboarding_visual_state_for_snapshot(state);
-            fb.relayout();
-            if secret {
-                assert_secret_prompts_withheld(&mut fb, &format!("setup step {state:?}"));
-            } else {
-                let _ = frame(&mut fb);
-                assert!(
-                    fb.host().secret_prompt_rects().is_empty(),
-                    "setup step {state:?} shows no secret"
-                );
-            }
-        }
-        drop(fb);
     }
+    drop(fb);
 }
 
 /// A shortcut step that asks for a secret is withheld; one that asks for

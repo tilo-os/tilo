@@ -782,258 +782,241 @@ fn center(r: vello::kurbo::Rect) -> Point {
 // Test 3: open quick settings via the tray pill
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
-    // Phase `overlay_host_keys_open_close_and_navigate_search_overview_and_tabs`.
-    {
-        // Phase `e2e_super_k_opens_search_palette_in_live_binary_path`.
-        {
-            let _guard = TEST_LOCK.lock_recover();
-            let tree = WorkspaceTree::bootstrap_demo();
-            let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
-            assert!(!host.palette_visible(), "palette starts closed");
+fn e2e_super_k_opens_search_palette_in_live_binary_path() {
+    let _guard = TEST_LOCK.lock_recover();
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+    assert!(!host.palette_visible(), "palette starts closed");
 
-            let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-            let handled = pump_host(&mut host, &named_key(NamedKey::Space), mods);
-            assert!(handled, "Super+Space must be consumed by the overlay host");
-            assert!(
-                host.palette_visible(),
-                "Super+Space must open the global-search palette in the live-binary event path"
-            );
-        }
+    let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+    let handled = pump_host(&mut host, &named_key(NamedKey::Space), mods);
+    assert!(handled, "Super+Space must be consumed by the overlay host");
+    assert!(
+        host.palette_visible(),
+        "Super+Space must open the global-search palette in the live-binary event path"
+    );
+}
 
-        // Phase `e2e_escape_closes_search_palette`.
-        {
-            let _guard = TEST_LOCK.lock_recover();
-            let tree = WorkspaceTree::bootstrap_demo();
-            let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+#[test]
+fn e2e_escape_closes_search_palette() {
+    let _guard = TEST_LOCK.lock_recover();
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
 
-            // Open via Super+Space rather than bypassing the host's state machine, guarding
-            // against a mutation-ordering regression.
-            let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-            let _ = pump_host(&mut host, &named_key(NamedKey::Space), mods);
-            assert!(host.palette_visible());
+    // Open via Super+Space rather than bypassing the host's state machine, guarding
+    // against a mutation-ordering regression.
+    let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+    let _ = pump_host(&mut host, &named_key(NamedKey::Space), mods);
+    assert!(host.palette_visible());
 
-            // Escape priority order: palette > overview > ws_settings > quick_settings.
-            let no_mods = Modifiers::default();
-            let handled = pump_host(&mut host, &named_key(NamedKey::Escape), no_mods);
-            assert!(handled, "Escape must be consumed while the palette is open");
-            assert!(
-                !host.palette_visible(),
-                "Escape must close the global-search palette"
-            );
-        }
+    // Escape priority order: palette > overview > ws_settings > quick_settings.
+    let no_mods = Modifiers::default();
+    let handled = pump_host(&mut host, &named_key(NamedKey::Escape), no_mods);
+    assert!(handled, "Escape must be consumed while the palette is open");
+    assert!(
+        !host.palette_visible(),
+        "Escape must close the global-search palette"
+    );
+}
 
-        // Phase `e2e_ctrl_tab_cycles_tabs_without_opening_overview`.
-        {
-            let _guard = TEST_LOCK.lock_recover();
-            let tree = WorkspaceTree::bootstrap_demo();
-            let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
-            assert!(!chrome.borrow().overlays.overview);
-            let before =
-                chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
+#[test]
+fn e2e_ctrl_tab_cycles_tabs_without_opening_overview() {
+    let _guard = TEST_LOCK.lock_recover();
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+    assert!(!chrome.borrow().overlays.overview);
+    let before = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
 
-            // Ctrl+Tab belongs to the focused app first (keyboard_focus_wire
-            // and app_tabs cover it); the desktop's own spelling adds Super.
-            let mods = Modifiers::from(
-                winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::CONTROL,
-            );
-            let handled = pump_host(&mut host, &named_key(NamedKey::Tab), mods);
-            assert!(
-                handled,
-                "Super+Ctrl+Tab must be consumed by the overlay host"
-            );
-            assert!(
-                !chrome.borrow().overlays.overview,
-                "Super+Ctrl+Tab is tab navigation; only Super+Tab opens the overview"
-            );
-            let after =
-                chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
-            assert_ne!(after, before, "Super+Ctrl+Tab must select the next tab");
+    // Ctrl+Tab belongs to the focused app first (keyboard_focus_wire
+    // and app_tabs cover it); the desktop's own spelling adds Super.
+    let mods = Modifiers::from(
+        winit::keyboard::ModifiersState::SUPER | winit::keyboard::ModifiersState::CONTROL,
+    );
+    let handled = pump_host(&mut host, &named_key(NamedKey::Tab), mods);
+    assert!(
+        handled,
+        "Super+Ctrl+Tab must be consumed by the overlay host"
+    );
+    assert!(
+        !chrome.borrow().overlays.overview,
+        "Super+Ctrl+Tab is tab navigation; only Super+Tab opens the overview"
+    );
+    let after = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
+    assert_ne!(after, before, "Super+Ctrl+Tab must select the next tab");
 
-            let backwards = Modifiers::from(
-                winit::keyboard::ModifiersState::SUPER
-                    | winit::keyboard::ModifiersState::CONTROL
-                    | winit::keyboard::ModifiersState::SHIFT,
-            );
-            assert!(pump_host(&mut host, &named_key(NamedKey::Tab), backwards));
-            assert_eq!(
-                chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
-                before,
-                "Super+Ctrl+Shift+Tab must return to the previous tab"
-            );
-        }
+    let backwards = Modifiers::from(
+        winit::keyboard::ModifiersState::SUPER
+            | winit::keyboard::ModifiersState::CONTROL
+            | winit::keyboard::ModifiersState::SHIFT,
+    );
+    assert!(pump_host(&mut host, &named_key(NamedKey::Tab), backwards));
+    assert_eq!(
+        chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
+        before,
+        "Super+Ctrl+Shift+Tab must return to the previous tab"
+    );
+}
 
-        // Phase `e2e_super_tab_toggles_overview_in_live_binary_path`.
-        {
-            let _guard = TEST_LOCK.lock_recover();
-            let tree = WorkspaceTree::bootstrap_demo();
-            let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
-            assert!(!chrome.borrow().overlays.overview);
+#[test]
+fn e2e_super_tab_toggles_overview_in_live_binary_path() {
+    let _guard = TEST_LOCK.lock_recover();
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+    assert!(!chrome.borrow().overlays.overview);
 
-            let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-            let handled = pump_host(&mut host, &named_key(NamedKey::Tab), mods);
-            assert!(handled, "Super+Tab must be consumed by the overlay host");
-            assert!(
-                chrome.borrow().overlays.overview,
-                "Super+Tab must toggle the overview overlay in the live-binary event path"
-            );
-        }
+    let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+    let handled = pump_host(&mut host, &named_key(NamedKey::Tab), mods);
+    assert!(handled, "Super+Tab must be consumed by the overlay host");
+    assert!(
+        chrome.borrow().overlays.overview,
+        "Super+Tab must toggle the overview overlay in the live-binary event path"
+    );
+}
 
-        // Phase `e2e_overview_arrows_select_and_enter_switches_room`.
-        // The overview finishes on the keyboard: arrows walk the room list, Enter
-        // commits and closes.
-        {
-            let _guard = TEST_LOCK.lock_recover();
-            let tree = WorkspaceTree::bootstrap_demo();
-            let started_on = tree.desktop.active;
-            assert!(
-                tree.desktop.workspaces.len() > 1,
-                "precondition: the fixture has somewhere else to go"
-            );
-            let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+// The overview finishes on the keyboard: arrows walk the room list, Enter
+// commits and closes.
+#[test]
+fn e2e_overview_arrows_select_and_enter_switches_room() {
+    let _guard = TEST_LOCK.lock_recover();
+    let tree = WorkspaceTree::bootstrap_demo();
+    let started_on = tree.desktop.active;
+    assert!(
+        tree.desktop.workspaces.len() > 1,
+        "precondition: the fixture has somewhere else to go"
+    );
+    let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
 
-            let super_key = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-            assert!(pump_host(&mut host, &named_key(NamedKey::Tab), super_key));
-            assert!(
-                chrome.borrow().overlays.overview,
-                "precondition: panel is open"
-            );
+    let super_key = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+    assert!(pump_host(&mut host, &named_key(NamedKey::Tab), super_key));
+    assert!(
+        chrome.borrow().overlays.overview,
+        "precondition: panel is open"
+    );
 
-            let no_mods = Modifiers::default();
-            let handled = pump_host(&mut host, &named_key(NamedKey::ArrowDown), no_mods);
-            assert!(
-                handled,
-                "the open panel must consume the arrow instead of letting the \
-                 desktop underneath it scroll"
-            );
+    let no_mods = Modifiers::default();
+    let handled = pump_host(&mut host, &named_key(NamedKey::ArrowDown), no_mods);
+    assert!(
+        handled,
+        "the open panel must consume the arrow instead of letting the \
+         desktop underneath it scroll"
+    );
 
-            let handled = pump_host(&mut host, &named_key(NamedKey::Enter), no_mods);
-            assert!(handled, "Enter must be consumed by the open panel");
-            assert!(
-                !chrome.borrow().overlays.overview,
-                "committing to a room closes the switcher"
-            );
-            assert_ne!(
-                chrome.borrow().tree().desktop.active,
-                started_on,
-                "Enter must actually go to the room the arrow selected"
-            );
-        }
+    let handled = pump_host(&mut host, &named_key(NamedKey::Enter), no_mods);
+    assert!(handled, "Enter must be consumed by the open panel");
+    assert!(
+        !chrome.borrow().overlays.overview,
+        "committing to a room closes the switcher"
+    );
+    assert_ne!(
+        chrome.borrow().tree().desktop.active,
+        started_on,
+        "Enter must actually go to the room the arrow selected"
+    );
+}
 
-        // Phase `e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed`.
-        // Arrows belong to the switcher only while it's open. Driven through the
-        // root/layout since the claim concerns a key the shell declines — the
-        // event must actually reach the content.
-        {
-            let _guard = TEST_LOCK.lock_recover();
-            let tree = WorkspaceTree::bootstrap_demo();
-            let mut h = Harness::new(&tree);
-            assert!(
-                !h.chrome.borrow().overlays.overview,
-                "precondition: panel shut"
-            );
+// Arrows belong to the switcher only while it's open. Driven through the
+// root/layout since the claim concerns a key the shell declines — the
+// event must actually reach the content.
+#[test]
+fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {
+    let _guard = TEST_LOCK.lock_recover();
+    let tree = WorkspaceTree::bootstrap_demo();
+    let mut h = Harness::new(&tree);
+    assert!(
+        !h.chrome.borrow().overlays.overview,
+        "precondition: panel shut"
+    );
 
-            let before = h.chrome.borrow().tree().desktop.active;
-            h.key(Key::Named(NamedKey::ArrowDown));
-            h.key(Key::Named(NamedKey::Enter));
-            assert!(
-                !h.chrome.borrow().overlays.overview,
-                "arrows and Enter must not open the switcher"
-            );
-            assert_eq!(
-                h.chrome.borrow().tree().desktop.active,
-                before,
-                "with the panel shut, Enter must not switch rooms"
-            );
-        }
+    let before = h.chrome.borrow().tree().desktop.active;
+    h.key(Key::Named(NamedKey::ArrowDown));
+    h.key(Key::Named(NamedKey::Enter));
+    assert!(
+        !h.chrome.borrow().overlays.overview,
+        "arrows and Enter must not open the switcher"
+    );
+    assert_eq!(
+        h.chrome.borrow().tree().desktop.active,
+        before,
+        "with the panel shut, Enter must not switch rooms"
+    );
+}
+
+#[test]
+fn e2e_open_quick_settings() {
+    let _guard = TEST_LOCK.lock_recover();
+    let tree = WorkspaceTree::bootstrap_demo();
+
+    let mut renderer_opt = OffscreenRenderer::try_new(W_U32, H_U32).ok();
+    let out_dir = screenshots_dir();
+
+    let mut h = Harness::new(&tree);
+    assert!(!h.chrome.borrow().overlays.quick_settings);
+
+    h.draw_to(
+        renderer_opt.as_mut(),
+        &out_dir.join("e2e-06-quick-settings-pre.png"),
+    );
+
+    let hit = tray_pill_hit(&mut h);
+    h.click(hit.x, hit.y);
+    assert!(
+        h.chrome.borrow().overlays.quick_settings,
+        "root-level click on the three-dot tray pill should open the quick-settings overlay"
+    );
+
+    // The open intent is stored in shared chrome state, while the retained
+    // host owns the transition. Pin that production transition at its resting
+    // value so this assertion captures Quick Settings rather than a valid
+    // state whose first animation frame is still fully transparent.
+    h.root
+        .as_any_mut()
+        .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
+        .expect("shell integration root remains a ShellOverlayHost")
+        .force_quick_settings_settled();
+
+    h.draw_to(
+        renderer_opt.as_mut(),
+        &out_dir.join("e2e-07-quick-settings-open.png"),
+    );
+    if renderer_opt.is_some() {
+        let before = out_dir.join("e2e-06-quick-settings-pre.png");
+        let rendered = out_dir.join("e2e-07-quick-settings-open.png");
+        assert_png_nonempty(&rendered);
+        let panel = h
+            .root
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
+            .expect("shell integration root remains a ShellOverlayHost")
+            .quick_settings_rect_for_tests();
+        assert_region_visibly_differs(&before, &rendered, panel, 1_000);
+        // The topbar clock (chrono::Local) shows behind the quick-settings
+        // popover, making this render wall-clock-dependent — a golden would flake
+        // once a minute. Compare only the panel's deterministic footprint so
+        // a boolean open state can never pass while the overlay is absent.
+    } else {
+        eprintln!("offscreen: no wgpu adapter — e2e_open_quick_settings asserted state only");
     }
+}
 
-    // Phase `e2e_quick_settings_open_from_the_tray_and_the_top_right_corner`.
-    {
-        // Phase `e2e_open_quick_settings`.
-        {
-            let _guard = TEST_LOCK.lock_recover();
-            let tree = WorkspaceTree::bootstrap_demo();
+// The visual status pill is intentionally inset, but the screen corner is
+// the fastest acquisition target. A hurried click at the literal top-right
+// pixel must therefore reach the same production root path as the pill.
+#[test]
+fn e2e_top_right_corner_opens_quick_settings() {
+    let _guard = TEST_LOCK.lock_recover();
+    let tree = WorkspaceTree::bootstrap_demo();
+    let mut h = Harness::new(&tree);
+    assert!(!h.chrome.borrow().overlays.quick_settings);
 
-            let mut renderer_opt = OffscreenRenderer::try_new(W_U32, H_U32).ok();
-            let out_dir = screenshots_dir();
+    // Populate the retained top-bar geometry before the pointer event, exactly
+    // as the compositor does on its first frame.
+    h.draw_to(None, Path::new(""));
+    h.click(f64::from(W_U32 - 1), 1.0);
 
-            let mut h = Harness::new(&tree);
-            assert!(!h.chrome.borrow().overlays.quick_settings);
-
-            h.draw_to(
-                renderer_opt.as_mut(),
-                &out_dir.join("e2e-06-quick-settings-pre.png"),
-            );
-
-            let hit = tray_pill_hit(&mut h);
-            h.click(hit.x, hit.y);
-            assert!(
-                h.chrome.borrow().overlays.quick_settings,
-                "root-level click on the three-dot tray pill should open the quick-settings overlay"
-            );
-
-            // The open intent is stored in shared chrome state, while the retained
-            // host owns the transition. Pin that production transition at its resting
-            // value so this assertion captures Quick Settings rather than a valid
-            // state whose first animation frame is still fully transparent.
-            h.root
-                .as_any_mut()
-                .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
-                .expect("shell integration root remains a ShellOverlayHost")
-                .force_quick_settings_settled();
-
-            h.draw_to(
-                renderer_opt.as_mut(),
-                &out_dir.join("e2e-07-quick-settings-open.png"),
-            );
-            if renderer_opt.is_some() {
-                let before = out_dir.join("e2e-06-quick-settings-pre.png");
-                let rendered = out_dir.join("e2e-07-quick-settings-open.png");
-                assert_png_nonempty(&rendered);
-                let panel = h
-                    .root
-                    .as_any_mut()
-                    .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
-                    .expect("shell integration root remains a ShellOverlayHost")
-                    .quick_settings_rect_for_tests();
-                assert_region_visibly_differs(&before, &rendered, panel, 1_000);
-                // The topbar clock (chrono::Local) shows behind the quick-settings
-                // popover, making this render wall-clock-dependent — a golden would flake
-                // once a minute. Compare only the panel's deterministic footprint so
-                // a boolean open state can never pass while the overlay is absent.
-            } else {
-                eprintln!(
-                    "offscreen: no wgpu adapter — e2e_open_quick_settings asserted state only"
-                );
-            }
-        }
-
-        // Phase `e2e_top_right_corner_opens_quick_settings`.
-        // The visual status pill is intentionally inset, but the screen corner is
-        // the fastest acquisition target. A hurried click at the literal top-right
-        // pixel must therefore reach the same production root path as the pill.
-        {
-            let _guard = TEST_LOCK.lock_recover();
-            let tree = WorkspaceTree::bootstrap_demo();
-            let mut h = Harness::new(&tree);
-            assert!(!h.chrome.borrow().overlays.quick_settings);
-
-            // Populate the retained top-bar geometry before the pointer event, exactly
-            // as the compositor does on its first frame.
-            h.draw_to(None, Path::new(""));
-            h.click(f64::from(W_U32 - 1), 1.0);
-
-            assert!(
-                h.chrome.borrow().overlays.quick_settings,
-                "the literal top-right screen corner must acquire Quick Settings even though the visible pill is inset"
-            );
-        }
-    }
+    assert!(
+        h.chrome.borrow().overlays.quick_settings,
+        "the literal top-right screen corner must acquire Quick Settings even though the visible pill is inset"
+    );
 }
 
 // Test 4: a maximized window keeps its bar, with Restore in it

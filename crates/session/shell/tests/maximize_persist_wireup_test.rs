@@ -99,153 +99,146 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn shell_tick_persists_maximize_only_when_a_click_fired() {
-    // Phase `shell_tick_writes_maximize_click_through_to_persisted_state`.
+fn shell_tick_writes_maximize_click_through_to_persisted_state() {
+    let (mut tree, strip_id, group_id) = single_group_tree();
+    let state_dir = tempfile::tempdir().expect("state directory");
+    let state_path = state_dir.path().join("state.json");
+    tree.persist_path = Some(state_path.clone());
+
+    // The host captures per-strip GroupRow pointers internally and wires
+    // them into its `harvest_pending_maximize_changes` hook.
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+
+    // If this fires the builder lost the seed — fix that before chasing the
+    // harvest.
     {
-        let (mut tree, strip_id, group_id) = single_group_tree();
-        let state_dir = tempfile::tempdir().expect("state directory");
-        let state_path = state_dir.path().join("state.json");
-        tree.persist_path = Some(state_path.clone());
+        let st = chrome.borrow();
+        let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(g.id, group_id);
+        assert!(!g.maximized, "seed group must start un-maximized");
+    }
 
-        // The host captures per-strip GroupRow pointers internally and wires
-        // them into its `harvest_pending_maximize_changes` hook.
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    // Prime the same pending slot the per-tab Maximize2 press arm writes to.
+    // The bar rect math is pinned by unit tests in
+    // `crates/sdk/ui-core/src/widget/window_group.rs::tests`; this pins the writeback from
+    // drained widget state to the chrome's `WorkspaceTree`.
+    {
+        let g = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("strip-0 group-0 widget");
+        assert_eq!(g.id, group_id, "widget id must match the seeded group");
+        assert!(!g.maximized, "widget starts un-maximized to mirror state");
+        // Same path the live binary hits: bar publishes pending_max, WindowGroup
+        // drains it on the next event.
+        g.publish_maximize_intent_for_tests();
+    }
+    // The drain runs inside `WindowGroup::handle_event`, so the widget tree
+    // needs an event to drive it.
+    let moved = ui::synthetic_input::cursor_moved(9000.0, 9000.0);
+    pump_no_op_event(&mut host, strip_id, &moved);
+    {
+        let g = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("strip-0 group-0 widget");
+        assert!(g.maximized, "drain must flip widget.maximized true");
+    }
 
-        // If this fires the builder lost the seed — fix that before chasing the
-        // harvest.
-        {
-            let st = chrome.borrow();
-            let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
-            assert_eq!(g.id, group_id);
-            assert!(!g.maximized, "seed group must start un-maximized");
-        }
-
-        // Prime the same pending slot the per-tab Maximize2 press arm writes to.
-        // The bar rect math is pinned by unit tests in
-        // `crates/sdk/ui-core/src/widget/window_group.rs::tests`; this pins the writeback from
-        // drained widget state to the chrome's `WorkspaceTree`.
-        {
-            let g = host
-                .group_at_for_tests(strip_id, 0)
-                .expect("strip-0 group-0 widget");
-            assert_eq!(g.id, group_id, "widget id must match the seeded group");
-            assert!(!g.maximized, "widget starts un-maximized to mirror state");
-            // Same path the live binary hits: bar publishes pending_max, WindowGroup
-            // drains it on the next event.
-            g.publish_maximize_intent_for_tests();
-        }
-        // The drain runs inside `WindowGroup::handle_event`, so the widget tree
-        // needs an event to drive it.
-        let moved = ui::synthetic_input::cursor_moved(9000.0, 9000.0);
-        pump_no_op_event(&mut host, strip_id, &moved);
-        {
-            let g = host
-                .group_at_for_tests(strip_id, 0)
-                .expect("strip-0 group-0 widget");
-            assert!(g.maximized, "drain must flip widget.maximized true");
-        }
-
-        // The regression bracket: without the harvest call below this stays
-        // false forever.
-        {
-            let st = chrome.borrow();
-            let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
-            assert!(
-                !g.maximized,
-                "before the harvest tick the persisted state lags the widget",
-            );
-        }
-
-        // One tick, mirroring the per-frame Widget::update call.
-        host.tick_pending_maximize_harvest_for_tests();
-
-        {
-            let st = chrome.borrow();
-            let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
-            assert!(
-                g.maximized,
-                "harvest tick must mirror the widget's maximize flip into \
-                 the persisted WorkspaceTree (#105 writeback)",
-            );
-        }
-        let restarted = shell::shell::persist::load_tree_from(&state_path)
-            .expect("maximize-on writeback creates valid durable state");
+    // The regression bracket: without the harvest call below this stays
+    // false forever.
+    {
+        let st = chrome.borrow();
+        let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
         assert!(
-            restarted.desktop.workspaces[0].strips[0].window_groups[0].maximized,
-            "maximize-on must survive an immediate restart"
-        );
-
-        // Round-trip: pins that the harvest is bidirectional, not a
-        // "latch true once" hack.
-        {
-            let g = host
-                .group_at_for_tests(strip_id, 0)
-                .expect("strip-0 group-0 widget");
-            g.publish_maximize_intent_for_tests();
-        }
-        pump_no_op_event(&mut host, strip_id, &moved);
-        {
-            let g = host
-                .group_at_for_tests(strip_id, 0)
-                .expect("strip-0 group-0 widget");
-            assert!(!g.maximized, "second drain must flip widget back to false");
-        }
-        host.tick_pending_maximize_harvest_for_tests();
-        {
-            let st = chrome.borrow();
-            let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
-            assert!(
-                !g.maximized,
-                "harvest must mirror the inverse flip, not just the rising edge",
-            );
-        }
-        let restarted = shell::shell::persist::load_tree_from(&state_path)
-            .expect("maximize-off writeback creates valid durable state");
-        assert!(
-            !restarted.desktop.workspaces[0].strips[0].window_groups[0].maximized,
-            "maximize-off must survive an immediate restart"
+            !g.maximized,
+            "before the harvest tick the persisted state lags the widget",
         );
     }
 
-    // Phase `shell_tick_leaves_persisted_maximize_alone_when_no_click_fired`.
-    // A no-op tick must not perturb a group whose persisted `maximized =
-    // true` came from disk: the take-pattern accessor yields `None` when
-    // nothing flipped, and the harvest must skip those rather than
-    // overwriting with the widget's default.
+    // One tick, mirroring the per-frame Widget::update call.
+    host.tick_pending_maximize_harvest_for_tests();
+
     {
-        let (mut tree, strip_id, group_id) = single_group_tree();
-        // `with_maximized(true)` runs at build time so the widget mirrors disk;
-        // the harvest must then not overwrite the persisted true with a stale
-        // false.
-        tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
-
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-
-        {
-            let g = host
-                .group_at_for_tests(strip_id, 0)
-                .expect("strip-0 group-0 widget");
-            assert_eq!(g.id, group_id);
-            assert!(
-                g.maximized,
-                "widget must be built from persisted state via `with_maximized`",
-            );
-        }
-
-        // No click happened → no pending change → harvest is a no-op.
-        host.tick_pending_maximize_harvest_for_tests();
-
         let st = chrome.borrow();
         let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
         assert!(
             g.maximized,
-            "harvest with no pending change must not overwrite persisted true \
-             with the widget's default false — pending_maximize_change is the \
-             single source of truth for the writeback",
+            "harvest tick must mirror the widget's maximize flip into \
+             the persisted WorkspaceTree (#105 writeback)",
         );
     }
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("maximize-on writeback creates valid durable state");
+    assert!(
+        restarted.desktop.workspaces[0].strips[0].window_groups[0].maximized,
+        "maximize-on must survive an immediate restart"
+    );
+
+    // Round-trip: pins that the harvest is bidirectional, not a
+    // "latch true once" hack.
+    {
+        let g = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("strip-0 group-0 widget");
+        g.publish_maximize_intent_for_tests();
+    }
+    pump_no_op_event(&mut host, strip_id, &moved);
+    {
+        let g = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("strip-0 group-0 widget");
+        assert!(!g.maximized, "second drain must flip widget back to false");
+    }
+    host.tick_pending_maximize_harvest_for_tests();
+    {
+        let st = chrome.borrow();
+        let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
+        assert!(
+            !g.maximized,
+            "harvest must mirror the inverse flip, not just the rising edge",
+        );
+    }
+    let restarted = shell::shell::persist::load_tree_from(&state_path)
+        .expect("maximize-off writeback creates valid durable state");
+    assert!(
+        !restarted.desktop.workspaces[0].strips[0].window_groups[0].maximized,
+        "maximize-off must survive an immediate restart"
+    );
+}
+
+// A no-op tick must not perturb a group whose persisted `maximized =
+// true` came from disk: the take-pattern accessor yields `None` when
+// nothing flipped, and the harvest must skip those rather than
+// overwriting with the widget's default.
+#[test]
+fn shell_tick_leaves_persisted_maximize_alone_when_no_click_fired() {
+    let (mut tree, strip_id, group_id) = single_group_tree();
+    // `with_maximized(true)` runs at build time so the widget mirrors disk;
+    // the harvest must then not overwrite the persisted true with a stale
+    // false.
+    tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
+
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+
+    {
+        let g = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("strip-0 group-0 widget");
+        assert_eq!(g.id, group_id);
+        assert!(
+            g.maximized,
+            "widget must be built from persisted state via `with_maximized`",
+        );
+    }
+
+    // No click happened → no pending change → harvest is a no-op.
+    host.tick_pending_maximize_harvest_for_tests();
+
+    let st = chrome.borrow();
+    let g = &st.tree().desktop.workspaces[0].strips[0].window_groups[0];
+    assert!(
+        g.maximized,
+        "harvest with no pending change must not overwrite persisted true \
+         with the widget's default false — pending_maximize_change is the \
+         single source of truth for the writeback",
+    );
 }
