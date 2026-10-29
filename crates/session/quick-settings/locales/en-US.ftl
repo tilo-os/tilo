@@ -163,3 +163,15 @@ qs-wifi-password = Password
 qs-wifi-password-cancel = Cancel
 qs-wifi-password-connect = Connect
 qs-wifi-password-for = Enter the network's password to join
+
+# The effects as search and agents list them, and why one cannot be used.
+qs-action-brighter = Brighter
+qs-action-dimmer = Dimmer
+qs-action-louder = Louder
+qs-action-mute-toggle = Mute or unmute
+qs-action-quieter = Quieter
+qs-action-set-airplane-mode = Turn airplane mode on or off
+qs-action-set-bluetooth = Turn Bluetooth on or off
+qs-action-set-vpn = Turn a VPN on or off
+qs-action-set-wifi = Turn Wi-Fi on or off
+qs-unavailable = This device has no such control

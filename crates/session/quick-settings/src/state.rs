@@ -147,6 +147,9 @@ pub struct QuickSettingsState {
     /// The person's devices a Bluetooth accessory can move to, read while
     /// an accessory's page shows; `None` without a device fabric.
     pub handoff_targets: Option<Vec<crate::HandoffTarget>>,
+    /// Which of the device's controls the desktop found it has: an effect
+    /// working one it lacks is published unavailable.
+    pub available: crate::actions::QsActionAvailability,
 }
 
 impl Default for QuickSettingsState {
@@ -195,6 +198,7 @@ impl Default for QuickSettingsState {
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             notifications: crate::NotificationsView::default(),
             handoff_targets: None,
+            available: crate::actions::QsActionAvailability::default(),
         }
     }
 }
@@ -254,6 +258,7 @@ impl QuickSettingsState {
             arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             notifications: crate::NotificationsView::default(),
             handoff_targets: None,
+            available: crate::actions::QsActionAvailability::all(),
         }
     }
 

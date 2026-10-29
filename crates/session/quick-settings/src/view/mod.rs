@@ -130,7 +130,7 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     let host = host_of(cx);
     let readings = Readings::new(QuickSettingsState::fixture());
     host.attach(readings.feed());
-    answer_effects(cx, &host);
+    answer_effects(cx, &host, &readings);
     let parts = Parts::new(&readings);
     let showing = cx.value(QuickSettings::showing);
     let told = Rc::clone(&host);
@@ -171,13 +171,17 @@ fn page(cx: &ViewCx<QuickSettings>, showing: &Showing, parts: &Parts) -> Element
     }
 }
 
-/// Every effect goes to the host, which carries it out on the device.
-fn answer_effects(cx: &ViewCx<QuickSettings>, host: &Rc<dyn PanelHost>) {
+/// Every effect goes to the host, which carries it out on the device; the
+/// readings say which ones the device can do now and what each is called
+/// ([`crate::effect::statuses`]).
+fn answer_effects(cx: &ViewCx<QuickSettings>, host: &Rc<dyn PanelHost>, readings: &Readings) {
     let host = Rc::clone(host);
+    let readings = readings.clone();
     cx.effects(move |effect: QsEffect, _| {
         host.run(effect)?;
         Ok(Effected::done())
-    });
+    })
+    .status(move || readings.read(crate::effect::statuses));
 }
 
 /// The panel's content, telling the host how tall it lays out: the host

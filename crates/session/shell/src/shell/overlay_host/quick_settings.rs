@@ -505,7 +505,15 @@ impl ShellOverlayHost {
             QsEffect::SetWifi { on } => {
                 self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(on));
             }
+            QsEffect::ToggleWifi => {
+                let on = !chrome.borrow().quick_settings.wifi;
+                self.dispatch_quick_settings_radio(os_actions::RadioChange::Wifi(on));
+            }
             QsEffect::SetAirplaneMode { on } => {
+                self.dispatch_quick_settings_radio(os_actions::RadioChange::Airplane(on));
+            }
+            QsEffect::ToggleAirplaneMode => {
+                let on = !chrome.borrow().quick_settings.radios.airplane_mode;
                 self.dispatch_quick_settings_radio(os_actions::RadioChange::Airplane(on));
             }
             QsEffect::SetWired { on } => {
@@ -519,6 +527,10 @@ impl ShellOverlayHost {
                     t("host-qs-change-failed-wired"),
                     result,
                 );
+            }
+            QsEffect::ToggleBluetooth => {
+                let on = !chrome.borrow().quick_settings.bluetooth;
+                self.run_quick_settings_effect(QsEffect::SetBluetooth { on });
             }
             QsEffect::SetBluetooth { on } => {
                 chrome.borrow_mut().quick_settings.bluetooth = on;
@@ -575,10 +587,30 @@ impl ShellOverlayHost {
             QsEffect::SetDisplayBrightness { display, level } => {
                 self.commit_quick_settings_level(QsLevelChange::Display(display, level));
             }
+            QsEffect::BrightnessUp => {
+                let change = brightness_step(&chrome.borrow().quick_settings, BRIGHTNESS_STEP);
+                self.commit_quick_settings_level(change);
+            }
+            QsEffect::BrightnessDown => {
+                let change = brightness_step(&chrome.borrow().quick_settings, -BRIGHTNESS_STEP);
+                self.commit_quick_settings_level(change);
+            }
             QsEffect::SetVolume { level } => {
                 self.commit_quick_settings_level(QsLevelChange::Volume(level));
             }
+            QsEffect::VolumeUp => {
+                let change = volume_step(&chrome.borrow().quick_settings, VOLUME_STEP);
+                self.commit_quick_settings_level(change);
+            }
+            QsEffect::VolumeDown => {
+                let change = volume_step(&chrome.borrow().quick_settings, -VOLUME_STEP);
+                self.commit_quick_settings_level(change);
+            }
             QsEffect::SetMuted { muted } => self.set_quick_settings_muted(&chrome, muted),
+            QsEffect::ToggleMuted => {
+                let muted = !chrome.borrow().quick_settings.volume_muted();
+                self.set_quick_settings_muted(&chrome, muted);
+            }
             QsEffect::RouteSound { node } => {
                 // The same route the Devices page takes; its answer is the
                 // outputs as they stand now.
@@ -797,6 +829,33 @@ impl ShellOverlayHost {
         &self,
     ) -> crate::shell::search::providers::actions::ValidatedQsActions<'_> {
         crate::shell::search::providers::actions::ValidatedQsActions::new(self.qs_actions.as_ref())
+    }
+}
+
+/// How far Louder and Quieter move the volume.
+const VOLUME_STEP: f64 = 0.05;
+/// How far Brighter and Dimmer move the brightness.
+const BRIGHTNESS_STEP: f64 = 0.1;
+
+/// The volume `step` from the level it is at, as Louder and Quieter ask.
+fn volume_step(state: &tilo_quick_settings::QuickSettingsState, step: f64) -> QsLevelChange {
+    QsLevelChange::Volume((f64::from(state.volume_level()) + step).clamp(0.0, 1.0))
+}
+
+/// The brightness `step` away, as Brighter and Dimmer ask: from the level
+/// of the display the person works on, when the desktop spans several that
+/// can be dimmed, else from the one brightness.
+fn brightness_step(state: &tilo_quick_settings::QuickSettingsState, step: f64) -> QsLevelChange {
+    let moved = |level: f32| (f64::from(level) + step).clamp(0.0, 1.0);
+    let focused = state.focused_display.as_deref().and_then(|focused| {
+        state
+            .displays
+            .iter()
+            .find(|display| display.connector == focused)
+    });
+    match focused {
+        Some(display) => QsLevelChange::Display(display.connector.clone(), moved(display.level)),
+        None => QsLevelChange::Brightness(moved(state.brightness)),
     }
 }
 
