@@ -3789,7 +3789,8 @@ pub(crate) fn run_with_context(
     };
     // A window whose instance a tilolang host runs holds none of the app's data: it gets no
     // collaboration connection (the host's instance has the app's own), and says so.
-    let resolved: Vec<_> = if opts.tilolang_hosted {
+    // An origin connector holds none of the app's data either: its instances commit it.
+    let resolved: Vec<_> = if opts.tilolang_hosted || opts.tilolang_connector.is_some() {
         resolved
             .into_iter()
             .filter(|service| service.name != crate::services::COLLAB_SERVICE)
