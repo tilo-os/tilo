@@ -1116,6 +1116,12 @@ impl BrowserShell {
                 }
                 DesktopAsk::ReportProblem => self.report_problem(),
                 DesktopAsk::Launchpad(action) => self.apply_launchpad(action),
+                DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::QuickSettings) => {
+                    let _ = self.page_intent(ChromeIntent::ToggleQuickSettings);
+                }
+                // The page's own keys reach the browser's shortcuts; the
+                // rest belong to a native session.
+                DesktopAsk::Shortcut(_) => {}
             }
         }
         changed

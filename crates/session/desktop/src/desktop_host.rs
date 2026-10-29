@@ -35,7 +35,9 @@ use winit::event::{ElementState, Modifiers, WindowEvent};
 
 use crate::about::TiloMenu;
 use crate::chrome::ChromeIntent;
-use crate::desktop_actions::{DesktopAction, OPERATION, chrome_resource, desk_resource};
+use crate::desktop_actions::{
+    DesktopAction, OPERATION, chrome_resource, desk_resource, launchpad_resource,
+};
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overview::{OverviewHost, room_cards};
 use crate::overview_panel::{OverviewPanel, OverviewPick};
@@ -102,6 +104,9 @@ pub enum DesktopAsk {
     ReportProblem,
     /// The person chose a card of the empty desk's launchpad.
     Launchpad(LaunchpadAction),
+    /// A desktop shortcut the layers have no part in (search, quick
+    /// settings, locking, the magnifier, …): the host's to carry out.
+    Shortcut(ShortcutAction),
 }
 
 /// Whether the desk shown has no window. Every desk, not only a workspace's
@@ -319,6 +324,18 @@ impl DeskLayer {
                 }
             }
             DesktopAction::OpenSearch => self.handle.open_search(None),
+            DesktopAction::Launchpad { ref card } => {
+                if card == "apps" {
+                    self.handle.open_applications();
+                } else if let Some(card) = LaunchpadAction::ALL
+                    .into_iter()
+                    .find(|action| action.slug() == card)
+                {
+                    self.asks.borrow_mut().push(DesktopAsk::Launchpad(card));
+                } else {
+                    return false;
+                }
+            }
             _ => return false,
         }
         true
@@ -336,7 +353,11 @@ impl ui::resources::PublishesResources for DeskLayer {
                 .map(|tab| (tab.id, tab.title.clone()))
                 .collect()
         });
-        vec![desk_resource(&tabs)]
+        let mut resources = vec![desk_resource(&tabs)];
+        if self.handle.read(desk_is_empty) {
+            resources.push(launchpad_resource());
+        }
+        resources
     }
 }
 
@@ -1317,9 +1338,27 @@ impl DesktopChrome {
                 self.new_workspace();
                 return true;
             }
+            DesktopAction::Overview { open } => {
+                if self.overview_open() != open {
+                    self.toggle_overview();
+                }
+                return true;
+            }
+            DesktopAction::Shortcut { ref action } => {
+                let Ok(action) = serde_json::from_value::<ShortcutAction>(
+                    serde_json::Value::String(action.clone()),
+                ) else {
+                    return false;
+                };
+                if !self.shortcut(action) {
+                    self.asks.borrow_mut().push(DesktopAsk::Shortcut(action));
+                }
+                return true;
+            }
             DesktopAction::FocusTab { .. }
             | DesktopAction::CloseTab { .. }
-            | DesktopAction::OpenSearch => return false,
+            | DesktopAction::OpenSearch
+            | DesktopAction::Launchpad { .. } => return false,
         };
         self.apply_intent(intent);
         true

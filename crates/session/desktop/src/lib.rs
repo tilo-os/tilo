@@ -31,6 +31,7 @@ pub mod follow_banner;
 pub mod here;
 pub mod intents;
 pub mod launchpad;
+pub mod osd;
 pub mod overview;
 pub mod overview_panel;
 pub mod overview_picture;

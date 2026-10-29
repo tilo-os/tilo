@@ -25,6 +25,8 @@ pub const DESK_RESOURCE: &str = "desktop:desk";
 pub enum DesktopAction {
     /// Open or close the overview.
     ToggleOverview,
+    /// Open the overview (`open`) or close it; nothing when it already is.
+    Overview { open: bool },
     /// Open or close quick settings (the host's).
     ToggleQuickSettings,
     /// Open or close the Tilo menu.
@@ -43,6 +45,12 @@ pub enum DesktopAction {
     CloseTab { tab: u64 },
     /// Open the desktop's search.
     OpenSearch,
+    /// Perform the desktop shortcut `action` (its id in the shortcut table,
+    /// such as `workspace_overview`), as its chord does.
+    Shortcut { action: String },
+    /// Choose the empty desk's launchpad card `card` (its slug, such as
+    /// `notes`), or `apps` for the applications.
+    Launchpad { card: String },
 }
 
 impl DesktopAction {
@@ -102,6 +110,18 @@ pub fn chrome_resource() -> ResourceSpec {
             |_| DesktopAction::ToggleOverview,
         ))
         .with_action(action(
+            "show-overview",
+            t("desktop-action-show-overview"),
+            Vec::new(),
+            |_| DesktopAction::Overview { open: true },
+        ))
+        .with_action(action(
+            "hide-overview",
+            t("desktop-action-hide-overview"),
+            Vec::new(),
+            |_| DesktopAction::Overview { open: false },
+        ))
+        .with_action(action(
             "toggle-quick-settings",
             t("desktop-action-toggle-quick-settings"),
             Vec::new(),
@@ -149,6 +169,43 @@ pub fn chrome_resource() -> ResourceSpec {
             Vec::new(),
             |_| DesktopAction::NewWorkspace,
         ))
+        .with_action(action(
+            "shortcut",
+            t("desktop-action-shortcut"),
+            vec![ActionParam::required_owned(
+                "action",
+                ParamType::Text,
+                t("desktop-action-param-shortcut"),
+            )],
+            |args| DesktopAction::Shortcut {
+                action: args.text("action").unwrap_or_default().to_owned(),
+            },
+        ))
+}
+
+/// The resource of the empty desk's launchpad.
+pub const LAUNCHPAD_RESOURCE: &str = "desktop:launchpad";
+
+/// The launchpad's resource: one action per card, by its slug, and `apps`
+/// for the applications.
+#[must_use]
+pub fn launchpad_resource() -> ResourceSpec {
+    let cards = crate::launchpad::LaunchpadAction::ALL
+        .into_iter()
+        .map(|card| (card.slug(), card.label()))
+        .chain([("apps", t("launchpad-open-app"))]);
+    cards.fold(
+        ResourceSpec::new(
+            LAUNCHPAD_RESOURCE,
+            "desktop",
+            t("desktop-actions-launchpad"),
+        ),
+        |resource, (slug, label)| {
+            resource.with_action(action(slug, label, Vec::new(), move |_| {
+                DesktopAction::Launchpad { card: slug.into() }
+            }))
+        },
+    )
 }
 
 /// The kind of a window's resource.
