@@ -467,7 +467,7 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Native Store publication through the same certified session fixture as Browser.
 store = { path = "../../../apps/store" }
 # Private feedback acceptance invokes the actual Chat action and receipt adapter.
-chat = { path = "../../../apps/chat", default-features = false }
+chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 # A sheet made in a workspace is listed in its content list.
 sheets = { path = "../../../apps/sheets" }
 # Real native editor instances in certified multi-device continuity fixtures.
