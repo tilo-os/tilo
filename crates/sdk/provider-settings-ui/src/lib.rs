@@ -1180,6 +1180,14 @@ impl<H: PanelBindings> ProviderPanel<H> {
                         .with_placeholder(t("agent-placeholder-url")),
                 ),
             ));
+            if let Some(what) =
+                Preset::matching(profile).and_then(|preset| preset.fill_in_for(profile))
+            {
+                body.push(row(widgets::caption(&t_args(
+                    "agent-endpoint-fill-in",
+                    &[("what", what.into())],
+                ))));
+            }
         }
         body.push(field_row(
             &t("agent-placeholder-model"),

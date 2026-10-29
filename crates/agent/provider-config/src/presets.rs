@@ -28,6 +28,9 @@ pub struct Preset {
     protocol: ProviderProtocol,
     endpoint: &'static str,
     endpoint_editable: bool,
+    /// What the person puts in place of the endpoint's placeholder part:
+    /// their resource, account or server.
+    fill_in: Option<&'static str>,
     key_header: KeyHeader,
     models_path: Option<&'static str>,
     docs: &'static str,
@@ -76,6 +79,7 @@ const fn hosted(
         protocol: ProviderProtocol::OpenAiCompatible,
         endpoint,
         endpoint_editable: false,
+        fill_in: None,
         key_header: KeyHeader::Bearer,
         models_path: Some("models"),
         docs,
@@ -113,6 +117,13 @@ impl Preset {
     /// whose endpoint names their account, or a server they run.
     const fn editable(mut self) -> Self {
         self.endpoint_editable = true;
+        self
+    }
+
+    /// The endpoint's placeholder part is the person's `what` to fill in.
+    const fn fill_in(mut self, what: &'static str) -> Self {
+        self.endpoint_editable = true;
+        self.fill_in = Some(what);
         self
     }
 
@@ -249,11 +260,11 @@ impl Preset {
         "azure-openai",
         "Azure OpenAI",
         "OpenAI models deployed in your own Azure resource.",
-        "https://{resource}.openai.azure.com/openai/v1",
+        "https://your-resource.openai.azure.com/openai/v1",
         "https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle",
     )
     .key_in(KeyHeader::ApiKey)
-    .editable()
+    .fill_in("your Azure resource's name in place of your-resource")
     .token_limit(TokenLimitParam::MaxCompletionTokens);
     pub const CEREBRAS: Self = hosted(
         "cerebras",
@@ -388,19 +399,19 @@ impl Preset {
         "cloudflare-workers-ai",
         "Cloudflare Workers AI",
         "Open models on Cloudflare's network, billed to your account.",
-        "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+        "https://api.cloudflare.com/client/v4/accounts/your-account-id/ai/v1",
         "https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/",
     )
-    .editable()
+    .fill_in("your Cloudflare account id in place of your-account-id")
     .models_at(None);
     pub const CLOUDFLARE_AI_GATEWAY: Self = hosted(
         "cloudflare-ai-gateway",
         "Cloudflare AI Gateway",
         "Your Cloudflare gateway in front of many providers.",
-        "https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/compat",
+        "https://gateway.ai.cloudflare.com/v1/your-account-id/default/compat",
         "https://developers.cloudflare.com/ai-gateway/usage/chat-completion/",
     )
-    .editable()
+    .fill_in("your Cloudflare account id in place of your-account-id, and your gateway's id in place of default if it is another")
     .models_at(None);
     pub const VERCEL_AI_GATEWAY: Self = hosted(
         "vercel-ai-gateway",
@@ -445,10 +456,11 @@ impl Preset {
         "vllm",
         "vLLM",
         "A vLLM server you run on your network.",
-        "http://{host}:8000/v1",
+        "http://your-server:8000/v1",
         "https://docs.vllm.ai/en/latest/serving/online_serving/",
     )
-    .self_run(EndpointLocation::PrivateNetwork);
+    .self_run(EndpointLocation::PrivateNetwork)
+    .fill_in("your server's address in place of your-server");
     pub const LLAMA_CPP: Self = hosted(
         "llama-cpp",
         "llama.cpp server",
@@ -478,20 +490,20 @@ impl Preset {
         "openai-compatible",
         "OpenAI-compatible provider",
         "Any other endpoint that speaks OpenAI's chat completions.",
-        "https://{host}/v1",
+        "https://api.example.com/v1",
         "https://platform.openai.com/docs/api-reference/chat",
     )
-    .editable();
+    .fill_in("the provider's endpoint in place of api.example.com");
     /// Any other Anthropic-compatible endpoint, typed by hand.
     pub const ANTHROPIC_COMPATIBLE: Self = hosted(
         "anthropic-compatible",
         "Anthropic-compatible provider",
         "Any other endpoint that speaks Anthropic's Messages API.",
-        "https://{host}",
+        "https://api.example.com",
         "https://platform.claude.com/docs/en/api/messages",
     )
     .anthropic()
-    .editable();
+    .fill_in("the provider's endpoint in place of api.example.com");
     /// A `ChatGPT` subscription, signed in with the person's `OpenAI` account.
     pub const CHATGPT: Self = hosted(
         "chatgpt",
@@ -591,7 +603,8 @@ impl Preset {
     }
 
     /// The endpoint a new profile starts with. One naming the person's
-    /// account has the part they fill in braces ([`unfilled_part`]).
+    /// account or server has a placeholder part for them to fill in
+    /// ([`Preset::fill_in_for`]).
     pub const fn endpoint(self) -> &'static str {
         self.endpoint
     }
@@ -639,6 +652,21 @@ impl Preset {
         })
     }
 
+    /// What the person still has to fill in of `profile`'s endpoint: its
+    /// endpoint is still this preset's placeholder. The endpoint is a valid
+    /// address either way, so the profile is stored; testing it says it
+    /// cannot be reached.
+    pub fn fill_in_for(self, profile: &ProviderProfile) -> Option<&'static str> {
+        self.fill_in
+            .filter(|_| profile.endpoint.trim_end_matches('/') == self.endpoint)
+    }
+
+    /// What the person puts in place of the endpoint's placeholder part,
+    /// when it has one.
+    pub const fn fill_in_text(self) -> Option<&'static str> {
+        self.fill_in
+    }
+
     /// A new profile from this preset, with a fresh id. Its model is chosen
     /// afterwards, from the provider's list or typed.
     pub fn profile(self) -> ProviderProfile {
@@ -674,15 +702,6 @@ impl Preset {
     }
 }
 
-/// The part of `endpoint` the person still has to fill in, in braces as a
-/// preset wrote it (`{resource}`), or `None` when it is complete.
-pub fn unfilled_part(endpoint: &str) -> Option<&str> {
-    let (_, open) = endpoint.split_once('{')?;
-    let (part, _) = open.split_once('}')?;
-    let start = endpoint.len().checked_sub(open.len())?.checked_sub(1)?;
-    endpoint.get(start..start.checked_add(part.len())?.checked_add(2)?)
-}
-
 /// The Gemini API's OpenAI-compatible endpoint.
 pub const GEMINI_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 pub const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1";
@@ -701,34 +720,21 @@ mod tests {
     fn every_preset_makes_a_valid_profile() {
         for preset in Preset::ALL.iter().copied() {
             assert_eq!(Preset::from_slug(preset.slug()), Some(preset));
-            let mut profile = preset.profile();
-            // An account's part of the endpoint is the person's to fill in;
-            // until then the profile says so.
-            let unfilled = unfilled_part(&profile.endpoint).map(str::to_owned);
-            assert_eq!(unfilled.is_some(), preset.endpoint().contains('{'));
+            let profile = preset.profile();
+            // The gateway stores only a valid configuration, so a preset's
+            // placeholder endpoint is a valid address too.
             let config = ProviderConfig {
                 profiles: vec![profile.clone()],
                 ..ProviderConfig::default()
             };
-            let issues: Vec<_> = config
-                .validation_errors()
-                .into_iter()
-                .map(|issue| issue.message)
-                .collect();
-            match &unfilled {
-                Some(part) => assert_eq!(issues, [format!("Fill in {part} in the endpoint.")]),
-                None => assert_eq!(issues, Vec::<String>::new(), "{preset:?}"),
-            }
-            if unfilled.is_some() {
-                while let Some(part) = unfilled_part(&profile.endpoint).map(str::to_owned) {
-                    profile.endpoint = profile.endpoint.replace(&part, "acme");
-                }
-                let config = ProviderConfig {
-                    profiles: vec![profile],
-                    ..ProviderConfig::default()
-                };
-                assert_eq!(config.validation_errors(), [], "{preset:?}");
-            }
+            assert_eq!(config.validation_errors(), [], "{preset:?}");
+            assert!(url::Url::parse(&profile.endpoint).is_ok(), "{preset:?}");
+            // Until the person fills it in, the form says what goes there.
+            assert_eq!(
+                Preset::matching(&profile).and_then(|matched| matched.fill_in_for(&profile)),
+                preset.fill_in_text(),
+                "{preset:?}"
+            );
         }
     }
 

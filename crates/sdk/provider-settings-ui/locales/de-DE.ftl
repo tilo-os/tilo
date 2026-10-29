@@ -277,3 +277,4 @@ agent-preset-add-named = { $provider } hinzufügen
 agent-model-use = Verwenden
 agent-model-use-named = { $model } verwenden
 agent-provider-where = Wo er läuft
+agent-endpoint-fill-in = Setze { $what } ein und speichere dann die Angaben.

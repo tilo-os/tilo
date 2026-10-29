@@ -91,13 +91,9 @@ fn request() -> neutral::ModelRequest {
     request
 }
 
-/// `endpoint`'s path, its account parts filled in.
+/// `endpoint`'s path.
 fn endpoint_path(endpoint: &str) -> String {
-    let mut endpoint = endpoint.to_owned();
-    while let Some(part) = agent_provider_config::presets::unfilled_part(&endpoint) {
-        endpoint = endpoint.replace(&part.to_owned(), "acme");
-    }
-    let url = url::Url::parse(&endpoint).unwrap();
+    let url = url::Url::parse(endpoint).unwrap();
     url.path().trim_end_matches('/').to_owned()
 }
 

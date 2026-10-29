@@ -1357,7 +1357,7 @@ impl ProviderConfig {
 }
 
 /// What is wrong with `profile`'s endpoint beyond its absence: no TLS to a
-/// hosted provider, or an account's part still to fill in.
+/// hosted provider.
 fn endpoint_issues(profile: &ProviderProfile, issues: &mut Vec<ProfileIssue>) {
     if profile.endpoint.trim().is_empty() {
         return;
@@ -1366,12 +1366,6 @@ fn endpoint_issues(profile: &ProviderProfile, issues: &mut Vec<ProfileIssue>) {
         issues.push(ProfileIssue::new(
             &profile.id,
             "Endpoint must be HTTPS unless it is a local or private endpoint.",
-        ));
-    }
-    if let Some(part) = presets::unfilled_part(&profile.endpoint) {
-        issues.push(ProfileIssue::new(
-            &profile.id,
-            &format!("Fill in {part} in the endpoint."),
         ));
     }
 }

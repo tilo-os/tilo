@@ -32,7 +32,10 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
         "Anthropic-compatible provider"
     );
     // Its endpoint is the person's to fill in.
-    assert_eq!(config(&mut app).profiles[0].endpoint, "https://{host}");
+    assert_eq!(
+        config(&mut app).profiles[0].endpoint,
+        "https://api.example.com"
+    );
     let id = config(&mut app).profiles[0].id.clone();
     let save = format!("agent-models-save-provider-{id}");
     assert_eq!(
