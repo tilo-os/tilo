@@ -306,7 +306,7 @@ pub enum Read {
 }
 
 /// What a subscription delivers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Topic {
     /// The room's other participants' presence.
     Presence,
@@ -326,6 +326,10 @@ pub enum Topic {
     /// The action catalogue this endpoint may see, as it stands and then
     /// each time it changes.
     Catalogue,
+    /// The app's private conversation with the person whose public key is
+    /// `peer`, for the invocation `on_behalf_of` (UUID bytes, or none), as it
+    /// stands and then each time it changes.
+    PersonChat { peer: String, on_behalf_of: Vec<u8> },
 }
 
 /// The host's answer to a call that succeeded.
@@ -392,6 +396,12 @@ pub enum Event {
     Invocation(Invocation),
     /// The action catalogue as JSON.
     Catalogue(String),
+    /// A private conversation at `generation`, in the person chat reply
+    /// encoding.
+    PersonChat {
+        generation: u64,
+        conversation: Vec<u8>,
+    },
     /// A task run handed to this agent, as `TaskRunEnvelope` JSON (its
     /// action context is free-form JSON, which postcard cannot carry).
     TaskRun(String),

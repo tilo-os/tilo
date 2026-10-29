@@ -73,33 +73,11 @@ impl CapnpChannelHandle {
     ) -> Promise<(), capnp::Error> {
         Promise::from((|| {
             let params = params.get()?;
-            let peer = params.get_public_key()?.to_str()?.to_owned();
-            let original = params.get_on_behalf_of()?.to_vec();
-            let selected = if original.is_empty() {
-                None
-            } else {
-                let key = view_key(&peer, &original).map_err(capnp::Error::failed)?;
-                Some(
-                    self.person_chat_views
-                        .borrow()
-                        .get(&key)
-                        .cloned()
-                        .ok_or_else(|| {
-                            capnp::Error::failed("private selected view unavailable".into())
-                        })?,
-                )
-            };
-            let changes = self
-                .private_changes(&peer, &original, selected.as_ref())
-                .map_err(capnp::Error::failed)?;
-            let stream: person_chat_stream::Client = capnp_rpc::new_client(PrivateChanges {
-                channel: self,
-                peer,
-                original,
-                selected,
-                changes: RefCell::new(Some(changes)),
-                initial: std::cell::Cell::new(true),
-            });
+            let stream: person_chat_stream::Client = capnp_rpc::new_client(PrivateChanges::open(
+                self,
+                params.get_public_key()?.to_str()?.to_owned(),
+                params.get_on_behalf_of()?.to_vec(),
+            )?);
             results.get().set_stream(stream);
             Ok(())
         })())
@@ -266,7 +244,9 @@ fn view_key(peer: &str, original: &[u8]) -> Result<ViewKey, String> {
     ))
 }
 
-struct PrivateChanges {
+/// One app's hold on its private conversation with `peer`: its reads, and
+/// news of each change, reauthorized every time.
+pub(super) struct PrivateChanges {
     channel: Rc<CapnpChannelHandle>,
     peer: String,
     original: Vec<u8>,
@@ -287,42 +267,111 @@ impl Drop for PrivateChanges {
         }
     }
 }
+impl PrivateChanges {
+    /// Hold the conversation with `peer`, for the invocation `original`
+    /// (UUID bytes) if the app holds a selected view for it.
+    pub(super) fn open(
+        channel: Rc<CapnpChannelHandle>,
+        peer: String,
+        original: Vec<u8>,
+    ) -> Result<Self, capnp::Error> {
+        let selected = if original.is_empty() {
+            None
+        } else {
+            let key = view_key(&peer, &original).map_err(capnp::Error::failed)?;
+            Some(
+                channel
+                    .person_chat_views
+                    .borrow()
+                    .get(&key)
+                    .cloned()
+                    .ok_or_else(|| {
+                        capnp::Error::failed("private selected view unavailable".into())
+                    })?,
+            )
+        };
+        let changes = channel
+            .private_changes(&peer, &original, selected.as_ref())
+            .map_err(capnp::Error::failed)?;
+        Ok(Self {
+            channel,
+            peer,
+            original,
+            selected,
+            changes: RefCell::new(Some(changes)),
+            initial: std::cell::Cell::new(true),
+        })
+    }
+
+    /// The conversation as it stands.
+    pub(super) fn read(&self) -> Result<Vec<u8>, capnp::Error> {
+        // Revalidate the exact selected actor/worker on every private fetch.
+        // Never re-enter terminal invocation dispatch or borrow a local actor.
+        let actor = self
+            .channel
+            .private_stream_actor(&self.peer, &self.original, self.selected.as_ref())
+            .map_err(capnp::Error::failed)?;
+        let command = serde_json::to_vec(&PersonChatCommand::Read {
+            public_key: self.peer.clone(),
+        })
+        .map_err(|error| capnp::Error::failed(error.to_string()))?;
+        let reply = self
+            .channel
+            .state
+            .services
+            .person_chat
+            .as_ref()
+            .ok_or_else(|| capnp::Error::failed("private person owner unavailable".into()))?
+            .command(&self.channel.route().cluster_id, &actor, &command)
+            .map_err(capnp::Error::failed)?;
+        // The owner reauthorizes the pair and bounds serialization; enforce
+        // the wire bound again before copying into the capability reply.
+        if reply.len() > 1024 * 1024 {
+            return Err(capnp::Error::failed(
+                "private conversation reply exceeds bound".into(),
+            ));
+        }
+        Ok(reply)
+    }
+
+    /// The conversation's generation: at once the first time, then once it
+    /// changed.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the stream is served on the connection's single-threaded local set"
+    )]
+    pub(super) async fn next(&self) -> Result<u64, capnp::Error> {
+        self.channel
+            .private_changes(&self.peer, &self.original, self.selected.as_ref())
+            .map_err(capnp::Error::failed)?;
+        let mut changes = self
+            .changes
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| capnp::Error::failed("private next already pending".into()))?;
+        if !self.initial.replace(false) {
+            changes
+                .changed()
+                .await
+                .map_err(|_| capnp::Error::failed("private conversation owner closed".into()))?;
+        }
+        // Waiting grants no authority: certify both people again after wake.
+        self.channel
+            .private_changes(&self.peer, &self.original, self.selected.as_ref())
+            .map_err(capnp::Error::failed)?;
+        let generation = *changes.borrow_and_update();
+        *self.changes.borrow_mut() = Some(changes);
+        Ok(generation)
+    }
+}
+
 impl person_chat_stream::Server for PrivateChanges {
     fn read(
         self: Rc<Self>,
         _params: person_chat_stream::ReadParams,
         mut results: person_chat_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        Promise::from((|| {
-            // Revalidate the exact selected actor/worker on every private fetch.
-            // Never re-enter terminal invocation dispatch or borrow a local actor.
-            let actor = self
-                .channel
-                .private_stream_actor(&self.peer, &self.original, self.selected.as_ref())
-                .map_err(capnp::Error::failed)?;
-            let command = serde_json::to_vec(&PersonChatCommand::Read {
-                public_key: self.peer.clone(),
-            })
-            .map_err(|error| capnp::Error::failed(error.to_string()))?;
-            let reply = self
-                .channel
-                .state
-                .services
-                .person_chat
-                .as_ref()
-                .ok_or_else(|| capnp::Error::failed("private person owner unavailable".into()))?
-                .command(&self.channel.route().cluster_id, &actor, &command)
-                .map_err(capnp::Error::failed)?;
-            // The owner reauthorizes the pair and bounds serialization; enforce
-            // the wire bound again before copying into the capability reply.
-            if reply.len() > 1024 * 1024 {
-                return Err(capnp::Error::failed(
-                    "private conversation reply exceeds bound".into(),
-                ));
-            }
-            results.get().set_reply(&reply);
-            Ok(())
-        })())
+        Promise::from(PrivateChanges::read(&self).map(|reply| results.get().set_reply(&reply)))
     }
 
     fn next(
@@ -331,25 +380,7 @@ impl person_chat_stream::Server for PrivateChanges {
         mut results: person_chat_stream::NextResults,
     ) -> Promise<(), capnp::Error> {
         Promise::from_future(async move {
-            self.channel
-                .private_changes(&self.peer, &self.original, self.selected.as_ref())
-                .map_err(capnp::Error::failed)?;
-            let mut changes = self
-                .changes
-                .borrow_mut()
-                .take()
-                .ok_or_else(|| capnp::Error::failed("private next already pending".into()))?;
-            if !self.initial.replace(false) {
-                changes.changed().await.map_err(|_| {
-                    capnp::Error::failed("private conversation owner closed".into())
-                })?;
-            }
-            // Waiting grants no authority: certify both people again after wake.
-            self.channel
-                .private_changes(&self.peer, &self.original, self.selected.as_ref())
-                .map_err(capnp::Error::failed)?;
-            let generation = *changes.borrow_and_update();
-            *self.changes.borrow_mut() = Some(changes);
+            let generation = PrivateChanges::next(&self).await?;
             results.get().set_generation(generation);
             Ok(())
         })

@@ -2325,6 +2325,23 @@ impl WireConnection {
                         let stream = session.invocation_feed(stable_ids).map_err(failed)?;
                         tokio::task::spawn_local(pump_pulled(stream, id, frames, Event::Invocation))
                     }
+                    Topic::PersonChat { peer, on_behalf_of } => {
+                        let stream = super::person_chat::PrivateChanges::open(
+                            Rc::clone(&session.channel),
+                            peer,
+                            on_behalf_of,
+                        )
+                        .map_err(failed)?;
+                        tokio::task::spawn_local(pump_pulled(
+                            stream,
+                            id,
+                            frames,
+                            |(generation, conversation)| Event::PersonChat {
+                                generation,
+                                conversation,
+                            },
+                        ))
+                    }
                     Topic::Catalogue => {
                         let stream = session.catalogue_feed().map_err(failed)?;
                         tokio::task::spawn_local(pump_pulled(stream, id, frames, |catalogue| {
@@ -2446,6 +2463,14 @@ impl Pulled for InvocationStreamServer {
     type Item = runtime_collab::wire::Invocation;
     async fn pull(&self) -> Result<Self::Item, capnp::Error> {
         self.next().await?.on_wire()
+    }
+}
+
+impl Pulled for super::person_chat::PrivateChanges {
+    type Item = (u64, Vec<u8>);
+    async fn pull(&self) -> Result<Self::Item, capnp::Error> {
+        let generation = self.next().await?;
+        Ok((generation, self.read()?))
     }
 }
 

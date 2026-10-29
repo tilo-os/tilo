@@ -693,6 +693,19 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
             }
             assert!(
                 endpoint
+                    .call(Request::Subscribe {
+                        channel,
+                        topic: Topic::PersonChat {
+                            peer: "ed25519:nobody".into(),
+                            on_behalf_of: vec![1; 3],
+                        },
+                    })
+                    .await
+                    .is_err(),
+                "a conversation for an invocation the app holds no view for"
+            );
+            assert!(
+                endpoint
                     .call(Request::Launch {
                         channel,
                         app_id: "so.tilo.notes".into(),
