@@ -193,9 +193,7 @@ mod tests {
     )]
     #[test]
     fn a_temporary_service_member_reads_until_its_grant_expires() {
-        use crate::shell::channel_encryption::testing::{
-            Directory, Endpoint, Policy, Room, key, public,
-        };
+        use crate::shell::channel_encryption::testing::{Endpoint, Room, key, public};
         use crate::shell::channel_encryption::{
             ChannelAccess, ChannelEncryption, ChannelEncryptionConfig,
         };
@@ -248,14 +246,18 @@ mod tests {
                     })),
             )),
         );
+        // The service reads the same (replicated) workspace tree: every
+        // participant refuses a commit its own view of the policy does not
+        // back, so it accepts its admission only once it sees its grant.
         let mut service = open(
             SERVICE,
             service_dir.path(),
-            Box::new(Directory {
-                governs: false,
-                governor: public(OWNER),
-                policy: Policy::default(),
-            }),
+            Box::new(Polled(
+                WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
+                    .with_governors(Box::new(|_| {
+                        Some((*public(SERVICE).as_bytes(), *public(OWNER).as_bytes()))
+                    })),
+            )),
         );
         let (owner_end, service_end) = (
             Endpoint::join(&transport, room, 0),
