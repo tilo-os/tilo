@@ -507,6 +507,11 @@ struct World {
     /// An action that asks its person first, and how many more asks the
     /// host answers with its draft waiting before the person confirms.
     awaiting: Option<(String, usize)>,
+    /// The room also runs tilolang Board and Views, whose hosts take programs,
+    /// and the Tasks tracker records the run's steps.
+    tilolang: bool,
+    /// What each `run-block` answers, by a word its source holds.
+    blocks: Vec<(&'static str, Value)>,
 }
 
 /// How the fixture host treats a re-ask that asks to be held.
@@ -640,6 +645,9 @@ impl World {
                 }],
             },
         ];
+        if self.tilolang {
+            surfaces.extend(programs::surfaces());
+        }
         if let Some(record) = self.second_window {
             surfaces.push(BrokerActionSurface {
                 peer_id: SECOND_PEER,
@@ -786,6 +794,32 @@ impl World {
                 (serde_json::json!({"succeeded": {}}), false)
             }
             "open" => (self.open_writer(), true),
+            "run-block" => {
+                let source = text("source");
+                let answer = self
+                    .blocks
+                    .iter()
+                    .find(|(word, _)| source.contains(word))
+                    .map(|(_, answer)| answer.clone());
+                match answer {
+                    Some(Value::String(error)) => {
+                        (serde_json::json!({ "failed_with": error }), false)
+                    }
+                    Some(answer) => (serde_json::json!({"succeeded": {"value": answer}}), false),
+                    None => (serde_json::json!({"failed": "no block"}), false),
+                }
+            }
+            "catalogue" => (
+                serde_json::json!({"succeeded": {"value": programs::catalogue()}}),
+                false,
+            ),
+            "answer" => (
+                serde_json::json!({"succeeded": {"value": {
+                    "type": "View", "id": "root/items:v1", "label": text("title")
+                }}}),
+                false,
+            ),
+            "record-step" | "record-answer" => (serde_json::json!({"succeeded": {}}), false),
             "type-text" => {
                 if self.blocks.is_empty() {
                     self.blocks.push(("p1".into(), String::new()));
@@ -952,7 +986,11 @@ impl ui::collaboration::PeerTransport for Broker {
                         invocation: *invocation,
                         error: tilo_actions::ActionFailure {
                             code: "app.refused".into(),
-                            message: format!("{action} was refused"),
+                            // The host's own words, when it gave them.
+                            message: outcome
+                                .get("failed_with")
+                                .and_then(Value::as_str)
+                                .map_or_else(|| format!("{action} was refused"), str::to_owned),
                             details: None,
                             retryable: false,
                         },
@@ -1402,6 +1440,8 @@ fn finish(reply: &str, done: bool) -> (&'static str, Value) {
 mod native_pipeline;
 #[path = "agent_loop/tests/pictures.rs"]
 mod pictures;
+#[path = "agent_loop/tests/programs.rs"]
+mod programs;
 
 fn native_fixture(latest: u64) -> Fixture {
     let control = runtime_collab::TaskRunControl {

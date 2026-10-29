@@ -111,6 +111,16 @@ scenario "a saturday list" -> Todo {
     call
 }
 
+/// A team's list for a release a week out: what is left, and what is done.
+scenario "a release list" {
+    todos.name = "Release 2.4"
+    todos.items.insert(Todo(title: "Freeze the strings for translation", done: true, due: 2026-10-26))
+    todos.items.insert(Todo(title: "Record the demo video", due: 2026-10-30))
+    todos.items.insert(Todo(title: "Update the changelog", notes: "Group the fixes by app.", due: 2026-10-31))
+    todos.items.insert(Todo(title: "Send the beta to the testers", done: true))
+    todos.items.insert(Todo(title: "Check the upgrade from 2.3", due: 2026-11-01))
+}
+
 /// A list everyone has finished.
 scenario "all done" {
     todos.name = "Packing"
