@@ -41,11 +41,11 @@ fn scribe(label: &str) -> collab_types::history::RosterAgent {
 }
 
 fn history_frames(
-    rx: &mut mpsc::UnboundedReceiver<ContextEnvelope>,
+    rx: &mut mpsc::UnboundedReceiver<ContextUpdate>,
 ) -> Vec<Vec<collab_types::history::RosterAgent>> {
     let mut frames = Vec::new();
     while let Ok(envelope) = rx.try_recv() {
-        if let ContextEnvelope::HistoryAgents(agents) = envelope {
+        if let ContextUpdate::HistoryAgents(agents) = envelope {
             frames.push(agents);
         }
     }

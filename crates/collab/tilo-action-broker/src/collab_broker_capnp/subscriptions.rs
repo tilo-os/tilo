@@ -1,6 +1,6 @@
 //! What a local subscriber of a channel is sent besides live traffic.
 use super::{
-    BrokerChannels, ChannelSubscribers, ContextEnvelope, CrdtRoute, OpAdmission, OpEnvelope, OpKind,
+    BrokerChannels, ChannelSubscribers, ContextUpdate, CrdtRoute, OpAdmission, OpEnvelope,
 };
 use std::sync::Mutex;
 use tokio::sync::mpsc;
@@ -47,7 +47,6 @@ pub(super) fn admitted_ops(
             let _ = tx.send(OpEnvelope {
                 op_bytes,
                 from_user_id: hex::encode(op.author.as_bytes()),
-                kind: OpKind::Signed,
                 admission: if op.encryption.is_some() {
                     OpAdmission::EncryptionRequired
                 } else {
@@ -68,7 +67,7 @@ pub(super) fn admitted_ops(
 pub(super) fn held_tree_records(
     channels: &Mutex<BrokerChannels>,
     channel_id: &str,
-    tx: &mpsc::UnboundedSender<ContextEnvelope>,
+    tx: &mpsc::UnboundedSender<ContextUpdate>,
 ) {
     let route = CrdtRoute::from_channel_key(channel_id);
     let held = channels
@@ -76,7 +75,7 @@ pub(super) fn held_tree_records(
         .map(|mut channels| channels.tree_records_held(&route))
         .unwrap_or_default();
     if !held.is_empty() {
-        let _ = tx.send(ContextEnvelope::RecordsArrived(held));
+        let _ = tx.send(ContextUpdate::RecordsArrived(held));
     }
 }
 
@@ -147,7 +146,7 @@ impl super::CapnpBrokerState {
 pub(super) fn context_frame<'a>(
     channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
     except: u64,
-    env: &ContextEnvelope,
+    env: &ContextUpdate,
 ) {
     for subs in channels {
         subs.context.retain(|sub| {
@@ -240,10 +239,10 @@ mod tests {
     }
 
     /// The records each `RecordsArrived` the subscriber was sent named.
-    fn told(rx: &mut mpsc::UnboundedReceiver<ContextEnvelope>) -> Vec<Vec<String>> {
+    fn told(rx: &mut mpsc::UnboundedReceiver<ContextUpdate>) -> Vec<Vec<String>> {
         let mut told = Vec::new();
         while let Ok(envelope) = rx.try_recv() {
-            if let ContextEnvelope::RecordsArrived(records) = envelope {
+            if let ContextUpdate::RecordsArrived(records) = envelope {
                 told.push(records);
             }
         }

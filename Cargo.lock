@@ -18355,6 +18355,7 @@ name = "tilo-content"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "serde",
  "tempfile",
  "thiserror 2.0.21",
  "tilo-advisory-lock",

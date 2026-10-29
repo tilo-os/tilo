@@ -124,6 +124,7 @@ use tokio::sync::{mpsc, watch};
 #[cfg(any(test, feature = "test-support"))]
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use collab_types::inbound::OpAdmission;
 use collab_types::presence::PresencePayload;
 use collab_types::{
     ArtifactId, ArtifactKind, RedactedMarker, SignedOp, ValidationError,
@@ -133,10 +134,11 @@ use collab_types::{
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::event::CollabEvent;
 use runtime_collab::raw::{
-    OpAdmission, OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle,
-    collab_service, context_stream, invocation_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
+    OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle, collab_service,
+    context_stream, invocation_stream, presence_event, presence_handle, presence_payload,
+    presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
+use runtime_collab::wire::ContextUpdate;
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
 };
@@ -1147,14 +1149,12 @@ fn verify_join_identity_with_host_scope(
     Ok(admitted)
 }
 
-/// Envelope pushed onto an [`OpStreamServer`]'s queue. `kind` is what
-/// makes the queue readable: signed, delta and whole-document share
-/// this type and are indistinguishable from the bytes alone.
+/// Envelope pushed onto a channel's op subscribers: the postcard bytes of
+/// one signed op, who sent it, and the channel's verdict on it.
 #[derive(Clone, Debug)]
 struct OpEnvelope {
     op_bytes: Vec<u8>,
     from_user_id: String,
-    kind: OpKind,
     admission: OpAdmission,
 }
 
@@ -1165,25 +1165,6 @@ struct PresenceEnvelope {
     user_id: String,
     key_bytes: Vec<u8>,
     payload: PresencePayload,
-}
-
-/// Envelope pushed onto a [`ContextStreamServer`]'s queue.
-#[derive(Clone, Debug)]
-enum ContextEnvelope {
-    Snapshot {
-        collaborators: Vec<ui::collaboration::Collaborator>,
-        permissions: Vec<String>,
-    },
-    FollowChanged {
-        peer_id: Option<String>,
-    },
-    SnapshotRequested,
-    /// An encoded `collab_types::handoff::HandoffRequest`.
-    Handoff(Vec<u8>),
-    /// The room's delegated agents the session verified, for history.
-    HistoryAgents(Vec<collab_types::history::RosterAgent>),
-    /// Records of the application's trees a peer wrote and no window holds.
-    RecordsArrived(Vec<String>),
 }
 
 /// One inert operation published by a live application connection: the one
@@ -3219,7 +3200,7 @@ struct PresenceSub {
 }
 struct ContextSub {
     peer_id: u64,
-    tx: mpsc::UnboundedSender<ContextEnvelope>,
+    tx: mpsc::UnboundedSender<ContextUpdate>,
     /// Authenticated native membership projection and the exact admission it
     /// came from. Incremental label/presence frames never replace it.
     native: Option<NativeContext>,
@@ -7339,14 +7320,14 @@ impl CapnpBrokerState {
                 Self::fanout_follow_changed(channels, except, peer_id.as_deref());
             }
             CollabEvent::Handoff { request } => {
-                let handoff = ContextEnvelope::Handoff(request.encode());
+                let handoff = ContextUpdate::Handoff(request.encode());
                 subscriptions::context_frame(channels, except, &handoff);
             }
             CollabEvent::RecordsArrived { records } => {
                 subscriptions::context_frame(
                     channels,
                     except,
-                    &ContextEnvelope::RecordsArrived(records.clone()),
+                    &ContextUpdate::RecordsArrived(records.clone()),
                 );
             }
             CollabEvent::ActionArrived { type_id, .. } => {
@@ -7412,7 +7393,6 @@ impl CapnpBrokerState {
         let env = OpEnvelope {
             op_bytes,
             from_user_id: from_user_id.to_owned(),
-            kind: OpKind::Signed,
             admission,
         };
         for subs in channels {
@@ -7494,7 +7474,7 @@ impl CapnpBrokerState {
         collaborators: &[ui::collaboration::Collaborator],
         permissions: &[String],
     ) {
-        let env = ContextEnvelope::Snapshot {
+        let env = ContextUpdate::Snapshot {
             collaborators: collaborators.to_vec(),
             permissions: permissions.to_vec(),
         };
@@ -7522,7 +7502,7 @@ impl CapnpBrokerState {
         except: u64,
         peer_id: Option<&str>,
     ) {
-        let env = ContextEnvelope::FollowChanged {
+        let env = ContextUpdate::FollowChanged {
             peer_id: peer_id.map(str::to_owned),
         };
         for subs in channels {
@@ -7579,10 +7559,10 @@ impl CapnpBrokerState {
         channel_id: &str,
         peer_id: u64,
         native: Option<NativeContext>,
-    ) -> mpsc::UnboundedReceiver<ContextEnvelope> {
+    ) -> mpsc::UnboundedReceiver<ContextUpdate> {
         let (tx, rx) = mpsc::unbounded_channel();
         if let Some(native) = native.as_ref() {
-            let _ = tx.send(ContextEnvelope::Snapshot {
+            let _ = tx.send(ContextUpdate::Snapshot {
                 collaborators: native.roster.clone(),
                 permissions: Vec::new(),
             });
@@ -7590,7 +7570,7 @@ impl CapnpBrokerState {
         // Who the app's history names for changes an agent's own key signed.
         let history_agents = self.history_agents_of(channel_id);
         if !history_agents.is_empty() {
-            let _ = tx.send(ContextEnvelope::HistoryAgents(history_agents.clone()));
+            let _ = tx.send(ContextUpdate::HistoryAgents(history_agents.clone()));
         }
         let certified = native.is_some();
         let held = tx.clone();
@@ -7923,7 +7903,7 @@ impl CapnpBrokerState {
                 }
                 if subscriber
                     .tx
-                    .send(ContextEnvelope::HistoryAgents(current.clone()))
+                    .send(ContextUpdate::HistoryAgents(current.clone()))
                     .is_err()
                 {
                     return false;
@@ -8007,7 +7987,7 @@ impl CapnpBrokerState {
                     changed = true;
                     if subscriber
                         .tx
-                        .send(ContextEnvelope::Snapshot {
+                        .send(ContextUpdate::Snapshot {
                             collaborators: roster.clone(),
                             permissions: Vec::new(),
                         })
@@ -8175,12 +8155,11 @@ impl CapnpBrokerState {
         else {
             return false;
         };
-        if channel.context.get(index).is_some_and(|subscriber| {
-            subscriber
-                .tx
-                .send(ContextEnvelope::SnapshotRequested)
-                .is_ok()
-        }) {
+        if channel
+            .context
+            .get(index)
+            .is_some_and(|subscriber| subscriber.tx.send(ContextUpdate::SnapshotRequested).is_ok())
+        {
             true
         } else {
             channel.context.remove(index);
@@ -8695,6 +8674,13 @@ impl Drop for CapnpChannelHandle {
 }
 
 impl CapnpChannelHandle {
+    /// A record-scoped connection names its record inside the channel id
+    /// (the SDK joins `<cluster>#record:<id>`), parsed back out here.
+    fn route(&self) -> CrdtRoute {
+        CrdtRoute::from_channel_key(&self.channel_id)
+    }
+
+    /// This handle's hold on its channel as the wire keeps it.
     /// Refuse a change on a channel the app holds only to read: no app
     /// writes on another app's route.
     fn writable(&self) -> Result<(), capnp::Error> {
@@ -9135,31 +9121,10 @@ fn reply_frame(
     }
 }
 
-impl CapnpChannelHandle {
-    /// The host's record-content service, for a channel still admitted.
-    fn record_content(
-        &self,
-    ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), capnp::Error> {
-        self.state
-            .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let route = self.record_route();
-        if route.app_id.is_empty() || route.cluster_id.is_empty() {
-            return Err(capnp::Error::failed(
-                "record content belongs to a certified app route".into(),
-            ));
-        }
-        let content = self.state.services.record_content.clone().ok_or_else(|| {
-            capnp::Error::unimplemented("this host keeps no record content".into())
-        })?;
-        Ok((route, content))
-    }
-}
-
 /// News of content for one channel's record, pulled one per `read`:
 /// content that arrived, or where a want of it has got to.
 struct BlobStreamServer {
-    host_guard: Option<HostWorkerReadGuard>,
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<crate::record_content::ContentNews>>>,
+    feed: Rc<AsyncMutex<wire::Feed<crate::record_content::ContentNews>>>,
 }
 
 impl blob_stream::Server for BlobStreamServer {
@@ -9168,17 +9133,14 @@ impl blob_stream::Server for BlobStreamServer {
         _params: blob_stream::ReadParams,
         mut results: blob_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
+        let feed = self.feed.clone();
         Promise::from_future(async move {
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            let mut guard = rx.lock().await;
-            let Some(arrival) = guard.recv().await else {
+            let next = feed.lock().await.next().await?;
+            let Some(arrival) = next else {
                 return Err(capnp::Error::disconnected(
                     "record content stream closed".into(),
                 ));
             };
-            drop(guard);
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
             let mut reply = results.get();
             reply.set_hash(&arrival.hash);
             reply.set_bytes(&arrival.bytes);
@@ -9360,25 +9322,13 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::OfferBlobParams,
         _results: channel_handle::OfferBlobResults,
     ) -> Promise<(), capnp::Error> {
-        // No app changes another app's route: a channel held to read refuses.
-        if let Err(error) = self.writable() {
-            return Promise::err(error);
-        }
-        let (route, content) = match self.record_content() {
-            Ok(found) => found,
-            Err(error) => return Promise::err(error),
-        };
         Promise::from_future(async move {
             let p = params.get()?;
             let hash = p
                 .get_hash()?
                 .to_str()
-                .map_err(|e| capnp::Error::failed(format!("offerBlob hash: {e}")))?
-                .to_owned();
-            let bytes = p.get_bytes()?;
-            content
-                .offer(&route, &hash, bytes)
-                .map_err(capnp::Error::failed)
+                .map_err(|e| capnp::Error::failed(format!("offerBlob hash: {e}")))?;
+            self.offer_content(hash, p.get_bytes()?)
         })
     }
 
@@ -9387,10 +9337,6 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::WantBlobParams,
         _results: channel_handle::WantBlobResults,
     ) -> Promise<(), capnp::Error> {
-        let (route, content) = match self.record_content() {
-            Ok(found) => found,
-            Err(error) => return Promise::err(error),
-        };
         Promise::from_future(async move {
             let hash = params
                 .get()?
@@ -9398,8 +9344,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 .to_str()
                 .map_err(|e| capnp::Error::failed(format!("wantBlob hash: {e}")))?
                 .to_owned();
-            content.want(&route, &hash);
-            Ok(())
+            self.want_content(&hash)
         })
     }
 
@@ -9408,17 +9353,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeBlobsParams,
         mut results: channel_handle::SubscribeBlobsResults,
     ) -> Promise<(), capnp::Error> {
-        let (route, content) = match self.record_content() {
-            Ok(found) => found,
+        let feed = match self.subscribe_content() {
+            Ok(feed) => feed,
             Err(error) => return Promise::err(error),
         };
         let client: blob_stream::Client = capnp_rpc::new_client(BlobStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
-            rx: Rc::new(AsyncMutex::new(content.subscribe(&route))),
+            feed: Rc::new(AsyncMutex::new(feed)),
         });
         results.get().set_stream(client);
         Promise::ok(())
@@ -9748,16 +9688,10 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::RequestDocumentSnapshotParams,
         _results: channel_handle::RequestDocumentSnapshotResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
+        match self.ask_for_document() {
+            Ok(()) => Promise::ok(()),
+            Err(error) => Promise::err(error),
         }
-        let _ = self
-            .state
-            .request_document_snapshot(&self.channel_id, self.connection_id);
-        Promise::ok(())
     }
 
     fn realtime_command(
@@ -10442,63 +10376,14 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::SendParams,
         _results: channel_handle::SendResults,
     ) -> Promise<(), capnp::Error> {
-        // No app changes another app's route: a channel held to read refuses.
-        if let Err(error) = self.writable() {
-            return Promise::err(error);
-        }
-        let state = self.state.clone();
-        let peer_id = self.connection_id;
-        // A change of the record the channel carries, under the id it is kept under.
-        let route = self.record_route();
-        let verified_identity = self.verified_identity.clone();
-        let record_kind = self.record_kind.clone();
         Promise::from_future(async move {
-            let op_bytes = params.get()?.get_op()?.to_vec();
-            let envelope: SignedOp = postcard::from_bytes(&op_bytes).map_err(|e| {
-                capnp::Error::failed(format!(
-                    "capnp send: op is not a postcard-encoded SignedOp: {e}"
-                ))
-            })?;
-            let current_identity = state.revalidate_admission(&route, &verified_identity)?;
-            verify_session_author(&current_identity, envelope.author)
-                .map_err(|error| capnp::Error::failed(format!("capnp send: {error}")))?;
-            state.authorize_certified_document(&route, &current_identity, &envelope)?;
-            let _owner_order = if state.durable_owner_required
-                || state.publisher.requires_owner_for(&route.cluster_id)
-            {
-                Some(state.owner_commit_order.lock().await)
-            } else {
-                None
-            };
-            if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
-            {
-                state.revalidate_admission(&route, &verified_identity)?;
-                state
-                    .commit_owner_request(
-                        tilo_peer_state::owner_commit::OwnerCommitRequest {
-                            room: route.cluster_id.clone(),
-                            operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                                app: route.app_id.clone(),
-                                record: route.record_id.clone(),
-                                envelope: Box::new(envelope.clone()),
-                            },
-                        },
-                        record_kind,
-                    )
-                    .await?;
-            }
-            let current_identity = state.revalidate_admission(&route, &verified_identity)?;
-            let authorized =
-                state.authorize_certified_document(&route, &current_identity, &envelope)?;
-            handle_authorized_signed_op_send(
-                &state,
-                peer_id,
-                &route,
-                &current_identity,
-                &authorized,
-                envelope,
-            );
-            Ok(())
+            let envelope: SignedOp =
+                postcard::from_bytes(params.get()?.get_op()?).map_err(|e| {
+                    capnp::Error::failed(format!(
+                        "send: op is not a postcard-encoded SignedOp: {e}"
+                    ))
+                })?;
+            self.send(envelope).await
         })
     }
 
@@ -10507,22 +10392,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeParams,
         mut results: channel_handle::SubscribeResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let rx = self
-            .state
-            .subscribe_ops(&self.channel_id, self.connection_id);
+        let feed = match self.subscribe_ops() {
+            Ok(feed) => feed,
+            Err(error) => return Promise::err(error),
+        };
         let client: stream::Client = capnp_rpc::new_client(OpStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
-            rx: Rc::new(AsyncMutex::new(rx)),
+            feed: Rc::new(AsyncMutex::new(feed)),
         });
         results.get().set_stream(client);
         Promise::ok(())
@@ -10571,58 +10446,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         _params: channel_handle::SubscribeContextParams,
         mut results: channel_handle::SubscribeContextResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let route = self.record_route();
-        let native = match self
-            .state
-            .native_roster_for_subscriber(&route, &self.verified_identity)
-        {
-            Ok(roster) => roster,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
+        let feed = match self.subscribe_context() {
+            Ok(feed) => feed,
+            Err(error) => return Promise::err(error),
         };
-        let instance = match self.native_private_window_instance() {
-            Ok(instance) => instance,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        let document = if instance.is_some() {
-            match self.document_read_context() {
-                Ok(context) => Some(context),
-                Err(error) => return Promise::err(capnp::Error::failed(error)),
-            }
-        } else {
-            None
-        };
-        let rx = self
-            .state
-            .subscribe_context(&self.channel_id, self.connection_id, native.clone());
-        if let Some(instance) = instance {
-            let alias = CrdtRoute::record(
-                &route.app_id,
-                &route.cluster_id,
-                format!("continuation:{instance}"),
-            )
-            .channel_key();
-            self.state
-                .alias_private_context(&self.channel_id, &alias, self.connection_id);
-        }
         let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
-            native_guard: native.map(|native| NativeContextReadGuard {
-                state: self.state.clone(),
-                route,
-                identity: native.admitted,
-                document,
-            }),
-            rx: Rc::new(AsyncMutex::new(rx)),
+            feed: Rc::new(AsyncMutex::new(feed)),
         });
         results.get().set_stream(client);
         Promise::ok(())
@@ -10633,55 +10462,16 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::FetchScrollbackForParams,
         mut results: channel_handle::FetchScrollbackForResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let broker_channels = self.state.broker_channels.clone();
-        let publisher = Arc::clone(self.state.publisher());
-        let route = self.record_route();
         Promise::from_future(async move {
             let p = params.get()?;
-            let artifact_id_bytes = p.get_artifact_id()?.to_vec();
-            let before_seq = p.get_before_seq();
-            let max = p.get_max();
-            let uuid = uuid::Uuid::from_slice(&artifact_id_bytes).map_err(|e| {
+            let uuid = uuid::Uuid::from_slice(p.get_artifact_id()?).map_err(|e| {
                 capnp::Error::failed(format!(
                     "capnp fetch_scrollback_for: artifactId must be 16 bytes: {e}"
                 ))
             })?;
-            let artifact = ArtifactId(uuid);
-            let (ops, mut exhausted) = read_scrollback(&broker_channels, artifact, before_seq, max);
-            // Local history ends here: ask the channel's other devices for
-            // what lies before it. Their answer lands in durable history, so
-            // the page is reported as not exhausted and the endpoint's next
-            // request picks it up.
-            if exhausted {
-                let peer_bound = ops
-                    .iter()
-                    .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok()) // optional-decode: read_scrollback encoded these from typed ops just now
-                    .map(|op| op.seq)
-                    .min()
-                    .unwrap_or(before_seq);
-                let ask = broker_channels
-                    .lock()
-                    .is_ok_and(|mut ch| ch.request_peer_history(artifact, peer_bound));
-                if ask
-                    && publisher.scrollback_request(
-                        &route,
-                        artifact,
-                        peer_bound,
-                        u16::try_from(max).unwrap_or(u16::MAX),
-                    )
-                {
-                    exhausted = false;
-                }
-            }
-            let batch = results.get().init_batch();
-            fill_scrollback_batch(batch, &ops, exhausted)?;
-            Ok(())
+            let (ops, exhausted) =
+                self.history(ArtifactId(uuid), p.get_before_seq(), p.get_max())?;
+            fill_scrollback_batch(results.get().init_batch(), &ops, exhausted)
         })
     }
 
@@ -13129,8 +12919,7 @@ impl HostWorkerReadGuard {
 // its turn — the two calls serialize instead of racing.
 
 struct OpStreamServer {
-    host_guard: Option<HostWorkerReadGuard>,
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<OpEnvelope>>>,
+    feed: Rc<AsyncMutex<wire::Feed<OpEnvelope>>>,
 }
 
 impl stream::Server for OpStreamServer {
@@ -13139,27 +12928,24 @@ impl stream::Server for OpStreamServer {
         _params: stream::ReadParams,
         mut results: stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
+        let feed = self.feed.clone();
         Promise::from_future(async move {
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            let mut guard = rx.lock().await;
-            let Some(env) = guard.recv().await else {
+            let next = feed.lock().await.next().await?;
+            let Some(env) = next else {
                 return Err(capnp::Error::disconnected("op stream fanout closed".into()));
             };
-            drop(guard);
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
             let mut r = results.get();
             r.set_op(&env.op_bytes);
             r.set_from_user_id(&env.from_user_id);
-            r.set_kind(env.kind);
-            r.set_admission(env.admission);
+            r.set_kind(OpKind::Signed);
+            r.set_admission(env.admission.into());
             Ok(())
         })
     }
 }
 
 struct PresenceStreamServer {
-    feed: Rc<AsyncMutex<wire::PresenceFeed>>,
+    feed: Rc<AsyncMutex<wire::Feed<PresenceEnvelope>>>,
 }
 
 struct RealtimeStreamServer {
@@ -13376,8 +13162,8 @@ impl presence_stream::Server for PresenceStreamServer {
     ) -> Promise<(), capnp::Error> {
         let feed = self.feed.clone();
         Promise::from_future(async move {
-            let next = feed.lock().await.next().await;
-            let Some(env) = next.map_err(capnp::Error::failed)? else {
+            let next = feed.lock().await.next().await?;
+            let Some(env) = next else {
                 return Err(capnp::Error::disconnected(
                     "presence stream fanout closed".into(),
                 ));
@@ -13433,9 +13219,7 @@ impl presence_stream::Server for PresenceStreamServer {
 }
 
 struct ContextStreamServer {
-    host_guard: Option<HostWorkerReadGuard>,
-    native_guard: Option<NativeContextReadGuard>,
-    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<ContextEnvelope>>>,
+    feed: Rc<AsyncMutex<wire::Feed<ContextUpdate>>>,
 }
 
 struct NativeContextReadGuard {
@@ -13488,43 +13272,37 @@ impl context_stream::Server for ContextStreamServer {
         _params: context_stream::ReadParams,
         mut results: context_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
+        let feed = self.feed.clone();
         Promise::from_future(async move {
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            NativeContextReadGuard::check(self.native_guard.as_ref())?;
-            let mut guard = rx.lock().await;
-            let Some(env) = guard.recv().await else {
+            let Some(env) = feed.lock().await.next().await? else {
                 return Err(capnp::Error::disconnected(
                     "context stream fanout closed".into(),
                 ));
             };
-            drop(guard);
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            NativeContextReadGuard::check(self.native_guard.as_ref())?;
             let mut ctx = results.get().init_ctx();
             let (collaborators, permissions) = match env {
-                ContextEnvelope::Snapshot {
+                ContextUpdate::Snapshot {
                     collaborators,
                     permissions,
                 } => (collaborators, permissions),
-                ContextEnvelope::FollowChanged { peer_id } => {
+                ContextUpdate::FollowChanged { peer_id } => {
                     ctx.set_follow_changed(true);
                     ctx.set_follow_target(peer_id.as_deref().unwrap_or(""));
                     return Ok(());
                 }
-                ContextEnvelope::SnapshotRequested => {
+                ContextUpdate::SnapshotRequested => {
                     ctx.set_snapshot_requested(true);
                     return Ok(());
                 }
-                ContextEnvelope::Handoff(message) => {
+                ContextUpdate::Handoff(message) => {
                     ctx.set_handoff(&message);
                     return Ok(());
                 }
-                ContextEnvelope::HistoryAgents(agents) => {
+                ContextUpdate::HistoryAgents(agents) => {
                     encode_history_agents(&mut ctx, &agents)?;
                     return Ok(());
                 }
-                ContextEnvelope::RecordsArrived(records) => {
+                ContextUpdate::RecordsArrived(records) => {
                     let count = u32::try_from(records.len())
                         .map_err(|_| capnp::Error::failed("context: too many records".into()))?;
                     let mut arrived = ctx.init_records_arrived(count);
@@ -17838,13 +17616,13 @@ pub mod tests {
         let mut parallel = state.subscribe_context(&channel, 46, Some(native.clone()));
         assert!(matches!(
             parallel.try_recv(),
-            Ok(ContextEnvelope::Snapshot { .. })
+            Ok(ContextUpdate::Snapshot { .. })
         ));
         let mut stream = state.subscribe_context(&channel, 46, Some(native.clone()));
         let mut ordinary = state.subscribe_context(&channel, 47, None);
         assert!(matches!(
             stream.try_recv(),
-            Ok(ContextEnvelope::Snapshot { .. })
+            Ok(ContextUpdate::Snapshot { .. })
         ));
         assert_eq!(
             state.certified_agent_identity(&room, &format!("agent:{tide}")),
@@ -17879,7 +17657,7 @@ pub mod tests {
             parallel.try_recv().is_err(),
             "app context must not replace a parallel authenticated native roster"
         );
-        let ContextEnvelope::Snapshot { collaborators, .. } = ordinary.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { collaborators, .. } = ordinary.try_recv().unwrap() else {
             panic!("ordinary context subscribers still receive app context");
         };
         assert_eq!(collaborators.len(), 1);
@@ -17901,7 +17679,7 @@ pub mod tests {
         assert!(membership.write().workspaces[0].revoke_grant(&collision));
         assert!(membership.write().workspaces[0].dismiss(other_person));
         state.refresh_workspace_context_services().unwrap();
-        let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
             panic!("membership refresh must be a complete snapshot");
         };
         assert!(
@@ -17926,7 +17704,7 @@ pub mod tests {
                 .iter()
                 .any(|row| row.id == person && row.is_self)
         );
-        let ContextEnvelope::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
             panic!("every mounted root must receive membership removal");
         };
         assert!(
@@ -17936,7 +17714,7 @@ pub mod tests {
         );
         membership.write().workspaces[0].admit_agent(reed, crate::test_support::KindSet::READ);
         state.refresh_workspace_context_services().unwrap();
-        let ContextEnvelope::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { collaborators, .. } = stream.try_recv().unwrap() else {
             panic!("membership addition must be a complete snapshot");
         };
         assert!(
@@ -17944,7 +17722,7 @@ pub mod tests {
                 .iter()
                 .any(|row| row.id == format!("agent:{reed}") && row.is_agent)
         );
-        let ContextEnvelope::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
+        let ContextUpdate::Snapshot { collaborators, .. } = parallel.try_recv().unwrap() else {
             panic!("every mounted root must receive membership addition");
         };
         assert!(
@@ -17967,18 +17745,18 @@ pub mod tests {
         let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
         assert!(matches!(
             queued.try_recv(),
-            Ok(ContextEnvelope::Snapshot { .. })
+            Ok(ContextUpdate::Snapshot { .. })
         ));
-        let queued = Rc::new(AsyncMutex::new(queued));
-        let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
-            host_guard: None,
-            native_guard: Some(NativeContextReadGuard {
+        let queued = Rc::new(AsyncMutex::new(
+            wire::Feed::new(None, queued).with_native_guard(Some(NativeContextReadGuard {
                 state: state.clone(),
                 route: route.clone(),
                 identity: native.admitted,
                 document: None,
-            }),
-            rx: Rc::clone(&queued),
+            })),
+        ));
+        let client: context_stream::Client = capnp_rpc::new_client(ContextStreamServer {
+            feed: Rc::clone(&queued),
         });
         let mut pending = Box::pin(client.read_request().send().promise);
         // The actual stream read must be waiting before revocation: it holds
@@ -18224,7 +18002,6 @@ pub mod tests {
         handle_authorized_signed_op_send(&state, 1, &route, &admitted, &authorized, op.clone());
 
         let delivered = received.try_recv().expect("snapshot fanout");
-        assert_eq!(delivered.kind, OpKind::Signed);
         assert_eq!(
             postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("signed envelope"),
             op
@@ -18448,7 +18225,7 @@ pub mod tests {
         assert_eq!(fanout.request_room_snapshots(&person_room), 2);
         let asked: Vec<bool> = receivers
             .iter_mut()
-            .map(|rx| matches!(rx.try_recv(), Ok(ContextEnvelope::SnapshotRequested)))
+            .map(|rx| matches!(rx.try_recv(), Ok(ContextUpdate::SnapshotRequested)))
             .collect();
         assert_eq!(asked, [true, true, false, false]);
     }
@@ -19440,7 +19217,7 @@ pub mod tests {
         );
         assert!(matches!(
             addressed.try_recv(),
-            Ok(ContextEnvelope::Handoff(message))
+            Ok(ContextUpdate::Handoff(message))
                 if collab_types::handoff::HandoffRequest::decode(&message) == Some(request)
         ));
         assert!(
@@ -19478,7 +19255,7 @@ pub mod tests {
             &private,
         );
         assert!(
-            matches!(current.try_recv(), Ok(ContextEnvelope::Handoff(message))
+            matches!(current.try_recv(), Ok(ContextUpdate::Handoff(message))
             if collab_types::handoff::HandoffRequest::decode(&message) == Some(request))
         );
         assert!(
@@ -19513,7 +19290,7 @@ pub mod tests {
         assert!(state.request_document_snapshot(channel, 12));
         assert!(matches!(
             first.try_recv(),
-            Ok(ContextEnvelope::SnapshotRequested)
+            Ok(ContextUpdate::SnapshotRequested)
         ));
         assert!(second.try_recv().is_err(), "only one holder may respond");
         let requester_only_channel = "dev.tilo.notes#room:test#record:empty";

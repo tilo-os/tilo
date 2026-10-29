@@ -6,7 +6,8 @@
 use std::cell::Cell;
 
 use runtime_collab::wire::{
-    Call, Event, FRAMING, Handle, HostFrame, Publication, Reply, Request, Topic,
+    Call, ContextUpdate, Event, FRAMING, Handle, HostFrame, Publication, Read, Reply, Request,
+    Topic,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -151,42 +152,280 @@ impl PresenceSession {
     }
 
     /// Everyone else's presence in this room from now on.
-    pub(super) fn subscribe(&self) -> Result<PresenceFeed, String> {
+    pub(super) fn subscribe(&self) -> Result<Feed<PresenceEnvelope>, String> {
         self.revalidate()?;
-        Ok(PresenceFeed {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
-            rx: self
-                .state
+        Ok(Feed::new(
+            HostWorkerReadGuard::for_channel(&self.state, self.peer_id, &self.verified_identity),
+            self.state
                 .subscribe_presence(&self.channel_id, self.peer_id),
-        })
+        ))
     }
 }
 
-/// The presence a [`PresenceSession`] subscribed to.
-pub(super) struct PresenceFeed {
+/// What a subscription receives from the broker's fanout. A host worker's
+/// feed ends with an error once that worker is no longer current, and a
+/// native window's once its room or document custody ended, checked on
+/// both sides of every wait.
+pub(super) struct Feed<T> {
     host_guard: Option<HostWorkerReadGuard>,
-    rx: mpsc::UnboundedReceiver<PresenceEnvelope>,
+    native_guard: Option<NativeContextReadGuard>,
+    rx: mpsc::UnboundedReceiver<T>,
 }
 
-impl PresenceFeed {
-    /// The next update, or `None` when the room's fanout closed. A host
-    /// worker that is no longer current ends the feed with an error, checked
-    /// on both sides of the wait.
-    pub(super) async fn next(&mut self) -> Result<Option<PresenceEnvelope>, String> {
-        HostWorkerReadGuard::check(self.host_guard.as_ref()).map_err(|error| error.to_string())?;
+impl<T> Feed<T> {
+    pub(super) fn new(
+        host_guard: Option<HostWorkerReadGuard>,
+        rx: mpsc::UnboundedReceiver<T>,
+    ) -> Self {
+        Self {
+            host_guard,
+            native_guard: None,
+            rx,
+        }
+    }
+
+    pub(super) fn with_native_guard(mut self, guard: Option<NativeContextReadGuard>) -> Self {
+        self.native_guard = guard;
+        self
+    }
+
+    fn check(&self) -> Result<(), capnp::Error> {
+        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+        NativeContextReadGuard::check(self.native_guard.as_ref())
+    }
+
+    /// The next item, or `None` when the fanout closed.
+    pub(super) async fn next(&mut self) -> Result<Option<T>, capnp::Error> {
+        self.check()?;
         let next = self.rx.recv().await;
-        HostWorkerReadGuard::check(self.host_guard.as_ref()).map_err(|error| error.to_string())?;
+        self.check()?;
         Ok(next)
     }
 }
 
-/// What a connection opened under one handle.
+/// What a connection opened under one handle: one admitted endpoint's hold
+/// on a channel, and its presence there.
 pub(super) struct ChannelSession {
-    pub(super) presence: PresenceSession,
+    channel: Rc<CapnpChannelHandle>,
+    presence: PresenceSession,
+}
+
+impl ChannelSession {
+    pub(super) fn new(channel: Rc<CapnpChannelHandle>) -> Self {
+        let presence = PresenceSession::new(
+            channel.state.clone(),
+            channel.channel_id.clone(),
+            channel.connection_id,
+            channel.verified_identity.clone(),
+        );
+        Self { channel, presence }
+    }
+}
+
+impl std::ops::Deref for ChannelSession {
+    type Target = CapnpChannelHandle;
+
+    fn deref(&self) -> &CapnpChannelHandle {
+        &self.channel
+    }
+}
+
+impl CapnpChannelHandle {
+    /// Admit, commit where the room's owner must hold it first, and fan out
+    /// one signed document change.
+    pub(super) async fn send(&self, envelope: SignedOp) -> Result<(), capnp::Error> {
+        self.writable()?;
+        let (state, route) = (&self.state, self.route());
+        let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
+        verify_session_author(&current_identity, envelope.author)
+            .map_err(|error| capnp::Error::failed(format!("send: {error}")))?;
+        state.authorize_certified_document(&route, &current_identity, &envelope)?;
+        let owner_required =
+            state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id);
+        let _owner_order = if owner_required {
+            Some(state.owner_commit_order.lock().await)
+        } else {
+            None
+        };
+        if owner_required {
+            state.revalidate_admission(&route, &self.verified_identity)?;
+            state
+                .commit_owner_request(
+                    tilo_owner_commit::OwnerCommitRequest {
+                        room: route.cluster_id.clone(),
+                        operation: tilo_owner_commit::CommitOperation::Document {
+                            app: route.app_id.clone(),
+                            record: route.record_id.clone(),
+                            envelope: Box::new(envelope.clone()),
+                        },
+                    },
+                    self.record_kind.clone(),
+                )
+                .await?;
+        }
+        let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
+        let authorized =
+            state.authorize_certified_document(&route, &current_identity, &envelope)?;
+        handle_authorized_signed_op_send(
+            state,
+            self.connection_id,
+            &route,
+            &current_identity,
+            &authorized,
+            envelope,
+        );
+        Ok(())
+    }
+
+    /// Every document change on this channel from now on, other endpoints'
+    /// and peers'.
+    pub(super) fn subscribe_ops(&self) -> Result<Feed<OpEnvelope>, capnp::Error> {
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        Ok(Feed::new(
+            self.host_guard(),
+            self.state
+                .subscribe_ops(&self.channel_id, self.connection_id),
+        ))
+    }
+
+    fn host_guard(&self) -> Option<HostWorkerReadGuard> {
+        HostWorkerReadGuard::for_channel(&self.state, self.peer_id, &self.verified_identity)
+    }
+
+    /// The host's record-content service, for a channel still admitted.
+    fn record_content(
+        &self,
+    ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), capnp::Error> {
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let route = self.route();
+        if route.app_id.is_empty() || route.cluster_id.is_empty() {
+            return Err(capnp::Error::failed(
+                "record content belongs to a certified app route".into(),
+            ));
+        }
+        let content = self.state.services.record_content.clone().ok_or_else(|| {
+            capnp::Error::unimplemented("this host keeps no record content".into())
+        })?;
+        Ok((route, content))
+    }
+
+    /// Keep content the record references, which the app stored.
+    pub(super) fn offer_content(&self, hash: &str, bytes: &[u8]) -> Result<(), capnp::Error> {
+        self.writable()?;
+        let (route, content) = self.record_content()?;
+        content
+            .offer(&route, hash, bytes)
+            .map_err(capnp::Error::failed)
+    }
+
+    /// Fetch content the record references and the app lacks; it arrives on
+    /// the content feed.
+    pub(super) fn want_content(&self, hash: &str) -> Result<(), capnp::Error> {
+        let (route, content) = self.record_content()?;
+        content.want(&route, hash);
+        Ok(())
+    }
+
+    /// The channel's context from now on, starting with its current
+    /// roster. A native private window's context also follows the
+    /// continuation it shows.
+    pub(super) fn subscribe_context(&self) -> Result<Feed<ContextUpdate>, capnp::Error> {
+        let route = self.route();
+        self.state
+            .revalidate_admission(&route, &self.verified_identity)?;
+        let native = self
+            .state
+            .native_roster_for_subscriber(&route, &self.verified_identity)
+            .map_err(capnp::Error::failed)?;
+        let instance = self
+            .native_private_window_instance()
+            .map_err(capnp::Error::failed)?;
+        let document = match instance {
+            Some(_) => Some(self.document_read_context().map_err(capnp::Error::failed)?),
+            None => None,
+        };
+        let rx = self
+            .state
+            .subscribe_context(&self.channel_id, self.connection_id, native.clone());
+        if let Some(instance) = instance {
+            let alias = CrdtRoute::record(
+                &route.app_id,
+                &route.cluster_id,
+                format!("continuation:{instance}"),
+            )
+            .channel_key();
+            self.state
+                .alias_private_context(&self.channel_id, &alias, self.connection_id);
+        }
+        let native_guard = native.map(|native| NativeContextReadGuard {
+            state: self.state.clone(),
+            route,
+            identity: native.admitted,
+            document,
+        });
+        Ok(Feed::new(self.host_guard(), rx).with_native_guard(native_guard))
+    }
+
+    /// Ask another endpoint holding this channel to publish the document's
+    /// current state.
+    pub(super) fn ask_for_document(&self) -> Result<(), capnp::Error> {
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let _ = self
+            .state
+            .request_document_snapshot(&self.channel_id, self.connection_id);
+        Ok(())
+    }
+
+    /// Up to `max` admitted changes to `artifact` before `before_seq`, and
+    /// whether that is all there is. Where local history ends, the
+    /// channel's other devices are asked for what lies before it; their
+    /// answer lands in durable history, so the page is reported as not
+    /// exhausted and the endpoint's next read picks it up.
+    pub(super) fn history(
+        &self,
+        artifact: ArtifactId,
+        before_seq: u64,
+        max: u32,
+    ) -> Result<(Vec<Vec<u8>>, bool), capnp::Error> {
+        let route = self.route();
+        self.state
+            .revalidate_admission(&route, &self.verified_identity)?;
+        let broker_channels = &self.state.broker_channels;
+        let (ops, mut exhausted) = read_scrollback(broker_channels, artifact, before_seq, max);
+        if exhausted {
+            let peer_bound = ops
+                .iter()
+                .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok())
+                .map(|op| op.seq)
+                .min()
+                .unwrap_or(before_seq);
+            let ask = broker_channels
+                .lock()
+                .is_ok_and(|mut ch| ch.request_peer_history(artifact, peer_bound));
+            if ask
+                && self.state.publisher().scrollback_request(
+                    &route,
+                    artifact,
+                    peer_bound,
+                    u16::try_from(max).unwrap_or(u16::MAX),
+                )
+            {
+                exhausted = false;
+            }
+        }
+        Ok((ops, exhausted))
+    }
+
+    /// News of the record's content from now on.
+    pub(super) fn subscribe_content(
+        &self,
+    ) -> Result<Feed<crate::record_content::ContentNews>, capnp::Error> {
+        let (route, content) = self.record_content()?;
+        Ok(Feed::new(self.host_guard(), content.subscribe(&route)))
+    }
 }
 
 /// One endpoint's connection: the handles it holds, its live subscriptions,
@@ -235,10 +474,31 @@ impl WireConnection {
             .ok_or_else(|| format!("no channel {} on this connection", handle.0))
     }
 
-    /// Answer one call; its reply, and any events it starts, take the
-    /// outgoing queue in that order.
+    /// Answer one call. A reply, and the events a subscription it starts
+    /// delivers, take the outgoing queue in that order; a call that waits
+    /// (a document change the room's owner commits first) answers when done.
     pub(crate) fn call(self: &Rc<Self>, Call { id, request }: Call) {
-        let result = self.dispatch(id, request);
+        let result = match request {
+            Request::Publish {
+                channel,
+                publication: Publication::Document(envelope),
+            } => match self.channel(channel) {
+                Ok(channel) => {
+                    let frames = self.frames.clone();
+                    tokio::task::spawn_local(async move {
+                        let result = channel
+                            .send(*envelope)
+                            .await
+                            .map(|()| Reply::Done)
+                            .map_err(|error| error.to_string());
+                        let _ = frames.send(HostFrame::Reply { id, result });
+                    });
+                    return;
+                }
+                Err(error) => Err(error),
+            },
+            request => self.dispatch(id, request),
+        };
         let _ = self.frames.send(HostFrame::Reply { id, result });
     }
 
@@ -253,15 +513,96 @@ impl WireConnection {
                 self.channel(channel)?.presence.publish(key, payload)?;
                 Ok(Reply::Done)
             }
-            Request::Subscribe {
+            Request::Publish {
+                publication: Publication::Document(_),
+                ..
+            } => Err("a document change is answered when committed".into()),
+            Request::Publish {
                 channel,
-                topic: Topic::Presence,
+                publication: Publication::Content { hash, bytes },
             } => {
+                self.channel(channel)?
+                    .offer_content(&hash, &bytes)
+                    .map_err(|error| error.to_string())?;
+                Ok(Reply::Done)
+            }
+            Request::Read {
+                channel,
+                read:
+                    Read::History {
+                        artifact,
+                        before_seq,
+                        max,
+                    },
+            } => {
+                let (ops, exhausted) = self
+                    .channel(channel)?
+                    .history(artifact, before_seq, max)
+                    .map_err(|error| error.to_string())?;
+                Ok(Reply::History { ops, exhausted })
+            }
+            Request::Read {
+                channel,
+                read: Read::Document,
+            } => {
+                self.channel(channel)?
+                    .ask_for_document()
+                    .map_err(|error| error.to_string())?;
+                Ok(Reply::Done)
+            }
+            Request::Read {
+                channel,
+                read: Read::Content { hash },
+            } => {
+                self.channel(channel)?
+                    .want_content(&hash)
+                    .map_err(|error| error.to_string())?;
+                Ok(Reply::Done)
+            }
+            Request::Subscribe { channel, topic } => {
                 if self.subscriptions.borrow().contains_key(&id) {
                     return Err(format!("subscription {id} is already live"));
                 }
-                let feed = self.channel(channel)?.presence.subscribe()?;
-                let task = tokio::task::spawn_local(pump_presence(feed, id, self.frames.clone()));
+                let session = self.channel(channel)?;
+                let frames = self.frames.clone();
+                let failed = |error: capnp::Error| error.to_string();
+                let task = match topic {
+                    Topic::Presence => {
+                        let feed = session.presence.subscribe()?;
+                        tokio::task::spawn_local(pump(feed, id, frames, presence_event))
+                    }
+                    Topic::Ops => {
+                        let feed = session.subscribe_ops().map_err(failed)?;
+                        tokio::task::spawn_local(pump(feed, id, frames, |envelope: OpEnvelope| {
+                            Some(Event::Op {
+                                op: envelope.op_bytes,
+                                from_user_id: envelope.from_user_id,
+                                admission: envelope.admission,
+                            })
+                        }))
+                    }
+                    Topic::Context => {
+                        let feed = session.subscribe_context().map_err(failed)?;
+                        tokio::task::spawn_local(pump(feed, id, frames, |update| {
+                            Some(Event::Context(update))
+                        }))
+                    }
+                    Topic::Content => {
+                        let feed = session.subscribe_content().map_err(failed)?;
+                        tokio::task::spawn_local(pump(
+                            feed,
+                            id,
+                            frames,
+                            |news: crate::record_content::ContentNews| {
+                                Some(Event::Content {
+                                    hash: news.hash,
+                                    state: news.state,
+                                    bytes: news.bytes,
+                                })
+                            },
+                        ))
+                    }
+                };
                 self.subscriptions
                     .borrow_mut()
                     .insert(id, (channel, task.abort_handle()));
@@ -296,24 +637,34 @@ impl WireConnection {
     }
 }
 
-async fn pump_presence(
-    mut feed: PresenceFeed,
+/// Another participant's presence as the wire carries it; `None` for what
+/// no app receives or what does not fit the wire.
+fn presence_event(envelope: PresenceEnvelope) -> Option<Event> {
+    if !envelope.payload.reaches_apps() {
+        return None;
+    }
+    Some(Event::Presence {
+        user_id: envelope.user_id,
+        presence: collab_types::PeerPresence {
+            key: envelope.key_bytes,
+            payload: crate::collab_presence::payload_to_peer(&envelope.payload)?,
+        },
+    })
+}
+
+/// Deliver `feed` as the subscription `subscription`'s events until it
+/// ends, then say why.
+async fn pump<T>(
+    mut feed: Feed<T>,
     subscription: u64,
     frames: mpsc::UnboundedSender<HostFrame>,
+    event: impl Fn(T) -> Option<Event>,
 ) {
     let reason = loop {
         match feed.next().await {
-            Ok(Some(envelope)) => {
-                let Some(payload) = crate::collab_presence::payload_to_peer(&envelope.payload)
-                else {
+            Ok(Some(item)) => {
+                let Some(event) = event(item) else {
                     continue;
-                };
-                let event = Event::Presence {
-                    user_id: envelope.user_id,
-                    presence: collab_types::PeerPresence {
-                        key: envelope.key_bytes,
-                        payload,
-                    },
                 };
                 if frames
                     .send(HostFrame::Event {
@@ -325,8 +676,8 @@ async fn pump_presence(
                     return;
                 }
             }
-            Ok(None) => break "presence fanout closed".to_owned(),
-            Err(error) => break error,
+            Ok(None) => break "the channel's fanout closed".to_owned(),
+            Err(error) => break error.to_string(),
         }
     };
     let _ = frames.send(HostFrame::Ended {

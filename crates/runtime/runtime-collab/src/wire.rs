@@ -14,7 +14,10 @@
 //! host and its peers already exchange, such as [`PeerPresence`], which
 //! broker-to-broker replication carries unchanged.
 
-use collab_types::PeerPresence;
+use collab_types::history::RosterAgent;
+use collab_types::inbound::OpAdmission;
+use collab_types::presence::Collaborator;
+use collab_types::{ArtifactId, PeerPresence, SignedOp};
 use serde::{Deserialize, Serialize};
 
 /// Both directions' framing.
@@ -43,6 +46,8 @@ pub enum Request {
     /// Start receiving one of a channel's topics. The call's id names the
     /// subscription in every event it delivers.
     Subscribe { channel: Handle, topic: Topic },
+    /// Ask for something a channel holds; it arrives on its topic.
+    Read { channel: Handle, read: Read },
     /// Stop a subscription this connection started.
     Unsubscribe { subscription: u64 },
     /// Close a handle, ending its subscriptions.
@@ -55,6 +60,30 @@ pub enum Publication {
     /// A keyed presence update, fanned out to the room's other endpoints
     /// and replicated to its peers.
     Presence(PeerPresence),
+    /// A signed change to the channel's document, answered once the host
+    /// admitted it (and the room's owner committed it, where one must).
+    Document(Box<SignedOp>),
+    /// Content the channel's record references, which the endpoint stored:
+    /// the host keeps it where the record's readers are served from.
+    Content { hash: String, bytes: Vec<u8> },
+}
+
+/// What an endpoint reads from a channel.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Read {
+    /// Content the channel's record references and the endpoint lacks. It
+    /// arrives on [`Topic::Content`], from this device or the room's others.
+    Content { hash: String },
+    /// The document's current state, which another endpoint holding the
+    /// channel is asked to publish; it arrives on [`Topic::Ops`].
+    Document,
+    /// Up to `max` admitted changes to `artifact` before `before_seq`,
+    /// answered as [`Reply::History`].
+    History {
+        artifact: ArtifactId,
+        before_seq: u64,
+        max: u32,
+    },
 }
 
 /// What a subscription delivers.
@@ -62,6 +91,14 @@ pub enum Publication {
 pub enum Topic {
     /// The room's other participants' presence.
     Presence,
+    /// Every signed change to the channel's document from now on.
+    Ops,
+    /// Content of the channel's record that arrived, or where a read of it
+    /// has got to.
+    Content,
+    /// Who is in the channel and what this endpoint may do there, and the
+    /// session's directed asks of it.
+    Context,
 }
 
 /// The host's answer to a call that succeeded.
@@ -72,6 +109,14 @@ pub enum Reply {
     Subscribed,
     /// What the call opened.
     Opened(Handle),
+    /// A page of history, each change the postcard bytes of its
+    /// [`SignedOp`]. Not `exhausted` while older changes remain here or
+    /// were asked of the room's other devices, whose answer a later read
+    /// finds.
+    History {
+        ops: Vec<Vec<u8>>,
+        exhausted: bool,
+    },
 }
 
 /// One event a subscription delivers.
@@ -82,6 +127,42 @@ pub enum Event {
         user_id: String,
         presence: PeerPresence,
     },
+    /// A signed document change, as the postcard bytes of its
+    /// [`SignedOp`], with who sent it and the channel's verdict on it.
+    Op {
+        op: Vec<u8>,
+        from_user_id: String,
+        admission: OpAdmission,
+    },
+    /// Content of the channel's record: its bytes once `state` is
+    /// resolved, else where it has got to.
+    Content {
+        hash: String,
+        state: tilo_content::ContentState,
+        bytes: Vec<u8>,
+    },
+    Context(ContextUpdate),
+}
+
+/// One change of a channel's context.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContextUpdate {
+    /// The roster and this endpoint's permissions, replacing the last.
+    Snapshot {
+        collaborators: Vec<Collaborator>,
+        permissions: Vec<String>,
+    },
+    /// The person at this desktop started following `peer_id`, or stopped.
+    FollowChanged { peer_id: Option<String> },
+    /// Publish the document's current state.
+    SnapshotRequested,
+    /// The next step of a handoff addressed to this instance, as
+    /// `collab_types::handoff::HandoffRequest` JSON.
+    Handoff(Vec<u8>),
+    /// The room's delegated agents the session verified, for history.
+    HistoryAgents(Vec<RosterAgent>),
+    /// Records of the application's trees a peer wrote and no window holds.
+    RecordsArrived(Vec<String>),
 }
 
 /// What the host sends an endpoint.

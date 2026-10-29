@@ -5,14 +5,16 @@
 
 use super::*;
 use crate::collab_outbound::recording::{RecordingSink, Sent};
-use collab_types::{PeerPresence, PeerPresencePayload};
+use collab_types::{PeerPresence, PeerPresencePayload, sign_op};
 use ed25519_dalek::SigningKey;
+use std::time::SystemTime;
 
 struct Room {
     state: Arc<CapnpBrokerState>,
     route: CrdtRoute,
     sink: Arc<RecordingSink>,
     membership: crate::test_support::WorkspaceTreeHandle,
+    directories: Rc<LocalActionDirectoryRegistry>,
     _fanout: Arc<FanoutState>,
 }
 
@@ -24,13 +26,17 @@ impl Room {
         for seed in members {
             workspace.admit(principal(*seed), crate::test_support::Role::Editor);
         }
-        let route = CrdtRoute::cluster(workspace.room().to_string());
+        let route = CrdtRoute::record(
+            "so.tilo.notes",
+            workspace.room().to_string(),
+            "meeting-notes",
+        );
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let sink = Arc::new(RecordingSink::default());
-        let (state, _) = CapnpBrokerState::new(
+        let (state, bridge_rx) = CapnpBrokerState::new(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::new(sink.clone()),
@@ -44,6 +50,7 @@ impl Room {
             route,
             sink,
             membership,
+            directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             _fanout: fanout,
         }
     }
@@ -57,20 +64,27 @@ impl Room {
             &self.route,
             VerifiedJoinIdentity {
                 user_public_key: root.verifying_key().to_bytes(),
-                device_public_key: [seed.wrapping_add(100); 32],
+                device_public_key: device(seed).verifying_key().to_bytes(),
                 capped: false,
             },
         )
         .unwrap();
         let (connection, outgoing) = WireConnection::new();
-        let channel = connection.open(ChannelSession {
-            presence: PresenceSession::new(
-                self.state.clone(),
-                self.route.channel_key(),
-                self.state.next_peer_id(),
-                admitted,
-            ),
-        });
+        let hold = self.state.next_peer_id();
+        let channel = connection.open(ChannelSession::new(Rc::new(CapnpChannelHandle {
+            person_chat_views: RefCell::default(),
+            committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+            state: self.state.clone(),
+            directories: self.directories.clone(),
+            channel_id: self.route.channel_key(),
+            peer_id: hold,
+            connection_id: hold,
+            verified_identity: admitted,
+            record_kind: None,
+            route_access: RouteAccess::Own,
+            lease: None,
+            _hold: None,
+        })));
         let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
         let (reader, writer) = host.into_split();
         let driver = tokio::task::spawn_local(serve(connection, outgoing, reader, writer));
@@ -81,6 +95,10 @@ impl Room {
             driver,
         }
     }
+}
+
+fn device(seed: u8) -> SigningKey {
+    SigningKey::from_bytes(&[seed.wrapping_add(100); 32])
 }
 
 fn principal(seed: u8) -> String {
@@ -252,6 +270,123 @@ async fn presence_crosses_the_wire_attributed_and_replicated() {
                     .is_err(),
                 "a closed handle names nothing"
             );
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_signed_change_crosses_the_wire_to_the_channel_subscribers() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = Room::new(&[4, 5]);
+            let mut watcher = room.endpoint(4);
+            let mut author = room.endpoint(5);
+            let channel = watcher.channel;
+            let subscription = watcher
+                .send(Request::Subscribe {
+                    channel,
+                    topic: Topic::Ops,
+                })
+                .await;
+            assert_eq!(
+                watcher.frame().await,
+                HostFrame::Reply {
+                    id: subscription,
+                    result: Ok(Reply::Subscribed),
+                }
+            );
+
+            let route = &room.route;
+            let mut op = SignedOp::new_unsigned(
+                DocumentMutation::Snapshot(b"automerge snapshot".to_vec())
+                    .encode()
+                    .unwrap(),
+                document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+                collab_types::Ed25519PublicKey::from_bytes(device(5).verifying_key().to_bytes()),
+                document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+                collab_types::OpKind::Change,
+                SystemTime::now(),
+                1,
+            );
+            sign_op(&mut op, &device(5)).unwrap();
+            let channel = author.channel;
+            assert_eq!(
+                author
+                    .call(Request::Publish {
+                        channel,
+                        publication: Publication::Document(Box::new(op.clone())),
+                    })
+                    .await,
+                Ok(Reply::Done)
+            );
+            let HostFrame::Event {
+                subscription: delivered,
+                event:
+                    Event::Op {
+                        op: bytes,
+                        from_user_id,
+                        ..
+                    },
+            } = watcher.frame().await
+            else {
+                panic!("the watcher receives the change");
+            };
+            assert_eq!(delivered, subscription);
+            assert_eq!(postcard::from_bytes::<SignedOp>(&bytes).unwrap(), op);
+            assert!(!from_user_id.is_empty());
+
+            let channel = watcher.channel;
+            assert!(matches!(
+                watcher
+                    .call(Request::Read {
+                        channel,
+                        read: Read::History {
+                            artifact: op.artifact,
+                            before_seq: u64::MAX,
+                            max: 16,
+                        },
+                    })
+                    .await,
+                Ok(Reply::History { .. })
+            ));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_late_joiner_asks_a_context_subscriber_for_the_document() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = Room::new(&[6, 8]);
+            let mut holder = room.endpoint(6);
+            let mut joiner = room.endpoint(8);
+            let channel = holder.channel;
+            assert_eq!(
+                holder
+                    .call(Request::Subscribe {
+                        channel,
+                        topic: Topic::Context,
+                    })
+                    .await,
+                Ok(Reply::Subscribed)
+            );
+            let channel = joiner.channel;
+            assert_eq!(
+                joiner
+                    .call(Request::Read {
+                        channel,
+                        read: Read::Document,
+                    })
+                    .await,
+                Ok(Reply::Done)
+            );
+            assert!(matches!(
+                holder.frame().await,
+                HostFrame::Event {
+                    event: Event::Context(ContextUpdate::SnapshotRequested),
+                    ..
+                }
+            ));
         })
         .await;
 }
