@@ -6,8 +6,8 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use tilo_render_protocol::patch::Lane;
 use tilo_render_protocol::patch::local::pair;
+use tilo_render_protocol::patch::{Lane, ResourceRef, ToApp, Value};
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
@@ -180,6 +180,90 @@ impl Staged {
 
     pub fn harness_mut(&mut self) -> &mut FrameHarness {
         &mut self.harness
+    }
+
+    /// The room's records and the items of their collections, as references.
+    fn records(&self) -> Vec<ResourceRef> {
+        let mut out = Vec::new();
+        let Some(host) = self.instance.host() else {
+            return out;
+        };
+        for (_, _, doc) in host.records() {
+            let Some(ty) = host.store().resource_type(&doc) else {
+                continue;
+            };
+            out.push(ResourceRef {
+                id: doc.clone(),
+                ty: ty.clone(),
+            });
+            let (Some(schema), Ok(record)) = (
+                tilolang_tilo::schema::lookup(&ty),
+                host.store().record(&doc),
+            ) else {
+                continue;
+            };
+            for field in &schema.fields {
+                if let (Some(item_ty), Some(tilolang_tilo::DynValue::Collection(items))) =
+                    (&field.record, record.get(&field.id))
+                {
+                    out.extend(items.ids().map(|id| ResourceRef {
+                        id: format!("{doc}/{}", id.as_str()),
+                        ty: item_ty.clone(),
+                    }));
+                }
+            }
+        }
+        out
+    }
+
+    /// Every resource the room holds, the window's views and the rows of their lists name.
+    pub fn resources(&mut self) -> Vec<ResourceRef> {
+        fn in_value(value: &Value, out: &mut Vec<ResourceRef>) {
+            match value {
+                Value::Ref(target) => out.push(target.clone()),
+                Value::List(items) => items.iter().for_each(|item| in_value(item, out)),
+                Value::Opt(Some(item)) => in_value(item, out),
+                Value::Map(entries) => entries.iter().for_each(|(k, v)| {
+                    in_value(k, out);
+                    in_value(v, out);
+                }),
+                _ => {}
+            }
+        }
+        fn in_node(node: &tilo_ui_host::UiNode, out: &mut Vec<ResourceRef>) {
+            node.props.values().for_each(|value| in_value(value, out));
+            node.children.iter().for_each(|child| in_node(child, out));
+        }
+        let mut out = self.records();
+        let Some(window) = self.window() else {
+            return out;
+        };
+        for tree in [window.root_tree(), window.detail_tree()]
+            .into_iter()
+            .flatten()
+        {
+            in_node(&tree, &mut out);
+        }
+        for list in window.lists() {
+            if let Some(rows) = window.rows_of(&list) {
+                let rows = rows.borrow();
+                for key in rows.rendered() {
+                    if let Some(row) = rows.row(&key) {
+                        in_node(row, &mut out);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Open `resource` in the window, as a person opening it from a list does.
+    pub fn open(&mut self, resource: ResourceRef) {
+        if let Some(window) = self.window() {
+            window.tell(ToApp::Open { resource });
+        }
+        self.exchange();
+        self.harness.relayout();
     }
 
     /// Why the window shows the platform's error state, if it does.

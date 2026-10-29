@@ -369,7 +369,7 @@ impl Walk<'_> {
             .filter(|(_, r)| has_area(*r))
             .collect();
         for (i, (a, ra)) in shown.iter().enumerate() {
-            for (b, rb) in shown.iter().skip(i + 1) {
+            for (b, rb) in shown.iter().skip(i.saturating_add(1)) {
                 let both = ra.intersect(*rb);
                 if has_area(both) && (!layered || (has_text(a) && has_text(b))) {
                     let mut keys = keys.to_vec();

@@ -11,6 +11,7 @@ mod source;
 mod stage;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -169,9 +170,12 @@ pub struct Report {
     pub findings: Vec<Finding>,
     /// Allow-list entries nothing showed for any more.
     pub stale: Vec<String>,
+    /// Views no layout showed a node of (`app › view`): no scenario reaches them, or the
+    /// toolkit draws them without widgets of their own (a list's rows).
+    pub unreached: Vec<String>,
     /// Layouts run, over every scenario of every app.
     pub layouts: usize,
-    pub elapsed_ms: u128,
+    pub elapsed_ms: u64,
 }
 
 impl Report {
@@ -209,11 +213,13 @@ pub fn check(options: &Options) -> Result<Report, String> {
         .transpose()?
         .unwrap_or_default();
     let mut findings = Vec::new();
-    let mut layouts_run = 0;
+    let mut layouts_run: usize = 0;
+    let mut unreached = Vec::new();
     for dir in &options.dirs {
-        let (app_findings, ran) = check_app(dir, &options.search, options.dump)?;
+        let (app_findings, ran, app_unreached) = check_app(dir, &options.search, options.dump)?;
         findings.extend(app_findings);
-        layouts_run += ran;
+        layouts_run = layouts_run.saturating_add(ran);
+        unreached.extend(app_unreached);
     }
     let mut seen = BTreeSet::new();
     for finding in &mut findings {
@@ -225,20 +231,23 @@ pub fn check(options: &Options) -> Result<Report, String> {
     Ok(Report {
         findings,
         stale,
+        unreached,
         layouts: layouts_run,
-        elapsed_ms: started.elapsed().as_millis(),
+        elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
 }
 
 /// The identity of a finding while it is gathered: kind, app, view, node, widget.
 type Identity = (Kind, String, String, Option<String>, String);
 
-/// Check one app: every scenario at every layout. Its findings and the layouts run.
+/// Check one app: every scenario at every layout, then each view no scenario showed, opened on
+/// a resource of its type the window names. Its findings, the layouts run and the views
+/// shown nowhere.
 fn check_app(
     dir: &Path,
     search: &[PathBuf],
     dump: Option<(u32, u32)>,
-) -> Result<(Vec<Finding>, usize), String> {
+) -> Result<(Vec<Finding>, usize, Vec<String>), String> {
     let mut search = search.to_vec();
     search.extend(dir.parent().map(Path::to_path_buf));
     let dirs = tilolang::source::dependency_order(dir, &search)?;
@@ -246,16 +255,22 @@ fn check_app(
         .map_err(|e| e.to_string())?;
     let sources = source::SourceMap::new(&built);
     let meta = built.last().ok_or("no package")?.compiled.meta.clone();
-    let short = meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned();
     let packages = Rc::new(stage::Packages(Rc::new(
         built.into_iter().map(|b| b.compiled).collect(),
     )));
-    let mut gathered: BTreeMap<Identity, Finding> = BTreeMap::new();
-    let mut text = ui::TextRenderer::new();
-    let all = layouts();
-    let mut ran = 0;
+    let mut check = AppCheck {
+        dir,
+        short: meta.app.rsplit('.').next().unwrap_or(&meta.app).to_owned(),
+        meta: &meta,
+        sources,
+        dump,
+        gathered: BTreeMap::new(),
+        text: ui::TextRenderer::new(),
+        ran: 0,
+        shown: BTreeSet::new(),
+    };
+    let first = layouts().first().copied().ok_or("no layouts")?;
     for scenario in &meta.scenarios {
-        let first = all.first().ok_or("no layouts")?;
         let mut staged = stage::Staged::new(
             &meta.app,
             &packages,
@@ -263,10 +278,58 @@ fn check_app(
             (first.size.width, first.size.height),
             ui::Theme::light(),
         )?;
-        for layout in &all {
+        check.run(&mut staged, &scenario.name)?;
+        // The views of types the scenario did not open, on a resource its window names.
+        for default in &meta.default_views {
+            let Some(view) = meta.views.iter().find(|v| v.id == default.view) else {
+                continue;
+            };
+            // The root's own view is the window's first column already.
+            if check.shown.contains(&view.name) || meta.roots.contains(&default.ty) {
+                continue;
+            }
+            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == default.ty) else {
+                continue;
+            };
+            staged.open(resource);
+            check.run(
+                &mut staged,
+                &format!("{}, then a {} opened", scenario.name, view.name),
+            )?;
+        }
+    }
+    let unreached = meta
+        .views
+        .iter()
+        .filter(|v| v.presents.is_none() && v.row_of.is_none())
+        .filter(|v| !check.shown.contains(&v.name))
+        .map(|v| format!("{} › {}", check.short, v.name))
+        .collect();
+    Ok((check.gathered.into_values().collect(), check.ran, unreached))
+}
+
+/// One app's check under way.
+struct AppCheck<'a> {
+    dir: &'a Path,
+    short: String,
+    meta: &'a tilolang::PackageMeta,
+    sources: source::SourceMap,
+    dump: Option<(u32, u32)>,
+    gathered: BTreeMap<Identity, Finding>,
+    /// Measures text as the window's pipeline does, for clipped text.
+    text: ui::TextRenderer,
+    ran: usize,
+    /// The views some layout showed a node of.
+    shown: BTreeSet<String>,
+}
+
+impl AppCheck<'_> {
+    /// Lay `staged` out at every layout and gather what is wrong, as staged by `label`.
+    fn run(&mut self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
+        for layout in layouts() {
             let theme = ui::Theme::light().with_text_scale(layout.text_scale);
-            text.set_text_scale(theme.text_scale);
-            text.apply_typography(&theme.tokens.typography);
+            self.text.set_text_scale(theme.text_scale);
+            self.text.apply_typography(&theme.tokens.typography);
             let input = if layout.size.touch {
                 InteractionEnvironment::TOUCH
             } else {
@@ -276,76 +339,93 @@ fn check_app(
             staged.lay_out(viewport, theme, input, layout.display_scale)?;
             if let Some(why) = staged.failed() {
                 return Err(format!(
-                    "{}: scenario {:?}: the window refused what the app sent: {why}",
-                    dir.display(),
-                    scenario.name
+                    "{}: {label}: the window refused what the app sent: {why}",
+                    self.dir.display(),
                 ));
             }
-            ran += 1;
-            if dump == Some((layout.size.width, layout.size.height)) {
-                let json = staged
-                    .harness()
-                    .inspection_json()
-                    .map_err(|e| e.to_string())?;
-                eprintln!("== {} {} at {layout}\n{json}", meta.app, scenario.name);
+            self.ran = self.ran.saturating_add(1);
+            let inspection = staged.harness().inspection();
+            if self.dump == Some(viewport) {
+                let json = serde_json::to_string_pretty(&inspection).map_err(|e| e.to_string())?;
+                eprintln!("== {} {label} at {layout}\n{json}", self.meta.app);
             }
+            self.note_shown(&inspection.root);
             let mut problems = audit::inspect(
-                &staged.harness().inspection().root,
+                &inspection.root,
                 viewport,
                 layout.size.touch.then(|| f64::from(input.minimum_target())),
             );
             problems.extend(audit::clipped_text(
                 staged.harness_mut().root_widget_mut(),
-                &mut text,
+                &mut self.text,
                 viewport,
             ));
             for problem in problems {
-                // The window's own parts (the shell's Back button) have test ids of their own,
-                // not the compiler's: they are shown as the window's, by that id.
-                let chrome = problem
-                    .id
-                    .as_ref()
-                    .filter(|id| sources.origin(id).is_none());
-                let origin = match chrome {
-                    Some(_) => None,
-                    None => sources.origin_of(&meta.app, &problem.keys),
-                };
-                let (view, node) = origin.as_ref().map_or_else(
-                    || ("(window)".to_owned(), chrome.cloned()),
-                    |o| (o.view.clone(), o.node.clone()),
-                );
-                let identity = (
-                    problem.kind,
-                    short.clone(),
-                    view.clone(),
-                    node.clone(),
-                    problem.widget.clone(),
-                );
-                let shown = layout.to_string();
-                let finding = gathered.entry(identity).or_insert_with(|| Finding {
-                    kind: problem.kind,
-                    app: short.clone(),
-                    view,
-                    node,
-                    widget: problem.widget.clone(),
-                    file: origin.as_ref().map(|o| o.span.file.clone()),
-                    line: origin.as_ref().map(|o| o.span.line),
-                    column: origin.as_ref().map(|o| o.span.column),
-                    detail: problem.detail.clone(),
-                    scenario: scenario.name.clone(),
-                    layouts: Vec::new(),
-                    count: 0,
-                    id: String::new(),
-                    allowed: false,
-                });
-                finding.count += 1;
-                if !finding.layouts.contains(&shown) {
-                    finding.layouts.push(shown);
-                }
+                self.gather(&problem, layout, label);
             }
         }
+        Ok(())
     }
-    Ok((gathered.into_values().collect(), ran))
+
+    /// Remember the views whose nodes `node` and what it holds show.
+    fn note_shown(&mut self, node: &ui::headless::InspectionNode) {
+        if let Some(origin) = node
+            .test_id
+            .as_deref()
+            .and_then(|id| self.sources.origin(id))
+            && origin.app == self.meta.app
+        {
+            self.shown.insert(origin.view);
+        }
+        for child in &node.children {
+            self.note_shown(child);
+        }
+    }
+
+    fn gather(&mut self, problem: &audit::Problem, layout: Layout, label: &str) {
+        // The window's own parts (the shell's Back button) have test ids of their own, not the
+        // compiler's: they are shown as the window's, by that id.
+        let chrome = problem
+            .id
+            .as_ref()
+            .filter(|id| self.sources.origin(id).is_none());
+        let origin = match chrome {
+            Some(_) => None,
+            None => self.sources.origin_of(&self.meta.app, &problem.keys),
+        };
+        let (view, node) = origin.as_ref().map_or_else(
+            || ("(window)".to_owned(), chrome.cloned()),
+            |o| (o.view.clone(), o.node.clone()),
+        );
+        let identity = (
+            problem.kind,
+            self.short.clone(),
+            view.clone(),
+            node.clone(),
+            problem.widget.clone(),
+        );
+        let shown = layout.to_string();
+        let finding = self.gathered.entry(identity).or_insert_with(|| Finding {
+            kind: problem.kind,
+            app: self.short.clone(),
+            view,
+            node,
+            widget: problem.widget.clone(),
+            file: origin.as_ref().map(|o| o.span.file.clone()),
+            line: origin.as_ref().map(|o| o.span.line),
+            column: origin.as_ref().map(|o| o.span.column),
+            detail: problem.detail.clone(),
+            scenario: label.to_owned(),
+            layouts: Vec::new(),
+            count: 0,
+            id: String::new(),
+            allowed: false,
+        });
+        finding.count = finding.count.saturating_add(1);
+        if !finding.layouts.contains(&shown) {
+            finding.layouts.push(shown);
+        }
+    }
 }
 
 /// The report as people read it: one line per finding, at its place in the source.
@@ -359,8 +439,9 @@ pub fn render(report: &Report) -> String {
         };
         let first = finding.layouts.first().map_or("", String::as_str);
         let more = finding.layouts.len().saturating_sub(1);
-        out.push_str(&format!(
-            "{place}{}{}: {} (at {first}{}; scenario {:?})\n",
+        let _ = writeln!(
+            out,
+            "{place}{}{}: {} (at {first}{}; scenario {:?})",
             if finding.allowed { "allowed " } else { "" },
             finding.id,
             finding.detail,
@@ -370,19 +451,30 @@ pub fn render(report: &Report) -> String {
                 String::new()
             },
             finding.scenario,
-        ));
+        );
     }
     for stale in &report.stale {
-        out.push_str(&format!(
-            "note: the allow-list names `{stale}`, which no longer shows: take it out\n"
-        ));
+        let _ = writeln!(
+            out,
+            "note: the allow-list names `{stale}`, which no longer shows: take it out"
+        );
+    }
+    if !report.unreached.is_empty() {
+        let _ = writeln!(
+            out,
+            "note: no layout showed {}: no scenario reaches them, or their nodes are drawn by \
+             a widget that keeps no children (a list's rows)",
+            report.unreached.join(", ")
+        );
     }
     let new = report.new_findings().count();
-    out.push_str(&format!(
-        "{} findings ({new} not allowed) in {} layouts, {:.1} s\n",
+    let _ = writeln!(
+        out,
+        "{} findings ({new} not allowed) in {} layouts, {}.{} s",
         report.findings.len(),
         report.layouts,
-        report.elapsed_ms as f64 / 1000.0
-    ));
+        report.elapsed_ms / 1000,
+        report.elapsed_ms % 1000 / 100,
+    );
     out
 }

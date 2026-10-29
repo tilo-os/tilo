@@ -71,12 +71,12 @@ impl Placed {
     fn new(source: &PackageSource, dir: &std::path::Path) -> Self {
         let mut files: Vec<_> = source.files.iter().collect();
         files.sort_by(|a, b| a.path.cmp(&b.path));
-        let mut base = 0;
+        let mut base: usize = 0;
         let files = files
             .into_iter()
             .map(|file| {
                 let at = base;
-                base += file.text.len() + 1;
+                base = base.saturating_add(file.text.len()).saturating_add(1);
                 let shown = PathBuf::from(&file.path);
                 let shown = shown
                     .strip_prefix(dir.parent().unwrap_or(dir))
@@ -99,8 +99,12 @@ impl Placed {
             });
         let local = offset.saturating_sub(base).min(text.len());
         let before = text.get(..local).unwrap_or_default();
-        let line = before.matches('\n').count() + 1;
-        let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+        let line = before.matches('\n').count().saturating_add(1);
+        let column = before
+            .rsplit('\n')
+            .next()
+            .map_or(0, |l| l.chars().count())
+            .saturating_add(1);
         Span {
             file: file.to_owned(),
             line,
@@ -228,7 +232,7 @@ impl SourceMap {
             .flat_map(|id| {
                 key.match_indices(id.as_str()).filter_map(move |(at, _)| {
                     let before = key.get(..at)?.chars().next_back();
-                    let after = key.get(at + id.len()..)?.chars().next();
+                    let after = key.get(at.saturating_add(id.len())..)?.chars().next();
                     (matches!(before, None | Some('~' | '.' | '/'))
                         && matches!(after, None | Some('~' | '.')))
                     .then_some((at, id))
@@ -236,7 +240,9 @@ impl SourceMap {
             })
             .max_by_key(|(at, _)| *at)?;
         let view = self.views.get(view_id)?;
-        let rest = key.get(at + view_id.len()..).unwrap_or_default();
+        let rest = key
+            .get(at.saturating_add(view_id.len())..)
+            .unwrap_or_default();
         // A loop body is a row view of its own (`<view>~row<n>`), keyed after the view it is in.
         let rest = match rest.strip_prefix("~row") {
             Some(row) => row.trim_start_matches(|c: char| c.is_ascii_digit()),
