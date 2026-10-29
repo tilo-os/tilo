@@ -369,20 +369,7 @@ impl TilolangHost {
                 } => {
                     // Nothing is delivered on a route before it is joined: what does come is
                     // said, as nothing answers it.
-                    for early in manager.poll() {
-                        if matches!(
-                            early,
-                            collaboration::CollabEvent::Invocation { .. }
-                                | collaboration::CollabEvent::Handoff { .. }
-                                | collaboration::CollabEvent::DocumentSnapshotRequested { .. }
-                        ) {
-                            tracing::warn!(
-                                app = spec.app,
-                                event = ?early,
-                                "a request reached an instance before its route was joined"
-                            );
-                        }
-                    }
+                    said_early(&spec.app, manager.poll());
                     if let Some(refused) = manager.join_refusal() {
                         return Err(AdmitError::Join(refused.to_owned()));
                     }
@@ -667,6 +654,25 @@ impl TilolangHost {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.running.is_empty() && self.opening.is_empty() && self.task.is_none()
+    }
+}
+
+/// Say each request in `events`, which reached the instance of `app` before its route was
+/// joined: nothing answers it.
+fn said_early(app: &str, events: Vec<collaboration::CollabEvent>) {
+    for early in events {
+        if matches!(
+            early,
+            collaboration::CollabEvent::Invocation { .. }
+                | collaboration::CollabEvent::Handoff { .. }
+                | collaboration::CollabEvent::DocumentSnapshotRequested { .. }
+        ) {
+            tracing::warn!(
+                app,
+                event = ?early,
+                "a request reached an instance before its route was joined"
+            );
+        }
     }
 }
 

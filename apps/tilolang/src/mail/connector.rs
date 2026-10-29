@@ -276,7 +276,35 @@ impl EngineConnector {
     }
 }
 
+/// Why what the engine held is answered unmade, once its worker ended.
+const WHY: &str = "the mail engine stopped";
+
 impl EngineConnector {
+    /// The engine's next answer; `None` once none waits, or the worker ended, which answers
+    /// every request it held into `out`.
+    fn next_event(&mut self, out: &mut Vec<Event>) -> Option<EngineEvent> {
+        match self.events.try_recv() {
+            Ok(event) => Some(event),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.engine_stopped(out);
+                None
+            }
+        }
+    }
+
+    /// Ask for the changes of `mailbox`, where a message of `account` was moved: they say its
+    /// new place on the server.
+    fn ask_moved(&mut self, account: &str, mailbox: &str) {
+        if self.changes(account, mailbox).is_none() {
+            tracing::warn!(
+                account,
+                mailbox,
+                "a moved message's new place was not asked for"
+            );
+        }
+    }
+
     /// The engine's worker ended: every request it did not answer is answered here, so nothing
     /// waits on it. A send it never made waits to go online (`Unsent`); a write is refused, so
     /// what it changed is put back; a read leaves its account unreachable.
@@ -284,7 +312,6 @@ impl EngineConnector {
         if self.pending.is_empty() {
             return;
         }
-        const WHY: &str = "the mail engine stopped";
         tracing::error!(
             requests = self.pending.len(),
             "{WHY}: its requests are answered unsent"
@@ -412,15 +439,7 @@ impl MailConnector for EngineConnector {
 
     fn events(&mut self) -> Vec<Event> {
         let mut out = Vec::new();
-        loop {
-            let event = match self.events.try_recv() {
-                Ok(event) => event,
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.engine_stopped(&mut out);
-                    break;
-                }
-            };
+        while let Some(event) = self.next_event(&mut out) {
             match event {
                 EngineEvent::Fetched {
                     account_id,
@@ -511,14 +530,8 @@ impl MailConnector for EngineConnector {
                     }
                     // A moved message has a new place on the server: its new mailbox's
                     // changes say which.
-                    if let Some(to) = to
-                        && self.changes(&account, &to).is_none()
-                    {
-                        tracing::warn!(
-                            account,
-                            mailbox = to,
-                            "a moved message's new place was not asked for"
-                        );
+                    if let Some(to) = to {
+                        self.ask_moved(&account, &to);
                     }
                 }
                 EngineEvent::Connected { .. }
