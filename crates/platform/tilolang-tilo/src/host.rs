@@ -76,6 +76,9 @@ pub(crate) struct HostInner {
     packages: RefCell<Vec<Package>>,
     /// Suggestions an agent's flow raised on the door, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
+    /// The program sessions of the callers that run programs on the door, by caller and
+    /// session name: the `let`s each keeps between programs.
+    pub(crate) programs: RefCell<HashMap<String, tilolang_runtime::program::Session>>,
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
     produced: RefCell<Option<(String, ResourceRef)>>,
@@ -506,6 +509,7 @@ impl Host {
             viewer,
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
+            programs: RefCell::default(),
             produced: RefCell::default(),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));

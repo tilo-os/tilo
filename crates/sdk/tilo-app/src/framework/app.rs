@@ -804,9 +804,12 @@ pub(crate) fn build_root<A: ResourceApp>(
         _ => A::view(&mut cx),
     };
     let live = permissions.is_some();
-    let root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
+    let mut root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation((app.local_operations)());
+    if A::BEHAVIOUR.window == ui_core::application::WindowRole::Sheet {
+        root = root.without_ground();
+    }
     if !app.document_history {
         return root.without_history();
     }

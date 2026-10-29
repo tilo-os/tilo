@@ -3833,7 +3833,54 @@ impl DrmScanout {
     /// one of a new output). `flip_unread`: a flip queued on this CRTC has
     /// not had its event read.
     pub fn service_link(&mut self, flip_unread: bool) {
-        self.with_link(|link, device| link.service(device, flip_unread));
+        let failed_before = self.link_failure().is_some();
+        if self
+            .with_link(|link, device| link.service(device, flip_unread))
+            .is_some()
+        {
+            self.journal_link_commit(failed_before);
+        }
+    }
+
+    /// After the link committed on the caller's behalf: journal a re-light
+    /// the driver refused (the link modesets from scratch instead) and an
+    /// output it failed, which a refused commit does without any event.
+    fn journal_link_commit(&mut self, failed_before: bool) {
+        self.journal_relight_refusal();
+        if !failed_before && self.link_failure().is_some() {
+            self.note_link_failed();
+        }
+    }
+
+    /// The driver refused to re-light the CRTC with its routing and mode
+    /// kept; the link modesets it from scratch instead.
+    fn journal_relight_refusal(&mut self) {
+        if let Some(error) = self
+            .link
+            .as_mut()
+            .and_then(|(link, _)| link.take_relight_refusal())
+        {
+            eprintln!(
+                "tilo compositor: DRM scanout: re-light refused connector={} error={error:?}; modesetting it from scratch",
+                u32::from(self.connector)
+            );
+        }
+    }
+
+    /// The link just failed: say why, and judge the wake it was in.
+    fn note_link_failed(&mut self) {
+        let reason = self
+            .link_failure()
+            .map_or_else(String::new, LinkFailure::describe);
+        eprintln!(
+            "tilo compositor: DRM scanout: output failed connector={} reason={reason:?}",
+            u32::from(self.connector)
+        );
+        let stage = match self.link_failure() {
+            Some(LinkFailure::Refused(_)) => WakeStage::Commit,
+            _ => WakeStage::Link,
+        };
+        self.judge_wake(Some(stage));
     }
 
     /// Take a page-flip event for this output's CRTC. `true` when it was
@@ -3843,25 +3890,13 @@ impl DrmScanout {
         let Some(completion) = self.with_link(|link, device| link.complete(frame, device)) else {
             return false;
         };
+        self.journal_relight_refusal();
         let Completion::Link(step) = completion else {
             return false;
         };
         match step {
             LinkStep::Up => self.on_link_up(),
-            LinkStep::Failed => {
-                let reason = self
-                    .link_failure()
-                    .map_or_else(String::new, LinkFailure::describe);
-                eprintln!(
-                    "tilo compositor: DRM scanout: output failed connector={} reason={reason:?}",
-                    u32::from(self.connector)
-                );
-                let stage = match self.link_failure() {
-                    Some(LinkFailure::Refused(_)) => WakeStage::Commit,
-                    _ => WakeStage::Link,
-                };
-                self.judge_wake(Some(stage));
-            }
+            LinkStep::Failed => self.note_link_failed(),
             LinkStep::Redone => {
                 eprintln!(
                     "tilo compositor: DRM scanout: no vblank after the modeset connector={}; redoing it from the CRTC switched off",
@@ -3962,10 +3997,12 @@ impl DrmScanout {
         {
             self.begin_wake();
         }
+        let failed_before = self.link_failure().is_some();
         if self
             .with_link(|link, device| link.want(power, device, flip_unread))
             .is_some()
         {
+            self.journal_link_commit(failed_before);
             return;
         }
         self.set_dpms_property(on);

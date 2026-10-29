@@ -1797,15 +1797,12 @@ fn super_f_asks_the_compositor_to_toggle_full_screen() {
 #[test]
 fn ctrl_alt_delete_opens_the_power_menu() {
     let mut h = Harness::new();
-    assert!(h.host.power_menu_semantic_rects().is_empty());
+    assert!(!h.host.power_menu_open());
     h.key(
         Key::Named(NamedKey::Delete),
         ModifiersState::CONTROL | ModifiersState::ALT,
     );
-    assert!(
-        !h.host.power_menu_semantic_rects().is_empty(),
-        "the session action sheet is open"
-    );
+    assert!(h.host.power_menu_open(), "the session action sheet is open");
 }
 
 #[test]

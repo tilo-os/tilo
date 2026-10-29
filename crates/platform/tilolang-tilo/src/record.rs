@@ -7,7 +7,9 @@
 //! counter merges exactly as a Rust [`Counter`] does.
 //!
 //! Layout of one resource: a map holding `$type`, `$app` and every field by field id, under
-//! `tl/<app>/<resource id>` in the room record.
+//! `tl/<app>/<resource id>` in the room record; its items under `$items`, each such a map by
+//! its id with its placement `$at` ([`crate::items`]). A `DynRecord` read whole
+//! ([`DynRecord::read_whole`]) holds each collection's items as a [`Collection`] again.
 
 use std::collections::BTreeMap;
 
@@ -99,6 +101,65 @@ impl DynRecord {
                 "`{id}` is not a register field"
             ))),
         }
+    }
+
+    /// The record at the map `obj` whole, of the type its map holds: every field, and each
+    /// collection with the items placed in it ([`crate::items`]), each whole.
+    ///
+    /// # Errors
+    /// The map holds no registered type, or a field that does not read.
+    pub fn read_whole(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError> {
+        let schema = Self::type_at(doc, obj)?;
+        let items = crate::items::Items::scan(doc, obj, schema);
+        let resolved = items.resolve(schema);
+        Self::assemble(doc, Some(obj), schema, (None, &items, &resolved))
+    }
+
+    /// The resource at the map `obj` (none: every field its default) of `schema`, the item
+    /// `holder` of its record (`None` for the record), with its collections' items.
+    fn assemble(
+        doc: &Doc,
+        obj: Option<&ObjId>,
+        schema: &'static TypeSchema,
+        (holder, items, resolved): (
+            Option<&str>,
+            &crate::items::Items,
+            &tilolang_runtime::place::Resolved,
+        ),
+    ) -> Result<Self, ModelError> {
+        let mut record = match obj {
+            Some(obj) => Self::read_fields(doc, obj)?,
+            None => Self::empty(schema)?,
+        };
+        let fields: Vec<String> = record
+            .schema
+            .fields
+            .iter()
+            .filter(|f| f.kind == MergeKind::Collection)
+            .map(|f| f.id.clone())
+            .collect();
+        for field in fields {
+            let mut collection = Collection::default();
+            for id in resolved.items(holder, &field) {
+                let Some(found) = items.found.get(&id) else {
+                    continue;
+                };
+                let Some(item_schema) = found.ty.as_deref().and_then(lookup) else {
+                    continue;
+                };
+                let item = Self::assemble(
+                    doc,
+                    found.obj.as_ref(),
+                    item_schema,
+                    (Some(&id), items, resolved),
+                )?;
+                collection.push(tilo_resource::Id::from_raw(id), item);
+            }
+            record
+                .fields
+                .insert(field, DynValue::Collection(collection));
+        }
+        Ok(record)
     }
 
     /// The type id stored at the map `obj`.

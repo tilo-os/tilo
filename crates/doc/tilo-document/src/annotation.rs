@@ -8,7 +8,7 @@
 //! palette, so a highlight made in one reader reads the same in another, or
 //! an exact colour a file brought along.
 
-use tilo_resource::{Collection, Model};
+use tilo_resource::{ActionCx, Collection, Model};
 
 use crate::ClipBlock;
 
@@ -49,6 +49,13 @@ impl<Anchor: Model> Comment<Anchor> {
             replies: Collection::new(),
         }
     }
+
+    /// A new thread about `anchor` saying `text`, by whoever invokes the
+    /// action and dated now.
+    #[must_use]
+    pub fn written(cx: &ActionCx, anchor: Anchor, text: String) -> Self {
+        Self::new(anchor, signer(cx), iso_time(cx.now_ms()), text)
+    }
 }
 
 /// An answer in a comment thread.
@@ -80,6 +87,26 @@ impl Reply {
             body: Vec::new(),
         }
     }
+
+    /// A plain-text answer by whoever invokes the action, dated now.
+    #[must_use]
+    pub fn written(cx: &ActionCx, text: String) -> Self {
+        Self::new(signer(cx), iso_time(cx.now_ms()), text)
+    }
+}
+
+/// Who writes in an action: whoever invokes it.
+fn signer(cx: &ActionCx) -> String {
+    cx.author().unwrap_or_default().to_owned()
+}
+
+/// `ms` after the Unix epoch as the ISO-8601 UTC time a comment is dated
+/// with, to the millisecond (`2026-10-09T13:08:01.250Z`).
+#[must_use]
+pub fn iso_time(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .unwrap_or_default()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 /// The colour of a highlight or other marking: a named swatch, or an exact
@@ -199,7 +226,14 @@ tilo_resource::json_model!(HighlightColor);
 
 #[cfg(test)]
 mod tests {
-    use super::HighlightColor;
+    use super::{HighlightColor, iso_time};
+
+    #[test]
+    fn a_comment_is_dated_in_iso_utc_to_the_millisecond() {
+        assert_eq!(iso_time(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(iso_time(1_791_551_281_250), "2026-10-09T13:08:01.250Z");
+        assert_eq!(iso_time(951_868_799_000), "2000-02-29T23:59:59.000Z");
+    }
 
     #[test]
     fn a_highlight_colour_is_stored_as_its_key() {

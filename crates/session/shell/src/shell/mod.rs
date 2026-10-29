@@ -161,7 +161,6 @@ pub mod physical_gamepad;
 pub mod placement;
 pub mod pointer_readiness;
 pub mod portal_dialog;
-mod power_menu;
 pub mod present;
 pub mod projection;
 mod projection_overlay;

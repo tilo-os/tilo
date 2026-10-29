@@ -1272,6 +1272,7 @@ doc = false
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
+"tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-sibling-unlock" = { path = "../../../crates/system/tilo-sibling-unlock", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-spellcheck" = { path = "../../../crates/text/spellcheck", default-features = false, features = [] }
@@ -3667,6 +3668,7 @@ doc = false
 "tilo-segment" = { path = "../../../crates/media/segment", default-features = false, features = ["infer"] }
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
+"tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
 "tilo-sibling-unlock" = { path = "../../../crates/system/tilo-sibling-unlock", default-features = false, features = [] }
 "tilo-sort" = { path = "../../../crates/platform/tilo-sort", default-features = false, features = [] }
 "tilo-spellcheck" = { path = "../../../crates/text/spellcheck", default-features = false, features = [] }

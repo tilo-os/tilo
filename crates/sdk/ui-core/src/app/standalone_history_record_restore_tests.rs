@@ -55,7 +55,7 @@ fn history_session(app: &mut App) -> uuid::Uuid {
         .unwrap();
     let id = resources
         .iter()
-        .find(|resource| resource.kind == "tilo.host.history.session")
+        .find(|resource| resource.kind == crate::standalone_history_host::HISTORY_SESSION_KIND)
         .expect("History is open")
         .id
         .clone();

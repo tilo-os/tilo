@@ -203,10 +203,14 @@ pub enum Mutation {
         item: NewRecord,
         index: Option<usize>,
     },
+    /// Remove the item, with every item in it ([`crate::place`]).
     CollRemove {
         field: FieldId,
         item: ItemId,
     },
+    /// Put the item at the place `index` of this collection, among its other items: from where
+    /// it is in this collection, or from another collection of the same document. It keeps its
+    /// id ([`crate::place`]).
     CollMove {
         field: FieldId,
         item: ItemId,
@@ -332,13 +336,17 @@ impl Reflected {
 }
 
 /// The versions of `at` among a document's change notes, oldest first: the changes whose
-/// resources include it.
+/// resources include it (named by id, or by the path an older change named it by).
 #[must_use]
 pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
     let id = at.id_string();
     notes
         .iter()
-        .filter(|note| note.touched.contains(&id))
+        .filter(|note| {
+            note.touched
+                .iter()
+                .any(|touched| *touched == id || crate::value::flat_id(touched) == id)
+        })
         .map(|note| Version {
             who: note.invoker.clone(),
             at: note
@@ -351,7 +359,7 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
 }
 
 /// One field of one resource: the resource as [`ResourceRef::id_string`] writes it (its
-/// document, then a step per nested item), and the field id, or [`ANY_FIELD`] for every field
+/// document, then `/item` for an item), and the field id, or [`ANY_FIELD`] for every field
 /// of that resource. Views record what they read as these, and stores report changes as them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FieldKey {
@@ -666,6 +674,13 @@ pub trait Store {
     /// `NotFound` when the document or item does not exist.
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError>;
 
+    /// Where the item `at` is: the resource whose collection holds it, and the collection's
+    /// field. `None` for a document, which no collection holds.
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the document or item does not exist.
+    fn container(&self, at: &ResourceRef) -> Result<Option<(ResourceRef, FieldId)>, StoreError>;
     /// How a reference in rich text reads for the person this store holds resources for: a
     /// resource they hold by what it is called now, one they cannot read as only being there.
     /// A store that cannot tell what its reader holds reads every resource as not shared: a
@@ -743,7 +758,7 @@ pub trait Store {
         let all = self.listing(at, field)?;
         let mut items = Vec::new();
         for id in all.iter() {
-            let target = at.item(&field.id, &id, item.clone());
+            let target = at.item(&id, item.clone());
             let holds =
                 pred.eval(&mut |read: &FieldRead| read.lit(self.read(&target, &read.spec)?))?;
             if holds {
@@ -781,7 +796,7 @@ pub trait Store {
         };
         let mut keyed = Vec::with_capacity(base.len());
         for id in base.iter() {
-            let target = at.item(&field.id, &id, item.clone());
+            let target = at.item(&id, item.clone());
             let value = match Reflected::of(&order.field) {
                 Some(end) => self
                     .version_end(&target, end == Reflected::Updated)?
