@@ -1116,21 +1116,6 @@ impl UpdatesModel {
         self
     }
 
-    /// Dispose the Windows-support card for a capture, without asking the
-    /// device or running the helper.
-    #[must_use]
-    pub fn with_windows_support(
-        mut self,
-        readiness: WindowsReadiness,
-        provider: WindowsSupportProvider,
-        runner: WindowsSupportRunner,
-    ) -> Self {
-        self.windows_support = readiness;
-        self.windows_support_provider = provider;
-        self.windows_support_runner = runner;
-        self
-    }
-
     /// Follow the helper's status file, so the card shows its progress and
     /// background results (an install that finished once the device came
     /// online) while the pane is open. Stops when the pane is dropped.
