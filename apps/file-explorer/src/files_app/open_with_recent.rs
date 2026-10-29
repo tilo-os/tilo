@@ -6,7 +6,7 @@
 //! into the context menu, the shared app-chooser palette, the resource
 //! catalogue and the listing.
 
-use super::{FileExplorerWidget, FileServices, layout_menu_widget};
+use super::{FileServices, FilesState, MenuChange, layout_menu_widget};
 use crate::command::FileCommand;
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
@@ -39,7 +39,7 @@ fn type_key(path: &Path) -> String {
     format!("{mime}|{ext}")
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     fn open_with_route(&self) -> Option<SharedOpenWithRoute> {
         match &self.services {
             FileServices::Legacy => crate::open_with::installed_route(),
@@ -205,8 +205,7 @@ impl FileExplorerWidget {
     /// "Other application…" for the full, searchable list.
     pub(super) fn open_open_with_submenu(&mut self, at: Point) {
         let Some(path) = self.open_with_subject() else {
-            self.submenu.close();
-            self.submenu_commands.clear();
+            self.menus.push(MenuChange::CloseSub);
             return;
         };
         let candidates = self.open_with_candidates(&path);
@@ -236,9 +235,8 @@ impl FileExplorerWidget {
             commands.push(Some(FileCommand::OpenWithOther));
         }
         menu.open_at([at.x as f32, at.y as f32]);
-        self.submenu = menu;
-        self.submenu_commands = commands;
-        layout_menu_widget(&mut self.submenu);
+        layout_menu_widget(&mut menu);
+        self.menus.push(MenuChange::Sub(menu, commands));
     }
 
     /// "Other application…": the shared searchable palette, listing every
@@ -573,7 +571,7 @@ fn append_open_with_chooser_actions(
     }
 }
 
-impl FileExplorerWidget {
+impl FilesState {
     fn retained_open_target_access(
         &self,
         path: &Path,

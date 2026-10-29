@@ -64,12 +64,22 @@ fn the_block_module_is_authored_as_an_agent_block() {
 }
 
 #[test]
-fn a_reference_to_a_nested_resource_is_written_with_its_steps() {
-    let b = block("todo.toggle(@todo.Todo:d1-1/f3a:i1-5)").expect("compiles");
+fn a_reference_to_an_item_is_written_with_its_document_and_id() {
+    let b = block("todo.toggle(@todo.Todo:d1-1/i1-5)").expect("compiles");
     validate(&b.wasm);
     assert_eq!(b.kind, BlockKind::Action);
     assert!(
-        b.wasm.windows(13).any(|w| w == "d1-1/f3a:i1-5".as_bytes()),
+        b.wasm.windows(9).any(|w| w == "d1-1/i1-5".as_bytes()),
         "the whole id reaches the module's strings"
+    );
+}
+
+#[test]
+fn a_reference_written_as_the_path_to_an_item_still_compiles() {
+    let b = block("todo.toggle(@todo.Todo:d1-1/f3a:i1-5)").expect("compiles");
+    validate(&b.wasm);
+    assert!(
+        b.wasm.windows(13).any(|w| w == "d1-1/f3a:i1-5".as_bytes()),
+        "the whole id reaches the module's strings, which the runtime reads as its last item"
     );
 }

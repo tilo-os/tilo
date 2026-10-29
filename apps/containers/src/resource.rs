@@ -1,20 +1,15 @@
 //! Containers as a resource: the new-container draft is the record
 //! ([`Containers`]), each field edited at its path; the podman engine's
-//! containers, images, volumes and distroboxes are live rows the surface
-//! publishes; moving around the app is the surface's own, offered to every
+//! containers, images, volumes and distroboxes are live rows the view
+//! publishes; moving around the app is the window's own, offered to every
 //! caller as effects.
 
-use std::rc::Rc;
-
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    RunMode, SurfaceCx, ViewCx,
-};
+use ui::framework::{Fixture, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Invoke, Model, resource};
 use ui::widget::Element;
 
-use crate::app::ContainersApp;
+use crate::app::{ContainersApp, ContainersState};
 use crate::draft::{CreateDraft, CreateField};
 use crate::model::{DetailTab, Engine, Section};
 
@@ -203,10 +198,7 @@ impl ResourceApp for ContainersShell {
     }
 
     fn view(cx: &mut ViewCx<Containers>) -> Element {
-        let app = ContainersApp::new();
-        // A search hit, or an agent's `open`, shows the row it names.
-        cx.on_open(app.opener());
-        cx.surface(app)
+        crate::app::window(cx, ContainersApp::new())
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -245,71 +237,13 @@ impl ResourceApp for ContainersShell {
     }
 }
 
-impl ResourceSurface<Containers, ContainersEffect> for ContainersApp {
-    fn present(&mut self, state: &Rc<Containers>) {
-        self.present_draft(&state.draft);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Containers>) {
-        let dispatcher = cx.dispatcher();
-        match cx.mode() {
-            RunMode::Live => self.connect(),
-            RunMode::Capture => {
-                if let Some(engine) = cx.fixture::<Engine>() {
-                    self.show_engine((*engine).clone());
-                }
-            }
-            RunMode::Past => self.show_past(),
-        }
-        self.attach_dispatcher(dispatcher);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scene(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: ContainersEffect,
-        _cx: &mut EffectCx<Containers, Self>,
-    ) -> EffectAnswer {
-        self.perform_effect(effect).map(|()| Effected::done())
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        if self.engine.live {
-            Vec::new()
-        } else {
-            vec![EffectStatus::unavailable(
-                ContainersEffect::CREATE,
-                "engine_offline",
-                "Creating containers requires a connected Podman engine",
-            )]
-        }
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        self.engine_rows()
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.engine_row(id)
-    }
-
-    /// Containers with their recent logs, images, volumes and distroboxes:
-    /// what the engine holds, not the document.
-    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        crate::search::engine_entries(&self.engine)
-    }
-}
-
-impl ContainersApp {
+impl ContainersState {
     /// Do what `effect` asks, for any caller: the rows, the palette, an
     /// agent.
     ///
     /// # Errors
     /// Returns why it could not be done.
-    pub fn perform_effect(&mut self, effect: ContainersEffect) -> Result<(), String> {
+    pub(crate) fn perform_effect(&mut self, effect: ContainersEffect) -> Result<(), String> {
         match effect {
             ContainersEffect::SetSection { section } => {
                 let section = Section::parse(&section)

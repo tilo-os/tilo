@@ -32,7 +32,7 @@ fn replicas() -> (AutoCommit, AutoCommit) {
 fn highlight(id: &str, page_id: &str, y: f64) -> Invoke<PdfMarkup> {
     let a = Annotation {
         id: id.to_string(),
-        chars: Some((10, 20)),
+        chars: Some([10, 20]),
         created_ms: 1_700_000_000_000,
         space: GeomSpace::User,
         ..Annotation::new(
@@ -79,7 +79,7 @@ fn concurrent_markup_edits_converge_across_replicas() {
         .find(|a| a.id == "left")
         .unwrap();
     assert_eq!(a.space, GeomSpace::User);
-    assert_eq!(a.chars, Some((10, 20)));
+    assert_eq!(a.chars, Some([10, 20]));
     assert_eq!(a.created_ms, 1_700_000_000_000);
 
     {
@@ -372,13 +372,19 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
             .first()
             .map(|c| c.id.clone())
             .expect("the sample has a thread");
-        let replies_before = PdfMarkup::of(&state.doc).list_comments()[0].replies.len();
+        let replies_before = PdfMarkup::of(&state.doc).list_comments()[0]
+            .comment
+            .replies
+            .len();
         app.perform_action(
             &mut Edits::lend(&mut state.doc),
             crate::actions::add_reply_action(&thread, "A reply"),
         );
         assert_eq!(
-            PdfMarkup::of(&state.doc).list_comments()[0].replies.len(),
+            PdfMarkup::of(&state.doc).list_comments()[0]
+                .comment
+                .replies
+                .len(),
             replies_before + 1,
             "a commenter's reply is added"
         );
@@ -416,7 +422,8 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
             app.state()
                 .comments
                 .iter()
-                .any(|c| c.id == thread && c.replies.values().any(|r| r.text == "Agreed"))
+                .any(|(id, c)| id.as_str() == thread
+                    && c.replies.values().any(|r| r.text == "Agreed"))
         );
         assert!(
             app.invoke(PdfMarkup::ADD_NOTE.with(("Mine".to_owned(), Some(1))))
@@ -587,7 +594,9 @@ fn exports_are_deterministic_and_carry_page_operations() {
         let (start, end) = (hit.char_start, hit.char_start + hit.char_len);
         let quads = text.bands_for_range(start, end);
         let a = Annotation {
-            chars: text.source_range(start, end),
+            chars: text
+                .source_range(start, end)
+                .map(|(start, end)| [start, end]),
             ..Annotation::new(
                 3,
                 AnnoKind::Markup {

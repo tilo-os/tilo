@@ -314,6 +314,62 @@ impl ContextMenuArea {
     }
 }
 
+/// An operation goes to the content, as it would without the menu, then to
+/// the open menu: a row an agent chooses is pressed where it is drawn.
+impl super::ResourceOperations for ContextMenuArea {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        super::local_resource_operation_handlers(self.content.as_ref())
+    }
+
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        let mut handlers = super::resource_operation_handlers(self.content.as_ref());
+        if self.menu.is_open() {
+            handlers.extend(super::resource_operation_handlers(&self.menu));
+        }
+        handlers
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        doc: &mut super::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        if let Some(started) = super::start_operation(self.content.as_mut(), op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if self.menu.is_open() {
+            return super::start_operation(&mut self.menu, op, doc, path);
+        }
+        Ok(None)
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        super::poll_resource_operation(
+            self.content.as_mut(),
+            invocation,
+            cancellation_requested,
+            doc,
+            path,
+        )
+        .or_else(|| {
+            super::poll_resource_operation(
+                &mut self.menu,
+                invocation,
+                cancellation_requested,
+                doc,
+                path,
+            )
+        })
+    }
+}
+
 /// Whether `widget` or anything inside it has the keyboard focus.
 pub(super) fn focus_within(widget: &dyn Widget) -> bool {
     if widget.is_focused() {
@@ -333,6 +389,25 @@ impl super::Decorator for ContextMenuArea {
 
     fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
         self.content.as_mut()
+    }
+
+    // The area answers operations itself, so one addressed to a row of its
+    // open menu reaches the menu even when the content answers its own.
+    // Every other capability is the content's.
+    fn provide<'a>(&'a self, request: &mut super::capability::Request<'a, '_>) {
+        if request.wants::<dyn super::ResourceOperations>() {
+            request.provide::<dyn super::ResourceOperations>(self);
+            return;
+        }
+        self.content.provide(request);
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut super::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn super::ResourceOperations>() {
+            request.provide::<dyn super::ResourceOperations>(self);
+            return;
+        }
+        self.content.provide_mut(request);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

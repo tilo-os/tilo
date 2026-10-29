@@ -625,12 +625,15 @@ impl Lexer<'_> {
         self.pos += 1;
         let id_start = self.pos;
         self.id_chars();
-        // A resource nested in another is written `doc/field:item`, one step per nesting.
+        // An item of a document is written `doc/item`. A reference written before items were
+        // named by id alone has a `/field:item` step per nesting; it names its last item.
         while self.at(0) == Some(b'/') && self.step_follows() {
             self.pos += 1;
             self.id_chars();
-            self.pos += 1;
-            self.id_chars();
+            if self.at(0) == Some(b':') {
+                self.pos += 1;
+                self.id_chars();
+            }
         }
         let id = self.slice(id_start, self.pos).to_string();
         if id.is_empty() {
@@ -667,7 +670,8 @@ impl Lexer<'_> {
         }
     }
 
-    /// Whether the `/` at the cursor starts a `/field:item` step of a reference id.
+    /// Whether the `/` at the cursor starts a `/item` (or older `/field:item`) step of a
+    /// reference id.
     fn step_follows(&self) -> bool {
         let is_id = |b: u8| is_ident_char(b) || b == b'-';
         let mut i = self.pos + 1;
@@ -675,10 +679,10 @@ impl Lexer<'_> {
         while self.bytes.get(i).is_some_and(|b| is_id(*b)) {
             i += 1;
         }
-        if i == field || self.bytes.get(i) != Some(&b':') {
+        if i == field {
             return false;
         }
-        self.bytes.get(i + 1).is_some_and(|b| is_id(*b))
+        self.bytes.get(i) != Some(&b':') || self.bytes.get(i + 1).is_some_and(|b| is_id(*b))
     }
 
     fn string(&mut self, start: usize) {

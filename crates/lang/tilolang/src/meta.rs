@@ -52,6 +52,11 @@ pub struct PackageMeta {
     /// Named seed data (`scenario "name" { ... }`), each run by its hidden action.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scenarios: Vec<ScenarioMeta>,
+    /// The arguments of actions views apply that compute from view state (`set(open, not
+    /// open)`): functions the runtime runs when the control's event fires, on the view state
+    /// as it is then. Each is exported as `e_<id>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub at_event: Vec<FnMeta>,
 }
 
 /// A named root: its name and its type's id.

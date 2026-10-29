@@ -61,6 +61,9 @@ pub enum MenuItem {
         /// A short fact at the row's trailing edge in place of a shortcut:
         /// how many results share a filter's value.
         detail: Option<String>,
+        /// What choosing the row does beyond its name ("Open apps close"),
+        /// read by assistive technology and never painted.
+        description: Option<String>,
         /// `Some` makes the row open a nested menu (with a chevron) instead
         /// of running `action`.
         submenu: Option<Vec<MenuItem>>,
@@ -109,6 +112,7 @@ impl MenuItem {
             enabled: true,
             shortcut: None,
             detail: None,
+            description: None,
             submenu: None,
             asks_first: false,
             address: None,
@@ -191,6 +195,16 @@ impl MenuItem {
     pub fn with_detail(mut self, text: impl Into<String>) -> Self {
         if let MenuItem::Action { detail, .. } = &mut self {
             *detail = Some(text.into());
+        }
+        self
+    }
+
+    /// Say what choosing the row does beyond its name ("Open apps close"):
+    /// assistive technology reads it with the row; it is not painted.
+    #[must_use]
+    pub fn with_description(mut self, text: impl Into<String>) -> Self {
+        if let MenuItem::Action { description, .. } = &mut self {
+            *description = Some(text.into());
         }
         self
     }
@@ -2108,6 +2122,7 @@ impl Widget for ContextMenu {
                     checked,
                     enabled,
                     submenu,
+                    description,
                     ..
                 } = item
                 else {
@@ -2129,7 +2144,9 @@ impl Widget for ContextMenu {
                         expanded: submenu.as_ref().map(|_| open_here.is_some()),
                         ..Default::default()
                     });
-                if let Some(trailing) = item.trailing_text(self.platform) {
+                if let Some(description) = description {
+                    node.description = Some(description.clone());
+                } else if let Some(trailing) = item.trailing_text(self.platform) {
                     node.description = Some(trailing);
                 } else if matches!(
                     item,

@@ -54,8 +54,8 @@ use ui::window_toolbar::ToolbarNotice;
 
 use crate::markup::{PagePlanEntry, PdfMarkup};
 use crate::model::{
-    self, AnnoKind, Annotation, Comment, Document, HighlightColor, MARGIN, PAGE_H, PAGE_W, PtRect,
-    SearchOptions, Signature, SignatureInk, Tool,
+    self, AnnoKind, Annotation, Document, HighlightColor, MARGIN, PAGE_H, PAGE_W, PtRect,
+    SearchOptions, Signature, SignatureInk, Thread, Tool, new_id, reply_blocks,
 };
 use crate::render;
 use crate::source::{
@@ -481,7 +481,7 @@ pub struct PdfApp {
     staged_scenario: Option<StagedScenario>,
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
-    comments: Vec<Comment>,
+    comments: Vec<Thread>,
     signatures: Vec<Signature>,
 
     // View state — local / per-peer, never in the shared doc.
@@ -685,7 +685,6 @@ pub struct PdfApp {
     /// Some(pointer-x-at-press) while dragging the rail's resize grip.
     rail_drag: Option<f64>,
     context_menu: Option<ContextMenu>,
-    created_counter: i64,
     dirty: bool,
     /// Visible page/thumbnail cache misses in the last production draw.
     pending_visuals: bool,
@@ -1190,7 +1189,6 @@ impl PdfApp {
             pan: None,
             rail_drag: None,
             context_menu: None,
-            created_counter: 100,
             dirty: true,
             pending_visuals: false,
             reduce_motion: false,
@@ -1634,9 +1632,9 @@ impl PdfApp {
             .into_iter()
             .map(|a| a.id)
             .collect();
-        for comment in PdfMarkup::of(state).list_comments() {
-            known.extend(comment.replies.into_iter().map(|r| r.id));
-            known.insert(comment.id);
+        for (id, comment) in PdfMarkup::of(state).comments.iter() {
+            known.extend(comment.replies.ids().map(|reply| reply.as_str().to_owned()));
+            known.insert(id.as_str().to_owned());
         }
         let plan = crate::adopt::plan_import(hash, existing, &known);
         self.submit(crate::actions::import_existing_action(hash, &plan));
@@ -1721,9 +1719,8 @@ impl PdfApp {
             .flat_map(|comment| {
                 std::iter::once(comment_view_key(&comment.id, None)).chain(
                     comment
-                        .replies
-                        .iter()
-                        .map(|reply| comment_view_key(&comment.id, Some(&reply.id))),
+                        .replies()
+                        .map(|(reply, _)| comment_view_key(&comment.id, Some(reply))),
                 )
             })
             .collect();
@@ -2925,7 +2922,7 @@ impl PdfApp {
                 self.ensure_raster_text(d.page);
                 let (quads, chars) = self.highlight_geometry(&d);
                 let a = Annotation {
-                    chars,
+                    chars: chars.map(|(start, end)| [start, end]),
                     ..Annotation::new(
                         d.page,
                         AnnoKind::Markup {
@@ -2955,9 +2952,8 @@ impl PdfApp {
     }
 
     fn create_note(&mut self, state: &mut ui::widget::Edits<'_>, page: usize, pt: (f64, f64)) {
-        let anno_id = Annotation::new_id();
-        self.created_counter += 1;
-        let comment_id = Comment::new_id();
+        let anno_id = new_id();
+        let comment_id = new_id();
         // One action creates the note marker *and* its (empty) comment thread —
         // one undo boundary, replayed atomically on peers.
         let note = crate::actions::NoteDraft {
@@ -2997,11 +2993,8 @@ impl PdfApp {
                 EditTarget::CommentBody(_) => self
                     .comments
                     .iter()
-                    .find(|comment| &comment.id == id && comment.body == initial)
-                    .map_or_else(
-                        || tilo_rich_text::plain_blocks(initial),
-                        |comment| comment.blocks.clone(),
-                    ),
+                    .find(|thread| &thread.id == id && thread.comment.text == initial)
+                    .map_or_else(|| tilo_rich_text::plain_blocks(initial), Thread::blocks),
                 _ => tilo_rich_text::plain_blocks(initial),
             };
             let field = self.comment_field(&blocks, matches!(target, EditTarget::Reply(_)));
@@ -3073,7 +3066,7 @@ impl PdfApp {
                     .comments
                     .iter()
                     .find(|c| c.id == id)
-                    .is_some_and(|c| !c.replies.is_empty());
+                    .is_some_and(|c| !c.comment.replies.is_empty());
                 if trimmed.is_empty() && !has_replies {
                     self.delete_target(&DeleteTarget::Comment(id), state);
                     return;
@@ -3260,7 +3253,7 @@ impl PdfApp {
             w,
             h,
         );
-        let sig_id = Signature::new_id();
+        let sig_id = new_id();
         let s = Signature {
             id: sig_id.clone(),
             page,
@@ -3589,7 +3582,7 @@ impl PdfApp {
             if let Some(c) = self
                 .comments
                 .iter()
-                .find(|c| c.anno_id.as_deref() == Some(id.as_str()))
+                .find(|c| c.pinned() == Some(id.as_str()))
             {
                 let cid = c.id.clone();
                 self.focus_sidebar(SidebarTab::Comments, cid);
@@ -3817,7 +3810,7 @@ impl PdfApp {
                     .comments
                     .iter()
                     .find(|c| &c.id == id)
-                    .and_then(|c| c.anno_id.clone())
+                    .and_then(|c| c.pinned().map(str::to_owned))
                     && self.selected_anno.as_deref() == Some(anno.as_str())
                 {
                     self.selected_anno = None;
@@ -5120,22 +5113,24 @@ impl Widget for PdfApp {
                     .comments
                     .iter()
                     .map(|comment| {
+                        let text = &comment.comment.text;
                         AccessNode::new(Role::ListItem)
-                            .with_name(if comment.body.trim().is_empty() {
+                            .with_name(if text.trim().is_empty() {
                                 "Empty comment".into()
                             } else {
-                                comment.body.clone()
+                                text.clone()
                             })
                             .with_description(format!(
                                 "{} on page {}; {} replies",
-                                self.author_name(&comment.author),
+                                self.author_name(&comment.comment.author),
                                 comment.page,
-                                comment.replies.len()
+                                comment.comment.replies.len()
                             ))
                             .with_action_target(format!("pdf.comment:{}.open", comment.id))
-                            .with_state(focusable().selected(
-                                comment.anno_id.as_deref() == self.selected_anno.as_deref(),
-                            ))
+                            .with_state(
+                                focusable()
+                                    .selected(comment.pinned() == self.selected_anno.as_deref()),
+                            )
                             .with_children(vec![
                                 button(
                                     "Edit comment",
@@ -5148,7 +5143,7 @@ impl Widget for PdfApp {
                                     Rect::ZERO,
                                 ),
                                 AccessNode::new(Role::ToggleButton)
-                                    .with_name(if comment.resolved {
+                                    .with_name(if comment.comment.resolved {
                                         "Reopen comment"
                                     } else {
                                         "Resolve comment"
@@ -5157,7 +5152,7 @@ impl Widget for PdfApp {
                                         "pdf.comment:{}.resolve",
                                         comment.id
                                     ))
-                                    .with_state(focusable().checked(comment.resolved)),
+                                    .with_state(focusable().checked(comment.comment.resolved)),
                                 button(
                                     "Delete comment",
                                     &format!("pdf.comment:{}.delete", comment.id),
@@ -5381,17 +5376,17 @@ impl Widget for PdfApp {
             };
             match verb {
                 "open" => {
-                    self.selected_anno = comment.anno_id;
+                    self.selected_anno = comment.pinned().map(str::to_owned);
                     self.go_to_page(comment.page);
                 }
                 "edit" => {
-                    self.begin_edit(EditTarget::CommentBody(id.into()), &comment.body);
+                    self.begin_edit(EditTarget::CommentBody(id.into()), &comment.comment.text);
                 }
                 "reply" => self.begin_edit(EditTarget::Reply(id.into()), ""),
                 "resolve" => {
                     self.perform_action(
                         state,
-                        crate::actions::set_comment_resolved_action(id, !comment.resolved),
+                        crate::actions::set_comment_resolved_action(id, !comment.comment.resolved),
                     );
                     self.reload(state);
                 }
@@ -6264,13 +6259,12 @@ pub(crate) mod tests {
         crate::actions::add_annotation_on(
             &Annotation {
                 id: "launched-highlight".into(),
-                page: 1,
-                kind: AnnoKind::highlight(PtRect::new(70.0, 150.0, 290.0, 15.0)),
-                color: HighlightColor::Yellow,
-                author: "Ada".into(),
-                chars: None,
-                created_ms: 0,
-                space: crate::model::GeomSpace::Page,
+                ..Annotation::new(
+                    1,
+                    AnnoKind::highlight(PtRect::new(70.0, 150.0, 290.0, 15.0)),
+                    HighlightColor::Yellow,
+                    "Ada",
+                )
             },
             "source-1",
         )
@@ -7012,13 +7006,12 @@ pub(crate) mod tests {
 
             let annotation = Annotation {
                 id: "annotation-on-import".into(),
-                page: 2,
-                kind: AnnoKind::Note { x: 12.0, y: 24.0 },
-                color: HighlightColor::Yellow,
-                author: "You".into(),
-                chars: None,
-                created_ms: 0,
-                space: crate::model::GeomSpace::Page,
+                ..Annotation::new(
+                    2,
+                    AnnoKind::Note { x: 12.0, y: 24.0 },
+                    HighlightColor::Yellow,
+                    "You",
+                )
             };
             app.perform_action(
                 &mut Edits::lend(&mut state.doc),
@@ -7717,7 +7710,7 @@ pub(crate) mod tests {
             assert!(
                 app.comments
                     .iter()
-                    .any(|c| c.anno_id.as_deref() == Some(note.id.as_str()))
+                    .any(|c| c.pinned() == Some(note.id.as_str()))
             );
         }
 
@@ -8120,7 +8113,7 @@ pub(crate) mod tests {
             PdfMarkup::apply_to(
                 &mut st.doc,
                 ui::tilo_resource::Invoke::group([
-                    ui::tilo_resource::Invoke::from(note.mark.set(AnnoKind::Note { x: nx, y: ny })),
+                    ui::tilo_resource::Invoke::from(note.kind.set(AnnoKind::Note { x: nx, y: ny })),
                     ui::tilo_resource::Invoke::from(note.space.set(crate::model::GeomSpace::Page)),
                 ]),
             );
@@ -8457,7 +8450,7 @@ pub(crate) mod tests {
             let comment = app
                 .comments
                 .iter()
-                .find(|c| c.anno_id.as_deref() == Some(note.id.as_str()))
+                .find(|c| c.pinned() == Some(note.id.as_str()))
                 .unwrap()
                 .clone();
             app.delete_target(
@@ -8654,9 +8647,12 @@ pub(crate) mod tests {
                 .into_iter()
                 .find(|comment| comment.page == 2)
                 .expect("the new note's thread");
-            assert_eq!(thread.author, "test-author", "the record keeps the id");
             assert_eq!(
-                app.author_name(&thread.author),
+                thread.comment.author, "test-author",
+                "the record keeps the id"
+            );
+            assert_eq!(
+                app.author_name(&thread.comment.author),
                 "Tess Author",
                 "your own note is signed with your name, not \"You\""
             );
@@ -9798,21 +9794,24 @@ pub(crate) mod tests {
             let app = crate::scenarios::sample_reader();
             let theme = ui::Theme::dark().with_text_scale(2.0);
             let mut tr = ui::text_render::TextRenderer::new();
-            let cm = Comment {
+            let mut comment = crate::model::Comment::new(
+                crate::model::PdfAnchor::default(),
+                "An exceptionally long review author name".into(),
+                String::new(),
+                "A deliberately long comment body that wraps across the narrow review panel at two-times text size.".into(),
+            );
+            comment.replies.push(
+                ui::tilo_resource::Id::from_raw("high-text-reply-one"),
+                Reply::new(
+                    "Bob".into(),
+                    String::new(),
+                    "A long reply that also wraps, proving the thread is allotted its own measured space.".into(),
+                ),
+            );
+            let cm = Thread {
                 id: "high-text-thread".into(),
-                anno_id: None,
                 page: 1,
-                author: "An exceptionally long review author name".into(),
-                body: "A deliberately long comment body that wraps across the narrow review panel at two-times text size.".into(),
-                created: 1,
-                resolved: false,
-                replies: vec![Reply {
-                    id: "high-text-reply-one".into(),
-                    author: "Bob".into(),
-                    body: "A long reply that also wraps, proving the thread is allotted its own measured space.".into(),
-                    blocks: tilo_rich_text::plain_blocks("A long reply that also wraps, proving the thread is allotted its own measured space."),
-                }],
-                blocks: tilo_rich_text::plain_blocks("A deliberately long comment body that wraps across the narrow review panel at two-times text size."),
+                comment,
             };
             let card_w = 276.0;
             let m = app.comment_metrics(&mut tr, &theme, &cm, card_w);

@@ -67,6 +67,9 @@ pub const PRIMS: &[Prim] = &[
         &[],
         &["bind", "placeholder", "on_change", "enabled"],
     ),
+    // Rich text typed, bound to a `RichText`: what a completion picks goes in as a reference
+    // (`ui.RichInput`).
+    prim_of("rich_input", &[], &["bind", "placeholder", "enabled"]),
     prim_of("image", &["src"], &["alt", "width", "height"]),
     prim_of("progress", &["value"], &[]),
     prim_of("divider", &[], &[]),

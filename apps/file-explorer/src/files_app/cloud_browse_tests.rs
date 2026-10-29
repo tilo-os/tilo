@@ -87,9 +87,9 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
     });
     let (services, recorder) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
-    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
-    files.cloud_fixture_consent = true;
-    files.startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
+    let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
+    files.state().cloud_fixture_consent = true;
+    files.state().startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
         id: "account".into(),
         kind: crate::remote_accounts::RemoteAccountKind::GoogleDrive,
         label: "Drive".into(),
@@ -99,56 +99,67 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
         files_mode: accounts::cloud_types::FilesMode::Import,
     }]);
     files
+        .state()
         .run_effect(FilesEffect::OpenAccount {
             account: "account".into(),
         })
         .unwrap();
     tilo_test_env::wait_until("the cloud listing to settle", || {
-        files.poll_cloud();
-        files.cloud.pending.is_none()
+        files.state().poll_cloud();
+        files.state().cloud.pending.is_none()
     });
-    assert_eq!(files.cloud.entries, vec![source]);
+    assert_eq!(files.state().cloud.entries, vec![source]);
     assert!(!root.path().join("Remote").exists());
-    assert_eq!(files.cloud_resources().len(), 1);
+    assert_eq!(files.state().cloud_resources().len(), 1);
     files
+        .state()
         .run_effect(FilesEffect::SelectCloud {
             entry: "native".into(),
         })
         .unwrap();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(destination.clone()));
     files
+        .state()
         .run_effect(FilesEffect::ImportCloud { folder: None })
         .unwrap();
     assert!(recorder.pick_requests()[0].is_writable_directory());
     tilo_test_env::wait_until("the cloud import to settle", || {
-        files.poll_cloud();
-        files.cloud.chooser.is_none() && files.cloud.transfer.is_none()
+        files.state().poll_cloud();
+        let state = files.state();
+        state.cloud.chooser.is_none() && state.cloud.transfer.is_none()
     });
     server.join().unwrap();
     assert_eq!(
         std::fs::read(destination.join("Document.docx")).unwrap(),
         bytes
     );
-    assert_eq!(files.cloud.progress.bytes, bytes.len() as u64);
+    assert_eq!(files.state().cloud.progress.bytes, bytes.len() as u64);
     std::fs::write(destination.join("Document.docx"), b"independent local edit").unwrap();
-    let outcome = files.local_outcomes.values().next().unwrap();
+    let outcome = files
+        .state()
+        .local_outcomes
+        .values()
+        .next()
+        .unwrap()
+        .clone();
     assert!(outcome.is_done());
     assert!(
         matches!(&outcome.result()[0], crate::file_ops::Change::CloudImported{from,to,..} if from == "cloud:account:native" && Path::new(to) == destination.join("Document.docx"))
     );
     recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
     files
+        .state()
         .run_effect(FilesEffect::ImportCloud { folder: None })
         .unwrap();
-    files.poll_cloud();
-    assert!(files.cloud.transfer.is_none());
+    files.state().poll_cloud();
+    assert!(files.state().cloud.transfer.is_none());
     assert_eq!(
-        files.local_outcomes.len(),
+        files.state().local_outcomes.len(),
         1,
         "cancelled chooser never queues a copy"
     );
-    files.run_effect(FilesEffect::RevealCloud).unwrap();
-    assert_eq!(files.current_path(), destination);
+    files.state().run_effect(FilesEffect::RevealCloud).unwrap();
+    assert_eq!(files.state().current_path(), destination);
 }
 
 #[test]
@@ -158,10 +169,10 @@ fn explicit_import_folder_is_pinned_without_a_chooser_and_is_not_source_consent(
     std::fs::create_dir(&destination).unwrap();
     let (services, recorder) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
-    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
-    files.cloud.active = true;
-    files.cloud.account = "private-account".into();
-    files.cloud.entries = vec![ImportEntry {
+    let files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+    files.state().cloud.active = true;
+    files.state().cloud.account = "private-account".into();
+    files.state().cloud.entries = vec![ImportEntry {
         id: "remote".into(),
         name: "Document.docx".into(),
         kind: ImportKind::NativeExport,
@@ -169,33 +180,35 @@ fn explicit_import_folder_is_pinned_without_a_chooser_and_is_not_source_consent(
         size: None,
         content_writable: false,
     }];
-    files.cloud.selected.insert("remote".into());
+    files.state().cloud.selected.insert("remote".into());
     files
+        .state()
         .run_effect(FilesEffect::ImportCloud {
             folder: Some(destination.display().to_string()),
         })
         .unwrap();
     assert!(recorder.pick_requests().is_empty());
-    assert!(files.cloud.chooser.is_none());
+    assert!(files.state().cloud.chooser.is_none());
     let crate::file_ops::FileOp::CloudImport {
         folder,
         destination: pinned,
         ..
-    } = files.cloud.retry.as_ref().unwrap()
+    } = files.state().cloud.retry.clone().unwrap()
     else {
         panic!("explicit destination must queue a cloud import")
     };
-    assert_eq!(Path::new(folder), destination);
+    assert_eq!(Path::new(&folder), destination);
     assert_eq!(
-        *pinned,
-        crate::cloud_transfer::pin_destination(folder, std::iter::empty()).unwrap()
+        pinned,
+        crate::cloud_transfer::pin_destination(&folder, std::iter::empty()).unwrap()
     );
     tilo_test_env::wait_until("the cloud transfer to settle", || {
-        files.poll_cloud();
-        files.cloud.transfer.is_none()
+        files.state().poll_cloud();
+        files.state().cloud.transfer.is_none()
     });
     assert!(
         files
+            .state()
             .local_outcomes
             .values()
             .all(|outcome| matches!(outcome,
@@ -203,7 +216,7 @@ fn explicit_import_folder_is_pinned_without_a_chooser_and_is_not_source_consent(
                     if reason.contains("host person") && partial.is_empty()
             ))
     );
-    assert_eq!(files.local_outcomes.len(), 1);
+    assert_eq!(files.state().local_outcomes.len(), 1);
     assert_eq!(std::fs::read_dir(destination).unwrap().count(), 0);
 }
 
@@ -236,30 +249,31 @@ fn replacing_folder_or_account_detaches_pending_pages_and_selection() {
     let root = tempfile::tempdir().unwrap();
     let runtime = tilo_test_env::runtime_tempdir().unwrap();
     env.set("XDG_RUNTIME_DIR", runtime.path());
-    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
-    files.startup_accounts = Some(vec![
+    let files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+    files.state().startup_accounts = Some(vec![
         browse_test_account("first"),
         browse_test_account("second"),
     ]);
     for (account, folder) in [("first", Some("child")), ("second", None)] {
-        files.cloud.active = true;
-        files.cloud.account = "first".into();
-        files.cloud.entries = vec![browse_test_entry()];
-        files.cloud.selected.insert("document".into());
-        files.cloud.next = Some(20);
+        files.state().cloud.active = true;
+        files.state().cloud.account = "first".into();
+        files.state().cloud.entries = vec![browse_test_entry()];
+        files.state().cloud.selected.insert("document".into());
+        files.state().cloud.next = Some(20);
         let (old, pending) = channel();
-        files.cloud.pending = Some(pending);
+        files.state().cloud.pending = Some(pending);
         files
+            .state()
             .run_effect(FilesEffect::BrowseCloud {
                 account: account.into(),
                 folder: folder.map(str::to_owned),
             })
             .unwrap();
-        assert!(files.cloud.entries.is_empty());
-        assert!(files.cloud.selected.is_empty());
-        assert_eq!(files.cloud.next, None);
-        assert_eq!(files.cloud.account, account);
-        assert_eq!(files.cloud.folder.as_deref(), folder);
+        assert!(files.state().cloud.entries.is_empty());
+        assert!(files.state().cloud.selected.is_empty());
+        assert_eq!(files.state().cloud.next, None);
+        assert_eq!(files.state().cloud.account, account);
+        assert_eq!(files.state().cloud.folder.as_deref(), folder);
         assert!(
             old.send(Ok(ImportReply::Page {
                 folder: "old".into(),
@@ -268,12 +282,12 @@ fn replacing_folder_or_account_detaches_pending_pages_and_selection() {
             }))
             .is_err()
         );
-        assert!(files.run_effect(FilesEffect::MoreCloud).is_err());
+        assert!(files.state().run_effect(FilesEffect::MoreCloud).is_err());
         tilo_test_env::wait_until("the cloud listing to settle", || {
-            files.poll_cloud();
-            files.cloud.pending.is_none()
+            files.state().poll_cloud();
+            files.state().cloud.pending.is_none()
         });
-        assert!(files.cloud.entries.is_empty());
+        assert!(files.state().cloud.entries.is_empty());
     }
 }
 
@@ -282,25 +296,27 @@ fn local_navigation_invalidates_page_and_destination_chooser() {
     let root = tempfile::tempdir().unwrap();
     let (services, recorder) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
-    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
-    files.cloud.active = true;
-    files.cloud.account = "account".into();
-    files.cloud.entries = vec![browse_test_entry()];
+    let files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+    files.state().cloud.active = true;
+    files.state().cloud.account = "account".into();
+    files.state().cloud.entries = vec![browse_test_entry()];
     files
+        .state()
         .run_effect(FilesEffect::SelectCloud {
             entry: "document".into(),
         })
         .unwrap();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(root.path().into()));
     files
+        .state()
         .run_effect(FilesEffect::ImportCloud { folder: None })
         .unwrap();
     let (old, pending) = channel();
-    files.cloud.pending = Some(pending);
-    files.navigate(root.path().into());
-    assert!(!files.cloud.active);
-    assert!(files.cloud.chooser.is_none());
-    assert!(files.cloud.proposal.is_empty());
+    files.state().cloud.pending = Some(pending);
+    files.state().navigate(root.path().into());
+    assert!(!files.state().cloud.active);
+    assert!(files.state().cloud.chooser.is_none());
+    assert!(files.state().cloud.proposal.is_empty());
     assert!(
         old.send(Ok(ImportReply::Page {
             folder: "old".into(),
@@ -309,17 +325,19 @@ fn local_navigation_invalidates_page_and_destination_chooser() {
         }))
         .is_err()
     );
-    files.poll_cloud();
-    assert!(files.cloud_resources().is_empty());
-    assert!(files.cloud.transfer.is_none());
-    assert!(files.awaiting_ops.is_empty());
+    files.state().poll_cloud();
+    assert!(files.state().cloud_resources().is_empty());
+    assert!(files.state().cloud.transfer.is_none());
+    assert!(files.state().awaiting_ops.is_empty());
     assert!(
         files
+            .state()
             .run_effect(FilesEffect::ImportCloud { folder: None })
             .is_err()
     );
     assert!(
         files
+            .state()
             .run_effect(FilesEffect::SelectCloud {
                 entry: "document".into()
             })
@@ -329,14 +347,14 @@ fn local_navigation_invalidates_page_and_destination_chooser() {
 
 #[test]
 fn next_page_appends_only_to_current_folder_and_disconnect_finishes_loading() {
-    let mut files = FileExplorerWidget::with_persistence(None, None);
-    files.cloud.active = true;
-    files.cloud.account = "account".into();
-    files.cloud.folder = Some("folder".into());
-    files.cloud.entries = vec![browse_test_entry()];
-    files.cloud.selected.insert("document".into());
+    let files = FileExplorerWidget::with_persistence(None, None);
+    files.state().cloud.active = true;
+    files.state().cloud.account = "account".into();
+    files.state().cloud.folder = Some("folder".into());
+    files.state().cloud.entries = vec![browse_test_entry()];
+    files.state().cloud.selected.insert("document".into());
     let (page, pending) = channel();
-    files.cloud.pending = Some(pending);
+    files.state().cloud.pending = Some(pending);
     let mut second = browse_test_entry();
     second.id = "second".into();
     page.send(Ok(ImportReply::Page {
@@ -345,26 +363,26 @@ fn next_page_appends_only_to_current_folder_and_disconnect_finishes_loading() {
         next_offset: Some(40),
     }))
     .unwrap();
-    assert!(files.poll_cloud());
-    assert_eq!(files.cloud.entries.len(), 2);
-    assert!(files.cloud.selected.contains("document"));
-    assert_eq!(files.cloud.next, Some(40));
+    assert!(files.state().poll_cloud());
+    assert_eq!(files.state().cloud.entries.len(), 2);
+    assert!(files.state().cloud.selected.contains("document"));
+    assert_eq!(files.state().cloud.next, Some(40));
     let (page, pending) = channel();
-    files.cloud.pending = Some(pending);
+    files.state().cloud.pending = Some(pending);
     drop(page);
-    assert!(files.poll_cloud());
-    assert!(files.cloud.pending.is_none());
-    assert!(files.cloud.error.is_some());
+    assert!(files.state().poll_cloud());
+    assert!(files.state().cloud.pending.is_none());
+    assert!(files.state().cloud.error.is_some());
 }
 
 #[test]
 fn legacy_cloud_links_do_not_offer_document_import() {
     let root = tempfile::tempdir().unwrap();
-    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+    let files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
     let mut account = browse_test_account("account");
     account.files_mode = accounts::cloud_types::FilesMode::Sync;
     account.mount = Some(root.path().into());
-    files.startup_accounts = Some(vec![account]);
+    files.state().startup_accounts = Some(vec![account]);
     for name in [
         "Document.gdoc",
         "Sheet.GSHEET",
@@ -373,17 +391,22 @@ fn legacy_cloud_links_do_not_offer_document_import() {
     ] {
         let path = root.path().join(name);
         std::fs::write(&path, b"browser link").unwrap();
-        let entries = files.read_directory(root.path()).unwrap();
+        let entries = files.state().read_directory(root.path()).unwrap();
         let entry = entries.iter().find(|entry| entry.path == path).unwrap();
         assert!(
             !files
+                .state()
                 .entry_resource(entry)
                 .actions
                 .iter()
                 .any(|action| action.id == "import-once")
         );
     }
-    assert!(files.importable_cloud_entry(&root.path().join("Document.docx")));
+    assert!(
+        files
+            .state()
+            .importable_cloud_entry(&root.path().join("Document.docx"))
+    );
 }
 
 /// A cloud folder is named by the window's bar as the account and the folder in
@@ -392,14 +415,17 @@ fn legacy_cloud_links_do_not_offer_document_import() {
 fn the_window_bar_names_the_cloud_folder() {
     let root = tempfile::tempdir().unwrap();
     let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
-    files.header_in_bar = true;
-    files.debug_show_cloud_folder();
-    files.refresh_cloud_header();
+    files.state().header_in_bar = true;
+    files.state().debug_show_cloud_folder();
+    files.with_state(FilesState::refresh_cloud_header);
     assert!(
-        !files.cloud.header_shown,
+        !files.state().cloud.header_shown,
         "no cloud title in the window while the bar names the place"
     );
-    let location = files.window_toolbar().location.expect("a location");
+    let location = files
+        .with_state(|state, chrome| state.window_toolbar(chrome))
+        .location
+        .expect("a location");
     assert_eq!(location.label, "Trip to Lisbon");
     assert_eq!(
         location
@@ -420,19 +446,19 @@ fn a_cloud_folder_named_before_the_bar_hosts_the_window_moves_into_the_bar() {
     let root = tempfile::tempdir().unwrap();
     let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
     ui::window_toolbar::set_hosted(false);
-    files.debug_show_cloud_folder();
-    files.sync_window_toolbar();
-    files.refresh_cloud_header();
+    files.state().debug_show_cloud_folder();
+    files.with_state(FilesState::sync_window_toolbar);
+    files.with_state(FilesState::refresh_cloud_header);
     assert!(
-        files.cloud.header_shown,
+        files.state().cloud.header_shown,
         "outside a Tilo session the window names the cloud folder"
     );
 
     ui::window_toolbar::set_hosted(true);
-    files.sync_window_toolbar();
-    files.refresh_cloud_header();
+    files.with_state(FilesState::sync_window_toolbar);
+    files.with_state(FilesState::refresh_cloud_header);
     assert!(
-        !files.cloud.header_shown,
+        !files.state().cloud.header_shown,
         "the window draws no cloud title while the bar names the place"
     );
     let location = ui::window_toolbar::declared()
@@ -464,6 +490,7 @@ fn a_cloud_folder_capture_shows_its_place_in_the_bar() {
         harness.present_in_window_bar();
         harness
             .root_mut::<FileExplorerWidget>()
+            .state()
             .debug_show_cloud_folder();
         for _ in 0..3 {
             harness.recompose().unwrap();

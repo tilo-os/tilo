@@ -269,6 +269,8 @@ pub enum Merge {
     Register,
     /// Text: the edit is spliced into it, never written over it, so concurrent edits merge.
     Splice,
+    /// Rich text: its paragraphs spliced and its marks set, never written over.
+    Rich,
 }
 
 /// What a widget keeps between frames (scroll, selection, caret, expansion). It is lens state:

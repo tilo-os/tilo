@@ -1,8 +1,8 @@
 //! The effects the host asks Video Player for, and what each answers with.
 
-use super::{EffectStatus, Id, LibraryTab, PLAYBACK_RATES, PlayerApp, VideoEffect};
+use super::{EffectStatus, Id, LibraryTab, PLAYBACK_RATES, PlayerState, VideoEffect};
 
-impl PlayerApp {
+impl PlayerState {
     /// What differs from the effects' declarations right now: playback
     /// controls need an open video, and clearing needs a recent one.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {

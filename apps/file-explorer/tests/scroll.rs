@@ -48,13 +48,13 @@ struct Harness {
 
 impl Harness {
     fn new(dir: &std::path::Path, mode: ViewMode, w: f32, h: f32) -> Self {
-        let mut widget = FileExplorerWidget::with_persistence(None, None);
-        widget.set_view_mode(mode);
-        widget.navigate(dir.to_path_buf());
+        let widget = FileExplorerWidget::with_persistence(None, None);
+        widget.state().set_view_mode(mode);
+        widget.state().navigate(dir.to_path_buf());
         assert!(
-            widget.entries_snapshot().len() >= 100,
+            widget.state().entries_snapshot().len() >= 100,
             "test needs a long directory; got {}",
-            widget.entries_snapshot().len()
+            widget.state().entries_snapshot().len()
         );
         Self {
             widget: Framed::new(

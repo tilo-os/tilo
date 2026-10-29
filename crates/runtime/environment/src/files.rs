@@ -36,8 +36,25 @@ pub const MAX_OPERANDS: usize = 256;
 /// recoverable store, listed and restored by its id.
 pub const KEPT_TASKS: usize = 64;
 
-/// The most text one `append` or `write` carries in the record.
+/// The most text one `append` or `write` carries inside the record. More
+/// than this travels by reference to the environment's content store
+/// ([`WriteOp::content`], [`AppendFileOp::content`]), which has no bound of
+/// its own: a write of any size is one action.
 pub const MAX_TEXT_BYTES: usize = 64 * 1024;
+
+/// How an action names content kept in the environment's content store:
+/// `tilo.content:<hash>`, the reference every action takes content by.
+#[must_use]
+pub fn content_reference(hash: &str) -> String {
+    format!("tilo.content:{hash}")
+}
+
+/// The hash a `tilo.content:<hash>` reference names, when `reference` is
+/// one.
+#[must_use]
+pub fn content_hash(reference: &str) -> Option<&str> {
+    tilo_resource::content::reference_hash(reference)
+}
 
 /// What a command asked for, before anything is written.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,16 +173,28 @@ impl FileAction {
                 self.verb()
             ));
         }
-        let text = match self {
-            Self::Append(op) => Some(op.text.len()),
-            Self::Write(op) => Some(op.text.len()),
-            _ => None,
+        let (text, content) = match self {
+            Self::Append(op) => (op.text.len(), op.content.as_deref()),
+            Self::Write(op) => (op.text.len(), op.content.as_deref()),
+            _ => (0, None),
         };
-        if text.is_some_and(|len| len > MAX_TEXT_BYTES) {
+        if text > MAX_TEXT_BYTES {
             return Err(format!(
-                "{} carries at most {MAX_TEXT_BYTES} bytes of text",
+                "{} carries at most {MAX_TEXT_BYTES} bytes of text; more goes by reference to \
+                 the environment's content store",
                 self.verb()
             ));
+        }
+        if let Some(hash) = content {
+            if content_hash(&content_reference(hash)) != Some(hash) {
+                return Err(format!("{}: {hash:?} names no content", self.verb()));
+            }
+            if text > 0 {
+                return Err(format!(
+                    "{} names its contents as text or by reference, not both",
+                    self.verb()
+                ));
+            }
         }
         if let Self::Write(op) = self {
             op.contents()?;
@@ -388,17 +417,23 @@ pub struct TruncateOp {
     pub create: bool,
 }
 
-/// `touch` and `append` as they were asked for: the same files, and the text
-/// `append` adds (empty for `touch`).
+/// `touch` and `append` as they were asked for: the same files, and what
+/// `append` adds (nothing for `touch`): `text`, or the content `content`
+/// names.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppendFileOp {
     pub files: Vec<PathBuf>,
     #[serde(default)]
     pub text: String,
+    /// What is added, by its hash in the environment's content store, in
+    /// place of `text`: bytes of any length, text or not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
 }
 
 /// `write` as it was asked for: the contents every one of `files` holds
-/// afterwards. Contents that are not text travel as base64 of the bytes.
+/// afterwards. Contents that are not text travel as base64 of the bytes, and
+/// contents of any size by reference to the environment's content store.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WriteOp {
     pub files: Vec<PathBuf>,
@@ -407,6 +442,10 @@ pub struct WriteOp {
     /// `text` is base64 of the contents.
     #[serde(default)]
     pub base64: bool,
+    /// The contents, by their hash in the environment's content store, in
+    /// place of `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
     /// Only a file that is not there yet (a shell's `>` under `set -C`).
     #[serde(default)]
     pub no_clobber: bool,
@@ -422,18 +461,33 @@ impl WriteOp {
                 files,
                 text,
                 base64: false,
+                content: None,
                 no_clobber,
             },
             Err(error) => Self {
                 files,
                 text: base64::engine::general_purpose::STANDARD.encode(error.as_bytes()),
                 base64: true,
+                content: None,
                 no_clobber,
             },
         }
     }
 
-    /// The bytes every file holds afterwards.
+    /// A write of the content kept under `hash` in the environment's
+    /// content store.
+    #[must_use]
+    pub fn of_content(files: Vec<PathBuf>, hash: String, no_clobber: bool) -> Self {
+        Self {
+            files,
+            content: Some(hash),
+            no_clobber,
+            ..Self::default()
+        }
+    }
+
+    /// The bytes every file holds afterwards, when they travel inside the
+    /// action ([`Self::content`] is `None`).
     ///
     /// # Errors
     ///

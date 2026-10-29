@@ -75,6 +75,7 @@ pub use keyboard::KeyboardXkb;
 #[cfg(test)]
 use keyboard::{KeyOutcome, keyboard_input_event, keysym_to_winit_key, text_for};
 use tilo_output_passes::icc_lut::IccLut;
+use wake::InputRecovery;
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
 /// deterministic and unit-testable without a seat or keyboard device.
@@ -313,6 +314,16 @@ pub struct DrmDispatchState {
     /// first input event after it: the flight record says whether input
     /// came back with the display.
     input_wake: Option<(&'static str, std::time::Instant)>,
+    /// The outputs lit when the display last woke, and when: one whose
+    /// wake fails gets one bring-up from scratch ([`Self::note_wake`]).
+    wake_relight: Option<(std::time::Instant, BTreeSet<DrmOutputKey>)>,
+    /// The connectors held dark ([`Self::link_failures`]) last journaled.
+    journaled_held: Vec<String>,
+    /// Cards a modeset found without DRM master, reopened through the seat
+    /// on the next dispatch ([`Self::reopen_cards_without_master`]).
+    cards_to_reopen: BTreeSet<u64>,
+    /// Bring a seat whose input devices all vanished back ([`InputRecovery`]).
+    input_recovery: InputRecovery,
     /// Libinput's optional per-touch-device output binding, keyed by its
     /// short-lived device id. Connector names, rather than [`OutputId`]s,
     /// survive an output being unplugged and later reconnected; each touch
@@ -945,7 +956,8 @@ impl CardLeaseLifecycle {
 /// the only real DRM implementation.
 trait KmsMasterControl {
     fn release_master(&self);
-    fn acquire_master(&self);
+    /// Hold DRM master again; whether the card holds it now.
+    fn acquire_master(&self) -> bool;
 }
 
 impl KmsMasterControl for CardHandle {
@@ -953,30 +965,24 @@ impl KmsMasterControl for CardHandle {
         CardHandle::drop_master(self);
     }
 
-    fn acquire_master(&self) {
-        CardHandle::acquire_master(self);
+    fn acquire_master(&self) -> bool {
+        CardHandle::acquire_master(self)
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum MasterAction {
-    Release,
-    Acquire,
-}
-
-/// Apply a DRM-master transition to every retained seat GPU. The caller owns
-/// sequencing with `PauseScanout`/`Resume`; this helper's narrow job is to
-/// make "all cards" non-accidental and unit-testable.
-fn apply_master_action<'a, T: KmsMasterControl + 'a>(
-    cards: impl IntoIterator<Item = &'a T>,
-    action: MasterAction,
-) {
-    for card in cards {
-        match action {
-            MasterAction::Release => card.release_master(),
-            MasterAction::Acquire => card.acquire_master(),
-        }
-    }
+/// Take DRM master back on every retained card, not only the one lighting
+/// the first output; the cards that still do not hold it. On a hybrid laptop
+/// the seat manager handed the discrete card's master back after a suspend
+/// and not the integrated one's, and the built-in panel was refused every
+/// modeset from then on with `EACCES`.
+fn cards_without_master<'a, T: KmsMasterControl + 'a>(
+    cards: impl IntoIterator<Item = (&'a u64, &'a T)>,
+) -> Vec<u64> {
+    cards
+        .into_iter()
+        .filter(|(_, card)| !card.acquire_master())
+        .map(|(&device_id, _)| device_id)
+        .collect()
 }
 
 /// A removed card stays libseat-owned until the presenter drops its duplicate
@@ -986,7 +992,11 @@ fn release_masters_for_pause<'a, T: KmsMasterControl + 'a>(
     active: impl IntoIterator<Item = &'a T>,
     retiring: impl IntoIterator<Item = &'a T>,
 ) {
-    apply_master_action(active.into_iter().chain(retiring), MasterAction::Release);
+    // Every retained seat GPU: the caller owns sequencing with
+    // `PauseScanout`/`Resume`, this makes "all cards" non-accidental.
+    for card in active.into_iter().chain(retiring) {
+        card.release_master();
+    }
 }
 
 /// Every probed connector, as display-set matching sees it.
@@ -1256,6 +1266,10 @@ impl DrmDispatchState {
             physical_modifiers: ModifiersState::empty(),
             key_repeat: KeyRepeat::default(),
             input_wake: None,
+            wake_relight: None,
+            journaled_held: Vec::new(),
+            cards_to_reopen: BTreeSet::new(),
+            input_recovery: InputRecovery::default(),
             devices: Vec::new(),
             touch_output_bindings: HashMap::new(),
             scale_override,
@@ -1689,8 +1703,25 @@ impl DrmDispatchState {
         let probed = self.connector_snapshots(probe);
         let (snapshots, display_set) =
             configured_connectors(&self.cards, probed, &self.live, Some(&self.display_set));
-        let failures_forgotten = prune_link_failures(&mut self.link_failures, &snapshots);
+        let mut failures_forgotten = prune_link_failures(&mut self.link_failures, &snapshots);
         let display_set_changed = self.display_set != display_set;
+        if display_set_changed && !self.link_failures.is_empty() {
+            // A display came or went on any card (the HDMI output on the
+            // discrete GPU replugged): every card's connectors are
+            // reconsidered, and one held dark on another card (the panel on
+            // the integrated GPU) gets another attempt with them.
+            let held: Vec<&str> = self
+                .link_failures
+                .values()
+                .map(|record| record.config_key.as_str())
+                .collect();
+            eprintln!(
+                "tilo compositor: DRM display: the connected displays changed: lighting {} again; it could not be lit before",
+                held.join(",")
+            );
+            self.link_failures.clear();
+            failures_forgotten = true;
+        }
         self.display_set = display_set;
         // A surviving output now answers to the configuration of this set
         // of monitors, whether it kept its mode or is re-modeset below, and
@@ -1866,6 +1897,15 @@ impl DrmDispatchState {
             if let Some(build) = bring_up_journaled(card, snapshot, used_on_card) {
                 used_on_card.push(build.crtc);
                 builds.push(build);
+            } else if self.session.as_ref().is_none_or(SessionState::is_active)
+                && !card.acquire_master()
+            {
+                // Refused because this card lost DRM master while the
+                // session is active: no modeset on it can succeed, so it is
+                // not the display's failure. The card is reopened through
+                // the seat, which grants master afresh, and its connectors
+                // are tried again then.
+                self.cards_to_reopen.insert(want.key.device);
             } else {
                 // Refused, or no CRTC free: asking again on every udev edge
                 // would modeset it in a loop.
@@ -2118,10 +2158,45 @@ impl DrmDispatchState {
             .map(|(&device, card)| (device, card.path().to_path_buf()))
             .collect();
         let line = topology::topology_line(&cards, &self.live);
-        if line != self.journaled_topology {
+        let held = self.held_dark_lines(&cards);
+        if line != self.journaled_topology || held != self.journaled_held {
             eprintln!("{line}");
+            for attempt in &held {
+                eprintln!("{attempt}");
+            }
             self.journaled_topology = line;
+            self.journaled_held = held;
         }
+    }
+
+    /// One `DRM connector attempt … result=failed` line for every connected
+    /// connector the reconciliation leaves out because it could not be lit
+    /// ([`Self::link_failures`]): a panel held dark must say so in the
+    /// journal next to the topology, not vanish from it.
+    fn held_dark_lines(&self, cards: &BTreeMap<u64, PathBuf>) -> Vec<String> {
+        self.link_failures
+            .iter()
+            .filter_map(|(key, record)| {
+                let snapshot = self
+                    .connector_probes
+                    .get(&key.device)?
+                    .iter()
+                    .find(|snapshot| snapshot.connector_id == key.connector)?;
+                let card = cards
+                    .get(&key.device)
+                    .map_or_else(|| PathBuf::from(format!("dev:{}", key.device)), Clone::clone);
+                let reason = format!(
+                    "held dark: it could not be lit ({:?}); tried again on a replug, a display settings change, a wake or the power key",
+                    record.reason
+                );
+                Some(topology::connector_attempt_line(
+                    &card,
+                    &snapshot.connector_name,
+                    snapshot.mode.size(),
+                    topology::ConnectorAttempt::Failed(&reason),
+                ))
+            })
+            .collect()
     }
 
     /// Tell the scanout owner about every output whose HDR request changed.
@@ -2234,6 +2309,7 @@ impl DrmDispatchState {
         let reports: Vec<SignalReport> = reports.try_iter().collect();
         let mut changed = false;
         let mut failed = false;
+        let mut relight = Vec::new();
         for report in reports {
             let Some((key, output_key)) = self
                 .live
@@ -2261,6 +2337,9 @@ impl DrmDispatchState {
                 let mut record = LinkFailureRecord::of(snapshot, reason);
                 record.config_key.clone_from(&key);
                 self.link_failures.insert(output_key, record);
+                if self.take_wake_relight(output_key) {
+                    relight.push((output_key, key.clone(), reason));
+                }
                 failed = true;
             }
             if self.signal_status.get(&key) != Some(&report.status) {
@@ -2272,6 +2351,20 @@ impl DrmDispatchState {
             // Drop the failed outputs; the reconciliation republishes.
             self.reapply_outputs_from_cache("an output could not be lit");
             changed = true;
+        }
+        if !relight.is_empty() {
+            // An output lit before the blank whose wake failed: its power-on
+            // commit, not the display, is what failed most often (amdgpu
+            // refused a hybrid laptop's panel once, and the panel stayed
+            // dark until the next replug). It is brought up again from
+            // scratch, on a fresh CRTC assignment, once per wake.
+            for (output_key, config_key, reason) in relight {
+                eprintln!(
+                    "tilo compositor: DRM display: wake: {config_key} could not be lit ({reason:?}); bringing it up again from scratch"
+                );
+                self.link_failures.remove(&output_key);
+            }
+            self.reapply_outputs_from_cache("relight an output whose wake failed");
         }
         if changed {
             self.reconcile_adaptive_sync();
@@ -2490,7 +2583,7 @@ impl DrmDispatchState {
                 }
             }
             SessionAction::AcquireMaster => {
-                apply_master_action(self.cards.values(), MasterAction::Acquire);
+                self.recover_card_masters("the session was activated");
             }
             // The remaining three all happen inside the scanouts, which
             // live on the render thread, so they travel together as one ordered `Resume` — splitting would let a frame slip between modeset and unpause.
@@ -2547,6 +2640,9 @@ impl DrmDispatchState {
             None => Vec::new(),
         };
         self.perform_all(actions);
+        // A suspend does not pause the seat, yet a card can come back
+        // without DRM master: take it back on every card.
+        self.recover_card_masters("woke from sleep");
         // The machine was powered down: an output that could not be lit
         // before sleep gets another attempt with the rest.
         self.retry_failed_outputs("woke from sleep");
@@ -5380,6 +5476,30 @@ impl DrmRuntime {
                 "DRM input: libinput still has work queued after the drain limit"
             );
         }
+        // Retiring reconciles at once, and the re-add once the old fd closed.
+        self.dispatch
+            .reopen_cards_without_master("a modeset was refused without it");
+        let input_missing = self.dispatch.devices.is_empty()
+            && self
+                .dispatch
+                .session
+                .as_ref()
+                .is_none_or(SessionState::is_active);
+        if let Some(attempt) = self
+            .dispatch
+            .input_recovery
+            .due(input_missing, std::time::Instant::now())
+        {
+            eprintln!(
+                "tilo compositor: DRM input: the active seat has no input devices; reopening them attempt={attempt}"
+            );
+            self.libinput.suspend();
+            if self.libinput.resume().is_err() {
+                eprintln!(
+                    "tilo compositor: DRM input: reopening the seat's input devices failed attempt={attempt}"
+                );
+            }
+        }
         if self.dispatch.finish_retired_cards() {
             // A Udev Added that raced removal was deliberately held until
             // libseat closed the old fd.  It is a new physical card from the
@@ -7169,6 +7289,12 @@ pub(super) mod tests {
         assert!(adaptive_sync_commands(&rx).is_empty());
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum MasterAction {
+        Release,
+        Acquire,
+    }
+
     #[derive(Clone)]
     struct FakeMasterCard {
         id: u64,
@@ -7182,11 +7308,91 @@ pub(super) mod tests {
                 .push((self.id, MasterAction::Release));
         }
 
-        fn acquire_master(&self) {
+        fn acquire_master(&self) -> bool {
             self.calls
                 .borrow_mut()
                 .push((self.id, MasterAction::Acquire));
+            true
         }
+    }
+
+    /// A card whose DRM master the seat manager may or may not hand back.
+    struct SeatCard {
+        holds_master: std::cell::Cell<bool>,
+        /// What the seat manager does when the card asks for master.
+        grants: bool,
+    }
+
+    impl KmsMasterControl for SeatCard {
+        fn release_master(&self) {
+            self.holds_master.set(false);
+        }
+
+        fn acquire_master(&self) -> bool {
+            if self.grants {
+                self.holds_master.set(true);
+            }
+            self.holds_master.get()
+        }
+    }
+
+    #[test]
+    fn a_session_pause_and_resume_finds_every_card_that_lost_master() {
+        // The hybrid laptop: the NVIDIA card (HDMI) gets master back after
+        // the pause, the amdgpu card (the panel) does not. Only the card
+        // without master is reopened; neither is skipped for being second.
+        let session = SessionState::new_active();
+        let cards: BTreeMap<u64, SeatCard> = BTreeMap::from([
+            (
+                DGPU,
+                SeatCard {
+                    holds_master: std::cell::Cell::new(true),
+                    grants: true,
+                },
+            ),
+            (
+                IGPU,
+                SeatCard {
+                    holds_master: std::cell::Cell::new(true),
+                    grants: false,
+                },
+            ),
+        ]);
+        let mut lost = Vec::new();
+        for tick in [SeatTick::Pause, SeatTick::Activate] {
+            for action in session.apply_with_actions(tick) {
+                match action {
+                    SessionAction::DropMaster => {
+                        release_masters_for_pause(cards.values(), std::iter::empty());
+                    }
+                    SessionAction::AcquireMaster => lost = cards_without_master(cards.iter()),
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(lost, [IGPU], "the panel's card is the one to reopen");
+        assert!(cards[&DGPU].holds_master.get());
+
+        // A reopened card's fd is granted master by the seat: nothing is
+        // left to reopen.
+        let reopened: BTreeMap<u64, SeatCard> = BTreeMap::from([(
+            IGPU,
+            SeatCard {
+                holds_master: std::cell::Cell::new(false),
+                grants: true,
+            },
+        )]);
+        assert!(cards_without_master(reopened.iter()).is_empty());
+    }
+
+    #[test]
+    fn a_wake_with_no_master_on_a_card_queues_it_for_reopening_not_for_good() {
+        let (mut state, _rx) = dispatch_with_channel();
+        // No card is retained in this harness, so nothing is reopened, and a
+        // card queued by a refused modeset is consumed, never kept.
+        state.cards_to_reopen.insert(IGPU);
+        assert!(!state.reopen_cards_without_master("test"));
+        assert!(state.cards_to_reopen.is_empty());
     }
 
     #[test]
@@ -7207,8 +7413,8 @@ pub(super) mod tests {
                     calls: std::rc::Rc::clone(&calls),
                 },
             ];
-            apply_master_action(cards.iter(), MasterAction::Release);
-            apply_master_action(cards.iter(), MasterAction::Acquire);
+            release_masters_for_pause(cards.iter(), std::iter::empty());
+            assert!(cards_without_master(cards.iter().map(|card| (&card.id, card))).is_empty());
             assert_eq!(
                 *calls.borrow(),
                 vec![
@@ -7235,7 +7441,7 @@ pub(super) mod tests {
                 calls: std::rc::Rc::clone(&calls),
             }];
             release_masters_for_pause(active.iter(), retiring.iter());
-            apply_master_action(active.iter(), MasterAction::Acquire);
+            assert!(cards_without_master(active.iter().map(|card| (&card.id, card))).is_empty());
             assert_eq!(
                 *calls.borrow(),
                 vec![
@@ -7385,7 +7591,7 @@ pub(super) mod tests {
     }
 
     /// The integrated GPU's `dev_t` in the hybrid fixtures below.
-    const IGPU: u64 = 0xe201;
+    pub(super) const IGPU: u64 = 0xe201;
     /// The discrete GPU's. Card ranking puts it first whenever it has more
     /// connected outputs, so its outputs are adopted (and numbered) first.
     pub(super) const DGPU: u64 = 0xe200;

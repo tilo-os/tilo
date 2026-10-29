@@ -2,8 +2,9 @@
 //! covers: the live entities it shows ([`LiveRow`]s) and the resource's
 //! edits bound to them, which of the resource's actions its live state
 //! makes unavailable, search entries for what the resource does not hold,
-//! whether the secrets behind them are unlocked, and what it looks up for
-//! the platform search's queries. A view says it with
+//! whether the secrets behind them are unlocked, what it looks up for the
+//! platform search's queries, and what it asks of the host (a document to
+//! open, the search to show). A view says it with
 //! [`ViewCx::publishing`](super::ViewCx::publishing); the root collects it as
 //! it collects a hosted surface's, so a view never needs a widget of its own
 //! to publish what it shows.
@@ -14,7 +15,7 @@ use std::rc::Rc;
 
 use tilo_resource::{ActionDecl, Resource, SearchEntry};
 use ui_core::search::SearchQuery;
-use ui_core::widget::{AppModel, Decorator, Element, ModelPath, Widget};
+use ui_core::widget::{AppHostIntent, AppModel, Decorator, Element, ModelPath, Widget};
 
 use super::effect::EffectStatus;
 use super::rows::LiveRow;
@@ -27,6 +28,7 @@ type Pending = Rc<dyn Fn(&str) -> bool>;
 /// handed (and nothing else); whether the row has any.
 type RowEdits = Rc<dyn Fn(&str, &mut dyn std::any::Any) -> bool>;
 type Statuses = Rc<dyn Fn() -> Vec<EffectStatus>>;
+type Intents = Rc<RefCell<dyn FnMut() -> Option<AppHostIntent>>>;
 type Entries = Rc<dyn Fn() -> Vec<SearchEntry>>;
 type Unlocked = Rc<dyn Fn() -> Option<bool>>;
 type OnQuery = Rc<RefCell<dyn FnMut(&SearchQuery)>>;
@@ -56,6 +58,7 @@ struct Sources {
     unlocked: Option<Unlocked>,
     query: Option<OnQuery>,
     answering: Option<Answering>,
+    intents: Option<Intents>,
 }
 
 impl<R: Resource> Default for Publishes<R> {
@@ -183,6 +186,18 @@ impl<R: Resource> Publishes<R> {
     #[must_use]
     pub fn search_pending(mut self, pending: impl Fn() -> bool + 'static) -> Self {
         self.sources.answering = Some(Rc::new(pending));
+        self
+    }
+
+    /// What the view asks of the host, one at a time, taken after every
+    /// frame: a document chosen here to open in its own app, the platform
+    /// search to show.
+    #[must_use]
+    pub fn host_intents(
+        mut self,
+        intents: impl FnMut() -> Option<AppHostIntent> + 'static,
+    ) -> Self {
+        self.sources.intents = Some(Rc::new(RefCell::new(intents)));
         self
     }
 }
@@ -360,8 +375,11 @@ impl SurfacePublication for Publishing {
     fn search_queries(&self) -> SearchQueries {
         self.queries.clone()
     }
-    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
-        None
+    fn take_host_intent(&mut self) -> Option<AppHostIntent> {
+        self.sources
+            .intents
+            .as_ref()
+            .and_then(|intents| (intents.borrow_mut())())
     }
     fn take_save_retry(&mut self) -> bool {
         false

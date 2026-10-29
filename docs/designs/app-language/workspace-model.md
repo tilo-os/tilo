@@ -110,7 +110,28 @@ The arrangement is typed state (strips have windows; a window has a resource, a 
 state), synced like everything else, with history of who opened, moved and closed what. The
 shell is a view of it.
 
-## 10. Open
+## 10. Shells
+
+A shell is a way to present the workspace on a device: a scrolling strip window manager, a 2D
+canvas, a phone, a watch, a browser. Every shell shows the same resources and actions; how
+things look and are arranged follows the device. Pixels are not shared between shells; meaning
+is: resources, actions, permissions, undo and history.
+
+**The web.** The browser is already a shell (tabs, history, back and forward, address bar), so
+a web session uses it instead of drawing a desktop inside it:
+
+- One open resource is, by default, one tab with its own URL, opened through its default view.
+  Links are real links; back and forward follow the trail of what was opened.
+- A strip or a canvas is a workspace resource too, so it has a URL. Opening one gives that tab
+  a scrolling window manager or a 2D canvas. Arrangement appears only where someone opens one,
+  never as a frame around everything.
+- Views render as real DOM components (text fields, lists, links), so the browser supplies
+  input, IME, accessibility, find, translation and autofill. Shared design tokens keep it
+  recognisably Tilo; components follow web conventions rather than matching the native look.
+- Outside services sync on the workspace's host, never in the page; the browser shows what the
+  workspace holds.
+
+## 11. Open
 
 - Whether others see a draft's text live or only that someone is typing.
 - Whether people create strips explicitly, or a strip starts when something is opened from

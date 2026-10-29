@@ -1420,6 +1420,7 @@ fn a_full_screen_tab_moved_to_another_group_still_leaves_on_unset() {
         }
         strip.window_groups.retain(|group| !group.tabs.is_empty());
         strip.window_groups.push(moved.expect("moved"));
+        drop(tree);
     }
     let after_move = h.state.client_fullscreen_group();
     let tick = h.full_screen_tick(id, panel);

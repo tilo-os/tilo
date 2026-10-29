@@ -320,13 +320,19 @@ search.md, "What a type declares" and "Types, references and paths".
 - **`a.then(b)` joins actions.** It is a method of action values, so it means the same wherever
   one is written; `b` runs once `a` is done. A composer sends its lens draft and clears it with
   `send(c, draft).then(set(draft, ""))`; a button presents the first action.
-- **An action a view applies reads its view state at the press.** View state given as an
-  argument (`send(c, draft)`, `set(draft, other)`) is the slot itself (`state_at`), read when
-  the event fires, in the view instance that took the typing: the window's last draw may be a
-  keystroke behind. Every action reference applied from a view does this, buttons, events of
-  components and `then` alike. An argument that computes from view state (`"{draft}!"`,
-  `n + 1`) would be read at the draw, so it is refused (E111): give the state and compute in
-  the action.
+- **An action a view applies reads its view state at the press.** An action's arguments are
+  evaluated when it is invoked, on what the invoker sees, the rule parameter defaults follow.
+  View state given as an argument (`send(c, draft)`, `set(draft, other)`) is the slot itself
+  (`state_at`), read when the event fires, in the view instance that took the typing: the
+  window's last draw may be a keystroke behind. An argument that computes from view state
+  (`set(open, not open)`, `send(c, "{draft}!")`, `set(n, n + 1)`) is a function of its own,
+  exported as `e_<id>` and listed in the metadata's `at_event` like a `fn`: it takes the view
+  state it reads (`state_at`) and the values from around it, as drawn, and is checked in the
+  discipline of a `fn`. The view passes it with `arg_at(id, args, boxed)`; the runtime runs it
+  when the event fires, after reading the state, and passes the value. So a toggle pressed
+  twice before the view draws again toggles twice. Every action reference applied from a view
+  does this, buttons, events of components and `then` alike; arguments that read no view state
+  are the values the view drew with.
 - **`if let`, `?.`, `??` and key paths add no context rules.** A match stays exhaustive in a
   view as anywhere; absent renders nothing through `if let` and `Option<View>` parameters,
   which are type rules. `a?.b.c` is not a chain: write `a?.b?.c`.

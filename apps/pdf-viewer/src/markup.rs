@@ -43,8 +43,7 @@ use ui::tilo_resource::{
 
 use crate::adopt::AdoptedEntry;
 use crate::model::{
-    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, HighlightColor, PtRect, Reply, Signature,
-    SignatureInk,
+    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, PtRect, Signature, SignatureInk, Thread,
 };
 
 /// The most pages one import brings in.
@@ -127,128 +126,6 @@ impl PageOccurrence {
     }
 }
 
-/// One annotation as stored.
-#[derive(Model, Clone, Debug, Default, PartialEq)]
-#[model(check = StoredAnnotation::valid)]
-pub struct StoredAnnotation {
-    #[model(atom, readonly)]
-    pub id: String,
-    /// Page: the page occurrence it is on.
-    #[model(atom)]
-    pub page_id: String,
-    /// Mark: what it marks, and where.
-    pub mark: AnnoKind,
-    /// Colour
-    pub color: HighlightColor,
-    /// Who made it.
-    #[model(readonly)]
-    pub author: String,
-    /// The engine character range `[start, end)` text markup covers.
-    #[model(readonly)]
-    pub chars: Option<[u32; 2]>,
-    /// When it was made (unix milliseconds; 0 when unknown).
-    #[model(readonly)]
-    pub created_ms: i64,
-    /// Which space its geometry is in.
-    pub space: GeomSpace,
-}
-
-impl Default for AnnoKind {
-    fn default() -> Self {
-        AnnoKind::Note { x: 0.0, y: 0.0 }
-    }
-}
-
-impl Identified for StoredAnnotation {
-    fn id(&self) -> Id {
-        Id::from_raw(self.id.clone())
-    }
-
-    /// In the order they were made.
-    fn order(&self, other: &Self) -> std::cmp::Ordering {
-        self.created_ms.cmp(&other.created_ms)
-    }
-}
-
-impl StoredAnnotation {
-    fn valid(&self) -> Result<(), Refusal> {
-        let finite = |values: &[f64]| values.iter().all(|value| value.is_finite());
-        let ok = match &self.mark {
-            AnnoKind::Markup { quads, .. } => {
-                !quads.is_empty() && quads.iter().all(|q| finite(&[q.x, q.y, q.w, q.h]))
-            }
-            AnnoKind::Ink { strokes } => strokes
-                .iter()
-                .all(|stroke| stroke.iter().all(|(x, y)| finite(&[*x, *y]))),
-            AnnoKind::Note { x, y } => finite(&[*x, *y]),
-            AnnoKind::FreeText { rect, size, .. } => {
-                finite(&[rect.x, rect.y, rect.w, rect.h]) && size.is_finite() && *size > 0.0
-            }
-        };
-        if !ok || self.id.trim().is_empty() || self.page_id.is_empty() {
-            return Err(Refusal::new(
-                "an annotation is on a page and has finite geometry",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// One reply in a comment thread, as stored under its id.
-#[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct StoredReply {
-    /// Who wrote it.
-    #[model(readonly)]
-    pub author: String,
-    /// What it says, as plain text.
-    #[model(label)]
-    pub text: String,
-    /// Its paragraphs as written, with their formatting; empty when it is
-    /// plain text.
-    pub rich: Vec<tilo_document::ClipBlock>,
-}
-
-/// One comment thread as stored: free on a page, or pinned to an
-/// annotation.
-#[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct StoredComment {
-    #[model(atom, readonly)]
-    pub id: String,
-    /// The annotation it is pinned to; empty for a comment free on a page.
-    #[model(atom, readonly)]
-    pub anno: String,
-    /// The page occurrence it is on.
-    #[model(atom)]
-    pub page_id: String,
-    /// Who wrote it.
-    #[model(readonly)]
-    pub author: String,
-    /// What it says, as plain text.
-    #[model(label)]
-    pub text: String,
-    /// Its paragraphs as written, with their formatting; empty when it is
-    /// plain text.
-    pub rich: Vec<tilo_document::ClipBlock>,
-    /// Ordinal for a stable order: creation order.
-    #[model(readonly)]
-    pub created: i64,
-    /// Resolved
-    pub resolved: bool,
-    /// The answers, in the order they were written.
-    pub replies: Collection<StoredReply>,
-}
-
-impl Identified for StoredComment {
-    fn id(&self) -> Id {
-        Id::from_raw(self.id.clone())
-    }
-
-    /// In the order they were written.
-    fn order(&self, other: &Self) -> std::cmp::Ordering {
-        self.created.cmp(&other.created)
-    }
-}
-
 /// One placed signature as stored.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 #[model(check = StoredSignature::valid)]
@@ -310,10 +187,10 @@ pub struct PdfMarkup {
     /// The pages, in reading order.
     pub pages: Collection<PageOccurrence>,
     /// Annotations: text markup, ink, notes and free text.
-    pub annotations: Keyed<StoredAnnotation>,
-    /// Comment threads.
+    pub annotations: Keyed<Annotation>,
+    /// Comment threads, in the order they were written.
     #[model(unit)]
-    pub comments: Keyed<StoredComment>,
+    pub comments: Collection<Comment>,
     /// Signatures
     pub signatures: Keyed<StoredSignature>,
     /// Form values, by the field's fully qualified name.
@@ -483,14 +360,8 @@ impl PdfMarkup {
         self.annotations
             .iter()
             .map(|stored| Annotation {
-                id: stored.id.clone(),
                 page: numbers.get(stored.page_id.as_str()).copied().unwrap_or(0),
-                kind: stored.mark.clone(),
-                color: stored.color,
-                author: stored.author.clone(),
-                chars: stored.chars.map(|[start, end]| (start, end)),
-                created_ms: stored.created_ms,
-                space: stored.space,
+                ..stored.clone()
             })
             .collect()
     }
@@ -498,37 +369,18 @@ impl PdfMarkup {
     /// The comment threads on pages that are part of the document now, in
     /// the order they were written.
     #[must_use]
-    pub fn list_comments(&self) -> Vec<Comment> {
+    pub fn list_comments(&self) -> Vec<Thread> {
         let numbers = self.page_numbers();
-        let mut comments = self
-            .comments
+        self.comments
             .iter()
-            .filter_map(|stored| {
-                let page = *numbers.get(stored.page_id.as_str())?;
-                Some(Comment {
-                    id: stored.id.clone(),
-                    anno_id: (!stored.anno.is_empty()).then(|| stored.anno.clone()),
-                    page,
-                    author: stored.author.clone(),
-                    body: stored.text.clone(),
-                    created: stored.created,
-                    resolved: stored.resolved,
-                    replies: stored
-                        .replies
-                        .iter()
-                        .map(|(id, reply)| Reply {
-                            id: id.as_str().to_owned(),
-                            author: reply.author.clone(),
-                            body: reply.text.clone(),
-                            blocks: blocks_of(&reply.text, &reply.rich),
-                        })
-                        .collect(),
-                    blocks: blocks_of(&stored.text, &stored.rich),
+            .filter_map(|(id, comment)| {
+                Some(Thread {
+                    id: id.as_str().to_owned(),
+                    page: *numbers.get(comment.anchor.page_id.as_str())?,
+                    comment: comment.clone(),
                 })
             })
-            .collect::<Vec<_>>();
-        comments.sort_by_key(|comment| comment.created);
-        comments
+            .collect()
     }
 
     /// The signatures on pages that are part of the document now.
@@ -555,16 +407,6 @@ impl PdfMarkup {
     #[must_use]
     pub fn adopted_entries(&self) -> Vec<AdoptedEntry> {
         self.adopted.values().cloned().collect()
-    }
-}
-
-/// A comment's paragraphs as the editor shows them: as written, or its
-/// plain text.
-fn blocks_of(text: &str, rich: &[tilo_document::ClipBlock]) -> Vec<ui::widget::BlockContent> {
-    if rich.is_empty() {
-        tilo_rich_text::plain_blocks(text)
-    } else {
-        rich.iter().map(tilo_rich_text::content_of_clip).collect()
     }
 }
 

@@ -37,9 +37,9 @@ use settings_store::hardware::ShortcutAction;
 use tilo_desktop::emoji_picker::EmojiPicker;
 use tilo_desktop::window_switcher::{WindowAddress, WindowSwitcher, WindowThumbnails};
 
+use super::sheet_apps::SheetHost;
 use super::tab_menu::{TabMenuLayer, TabMenuTarget};
 use crate::shell::display_confirm::DisplayConfirmPrompt;
-use crate::shell::power_menu::PowerMenu;
 use crate::shell::window_menu::WindowMenuAction;
 
 /// Every shell overlay, topmost first. Declaration order *is* the stacking
@@ -62,7 +62,7 @@ pub(crate) enum LayerId {
     /// The tab right-click menu: the topmost transient, whose rows are what
     /// a reader should land on.
     TabContextMenu,
-    /// The session power flyout.
+    /// The session power menu, an app ([`tilo_sheets::power`]).
     PowerMenu,
     CommandPalette,
     MemberSheet,
@@ -605,7 +605,7 @@ pub(crate) struct OverlayStack {
     pub(crate) dictation: super::dictation_layer::DictationSurface,
     pub(crate) emoji_picker: EmojiPicker,
     pub(crate) tab_menu: TabMenuLayer,
-    pub(crate) power_menu: PowerMenu,
+    pub(crate) power_menu: SheetHost<tilo_sheets::power::PowerSeat>,
     /// The layer that consumed a press whose release has not arrived yet.
     release_owner: Option<LayerId>,
 }
@@ -829,24 +829,51 @@ mod tests {
         route_band(stack, Band::Popover, event, cursor)
     }
 
+    /// The point a test's window menu opens at.
+    const MENU_AT: Point = Point::new(600.0, 300.0);
+
+    /// Open the window menu, a popup over the windows.
+    fn open_menu(stack: &mut OverlayStack) {
+        stack.tab_menu.open(
+            super::super::tab_menu::MenuSubject::Window(TabMenuTarget {
+                strip: <crate::shell::state::StripId as crate::shell::state::FreshId>::new(),
+                group: 7001,
+                tab: 0xa1,
+            }),
+            crate::shell::window_menu::window_menu_rows(
+                &crate::shell::window_menu::WindowMenuFacts {
+                    tab_count: 3,
+                    ..Default::default()
+                },
+                &settings_store::hardware::ShortcutConfig::default(),
+            ),
+            MENU_AT,
+            "Files".into(),
+            VIEWPORT,
+        );
+    }
+
     #[test]
     fn a_stacked_layer_describes_the_surface_it_is() {
         let mut stack = OverlayStack::default();
-        stack.power_menu.open();
-        let surface = stack.surface(LayerId::PowerMenu);
+        open_menu(&mut stack);
+        let surface = stack.surface(LayerId::TabContextMenu);
         assert_eq!(surface.kind, Role::Popup);
         assert_eq!(surface.modality, Modality::WindowModal);
         assert_eq!(surface.owner, Owner::Shell);
         assert_eq!(surface.lifecycle, Lifecycle::Shown);
         assert_eq!(
             surface.anchor,
-            Anchor::TopTrailing(stack.power_menu.metrics().margin),
-            "the menu hangs from the top bar by the floating margin"
+            Anchor::Beside {
+                at: Rect::new(MENU_AT.x, MENU_AT.y, MENU_AT.x, MENU_AT.y),
+                gap: 0.0
+            },
+            "the menu stands beside the point it was opened at"
         );
         // Closed, the same surface still says what it is; it just is not
         // in the life of taking input any more.
-        assert!(stack.power_menu.close());
-        let closed = stack.surface(LayerId::PowerMenu);
+        stack.tab_menu.close();
+        let closed = stack.surface(LayerId::TabContextMenu);
         assert_eq!(closed.lifecycle, Lifecycle::Closed);
         assert_eq!(closed.kind, Role::Popup);
     }
@@ -878,7 +905,7 @@ mod tests {
     fn only_a_modal_surface_holds_down_what_is_behind_it() {
         let mut stack = OverlayStack::default();
         assert_eq!(stack.scrim(geometry()), None, "nothing is up");
-        stack.power_menu.open();
+        open_menu(&mut stack);
         let scrim = stack
             .scrim(geometry())
             .expect("the menu is modal over its display");
@@ -886,7 +913,7 @@ mod tests {
         // Its own panel is not the area it makes inert: the press outside
         // the panel still reaches the menu first, and closes it.
         assert!(
-            stack.power_menu.panel_rect(VIEWPORT) != scrim,
+            stack.tab_menu.rect() != Some(scrim),
             "the panel is not the whole display"
         );
         let bridge = Surface::shell(
@@ -1013,16 +1040,13 @@ mod tests {
     #[test]
     fn a_release_is_owed_only_in_the_band_that_took_its_press() {
         let mut stack = OverlayStack::default();
-        stack.power_menu.open();
+        open_menu(&mut stack);
         let outside = Point::new(VIEWPORT.x0 + 4.0, VIEWPORT.y1 - 4.0);
         assert_eq!(
             route(&mut stack, &button(ElementState::Pressed), outside),
             (true, true)
         );
-        assert!(
-            !stack.power_menu.is_open(),
-            "the press dismissed the flyout"
-        );
+        assert!(!stack.tab_menu.is_open(), "the press dismissed the menu");
         assert!(stack.listens(Band::Popover), "its release is still owed");
         for band in [Band::Session, Band::Chord, Band::Modal] {
             assert!(!stack.listens(band), "{band:?}");
@@ -1066,15 +1090,15 @@ mod tests {
     #[test]
     fn a_dismissing_press_owes_exactly_its_own_release() {
         let mut stack = OverlayStack::default();
-        stack.power_menu.open();
+        open_menu(&mut stack);
         let outside = Point::new(VIEWPORT.x0 + 4.0, VIEWPORT.y1 - 4.0);
 
         assert_eq!(
             route(&mut stack, &button(ElementState::Pressed), outside),
             (true, true),
-            "the press outside the flyout dismisses it and stops there"
+            "the press outside the menu dismisses it and stops there"
         );
-        assert!(!stack.power_menu.is_open());
+        assert!(!stack.tab_menu.is_open());
         assert_eq!(
             route(&mut stack, &button(ElementState::Released), outside),
             (true, true),
@@ -1091,9 +1115,9 @@ mod tests {
     fn escape_dismisses_only_an_open_layer() {
         let mut stack = OverlayStack::default();
         assert!(!stack.dismiss_topmost());
-        stack.power_menu.open();
+        open_menu(&mut stack);
         assert!(stack.dismiss_topmost());
-        assert!(!stack.power_menu.is_open());
+        assert!(!stack.tab_menu.is_open());
         assert!(!stack.dismiss_topmost());
     }
 }

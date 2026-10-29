@@ -34,3 +34,11 @@ tilolang-sort = Sort
 tilolang-more = More actions
 tilolang-undo = Undo
 tilolang-did = { $action }: { $title }
+tilolang-replying-to = Replying to
+tilolang-thread-replies = { $count ->
+    [one] 1 reply
+   *[other] { $count } replies
+}
+
+app-activate-window = Show this window
+app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.

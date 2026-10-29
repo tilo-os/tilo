@@ -355,10 +355,10 @@ fn dictionary_identity_owner() -> Option<[u8; 32]> {
 /// Hold the person's and this device's settings for the session: every
 /// reader and writer in this process goes through them, and every other
 /// process reads the same documents, following this one.
-fn install_session_settings() -> std::io::Result<()> {
+fn install_session_settings() {
     let Some(root) = settings_store::config_root() else {
         tracing::warn!("no config directory; settings are not kept this session");
-        return Ok(());
+        return;
     };
     let session = settings_store::profile(&root);
     if !session.is_holder() {
@@ -402,7 +402,6 @@ fn install_session_settings() -> std::io::Result<()> {
             None => source,
         };
     settings_store::install_source(Some(source));
-    Ok(())
 }
 
 #[allow(
@@ -636,13 +635,9 @@ pub fn run() -> std::process::ExitCode {
         }
     };
 
-    // Keep setup and identity preparation first, but install the checked source
-    // before the host import can read or update settings. Otherwise its legacy
-    // copy writer could replace a symlink before checked startup sees it.
-    if let Err(error) = install_session_settings() {
-        tracing::error!(%error, "cannot safely open session settings; repair the settings copy or its lock before starting the session");
-        return std::process::ExitCode::FAILURE;
-    }
+    // Keep setup and identity preparation first, but install the settings
+    // source before the host import can read or update settings.
+    install_session_settings();
     // Who sits here is read now, before the loop runs, and kept current by
     // workers: the loop asks on every frame and must never wait on the disk.
     shell::watched_identity::install();

@@ -7175,7 +7175,7 @@ mod tests {
         // The session keeps the person's settings, as it does in a session.
         let paths = config.path().to_path_buf();
         let records = settings_store::Store::open(&paths).expect("records");
-        let _settings = crate::shell::test_support::install_settings(records.clone());
+        let _settings = crate::shell::test_support::install_settings(records);
 
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();

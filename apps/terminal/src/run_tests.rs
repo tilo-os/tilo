@@ -459,6 +459,10 @@ impl ush_tilo::Environment for Granted {
             operations: 1,
         })
     }
+    fn keep(&self) -> std::io::Result<Box<dyn ush_tilo::Keeping>> {
+        // This session writes only what travels inside its actions.
+        Err(std::io::Error::other("this test keeps no content"))
+    }
 }
 
 /// A session whose shell runs on the Tilo side: its host reads only what

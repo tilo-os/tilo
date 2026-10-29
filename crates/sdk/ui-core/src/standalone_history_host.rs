@@ -123,6 +123,34 @@ impl HostHistoryLayout {
     }
 }
 
+/// The kind of the open History session's resource.
+pub(crate) const HISTORY_SESSION_KIND: &str = "tilo.host.history.session";
+
+/// `action` on the open History session among `resources`, when one is open.
+pub(crate) fn session_action_address(
+    resources: &[ResourceSpec],
+    action: &str,
+) -> Option<tilo_actions::ActionAddress> {
+    resources
+        .iter()
+        .find(|resource| resource.kind == HISTORY_SESSION_KIND)
+        .map(|resource| tilo_actions::ActionAddress::new(resource.id.as_str(), action))
+}
+
+/// Every action address `resources` publish.
+pub(crate) fn addresses(
+    resources: Vec<ResourceSpec>,
+) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+    resources
+        .into_iter()
+        .flat_map(|resource| {
+            resource.actions.into_iter().map(move |action| {
+                tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id)
+            })
+        })
+        .collect()
+}
+
 /// The document History browses: the preferred (focused or root) binding,
 /// else the one binding laid out, else the active record. Two bindings laid
 /// out at once are ambiguous, as is an open record set with none active.
@@ -523,6 +551,19 @@ impl StandaloneHistoryHost {
     ) -> Result<Vec<ResourceSpec>, HistoryHostError> {
         self.refresh(context)?;
         Ok(self.own_resources(context))
+    }
+
+    /// Everything History answers locally: its own doors and what its
+    /// presented widgets publish.
+    pub(crate) fn door_resources(
+        &mut self,
+        context: &HistoryReadContext<'_>,
+    ) -> Result<Vec<ResourceSpec>, HistoryHostError> {
+        let mut resources = self.local_resources(context)?;
+        for root in self.presentation_roots(context)? {
+            crate::widget::collect_widget_resources(root, context.document, &mut resources);
+        }
+        Ok(resources)
     }
 
     /// History, Search and the open session, each action available exactly
@@ -940,6 +981,28 @@ impl StandaloneHistoryHost {
     }
     pub(crate) fn pane_mut(&mut self) -> Option<&mut StandaloneHistoryPane> {
         self.is_open().then_some(&mut self.pane)
+    }
+
+    /// Start one of the open pane's own view operations; it never writes the
+    /// document. `None` when the pane does not know the operation.
+    pub(crate) fn start_pane_operation(
+        &mut self,
+        encoded: &tilo_actions::EncodedAction,
+        document: &mut automerge::AutoCommit,
+        root: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let pane = self.pane_mut().ok_or("History is not open")?;
+        crate::widget::start_without_document_writes(
+            pane,
+            &crate::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut crate::widget::Edits::lend(document),
+            root,
+        )
     }
 
     pub(crate) fn session(
@@ -1389,7 +1452,7 @@ fn session_resource(session: uuid::Uuid) -> ResourceSpec {
         .of_kind(tilo_actions::ActionKind::Read);
     ResourceSpec::new(
         format!("tilo.host.history:{session}"),
-        "tilo.host.history.session",
+        HISTORY_SESSION_KIND,
         I18nManager::lookup_plain("standalone-history-title"),
     )
     .with_action(select)
@@ -2131,14 +2194,8 @@ mod tests {
         confirmed: bool,
     ) -> Result<(), tilo_actions::DoorError> {
         let resources = host.local_resources(context).unwrap();
-        let (arguments, _, _) = crate::bound_dispatch::resolve_resource_invocation(
+        let encoded = crate::bound_dispatch::encode_resource_invocation(
             &resources, &address, None, arguments, confirmed,
-        )?;
-        let encoded = crate::bound_dispatch::encode_resource_action(
-            &resources,
-            &address,
-            arguments.as_ref(),
-            None,
         )?;
         host.invoke_local(&encoded, context)
             .map_err(|error| tilo_actions::DoorError::InvalidArguments(format!("{error:?}")))

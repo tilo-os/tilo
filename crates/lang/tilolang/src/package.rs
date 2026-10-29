@@ -250,6 +250,7 @@ fn emit_package(a: Analysis) -> Compiled {
     let fx = effects::analyze(&a.ir, &a.env.app);
     let mut meta = build_meta(&a.module, &a.env, &fx, &a.ir.states);
     meta.views.extend(row_views(&a.ir, &a.env.app, &fx));
+    meta.at_event = at_event_fns(&a.ir, &a.env.app);
     let bare = codegen::emit(&a.ir, None);
     meta.module_hash = sha256_hex(&bare);
     let wasm = codegen::emit(&a.ir, Some(&meta.to_json_bytes()));
@@ -319,6 +320,20 @@ fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
         default: f.default.clone(),
         role: f.role.clone(),
     }
+}
+
+/// The arguments the checker made functions of: the runtime runs them when an event fires.
+fn at_event_fns(ir: &crate::ir::Module, app: &str) -> Vec<FnMeta> {
+    ir.at_event
+        .iter()
+        .map(|a| FnMeta {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            doc: String::new(),
+            params: params_meta(&a.params, app),
+            result: a.result.meta_text(app),
+        })
+        .collect()
 }
 
 /// The views the checker made of UI loop bodies: the host calls them like declared views.

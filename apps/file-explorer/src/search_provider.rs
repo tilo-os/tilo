@@ -555,15 +555,15 @@ mod tests {
             std::fs::create_dir_all(&sub).unwrap();
             std::fs::create_dir_all(&cfg).unwrap();
 
-            let mut app = crate::files_app::FileExplorerWidget::with_persistence(
+            let app = crate::files_app::FileExplorerWidget::with_persistence(
                 Some(&cfg),
                 Some(home.clone()),
             );
             // Move away from Home so activation demonstrably navigates back.
-            app.navigate(sub.clone());
-            assert_eq!(app.current_path(), sub);
+            app.state().navigate(sub.clone());
+            assert_eq!(app.state().current_path(), sub);
 
-            let hit = source(app.search_entries_shown())
+            let hit = source(app.state().search_entries_shown())
                 .search("")
                 .into_iter()
                 .find(|r| r.action_id == place_resource_id(&home))
@@ -583,10 +583,11 @@ mod tests {
                 .expect("the place's row opens it");
             assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);
             assert_eq!(spec.contract, ui::tilo_actions::ActionContract::view());
-            app.open_anchor(&hit.anchor())
+            app.state()
+                .open_anchor(&hit.anchor())
                 .expect("the window opens the hit's anchor");
             assert_eq!(
-                app.current_path(),
+                app.state().current_path(),
                 home,
                 "activation navigated to the chosen place"
             );

@@ -5,20 +5,20 @@ pdf-viewer-history-scope = PDF and its markup
 ## History: what each change did, by field and by verb
 
 pdf-viewer-page-occurrence-rotation = Turned a page to { $new } degrees
-pdf-viewer-stored-annotation-page-id = Moved markup to another page
-pdf-viewer-stored-annotation-mark = Reshaped markup
-pdf-viewer-stored-annotation-color = Recoloured markup
-pdf-viewer-stored-annotation-space = Moved markup
-pdf-viewer-stored-comment-page-id = Moved { $item } to another page
-pdf-viewer-stored-comment-text = Edited the comment { $item }
-pdf-viewer-stored-comment-rich = Formatted the comment { $item }
-pdf-viewer-stored-comment-resolved = { $new ->
+pdf-viewer-annotation-page-id = Moved markup to another page
+pdf-viewer-annotation-mark = Reshaped markup
+pdf-viewer-annotation-color = Recoloured markup
+pdf-viewer-annotation-space = Moved markup
+pdf-viewer-pdf-anchor-page-id = Moved a comment to another page
+pdf-viewer-comment-text = Edited the comment { $item }
+pdf-viewer-comment-body = Formatted the comment { $item }
+pdf-viewer-comment-resolved = { $new ->
     [true] Resolved { $item }
    *[false] Reopened { $item }
 }
-pdf-viewer-stored-comment-replies = Changed the replies to { $item }
-pdf-viewer-stored-reply-text = Edited the reply { $item }
-pdf-viewer-stored-reply-rich = Formatted the reply { $item }
+pdf-viewer-comment-replies = Changed the replies to { $item }
+pdf-viewer-reply-text = Edited the reply { $item }
+pdf-viewer-reply-body = Formatted the reply { $item }
 pdf-viewer-stored-signature-page-id = Moved a signature to another page
 pdf-viewer-stored-signature-rect = Moved a signature
 pdf-viewer-stored-signature-space = Moved a signature

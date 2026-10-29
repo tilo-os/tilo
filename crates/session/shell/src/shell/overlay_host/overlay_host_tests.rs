@@ -879,45 +879,55 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
         );
     }
 
-    fn power_menu_accessibility_paths_focus_and_activate_exact_rows() {
+    fn the_power_menu_is_an_app_the_shell_hosts_and_acts_on() {
         let mut h = build_harness();
-        h.host.layers.power_menu.open();
-        h.host.layers.power_menu.force_settled_for_visual_test();
+        h.host.force_power_menu_for_visual_test();
+        assert!(h.host.power_menu_open());
+        // Laid out once it is up, then drawn by its app.
+        paint(&mut h);
+        let crate::shell::test_support::LaidOut { taffy, node, nodes } =
+            crate::shell::test_support::lay_out_in_viewport(
+                &mut h.host,
+                1600.0,
+                900.0,
+                &Theme::dark(),
+            );
+        (h.taffy, h.root_node, h.node_map) = (taffy, node, nodes);
+        paint(&mut h);
+        let rows = h.host.power_menu_semantic_rects();
+        let names: Vec<&str> = rows.iter().map(|(name, _)| *name).collect();
+        assert_eq!(
+            names.first(),
+            Some(&"power_lock"),
+            "{names:?} mounted {} drawn {} laid out {} area {:?} phase {:?}",
+            h.host.layers.power_menu.is_mounted(),
+            h.host.layers.power_menu.is_drawn(),
+            h.host.layers.power_menu.widget().is_some(),
+            h.host.layers.power_menu.area(),
+            tilo_sheets::Seat::presentation(h.host.layers.power_menu.seat()).phase(),
+        );
+        assert!(names.contains(&"power_shut_down"), "{names:?}");
+        for (name, rect) in &rows {
+            assert!(
+                rect.x1 <= 1600.0 && rect.x0 > 800.0 && rect.y0 > 0.0,
+                "{name} hangs from the top bar's trailing end: {rect:?}"
+            );
+        }
 
-        let semantics = h.host.accessibility().expect("shell semantics");
-        assert_eq!(
-            semantics
-                .children
-                .first()
-                .and_then(|node| node.name.as_deref()),
-            Some(crate::shell::i18n::t("power-menu-title").as_str())
+        // A press on Lock asks the shell, which locks through the one
+        // session executor the typed actions reach.
+        let lock = rows[0].1.center();
+        let none = Modifiers::default();
+        let _ = pump(
+            &mut h,
+            &ui::synthetic_input::cursor_moved(lock.x, lock.y),
+            none,
         );
-        assert_eq!(
-            h.host.synthetic_accessibility_rect(&[0, 0]),
-            h.host
-                .power_menu_semantic_rects()
-                .into_iter()
-                .find(|(name, _)| *name == "power_lock")
-                .map(|(_, rect)| rect)
-        );
-        assert!(h.host.focus_synthetic_accessibility(&[0, 0]));
-        assert_eq!(
-            h.host.layers.power_menu.key(
-                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
-                false
-            ),
-            PowerMenuClick::Lock
-        );
-
-        h.host.layers.power_menu.open();
-        assert!(h.host.focus_synthetic_accessibility(&[0, 5]));
-        assert_eq!(
-            h.host.layers.power_menu.key(
-                &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
-                false
-            ),
-            PowerMenuClick::Execute(os_actions::SessionAction::ShutDown)
-        );
+        assert!(pump(&mut h, &mouse_press(), none));
+        let _ = pump(&mut h, &mouse_release(), none);
+        h.host.update(&AutoCommit::new(), &automerge::ROOT);
+        assert!(h.chrome.borrow_mut().take_session_lock_request());
+        assert!(!h.host.power_menu_open(), "the menu took itself down");
     }
 
     fn accessibility_focus_routes_through_shifted_overlay_indices() {
@@ -967,7 +977,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
 
     active_window_controls_report_the_live_painted_geometry();
     accessibility_overlay_paths_share_the_published_coexistence_order();
-    power_menu_accessibility_paths_focus_and_activate_exact_rows();
+    the_power_menu_is_an_app_the_shell_hosts_and_acts_on();
     accessibility_focus_routes_through_shifted_overlay_indices();
 }
 

@@ -15,7 +15,10 @@
 //!   record's `write`, `>> file` its `append`, each checked against the
 //!   grants by the verb, recorded in History and undone from there. The
 //!   writes of one command line carry its [`Run`], so History groups them as
-//!   one.
+//!   one. A redirect of any size is one action: past
+//!   [`MAX_TEXT_BYTES`](tilo_environment::files::MAX_TEXT_BYTES), what the
+//!   command writes is streamed into the environment's content store
+//!   ([`Environment::keep`]) and the action names it by reference.
 //! - **A program** that is none of the shell's own goes to [`Programs`]: the
 //!   place that can run it (a Linux guest for the session, tier 3). This host
 //!   never starts a process itself.
@@ -37,7 +40,8 @@ use collab_types::caps::Access;
 /// What [`Environment::grants`] answers: the record's grants.
 pub use collab_types::caps::CapOverride;
 use tilo_environment::files::{
-    AppendFileOp, FileAction, WriteOp, anchored, cli, normalize, permits, permits_in, ungranted,
+    AppendFileOp, FileAction, MAX_TEXT_BYTES, WriteOp, anchored, cli, normalize, permits,
+    permits_in, ungranted,
 };
 use ush_shell::{DirEntry, FileCall, Host, Metadata, Output, Program, Run, Stdio, WriteMode};
 
@@ -55,6 +59,35 @@ pub trait Environment: Send + Sync {
     ///
     /// Why it was refused or did not get carried out, in words.
     fn act(&self, action: FileAction, run: Option<&Run>) -> Result<Acted, String>;
+
+    /// Start keeping content in the environment's content store, for an
+    /// action to name by reference: what is written to the answer is
+    /// streamed there, whatever its size, and [`Keeping::finish`] says what
+    /// it was kept as.
+    ///
+    /// # Errors
+    ///
+    /// The store could not be written to.
+    fn keep(&self) -> io::Result<Box<dyn Keeping>>;
+}
+
+/// Content on its way into the environment's content store.
+pub trait Keeping: Write + Send {
+    /// Everything was written: the content as kept.
+    ///
+    /// # Errors
+    ///
+    /// The store could not keep it.
+    fn finish(self: Box<Self>) -> io::Result<Kept>;
+}
+
+/// Content kept in the environment's content store.
+pub struct Kept {
+    /// Its hash (BLAKE3, lower-case hex): what an action names it by.
+    pub hash: String,
+    /// What keeps the content from being collected until the action that
+    /// names it is recorded: dropped after that.
+    pub hold: Option<Box<dyn Send>>,
 }
 
 /// What an action did.
@@ -285,6 +318,7 @@ impl Host for TiloHost {
             mode,
             run: run.cloned(),
             bytes: Vec::new(),
+            keeping: None,
         }))
     }
 
@@ -384,54 +418,89 @@ impl Host for TiloHost {
 }
 
 /// A redirect's file: what the command writes is gathered, and becomes one
-/// action of the environment's when the redirect closes.
+/// action of the environment's when the redirect closes. Up to
+/// [`MAX_TEXT_BYTES`] it travels inside the action; past that it is
+/// streamed into the environment's content store as it is written, and the
+/// action names it by reference, so a redirect of any size is one action.
 struct Redirect {
     host: TiloHost,
     path: PathBuf,
     mode: WriteMode,
     run: Option<Run>,
     bytes: Vec<u8>,
+    /// Where what was written goes once it is too much to carry.
+    keeping: Option<Box<dyn Keeping>>,
 }
 
 impl Redirect {
-    /// The action the redirect is, for what was written.
-    fn action(&mut self) -> Result<FileAction, String> {
-        let bytes = std::mem::take(&mut self.bytes);
+    /// Keep what was written so far, and everything after it, in the
+    /// content store.
+    fn spill(&mut self) -> io::Result<&mut Box<dyn Keeping>> {
+        if self.keeping.is_none() {
+            let mut keeping = self.host.0.environment.keep()?;
+            keeping.write_all(&self.bytes)?;
+            self.bytes = Vec::new();
+            self.keeping = Some(keeping);
+        }
+        self.keeping
+            .as_mut()
+            .ok_or_else(|| io::Error::other("the content store went away"))
+    }
+
+    /// The action the redirect is, for what was written, and what holds
+    /// its content until the action is recorded.
+    fn action(&mut self) -> Result<(FileAction, Option<Kept>), String> {
         let files = vec![self.path.clone()];
-        Ok(match self.mode {
-            WriteMode::Truncate => FileAction::Write(WriteOp::of(files, bytes, false)),
-            WriteMode::CreateNew => FileAction::Write(WriteOp::of(files, bytes, true)),
-            // `>>` with nothing written still makes the file, as `touch`.
-            WriteMode::Append if bytes.is_empty() => FileAction::Touch(AppendFileOp {
-                files,
-                text: String::new(),
-            }),
-            WriteMode::Append => match String::from_utf8(bytes) {
-                Ok(text) => FileAction::Append(AppendFileOp { files, text }),
-                // `append` carries text; bytes that are not text are added
-                // by writing the whole file, what it held and then them.
-                Err(error) => {
-                    let mut whole = match self.host.open_read(&self.path) {
-                        Ok(mut held) => {
-                            let mut whole = Vec::new();
-                            held.read_to_end(&mut whole)
-                                .map_err(|e| ush_shell::commands::describe(&e))?;
-                            whole
-                        }
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-                        Err(e) => return Err(ush_shell::commands::describe(&e)),
-                    };
-                    whole.extend_from_slice(error.as_bytes());
-                    FileAction::Write(WriteOp::of(files, whole, false))
-                }
+        let append = self.mode == WriteMode::Append;
+        // `append` carries text: bytes that are not text go by reference.
+        if append && !self.bytes.is_empty() && std::str::from_utf8(&self.bytes).is_err() {
+            self.spill()
+                .map_err(|e| ush_shell::commands::describe(&e))?;
+        }
+        if let Some(keeping) = self.keeping.take() {
+            let kept = keeping
+                .finish()
+                .map_err(|e| ush_shell::commands::describe(&e))?;
+            let hash = kept.hash.clone();
+            let action = match self.mode {
+                WriteMode::Truncate => FileAction::Write(WriteOp::of_content(files, hash, false)),
+                WriteMode::CreateNew => FileAction::Write(WriteOp::of_content(files, hash, true)),
+                WriteMode::Append => FileAction::Append(AppendFileOp {
+                    files,
+                    text: String::new(),
+                    content: Some(hash),
+                }),
+            };
+            return Ok((action, Some(kept)));
+        }
+        let bytes = std::mem::take(&mut self.bytes);
+        Ok((
+            match self.mode {
+                WriteMode::Truncate => FileAction::Write(WriteOp::of(files, bytes, false)),
+                WriteMode::CreateNew => FileAction::Write(WriteOp::of(files, bytes, true)),
+                // `>>` with nothing written still makes the file, as `touch`.
+                WriteMode::Append if bytes.is_empty() => FileAction::Touch(AppendFileOp {
+                    files,
+                    ..AppendFileOp::default()
+                }),
+                WriteMode::Append => FileAction::Append(AppendFileOp {
+                    files,
+                    text: String::from_utf8(bytes).map_err(|e| e.to_string())?,
+                    content: None,
+                }),
             },
-        })
+            None,
+        ))
     }
 }
 
 impl Write for Redirect {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.bytes.extend_from_slice(buf);
+        if self.keeping.is_none() && self.bytes.len().saturating_add(buf.len()) <= MAX_TEXT_BYTES {
+            self.bytes.extend_from_slice(buf);
+            return Ok(buf.len());
+        }
+        self.spill()?.write_all(buf)?;
         Ok(buf.len())
     }
 
@@ -442,12 +511,16 @@ impl Write for Redirect {
 
 impl Drop for Redirect {
     fn drop(&mut self) {
-        let done = self.action().and_then(|action| {
-            self.host
+        let done = self.action().and_then(|(action, kept)| {
+            let acted = self
+                .host
                 .0
                 .environment
                 .act(action, self.run.as_ref())
-                .map(drop)
+                .map(drop);
+            // Held until the action that names the content is recorded.
+            drop(kept);
+            acted
         });
         if let Err(reason) = done {
             let _ = self.host.0.notices.write_str(&format!(

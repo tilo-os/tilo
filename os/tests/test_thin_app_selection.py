@@ -44,6 +44,9 @@ resolver = "2"
 [profile.thin-app]
 inherits = "dev"
 codegen-units = 1
+[profile.thin-dev]
+inherits = "thin-app"
+codegen-units = 16
 """)
         self.write("shared/Cargo.toml", """[package]
 name = "shared"
@@ -290,6 +293,25 @@ app-sdk = { path = "../../app_sdk" }
             started = self.run_command(str(target / "calculator"), LD_LIBRARY_PATH=f"{target}:{rustlib}")
             self.assertEqual(started.returncode, 0, started.stderr)
             self.assertIn("unified-runtime-ok", started.stdout)
+        restart_fixture(self)
+        with self.subTest(phase="a_development_build_compiles_its_apps_for_speed"):
+            # thin-dev, a developer session's build: the app crates keep the
+            # profile's settings rather than one size-optimised unit, and the
+            # wrapper still links the app against the shared runtime.
+            maps = self.root / "dev-link-maps"
+            dev = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator",
+                                   PROFILE="thin-dev", TILO_THIN_LINK_MAP_DIR=str(maps),
+                                   EXTRA_CARGO_ARGS="-v")
+            self.assertEqual(dev.returncode, 0, dev.stdout + dev.stderr)
+            library_compile = [line for line in dev.stderr.splitlines()
+                               if "Running `" in line and "--crate-name calculator_support" in line]
+            self.assertEqual(len(library_compile), 1, dev.stderr)
+            self.assertNotIn("-C opt-level=z", library_compile[0])
+            self.assertIn("-C codegen-units=16", library_compile[0])
+            self.assertTrue((self.root / "target/thin-dev/calculator").is_file())
+            self.assertTrue((maps / "calculator.map").is_file())
+            self.assertIn("[libruntime_dylib.so]", subprocess.check_output(
+                ["readelf", "-dW", str(self.root / "target/thin-dev/calculator")], text=True))
         restart_fixture(self)
         with self.subTest(phase="unknown_selected_package_fails_before_cargo"):
             result = self.run_command("bash", "os/scripts/build-thin-apps.sh", BUILD_PACKAGES="calculator missing")

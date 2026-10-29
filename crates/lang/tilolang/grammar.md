@@ -108,8 +108,9 @@ Tokens:
   `2026-06-29T07:02:30Z` (a Time, in UTC), or a month `2026-08` (only as a filter's value), as
   search writes them.
 - `string` is `"..."`; `{expr}` inside it interpolates.
-- `reference` is `@app.Type:id`, with `/field:item` steps for a nested resource and an optional
-  `@version` (`@so.tilo.todo.Todo:01J8/items:3K`).
+- `reference` is `@app.Type:id`, `doc/item` for an item of a document, and an optional
+  `@version` (`@so.tilo.todo.Todo:01J8/3K`). An older reference's `/field:item` steps still
+  read, as the item of its last step.
 - `.name` where a lambda goes is a key path, the lambda `x -> x.name` (`sort_by(.due)`).
 - `//` starts a comment to the end of the line. `///` is a doc comment: it belongs to the
   declaration that follows, is kept in the metadata, and is what agents read.

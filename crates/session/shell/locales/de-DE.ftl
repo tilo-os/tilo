@@ -1084,9 +1084,6 @@ shell-activity-title = Aktivität
 shell-activity-loading = Aktivität im Arbeitsbereich wird geladen …
 
 # Sitzungsmenü
-power-menu-title = Ein/Aus
-power-menu-description-switch-user = Diesen Computer sperren, abmelden, Benutzer wechseln, in Bereitschaft versetzen, neu starten oder ausschalten
-power-menu-description = Diesen Computer sperren, abmelden, in Bereitschaft versetzen, neu starten oder ausschalten
 power-lock = Sperren
 power-lock-detail = Apps laufen weiter
 power-logout = Abmelden
