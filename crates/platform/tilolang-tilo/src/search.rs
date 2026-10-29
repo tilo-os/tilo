@@ -31,6 +31,9 @@ pub struct Hit {
     pub title: String,
     /// Every text it holds, in field order.
     pub texts: Vec<String>,
+    /// The resources its rich text refers to, in the one form (`tilo_reference::embed`): the
+    /// system's index finds it by what they are called now, and keeps its backlinks.
+    pub references: Vec<String>,
 }
 
 /// The searchable resources of the record `doc` and the items below it, read from the record
@@ -44,10 +47,32 @@ pub fn hits(meta: &Meta, record: &DynRecord, doc: &str) -> Vec<Hit> {
 
 fn collect(meta: &Meta, record: &DynRecord, path: &str, out: &mut Vec<Hit>) {
     let mut texts = Vec::new();
+    let mut references: Vec<String> = Vec::new();
     for field in &record.schema().fields {
         let text = match record.get(&field.id) {
             Some(DynValue::Text(text)) => text.clone(),
-            Some(DynValue::RichText(rich)) => rich.text(),
+            Some(DynValue::RichText(rich)) => {
+                let value = tilolang_runtime::rich::RichValue {
+                    blocks: rich
+                        .state()
+                        .map(|state| {
+                            state
+                                .body()
+                                .all()
+                                .filter_map(|id| state.block(id))
+                                .map(|block| (**block).clone())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                };
+                for reference in value.references() {
+                    let mark = reference.mark_value();
+                    if reference.as_resource().is_some() && !references.contains(&mark) {
+                        references.push(mark);
+                    }
+                }
+                rich.text()
+            }
             _ => continue,
         };
         if !text.trim().is_empty() {
@@ -61,6 +86,7 @@ fn collect(meta: &Meta, record: &DynRecord, path: &str, out: &mut Vec<Hit>) {
             type_name: record.schema().name.clone(),
             title,
             texts,
+            references,
         });
     }
     for field in &record.schema().fields {
@@ -104,6 +130,7 @@ pub fn every_hit(host: &Host) -> Vec<Hit> {
                 type_name: held.schema.name.clone(),
                 title: held.texts.first()?.clone(),
                 texts: held.texts,
+                references: held.references,
             })
         }));
     }
