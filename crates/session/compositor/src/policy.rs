@@ -94,6 +94,14 @@ pub trait WindowPolicy {
         None
     }
 
+    /// `window` asked for the keyboard (an xdg-activation request).
+    /// `fresh` is whether its token is recent enough to come from what the
+    /// person just did. Whether it gets the keyboard; a window refused is
+    /// one waiting for the person, which a policy shows where they look.
+    fn activate(&mut self, _window: &WindowInfo, fresh: bool) -> bool {
+        fresh
+    }
+
     /// The windows a person closed through the policy's own controls since
     /// it was last asked: the compositor asks each client to close them.
     fn take_close_requests(&mut self) -> Vec<u64> {
