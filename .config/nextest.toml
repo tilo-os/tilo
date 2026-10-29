@@ -1,12 +1,15 @@
+# Setup scripts give the ci profile's runs their test environment (below).
+experimental = ["setup-scripts"]
+
 [profile.default]
 # Report and terminate hung tests.
 slow-timeout = { period = "60s", terminate-after = 4 }
 failure-output = "immediate-final"
 fail-fast = false
 
-# Also the profile for the whole suite outside CI, under tools/test-env.sh;
-# DEVELOPMENT.md ("The whole suite, as CI runs it") has the command, which keeps
-# the visual goldens (.config/nextest-filters.toml) for an idle renderer.
+# Also the profile for the whole suite outside CI; DEVELOPMENT.md ("The whole
+# suite, as CI runs it") has the command, which keeps the visual goldens
+# (.config/nextest-filters.toml) for an idle renderer.
 [profile.ci]
 # A test still running after 30 s prints a SLOW line each period, so a log
 # shows where shard time goes while it runs. The hang bound stays 30 s x 16 = 8 min.
@@ -24,6 +27,32 @@ final-status-level = "flaky"
 
 [profile.ci.junit]
 path = "junit.xml"
+
+# The ci profile's test environment, set up by nextest itself on the machine
+# that runs the tests, wherever cargo runs them (a CI container, a developer
+# machine, a remote builder): lavapipe, PDFium, the shared fixture cache, the
+# TILO_REQUIRE_* capabilities the image promises and a private audio endpoint
+# for the run's lifetime; the native NTFS images only for a run that selects a
+# test reading them. tools/test-env-setup.sh describes each step; every test
+# binary also runs in tools/with-test-environment.sh (tools/cargo-runner.sh).
+[scripts.setup.test-runtime]
+command = ["bash", "tools/test-env-setup.sh", "runtime"]
+
+[scripts.setup.headless-audio]
+command = ["bash", "tools/test-env-setup.sh", "audio"]
+
+[scripts.setup.ntfs-fixtures]
+command = ["bash", "tools/test-env-setup.sh", "ntfs"]
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "all()"
+setup = ["test-runtime", "headless-audio"]
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-ntfs-helper)"
+setup = "ntfs-fixtures"
 
 # Process-isolated compositor, GPU, and collaboration tests need shared limits.
 #

@@ -7,12 +7,14 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools/with-test-environment.sh"
 RUNNER = ROOT / "tools/cargo-runner.sh"
 HELPER = ROOT / "tools/desktop-isolation.sh"
+SETUP = ROOT / "tools/test-env-setup.sh"
 DUMP = "import json, os; print(json.dumps(dict(os.environ)))"
 
 
@@ -92,6 +94,71 @@ class TestEnvironmentTests(unittest.TestCase):
         home, display = inner_line.split(" ")
         self.assertNotEqual(home, outer)
         self.assertEqual(display, "none")
+
+    def test_the_runs_private_audio_endpoint_is_kept_and_a_desktops_is_not(self) -> None:
+        private = {"TILO_HEADLESS_AUDIO_PID": "1234", "PULSE_RUNTIME_PATH": "/tmp/tilo-audio.x",
+                   "PULSE_SERVER": "unix:/tmp/tilo-audio.x/native"}
+        env = json.loads(self.run_wrapped("python3", "-c", DUMP, **private).stdout)
+        self.assertEqual(env["PULSE_SERVER"], "unix:/tmp/tilo-audio.x/native")
+        for desktop in ({"PULSE_SERVER": "unix:/run/user/1000/pulse/native"},
+                        {**private, "PULSE_SERVER": "unix:/run/user/1000/pulse/native"}):
+            env = json.loads(self.run_wrapped("python3", "-c", DUMP, **desktop).stdout)
+            self.assertNotIn("PULSE_SERVER", env)
+
+
+class TestEnvironmentSetupTests(unittest.TestCase):
+    """tools/test-env-setup.sh: the steps nextest's ci profile and tools/test-env.sh run."""
+
+    def setup(self, *steps: str, **extra: str) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
+        with tempfile.TemporaryDirectory() as directory:
+            env_file = Path(directory) / "env"
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": directory,
+                   "NEXTEST_ENV": str(env_file), **extra}
+            result = subprocess.run(["bash", str(SETUP), *steps], env=env,
+                                    capture_output=True, text=True, check=False)
+            lines = env_file.read_text().splitlines() if env_file.exists() else []
+            return result, dict(line.split("=", 1) for line in lines)
+
+    def test_the_ci_profile_runs_the_setup_where_its_tests_run(self) -> None:
+        config = tomllib.loads((ROOT / ".config/nextest.toml").read_text())
+        self.assertIn("setup-scripts", config["experimental"])
+        scripts = config["scripts"]["setup"]
+        steps = {name: script["command"][2:] for name, script in scripts.items()}
+        self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
+                                 "ntfs-fixtures": ["ntfs"]})
+        for script in scripts.values():
+            self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
+        rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
+        self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
+                                 "package(tilo-ntfs-helper)": "ntfs-fixtures"})
+
+    def test_runtime_provides_the_renderer_and_the_promised_capabilities(self) -> None:
+        driver = Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json")
+        result, env = self.setup("runtime", TILO_REQUIRE_GPU="0" if not driver.exists() else "1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(env["TILO_REQUIRE_MEDIA"], "1")
+        self.assertTrue(env["TILO_TEST_CACHE_DIR"].endswith("/.cache/tilo/test-env"))
+        if driver.exists():
+            self.assertEqual(env["VK_DRIVER_FILES"], str(driver))
+            self.assertEqual(env["WGPU_ADAPTER_NAME"], "llvmpipe")
+        else:
+            self.assertNotIn("VK_DRIVER_FILES", env)
+            self.assertEqual(env["TILO_REQUIRE_GPU"], "0")
+
+    def test_a_missing_renderer_fails_where_it_is_promised(self) -> None:
+        if Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json").exists():
+            self.skipTest("this machine has lavapipe")
+        result, _ = self.setup("runtime")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("lavapipe", result.stderr)
+
+    def test_existing_settings_and_endpoints_are_kept(self) -> None:
+        result, env = self.setup("audio", "ntfs", TILO_REQUIRE_AUDIO="0",
+                                 TILO_NTFS_FIXTURES="/fixtures")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(env, {"TILO_NTFS_FIXTURES": "/fixtures"})
+        result, _ = self.setup("bogus")
+        self.assertEqual(result.returncode, 2)
 
 
 class CargoRunnerTests(unittest.TestCase):

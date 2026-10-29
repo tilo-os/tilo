@@ -88,21 +88,18 @@ mkdir -p "$metadata"
     >"$metadata/cargo.json"
 
 # Like a CI lane, require what this machine provides: a test that then
-# finds no adapter or audio endpoint fails rather than skipping.
-required=()
+# finds no adapter or audio endpoint fails rather than skipping. The ci
+# profile's setup scripts (.config/nextest.toml) provide lavapipe and the
+# private audio endpoint; what this machine lacks is not promised.
+required=(TILO_REQUIRE_MEDIA=0)
 driver="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
-if [ -r "$driver" ]; then
-    required+=(TILO_REQUIRE_GPU=1)
-else
+if [ ! -r "$driver" ]; then
+    required+=(TILO_REQUIRE_GPU=0)
     echo "note: $driver is missing; install mesa-vulkan-drivers or GPU tests skip" >&2
 fi
-
-runner=(bash tools/with-test-environment.sh)
-if command -v pulseaudio >/dev/null 2>&1 \
-    && bash tools/with-headless-audio.sh true >/dev/null 2>&1; then
-    runner+=(bash tools/with-headless-audio.sh)
-    required+=(TILO_REQUIRE_AUDIO=1)
-else
+if ! { command -v pulseaudio >/dev/null 2>&1 \
+    && bash tools/with-headless-audio.sh true >/dev/null 2>&1; }; then
+    required+=(TILO_REQUIRE_AUDIO=0)
     echo "note: no isolated pulseaudio endpoint (tools/with-headless-audio.sh); audio tests skip" >&2
 fi
 
@@ -116,9 +113,6 @@ clean=(
     "CARGO_HOME=$cargo_home"
     "RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}"
     "TERM=${TERM:-dumb}"
-    "WGPU_BACKEND=vulkan"
-    "VK_DRIVER_FILES=$driver"
-    "WGPU_ADAPTER_NAME=llvmpipe"
     "${required[@]}"
 )
 for name in USER LOGNAME CARGO_TERM_COLOR TILO_PDFIUM_LIB NEXTEST_TEST_THREADS; do
@@ -127,7 +121,7 @@ for name in USER LOGNAME CARGO_TERM_COLOR TILO_PDFIUM_LIB NEXTEST_TEST_THREADS; 
     fi
 done
 
-exec env -i "${clean[@]}" "${runner[@]}" \
+exec env -i "${clean[@]}" bash tools/with-test-environment.sh \
     "$nextest" nextest run --profile ci \
     --binaries-metadata "$metadata/binaries.json" --cargo-metadata "$metadata/cargo.json" \
     -E "$expression" "${run_args[@]}"
