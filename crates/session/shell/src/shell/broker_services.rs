@@ -346,9 +346,8 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         })
     }
 
-    /// A room whose channels its node takes part in: this owner forwards an
-    /// opening app's authorship to that host
-    /// ([`host_membership::grant_app_authorship_at_host`]).
+    /// A room whose channels its node takes part in: this device writes its
+    /// membership changes there itself, as in any room it holds.
     fn grants_authorship_at_host(&self, room: &str) -> bool {
         super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().seals_records(room))
     }
@@ -360,9 +359,9 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
 
     /// A membership change this device writes itself, signed with its own
     /// key: the room's admission decides it against the caller's grants,
-    /// and its host admits it as it admits every member's change. Only an
-    /// app's authorship, the owner's to give, is the host's to commit in a
-    /// room a host governs.
+    /// and its host admits it as it admits every member's change. In a room
+    /// this device's own host governs, that host commits it
+    /// ([`host_membership::commit_at_own_host`]).
     fn execute(
         &self,
         request: tilo_owner_commit::OwnerCommitRequest,
@@ -377,21 +376,6 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 .ok_or("invalid native membership room")?;
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
-                if let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
-                    caller,
-                    command:
-                        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
-                            app,
-                        },
-                    ..
-                } = &request.operation
-                    && let Some(receipt) = self::host_membership::grant_app_authorship_at_host(
-                        network, &owner, room, &request, caller, app,
-                    )
-                    .await
-                {
-                    return receipt;
-                }
                 if let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
                     caller,
                     command,
@@ -736,77 +720,11 @@ fn stage_launch_content(
     Ok(Some(path))
 }
 
-/// Launches installed apps. With the session's workspace tree it can record
-/// a workspace author granting an app authorship before launching it; with
-/// the network, an app opened in a room another device governs is opened by
-/// that governor, which creates and places its record.
-pub struct NativeLauncher(
-    pub Option<WorkspaceTreeHandle>,
-    pub Option<Arc<super::network::ShellNetwork>>,
-);
-
-/// How long a launch waits for a room's governor to open the app.
-const GOVERNED_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
+/// Launches installed apps, in every room on this device itself: with the
+/// session's workspace tree it places their windows.
+pub struct NativeLauncher(pub Option<WorkspaceTreeHandle>);
 
 impl NativeLauncher {
-    /// Open `app` through the governor of `workspace`'s room, when another
-    /// device governs it and opens its apps. `None` when this session opens
-    /// it itself.
-    ///
-    /// Such a room only holds records its governor created, so a local
-    /// launch would open an app whose document the room does not hold. The
-    /// governor's open places the window in the room; the session then opens
-    /// its own instance of that window through [`super::peer_windows`]. A
-    /// host governing the room (a node's relay) runs no apps: the session
-    /// runs the app and publishes its window as its own, as it does a legacy
-    /// window, for the room's members to watch.
-    fn open_through_governor(
-        &self,
-        app: &str,
-        workspace: &tilo_desktop_model::Workspace,
-        place: &LaunchPlace,
-    ) -> Option<Result<(), String>> {
-        let resource = format!(
-            "{}{app}",
-            tilo_desktop_model::commands::OPEN_APP_RESOURCE_PREFIX
-        );
-        let answer = self
-            .1
-            .as_ref()
-            .filter(|network| network.governor_opens_apps(workspace.room()))?
-            .invoke_governor(
-                workspace.room(),
-                tilo_desktop_model::commands::APP_ID,
-                &resource,
-                tilo_desktop_model::commands::OPEN_APP_ACTION,
-                self.beside_group(workspace, place)
-                    .map(|group| serde_json::json!({ "beside": group })),
-            );
-        Some(match answer.wait_timeout(GOVERNED_OPEN_TIMEOUT) {
-            Ok(Some(result)) => result.map(drop),
-            Ok(None) => Err("the workspace host stopped before opening the app".into()),
-            Err(_) => Err("the workspace host did not open the app in time".into()),
-        })
-    }
-
-    /// The group of `workspace` an open at `place` goes beside, as the
-    /// governor of a room names it: the view the actor works in.
-    fn beside_group(
-        &self,
-        workspace: &tilo_desktop_model::Workspace,
-        place: &LaunchPlace,
-    ) -> Option<u64> {
-        let LaunchPlace::Beside { app_id } = place else {
-            return None;
-        };
-        let tree = self.0.as_ref()?.read();
-        tree.desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.room() == workspace.room())
-            .and_then(|workspace| super::placement::group_showing(workspace, app_id))
-    }
-
     /// Note where `app`'s window lands when it arrives: at `place` in
     /// `workspace`, decided now against the desk as it stands.
     fn place(&self, app: &str, workspace: &tilo_desktop_model::Workspace, place: &LaunchPlace) {
@@ -999,14 +917,10 @@ impl LauncherServices for NativeLauncher {
                 },
             );
         }
-        if let Some(opened) = self.open_through_governor(app, workspace, place) {
-            return opened;
-        }
         self.place(app, workspace, place);
-        // Opening an app yourself makes it an author: the app asks the
-        // room's host for that through the native owner
-        // ([`NativeWorkspaceMembership`]), and opens as a viewer until the
-        // authorship arrives.
+        // Opening an app yourself makes it an author: this device writes
+        // that through the native owner ([`NativeWorkspaceMembership`]), and
+        // the app opens as a viewer until the authorship arrives.
         let launched = match record {
             Some(record) => {
                 let record = ui::record::RecordId::parse(record)
@@ -1038,15 +952,6 @@ impl LauncherServices for NativeLauncher {
                     .map(drop)
                     .map_err(|error| error.to_string())
             });
-        }
-        if self
-            .1
-            .as_ref()
-            .is_some_and(|network| network.governor_opens_apps(workspace.room()))
-        {
-            return Err(
-                "observed package startup must be requested from the workspace host".into(),
-            );
         }
         let catalog = package_store::Catalog::from_env().map_err(|error| error.to_string())?;
         let selected = match package_root {
@@ -1085,15 +990,6 @@ impl LauncherServices for NativeLauncher {
         };
         if app.starts_with(HOST_APPLICATION_PREFIX) {
             return self.begin_launch(app, package_root, workspace, author);
-        }
-        if self
-            .1
-            .as_ref()
-            .is_some_and(|network| network.governor_opens_apps(workspace.room()))
-        {
-            return Err(
-                "observed package startup must be requested from the workspace host".into(),
-            );
         }
         let original =
             original.ok_or("native observed launch requires its original certified caller")?;
@@ -1135,11 +1031,6 @@ impl LauncherServices for NativeLauncher {
         if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
             return launch_host_application(desktop_id, workspace, content)
                 .map(|()| Launched::Unconfirmed);
-        }
-        if content.hash.is_empty()
-            && let Some(opened) = self.open_through_governor(app, workspace, place)
-        {
-            return opened.map(|()| Launched::Unconfirmed);
         }
         let mut workspace = workspace.clone();
         let document = stage_launch_content(app, content, &mut workspace, &SessionContentStore)?;
@@ -2034,7 +1925,7 @@ pub fn native_services(
     let approved_checks = membership
         .as_ref()
         .map(|tree| approved_checks::service(tree.clone(), network.clone()));
-    let launcher = Arc::new(NativeLauncher(membership.clone(), network.clone()));
+    let launcher = Arc::new(NativeLauncher(membership.clone()));
     let display_control = membership
         .as_ref()
         .zip(settings_store::installed_source())
@@ -2231,7 +2122,7 @@ pub(crate) fn test_broker_with_membership(
     let authority = Arc::new(NativeWorkspaceAuthority(membership.clone()));
     let services = HostServices {
         legacy_workspace: Some(authority.clone()),
-        launcher: Some(Arc::new(NativeLauncher(Some(membership.clone()), None))),
+        launcher: Some(Arc::new(NativeLauncher(Some(membership.clone())))),
         workspace_governance: Some(Arc::new(NativeWorkspaceGovernance(
             membership.clone(),
             None,
@@ -2807,7 +2698,7 @@ mod tests {
             crate::shell::state::WorkspaceId(3),
             "host launch test",
         );
-        let refused = NativeLauncher(None, None).launch_content(
+        let refused = NativeLauncher(None).launch_content(
             "host:chromium-browser",
             &workspace,
             LaunchContent {

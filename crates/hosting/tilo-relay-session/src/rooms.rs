@@ -83,10 +83,6 @@ pub const LIST_ROOMS: &str = "room.list";
 /// restricted to its person and redeemable `expires_in_seconds` (600 when
 /// omitted).
 pub const ENTER_ROOM: &str = "room.enter";
-/// Let the application `app` author the records of `room`: what opening an
-/// app in a room the host governs for the first time asks. Answers the
-/// room's `generation` that carries it.
-pub const GRANT_APP_AUTHORSHIP: &str = "room.grant-app-authorship";
 
 /// Serve a room a device of the host's own person governs, as that governor
 /// asks: arguments `room`, `workspace_id`, `governor_hint` (the governor's
@@ -201,16 +197,6 @@ pub struct RemoveMemberRequest {
     pub request_id: [u8; 32],
     /// The member's person.
     pub user_public_key: [u8; 32],
-}
-
-/// Delegate one application's workspace authorship. A repeated `request_id`
-/// returns the change it committed, and fails if it named another app.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GrantAppAuthorshipRequest {
-    /// Caller-chosen idempotency key; never zero.
-    pub request_id: [u8; 32],
-    /// The exact registered application identifier.
-    pub app: String,
 }
 
 /// A governed room as its administrators see it.

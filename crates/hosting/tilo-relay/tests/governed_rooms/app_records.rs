@@ -2,9 +2,7 @@
 //! the room lets the app author: a member's device signs the app's empty
 //! record itself, as every replica admits a member's record, and the app's
 //! first state reaches the record as the member's own change.
-use super::governance_actions::{ask_host_of, host_operation, outcome, subscribed};
 use super::*;
-use tilo_relay::rooms::GRANT_APP_AUTHORSHIP;
 
 const OPENED: &str = "so.tilo.notes";
 
@@ -131,21 +129,20 @@ async fn an_admitted_member_creates_an_authored_apps_empty_record() {
         "a record of an app the room does not let author is never created"
     );
 
-    let owner = subscribed(&relay, &laptop, workspace).await;
-    outcome(
-        ask_host_of(
-            &owner,
-            host_operation(
-                GRANT_APP_AUTHORSHIP,
-                serde_json::json!({ "room": room.room, "app": OPENED }),
-            ),
-        )
-        .await,
-    )
-    .unwrap();
-    drop(owner);
-    // The laptop's newest session is its current one: this replaces the one
-    // that granted the authorship.
+    // The room lets the app author, as its host is configured to.
+    assert!(
+        relay
+            .rooms()
+            .unwrap()
+            .settle_app_authorship(
+                &room.room,
+                &host.cert,
+                &std::collections::BTreeSet::from([OPENED.to_owned()]),
+                &std::collections::BTreeSet::new(),
+            )
+            .await
+            .unwrap()
+    );
     let laptop_session = session(&relay, &laptop, workspace).await;
     receive_until(
         "the member holds the app's authorship",

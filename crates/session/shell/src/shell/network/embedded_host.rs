@@ -275,16 +275,6 @@ impl ShellNetwork {
         Ok(self.host_opened(host, opened))
     }
 
-    /// [`Self::local_host`] for a task on the network's runtime: the same
-    /// opening, awaited.
-    async fn local_host_awaited(&self) -> Result<Arc<RoomHost>, String> {
-        if let Some(host) = self.room_host() {
-            return Ok(host);
-        }
-        let (host, opened) = self.host_opening()?.open().await?;
-        Ok(self.host_opened(host, opened))
-    }
-
     /// Everything opening this device's host takes, owned, so it opens on
     /// the network's runtime.
     fn host_opening(&self) -> Result<HostOpening, String> {
@@ -455,19 +445,6 @@ impl ShellNetwork {
         super::native_enrollment::wait_on_runtime(&self.runtime_handle()?, async move {
             host.ask_own(&caller, &action, arguments).await
         })?
-    }
-
-    /// [`Self::local_host_action`] for a caller already on the network's
-    /// runtime: the same in-process operation of this device's own host,
-    /// awaited rather than blocked on. Waits on nothing but this device.
-    pub(super) async fn local_host_action_awaited(
-        &self,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Value, String> {
-        let host = self.local_host_awaited().await?;
-        let caller = self.own_host_caller()?;
-        host.ask_own(&caller, action, arguments).await
     }
 
     /// The certificate this device asks its own host's operations with: its

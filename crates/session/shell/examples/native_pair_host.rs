@@ -13,7 +13,7 @@ use tilo_identity_host::{
 use tilo_relay::{
     config::RelayConfig,
     daemon::{Relay, RelayIdentity},
-    rooms::{GrantAppAuthorshipRequest, IssueInvitationRequest, RemoveMemberRequest},
+    rooms::{IssueInvitationRequest, RemoveMemberRequest},
 };
 use tilo_user_identity::{DeviceCert, IdentityPaths, RevocationList};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
@@ -68,13 +68,11 @@ async fn invitations(
     let rooms = relay.rooms().ok_or("host room service absent")?;
     let room = rooms.create("Private native pair").await?;
     rooms
-        .grant_app_authorship(
+        .settle_app_authorship(
             &room.room,
             host,
-            GrantAppAuthorshipRequest {
-                request_id: [4; 32],
-                app: "so.tilo.chat".into(),
-            },
+            &std::collections::BTreeSet::from(["so.tilo.chat".to_owned()]),
+            &std::collections::BTreeSet::new(),
         )
         .await?;
     rooms

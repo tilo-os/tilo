@@ -952,32 +952,17 @@ impl Device {
         let _ = self.note_keys(room);
     }
 
-    /// Ask `room`'s host to let the notes app author the room's records, as
-    /// this device: the host's answer.
+    /// Let the notes app author `room`'s records, written by this device.
     pub(crate) fn let_notes_author(&self, room: RoomId) -> Result<(), String> {
-        let net = Arc::clone(self.net());
-        let cert = self.cert();
-        let runtime = net.runtime_handle().unwrap();
-        runtime
-            .block_on(net.grant_app_authorship_at_host(room, &cert, NOTES))
-            .unwrap_or_else(|| Err(format!("{} reaches no host governing the room", self.label)))
-            .map(|_| ())
+        self.let_app_author(room, NOTES)
     }
 
     /// Let `app` keep records in `room`, as opening the app there first
-    /// does: the room's host lets it author, asked while this device's loop
-    /// keeps turning. Every hosted room is sealed: the app opens its
-    /// record's channel itself, so nothing is made here.
+    /// does: this device lets it author. Every hosted room is sealed: the
+    /// app opens its record's channel itself, so nothing is made here.
     pub(crate) fn open_app_first(&self, room: RoomId, app: &str) {
-        let net = Arc::clone(self.net());
-        let cert = self.cert();
-        let asked = {
-            let app = app.to_owned();
-            async move { net.grant_app_authorship_at_host(room, &cert, &app).await }
-        };
-        self.answer("the host's answer for the app's authorship", asked)
-            .expect("the room's host answers for the app's authorship")
-            .unwrap_or_else(|error| panic!("the host lets {app} author: {error}"));
+        self.let_app_author(room, app)
+            .unwrap_or_else(|error| panic!("{} lets {app} author: {error}", self.label));
         self.assert_sealed(room);
     }
 
@@ -1001,16 +986,25 @@ impl Device {
             .expect("the request runs to its answer")
     }
 
-    /// Ask `room`'s host to let `app` author the room's records, as this
-    /// device, as opening the app there first does: the host's answer.
+    /// Let `app` author `room`'s records, as opening the app there first
+    /// does: this device writes the grant itself, while its loop keeps
+    /// turning.
     pub(crate) fn let_app_author(&self, room: RoomId, app: &str) -> Result<(), String> {
         let net = Arc::clone(self.net());
-        let cert = self.cert();
-        let runtime = net.runtime_handle().unwrap();
-        runtime
-            .block_on(net.grant_app_authorship_at_host(room, &cert, app))
-            .unwrap_or_else(|| Err(format!("{} reaches no host governing the room", self.label)))
-            .map(|_| ())
+        let command =
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                app: app.to_owned(),
+            };
+        let written = async move {
+            tokio::task::spawn_blocking(move || {
+                let owner = net.native_owner()?;
+                let caller = owner.with_current(room, |view| Ok(view.device().clone()))?;
+                net.commit_membership_here(&owner, room, caller, command)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+        };
+        self.answer("the app's authorship written", written)
     }
 
     /// `room`'s records are sealed channels each app opens itself, never

@@ -2849,9 +2849,9 @@ impl WorkspaceTree {
         owned
     }
 
-    /// Make `request` in `room`: a membership change this device writes
-    /// into its replica of the room, anything else asked of the room's
-    /// governor, both from the outbox ([`room_outbox`]). Nothing changes
+    /// Make `request` in `room`: a governance change this device writes
+    /// into its replica of the room from the outbox ([`room_outbox`]),
+    /// whether or not any other device is in reach. Nothing changes
     /// here until the room's admitted document carries it, but for what is
     /// taken back: a
     /// sandbox capability ([`Self::narrow_sandbox`]), which stays taken

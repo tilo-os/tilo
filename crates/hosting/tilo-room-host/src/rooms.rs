@@ -106,10 +106,9 @@ pub struct WaitListMail {
 // daemon's historic paths.
 pub use tilo_relay_session::rooms::{
     ATTACH_HOST, ActionInvitation, CREATE_ROOM, CancelInvitationRequest, CreatedRoom, DETACH_HOST,
-    ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest,
-    HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom, IssueInvitationRequest,
-    IssuedInvitation, LIST_ROOMS, PendingInvitation, RemoveMemberRequest, RoomListing, RoomSummary,
-    SetMemberRoleRequest, UNHOST_ROOM, ask_host,
+    ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, HostedRoom,
+    IssueInvitationRequest, IssuedInvitation, LIST_ROOMS, PendingInvitation, RemoveMemberRequest,
+    RoomListing, RoomSummary, SetMemberRoleRequest, UNHOST_ROOM, ask_host,
 };
 
 use crate::peer::WorkspaceRegistry;

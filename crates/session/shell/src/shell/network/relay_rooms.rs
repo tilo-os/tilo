@@ -46,8 +46,8 @@ use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_network_actor::room_governance::Request;
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
-    ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
-    IssuedInvitation, LIST_ROOMS, RoomListing,
+    ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssuedInvitation,
+    LIST_ROOMS, RoomListing,
 };
 
 /// How long one invocation on a room's own session may take.
@@ -445,68 +445,6 @@ impl ShellNetwork {
     /// room is served here, or its host is this device's endpoint.
     pub(super) fn local_host_governs(&self, room: RoomId, host: iroh::EndpointId) -> bool {
         self.hosted_here(room) || host == self.local_peer_id
-    }
-
-    /// Have the host governing `room` let `app` author the room's records,
-    /// as `caller`, this device: what opening an app there for the first time
-    /// asks, the host's own operation on the room's session. `None` when no
-    /// host governs the room: a device governing it decides through its own
-    /// owner. Answers the governance generation the host committed it in.
-    pub(crate) async fn grant_app_authorship_at_host(
-        &self,
-        room: RoomId,
-        caller: &tilo_user_identity::DeviceCert,
-        app: &str,
-    ) -> Option<Result<u64, String>> {
-        let host = match self.governing_host(room, caller) {
-            Ok(None) => return None,
-            Ok(Some(host)) => host,
-            Err(error) => return Some(Err(error)),
-        };
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("room".into(), room.to_string().into());
-        arguments.insert("app".into(), app.into());
-        // A room this device's own host holds is asked there in process,
-        // whichever route this device's view of it came by: a room served
-        // here never waits on the network, and answers even after the
-        // in-process session with it ended.
-        if self.local_host_governs(room, host) {
-            return Some(
-                self.local_host_action_awaited(GRANT_APP_AUTHORSHIP, arguments)
-                    .await
-                    .and_then(|answer| {
-                        answer
-                            .get("generation")
-                            .and_then(serde_json::Value::as_u64)
-                            .ok_or_else(|| {
-                                "the host answered the app authorship with something else".into()
-                            })
-                    }),
-            );
-        }
-        let invoke = invocation(
-            HOST_ACTIONS_PROVIDER,
-            HOST_ROOMS_RESOURCE.to_owned(),
-            GRANT_APP_AUTHORSHIP,
-            arguments,
-        );
-        Some(
-            async {
-                let answer = self.ask_relay(room_topic_id(room), host, invoke)?;
-                let status =
-                    tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
-                        .await
-                        .map_err(|_| "app authorship reply worker stopped")?
-                        .map_err(|_| "the host did not answer the app authorship in time")??;
-                receipt_value(status)?
-                    .get("generation")
-                    .and_then(serde_json::Value::as_u64)
-                    .ok_or_else(|| {
-                        "the host answered the app authorship with something else".into()
-                    })
-            }
-            .await,
-        )
     }
 
     /// The device of the host governing `room`, to ask a host operation of

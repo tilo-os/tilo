@@ -232,6 +232,60 @@ fn a_members_membership_command_is_signed_by_their_own_device_and_decided_by_the
     );
 }
 
+/// An administrator's own device lets an app author the room, as a grant
+/// of their own; an editor's cannot, and letting it again changes nothing.
+#[test]
+fn an_administrators_own_device_lets_an_app_author_and_an_editors_cannot() {
+    use crate::workspace_membership::WorkspaceMembershipCommand;
+    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+    let editor_key = SigningKey::from_bytes(&[6; 32]);
+    let notes = WorkspaceMembershipCommand::GrantAppAuthorship {
+        app: "so.tilo.notes".into(),
+    };
+    let authors = |peer: &StatePeer| {
+        peer.permissions(editor.device_public_key, now)
+            .unwrap()
+            .policy
+            .app_authors("so.tilo.notes", &tilo_action_policy::Context::at_time(now))
+    };
+    assert!(
+        peer.clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(&editor, &notes, &editor_key, now)
+            .is_err(),
+        "an editor lets no app author the room"
+    );
+    peer.governance_mut()
+        .set_member_administrator(user, &host_key, now)
+        .unwrap();
+    assert!(
+        peer.workspace_mut()
+            .apply_workspace_membership_command(&editor, &notes, &editor_key, now)
+            .unwrap()
+    );
+    assert!(authors(&peer));
+    let grant = peer
+        .permissions(editor.device_public_key, now)
+        .unwrap()
+        .policy
+        .grants
+        .into_iter()
+        .find(|grant| grant.id.as_str() == "app-author:so.tilo.notes")
+        .unwrap();
+    assert_eq!(
+        grant.granted_by,
+        tilo_action_policy::Subject::Person(hex::encode(user))
+    );
+    assert!(
+        !peer
+            .workspace_mut()
+            .apply_workspace_membership_command(&editor, &notes, &editor_key, now)
+            .unwrap(),
+        "an app already authoring is no change"
+    );
+}
+
 /// The room's own settings an editor's device writes as `change`.
 fn change_settings(
     peer: &mut StatePeer,

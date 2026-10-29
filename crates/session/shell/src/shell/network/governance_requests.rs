@@ -10,6 +10,10 @@ use tilo_peer_state::workspace_membership::{
     AppAction, SettingsChange, WorkspaceMembershipCommand, app_action_lifetime,
 };
 
+/// How long a change this device's own host committed may take to reach
+/// this device's replica.
+const OWN_HOST_COMMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Why a desktop command is not a change to the room's governance.
 const NOT_GOVERNANCE: &str = "this change is not one of the room's own";
 
@@ -247,8 +251,7 @@ impl ShellNetwork {
             // Its host may not be open yet: asked again once it is.
             let host = self.local_host().map_err(HostAskError::Unreachable)?;
             return self
-                .commit_membership_at_own_host(&host, room, caller, command)
-                .map(drop)
+                .commit_membership_at_own_host(&host, &owner, room, caller, command)
                 .map_err(HostAskError::Refused);
         }
         self.commit_membership_here(&owner, room, caller, command)
@@ -274,16 +277,18 @@ impl ShellNetwork {
 
     /// Commit `command`, a membership change of `caller`, this device, at
     /// this device's own `host`, which governs `room`
-    /// ([`Self::own_host_governs`]). Answers the heads of the room's
-    /// document that carries it, for this device's replica to wait for.
-    /// Blocks on the host: for a worker, never the frame loop.
+    /// ([`Self::own_host_governs`]), and answer once `owner`, this device's
+    /// replica, carries it: a change made here is in force here when this
+    /// returns, wherever it was committed. Blocks on the host and the
+    /// replica: for a worker, never the frame loop.
     pub(crate) fn commit_membership_at_own_host(
         &self,
         host: &std::sync::Arc<tilo_network_actor::local_host::room_host::RoomHost>,
+        owner: &crate::shell::native_workspace_owner::NativeWorkspaceOwner,
         room: RoomId,
         caller: tilo_user_identity::DeviceCert,
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-    ) -> Result<Vec<automerge::ChangeHash>, String> {
+    ) -> Result<(), String> {
         let host = std::sync::Arc::clone(host);
         let (completion, heads) = self
             .wait_on(async move {
@@ -296,7 +301,23 @@ impl ShellNetwork {
         // The host's publication reaches this device's replica as every
         // member's does; it is drained now rather than on the next tick.
         self.schedule_native_owner_publication(room);
-        Ok(heads)
+        let deadline = std::time::Instant::now() + OWN_HOST_COMMIT_TIMEOUT;
+        loop {
+            let carried = owner.with_current(room, |view| {
+                Ok(view.peer().admitted_room().is_some_and(|doc| {
+                    heads
+                        .iter()
+                        .all(|head| automerge::ReadDoc::get_change_by_hash(doc, head).is_some())
+                }))
+            })?;
+            if carried {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("this device's host committed the change but it did not reach this device in time".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
     }
 
     /// Commit `command` in `room` as `caller`, this device, signed with its
@@ -311,9 +332,7 @@ impl ShellNetwork {
     ) -> Result<(), String> {
         if self.own_host_governs(room, &caller) {
             let host = self.local_host()?;
-            return self
-                .commit_membership_at_own_host(&host, room, caller, command)
-                .map(drop);
+            return self.commit_membership_at_own_host(&host, owner, room, caller, command);
         }
         let request = tilo_owner_commit::OwnerCommitRequest {
             room: room.to_string(),

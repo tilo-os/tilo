@@ -13,8 +13,7 @@ use tilo_actions::remote::{
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay_session::rooms::{
     ATTACH_HOST, CREATE_ROOM, CreatedRoom, DETACH_HOST, ENTER_ROOM, EnteredRoom,
-    GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, LIST_ROOMS,
-    RoomListing, UNHOST_ROOM,
+    HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, LIST_ROOMS, RoomListing, UNHOST_ROOM,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -95,7 +94,6 @@ async fn the_relays_person_creates_and_lists_rooms_as_actions() {
             CREATE_ROOM,
             LIST_ROOMS,
             ENTER_ROOM,
-            GRANT_APP_AUTHORSHIP,
             ATTACH_HOST,
             DETACH_HOST,
             HOST_ROOM,
@@ -211,22 +209,6 @@ async fn the_relays_person_enters_a_room_and_lets_an_app_author_it_as_actions() 
     let again: EnteredRoom =
         serde_json::from_value(invoke(&host, &laptop, enter()).await.unwrap()).unwrap();
     assert!(!again.changed, "already admitted");
-
-    // Holding the room, the laptop lets an app author its records.
-    let granted = invoke(
-        &host,
-        &laptop,
-        host_request(
-            GRANT_APP_AUTHORSHIP,
-            json!({ "room": created.room, "app": "so.tilo.notes" }),
-        ),
-    )
-    .await
-    .unwrap();
-    assert!(
-        granted["generation"].as_u64() > Some(created.generation),
-        "{granted}"
-    );
     relay.shutdown().await;
 }
 
@@ -252,10 +234,6 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
         (CREATE_ROOM, json!({ "name": "Theirs" })),
         (LIST_ROOMS, json!({})),
         (ENTER_ROOM, json!({ "room": room.room })),
-        (
-            GRANT_APP_AUTHORSHIP,
-            json!({ "room": room.room, "app": "so.tilo.notes" }),
-        ),
     ] {
         assert_eq!(
             invoke(&host, &stranger, host_request(action, argument)).await,

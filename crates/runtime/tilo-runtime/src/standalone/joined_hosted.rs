@@ -252,17 +252,20 @@ impl Joined {
             }
         }
         if !authors {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert("room".into(), room.to_string().into());
-            arguments.insert("app".into(), app.clone().into());
+            // This device lets the app author, committed by its own host,
+            // which signs the room's history under this device's key.
             own_host
                 .host
-                .ask_own(
+                .rooms()
+                .commit_own_membership(
+                    &room.to_string(),
                     &self.custody.device_cert,
-                    tilo_relay_session::rooms::GRANT_APP_AUTHORSHIP,
-                    arguments,
+                    tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                        app: app.clone(),
+                    },
                 )
-                .await?;
+                .await
+                .map_err(|error| error.to_string())?;
         }
         let message = neighbour_wire::NeighbourMsg::AppDocument {
             peer: u64::from_le_bytes([

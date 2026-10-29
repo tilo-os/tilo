@@ -58,6 +58,9 @@ impl NativeWorkspaceOwner {
                     | Command::Revoke { .. }
                     | Command::AddAgent { .. }
                     | Command::RemoveAgent { .. }
+                    | Command::GrantAppAuthorship { .. }
+                    | Command::Share { .. }
+                    | Command::Unshare { .. }
             )
         {
             return Err("only the room's governor commits this change".into());

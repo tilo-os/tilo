@@ -30,10 +30,10 @@ impl NativeDocumentReads for NativeOwnerCommitService {
             context.revalidate()?;
             return Ok(None);
         }
-        // A missing record of a room a host governs is made empty by this
-        // device ([`Self::prepare_application_elsewhere`]): a room hosted on
-        // a device, this one included, keeps its records in sealed channels
-        // each app opens itself.
+        // A missing record of a room another device governs is made empty
+        // by this device ([`Self::prepare_application_elsewhere`]): a room
+        // hosted on a device, this one included, keeps its records in sealed
+        // channels each app opens itself.
         Err("this room's records are sealed channels its apps open themselves".into())
     }
     fn prepare_application_elsewhere(
@@ -41,7 +41,7 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         context: &NativeDocumentReadContext,
     ) -> Option<tilo_action_broker::services::PreparingElsewhere> {
         let room = super::super::state::RoomId::parse(&context.route().cluster_id)?;
-        if !self.host_governs(room) {
+        if !self.network.as_ref()?.governed_elsewhere(room) {
             return None;
         }
         Some(preparing_here(
@@ -471,14 +471,6 @@ impl NativeOwnerCommitService {
             tilo_identity_host::policy_change::announce();
         });
     }
-    /// Whether another device governs `room` and it is a host (a home
-    /// relay), whose members create its records themselves.
-    fn host_governs(&self, room: super::super::state::RoomId) -> bool {
-        self.network.as_ref().is_some_and(|network| {
-            self.opened_owner("")
-                .is_ok_and(|owner| network.governed_by_host(&owner, room))
-        })
-    }
     /// Say why an app's first read of a record its room does not hold
     /// failed: whether its launch carried the signed original's creation
     /// evidence, and who governs the room. Only a failed read logs.
@@ -577,7 +569,7 @@ fn preparing_here(
     })
 }
 
-/// In a room a host governs (a home relay), create the channel's missing
+/// In a room another device governs, create the channel's missing
 /// record empty, signed by this device, as every receiver admits a member's
 /// record: the room lets its app author records and this person change the
 /// record. The same original launch evidence and declared kind a local

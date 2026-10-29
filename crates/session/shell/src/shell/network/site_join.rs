@@ -466,7 +466,7 @@ impl ShellNetwork {
             drop(tree);
             return Ok(());
         }
-        let launcher = crate::shell::broker_services::NativeLauncher(Some(tree), None);
+        let launcher = crate::shell::broker_services::NativeLauncher(Some(tree));
         tilo_action_broker::services::LauncherServices::launch(
             &launcher,
             app,

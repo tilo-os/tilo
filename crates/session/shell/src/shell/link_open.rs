@@ -351,7 +351,7 @@ impl LinkWorkspaces for SessionWorkspaces {
         if open.maximized {
             tracing::debug!(app, "full-tab links open as a regular window natively");
         }
-        let launcher = crate::shell::broker_services::NativeLauncher(Some(self.0.clone()), None);
+        let launcher = crate::shell::broker_services::NativeLauncher(Some(self.0.clone()));
         Some(
             tilo_action_broker::services::LauncherServices::launch(
                 &launcher,

@@ -349,11 +349,23 @@ impl StatePeer {
             .check_workspace_administration(caller.device_public_key, now)?;
         let member = self.permissions(caller.device_public_key, now)?;
         if let WorkspaceMembershipCommand::GrantAppAuthorship { app } = command {
-            self.require_governance_writer(key, now)?;
             let grant = roles::app_authorship(&self.core.room, app, Subject::Person(member.person));
-            return self
-                .governance_mut()
-                .put_governed_grants(&[grant], key, now);
+            if self.require_governance_writer(key, now).is_ok() {
+                return self
+                    .governance_mut()
+                    .put_governed_grants(&[grant], key, now);
+            }
+            // Anyone else gives it as a grant of their own, as every
+            // receiver admits it from them (`room::membership`).
+            if member.policy.grants.iter().any(|held| held.id == grant.id) {
+                return Ok(false);
+            }
+            return self.apply_governance_grant_command(
+                caller,
+                &WorkspaceMembershipCommand::Grant { grant },
+                key,
+                now,
+            );
         }
         let subject = Subject::agent(command.agent().ok_or("missing agent membership target")?);
         let room = member.policy.node();
