@@ -28,7 +28,7 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-use crate::host_core::HostCore as _;
+use crate::host_core::{ControlHost as _, HostCore as _, ResourceInvocation};
 use std::cell::Cell;
 
 #[cfg(feature = "native")]

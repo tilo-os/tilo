@@ -203,7 +203,7 @@ impl FrameHarness {
     }
 
     /// Resolve and run one History door action; the next frame presents it.
-    fn run_local_history_action(
+    pub(super) fn run_local_history_action(
         &mut self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
@@ -231,44 +231,6 @@ impl FrameHarness {
         )
         .map_err(|error| error.to_string())?;
         self.execute_history_operation(&encoded)
-    }
-
-    /// A control in the app's tree bound to the window's History door (the
-    /// History control in the app's header row) runs there, as the History
-    /// shortcut does, never as an app action. An app `owner` hosted in a tile
-    /// opens that tile's History. Returns whether it was one.
-    pub(super) fn take_history_invocation(
-        &mut self,
-        intent: &tilo_actions::ControlInvocation,
-        owner: Option<crate::history_mode::HistoryOwner>,
-    ) -> bool {
-        if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE {
-            return false;
-        }
-        let embedded = owner.and_then(|owner| {
-            crate::history_mode::embedded::invoke_door(self.root.as_mut(), &owner, intent)
-        });
-        let result = embedded.unwrap_or_else(|| {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(intent.arguments.clone())
-            );
-            self.run_local_history_action(&intent.address, Some(&argument))
-                .map_err(tilo_actions::DoorError::Failed)
-        });
-        if let Err(error) = &result {
-            tracing::debug!(?error, "headless: History control refused");
-        }
-        let result = result.map(|()| {
-            crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
-        });
-        crate::widget::controls::on_control_invocation_result(
-            self.root.as_mut(),
-            &intent.address,
-            &result,
-        );
-        true
     }
 
     fn execute_history_operation(

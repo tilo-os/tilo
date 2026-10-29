@@ -14,6 +14,10 @@ use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget}
 use crate::standalone_history_host::{HostHistoryLayout, StandaloneHistoryHost};
 use crate::widget::Widget;
 
+mod controls;
+
+pub(crate) use controls::{ControlHost, json_argument};
+
 /// A host's document and laid-out widget tree, borrowed for one read.
 pub(crate) struct HostTree<'a> {
     pub(crate) state: &'a crate::State,
@@ -212,6 +216,78 @@ pub(crate) struct HostDocument<'a> {
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
     /// Who acts here: the author of what this host writes for its person.
     pub(crate) author: &'a crate::permissions::UserId,
+}
+
+/// One invocation a host hands a door: who asks, with what argument, under
+/// which confirmation, invocation and context.
+#[derive(Clone, Copy)]
+pub(crate) struct ResourceInvocation<'a> {
+    pub(crate) address: &'a tilo_actions::ActionAddress,
+    pub(crate) actor: &'a str,
+    pub(crate) argument: Option<&'a str>,
+    pub(crate) confirmation_satisfied: bool,
+    pub(crate) broker_admitted: bool,
+    pub(crate) confirmation_evidence: Option<&'a serde_json::Value>,
+    pub(crate) invocation: Option<tilo_actions::InvocationId>,
+    pub(crate) ambient_context: Option<&'a tilo_actions::ActionContext>,
+    pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
+}
+
+impl<'a> ResourceInvocation<'a> {
+    pub(crate) fn new(address: &'a tilo_actions::ActionAddress, actor: &'a str) -> Self {
+        Self {
+            address,
+            actor,
+            argument: None,
+            confirmation_satisfied: false,
+            broker_admitted: false,
+            confirmation_evidence: None,
+            invocation: None,
+            ambient_context: None,
+            scope: None,
+        }
+    }
+
+    pub(crate) fn argument(mut self, argument: Option<&'a str>) -> Self {
+        self.argument = argument;
+        self
+    }
+
+    pub(crate) fn confirmed(mut self, confirmed: bool) -> Self {
+        self.confirmation_satisfied = confirmed;
+        self
+    }
+
+    pub(crate) fn broker_admitted(mut self, admitted: bool) -> Self {
+        self.broker_admitted = admitted;
+        self
+    }
+
+    pub(crate) fn evidence(mut self, evidence: Option<&'a serde_json::Value>) -> Self {
+        self.confirmation_evidence = evidence;
+        self
+    }
+
+    pub(crate) fn invocation(mut self, invocation: Option<tilo_actions::InvocationId>) -> Self {
+        self.invocation = invocation;
+        self
+    }
+
+    pub(crate) fn ambient_context(
+        mut self,
+        context: Option<&'a tilo_actions::ActionContext>,
+    ) -> Self {
+        self.ambient_context = context;
+        self
+    }
+
+    pub(crate) fn scope(
+        mut self,
+        scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
+    ) -> Self {
+        self.scope = scope;
+        self
+    }
 }
 
 pub(crate) trait HostCore {
