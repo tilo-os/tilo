@@ -1487,6 +1487,35 @@ impl Device {
         super::embedded_host::host_state_root(&self.dir.join("state.json"))
     }
 
+    /// Where this device stands on `room`'s note channel, for
+    /// [`Self::catch_up`].
+    fn channel_standing(&self, room: RoomId) -> String {
+        // A device serving through its session's broker holds its channels
+        // there: what the broker hands the notes app, and the shared desktop
+        // record, whose writes carry the room's windows.
+        if self.carries_layouts {
+            let note = self.note_keys(room).map_or("not handed", |_| "ready");
+            let desktop = self.endpoint_keys.lock().unwrap().clone().map_or_else(
+                || "no broker".to_owned(),
+                |keys| match keys(
+                    &room.to_string(),
+                    tilo_desktop_model::ownership::DESKTOP_APP,
+                    tilo_desktop_model::ownership::DESKTOP_RECORD,
+                    0,
+                ) {
+                    Ok(reply) => format!("{:?}", reply.access),
+                    Err(error) => error.to_string(),
+                },
+            );
+            format!("{note} by the session's broker, the desktop record's {desktop}")
+        } else {
+            match self.note_access(room) {
+                ChannelAccess::Ready(_) => "ready".to_owned(),
+                other => format!("{other:?}"),
+            }
+        }
+    }
+
     /// Where this device stands on `room`, for a wait that timed out: its
     /// native owner, whether it holds the room, the note as the notes app
     /// here has it (and the changes it still lacks), the note's writes
@@ -1511,10 +1540,7 @@ impl Device {
                 tree.seals_records(room),
             )
         };
-        let access = match self.note_access(room) {
-            ChannelAccess::Ready(_) => "ready".to_owned(),
-            other => format!("{other:?}"),
-        };
+        let access = self.channel_standing(room);
         let (text, heads, missing) = {
             let mut notes = self.notes.lock().unwrap();
             notes.get_mut(&room).map_or((None, 0, 0), |document| {
