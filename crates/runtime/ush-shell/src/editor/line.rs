@@ -35,6 +35,15 @@ impl Line {
         }
     }
 
+    /// `text` with the cursor after its first `cursor` characters.
+    pub fn with_cursor(text: &str, cursor: usize) -> Self {
+        let chars: Vec<char> = text.chars().collect();
+        Self {
+            cursor: cursor.min(chars.len()),
+            chars,
+        }
+    }
+
     pub fn text(&self) -> String {
         self.chars.iter().collect()
     }

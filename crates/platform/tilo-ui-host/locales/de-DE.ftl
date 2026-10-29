@@ -30,6 +30,7 @@ tilolang-none-selected = Nichts ausgewählt
 tilolang-sort = Sortieren
 tilolang-more = Weitere Aktionen
 tilolang-undo = Rückgängig
+tilolang-typing-unplaced = Keine Eingabe hat übernommen, was du getippt hast: „{ $typed }“
 tilolang-did = { $action }: { $title }
 tilolang-replying-to = Antwort an
 tilolang-thread-replies = { $count ->

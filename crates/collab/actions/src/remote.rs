@@ -48,6 +48,7 @@ mod providers;
 mod record_read;
 mod search;
 mod shared_host;
+pub mod task_programs;
 #[cfg(any(test, feature = "test-support"))]
 mod test_host;
 mod wait;

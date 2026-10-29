@@ -13,7 +13,9 @@
 //! 2. its identity-service connection;
 //! 3. its verified module, in a sealed memfd ([`Module`]);
 //! 4. its window: the patch connection to the window's process, which shows
-//!    what the instance sends and reports what the person did.
+//!    what the instance sends and reports what the person did;
+//! 5. for an app whose types hold an outside service's resources, its connection
+//!    to the app's origin connector (`crate::origin_connector`).
 //!
 //! A message is one `SOCK_SEQPACKET` packet in the framing of `jobs`: the verb
 //! [`INSTANCE_VERB`] and the request ([`InstanceRequest`], JSON), with the four
@@ -263,6 +265,8 @@ pub struct InstanceFds {
     pub identity: Descriptor,
     pub module: Descriptor,
     pub window: Descriptor,
+    /// The connection to the app's origin connector, for an app with one.
+    pub origin: Option<Descriptor>,
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -331,7 +335,10 @@ pub fn send_instance(
                 fds.identity.as_fd(),
                 fds.module.as_fd(),
                 fds.window.as_fd(),
-            ],
+            ]
+            .into_iter()
+            .chain(fds.origin.as_ref().map(std::os::fd::AsFd::as_fd))
+            .collect::<Vec<_>>(),
         )
     }
     #[cfg(not(target_os = "linux"))]
@@ -425,8 +432,16 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
         }
         let request: InstanceRequest = serde_json::from_slice(request)
             .map_err(|_| invalid("an instance request that does not decode"))?;
-        let [broker, identity, module, window] = <[Descriptor; 4]>::try_from(fds)
-            .map_err(|_| invalid("an instance without its four connections"))?;
+        let mut fds = fds.into_iter();
+        let (Some(broker), Some(identity), Some(module), Some(window)) =
+            (fds.next(), fds.next(), fds.next(), fds.next())
+        else {
+            return Err(invalid("an instance without its four connections"));
+        };
+        let origin = fds.next();
+        if fds.next().is_some() {
+            return Err(invalid("an instance with more connections than it has"));
+        }
         if request.module_len > MAX_MODULE {
             return Err(invalid("a module over the door's limit"));
         }
@@ -437,6 +452,7 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
                 identity,
                 module,
                 window,
+                origin,
             },
         )))
     }
@@ -552,10 +568,23 @@ mod tests {
             identity: connection(),
             module: connection(),
             window: connection(),
+            origin: None,
         };
         send_instance(&shell, &request, &fds).unwrap();
-        let (received, _fds) = receive_instance(&host).unwrap().unwrap();
+        let (received, received_fds) = receive_instance(&host).unwrap().unwrap();
         assert_eq!(received, request);
+        assert!(
+            received_fds.origin.is_none(),
+            "an app without an origin has no connection"
+        );
+        // An app with an origin brings its connection to the connector as the fifth.
+        let fds = InstanceFds {
+            origin: Some(connection()),
+            ..fds
+        };
+        send_instance(&shell, &request, &fds).unwrap();
+        let (_, received_fds) = receive_instance(&host).unwrap().unwrap();
+        assert!(received_fds.origin.is_some());
         drop(shell);
         assert!(
             receive_instance(&host).unwrap().is_none(),

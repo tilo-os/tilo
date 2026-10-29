@@ -141,6 +141,11 @@ impl ui::app::AppSurface for Region {
     fn set_cursor(&self, _: ui::winit::window::CursorIcon) {}
 }
 
+thread_local! {
+    /// The serial of the last input event the live window was handed.
+    static INPUT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// The window the person uses: the headless frame harness, or the live `App` a window process
 /// runs, fed input as its surface feeds it.
 enum Window {
@@ -151,6 +156,8 @@ enum Window {
 impl Window {
     /// The live window's frames, as its surface runs them, until it is at rest.
     fn live_frame(app: &mut ui::App) {
+        // The wake's input is all handled, as the window's event loop says once it is.
+        app.input_handled(INPUT.with(std::cell::Cell::get));
         for _ in 0..3 {
             let mut scene = ui::advanced::Scene::new();
             if !app.surface_frame(&Region, &mut scene) || !app.unsettled() {
@@ -162,7 +169,11 @@ impl Window {
     /// `event` as the live window's surface delivers it. A quick hand's events (and
     /// tilo-control's) come faster than the window's frames: none runs between them, only once
     /// the session settles.
+    /// Each carries the next input serial, as the compositor's do: the window has handled the
+    /// input before it when it gets it.
     fn live_input(app: &mut ui::App, event: ui::winit::event::WindowEvent) {
+        let before = INPUT.with(|input| input.replace(input.get().wrapping_add(1)));
+        app.input_handled(before);
         app.surface_input(&Region, event, false);
     }
 
@@ -520,7 +531,7 @@ fn new_notes_take_the_keys_typed_right_after_new_note(mut session: Session) {
     let plus = session.new_note_button();
     session.window.click_at(plus.0, plus.1);
     session.settle();
-    let title = session.field("Title");
+    let title = session.field("Untitled");
     session.window.click_at(title.0, title.1);
     session.window.type_text("First ");
     session.settle();
@@ -536,10 +547,10 @@ fn new_notes_take_the_keys_typed_right_after_new_note(mut session: Session) {
         titles,
         [
             // Clicked past its end: typed after it.
-            "UntitledFirst ",
-            "UntitledNote title",
-            "UntitledNote title",
-            "UntitledNote title"
+            "First ",
+            "Note title",
+            "Note title",
+            "Note title"
         ],
         "every key typed after New note lands in the new note's title, none lost"
     );
@@ -569,7 +580,7 @@ fn keys_typed_after_each_of_several_presses_land_in_the_note_that_press_made(mut
     titles.sort();
     assert_eq!(
         titles,
-        ["UntitledAlpha", "UntitledBeta", "UntitledGamma"],
+        ["Alpha", "Beta", "Gamma"],
         "each note has the keys typed after its own press"
     );
 }
@@ -595,7 +606,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_onc
     // The connection's queue fills up while the person types fast into notes, open and new.
     busy.store(true, Ordering::SeqCst);
     let before = changes.lock().unwrap().len();
-    let title = session.field("Title");
+    let title = session.field("Untitled");
     session.window.click_at(title.0 + 40.0, title.1);
     for key in ["Be", "ta", "Gam", "ma"] {
         session.window.type_text(key);
@@ -613,7 +624,7 @@ fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_onc
     titles.sort();
     assert_eq!(
         titles,
-        ["UntitledBetaGamma", "UntitledWV"],
+        ["BetaGamma", "WV"],
         "every key is kept while the room cannot take it yet"
     );
     assert_eq!(
@@ -657,7 +668,7 @@ fn clicking_a_notes_title_takes_the_keyboard_from_its_body_in_the_live_window() 
         session.window.click_at(body.0 + shift, body.1);
         session.window.type_text("Body");
         session.settle();
-        let title = session.field("Title");
+        let title = session.field("Untitled");
         session.window.click_at(title.0 + shift, title.1);
         session.window.type_text("XY");
         session.settle();
@@ -713,5 +724,96 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
     assert!(
         !shown.iter().any(|text| text.contains("95522b97c3d1")),
         "nothing shows the person's key: {shown:?}"
+    );
+}
+
+/// The desktop's bar over the live window, as the shell runs it: the window declares its slots
+/// there, and what the person does with them reaches the window on its shell-ui connection,
+/// naming the input the shell had sent the window by then.
+struct Bar {
+    shell: std::os::unix::net::UnixStream,
+}
+
+impl Bar {
+    /// The bar over `session`'s live window, which the desktop hosts.
+    fn over(session: &mut Session) -> Self {
+        let (shell, app) = std::os::unix::net::UnixStream::pair().unwrap();
+        let Window::Live(window) = &mut session.window else {
+            panic!("the bar is over the live window");
+        };
+        window.test_floating_service_connection(
+            ui::floating_surface::FloatingSurfaceServiceClient::from_test_stream(app).unwrap(),
+        );
+        Self { shell }
+    }
+
+    /// The person presses the bar's slot `name` after the input with the serial `after`; the
+    /// window reads it at once, before the input it has not handled yet.
+    fn press(&mut self, session: &mut Session, name: &str, after: u32) {
+        use std::io::Write as _;
+        let id = ui::window_toolbar::declared()
+            .expect("the window declares its bar's slots")
+            .actions
+            .iter()
+            .find(|action| action.name == name)
+            .unwrap_or_else(|| panic!("the bar has {name:?}"))
+            .id
+            .clone();
+        let mut frame = serde_json::to_vec(
+            &ui::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent {
+                event: ui::window_toolbar::ToolbarEvent::Action { id },
+                after_input: Some(after),
+            },
+        )
+        .unwrap();
+        frame.push(b'\n');
+        self.shell.write_all(&frame).unwrap();
+        let Window::Live(window) = &mut session.window else {
+            panic!("the bar is over the live window");
+        };
+        window.test_pump_floating_service();
+    }
+}
+
+/// The serial the next `count` input events end at.
+fn input_after(count: u32) -> u32 {
+    INPUT.with(std::cell::Cell::get).wrapping_add(count)
+}
+
+/// The person types in a note's body, presses "+" in the window's bar and types the new
+/// note's title, quicker than the window reads its input: the press reaches the window before
+/// the keys typed before it. It runs where the person made it, after those keys and before the
+/// ones after it, so each lands where it was typed.
+#[test]
+fn a_bar_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_where_the_keyboard_was_follows_into_what_it_opens()
+ {
+    ui::window_toolbar::set_hosted(true);
+    let mut session = Session::live_notes();
+    let mut bar = Bar::over(&mut session);
+    bar.press(&mut session, "New note", input_after(0));
+    session.settle();
+    session.window.type_text("First");
+    session.settle();
+    let body = session.body();
+    session.window.click_at(body.0, body.1);
+    session.settle();
+    // "Body" is eight key events; the press comes after them, and reaches the window first.
+    bar.press(&mut session, "New note", input_after(8));
+    session.window.type_text("Body");
+    session.window.type_text("Echo");
+    session.settle();
+    let mut titles = session.titles();
+    titles.sort();
+    assert_eq!(
+        titles,
+        ["Echo", "First"],
+        "the keys typed after the press are the new note's title"
+    );
+    let shown = session.shown();
+    assert!(
+        !shown
+            .iter()
+            .any(|text| text.contains("Body") || text.contains("Echo\n")),
+        "the new note's body has none of the other's typing: {shown:?}"
     );
 }

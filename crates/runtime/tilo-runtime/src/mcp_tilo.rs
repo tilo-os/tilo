@@ -141,6 +141,8 @@ pub(crate) struct Programs {
     /// The names the task's programs bound.
     lets: Vec<String>,
     steps: Vec<Step>,
+    /// What the person pointed at when they asked, as a resource literal: what `this` names.
+    this: Option<String>,
 }
 
 impl Programs {
@@ -287,6 +289,13 @@ fn resolve_refs(source: &str, programs: &Programs) -> Result<String, String> {
                     out.push_str(literal);
                     continue;
                 }
+                if text == "this"
+                    && !programs.lets.contains(&text)
+                    && let Some(this) = &programs.this
+                {
+                    out.push_str(this);
+                    continue;
+                }
                 if looks_like_ref(&text) && !programs.lets.contains(&text) {
                     return Err(format!(
                         "`{text}` is no reference this session showed: a reference comes from an \
@@ -409,16 +418,123 @@ fn preview(answer: &Value) -> String {
     text
 }
 
+/// One program of a task as the task's own runner reads it back: what the agent is told, and
+/// what the program did, for the runner to show the person.
+#[derive(Clone, Debug, Default)]
+pub struct TaskProgram {
+    /// What the agent reads: the door's tilolang answer.
+    pub text: String,
+    pub failed: bool,
+    /// The host's answer (`{state, output, detail, steps, changed, apps}`), when the program ran.
+    pub answer: Option<Value>,
+    /// Each reference the text shows, with the resource literal it names.
+    pub refs: Vec<(String, String)>,
+    /// The program as it ran, its references written as the resources they name.
+    pub source: Option<String>,
+}
+
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+    /// One task of agent `agent_id` in `room`, acting for `person` who started it (the Tasks
+    /// agent's run of an issue): it may do what both the agent and that person may, as the
+    /// agent's own calls of the run do. Each session is its own fresh execution.
+    #[must_use]
+    pub fn for_task(host: H, room: String, agent_id: &str, person: Option<&str>) -> Self {
+        let mut caller = tilo_actions::remote::Caller::local_agent(agent_id);
+        if let Some(person) = person {
+            caller = caller.acting_for(person);
+        }
+        let caller = caller.in_room(room.clone()).in_new_execution();
+        Self::from_caller(host, room, format!("agent:{agent_id}"), caller)
+            .with_surface(crate::mcp::Surface::Agent)
+    }
+
+    /// Attribute every invocation of this session to `group`, the run of a task whose own
+    /// runner (the Tasks agent's loop) asks this session's programs: its changes are that run's.
+    #[must_use]
+    pub fn with_work_group(mut self, group: tilo_actions::WorkGroup) -> Self {
+        *self
+            .run
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(group);
+        self
+    }
+}
+
+impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+    /// One program of this task for a runner of the task's own (the Tasks agent's loop) rather
+    /// than an MCP client: the same step as the `tilo` tool, read back with what it did.
+    /// `this` is what the person pointed at, as a resource literal, which `this` then names.
+    pub async fn task_program(
+        &self,
+        program: &str,
+        confirm: bool,
+        this: Option<&str>,
+    ) -> TaskProgram {
+        if let Some(this) = this {
+            let mut programs = self.programs.lock_recover();
+            programs.this = Some(this.to_owned());
+        }
+        let args = TiloArgs {
+            program: program.to_owned(),
+            confirm,
+        };
+        let (reply, answer, source) = match Box::pin(self.tilo_step(args)).await {
+            Ok(ran) => ran,
+            Err(text) => {
+                return TaskProgram {
+                    text,
+                    failed: true,
+                    ..TaskProgram::default()
+                };
+            }
+        };
+        let programs = self.programs.lock_recover();
+        let mut refs: Vec<(String, String)> = Vec::new();
+        for piece in pieces(&reply.text) {
+            if let Piece::Word {
+                text,
+                member: false,
+            } = piece
+                && let Some(literal) = programs.by_ref.get(&text)
+                && !refs.iter().any(|(known, _)| *known == text)
+            {
+                refs.push((text, literal.clone()));
+            }
+        }
+        TaskProgram {
+            text: reply.text,
+            failed: reply.failed,
+            answer,
+            refs,
+            source,
+        }
+    }
+
     /// The `tilo` tool.
     pub(super) async fn agent_tilo(&self, args: TiloArgs) -> Result<Reply, String> {
+        Box::pin(self.tilo_step(args))
+            .await
+            .map(|(reply, _, _)| reply)
+    }
+
+    /// One `tilo` call: its reply, the host's answer when a program ran, and the program as it
+    /// ran.
+    async fn tilo_step(
+        &self,
+        args: TiloArgs,
+    ) -> Result<(Reply, Option<Value>, Option<String>), String> {
         let program = args.program.trim();
         match program {
             "" => return Err("send a program: tilolang statements, one per line".to_owned()),
-            "undo" => return self.undo_steps(false).await,
-            "undo task" => return self.undo_steps(true).await,
-            "history task" => return Ok(Reply::ok(self.history())),
-            "catalogue" => return self.catalogue().await,
+            "undo" => {
+                return self
+                    .undo_steps(false)
+                    .await
+                    .map(|reply| (reply, None, None));
+            }
+            "undo task" => return self.undo_steps(true).await.map(|reply| (reply, None, None)),
+            "history task" => return Ok((Reply::ok(self.history()), None, None)),
+            "catalogue" => return self.catalogue().await.map(|reply| (reply, None, None)),
             _ => {}
         }
         let source = resolve_refs(program, &self.programs.lock_recover())?;
@@ -443,10 +559,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     reply.text,
                     "\nwhat it changed could not be taken back: {why}"
                 );
-                return Ok(reply);
+                return Ok((reply, Some(answer), Some(source)));
             }
         }
-        Ok(self.answered(program, &answer))
+        Ok((self.answered(program, &answer), Some(answer), Some(source)))
     }
 
     /// Every installed app the task's programs may name, with its declarations, as JSON

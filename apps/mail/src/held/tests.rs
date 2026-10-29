@@ -126,56 +126,6 @@ fn search_messages_finds_held_mail_by_every_word() {
     assert!(none["messages"].as_array().unwrap().is_empty());
 }
 
-#[test]
-fn draft_reply_writes_the_draft_quoting_the_original_and_sends_nothing() {
-    let mut app = TestApp::<MailShell>::new().unwrap();
-    let id = sample(&mut app);
-    app.call(
-        "draft-reply",
-        json!({ "message": id, "body": "Thanks Sam, looks good." }),
-    )
-    .unwrap();
-    let state = app.state();
-    assert_eq!(state.draft.to, "Sam Lee <sam@example.test>");
-    assert_eq!(state.draft.subject, "Re: Quarterly numbers");
-    assert!(state.draft.body.starts_with("Thanks Sam, looks good."));
-    assert!(state.draft.body.contains("> They are up."));
-    assert!(
-        state.draft.rich_body.is_some(),
-        "the composer opens on the text"
-    );
-    assert!(state.outgoing().is_empty(), "nothing is sent");
-}
-
-#[test]
-fn draft_message_writes_a_new_draft() {
-    let mut app = TestApp::<MailShell>::new().unwrap();
-    app.call(
-        "draft-message",
-        json!({ "to": "Ana <ana@example.test>", "subject": "Lunch", "body": "Friday?", "cc": "bo@example.test" }),
-    )
-    .unwrap();
-    let draft = app.state().draft;
-    assert_eq!(
-        (
-            draft.to.as_str(),
-            draft.cc.as_str(),
-            draft.subject.as_str(),
-            draft.body.as_str()
-        ),
-        (
-            "Ana <ana@example.test>",
-            "bo@example.test",
-            "Lunch",
-            "Friday?"
-        )
-    );
-}
-
-/// What refuses drafting over a person's draft: no verb an agent may not
-/// take.
-const PERSONS_DRAFT: &str = "a person is writing a draft here";
-
 fn draft(app: &mut TestApp<MailShell>, subject: &str, body: &str) -> Result<(), String> {
     let drafted = app.call(
         "draft-message",
@@ -197,136 +147,103 @@ fn save_as_a_person(app: &mut TestApp<MailShell>, subject: &str, body: &str) {
     app.settle();
 }
 
-fn refused_over_a_persons_draft(refused: Result<(), String>) {
-    let refused = refused.expect_err("a person's draft is left alone");
-    assert!(refused.contains(PERSONS_DRAFT), "{refused}");
-    assert!(
-        !refused.contains("save-draft") && !refused.contains("discard-draft"),
-        "it names no verb an agent may not take: {refused}"
-    );
+/// The drafts of their own, by id, oldest first.
+fn drafts(app: &TestApp<MailShell>) -> Vec<(String, crate::resource::DraftState)> {
+    app.state()
+        .drafts
+        .iter()
+        .map(|(id, draft)| (id.as_str().to_owned(), draft.clone()))
+        .collect()
 }
 
 #[test]
-fn drafting_again_over_its_own_untouched_draft_replaces_it() {
+fn draft_reply_starts_a_draft_of_its_own_quoting_the_original_and_sends_nothing() {
     let mut app = TestApp::<MailShell>::new().unwrap();
-    draft(&mut app, "Claim pending", "We still need your ID.").unwrap();
+    let id = sample(&mut app);
+    let answer = app
+        .call(
+            "draft-reply",
+            json!({ "message": id, "body": "Thanks Sam, looks good.", "notes": "Numbers check out." }),
+        )
+        .unwrap()
+        .expect("the draft is answered");
+    app.settle();
+    let [(draft_id, draft)]: [(String, crate::resource::DraftState); 1] =
+        drafts(&app).try_into().expect("one draft");
+    assert_eq!(answer["draft"]["id"], draft_id.as_str(), "{answer}");
+    assert_eq!(answer["draft"]["item"], format!("mail.draft:{draft_id}"));
+    assert_eq!(draft.to, "Sam Lee <sam@example.test>");
+    assert_eq!(draft.subject, "Re: Quarterly numbers");
+    assert!(draft.body.starts_with("Thanks Sam, looks good."));
+    assert!(draft.body.contains("> They are up."));
+    assert_eq!(draft.in_reply_to.as_deref(), Some(id.as_str()));
+    assert_eq!(draft.notes, "Numbers check out.");
+    assert!(draft.rich_body.is_some(), "the composer opens on the text");
+    let state = app.state();
+    assert!(
+        state.draft.is_empty(),
+        "the composer's own draft is untouched"
+    );
+    assert!(state.outgoing().is_empty(), "nothing is sent");
+}
+
+#[test]
+fn every_reply_and_message_drafted_is_a_draft_of_its_own() {
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let id = sample(&mut app);
+    for body in ["Thanks Sam.", "Thanks Sam, looks good."] {
+        app.call("draft-reply", json!({ "message": id, "body": body }))
+            .unwrap();
+        app.settle();
+    }
     let answer = app
         .call(
             "draft-message",
-            json!({ "to": "Ana <ana@example.test>", "subject": "Claim approved", "body": "We pay EUR 239." }),
-        )
-        .expect("its own draft is written over")
-        .expect("an answer");
-    app.settle();
-    assert_eq!(answer["draft"]["subject"], "Claim approved", "{answer}");
-    let state = app.state();
-    assert_eq!(
-        (state.draft.subject.as_str(), state.draft.body.as_str()),
-        ("Claim approved", "We pay EUR 239.")
-    );
-    let drafts = app
-        .call(
-            "export-content",
-            json!({ "format": "json", "folder": "drafts" }),
+            json!({ "to": "Ana <ana@example.test>", "subject": "Lunch", "body": "Friday?", "cc": "bo@example.test", "notes": "Ask about Monday too." }),
         )
         .unwrap()
-        .unwrap();
-    let parsed: serde_json::Value = serde_json::from_slice(&exported(&app, &drafts)).unwrap();
+        .expect("the draft is answered");
+    app.settle();
+    assert_eq!(answer["draft"]["subject"], "Lunch", "{answer}");
+    let all = drafts(&app);
+    assert_eq!(all.len(), 3, "nothing is written over");
+    let lunch = &all
+        .iter()
+        .find(|(id, _)| answer["draft"]["id"] == id.as_str())
+        .expect("the answered draft")
+        .1;
     assert_eq!(
-        parsed.as_array().map(Vec::len),
-        Some(1),
-        "one draft: {parsed}"
+        (
+            lunch.to.as_str(),
+            lunch.cc.as_str(),
+            lunch.body.as_str(),
+            lunch.notes.as_str()
+        ),
+        (
+            "Ana <ana@example.test>",
+            "bo@example.test",
+            "Friday?",
+            "Ask about Monday too."
+        )
     );
-    assert_eq!(parsed[0]["body"], "We pay EUR 239.");
-    // Over and over: each one written is its own again.
-    draft(
-        &mut app,
-        "Claim approved",
-        "We pay EUR 239.00 by 28 October.",
-    )
-    .unwrap();
-    assert_eq!(app.state().draft.body, "We pay EUR 239.00 by 28 October.");
 }
 
 #[test]
-fn a_draft_a_person_changed_after_it_was_drafted_is_left_alone() {
-    // Saved by the person, as the composer saves it.
+fn a_draft_a_person_is_writing_is_left_alone_beside_new_ones() {
     let mut app = TestApp::<MailShell>::new().unwrap();
-    draft(&mut app, "Lunch", "Friday?").unwrap();
     save_as_a_person(&mut app, "Lunch", "Friday? Or Monday.");
-    refused_over_a_persons_draft(draft(&mut app, "Lunch", "Monday?"));
+    draft(&mut app, "Lunch", "Monday?").unwrap();
     assert_eq!(app.state().draft.body, "Friday? Or Monday.");
-
-    // Its subject typed over in the composer.
-    let mut app = TestApp::<MailShell>::new().unwrap();
-    draft(&mut app, "Lunch", "Friday?").unwrap();
-    app.call(
-        "field-edit",
-        json!({ "edit": crate::resource::Mail::paths().draft.subject.replace("Lunch on Friday") }),
-    )
-    .unwrap();
-    app.settle();
-    refused_over_a_persons_draft(draft(&mut app, "Lunch", "Monday?"));
-
-    // Opened in the composer, which starts its body again to type in, the
-    // same text as before.
-    let mut app = TestApp::<MailShell>::new().unwrap();
-    draft(&mut app, "Lunch", "Friday?").unwrap();
-    app.call("start-draft-body", json!({ "text": "Friday?" }))
+    let [(id, _)]: [(String, crate::resource::DraftState); 1] =
+        drafts(&app).try_into().expect("one draft");
+    // Each is discarded on its own.
+    app.call_confirmed("discard-draft", json!({ "draft": id }))
         .unwrap();
     app.settle();
-    refused_over_a_persons_draft(draft(&mut app, "Lunch", "Monday?"));
-    assert_eq!(app.state().draft.body, "Friday?");
-}
-
-#[test]
-fn a_draft_a_person_is_writing_is_left_alone() {
-    let mut app = TestApp::<MailShell>::new().unwrap();
-    save_as_a_person(&mut app, "Lunch", "Friday?");
-    refused_over_a_persons_draft(draft(&mut app, "Lunch", "Monday?"));
-    // Only begun: a blank message opened in the composer.
-    let mut app = TestApp::<MailShell>::new().unwrap();
-    app.call("start-draft-body", json!({ "text": "" })).unwrap();
-    app.settle();
-    refused_over_a_persons_draft(draft(&mut app, "Lunch", "Monday?"));
-}
-
-#[test]
-fn once_the_draft_is_discarded_drafting_writes_a_new_one() {
-    let mut app = TestApp::<MailShell>::new().unwrap();
-    save_as_a_person(&mut app, "Lunch", "Friday?");
-    refused_over_a_persons_draft(draft(&mut app, "Lunch", "Monday?"));
+    assert!(drafts(&app).is_empty());
+    assert_eq!(app.state().draft.body, "Friday? Or Monday.");
     app.call_confirmed("discard-draft", json!({})).unwrap();
-    app.settle();
-    draft(&mut app, "Lunch", "Monday?").unwrap();
-    assert_eq!(app.state().draft.body, "Monday?");
-    assert!(app.state().draft.drafted.is_some());
-    app.call_confirmed("discard-draft", json!({})).unwrap();
-    assert_eq!(app.state().draft.drafted, None, "discarding forgets it");
-}
-
-#[test]
-fn draft_reply_writes_over_its_own_untouched_reply_and_leaves_a_persons_alone() {
-    let mut app = TestApp::<MailShell>::new().unwrap();
-    let id = sample(&mut app);
-    let reply = |app: &mut TestApp<MailShell>, body: &str| {
-        let replied = app.call("draft-reply", json!({ "message": id, "body": body }));
-        app.settle();
-        replied.map(drop).map_err(|refused| refused.to_string())
-    };
-    reply(&mut app, "Thanks Sam.").unwrap();
-    reply(&mut app, "Thanks Sam, looks good.").expect("its own reply is written over");
-    let state = app.state();
-    assert!(state.draft.body.starts_with("Thanks Sam, looks good.\n"));
-    assert_eq!(state.draft.subject, "Re: Quarterly numbers");
-    // A reply drafted over a message drafted, and the other way round.
-    draft(&mut app, "Lunch", "Friday?").unwrap();
-    reply(&mut app, "Thanks Sam.").unwrap();
-    assert_eq!(app.state().draft.subject, "Re: Quarterly numbers");
-
-    save_as_a_person(&mut app, "Re: Quarterly numbers", "Thanks Sam. More soon.");
-    refused_over_a_persons_draft(reply(&mut app, "Thanks again."));
-    assert_eq!(app.state().draft.body, "Thanks Sam. More soon.");
+    assert!(app.state().draft.is_empty());
 }
 
 #[test]

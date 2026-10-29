@@ -2129,6 +2129,38 @@ impl WindowGroup {
         !self.tab_rects().iter().any(|r| r.contains(p))
     }
 
+    /// Where the window can be carried by its bar while it stands on a
+    /// canvas: anywhere on the bar that is not a control, its title and
+    /// location included. The resize edge and the search control are not.
+    pub fn carry_grab_hit(&self, p: Point) -> bool {
+        self.navigation_bar_visible()
+            && self.bar_rect().contains(p)
+            && !self.resize_grab_hit(p)
+            && !self.search.hit(p)
+            && !self.bar.control_hit(p)
+    }
+
+    /// Whether the window can be carried by its bar from its title and
+    /// location ([`Self::carry_grab_hit`]): it stands on a canvas.
+    pub fn set_carriable(&mut self, carriable: bool) {
+        self.bar.set_carriable(carriable);
+    }
+
+    /// The press on the bar became a carry of the window.
+    pub fn cancel_press_for_carry(&mut self) {
+        self.bar.cancel_press_for_carry();
+    }
+
+    /// Whether the bar has a menu or picker open over the window.
+    pub fn bar_popup_open(&self) -> bool {
+        self.navigation_bar_visible() && self.bar.popup_open()
+    }
+
+    /// Close what the bar has open over the window. Whether anything was.
+    pub fn close_bar_popups(&mut self) -> bool {
+        self.bar.close_popups()
+    }
+
     /// Whether `p` is on the window's own controls at the end of its bar
     /// (history, maximize, close).
     pub(crate) fn window_control_hit(&self, p: Point) -> bool {

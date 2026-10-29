@@ -1050,6 +1050,9 @@ pub struct State {
     pub seat: Seat<Self>,
     /// Monotonic counter for input serials — reusing old `Serial`s would make wayland clients ignore the motion/button.
     pub serial_counter: u32,
+    /// Which input each app's process was sent, so what the person does in its window's bar
+    /// keeps its place among it.
+    pub input_order: crate::compositor::input_order::InputOrder,
     /// Recently issued seat serials and their issue time. The activation
     /// protocol carries a serial but no timestamp for the underlying input;
     /// retaining this short bounded history lets us reject fabricated and
@@ -1420,6 +1423,18 @@ pub(crate) fn committed_surface_scale(
             .map(|source| (source.loc.x, source.loc.y, source.size.w, source.size.h)),
         destination: viewport.dst.map(|size| (size.w, size.h)),
     }
+}
+
+/// The scale a window renders at on a display of `output_scale` while the
+/// canvas it stands on is zoomed to `zoom`: as many buffer pixels per window
+/// pixel as the screen gives it, so zoomed text is drawn sharp rather than
+/// stretched. Rounded to the protocol's 1/120 steps, so a zoom that settles
+/// asks for one scale, not a new one for every last digit.
+fn canvas_render_scale(output_scale: f64, zoom: f64) -> f64 {
+    if !zoom.is_finite() || zoom <= 0.0 || (zoom - 1.0).abs() < f64::EPSILON {
+        return output_scale;
+    }
+    ((output_scale * zoom * 120.0).round() / 120.0).max(1.0 / 120.0)
 }
 
 /// Tell `surface` and every subsurface under it to render at `scale`.
@@ -2192,6 +2207,7 @@ impl State {
             surface_tracker: SurfaceTracker::new(),
             seat,
             serial_counter: 0,
+            input_order: crate::compositor::input_order::InputOrder::default(),
             activation_serials: VecDeque::new(),
             clients_given_input: std::collections::HashSet::new(),
             start_time: std::time::Instant::now(),
@@ -2914,7 +2930,10 @@ impl State {
             {
                 session.set_rate(hz);
             }
-            let scale = self.scale_for_origin(*origin);
+            let scale = canvas_render_scale(
+                self.scale_for_origin(*origin),
+                crate::shell::foreign::store().canvas_zoom(*surface_id),
+            );
             let previous = self.surface_scales.insert(*surface_id, scale);
             if previous == Some(scale) {
                 continue;
@@ -4545,6 +4564,23 @@ impl State {
             |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
         );
         true
+    }
+
+    /// The keys that type `ch` on the keymap the seat sends its clients, in
+    /// the active input source ([`super::keymap_typing::stroke_for`]); only
+    /// keys a synthesised key event can name are used. `None` when no key
+    /// types it, or the seat has no keyboard.
+    pub(crate) fn seat_stroke(&mut self, ch: char) -> Option<super::keymap_typing::Stroke> {
+        let keyboard = self.seat.get_keyboard()?;
+        keyboard.with_xkb_state(self, |context| {
+            let xkb = context.xkb().lock().ok()?;
+            let layout = xkb.active_layout().0;
+            // SAFETY: the keymap is only read while the lock is held, and
+            // the scratch state `stroke_for` makes from it is dropped before
+            // it returns, so no reference outlives the seat's `Xkb`.
+            let keymap = unsafe { xkb.keymap() };
+            super::keymap_typing::stroke_for(keymap, layout, ch, super::keymap_typing::deliverable)
+        })
     }
 
     /// Reverse-lookup a keysym to a keycode in the seat keyboard's active
@@ -9965,6 +10001,19 @@ mod loop_gating_tests {
         let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
         let display: Display<State> = Display::new().expect("display");
         State::new(event_loop.handle(), display.handle())
+    }
+
+    #[test]
+    fn a_window_on_a_zoomed_canvas_renders_at_the_zoomed_scale() {
+        assert!((canvas_render_scale(1.0, 1.0) - 1.0).abs() < f64::EPSILON);
+        assert!((canvas_render_scale(1.5, 1.0) - 1.5).abs() < f64::EPSILON);
+        assert!((canvas_render_scale(1.0, 2.0) - 2.0).abs() < f64::EPSILON);
+        assert!((canvas_render_scale(2.0, 0.5) - 1.0).abs() < f64::EPSILON);
+        // A zoom between steps asks for the nearest 1/120.
+        let scale = canvas_render_scale(1.0, 1.1_f64.powi(3));
+        assert!((scale * 120.0 - (scale * 120.0).round()).abs() < 1e-9);
+        assert!((scale - 1.331).abs() < 1.0 / 120.0);
+        assert!((canvas_render_scale(1.0, f64::NAN) - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
