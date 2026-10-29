@@ -32,7 +32,8 @@
 # cargo in use (no cargo-nextest there), they fall back to plain
 # `cargo test` over the same packages; the fallback runs the libtest harness
 # without nextest's ci profile or filtersets, so it also runs the visual
-# goldens and push-only tests, and the separate goldens stage is skipped.
+# goldens and push-only tests, and the separate goldens stage is skipped (as
+# it is whenever this machine has no pulseaudio or lavapipe: see local_env).
 # Force it with LOCAL_AFFECTED_NO_NEXTEST=1.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
@@ -49,7 +50,7 @@ while [ $# -gt 0 ]; do
     --shard) only_shard=$2; shift 2 ;;
     --tapps) want_tapps=1; shift ;;
     --keep-going) keep_going=1; shift ;;
-    -h | --help) sed -n '2,38p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,40p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -123,8 +124,19 @@ for token in shlex.split(sys.argv[1]):
 PY
 }
 
-export TILO_REQUIRE_MEDIA=1 TILO_REQUIRE_AUDIO=1 TILO_REQUIRE_GPU=1
-bash tools/ensure-headless-audio.sh >/dev/null 2>&1 || true
+# The test wrappers (tools/test-env.sh) give the tests a software audio and
+# GPU endpoint, so they need pulseaudio and lavapipe on this machine. Where
+# they are absent (a laptop whose cargo forwards to a builder that has them),
+# the tests run on that builder without the local wrappers and without the
+# TILO_REQUIRE_* switches, which are only true where the endpoints exist.
+local_env=1
+if ! command -v pulseaudio >/dev/null || [ ! -r "/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json" ]; then
+  local_env=0
+  echo "note: no local pulseaudio/lavapipe; tests run without the local test-env wrappers" >&2
+else
+  export TILO_REQUIRE_MEDIA=1 TILO_REQUIRE_AUDIO=1 TILO_REQUIRE_GPU=1
+  bash tools/ensure-headless-audio.sh >/dev/null 2>&1 || true
+fi
 
 if want check; then
   while IFS= read -r row; do
@@ -181,13 +193,13 @@ while IFS= read -r row; do
     # shellcheck disable=SC2086
     if [ "$use_nextest" = 1 ]; then
       TILO_TEST_NTFS_FIXTURES=$ntfs step "nextest shard $shard ($tests)" \
-        bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --tests $tests -E "$pull_filter"
+        $([ "$local_env" = 1 ] && echo bash tools/ci/t-nextest.sh) cargo nextest run --locked --profile ci --tests $tests -E "$pull_filter"
     else
       TILO_TEST_NTFS_FIXTURES=$ntfs step "cargo test shard $shard ($tests)" \
-        bash tools/test-env.sh cargo test --locked $tests
+        $([ "$local_env" = 1 ] && echo bash tools/test-env.sh) cargo test --locked $tests
     fi
   fi
-  if want goldens && [ "$use_nextest" = 1 ]; then
+  if want goldens && [ "$use_nextest" = 1 ] && [ "$local_env" = 1 ]; then
     case " $tests " in
       *" -p shell "* | *" -p tilo-ui "* | *" -p ebook "*)
         # shellcheck disable=SC2086
