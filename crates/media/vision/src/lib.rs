@@ -485,6 +485,7 @@ mod tests {
             vision,
             face_recognition: false,
             tool_calling: false,
+            capabilities_from: agent_provider_config::CapabilitySource::Provider,
         }];
         ProviderConfig {
             profiles: vec![profile],

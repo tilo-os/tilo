@@ -3104,7 +3104,7 @@ pub use form::{CheckControl, FormControl, labeled_check, labeled_field};
 pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
-    ManualConflict, ManualLayout, PageLayout, SectionLayout,
+    ManualConflict, ManualLayout, PageLayout, ScrollDirection, ScrollLayout, SectionLayout,
 };
 mod embedded;
 pub use embedded::Embedded;
