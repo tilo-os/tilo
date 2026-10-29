@@ -743,15 +743,30 @@ pub(crate) fn describe(window: &Window) -> Option<WindowInfo> {
         return Some(window_info(toplevel));
     }
     let x11 = window.x11_surface()?;
+    let size = |size: Option<smithay::utils::Size<i32, Logical>>| {
+        size.filter(|size| size.w > 0 && size.h > 0)
+            .map(|size| (size.w, size.h))
+    };
     (!x11.is_override_redirect()).then(|| WindowInfo {
         id: X11_IDS | u64::from(x11.window_id()),
         app_id: Some(x11.class()),
         title: Some(x11.title()),
+        parent: x11
+            .is_transient_for()
+            .map(|parent| X11_IDS | u64::from(parent)),
+        min_size: size(x11.min_size()),
+        max_size: size(x11.max_size()),
     })
 }
 
 /// What a policy learns about a toplevel.
 fn window_info(toplevel: &ToplevelSurface) -> WindowInfo {
+    let id_of = |surface: &WlSurface| {
+        smithay::wayland::compositor::with_states(surface, |states| {
+            states.data_map.get::<WindowId>().map(|id| id.0)
+        })
+    };
+    let parent = toplevel.parent().as_ref().and_then(id_of);
     smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
         let id = states.data_map.get::<WindowId>().map_or(0, |id| id.0);
         let attributes = states
@@ -763,7 +778,26 @@ fn window_info(toplevel: &ToplevelSurface) -> WindowInfo {
                     .map(|data| (data.app_id.clone(), data.title.clone()))
             });
         let (app_id, title) = attributes.unwrap_or_default();
-        WindowInfo { id, app_id, title }
+        let (min, max) = {
+            let mut cached = states
+                .cached_state
+                .get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
+            let current = cached.current();
+            let limits = (current.min_size, current.max_size);
+            drop(cached);
+            limits
+        };
+        let size = |size: smithay::utils::Size<i32, Logical>| {
+            (size.w > 0 && size.h > 0).then_some((size.w, size.h))
+        };
+        WindowInfo {
+            id,
+            app_id,
+            title,
+            parent,
+            min_size: size(min),
+            max_size: size(max),
+        }
     })
 }
 

@@ -18,6 +18,7 @@ use tilo_compositor::{
     Arrangement, GestureEvent, HostLayer, SurfaceHost, WindowInfo, WindowPolicy,
 };
 use tilo_desktop_policy::displays::Output;
+use tilo_desktop_policy::floating::centred;
 use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 
@@ -92,6 +93,24 @@ impl Desk {
         if self.policy.set_displays(&displays) {
             self.host.relayout();
         }
+    }
+
+    /// Where a dialog of `size` floats: centred over its parent, or the
+    /// display the person works on, in the logical layout. `None` while it
+    /// is hidden with its parent.
+    fn floating(&self, window: u64, size: (i32, i32)) -> Option<Point<i32, Logical>> {
+        let (ox, oy) = self.host.placement().origin;
+        let (_, area) = self
+            .policy
+            .layout()
+            .floating
+            .into_iter()
+            .find(|(id, _)| *id == window)?;
+        let at = centred(area, (f64::from(size.0), f64::from(size.1)));
+        Some(Point::from((
+            ox.saturating_add(round(at.x)),
+            oy.saturating_add(round(at.y)),
+        )))
     }
 
     /// Where `window`'s content is in the logical layout, as last laid out.
@@ -283,6 +302,9 @@ impl StripPolicy {
             id: window.id,
             app_id: window.app_id.clone(),
             title: window.title.clone(),
+            parent: window.parent,
+            min_size: window.min_size,
+            max_size: window.max_size,
         });
         if let Err(error) = mapped {
             tracing::warn!(%error, window = window.id, "the desktop has no strip to open a window in");
@@ -303,6 +325,7 @@ impl WindowPolicy for StripPolicy {
         if !self.pending.contains(&window.id) {
             self.pending.push(window.id);
         }
+        // A dialog picks its own size.
         let rect = self.desk.borrow().shown(window.id)?;
         Some((rect.size.w, rect.size.h))
     }
@@ -310,15 +333,16 @@ impl WindowPolicy for StripPolicy {
     fn place(
         &mut self,
         window: &WindowInfo,
-        _size: (i32, i32),
+        size: (i32, i32),
         outputs: &[Rectangle<i32, Logical>],
     ) -> Point<i32, Logical> {
         self.map(window, outputs);
         self.pending.retain(|id| *id != window.id);
-        self.desk
-            .borrow()
-            .shown(window.id)
-            .map_or_else(|| Point::from((OFFSTAGE, 0)), |rect| rect.loc)
+        let desk = self.desk.borrow();
+        desk.shown(window.id)
+            .map(|rect| rect.loc)
+            .or_else(|| desk.floating(window.id, size))
+            .unwrap_or_else(|| Point::from((OFFSTAGE, 0)))
     }
 
     fn arrange(
@@ -360,17 +384,22 @@ impl WindowPolicy for StripPolicy {
         Some(
             windows
                 .iter()
-                .map(|(window, _)| match desk.shown(window.id) {
-                    Some(rect) => Arrangement {
+                .map(|(window, current)| {
+                    if let Some(rect) = desk.shown(window.id) {
+                        return Arrangement {
+                            id: window.id,
+                            location: rect.loc,
+                            size: Some((rect.size.w, rect.size.h)),
+                        };
+                    }
+                    let size = (current.size.w, current.size.h);
+                    Arrangement {
                         id: window.id,
-                        location: rect.loc,
-                        size: Some((rect.size.w, rect.size.h)),
-                    },
-                    None => Arrangement {
-                        id: window.id,
-                        location: Point::from((OFFSTAGE, 0)),
+                        location: desk
+                            .floating(window.id, size)
+                            .unwrap_or_else(|| Point::from((OFFSTAGE, 0))),
                         size: None,
-                    },
+                    }
                 })
                 .collect(),
         )
