@@ -17,7 +17,7 @@ fn failure() -> io::Error {
 fn uid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
-pub(crate) fn child(parent: &File, name: &std::ffi::OsStr, flags: i32) -> io::Result<File> {
+pub fn child(parent: &File, name: &std::ffi::OsStr, flags: i32) -> io::Result<File> {
     use std::os::unix::ffi::OsStrExt;
     let name = std::ffi::CString::new(name.as_bytes()).map_err(|_| failure())?;
     // SAFETY: parent is live, name terminated; openat returns a newly owned fd.
@@ -35,7 +35,7 @@ pub(crate) fn child(parent: &File, name: &std::ffi::OsStr, flags: i32) -> io::Re
     // SAFETY: successful openat returned a newly owned descriptor.
     Ok(unsafe { File::from_raw_fd(fd) })
 }
-pub(super) fn directory(path: &Path) -> io::Result<File> {
+pub fn directory(path: &Path) -> io::Result<File> {
     if !path.is_absolute() {
         return Err(failure());
     }
@@ -58,14 +58,14 @@ pub(super) fn directory(path: &Path) -> io::Result<File> {
     }
     Ok(pin)
 }
-pub(super) fn private(pin: &File) -> io::Result<()> {
+pub fn private(pin: &File) -> io::Result<()> {
     let meta = pin.metadata()?;
     if meta.uid() != uid() || meta.mode() & 0o077 != 0 {
         return Err(failure());
     }
     Ok(())
 }
-pub(super) fn create(parent: &File, name: &str) -> io::Result<File> {
+pub fn create(parent: &File, name: &str) -> io::Result<File> {
     match child(
         parent,
         std::ffi::OsStr::new(name),
@@ -138,7 +138,7 @@ fn acknowledged(pin: &File, operation: &str) -> io::Result<bool> {
 fn plans(home: &Path) -> PathBuf {
     home.join(".local/state/tilo/migration-handoff")
 }
-pub(crate) fn detect(home: &Path) -> io::Result<Vec<String>> {
+pub fn detect(home: &Path) -> io::Result<Vec<String>> {
     let path = plans(home);
     let pin = match directory(&path) {
         Ok(pin) => pin,
@@ -172,7 +172,7 @@ pub(crate) fn detect(home: &Path) -> io::Result<Vec<String>> {
         if !file.metadata()?.is_file() || file.metadata()?.len() > 9 * 1024 * 1024 {
             return Err(failure());
         }
-        if !acknowledged(&pin, id)? && !crate::retained_files::acknowledged(home, id)? {
+        if !acknowledged(&pin, id)? && !crate::retained::acknowledged(home, id)? {
             operations.push(id.to_owned());
         }
         if operations.len() > 32 {
@@ -185,7 +185,7 @@ pub(crate) fn detect(home: &Path) -> io::Result<Vec<String>> {
     operations.sort();
     Ok(operations)
 }
-pub(crate) struct Migration {
+pub struct Migration {
     home: PathBuf,
     operations: Vec<String>,
     selected: Option<String>,
@@ -193,8 +193,8 @@ pub(crate) struct Migration {
     original_copy: Option<OriginalCopyWorker>,
     original_copy_request: Option<OriginalCopyRequest>,
     original_copy_operation: Option<String>,
-    access: Option<crate::retained_files::Request>,
-    access_request: Option<crate::retained_files::Request>,
+    access: Option<crate::retained::Request>,
+    access_request: Option<crate::retained::Request>,
     access_release: Option<String>,
     shared_files: bool,
     applications_only: bool,
@@ -206,14 +206,14 @@ pub(crate) struct Migration {
     result: serde_json::Value,
 }
 impl Migration {
-    pub(crate) fn open(home: PathBuf) -> Self {
+    pub fn open(home: PathBuf) -> Self {
         let (operations, state) = match detect(&home) {
             Ok(operations) => (operations, "pending"),
             Err(_) => (Vec::new(), "unavailable"),
         };
         let intent = operations
             .first()
-            .and_then(|operation| crate::retained_files::intent(&home, operation).ok());
+            .and_then(|operation| crate::retained::intent(&home, operation).ok());
         Self {
             home,
             operations,
@@ -225,8 +225,8 @@ impl Migration {
             access: None,
             access_request: None,
             access_release: None,
-            shared_files: intent == Some(crate::retained_files::Intent::Shared),
-            applications_only: intent == Some(crate::retained_files::Intent::Applications),
+            shared_files: intent == Some(crate::retained::Intent::Shared),
+            applications_only: intent == Some(crate::retained::Intent::Applications),
             transfer_complete: false,
             original_copy_completion: serde_json::Value::Null,
             cleanup_state: "none",
@@ -235,13 +235,13 @@ impl Migration {
             result: serde_json::Value::Null,
         }
     }
-    pub(crate) fn pending(&self) -> bool {
+    pub fn pending(&self) -> bool {
         !self.operations.is_empty() || self.state == "unavailable"
     }
-    pub(crate) fn status(&self) -> serde_json::Value {
+    pub fn status(&self) -> serde_json::Value {
         serde_json::json!({"state":self.state,"operations":self.operations,"selected":self.selected,"result":self.result,"can_review":self.worker.is_none()&&self.original_copy.is_none()&&!self.busy(),"retained_access":self.shared_files,"applications_only":self.applications_only,"original_copy":self.original_copy.is_some(),"transfer_complete":self.transfer_complete,"original_copy_completion":self.original_copy_completion,"cleanup_state":self.cleanup_state,"cleanup_result":self.cleanup_result})
     }
-    pub(crate) fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         [
             "reviewing",
             "copying",
@@ -254,7 +254,7 @@ impl Migration {
         ]
         .contains(&self.state)
     }
-    pub(crate) fn next_action(&self) -> &'static str {
+    pub fn next_action(&self) -> &'static str {
         if self.transfer_complete && self.cleanup_state == "pending" {
             return "cleanup-resume";
         }
@@ -288,9 +288,9 @@ impl Migration {
         {
             return Err(failure());
         }
-        let intent = crate::retained_files::intent(&self.home, selected)?;
-        self.shared_files = intent == crate::retained_files::Intent::Shared;
-        self.applications_only = intent == crate::retained_files::Intent::Applications;
+        let intent = crate::retained::intent(&self.home, selected)?;
+        self.shared_files = intent == crate::retained::Intent::Shared;
+        self.applications_only = intent == crate::retained::Intent::Applications;
         self.original_copy_operation = None;
         if !self.shared_files {
             let (commands, command_receiver) = mpsc::channel();
@@ -302,10 +302,10 @@ impl Migration {
                 events,
             });
             self.original_copy = Some(OriginalCopyWorker { commands, receiver });
-        } else if let Some(access) = crate::retained_files::request(&self.home, selected)? {
+        } else if let Some(access) = crate::retained::request(&self.home, selected)? {
             if access.applications {
                 let operation =
-                    crate::retained_files::pending_applications_operation(&self.home, &access)?;
+                    crate::retained::pending_applications_operation(&self.home, &access)?;
                 let (commands, command_receiver) = mpsc::channel();
                 let (events, receiver) = mpsc::channel();
                 self.original_copy_operation = Some(operation.clone());
@@ -374,7 +374,7 @@ impl Migration {
         if self.state == "existing-files-available"
             && let Some(access) = &self.access
         {
-            crate::retained_files::acknowledge(&self.home, access)?;
+            crate::retained::acknowledge(&self.home, access)?;
         } else {
             self.acknowledge(&id, outcome)?;
         }
@@ -420,7 +420,7 @@ impl Migration {
         };
         Ok(())
     }
-    pub(crate) fn invoke(&mut self, op: &str, selected: Option<&str>) -> io::Result<()> {
+    pub fn invoke(&mut self, op: &str, selected: Option<&str>) -> io::Result<()> {
         if op == "review" {
             return self.review(selected);
         }
@@ -465,16 +465,16 @@ impl Migration {
         };
         Ok(())
     }
-    pub(crate) fn take_access_request(&mut self) -> Option<crate::retained_files::Request> {
+    pub fn take_access_request(&mut self) -> Option<crate::retained::Request> {
         if self.original_copy.is_some() {
             return None;
         }
         self.access_request.take()
     }
-    pub(crate) fn take_access_release(&mut self) -> Option<String> {
+    pub fn take_access_release(&mut self) -> Option<String> {
         self.access_release.take()
     }
-    pub(crate) fn access_outcome(&mut self, operation: &str, available: bool) {
+    pub fn access_outcome(&mut self, operation: &str, available: bool) {
         if self.selected.as_deref() == Some(operation)
             && self.access.is_some()
             && self.original_copy.is_none()
@@ -505,7 +505,7 @@ impl Migration {
         file.sync_all()?;
         pin.sync_all()
     }
-    pub(crate) fn take_original_copy_request(&mut self) -> Option<OriginalCopyRequest> {
+    pub fn take_original_copy_request(&mut self) -> Option<OriginalCopyRequest> {
         self.original_copy_request.take()
     }
     /// Take the original copy's next event: its progress, its completion
@@ -602,12 +602,12 @@ impl Migration {
         if self.cleanup_state == "finished" && self.shared_files {
             let access = self.access.as_ref();
             let unchanged = access.is_some_and(|access| {
-                crate::retained_files::request(&self.home, &access.operation)
+                crate::retained::request(&self.home, &access.operation)
                     .ok()
                     .flatten()
                     .as_ref()
                     == Some(access)
-                    && crate::retained_files::pending_applications_operation(&self.home, access)
+                    && crate::retained::pending_applications_operation(&self.home, access)
                         .ok()
                         .as_deref()
                         == self.original_copy_operation.as_deref()
@@ -626,7 +626,7 @@ impl Migration {
             self.state = "reviewing";
         }
     }
-    pub(crate) fn poll(&mut self) -> bool {
+    pub fn poll(&mut self) -> bool {
         if self.original_copy.is_some() {
             return self.poll_original_copy();
         }
@@ -689,7 +689,7 @@ impl Migration {
             // The browser import completes during the helper's review, before
             // the home copy or adoption. Attach its signed projection now so
             // the first Browser launch in this session can take it.
-            crate::onboarding_browser::attach_deferred_continuity();
+            crate::browser::attach_deferred_continuity();
         } else {
             self.state = "failed";
             self.result = serde_json::Value::Null;
@@ -757,7 +757,7 @@ impl Drop for Worker {
 }
 
 /// Operation is routing only; the root independently opens its protected declaration.
-pub(crate) struct OriginalCopyRequest {
+pub struct OriginalCopyRequest {
     pub operation: String,
     pub commands: mpsc::Receiver<launcher::retained_view::installed_copy::CopyOwnerCommand>,
     pub events: mpsc::Sender<launcher::retained_view::installed_copy::CopyOwnerEvent>,
@@ -905,7 +905,7 @@ mod tests {
         let request = migration.take_original_copy_request().unwrap();
         migration.shared_files = true;
         migration.selected = Some(source.clone());
-        migration.access = Some(crate::retained_files::Request {
+        migration.access = Some(crate::retained::Request {
             operation: source.clone(),
             digest: "a".repeat(64),
             applications: true,
@@ -990,7 +990,7 @@ mod tests {
         // Simulate only the existing actor's next access callback after its
         // already-tested RO gate. This does not construct a source grant.
         migration.original_copy = None;
-        migration.access = Some(crate::retained_files::Request {
+        migration.access = Some(crate::retained::Request {
             operation: stage.clone(),
             digest: "d".repeat(64),
             applications: true,

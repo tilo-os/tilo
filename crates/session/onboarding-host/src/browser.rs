@@ -1,8 +1,8 @@
 //! First-login continuation for separately selected browser domains.
 //! The canonical helper authenticates the carrier and independently verifies the
 //! projection. A saved public choice never substitutes for those proofs.
-use crate::onboarding_continuation::{self as continuation, Context, Continuation, Kind, Settled};
-use crate::onboarding_prepared::{BrowserDeclaration, Pending as Prepared};
+use crate::continuation::{self as continuation, Context, Continuation, Kind, Settled};
+use crate::prepared::{BrowserDeclaration, Pending as Prepared};
 use sha2::{Digest, Sha256};
 use std::{
     io,
@@ -10,10 +10,10 @@ use std::{
     time::Duration,
 };
 
-pub(crate) type Pending = Continuation<Browser>;
+pub type Pending = Continuation<Browser>;
 
 /// Browser data carried over by a prepared setup.
-pub(crate) enum Browser {}
+pub enum Browser {}
 
 fn failure() -> io::Error {
     continuation::failure::<Browser>()
@@ -26,7 +26,7 @@ fn private_file(path: &Path, bound: u64) -> io::Result<Vec<u8>> {
 }
 #[derive(serde::Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
-pub(crate) enum Event {
+pub enum Event {
     #[serde(rename = "ready-to-activate")]
     Ready { profiles: usize },
     #[serde(rename = "complete")]
@@ -67,7 +67,7 @@ fn authorized_device(identity: &Path, certificate: &[u8]) -> io::Result<([u8; 32
     if !group_signed || !this_device {
         return Err(failure());
     }
-    let fleet = crate::device_fleet::DeviceFleetStore::at(identity, paths)
+    let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::at(identity, paths)
         .load(&hex::encode(metadata.group_public_key))?;
     if fleet.is_revoked(&cert.device_public_key) {
         return Err(failure());
@@ -108,14 +108,14 @@ fn completion_projection(
 /// binds the reviewed migration operation and the exact projection the Browser
 /// app will import, and the certificate still comes from the active person's
 /// enrolled device.
-pub(crate) fn deferred_projection(home: &Path, identity: &Path) -> io::Result<Option<PathBuf>> {
+pub fn deferred_projection(home: &Path, identity: &Path) -> io::Result<Option<PathBuf>> {
     let base = home.join(".local/state/tilo/browser-continuity");
-    let pin = match crate::onboarding_migration::directory(&base) {
+    let pin = match crate::migration::directory(&base) {
         Ok(pin) => pin,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    crate::onboarding_migration::private(&pin)?;
+    crate::migration::private(&pin)?;
     let mut found = None;
     for entry in std::fs::read_dir(&base)?.take(64) {
         let entry = entry?;
@@ -177,15 +177,15 @@ pub(crate) fn deferred_projection(home: &Path, identity: &Path) -> io::Result<Op
 }
 
 /// Recheck the signed deferred proof and attach it to the Browser launch.
-pub(crate) fn attach_deferred_continuity() {
-    let Some(home) = crate::onboarding::session_home() else {
+pub fn attach_deferred_continuity() {
+    let Some(home) = crate::identity::session_home() else {
         return;
     };
-    let Ok(store) = crate::identity_registry::IdentityRegistryStore::from_env() else {
+    let Ok(store) = tilo_identity_host::registry::IdentityRegistryStore::from_env() else {
         return;
     };
     if let Ok(Some(path)) = deferred_projection(&home, store.identity_dir()) {
-        crate::shell::launcher::set_browser_continuity(Some(path));
+        crate::host::set_browser_continuity(Some(path));
     }
 }
 
@@ -210,8 +210,8 @@ fn valid_deferred_projection(home: &Path, path: &Path) -> bool {
         && container.to_str() == Some(browser_continuity::completion::DEFERRED_CONTAINER)
         && import.to_str() == Some("import")
         && data.to_str() == Some("home")
-        && crate::onboarding_migration::directory(path)
-            .is_ok_and(|pin| crate::onboarding_migration::private(&pin).is_ok())
+        && crate::migration::directory(path)
+            .is_ok_and(|pin| crate::migration::private(&pin).is_ok())
 }
 fn valid_projection(home: &Path, operation: &str, path: &Path) -> bool {
     let workspace = home
@@ -228,15 +228,15 @@ fn valid_projection(home: &Path, operation: &str, path: &Path) -> bool {
                             .is_some_and(|name| name.starts_with("browser-import-"))
                 })
         })
-        && crate::onboarding_migration::directory(path)
-            .is_ok_and(|pin| crate::onboarding_migration::private(&pin).is_ok())
+        && crate::migration::directory(path)
+            .is_ok_and(|pin| crate::migration::private(&pin).is_ok())
 }
 /// Recheck current-person/device authority and the signed exact projection on every launch.
-pub(crate) fn validate_published_projection(path: &Path) -> bool {
-    let Some(home) = crate::onboarding::session_home() else {
+pub fn validate_published_projection(path: &Path) -> bool {
+    let Some(home) = crate::identity::session_home() else {
         return false;
     };
-    let Ok(store) = crate::identity_registry::IdentityRegistryStore::from_env() else {
+    let Ok(store) = tilo_identity_host::registry::IdentityRegistryStore::from_env() else {
         return false;
     };
     let identity = store.identity_dir();
@@ -287,7 +287,7 @@ impl Kind for Browser {
         status.insert("browser".to_owned(), true.into());
     }
     fn package(cx: &Context<Self>, directory: &Path) -> io::Result<(PathBuf, String)> {
-        let expected: crate::onboarding_prepared::BrowserPayload =
+        let expected: crate::prepared::BrowserPayload =
             serde_json::from_slice(&private_file(&directory.join("expectation.json"), 24576)?)
                 .map_err(|_| failure())?;
         if expected != cx.declaration.payload {
@@ -331,7 +331,7 @@ impl Kind for Browser {
 }
 
 impl Pending {
-    pub(crate) fn verified_projection(&self) -> Option<&Path> {
+    pub fn verified_projection(&self) -> Option<&Path> {
         self.projection().filter(|path| {
             self.state() == "complete"
                 && valid_projection(&self.context().home, self.operation(), path)
@@ -339,15 +339,22 @@ impl Pending {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
+/// Fixtures for the tests of this module and of the session that hosts setup.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "test support: a fixture that cannot be written fails the calling test"
+)]
+pub mod fixtures {
+    use super::{BrowserDeclaration, Prepared, root};
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
-    use zeroize::Zeroizing;
+    use std::path::{Path, PathBuf};
 
-    pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, BrowserDeclaration) {
-        let (home, identity, _) = crate::onboarding_portable_home::tests::fixture();
+    pub fn fixture() -> (tempfile::TempDir, PathBuf, BrowserDeclaration) {
+        let (home, identity, _) = crate::portable_home::fixtures::fixture();
         let prepared = Prepared::open(home.path()).unwrap();
         std::fs::remove_file(
             home.path()
@@ -372,7 +379,7 @@ pub(crate) mod tests {
         .unwrap();
         let operation = uuid::Uuid::new_v4().to_string();
         let declaration = BrowserDeclaration {
-            payload: crate::onboarding_prepared::BrowserPayload {
+            payload: crate::prepared::BrowserPayload {
                 schema: 1,
                 filename: format!("browser-{operation}.sealed"),
                 operation,
@@ -383,7 +390,7 @@ pub(crate) mod tests {
                 entries: 2,
                 ciphertext_sha256: [2; 32],
                 plan_sha256: Sha256::digest(plan.encode().unwrap()).into(),
-                limits: crate::onboarding_prepared::ApplicationLimits {
+                limits: crate::prepared::ApplicationLimits {
                     plaintext_bytes: 1024,
                     entries: 64,
                     metadata_bytes: 1024,
@@ -420,7 +427,7 @@ pub(crate) mod tests {
         }
         (home, identity, declaration)
     }
-    pub(crate) fn certified_projection(
+    pub fn certified_projection(
         home: &Path,
         identity: &Path,
         declaration: &BrowserDeclaration,
@@ -474,7 +481,7 @@ pub(crate) mod tests {
         std::fs::set_permissions(receipt, std::fs::Permissions::from_mode(0o600)).unwrap();
         projection
     }
-    pub(crate) fn deferred_projection_fixture(home: &Path, identity: &Path) -> (PathBuf, PathBuf) {
+    pub fn deferred_projection_fixture(home: &Path, identity: &Path) -> (PathBuf, PathBuf) {
         let paths = crate::firstboot::collaboration_identity_paths();
         crate::firstboot::ensure_collaboration_identity(identity, &paths).unwrap();
         let signer = runtime_identity::load_from_path(identity.join("primary.json")).unwrap();
@@ -551,7 +558,15 @@ pub(crate) mod tests {
         std::fs::set_permissions(receipt, std::fs::Permissions::from_mode(0o600)).unwrap();
         (root, projection)
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use zeroize::Zeroizing;
+
+    use super::fixtures::*;
     #[test]
     fn deferred_first_launch_projection_is_attached_only_with_its_signed_proof() {
         let (home, identity, _declaration) = fixture();

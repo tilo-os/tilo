@@ -110,7 +110,7 @@ pub mod host_shell_allow;
 pub mod hosted_inputs;
 pub mod i18n;
 pub(crate) mod identity_admin;
-pub mod identity_provisioning;
+pub use tilo_onboarding_host::identity_provisioning;
 pub mod in_process;
 pub mod input_policy;
 pub(crate) mod input_sources;

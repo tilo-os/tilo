@@ -1,29 +1,29 @@
 //! Explicit first-login continuation for authenticated portable applications.
 //! The canonical helper owns archive proofs, user-state adoption and signed
 //! offline restoration; this controller never substitutes a public receipt for them.
-use crate::onboarding_continuation::{self as continuation, Context, Continuation, Kind, Settled};
-use crate::onboarding_prepared::{Pending as Prepared, PortableApplications};
+use crate::continuation::{self as continuation, Context, Continuation, Kind, Settled};
+use crate::prepared::{Pending as Prepared, PortableApplications};
 use std::{
     io,
     path::{Path, PathBuf},
     time::Duration,
 };
 
-pub(crate) type Pending = Continuation<Applications>;
+pub type Pending = Continuation<Applications>;
 
 /// Portable applications carried over by a prepared setup.
-pub(crate) enum Applications {}
+pub enum Applications {}
 
 fn failure() -> io::Error {
     continuation::failure::<Applications>()
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn root(home: &Path) -> PathBuf {
     continuation::root::<Applications>(home)
 }
 #[derive(serde::Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
-pub(crate) enum Event {
+pub enum Event {
     #[serde(rename = "ready-to-restore")]
     Ready {
         applications: usize,
@@ -105,14 +105,21 @@ impl Kind for Applications {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
+/// Fixtures for the tests of this module and of the session that hosts setup.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "test support: a fixture that cannot be written fails the calling test"
+)]
+pub mod fixtures {
+    use super::{PortableApplications, Prepared, root};
     use sha2::{Digest, Sha256};
-    use std::os::unix::fs::{PermissionsExt, symlink};
-    use zeroize::Zeroizing;
-    pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, PortableApplications) {
-        let (home, identity, _) = crate::onboarding_portable_home::tests::fixture();
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    pub fn fixture() -> (tempfile::TempDir, PathBuf, PortableApplications) {
+        let (home, identity, _) = crate::portable_home::fixtures::fixture();
         let prepared = Prepared::open(home.path()).unwrap();
         std::fs::remove_file(
             home.path()
@@ -175,7 +182,7 @@ pub(crate) mod tests {
             entries,
             ciphertext_sha256: Sha256::digest(ciphertext).into(),
             manifest_sha256: Sha256::digest(&metadata).into(),
-            limits: crate::onboarding_prepared::ApplicationLimits {
+            limits: crate::prepared::ApplicationLimits {
                 plaintext_bytes: 1024 * 1024,
                 entries: 128,
                 metadata_bytes: 64 * 1024,
@@ -208,6 +215,15 @@ pub(crate) mod tests {
         }
         (home, identity, declaration)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::*;
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use zeroize::Zeroizing;
     fn wait(pending: &mut Pending) {
         tilo_test_env::wait_until("the worker to exit", || {
             if !pending.busy() {

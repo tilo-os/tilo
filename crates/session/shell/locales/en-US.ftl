@@ -1690,28 +1690,6 @@ onboarding-connect-recovery-message = Your existing identity couldn't be verifie
 onboarding-connect-choose-file-first = Choose an encrypted backup or legacy identity file first.
 onboarding-keyring-unavailable = The desktop keyring is still unavailable. Unlock it and retry, or restore an encrypted backup: { $error }
 
-# First-login identity setup: pairing with a nearby device
-onboarding-nearby-failed-title = Pairing did not finish
-onboarding-nearby-ended = The pairing window closed or approval was cancelled. Choose Try again.
-onboarding-nearby-unknown = Choose Try again.
-onboarding-nearby-detail = Details: { $detail }
-onboarding-nearby-permission-title = Permission denied: this computer was not allowed to save the pairing
-onboarding-nearby-permission = This computer's device identity couldn't be saved. Once that's fixed, choose Try again.
-onboarding-nearby-storage-full-title = This computer's disk is full
-onboarding-nearby-storage-full = The pairing could not be saved. Free up some space, then choose Try again.
-onboarding-nearby-read-only-title = This computer's storage is read-only
-onboarding-nearby-read-only = The pairing could not be saved. Choose Try again once the storage can be written to.
-onboarding-nearby-unreachable-title = Your other device could not be reached
-onboarding-nearby-unreachable = Check that both devices are on the same network, then choose Try again.
-onboarding-nearby-timed-out-title = No trusted device approved this computer in time
-onboarding-nearby-timed-out = Choose Try again, then approve it on your other device.
-onboarding-nearby-invalid-identity-title = Your other device returned an invalid identity
-onboarding-nearby-invalid-identity = Choose Try again.
-onboarding-nearby-not-started-title = Nearby setup could not start
-onboarding-nearby-not-started = Choose Try again.
-onboarding-nearby-unavailable = Nearby setup is unavailable in this session
-onboarding-nearby-cancelled = Pairing cancelled. Choose Try again to start over.
-onboarding-nearby-connected = Connected. Your workspaces will appear automatically.
 
 # First-login identity setup: encrypted backup
 onboarding-passphrase-too-short = Use at least 12 characters. Make it long and unique; length alone does not make a common passphrase safe.
