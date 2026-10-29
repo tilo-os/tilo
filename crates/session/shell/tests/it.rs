@@ -53,6 +53,8 @@ mod collab_policy_state;
 mod color_management_protocol;
 #[path = "color_management_surface_override.rs"]
 mod color_management_surface_override;
+#[path = "command_line_usage.rs"]
+mod command_line_usage;
 #[path = "compositor_test.rs"]
 mod compositor_test;
 #[path = "continuity_suggestion_flow.rs"]

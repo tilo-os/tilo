@@ -435,6 +435,11 @@ pub fn run() -> std::process::ExitCode {
         eprintln!("error: {refusal}");
         return std::process::ExitCode::from(2);
     }
+    // `--help`, and a flag the compositor does not read, are answered here,
+    // before the spawner, identity or any session state is touched.
+    if let Some(code) = answer_usage_request(&early_args) {
+        return code;
+    }
     // While no other thread exists: a table grown later stalls every thread
     // that opens a file, the main loop among them.
     if shell::compositor::descriptor_table::reserve().is_none() {
@@ -666,6 +671,22 @@ pub fn run() -> std::process::ExitCode {
 fn removed_run_mode_refusal(args: &[String]) -> Option<&'static str> {
     let flags: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     compositor::removed_run_mode_refusal(&flags)
+}
+
+/// Print usage for `--help`/`-h` (exit 0) or an unknown flag (exit 2);
+/// `None` when the arguments start a session.
+fn answer_usage_request(args: &[String]) -> Option<std::process::ExitCode> {
+    let flags: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+    match compositor::usage_request(&flags)? {
+        compositor::UsageRequest::Help => {
+            print!("{}", compositor::USAGE);
+            Some(std::process::ExitCode::SUCCESS)
+        }
+        compositor::UsageRequest::Unknown(flag) => {
+            eprint!("error: unknown option {flag}\n\n{}", compositor::USAGE);
+            Some(std::process::ExitCode::from(2))
+        }
+    }
 }
 
 /// The session release, as packaged (`dist/VERSION`), for a lone
