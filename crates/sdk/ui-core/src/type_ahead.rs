@@ -69,7 +69,21 @@ impl TypeAhead {
         current: Option<usize>,
     ) -> Option<usize> {
         let labels: Vec<&str> = labels.into_iter().collect();
-        let n = labels.len();
+        self.target_at(labels.len(), current, |index| {
+            labels.get(index).map(|label| (*label).into())
+        })
+    }
+
+    /// [`Self::target`] among `len` rows read one at a time by `label`
+    /// (`None` for a row without a name), so a long list is searched
+    /// without collecting its names.
+    #[must_use]
+    pub fn target_at<'a>(
+        &self,
+        len: usize,
+        current: Option<usize>,
+        mut label: impl FnMut(usize) -> Option<std::borrow::Cow<'a, str>>,
+    ) -> Option<usize> {
         let first = self.typed.chars().next()?;
         let repeated = self.typed.chars().all(|c| c == first);
         let prefix = if repeated {
@@ -83,12 +97,10 @@ impl TypeAhead {
             Some(current) => current,
             None => 0,
         };
-        (0..n)
-            .map(|step| start.saturating_add(step) % n)
+        (0..len)
+            .map(|step| start.saturating_add(step) % len)
             .find(|&index| {
-                labels
-                    .get(index)
-                    .is_some_and(|label| label.to_lowercase().starts_with(&prefix))
+                label(index).is_some_and(|label| label.to_lowercase().starts_with(&prefix))
             })
     }
 }

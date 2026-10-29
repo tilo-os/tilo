@@ -25,7 +25,7 @@ use winit::event::{
 use winit::keyboard::{Key, NamedKey};
 
 use crate::arriving::Arrival;
-use crate::collection_transition::{KeyedRowSnapshot, KeyedTransitionSet, RowGeometry};
+use crate::collection_transition::RowMotions;
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
@@ -889,8 +889,14 @@ pub struct TreeImpl<T, M = TreeNode<T>> {
     drag_scroll: DragScroller,
     scroll: super::rows::RowScroll,
     last_tick: Option<Instant>,
-    transition_snapshot: Vec<KeyedRowSnapshot<TreeRowKey, TreeTransitionPayload>>,
-    transitions: KeyedTransitionSet<TreeRowKey, TreeTransitionPayload>,
+    /// The rows shown at the last structural change, and what they showed:
+    /// a change moves them from there, and fades out the ones it took away.
+    transition_snapshot: Vec<ShownTreeRow>,
+    /// Rows on their way after a structural change (`motion::ListChange`).
+    transitions: RowMotions<TreeRowKey>,
+    /// The rows shown before the last change, which paint the ones it took
+    /// away while they fade out.
+    left_rows: Vec<ShownTreeRow>,
     /// The motion its row changes play (`motion::ListChange`).
     transition_motion: crate::tokens::EffectiveMotion,
     reduce_motion: bool,
@@ -1065,6 +1071,15 @@ enum TransitionTextTone {
     Danger,
 }
 
+/// A shown row at a structural change: where it stood and what it showed.
+#[derive(Clone)]
+struct ShownTreeRow {
+    key: TreeRowKey,
+    top: f64,
+    height: f64,
+    payload: TreeTransitionPayload,
+}
+
 #[derive(Clone)]
 struct TreeTransitionPayload {
     label: String,
@@ -1151,7 +1166,8 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             scroll: super::rows::RowScroll::default(),
             last_tick: None,
             transition_snapshot: Vec::new(),
-            transitions: KeyedTransitionSet::new(),
+            transitions: RowMotions::default().fading_out_leavers(),
+            left_rows: Vec::new(),
             transition_motion: crate::tokens::EffectiveMotion::default(),
             reduce_motion: false,
             disclosure_w: DISCLOSURE_WIDTH,
@@ -1664,7 +1680,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     /// Whether rows are moving between geometries now.
     #[cfg(test)]
     pub(crate) fn transitions_active(&self) -> bool {
-        self.transitions.is_active(crate::time::now())
+        self.transitions.is_moving(crate::time::now())
     }
 
     fn reconcile_model_state(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
@@ -1883,9 +1899,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             .capture_anchor(|index| self.index.row_at(&self.model, index).map(|(key, _)| key))
     }
 
-    fn capture_transition_snapshot(
-        &self,
-    ) -> Vec<KeyedRowSnapshot<TreeRowKey, TreeTransitionPayload>> {
+    fn capture_transition_snapshot(&self) -> Vec<ShownTreeRow> {
         if self.viewport.viewport() <= 0.0 && self.index.len() > MAX_TRANSITION_ROWS {
             return Vec::new();
         }
@@ -1893,10 +1907,8 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             .take(MAX_TRANSITION_ROWS)
             .filter_map(|index| {
                 let (key, depth) = self.index.row_at(&self.model, index)?;
-                let geometry = RowGeometry::new(
-                    self.viewport.item_view_top(index)?,
-                    self.viewport.item_height(index)?,
-                );
+                let top = self.viewport.item_view_top(index)?;
+                let height = self.viewport.item_height(index)?.max(0.0);
                 let (label, is_branch, expanded, tone) = match key {
                     TreeRowKey::Node(id) => (
                         self.model.label(id)?.to_owned(),
@@ -1922,9 +1934,10 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
                         ),
                     },
                 };
-                Some(KeyedRowSnapshot {
+                Some(ShownTreeRow {
                     key,
-                    geometry,
+                    top,
+                    height,
                     payload: TreeTransitionPayload {
                         label,
                         depth,
@@ -1948,7 +1961,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
 
     fn reconcile_visible(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
         self.paint_dirty = true;
-        let old_snapshot = self.transition_snapshot.clone();
+        let old_snapshot = std::mem::take(&mut self.transition_snapshot);
         let next = SparseTreeIndex::build(&self.model, &self.expanded, self.index.root_hidden);
         self.viewport.reconcile(
             next.len(),
@@ -1958,14 +1971,19 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         self.index = next;
         self.refresh_nav_heights();
         let new_snapshot = self.capture_transition_snapshot();
-        if self.laid_out && !self.is_nav() {
-            self.transitions.reconcile(
-                &old_snapshot,
-                &new_snapshot,
-                crate::time::now(),
-                self.transition_motion,
-                crate::tokens::MotionSource::Pointer,
+        if self.laid_out && !self.is_nav() && !old_snapshot.is_empty() {
+            let motion = self.transition_motion;
+            let tops = |rows: &[ShownTreeRow]| -> Vec<(TreeRowKey, f64)> {
+                rows.iter().map(|row| (row.key, row.top)).collect()
+            };
+            self.transitions.capture(
+                tops(&old_snapshot),
+                true,
+                (!motion.reduced()).then_some(crate::tokens::MotionSource::Pointer),
             );
+            self.transitions
+                .start(tops(&new_snapshot), motion, crate::time::now());
+            self.left_rows = old_snapshot;
         } else {
             // Navigation rows and section headings must share the same geometry
             // as their hit and accessibility targets immediately. Moving old
@@ -2637,21 +2655,18 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     /// with what was typed, as a person scanning a list expects.
     fn type_ahead(&mut self, text: &str) -> bool {
         self.typing.type_text(text, crate::time::now());
-        let len = self.index.len();
-        let labels: Vec<String> = (0..len)
-            .map(|index| match self.index.row_at(&self.model, index) {
-                Some((TreeRowKey::Node(id), _)) if self.model.is_selectable(id) => {
-                    self.model.label(id).map(str::to_owned).unwrap_or_default()
-                }
-                _ => String::new(),
-            })
-            .collect();
         let current = self
             .focused
             .and_then(|key| self.index.index_of_key(&self.model, key));
-        let Some(target) = self
-            .typing
-            .target(labels.iter().map(String::as_str), current)
+        let (model, index) = (&self.model, &self.index);
+        let Some(target) =
+            self.typing
+                .target_at(index.len(), current, |at| match index.row_at(model, at) {
+                    Some((TreeRowKey::Node(id), _)) if model.is_selectable(id) => {
+                        model.label(id).map(std::borrow::Cow::Borrowed)
+                    }
+                    _ => None,
+                })
         else {
             // Nothing begins so: the keystroke is still the list's.
             return true;
@@ -3147,7 +3162,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
         // too, which paint inside their row. Rows in motion, a drag, an open
         // menu and delegated rows prove nothing, and repaint the tree.
         let tracks_rows = self.mounted_rows.is_empty()
-            && !self.transitions.is_active(now)
+            && !self.transitions.is_moving(now)
             && !self.reorder.is_active()
             && !self.reorder.is_tracking()
             && !self.menu.is_open();
@@ -3224,20 +3239,17 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                 let Some(row_height) = self.viewport.item_height(i) else {
                     break 'row;
                 };
-                let visual =
-                    self.transitions
-                        .visual(&key, RowGeometry::new(view_top, row_height), now);
-                let row_height = visual.geometry.height;
+                let (shift, opacity) = self.transitions.pose(&key, now);
                 // The dragged row stays in place, faded, while its lifted copy
                 // follows the pointer.
                 let opacity = if matches!(key, TreeRowKey::Node(id) if drag_source == Some(id)) {
-                    visual.opacity * 0.4
+                    opacity * 0.4
                 } else {
-                    visual.opacity
+                    opacity
                 };
                 let body_top = self.rect.y0 + self.heading_h;
                 let body_bottom = body_top + self.body_height();
-                let y0 = body_top + visual.geometry.top;
+                let y0 = body_top + view_top + shift;
                 let y1 = y0 + row_height;
                 if y1 <= body_top {
                     break 'row;
@@ -3515,17 +3527,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
             }
         }
         for row in &mut self.mounted_rows {
-            let settled_top = self.viewport.item_view_top(row.index).unwrap_or_default();
-            let settled_height = self
-                .viewport
-                .item_height(row.index)
-                .unwrap_or_else(|| self.viewport.estimated_height());
-            let visual = self.transitions.visual(
-                &row.key,
-                RowGeometry::new(settled_top, settled_height),
-                now,
-            );
-            let delta = visual.geometry.top - settled_top;
+            let (delta, opacity) = self.transitions.pose(&row.key, now);
             #[allow(
                 clippy::arithmetic_side_effects,
                 reason = "kurbo Affine composition is finite screen-space matrix math"
@@ -3534,7 +3536,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
-                visual.opacity,
+                opacity,
                 transform,
                 &self.rect,
             );
@@ -3542,13 +3544,18 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                 .draw(scene, row_transform, text_renderer, theme, presence);
             scene.pop_layer();
         }
-        for (_, payload, visual) in self.transitions.exiting(now) {
-            if visual.opacity <= f32::EPSILON {
+        for (key, top, opacity) in self.transitions.leaving(now) {
+            let Some(ShownTreeRow {
+                height, payload, ..
+            }) = self.left_rows.iter().find(|row| row.key == *key)
+            else {
+                continue;
+            };
+            if opacity <= f32::EPSILON {
                 continue;
             }
-            let opacity = visual.opacity;
-            let y0 = self.body_top() + visual.geometry.top;
-            let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y0 + visual.geometry.height);
+            let y0 = self.body_top() + top;
+            let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y0 + height);
             if payload.selected {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
@@ -3573,7 +3580,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                 scene.pop_layer();
             }
             let glyph_x = self.rect.x0 + self.row_inset + f64_of_usize(payload.depth) * indent_px;
-            let text_y = centered_text_top(y0, visual.geometry.height, line_h);
+            let text_y = centered_text_top(y0, *height, line_h);
             if payload.is_branch {
                 paint_disclosure(
                     scene,
@@ -3854,7 +3861,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                 .give_needs_frame(crate::motion::frame_now())
             || self.scroll.fading()
             || self.reorder.is_active()
-            || self.transitions.is_active(crate::time::now())
+            || self.transitions.is_moving(crate::time::now())
             || self.menu.is_open() && self.menu.needs_redraw()
             || self
                 .rename
@@ -3913,7 +3920,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
             || self.scroll.in_progress()
             || self.model.needs_poll()
             || self.reorder.is_active()
-            || self.transitions.is_active(crate::time::now())
+            || self.transitions.is_moving(crate::time::now())
             || self.arrivals.is_moving(crate::motion::frame_now())
             || self
                 .mounted_rows
@@ -4479,7 +4486,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
         self.drag_scroll.is_tracking().hash(&mut state);
         self.scroll.momentum.is_active().hash(&mut state);
         self.transitions
-            .is_active(crate::time::now())
+            .is_moving(crate::time::now())
             .hash(&mut state);
         // Pointer-driven chrome: the heading action and the hovered row's
         // actions lift under the pointer.
@@ -6654,37 +6661,24 @@ mod tests {
 
             assert!(view.set_expanded(2, true));
             let now = crate::time::now();
-            let anchor_index = view.visible_index_of(3).unwrap();
-            let settled = RowGeometry::new(
-                view.viewport.item_view_top(anchor_index).unwrap(),
-                view.viewport.item_height(anchor_index).unwrap(),
-            );
-            let moving = view.transitions.visual(&TreeRowKey::Node(3), settled, now);
-            assert!(moving.geometry.top < settled.top);
-            let child_index = view.visible_index_of(20).unwrap();
-            let entering = view.transitions.visual(
-                &TreeRowKey::Node(20),
-                RowGeometry::new(
-                    view.viewport.item_view_top(child_index).unwrap(),
-                    view.viewport.item_height(child_index).unwrap(),
-                ),
-                now,
-            );
-            assert!(entering.opacity < 1.0);
-            assert!(view.transitions.is_active(now));
+            let (moving, _) = view.transitions.pose(&TreeRowKey::Node(3), now);
+            assert!(moving < 0.0, "the row below drops from where it stood");
+            let (_, entering) = view.transitions.pose(&TreeRowKey::Node(20), now);
+            assert!(entering < 1.0);
+            assert!(view.transitions.is_moving(now));
 
             view.transitions.clear();
             view.refresh_transition_snapshot();
             assert!(view.set_expanded(2, false));
+            let now = crate::time::now();
             assert!(
                 view.transitions
-                    .exiting(crate::time::now())
-                    .any(|(key, payload, visual)| {
-                        *key == TreeRowKey::Node(20)
-                            && payload.label == "hidden child"
-                            && visual.opacity > 0.0
-                    })
+                    .leaving(now)
+                    .any(|(key, _, opacity)| *key == TreeRowKey::Node(20) && opacity > 0.0)
             );
+            assert!(view.left_rows.iter().any(|row| {
+                row.key == TreeRowKey::Node(20) && row.payload.label == "hidden child"
+            }));
         }
 
         {
@@ -6696,18 +6690,11 @@ mod tests {
 
             assert!(view.set_expanded(2, true));
             let now = crate::time::now();
-            assert!(!view.transitions.is_active(now));
-            assert_eq!(view.transitions.exiting(now).count(), 0);
-            let child = view.visible_index_of(20).unwrap();
-            let settled = RowGeometry::new(
-                view.viewport.item_view_top(child).unwrap(),
-                view.viewport.item_height(child).unwrap(),
-            );
+            assert!(!view.transitions.is_moving(now));
+            assert_eq!(view.transitions.leaving(now).count(), 0);
             assert_eq!(
-                view.transitions
-                    .visual(&TreeRowKey::Node(20), settled, now)
-                    .opacity,
-                1.0
+                view.transitions.pose(&TreeRowKey::Node(20), now),
+                (0.0, 1.0)
             );
         }
     }

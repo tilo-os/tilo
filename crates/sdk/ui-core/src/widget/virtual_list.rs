@@ -1616,19 +1616,21 @@ impl<M: ListModel> VirtualList<M> {
     /// Typing in the focused list: move to the first row whose name begins
     /// with what was typed. A list whose model names no rows lets the key go.
     fn type_ahead(&mut self, text: &str, current: Option<usize>) -> bool {
-        let count = self.model.len();
-        let labels: Vec<Option<String>> = (0..count).map(|index| self.model.label(index)).collect();
-        if labels.iter().all(Option::is_none) {
-            return false;
-        }
         if text == " " && !self.typing.is_typing(crate::time::now()) {
             return false;
         }
         self.typing.type_text(text, crate::time::now());
-        let target = self.typing.target(
-            labels.iter().map(|label| label.as_deref().unwrap_or("")),
-            current,
-        );
+        let model = &self.model;
+        let mut named = false;
+        let target = self.typing.target_at(model.len(), current, |index| {
+            let label = model.label(index);
+            named |= label.is_some();
+            label.map(std::borrow::Cow::Owned)
+        });
+        if !named {
+            self.typing.reset();
+            return false;
+        }
         if let Some(index) = target {
             // Typing moves to a row; it never extends a selection, whatever
             // case the letters were typed in.
