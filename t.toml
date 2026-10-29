@@ -4553,16 +4553,18 @@ lifetime = "3600"
 # commit's development installer medium installs an encrypted system in a KVM guest with a
 # software TPM, which then boots through first boot, migration at the greeter, the boot sign-in
 # screen, wrong entries, lock screen/sudo/polkit and the recovery key; a second install uses the
-# installer's separate disk secret. `t outputs signin-e2e-x86_64` gives report.md and the boot
+# installer's separate disk secret. `t outputs signin-e2e-<arch>` gives report.md and the boot
 # sign-in and greeter screenshots. Two installs and about a dozen cold boots: an hour or more on
-# top of the image and medium builds.
+# top of the image and medium builds. The dispatch inputs pick other variants: `variants =
+# "rollback"` with `pre_pam_tilo_image`, an image from before pam_tilo that the guest can pull or
+# an OCI archive below /target. Without t, tools/ci/signin-e2e-builder.sh runs it.
 [[check]]
-name = "signin-e2e-x86_64"
-run = "bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt && bash tools/ci/signin-e2e.sh /target/publish/dev-installer-medium/x86_64/disk.qcow2 /target/signin-e2e"
-needs = ["dev-installer-medium-x86_64", "tilo-vm-binary-x86_64"]
+name = "signin-e2e-{arch}"
+run = "bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt tools/ci/packages/signin-e2e-{arch}.txt && bash tools/ci/signin-e2e.sh /target/publish/dev-installer-medium/{arch}/disk.qcow2 /target/signin-e2e"
+needs = ["dev-installer-medium-{arch}", "{vm}"]
 env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
 outputs = ["/target/signin-e2e/**"]
-requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+requires = ["{node}", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
 requirement = { cores = 8, memory = "16GiB" }
@@ -4570,6 +4572,13 @@ timeout_secs = 14400
 default = false
 heavy = true
 on = ["stable", "dispatch"]
+
+[check.dispatch_inputs]
+variants = ""
+pre_pam_tilo_image = ""
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64", vm = "tilo-vm-binary-x86_64" }, { arch = "aarch64", node = "arch=arm64", vm = "tilo-vm-binary-arm64" }]
 
 # The imager's staging helper and reclaim proofs over loop devices. Needs a privileged node with loop
 # devices.

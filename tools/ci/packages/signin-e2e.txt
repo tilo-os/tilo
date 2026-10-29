@@ -1,10 +1,7 @@
-# What tools/ci/signin-e2e.sh needs beside the builder image: QEMU, firmware and swtpm for
-# vm.sh; tesseract and ImageMagick read the boot screens.
-edk2-ovmf
-qemu-system-x86-core
-qemu-device-display-virtio-vga
+# What tools/ci/signin-e2e.sh needs beside the builder image on either architecture: swtpm for
+# vm.sh's TPM; tesseract and ImageMagick read the boot screens. QEMU and its firmware are in
+# signin-e2e-<arch>.txt.
 qemu-img
-ipxe-roms-qemu
 swtpm
 swtpm-tools
 socat
