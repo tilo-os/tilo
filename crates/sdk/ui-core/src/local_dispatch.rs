@@ -1,27 +1,15 @@
-//! Framework-owned action dispatch every app gets by default.
+//! The local executor every immediate action goes through.
 //!
-//! [`LocalDispatch`] centralizes dispatch, undo-boundary, and test-observation
-//! bookkeeping so an app declares only its own action domain.
-//!
-//! ```ignore
-//! struct MyApp { actions: tilo_ui::LocalDispatch, /* … */ }
-//!
-//! // At every affordance that mutates shared state:
-//! self.actions.dispatch(doc, MY_ACTION_TYPE, &action);
-//!
-//! impl Widget for MyApp {
-//!     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-//!         self.actions.take_committed()
-//!     }
-//! }
-//! ```
-//!
-//! [`LocalDispatch`]: crate::local_dispatch::LocalDispatch
+//! A bound view's dispatcher hands each action of its resource to
+//! [`LocalDispatch`] through [`Edits::apply`](crate::widget::Edits::apply): it
+//! runs on the canonical executor with this device's actor, is reported to the
+//! collaboration route, and opens the undo boundary the host takes with
+//! [`LocalDispatch::take_committed`].
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{Action, ActionContext, EncodedAction};
 
-/// Framework-owned action dispatch an app embeds as a single field.
+/// The local executor, held by whatever applies actions to a document.
 ///
 /// The undo boundary this brackets carries no author: what crosses this
 /// seam is heads, not identity. It's still reachable by interactive Ctrl+Z
@@ -29,15 +17,9 @@ use tilo_actions::{Action, ActionContext, EncodedAction};
 /// `UndoLog::claimable_by`.
 #[derive(Default)]
 pub struct LocalDispatch {
-    /// Drained via
-    /// [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action)
-    /// to record exactly one undo boundary bracketing the action(s).
+    /// Drained via [`Self::take_committed`] to record exactly one undo
+    /// boundary bracketing the action(s).
     commit_before: Option<Vec<ChangeHash>>,
-    /// Lets a test prove an affordance and the Ctrl+K
-    /// [`ActionSpec`](tilo_actions::ActionSpec) build the byte-identical
-    /// action.
-    last_dispatched: Option<EncodedAction>,
-    ambient_context: Option<ActionContext>,
 }
 
 impl LocalDispatch {
@@ -45,37 +27,9 @@ impl LocalDispatch {
         Self::default()
     }
 
-    /// Set task/session provenance inherited by later dispatches. Concrete
-    /// action/resource fields always win; this is primarily for purpose and
-    /// work-group metadata supplied by an agent run or issue context.
-    pub fn set_ambient_context(&mut self, context: Option<ActionContext>) {
-        self.ambient_context = context;
-    }
-
-    /// Brackets the undo boundary on the *first* successful action of the event only
-    /// (`get_heads` flushes pending app writes, so the bracket covers only
-    /// the action's own change), encodes + remembers it as
-    /// [`last_dispatched`](Self::last_dispatched), then dispatches through
-    /// the default [`LocalTransport`](tilo_actions::LocalTransport) — applied
-    /// via the executor with a pinned actor, so it replays byte-identically
-    /// on peers. A dispatch error is logged at WARN and swallowed; an
-    /// affordance never panics the app.
-    pub fn dispatch<A>(&mut self, doc: &mut AutoCommit, type_id: &str, action: &A)
-    where
-        A: Action + serde::Serialize,
-    {
-        if let Err(error) = self.try_dispatch(doc, type_id, action) {
-            tracing::warn!(error = %error, type_id = %type_id, "action dispatch failed");
-        }
-    }
-
-    /// Dispatch an action through the canonical local executor and return a
-    /// structured refusal or infrastructure error to the affordance.
-    ///
-    /// Unlike [`dispatch`](Self::dispatch), this does not swallow errors. It
-    /// only records an undo boundary and last-dispatched payload after the
-    /// action applies.
-    pub fn try_dispatch<A>(
+    /// [`Self::try_dispatch_with_context`] without an activity context.
+    #[cfg(test)]
+    pub(crate) fn try_dispatch<A>(
         &mut self,
         doc: &mut AutoCommit,
         type_id: &str,
@@ -87,32 +41,13 @@ impl LocalDispatch {
         self.try_dispatch_maybe_context(doc, type_id, action, None)
     }
 
-    /// Dispatch with the activity context the app already has at the direct
-    /// affordance: resource, human label, optional purpose/group, and browse
-    /// facets. This is the preferred path for mutations that should appear in
-    /// workspace history; [`Self::dispatch`] remains the legacy fallback.
-    pub fn dispatch_with_context<A>(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &A,
-        context: ActionContext,
-    ) where
-        A: Action + serde::Serialize,
-    {
-        if let Err(error) = self.try_dispatch_with_context(doc, type_id, action, context) {
-            tracing::warn!(error = %error, type_id = %type_id, "action dispatch failed");
-        }
-    }
-
-    /// Contextual [`try_dispatch`](Self::try_dispatch). Resource/history
-    /// provenance follows the same canonical executor path as every other
-    /// direct affordance.
+    /// Apply `action` now under `context`, which names it in the workspace
+    /// history. Records the undo boundary only once the action applies.
     ///
     /// # Errors
     ///
-    /// Returns the same encoding, document, or application refusal errors as
-    /// [`try_dispatch`](Self::try_dispatch), without recording success state.
+    /// Returns the encoding, document or application refusal error; no undo
+    /// boundary is recorded then.
     pub fn try_dispatch_with_context<A>(
         &mut self,
         doc: &mut AutoCommit,
@@ -153,11 +88,6 @@ impl LocalDispatch {
         let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
         let mut transport = tilo_actions::LocalTransport::new();
         let actor = doc.get_actor().to_bytes().to_vec();
-        let context = match (context, self.ambient_context.as_ref()) {
-            (Some(context), Some(ambient)) => Some(context.enriched_by(ambient)),
-            (None, Some(ambient)) => Some(ambient.clone()),
-            (context, None) => context,
-        };
         let change_kind = action.change_kind();
         let observation = if matches!(change_kind, tilo_actions::ChangeKind::External) {
             None
@@ -217,7 +147,6 @@ impl LocalDispatch {
         if step && self.commit_before.is_none() {
             self.commit_before = Some(before);
         }
-        self.last_dispatched = Some(encoded);
         Ok(())
     }
 
@@ -226,10 +155,6 @@ impl LocalDispatch {
     /// [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action).
     pub fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
         self.commit_before.take()
-    }
-
-    pub fn last_dispatched(&self) -> Option<&EncodedAction> {
-        self.last_dispatched.as_ref()
     }
 }
 
@@ -278,14 +203,15 @@ mod tests {
         {
             let mut doc = AutoCommit::new();
             let mut host = LocalDispatch::new();
-            host.dispatch(
+            host.try_dispatch(
                 &mut doc,
                 PUT_TYPE,
                 &Put {
                     key: "score".into(),
                     value: 42,
                 },
-            );
+            )
+            .unwrap();
             assert_eq!(
                 doc.get(&ROOT, "score").unwrap().unwrap().0.as_i64(),
                 Some(42)
@@ -296,7 +222,7 @@ mod tests {
             let actor = automerge::ActorId::from(vec![7, 8, 9, 10]);
             let mut doc = AutoCommit::new().with_actor(actor.clone());
             let mut host = LocalDispatch::new();
-            host.dispatch_with_context(
+            host.try_dispatch_with_context(
                 &mut doc,
                 PUT_TYPE,
                 &Put {
@@ -304,7 +230,8 @@ mod tests {
                     value: 42,
                 },
                 ActionContext::for_app("org.tilo.Test", "Test"),
-            );
+            )
+            .unwrap();
             let changes = doc.get_changes(&[]);
             assert_eq!(
                 changes.last().map(automerge::Change::actor_id),
@@ -320,22 +247,24 @@ mod tests {
             let heads_before_actions = doc.get_heads();
 
             let mut host = LocalDispatch::new();
-            host.dispatch(
+            host.try_dispatch(
                 &mut doc,
                 PUT_TYPE,
                 &Put {
                     key: "a".into(),
                     value: 1,
                 },
-            );
-            host.dispatch(
+            )
+            .unwrap();
+            host.try_dispatch(
                 &mut doc,
                 PUT_TYPE,
                 &Put {
                     key: "b".into(),
                     value: 2,
                 },
-            );
+            )
+            .unwrap();
 
             let committed = host
                 .take_committed()
@@ -353,27 +282,11 @@ mod tests {
         {
             let mut doc = AutoCommit::new();
             let mut host = LocalDispatch::new();
-            assert!(host.last_dispatched().is_none());
-            let action = Put {
-                key: "k".into(),
-                value: 7,
-            };
-            host.dispatch(&mut doc, PUT_TYPE, &action);
-            let enc = host
-                .last_dispatched()
-                .expect("dispatch recorded the action");
-            assert_eq!(enc, &EncodedAction::encode(PUT_TYPE, &action).unwrap());
-        }
-
-        {
-            let mut doc = AutoCommit::new();
-            let mut host = LocalDispatch::new();
             assert!(matches!(
                 host.try_dispatch(&mut doc, "test.refuse", &Refuse),
                 Err(tilo_actions::ActionError::Refused(_))
             ));
             assert!(host.take_committed().is_none());
-            assert!(host.last_dispatched().is_none());
             assert!(doc.get_heads().is_empty());
         }
     }
@@ -383,7 +296,7 @@ mod tests {
         {
             let mut doc = AutoCommit::new();
             let mut host = LocalDispatch::new();
-            host.dispatch_with_context(
+            host.try_dispatch_with_context(
                 &mut doc,
                 PUT_TYPE,
                 &Put {
@@ -391,7 +304,8 @@ mod tests {
                     value: 9,
                 },
                 ActionContext::for_resource("counter:1", "counter", "Score"),
-            );
+            )
+            .unwrap();
             let heads = doc.get_heads();
             let change = doc
                 .get_change_by_hash(&heads[0])
@@ -406,43 +320,6 @@ mod tests {
                     .as_ref()
                     .map(|resource| resource.label.as_str()),
                 Some("Score")
-            );
-        }
-
-        {
-            let mut doc = AutoCommit::new();
-            let mut host = LocalDispatch::new();
-            host.set_ambient_context(Some(
-                ActionContext::default()
-                    .with_purpose("Prepare launch")
-                    .with_group("issue:42", "Launch", "issue"),
-            ));
-            host.dispatch_with_context(
-                &mut doc,
-                PUT_TYPE,
-                &Put {
-                    key: "k".into(),
-                    value: 1,
-                },
-                ActionContext::for_resource("counter", "counter", "Counter"),
-            );
-            let heads = doc.get_heads();
-            let change = doc.get_change_by_hash(&heads[0]).unwrap();
-            let context = change
-                .message()
-                .and_then(|message| ActionContext::from_change_message(message))
-                .unwrap();
-            assert_eq!(context.purpose.as_deref(), Some("Prepare launch"));
-            assert_eq!(
-                context.group.as_ref().map(|group| group.id.as_str()),
-                Some("issue:42")
-            );
-            assert_eq!(
-                context
-                    .resource
-                    .as_ref()
-                    .map(|resource| resource.id.as_str()),
-                Some("counter")
             );
         }
     }

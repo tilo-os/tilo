@@ -1553,13 +1553,8 @@ fn semantic_invocation_matches_the_affordance_dispatch() {
             .action(&SemanticId("r:test.counter".into()), "bump")
             .expect("bump affordance");
 
-        let mut host = crate::local_dispatch::LocalDispatch::new();
-        let mut host_doc = automerge::AutoCommit::new();
-        host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
-        let from_affordance = host
-            .last_dispatched()
-            .expect("the affordance dispatched")
-            .clone();
+        let from_affordance =
+            tilo_actions::EncodedAction::encode(COUNTER_TYPE, &CounterAction::Bump).unwrap();
 
         match &bump.kind {
             SemanticActionKind::App(enc) => assert_eq!(
@@ -1616,7 +1611,8 @@ fn semantic_invocation_matches_the_affordance_dispatch() {
 
         let mut host = crate::local_dispatch::LocalDispatch::new();
         let mut host_doc = automerge::AutoCommit::new();
-        host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
+        host.try_dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump)
+            .unwrap();
 
         let via_a11y = counter(&app);
         let via_affordance = match host_doc.get(&ROOT, "n") {

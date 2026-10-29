@@ -12914,22 +12914,26 @@ mod dispatched_action_driver_tests {
             // prove the host brackets the *event*, not each action.
             if text == "2" {
                 for text in ["x", "y"] {
-                    self.actions.dispatch(
+                    self.actions
+                        .try_dispatch(
+                            doc,
+                            APPEND,
+                            &Append {
+                                text: text.to_string(),
+                            },
+                        )
+                        .unwrap();
+                }
+            } else {
+                self.actions
+                    .try_dispatch(
                         doc,
                         APPEND,
                         &Append {
                             text: text.to_string(),
                         },
-                    );
-                }
-            } else {
-                self.actions.dispatch(
-                    doc,
-                    APPEND,
-                    &Append {
-                        text: text.to_string(),
-                    },
-                );
+                    )
+                    .unwrap();
             }
             *handled = self.claims;
         }
@@ -12945,13 +12949,15 @@ mod dispatched_action_driver_tests {
             if !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }
-            self.actions.dispatch(
-                doc.document_mut(),
-                APPEND,
-                &Append {
-                    text: "!".to_string(),
-                },
-            );
+            self.actions
+                .try_dispatch(
+                    doc.document_mut(),
+                    APPEND,
+                    &Append {
+                        text: "!".to_string(),
+                    },
+                )
+                .unwrap();
             true
         }
 

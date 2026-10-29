@@ -386,8 +386,10 @@ impl crate::widget::ResourceOperations for Probe {
         };
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
-                self.actions
-                    .dispatch(doc.document_mut(), "bound.apply", &FollowUp);
+                // A refusal is the probe's to observe, not this view's.
+                let _ = self
+                    .actions
+                    .try_dispatch(doc.document_mut(), "bound.apply", &FollowUp);
             }
             Self::capture("bound-view");
             return Ok(Some(crate::widget::ResourceOperationStart::Completed(
@@ -406,12 +408,14 @@ impl crate::widget::ResourceOperations for Probe {
         }
         match mode {
             2 | 3 => {}
-            7 => self.actions.dispatch_with_context(
-                doc.document_mut(),
-                "bound.apply",
-                &FollowUp,
-                tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
-            ),
+            7 => {
+                let _ = self.actions.try_dispatch_with_context(
+                    doc.document_mut(),
+                    "bound.apply",
+                    &FollowUp,
+                    tilo_actions::ActionContext::for_resource("bound:probe", "probe", "Probe"),
+                );
+            }
             9 | 10 => {
                 assert_eq!(
                     self.actions
@@ -428,9 +432,11 @@ impl crate::widget::ResourceOperations for Probe {
                 doc.document_mut().put(ROOT, "raw-unwind", true).unwrap();
                 panic!("controlled compound unwind");
             }
-            _ => self
-                .actions
-                .dispatch(doc.document_mut(), "bound.apply", &FollowUp),
+            _ => {
+                let _ = self
+                    .actions
+                    .try_dispatch(doc.document_mut(), "bound.apply", &FollowUp);
+            }
         }
         if matches!(mode, 5 | 6) {
             doc.document_mut().put(ROOT, "raw-after", true).unwrap();
