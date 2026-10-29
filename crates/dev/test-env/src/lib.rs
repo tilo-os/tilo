@@ -89,6 +89,8 @@
 pub mod allocation;
 mod capability;
 mod desktop;
+#[cfg(target_os = "linux")]
+pub mod disk_sync;
 pub mod environment;
 mod fixture;
 pub mod hang;

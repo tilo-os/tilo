@@ -776,7 +776,7 @@ fn import_identity_record(parent: &Path, id: &str, bytes: &[u8]) -> io::Result<P
 /// Returns an error if the identity directory cannot be resolved or the
 /// enrolled device cannot be completed.
 pub fn complete_enrolled_device() -> io::Result<bool> {
-    let store = crate::identity_registry::IdentityRegistryStore::from_env()?;
+    let store = tilo_identity_host::registry::IdentityRegistryStore::from_env()?;
     tilo_identity_host::provisioning::complete_enrolled_device(
         store.identity_dir(),
         &crate::firstboot::collaboration_identity_paths(),

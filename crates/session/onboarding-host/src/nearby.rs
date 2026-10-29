@@ -21,8 +21,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crate::onboarding::MintedIdentity;
-use crate::shell::i18n::{t, t_args};
+use crate::identity::MintedIdentity;
+use tilo_onboarding::{t, t_args};
 
 /// The enrollment helper the image installs.
 const ENROLL: &str = "/usr/libexec/tilo/tilo-enroll";
@@ -37,7 +37,7 @@ const PROCESS_BOUND: Duration = Duration::from_secs(3 * PAIRING_WINDOW_SECS + 30
 
 /// What the helper last reported in its status file.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum NearbyProgress {
+pub enum NearbyProgress {
     /// Nothing readable yet.
     Starting,
     /// Broadcasting; the trusted device shows the same code.
@@ -55,7 +55,7 @@ pub(crate) enum NearbyProgress {
 /// can act on has its own plain words; only a reason nothing more is known
 /// about falls back to the general one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NearbyCause {
+pub enum NearbyCause {
     /// This computer was not allowed to write the pairing.
     PermissionDenied,
     /// The disk is full.
@@ -175,13 +175,13 @@ impl NearbyCause {
 
 /// Why a pairing attempt ended, and the helper's own words when it gave any.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NearbyFailure {
-    pub(crate) cause: NearbyCause,
-    pub(crate) detail: Option<String>,
+pub struct NearbyFailure {
+    pub cause: NearbyCause,
+    pub detail: Option<String>,
 }
 
 impl NearbyFailure {
-    pub(crate) fn new(cause: NearbyCause) -> Self {
+    pub fn new(cause: NearbyCause) -> Self {
         Self {
             cause,
             detail: None,
@@ -189,7 +189,7 @@ impl NearbyFailure {
     }
 
     /// A failure known only by its text; its cause is read from it.
-    pub(crate) fn from_detail(detail: String) -> Self {
+    pub fn from_detail(detail: String) -> Self {
         Self {
             cause: NearbyCause::from_text(&detail),
             detail: Some(detail),
@@ -197,12 +197,12 @@ impl NearbyFailure {
     }
 
     /// What went wrong, in plain words: the banner's title.
-    pub(crate) fn title(&self) -> String {
+    pub fn title(&self) -> String {
         t(self.cause.keys().0)
     }
 
     /// What to do next, followed by the helper's own words.
-    pub(crate) fn message(&self) -> String {
+    pub fn message(&self) -> String {
         let next = t(self.cause.keys().1);
         match &self.detail {
             Some(detail) => format!(
@@ -223,7 +223,7 @@ impl NearbyFailure {
 }
 
 /// Parse the status file at `path`.
-pub(crate) fn read_progress(path: &Path) -> NearbyProgress {
+pub fn read_progress(path: &Path) -> NearbyProgress {
     let Some(status) = std::fs::read(path)
         .ok()
         .filter(|bytes| bytes.len() <= 64 * 1024)
@@ -262,7 +262,7 @@ pub(crate) fn read_progress(path: &Path) -> NearbyProgress {
 
 /// What onboarding should show after one [`NearbyPairing::poll`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum NearbyEvent {
+pub enum NearbyEvent {
     /// Nothing changed.
     Idle,
     /// A verification code to show.
@@ -330,7 +330,7 @@ impl StatusWatcher {
         let (wakes, woken) = mpsc::channel();
         let (sent, reads) = mpsc::channel();
         // Made on the loop's thread, so a new read wakes the loop it is for.
-        let wake = crate::shell::search::invocation_wake::waker();
+        let wake = crate::host::loop_waker();
         let changes = wakes.clone();
         let spawned = std::thread::Builder::new()
             .name("tilo-nearby-status".into())
@@ -429,7 +429,7 @@ fn verified(identity_dir: &Path, path: &Path, expected: Option<&str>) -> Option<
     if path.parent() != Some(identity_dir) {
         return None;
     }
-    let identity = crate::onboarding::existing_identity_at(path).ok()?;
+    let identity = crate::identity::existing_identity_at(path).ok()?;
     expected
         .is_none_or(|expected| identity.fingerprint == expected)
         .then_some(identity)
@@ -437,7 +437,7 @@ fn verified(identity_dir: &Path, path: &Path, expected: Option<&str>) -> Option<
 
 /// One running pairing attempt. Dropping it stops the helper's whole process
 /// group.
-pub(crate) struct NearbyPairing {
+pub struct NearbyPairing {
     child: Option<Child>,
     deadline: Instant,
     status_path: PathBuf,
@@ -456,7 +456,7 @@ impl NearbyPairing {
     /// # Errors
     ///
     /// Why the helper cannot be started.
-    pub(crate) fn start(
+    pub fn start(
         identity_root: &Path,
         identity_dir: &Path,
         status_path: &Path,
@@ -491,7 +491,7 @@ impl NearbyPairing {
         Self::spawn(command, identity_dir, status_path, PROCESS_BOUND)
     }
 
-    pub(crate) fn spawn(
+    pub fn spawn(
         mut command: Command,
         identity_dir: &Path,
         status_path: &Path,
@@ -529,7 +529,7 @@ impl NearbyPairing {
     /// Advance from what the helper reported. After [`NearbyEvent::Joined`]
     /// or [`NearbyEvent::Failed`] the caller drops this attempt. Never reads
     /// the disk: the status comes from the watcher.
-    pub(crate) fn poll(&mut self, now: Instant) -> NearbyEvent {
+    pub fn poll(&mut self, now: Instant) -> NearbyEvent {
         let exited = self
             .child
             .as_mut()
@@ -695,7 +695,7 @@ fn available_output(stream: &mut std::process::ChildStderr) -> String {
 }
 
 /// Stop `child` and every process in its group, bounded.
-pub(crate) fn terminate(child: &mut Option<Child>) {
+pub fn terminate(child: &mut Option<Child>) {
     if let Some(mut child) = child.take() {
         bounded_command::terminate_tree(&mut child, Duration::from_millis(750));
     }
@@ -956,7 +956,7 @@ mod tests {
     fn recording_a_failed_pairing_never_waits_for_the_disk() {
         let fixture = fixture();
         let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-        let event = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+        let event = tilo_test_env::disk_sync::on_a_thread_that_cannot_sync(|| {
             poll_until_over(&mut pairing)
         });
         assert_eq!(
@@ -986,7 +986,7 @@ mod tests {
         let mut pairing = helper(&fixture, "exec sleep infinity", PROCESS_BOUND);
         // Spawning removed any old status; the helper's file is now one
         // whose bytes have not arrived.
-        let status = crate::shell::disk_sync_guard::blocking_source(
+        let status = tilo_test_env::disk_sync::blocking_source(
             &fixture.identity_dir,
             ".nearby-enrollment-status.json",
         );

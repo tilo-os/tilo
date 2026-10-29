@@ -1,0 +1,63 @@
+[package]
+name = "tilo-onboarding-host"
+description = "The host side of first use: the identity ceremony and its storage, first-boot provisioning, nearby pairing, prepared setups and the transfers they carry over, and the custody of their secrets."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[features]
+# Prepared-setup, transfer and browser-projection fixtures for the tests of
+# the session that hosts setup.
+test-support = []
+
+[dependencies]
+bounded-command = { path = "../../system/bounded-command" }
+collab-types = { path = "../../collab/collab-types" }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+getrandom.workspace = true
+hex.workspace = true
+launcher = { path = "../../packaging/launcher" }
+libc.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+rand_core.workspace = true
+rcgen.workspace = true
+runtime-identity = { path = "../../runtime/runtime-identity" }
+rustls.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+settings-store = { path = "../../system/settings-store", features = ["watch"] }
+sha2.workspace = true
+tempfile.workspace = true
+threshold-identity = { path = "../../collab/threshold-identity" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
+tilo-handoff = { path = "../../platform/tilo-handoff" }
+tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony" }
+tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
+tilo-onboarding = { path = "../onboarding" }
+tilo-paths.workspace = true
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tracing.workspace = true
+uuid.workspace = true
+wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
+zeroize.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs", "pipe", "process", "stdio"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+browser-continuity = { path = "../../browser/browser-continuity", features = ["native"] }
+
+[dev-dependencies]
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

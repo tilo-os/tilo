@@ -501,6 +501,7 @@ pub fn run() -> std::process::ExitCode {
     // The shell's copy and every toolkit widget it draws, in the desktop's
     // language.
     shell::shell::i18n::ensure();
+    shell::onboarding_host::install();
 
     // Inspect process shape while startup is still single-threaded. Host
     // packages pass an explicit installation context; deriving it from a

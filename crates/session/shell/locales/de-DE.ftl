@@ -1669,28 +1669,6 @@ onboarding-connect-recovery-message = Deine vorhandene Identität konnte nicht g
 onboarding-connect-choose-file-first = Wähle zuerst eine verschlüsselte Sicherung oder eine ältere Identitätsdatei aus.
 onboarding-keyring-unavailable = Der Schlüsselbund des Desktops ist weiterhin nicht verfügbar. Entsperre ihn und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her: { $error }
 
-# Identitätseinrichtung: Koppeln mit einem Gerät in der Nähe
-onboarding-nearby-failed-title = Die Kopplung wurde nicht abgeschlossen
-onboarding-nearby-ended = Das Kopplungsfenster wurde geschlossen oder die Freigabe abgebrochen. Wähle „Erneut versuchen“.
-onboarding-nearby-unknown = Wähle „Erneut versuchen“.
-onboarding-nearby-detail = Details: { $detail }
-onboarding-nearby-permission-title = Zugriff verweigert: Dieser Computer durfte die Kopplung nicht speichern
-onboarding-nearby-permission = Die Geräteidentität dieses Computers konnte nicht gespeichert werden. Wähle „Erneut versuchen“, sobald das behoben ist.
-onboarding-nearby-storage-full-title = Der Speicher dieses Computers ist voll
-onboarding-nearby-storage-full = Die Kopplung konnte nicht gespeichert werden. Gib etwas Speicherplatz frei und wähle dann „Erneut versuchen“.
-onboarding-nearby-read-only-title = Der Speicher dieses Computers ist schreibgeschützt
-onboarding-nearby-read-only = Die Kopplung konnte nicht gespeichert werden. Wähle „Erneut versuchen“, sobald der Speicher beschreibbar ist.
-onboarding-nearby-unreachable-title = Dein anderes Gerät war nicht erreichbar
-onboarding-nearby-unreachable = Prüfe, ob beide Geräte im selben Netzwerk sind, und wähle dann „Erneut versuchen“.
-onboarding-nearby-timed-out-title = Kein vertrauenswürdiges Gerät hat diesen Computer rechtzeitig freigegeben
-onboarding-nearby-timed-out = Wähle „Erneut versuchen“ und gib ihn dann auf deinem anderen Gerät frei.
-onboarding-nearby-invalid-identity-title = Dein anderes Gerät hat eine ungültige Identität geliefert
-onboarding-nearby-invalid-identity = Wähle „Erneut versuchen“.
-onboarding-nearby-not-started-title = Die Einrichtung über ein Gerät in der Nähe konnte nicht starten
-onboarding-nearby-not-started = Wähle „Erneut versuchen“.
-onboarding-nearby-unavailable = Die Einrichtung über ein Gerät in der Nähe ist in dieser Sitzung nicht verfügbar
-onboarding-nearby-cancelled = Kopplung abgebrochen. Wähle „Erneut versuchen“, um neu zu beginnen.
-onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automatisch.
 
 # Identitätseinrichtung: verschlüsselte Sicherung
 onboarding-passphrase-too-short = Verwende mindestens 12 Zeichen. Mach sie lang und einzigartig; Länge allein macht eine gängige Passphrase nicht sicher.

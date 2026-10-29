@@ -1,8 +1,8 @@
 //! A declared portable home stays pending independently of identity activation.
 //! The canonical headless helper authenticates and adopts; this controller only
 //! retains explicit intent, bounded public progress and completion/defer receipts.
-use crate::onboarding_continuation::{self as continuation, Context, Continuation, Kind, Settled};
-use crate::onboarding_prepared::{Pending as Prepared, PortableHome};
+use crate::continuation::{self as continuation, Context, Continuation, Kind, Settled};
+use crate::prepared::{Pending as Prepared, PortableHome};
 use std::{
     fs::OpenOptions,
     io,
@@ -11,17 +11,17 @@ use std::{
     time::Duration,
 };
 
-pub(crate) type Pending = Continuation<Home>;
+pub type Pending = Continuation<Home>;
 
 /// A portable home carried over by a prepared setup.
-pub(crate) enum Home {}
+pub enum Home {}
 
 fn failure() -> io::Error {
     continuation::failure::<Home>()
 }
 #[derive(serde::Deserialize)]
 #[serde(tag = "event", deny_unknown_fields)]
-pub(crate) enum HelperEvent {
+pub enum HelperEvent {
     #[serde(rename = "ready-to-adopt")]
     Ready { preview: HelperPreview },
     #[serde(rename = "complete")]
@@ -31,7 +31,7 @@ pub(crate) enum HelperEvent {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct HelperPreview {
+pub struct HelperPreview {
     install_items: usize,
     collisions: usize,
     inactive_custody: usize,
@@ -40,7 +40,7 @@ pub(crate) struct HelperPreview {
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct HelperResult {
+pub struct HelperResult {
     complete: bool,
     cancelled: bool,
     installed: usize,
@@ -53,7 +53,7 @@ pub(crate) struct HelperResult {
 fn root(home: &Path) -> PathBuf {
     continuation::root::<Home>(home)
 }
-pub(crate) fn helper_executable() -> io::Result<&'static Path> {
+pub fn helper_executable() -> io::Result<&'static Path> {
     let executable = match std::fs::symlink_metadata("/etc/tilo/prepared-setup") {
         Ok(_) => Path::new("/etc/tilo/prepared-setup"),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -141,8 +141,8 @@ impl Kind for Home {
         }
         // Refuse missing/redirected files before launching. The helper validates
         // exact ciphertext, limits and authenticated footer.
-        let pin = crate::onboarding_migration::directory(directory)?;
-        crate::onboarding_migration::private(&pin)?;
+        let pin = crate::migration::directory(directory)?;
+        crate::migration::private(&pin)?;
         let package = directory.join(filename);
         continuation::private_package::<Self>(&package, None)?;
         Ok((package, operation.to_owned()))
@@ -172,22 +172,28 @@ impl Kind for Home {
         }
     }
     fn prepare_root(home: &Path) -> io::Result<()> {
-        let mut pin = crate::onboarding_migration::directory(home)?;
+        let mut pin = crate::migration::directory(home)?;
         for segment in [".local", "state", "tilo", "prepared-home"] {
-            pin = crate::onboarding_migration::create(&pin, segment)?;
-            crate::onboarding_migration::private(&pin)?;
+            pin = crate::migration::create(&pin, segment)?;
+            crate::migration::private(&pin)?;
         }
         Ok(())
     }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+/// Fixtures for the tests of this module and of the session that hosts setup.
+#[cfg(any(test, feature = "test-support"))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "test support: a fixture that cannot be written fails the calling test"
+)]
+pub mod fixtures {
     use super::*;
     use sha2::{Digest, Sha256};
     use std::os::unix::fs::PermissionsExt;
-    use zeroize::Zeroizing;
-    pub(crate) fn fixture() -> (tempfile::TempDir, PathBuf, PortableHome) {
+    pub fn fixture() -> (tempfile::TempDir, PathBuf, PortableHome) {
         let home = tempfile::tempdir().unwrap();
         let state = home.path().join(".local/state/tilo/prepared-setup");
         std::fs::create_dir_all(&state).unwrap();
@@ -244,6 +250,13 @@ pub(crate) mod tests {
             .unwrap();
         (home, identity, declaration)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::*;
+    use super::*;
+    use zeroize::Zeroizing;
     #[test]
     fn authenticated_password_handoff_is_bound_to_exact_setup_and_defer_clears_it() {
         let mut env = tilo_test_env::ScopedEnv::new();

@@ -17,6 +17,9 @@ tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tempfile.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [features]
 # `FakeDocumentNet`: a `FakeNet` whose devices carry Automerge changes. Off by
 # default, so a package that only needs the environment does not link a CRDT;

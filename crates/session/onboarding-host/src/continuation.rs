@@ -8,7 +8,7 @@
 //! those receipts, and never substitutes a receipt for the helper's proofs.
 //! What differs per kind (the declaration, the helper's events, the package
 //! custody checks and the helper's arguments) is the kind's [`Kind`] policy.
-use crate::onboarding_prepared::Pending as Prepared;
+use crate::prepared::Pending as Prepared;
 use std::{
     fs::OpenOptions,
     io::{self, Read, Write},
@@ -20,7 +20,7 @@ use std::{
 use zeroize::{Zeroize, Zeroizing};
 
 /// What a helper's last event settles.
-pub(crate) enum Settled {
+pub enum Settled {
     /// Reviewed; `proceed` when an automatic continuation may go on.
     Ready {
         result: serde_json::Value,
@@ -39,7 +39,7 @@ pub(crate) enum Settled {
 }
 
 /// One kind of continuation's policy.
-pub(crate) trait Kind: Sized + 'static {
+pub trait Kind: Sized + 'static {
     type Declaration: Clone + PartialEq + serde::Serialize + serde::de::DeserializeOwned;
     type Event: serde::de::DeserializeOwned;
     /// The one error every refusal reports.
@@ -101,20 +101,20 @@ pub(crate) trait Kind: Sized + 'static {
     }
 }
 
-pub(crate) fn failure<K: Kind>() -> io::Error {
+pub fn failure<K: Kind>() -> io::Error {
     io::Error::other(K::FAILURE)
 }
 
-pub(crate) fn root<K: Kind>(home: &Path) -> PathBuf {
+pub fn root<K: Kind>(home: &Path) -> PathBuf {
     home.join(".local/state/tilo").join(K::ROOT)
 }
 
 /// The exact prepared transfer a continuation belongs to.
-pub(crate) struct Context<K: Kind> {
-    pub(crate) home: PathBuf,
-    pub(crate) identity: PathBuf,
-    pub(crate) declaration: K::Declaration,
-    pub(crate) digest: [u8; 32],
+pub struct Context<K: Kind> {
+    pub home: PathBuf,
+    pub identity: PathBuf,
+    pub declaration: K::Declaration,
+    pub digest: [u8; 32],
 }
 
 #[derive(PartialEq, serde::Serialize, serde::Deserialize)]
@@ -131,7 +131,7 @@ struct Worker {
     _scratch: tempfile::TempDir,
 }
 
-pub(crate) struct Continuation<K: Kind> {
+pub struct Continuation<K: Kind> {
     cx: Context<K>,
     state: &'static str,
     result: serde_json::Value,
@@ -143,9 +143,9 @@ pub(crate) struct Continuation<K: Kind> {
 
 /// A private, owner-only regular file of at most `bound` bytes in a private
 /// directory, read without following links.
-pub(crate) fn private_file<K: Kind>(path: &Path, bound: u64) -> io::Result<Vec<u8>> {
-    let parent = crate::onboarding_migration::directory(path.parent().ok_or_else(failure::<K>)?)?;
-    crate::onboarding_migration::private(&parent)?;
+pub fn private_file<K: Kind>(path: &Path, bound: u64) -> io::Result<Vec<u8>> {
+    let parent = crate::migration::directory(path.parent().ok_or_else(failure::<K>)?)?;
+    crate::migration::private(&parent)?;
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -170,7 +170,7 @@ pub(crate) fn private_file<K: Kind>(path: &Path, bound: u64) -> io::Result<Vec<u
 /// Open `path` without following links and check it is a private regular
 /// file the session owns, of exactly `length` bytes when given. Large hashing
 /// and authentication belong to the helper, not to the compositor's thread.
-pub(crate) fn private_package<K: Kind>(path: &Path, length: Option<u64>) -> io::Result<()> {
+pub fn private_package<K: Kind>(path: &Path, length: Option<u64>) -> io::Result<()> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -187,11 +187,7 @@ pub(crate) fn private_package<K: Kind>(path: &Path, length: Option<u64>) -> io::
 }
 
 impl<K: Kind> Continuation<K> {
-    pub(crate) fn open(
-        home: PathBuf,
-        identity: PathBuf,
-        declaration: K::Declaration,
-    ) -> io::Result<Self> {
+    pub fn open(home: PathBuf, identity: PathBuf, declaration: K::Declaration) -> io::Result<Self> {
         if !K::valid(&declaration) {
             return Err(failure::<K>());
         }
@@ -251,7 +247,7 @@ impl<K: Kind> Continuation<K> {
     /// Retain only the credential just authenticated for this exact prepared
     /// package. Onboarding may continue the already-consented transfer with
     /// it after activation; retaining the password alone starts no process.
-    pub(crate) fn receive_prepared_password(
+    pub fn receive_prepared_password(
         &mut self,
         digest: [u8; 32],
         password: Zeroizing<Vec<u8>>,
@@ -281,7 +277,7 @@ impl<K: Kind> Continuation<K> {
         Ok(())
     }
 
-    pub(crate) fn continue_automatic(&mut self) -> bool {
+    pub fn continue_automatic(&mut self) -> bool {
         if self.automatic && self.state == "pending" && !self.password.is_empty() && !self.busy() {
             if self.invoke("review", b"").is_err() {
                 self.automatic = false;
@@ -291,40 +287,40 @@ impl<K: Kind> Continuation<K> {
         false
     }
 
-    pub(crate) fn deferred(&self) -> bool {
+    pub fn deferred(&self) -> bool {
         self.state == "deferred"
     }
 
-    pub(crate) fn pending(&self) -> bool {
+    pub fn pending(&self) -> bool {
         !["complete", "deferred"].contains(&self.state)
     }
 
-    pub(crate) fn needs_password(&self) -> bool {
+    pub fn needs_password(&self) -> bool {
         self.password.is_empty() && !self.busy() && self.pending()
     }
 
-    pub(crate) fn busy(&self) -> bool {
+    pub fn busy(&self) -> bool {
         self.worker.is_some()
     }
 
-    pub(crate) fn operation(&self) -> &str {
+    pub fn operation(&self) -> &str {
         K::operation(&self.cx.declaration)
     }
 
-    pub(crate) fn context(&self) -> &Context<K> {
+    pub fn context(&self) -> &Context<K> {
         &self.cx
     }
 
-    pub(crate) fn state(&self) -> &'static str {
+    pub fn state(&self) -> &'static str {
         self.state
     }
 
     /// The projection the helper's verified completion produced.
-    pub(crate) fn projection(&self) -> Option<&Path> {
+    pub fn projection(&self) -> Option<&Path> {
         self.projection.as_deref()
     }
 
-    pub(crate) fn status(&self) -> serde_json::Value {
+    pub fn status(&self) -> serde_json::Value {
         let mut status = serde_json::Map::new();
         for (key, value) in [
             ("state", serde_json::json!(self.state)),
@@ -345,7 +341,7 @@ impl<K: Kind> Continuation<K> {
         serde_json::Value::Object(status)
     }
 
-    pub(crate) fn next_action(&self) -> &'static str {
+    pub fn next_action(&self) -> &'static str {
         if self.state == K::READY {
             K::PROCEED
         } else {
@@ -353,7 +349,7 @@ impl<K: Kind> Continuation<K> {
         }
     }
 
-    pub(crate) fn invoke(&mut self, op: &str, password: &[u8]) -> io::Result<()> {
+    pub fn invoke(&mut self, op: &str, password: &[u8]) -> io::Result<()> {
         if op == "cancel" && self.busy() {
             self.worker = None;
             self.password.zeroize();
@@ -392,7 +388,7 @@ impl<K: Kind> Continuation<K> {
         if self.password.is_empty() {
             return Err(failure::<K>());
         }
-        match crate::onboarding_portable_home::helper_executable()
+        match crate::portable_home::helper_executable()
             .and_then(|helper| self.start_with(action, helper))
         {
             Ok(worker) => {
@@ -418,14 +414,14 @@ impl<K: Kind> Continuation<K> {
         self.validate()?;
         let directory = root::<K>(&self.cx.home);
         let (package, operation) = K::package(&self.cx, &directory)?;
-        let mut pin = crate::onboarding_migration::directory(&self.cx.home)?;
+        let mut pin = crate::migration::directory(&self.cx.home)?;
         for segment in [".local", "state", "tilo", K::WORKSPACE, operation.as_str()] {
-            pin = crate::onboarding_migration::create(&pin, segment)?;
+            pin = crate::migration::create(&pin, segment)?;
             if K::WORKSPACE_NAMESPACE && [".local", "state", "tilo"].contains(&segment) {
                 tilo_files::native::atomic::StorageDirectory::from_file(pin.try_clone()?)?
                     .validate_namespace_control()?;
             } else {
-                crate::onboarding_migration::private(&pin)?;
+                crate::migration::private(&pin)?;
             }
         }
         let scratch = tempfile::Builder::new()
@@ -475,8 +471,8 @@ impl<K: Kind> Continuation<K> {
         K::prepare_root(&self.cx.home)?;
         self.validate()?;
         let directory = root::<K>(&self.cx.home);
-        let pin = crate::onboarding_migration::directory(&directory)?;
-        crate::onboarding_migration::private(&pin)?;
+        let pin = crate::migration::directory(&directory)?;
+        crate::migration::private(&pin)?;
         let choice = Choice {
             schema: 1,
             setup_digest: self.cx.digest,
@@ -522,7 +518,7 @@ impl<K: Kind> Continuation<K> {
         pin.sync_all()
     }
 
-    pub(crate) fn poll(&mut self) -> bool {
+    pub fn poll(&mut self) -> bool {
         let Some(worker) = &mut self.worker else {
             return false;
         };
@@ -584,16 +580,16 @@ impl<K: Kind> Continuation<K> {
 #[cfg(test)]
 impl<K: Kind> Continuation<K> {
     /// Stop continuing on its own after a review.
-    pub(crate) fn manual(&mut self) {
+    pub fn manual(&mut self) {
         self.automatic = false;
     }
 
-    pub(crate) fn holds_password(&self) -> bool {
+    pub fn holds_password(&self) -> bool {
         !self.password.is_empty()
     }
 
     /// Run the helper `executable` for `action` as the controller would.
-    pub(crate) fn run_with(&mut self, action: &str, executable: &Path) -> io::Result<()> {
+    pub fn run_with(&mut self, action: &str, executable: &Path) -> io::Result<()> {
         self.worker = Some(self.start_with(action, executable)?);
         Ok(())
     }
