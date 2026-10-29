@@ -18,9 +18,13 @@ use ui::widget::{Column, Element, ModalDialog, Segment, ViewTabs, Widget};
 
 use crate::presentation::Presentation;
 
+mod agents;
 mod general;
 mod people;
 
+pub use agents::{
+    AccessApp, Agent, AgentReview, Agents, Bot, Exception, Intro, KindLine, ModelChoice, Models,
+};
 pub use general::{Archived, Device, General, Group, Public, PublicControls};
 pub use people::{Decision, Offers, People, Person, RoleChoice};
 
@@ -120,6 +124,61 @@ pub enum WorkspaceSettingsEffect {
     /// Transfer the workspace's ownership, or answer a transfer
     #[effect(own_device, kind = "read")]
     Ownership,
+    /// Admit an agent to the workspace
+    #[effect(own_device, kind = "read")]
+    AddAgent,
+    /// Show what an agent may do in the workspace, app by app
+    #[effect(own_device, kind = "read")]
+    ReviewAgent {
+        #[param("The agent, by its key in the list")]
+        agent: String,
+    },
+    /// Back from an agent's review to the agents
+    #[effect(own_device, kind = "read")]
+    EndReview,
+    /// Answer what an agent may do of one kind in one app
+    #[effect(attended)]
+    SetAgentAnswer {
+        #[param("The agent, by its key in the list")]
+        agent: String,
+        #[param("The app, by its key in the review")]
+        scope: String,
+        #[param("read, change or outside")]
+        kind: String,
+        #[param("allow, ask or deny; empty to follow the agent's admission")]
+        answer: String,
+    },
+    /// Return an agent's answers in one app to its admission's
+    #[effect(attended)]
+    ResetAgentApp {
+        #[param("The agent, by its key in the list")]
+        agent: String,
+        #[param("The app, by its key in the review")]
+        scope: String,
+    },
+    /// Choose the model an agent plans with
+    #[effect(own_device)]
+    SetAgentModel {
+        #[param("The agent, by its key in the list")]
+        agent: String,
+        #[param("The model, by its key in the review; empty for the default")]
+        model: String,
+    },
+    /// Take an agent out of the workspace
+    #[effect(destructive, attended)]
+    RemoveAgent {
+        #[param("The agent, by its key in the list")]
+        agent: String,
+    },
+    /// Find a bot for the workspace
+    #[effect(own_device, kind = "read")]
+    AddBot,
+    /// Take back the workspace's request for a bot: its host stops it
+    #[effect(destructive, attended)]
+    RemoveBot {
+        #[param("The bot, by its directory entry")]
+        bot: String,
+    },
 }
 
 /// A tab of the sheet.
@@ -128,17 +187,19 @@ pub enum Tab {
     #[default]
     General,
     People,
+    Agents,
 }
 
 impl Tab {
     /// Every tab, in the order the strip shows them.
-    pub const ALL: [Self; 2] = [Self::General, Self::People];
+    pub const ALL: [Self; 3] = [Self::General, Self::People, Self::Agents];
 
     /// What the tab is asked for by.
     pub fn key(self) -> &'static str {
         match self {
             Self::General => "general",
             Self::People => "people",
+            Self::Agents => "agents",
         }
     }
 
@@ -172,6 +233,7 @@ pub struct Settings {
     pub tab: Tab,
     pub general: General,
     pub people: People,
+    pub agents: Agents,
 }
 
 /// A change the sheet asks about before asking the shell for it.
@@ -179,6 +241,16 @@ pub struct Settings {
 pub enum Confirm {
     /// Remove the member `member`, called `name`.
     RemoveMember { member: String, name: String },
+}
+
+/// What the sheet keeps to itself while it is up: the question it is
+/// asking, and what of an agent's review is open.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Local {
+    confirming: Option<Confirm>,
+    /// The app whose answers are open in an agent's review.
+    open_app: Option<String>,
+    models_open: bool,
 }
 
 /// What the shell lends the sheet: whether it is up, what it shows, and
@@ -292,8 +364,8 @@ impl ResourceApp for WorkspaceSettingsApp {
         };
         let name = cx.local(initial.name.clone());
         let shown = cx.local(initial);
-        let asking_first = cx.fixture::<Confirm>().map(|confirm| (*confirm).clone());
-        let confirming = cx.local(asking_first);
+        let staged = cx.fixture::<Local>().map(|local| (*local).clone());
+        let local = cx.local(staged.unwrap_or_default());
         if let Some(seat) = &seat {
             *seat.shown.borrow_mut() = Some(shown.clone());
             *seat.name.borrow_mut() = Some(name.clone());
@@ -311,14 +383,14 @@ impl ResourceApp for WorkspaceSettingsApp {
             dispatch: cx.dispatcher(),
             shown: shown.clone(),
             name,
-            confirming: confirming.clone(),
+            local: local.clone(),
             seat,
         };
         let sheet_parts = parts.clone();
         let content = cx.switch(&shown, move |cx, settings| {
             let settings = settings.clone();
             let parts = sheet_parts.clone();
-            cx.switch(&confirming, move |_cx, confirm| match confirm {
+            cx.switch(&local, move |_cx, local| match &local.confirming {
                 Some(confirm) => decision(&settings, confirm, &parts),
                 None => sheet(&settings, &parts),
             })
@@ -333,15 +405,28 @@ impl ResourceApp for WorkspaceSettingsApp {
             "people",
             "people-member",
             "people-removing",
+            "agents",
+            "agents-empty",
+            "agent-review",
         ]
     }
 
     fn fixture(fixture: &mut ui::framework::Fixture<WorkspaceSettings>) {
         let settings = scenario(fixture.scenario());
+        if fixture.scenario() == Some("agent-review") {
+            fixture.provide(Local {
+                open_app: Some("so.tilo.notes".to_owned()),
+                models_open: true,
+                ..Local::default()
+            });
+        }
         if fixture.scenario() == Some("people-removing") {
-            fixture.provide(Confirm::RemoveMember {
-                member: "ada".to_owned(),
-                name: "Ada Lovelace-Byron".to_owned(),
+            fixture.provide(Local {
+                confirming: Some(Confirm::RemoveMember {
+                    member: "ada".to_owned(),
+                    name: "Ada Lovelace-Byron".to_owned(),
+                }),
+                ..Local::default()
             });
         }
         fixture.provide(settings);
@@ -358,6 +443,31 @@ pub fn scenario(name: Option<&str>) -> Settings {
         },
         Some("people" | "people-removing") => Settings {
             tab: Tab::People,
+            ..sample()
+        },
+        Some("agents") => Settings {
+            tab: Tab::Agents,
+            ..sample()
+        },
+        Some("agents-empty") => Settings {
+            tab: Tab::Agents,
+            agents: Agents {
+                agents: Vec::new(),
+                bots: Vec::new(),
+                intro: Intro {
+                    title: "No agents".to_owned(),
+                    ..agents::sample().intro
+                },
+                ..agents::sample()
+            },
+            ..sample()
+        },
+        Some("agent-review") => Settings {
+            tab: Tab::Agents,
+            agents: Agents {
+                review: Some(agents::sample_review()),
+                ..agents::sample()
+            },
             ..sample()
         },
         Some("people-member") => Settings {
@@ -382,10 +492,15 @@ fn sample() -> Settings {
         name: "Studio".to_owned(),
         role: "Owner".to_owned(),
         close: "Close".to_owned(),
-        tabs: vec![tab(Tab::General, "General"), tab(Tab::People, "People")],
+        tabs: vec![
+            tab(Tab::General, "General"),
+            tab(Tab::People, "People"),
+            tab(Tab::Agents, "Agents"),
+        ],
         tab: Tab::General,
         general: general::sample(),
         people: people::sample(),
+        agents: agents::sample(),
     }
 }
 
@@ -396,8 +511,8 @@ struct Parts {
     shown: LocalState<Settings>,
     /// The name as typed.
     name: LocalState<String>,
-    /// The change the sheet is asking about, while it asks.
-    confirming: LocalState<Option<Confirm>>,
+    /// What the sheet keeps to itself while it is up.
+    local: LocalState<Local>,
     seat: Option<WorkspaceSettingsSeat>,
 }
 
@@ -406,6 +521,16 @@ impl Parts {
     /// decision, as a key is; anyone acting for them goes through the
     /// door, which asks first where the effect says so.
     fn ask(&self, effect: WorkspaceSettingsEffect) {
+        if matches!(
+            effect,
+            WorkspaceSettingsEffect::ReviewAgent { .. } | WorkspaceSettingsEffect::EndReview
+        ) {
+            // Each review opens with everything closed.
+            self.local.update(|local| {
+                local.open_app = None;
+                local.models_open = false;
+            });
+        }
         match &self.seat {
             Some(seat) if self.dispatch.is_own_gesture(&effect) => seat.ask(effect),
             _ => self.dispatch.effect(&effect),
@@ -441,16 +566,40 @@ impl Parts {
 
     /// Ask whether to make `change` before asking the shell for it.
     fn confirm(&self, change: Confirm) {
-        self.confirming.set(Some(change));
+        self.local.update(|local| local.confirming = Some(change));
+    }
+
+    /// Open the answers of the app `scope` in an agent's review, or close
+    /// them when they are open.
+    fn toggle_app(&self, scope: &str) {
+        self.local.update(|local| {
+            local.open_app = if local.open_app.as_deref() == Some(scope) {
+                None
+            } else {
+                Some(scope.to_owned())
+            };
+        });
+    }
+
+    /// Show or hide the models an agent may plan with.
+    fn toggle_models(&self) {
+        self.local
+            .update(|local| local.models_open = !local.models_open);
+    }
+
+    /// Whether an agent's review is shown.
+    fn reviewing(&self) -> bool {
+        let settings = self.shown.get();
+        settings.tab == Tab::Agents && settings.agents.review.is_some()
     }
 
     /// The person answered the question: keep things as they are, look at
     /// the workspace's activity, or go ahead.
     fn decide(&self, answer: Answer) {
-        let Some(change) = self.confirming.get() else {
+        let Some(change) = self.local.get().confirming else {
             return;
         };
-        self.confirming.set(None);
+        self.local.update(|local| local.confirming = None);
         match answer {
             Answer::Keep => {}
             Answer::Review => self.ask(WorkspaceSettingsEffect::ReviewActivity),
@@ -488,6 +637,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
     let pane = match settings.tab {
         Tab::General => general::pane(settings, parts),
         Tab::People => people::pane(settings, parts),
+        Tab::Agents => agents::pane(settings, parts),
     };
     let body = Column::new()
         .with_no_padding()
@@ -558,7 +708,8 @@ fn decision(settings: &Settings, confirm: &Confirm, parts: &Parts) -> Element {
     )
 }
 
-/// Escape takes back a name being typed before it closes the sheet; the
+/// Escape takes back a name being typed, and leaves an agent's review,
+/// before it closes the sheet; the
 /// sheet's own dialog walks its controls with Tab and presses them with
 /// Enter and Space.
 struct Keys {
@@ -585,8 +736,15 @@ impl ui::widget::Decorator for Keys {
                 if key.state == ui::winit::event::ElementState::Pressed
                     && key.logical_key == Key::Named(NamedKey::Escape)
         );
+        let asking = self.parts.local.get().confirming.is_some();
         if escape && self.parts.renaming() {
             self.parts.name.set(self.parts.shown.get().name);
+            *ctx.handled = true;
+            return;
+        }
+        // Escape in an agent's review goes back to the agents.
+        if escape && !asking && self.parts.reviewing() {
+            self.parts.ask(WorkspaceSettingsEffect::EndReview);
             *ctx.handled = true;
             return;
         }

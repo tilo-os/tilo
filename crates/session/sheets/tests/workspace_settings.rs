@@ -305,3 +305,100 @@ fn switching_tabs_asks_the_shell() {
         }]
     );
 }
+
+#[test]
+fn the_agents_tab_lists_agents_and_bots_apart() {
+    let mut app = staged("agents");
+    for text in ["2 agents", "claude", "Encrypted backup", "Bots", "Standup"] {
+        assert!(says(&mut app, text), "{text:?} is shown");
+    }
+    let mut empty = staged("agents-empty");
+    assert!(says(&mut empty, "No agents yet"));
+}
+
+#[test]
+fn agent_and_bot_controls_name_what_they_act_on() {
+    let (mut app, seat) = seated("agents");
+    press(&mut app, "ws-agents-review-claude");
+    press(&mut app, "ws-agents-add");
+    press(&mut app, "ws-bots-add");
+    assert_eq!(
+        seat.take_asked(),
+        [
+            WorkspaceSettingsEffect::ReviewAgent {
+                agent: "claude".to_owned()
+            },
+            WorkspaceSettingsEffect::AddAgent,
+            WorkspaceSettingsEffect::AddBot,
+        ]
+    );
+}
+
+#[test]
+fn an_agent_review_shows_its_answers_model_and_exceptions() {
+    let mut app = staged("agent-review");
+    for text in [
+        "Notes",
+        "Calendar",
+        "Ask first",
+        "Sonnet (Anthropic)",
+        "Notes: Delete for good",
+    ] {
+        assert!(says(&mut app, text), "{text:?} is shown");
+    }
+}
+
+#[test]
+fn in_a_review_escape_goes_back_to_the_agents() {
+    let (mut app, seat) = seated("agent-review");
+    app.harness().key("Escape");
+    app.settle();
+    assert_eq!(seat.take_asked(), [WorkspaceSettingsEffect::EndReview]);
+    assert!(seat.presentation().is_open(), "the sheet stays up");
+}
+
+#[test]
+fn a_review_asks_for_answers_models_and_resets_by_key() {
+    let (mut app, seat) = seated("agent-review");
+    press(&mut app, "ws-agent-app-so.tilo.notes");
+    press(&mut app, "ws-agent-reset-so.tilo.notes");
+    press(
+        &mut app,
+        "ws-agent-stop-so.tilo.notes/notes.notebook/delete-outside",
+    );
+    press(&mut app, "ws-agent-models");
+    press(&mut app, "ws-agent-use-");
+    assert_eq!(
+        seat.take_asked(),
+        [
+            WorkspaceSettingsEffect::ResetAgentApp {
+                agent: "claude".to_owned(),
+                scope: "so.tilo.notes".to_owned(),
+            },
+            WorkspaceSettingsEffect::SetAgentAnswer {
+                agent: "claude".to_owned(),
+                scope: "so.tilo.notes/notes.notebook/delete".to_owned(),
+                kind: "outside".to_owned(),
+                answer: String::new(),
+            },
+            WorkspaceSettingsEffect::SetAgentModel {
+                agent: "claude".to_owned(),
+                model: String::new(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn an_agent_is_answered_through_the_door_too() {
+    let (mut app, seat) = seated("agent-review");
+    app.effect(&WorkspaceSettingsEffect::SetAgentAnswer {
+        agent: "claude".to_owned(),
+        scope: "so.tilo.calendar".to_owned(),
+        kind: "change".to_owned(),
+        answer: "deny".to_owned(),
+    })
+    .unwrap();
+    app.settle();
+    assert_eq!(seat.take_asked().len(), 1);
+}
