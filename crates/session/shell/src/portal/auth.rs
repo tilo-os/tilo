@@ -5,7 +5,20 @@
 //! frontend has already derived `app_id` from the original application's
 //! credentials.  Workspace attribution is a separate, injected lookup because
 //! every backend call itself has the frontend's D-Bus sender, not the app's.
+//!
+//! The frontend can name a host process's app only from its own systemd
+//! unit (`app-<launcher>-<id>-<n>.scope` with an `<id>.desktop` beside it).
+//! The compositor starts apps in cgroups of one delegated tree
+//! (`launcher::app_cgroup`), so for every app it launches the frontend
+//! asserts the empty id. A call that carries a request handle names its
+//! requester, though: the frontend makes the handle
+//! `/org/freedesktop/portal/desktop/request/<sender>/<token>` from the
+//! caller's unique bus name. [`authenticate_request`] asks the bus for that
+//! connection's process and resolves it to the launch the compositor
+//! supervises (normally the app's `xdg-dbus-proxy`, a child of its
+//! launcher), so the app is named by its launch, not by a string.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use zbus::names::{BusName, OwnedUniqueName};
@@ -14,6 +27,8 @@ use super::{PortalCaller, PortalContext};
 
 pub const FRONTEND_BUS_NAME: &str = "org.freedesktop.portal.Desktop";
 const MAX_APP_ID_BYTES: usize = 255;
+/// Where the frontend exports the `Request` object of a call it forwards.
+const REQUEST_PATH_PREFIX: &str = "/org/freedesktop/portal/desktop/request/";
 
 /// Resolves a frontend-authenticated application id (and, where present, its
 /// exported parent window) to a concrete Tilo application instance.
@@ -30,11 +45,16 @@ where
     }
 }
 
+/// Resolves the process behind a requester's bus connection to the live
+/// launch that owns it.
+pub type RequesterResolver = Arc<dyn Fn(u32) -> Option<PortalCaller> + Send + Sync>;
+
 #[derive(Clone)]
 enum FrontendAuthority {
     SessionBus(zbus::Connection),
-    /// Explicit injection for p2p protocol tests, which have no bus daemon.
-    Fixed(OwnedUniqueName),
+    /// Explicit injection for p2p protocol tests, which have no bus daemon:
+    /// the frontend's name and the process behind each requester's name.
+    Fixed(OwnedUniqueName, HashMap<String, u32>),
 }
 
 /// A verified backend call. `owner` is retained so request/session registries
@@ -49,6 +69,7 @@ pub struct AuthenticatedCall {
 pub struct PortalAuthenticator {
     authority: FrontendAuthority,
     resolver: Arc<dyn PortalCallerResolver>,
+    requesters: Option<RequesterResolver>,
 }
 
 impl PortalAuthenticator {
@@ -63,7 +84,7 @@ impl PortalAuthenticator {
         let expected = self.frontend_owner().await?;
         let sender = match (sender, &self.authority) {
             (Some(sender), _) => sender,
-            (None, FrontendAuthority::Fixed(owner)) => owner,
+            (None, FrontendAuthority::Fixed(owner, _)) => owner,
             (None, FrontendAuthority::SessionBus(_)) => {
                 return Err(AuthenticationError::MissingSender);
             }
@@ -83,6 +104,7 @@ impl PortalAuthenticator {
         Self {
             authority: FrontendAuthority::SessionBus(connection),
             resolver,
+            requesters: None,
         }
     }
 
@@ -93,9 +115,27 @@ impl PortalAuthenticator {
         resolver: Arc<dyn PortalCallerResolver>,
     ) -> Self {
         Self {
-            authority: FrontendAuthority::Fixed(owner),
+            authority: FrontendAuthority::Fixed(owner, HashMap::new()),
             resolver,
+            requesters: None,
         }
+    }
+
+    /// Name a request's requester by the launch its process belongs to.
+    #[must_use]
+    pub fn with_requesters(mut self, requesters: RequesterResolver) -> Self {
+        self.requesters = Some(requesters);
+        self
+    }
+
+    /// The process behind each requester's unique name, for a test
+    /// authenticator that has no bus to ask.
+    #[must_use]
+    pub fn with_requester_pids_for_tests(mut self, pids: HashMap<String, u32>) -> Self {
+        if let FrontendAuthority::Fixed(_, known) = &mut self.authority {
+            *known = pids;
+        }
+        self
     }
 
     /// Authenticate the backend sender, validate the asserted app id, then
@@ -107,8 +147,60 @@ impl PortalAuthenticator {
         app_id: &str,
         parent_window: Option<&str>,
     ) -> Result<AuthenticatedCall, AuthenticationError> {
-        validate_app_id(app_id)?;
         let expected = self.authenticate_frontend(sender).await?;
+        self.resolve_asserted(expected, app_id, parent_window)
+    }
+
+    /// [`Self::authenticate`] for a call carrying the request handle the
+    /// frontend made for it. The requester's own launch names the app; the
+    /// frontend's id, when it has one, must agree with it. A requester that
+    /// is no supervised launch is judged by the frontend's id alone.
+    pub async fn authenticate_request(
+        &self,
+        sender: Option<&OwnedUniqueName>,
+        handle: &str,
+        app_id: &str,
+        parent_window: Option<&str>,
+    ) -> Result<AuthenticatedCall, AuthenticationError> {
+        let expected = self.authenticate_frontend(sender).await?;
+        let Some(caller) = self.requester(handle).await else {
+            if app_id.is_empty() {
+                return Err(AuthenticationError::UnattributedRequester);
+            }
+            return self.resolve_asserted(expected, app_id, parent_window);
+        };
+        if !app_id.is_empty() && caller.app_id != app_id {
+            return Err(AuthenticationError::ApplicationMismatch);
+        }
+        Ok(AuthenticatedCall {
+            owner: expected,
+            caller,
+        })
+    }
+
+    /// The live launch behind the connection that made the request `handle`.
+    async fn requester(&self, handle: &str) -> Option<PortalCaller> {
+        let resolve = self.requesters.as_ref()?;
+        let name = requester_of_handle(handle)?;
+        let pid = match &self.authority {
+            FrontendAuthority::Fixed(_, pids) => *pids.get(name.as_str())?,
+            FrontendAuthority::SessionBus(connection) => zbus::fdo::DBusProxy::new(connection)
+                .await
+                .ok()?
+                .get_connection_unix_process_id(BusName::from(name))
+                .await
+                .ok()?,
+        };
+        resolve(pid)
+    }
+
+    fn resolve_asserted(
+        &self,
+        expected: OwnedUniqueName,
+        app_id: &str,
+        parent_window: Option<&str>,
+    ) -> Result<AuthenticatedCall, AuthenticationError> {
+        validate_app_id(app_id)?;
         let caller = self
             .resolver
             .resolve(app_id, parent_window)
@@ -124,7 +216,7 @@ impl PortalAuthenticator {
 
     async fn frontend_owner(&self) -> Result<OwnedUniqueName, AuthenticationError> {
         match &self.authority {
-            FrontendAuthority::Fixed(owner) => Ok(owner.clone()),
+            FrontendAuthority::Fixed(owner, _) => Ok(owner.clone()),
             FrontendAuthority::SessionBus(connection) => {
                 let proxy = zbus::fdo::DBusProxy::new(connection)
                     .await
@@ -159,6 +251,38 @@ pub async fn authenticate_call(
         .await
 }
 
+/// [`authenticate_call`] for a call that carries its request `handle`.
+pub async fn authenticate_request(
+    ctx: &PortalContext,
+    header: &zbus::message::Header<'_>,
+    handle: &str,
+    app_id: &str,
+    parent_window: Option<&str>,
+) -> Result<AuthenticatedCall, AuthenticationError> {
+    let authenticator = ctx
+        .authenticator
+        .as_ref()
+        .ok_or(AuthenticationError::FrontendUnavailable)?;
+    let sender = header.sender().cloned().map(OwnedUniqueName::from);
+    authenticator
+        .authenticate_request(sender.as_ref(), handle, app_id, parent_window)
+        .await
+}
+
+/// The unique bus name a request handle was made for: the frontend drops
+/// its leading `:` and spells each `.` as `_`. Bus daemons hand out names of
+/// digits and dots only, so anything else names no requester.
+fn requester_of_handle(handle: &str) -> Option<OwnedUniqueName> {
+    let escaped = handle
+        .strip_prefix(REQUEST_PATH_PREFIX)?
+        .split('/')
+        .next()?;
+    if escaped.is_empty() || !escaped.bytes().all(|b| b.is_ascii_digit() || b == b'_') {
+        return None;
+    }
+    OwnedUniqueName::try_from(format!(":{}", escaped.replace('_', "."))).ok()
+}
+
 /// Authenticate the backend sender for implementation interfaces that don't
 /// have an app id in their wire signature.
 pub async fn authenticate_frontend_call(
@@ -186,6 +310,8 @@ pub enum AuthenticationError {
     UnknownApplication,
     #[error("resolved application does not match the frontend assertion")]
     ApplicationMismatch,
+    #[error("the requester is no launch the compositor supervises and the frontend named no app")]
+    UnattributedRequester,
 }
 
 fn validate_app_id(app_id: &str) -> Result<(), AuthenticationError> {
@@ -251,5 +377,80 @@ mod tests {
                 AuthenticationError::InvalidApplicationId
             );
         }
+    }
+
+    #[test]
+    fn a_request_handle_names_its_requester() {
+        let name = |handle: &str| requester_of_handle(handle).map(|n| n.as_str().to_string());
+        assert_eq!(
+            name("/org/freedesktop/portal/desktop/request/1_42/t1").as_deref(),
+            Some(":1.42")
+        );
+        // The frontend appends a counter to a token already in use.
+        assert_eq!(
+            name("/org/freedesktop/portal/desktop/request/1_42/t1/7").as_deref(),
+            Some(":1.42")
+        );
+        assert_eq!(
+            name("/org/freedesktop/portal/desktop/session/1_42/t1"),
+            None
+        );
+        assert_eq!(name("/org/freedesktop/portal/desktop/request//t1"), None);
+        assert_eq!(name("/org/freedesktop/portal/desktop/request/x_y/t1"), None);
+    }
+
+    #[tokio::test]
+    async fn a_request_is_attributed_to_its_requesters_launch() {
+        const HANDLE: &str = "/org/freedesktop/portal/desktop/request/1_42/t";
+        let owner: OwnedUniqueName = ":1.7".try_into().unwrap();
+        let notes = || PortalCaller::new(WorkspaceId(3), "so.tilo.notes");
+        let by_launch = |known: bool| {
+            PortalAuthenticator::fixed_for_tests(
+                owner.clone(),
+                Arc::new(|_: &str, _: Option<&str>| None),
+            )
+            .with_requesters(Arc::new(move |pid| {
+                (known && pid == 4242).then(|| PortalCaller::new(WorkspaceId(3), "so.tilo.notes"))
+            }))
+            .with_requester_pids_for_tests(HashMap::from([(":1.42".to_string(), 4242)]))
+        };
+
+        // The frontend could not name the app: its launch does.
+        let call = by_launch(true)
+            .authenticate_request(Some(&owner), HANDLE, "", None)
+            .await
+            .unwrap();
+        assert_eq!(call.caller, notes());
+        // A frontend that names it must name the same app.
+        assert!(
+            by_launch(true)
+                .authenticate_request(Some(&owner), HANDLE, "so.tilo.notes", None)
+                .await
+                .is_ok()
+        );
+        assert_eq!(
+            by_launch(true)
+                .authenticate_request(Some(&owner), HANDLE, "so.tilo.mail", None)
+                .await
+                .unwrap_err(),
+            AuthenticationError::ApplicationMismatch
+        );
+        // A process no launch owns, named by nobody, is refused.
+        assert_eq!(
+            by_launch(false)
+                .authenticate_request(Some(&owner), HANDLE, "", None)
+                .await
+                .unwrap_err(),
+            AuthenticationError::UnattributedRequester
+        );
+        // Only the frontend's calls count.
+        let attacker: OwnedUniqueName = ":1.8".try_into().unwrap();
+        assert_eq!(
+            by_launch(true)
+                .authenticate_request(Some(&attacker), HANDLE, "", None)
+                .await
+                .unwrap_err(),
+            AuthenticationError::UntrustedSender
+        );
     }
 }

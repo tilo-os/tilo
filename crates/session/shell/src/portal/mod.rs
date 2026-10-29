@@ -675,6 +675,14 @@ impl GrantStoreHandle {
         WorkspaceTreeHandle::clone(&self.tree)
     }
 
+    /// The live launch the process `pid` descends from, in the workspace it
+    /// was launched into.
+    pub fn resolve_launch(&self, pid: u32) -> Option<PortalCaller> {
+        let launch = crate::shell::launcher::verified_launch_for_descendant(pid)?;
+        let room = launch.workspace_id.filter(|room| !room.is_empty())?;
+        self.caller_in_room(&room, &launch.package_id)
+    }
+
     /// Resolve a launcher-verified live application to one concrete local
     /// workspace. Multiple live rooms are intentionally ambiguous unless a
     /// future parent-window resolver identifies the exact surface.
@@ -1364,20 +1372,23 @@ pub async fn serve_with_inhibit_and_clipboard(
     if ctx.authenticator.is_none() {
         let grants = ctx.grants.clone();
         let callers = ctx.caller_map.clone();
+        let launches = ctx.grants.clone();
         let resolver = Arc::new(move |app_id: &str, _parent: Option<&str>| {
             callers
                 .lookup("")
                 .filter(|caller| caller.app_id == app_id)
                 .or_else(|| grants.resolve_live_app(app_id))
         });
-        ctx.authenticator = Some(if connection.unique_name().is_none() {
+        let authenticator = if connection.unique_name().is_none() {
             PortalAuthenticator::fixed_for_tests(
                 ":1.0".try_into().expect("static unique bus name"),
                 resolver,
             )
         } else {
             PortalAuthenticator::session_bus(connection.clone(), resolver)
-        });
+        };
+        ctx.authenticator =
+            Some(authenticator.with_requesters(Arc::new(move |pid| launches.resolve_launch(pid))));
     }
 
     let fc = FileChooserBackend::new(ctx.clone());
