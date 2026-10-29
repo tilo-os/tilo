@@ -262,11 +262,9 @@ impl FilesState {
         };
         self.app_chooser_target = Some(path);
         let resource = self.entry_resource(&entry);
-        self.app_chooser
-            .open(ui::search::SearchRequest::within(ui::search::ScopeDecl::new(
-                resource.id.0,
-                entry.name,
-            )));
+        self.app_chooser.open(ui::search::SearchRequest::within(
+            ui::search::ScopeDecl::new(resource.id.0, entry.name),
+        ));
         self.structure_dirty = true;
     }
 

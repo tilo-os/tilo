@@ -9847,10 +9847,10 @@ impl FilesState {
         }
     }
 
-    fn window_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn window_accessibility(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
         if let Some(sheet) = self.sheet_accessibility() {
-            return Some(sheet);
+            return sheet;
         }
         if let Some(panel) = &self.collab_panel {
             let mut children = Vec::with_capacity(panel.lines.len() + 2);
@@ -9873,23 +9873,21 @@ impl FilesState {
                         ),
                 );
             }
-            return Some(
-                AccessNode::new(Role::Dialog)
-                    .with_name(panel.title.clone())
-                    .with_description(t_args(
-                        "files-a11y-dialog-close",
-                        &[arg("summary", panel.summary.clone())],
-                    ))
-                    .with_value(panel.lines.join(". "))
-                    .with_live(Politeness::Polite)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.collab_panel_focused)
-                            .modal(true),
-                    )
-                    .with_children(children),
-            );
+            return AccessNode::new(Role::Dialog)
+                .with_name(panel.title.clone())
+                .with_description(t_args(
+                    "files-a11y-dialog-close",
+                    &[arg("summary", panel.summary.clone())],
+                ))
+                .with_value(panel.lines.join(". "))
+                .with_live(Politeness::Polite)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.collab_panel_focused)
+                        .modal(true),
+                )
+                .with_children(children);
         }
 
         let root = AccessNode::new(Role::Group)
@@ -9905,7 +9903,7 @@ impl FilesState {
                 Politeness::Polite
             })
             .with_state(AccessState::new().busy(self.is_loading));
-        Some(root)
+        root
     }
 
     fn perform_window_action(&mut self, target: &str, action: &ui::a11y::Action) -> bool {

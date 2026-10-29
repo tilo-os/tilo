@@ -598,8 +598,8 @@ mod open_with_tests {
         let mut w = pdf_widget();
         w.state().apply_command(FileCommand::OpenWithOther);
         let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
-        let invocation = ui::widget::controls::take_control_invocation(&mut w)
-            .expect("the host's search opens");
+        let invocation =
+            ui::widget::controls::take_control_invocation(&mut w).expect("the host's search opens");
         let request = ui::search::SearchRequest::from_arguments(&invocation.arguments);
         assert_eq!(
             request.resource_scope().map(|scope| scope.anchor.as_str()),
