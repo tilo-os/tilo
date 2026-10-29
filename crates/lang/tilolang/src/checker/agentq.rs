@@ -690,7 +690,7 @@ impl Checker<'_> {
 
     /// `@chat.Message:...` in a program whose host does not hold chat: a resource read through
     /// the platform, a `host.Resource`.
-    pub(super) fn foreign_ref(&mut self, r: &ast::RefLit) -> Option<Ex> {
+    pub(super) fn foreign_ref(&self, r: &ast::RefLit) -> Option<Ex> {
         if !self.st.program {
             return None;
         }

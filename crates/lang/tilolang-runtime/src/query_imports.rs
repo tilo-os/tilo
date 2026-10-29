@@ -62,9 +62,9 @@ fn excerpt(line: &str, text: &str) -> String {
     if chars <= EXCERPT {
         return line.to_owned();
     }
-    let at = line
-        .find(text)
-        .map_or(0, |byte| line[..byte].chars().count());
+    let at = line.find(text).map_or(0, |byte| {
+        line.get(..byte).map_or(0, |before| before.chars().count())
+    });
     let start = at.saturating_sub(EXCERPT / 3);
     let cut: String = line.chars().skip(start).take(EXCERPT).collect();
     let before = if start > 0 { "…" } else { "" };
@@ -101,20 +101,18 @@ impl Core {
     /// Every app a program reads by default: those this runtime holds, then the others it may
     /// read.
     fn every_app(&self, inputs: &ProgramInputs) -> Vec<String> {
-        let mut apps: Vec<String> = match &inputs.local {
-            Some(local) => local.clone(),
-            None => {
-                let mut held: Vec<String> = Vec::new();
-                for p in self.registry.borrow().packages() {
-                    let app = &p.meta.app;
-                    if app == tilolang::HOST_APP || app.starts_with("agent.") || held.contains(app)
-                    {
-                        continue;
-                    }
-                    held.push(app.clone());
+        let mut apps: Vec<String> = if let Some(local) = &inputs.local {
+            local.clone()
+        } else {
+            let mut held: Vec<String> = Vec::new();
+            for p in self.registry.borrow().packages() {
+                let app = &p.meta.app;
+                if app == tilolang::HOST_APP || app.starts_with("agent.") || held.contains(app) {
+                    continue;
                 }
-                held
+                held.push(app.clone());
             }
+            held
         };
         for (_, app) in &inputs.sources {
             if !apps.contains(app) {
@@ -223,7 +221,7 @@ impl Core {
                     Value::Coll(c) => self.coll_items(&c)?,
                     other => vec![other],
                 };
-                let lines = self.rows(&items, &fields, &ty)?;
+                let lines = self.rows(&items, &fields, &ty);
                 for line in lines {
                     self.say(line);
                 }
@@ -233,48 +231,17 @@ impl Core {
                 let Value::List(keys) = self.val(a.h(0)?)? else {
                     return trap("count_by takes a list");
                 };
-                let items = match self.val(a.h(1)?)? {
-                    Value::List(items) => items,
-                    Value::Coll(c) => self.coll_items(&c)?,
-                    _ => return trap("count_by takes a list"),
-                };
+                let items = self.items_of(self.val(a.h(1)?)?, "count_by")?;
                 self.ret_h(self.grouped(keys, items, imp == Imp::CountBy))
             }
             Imp::Take => {
                 let n = usize::try_from(a.long(1)?).unwrap_or(0);
-                let items = match self.val(a.h(0)?)? {
-                    Value::List(items) => items,
-                    Value::Coll(c) => self.coll_items(&c)?,
-                    _ => return trap("take takes a list"),
-                };
+                let items = self.items_of(self.val(a.h(0)?)?, "take")?;
                 self.ret_h(Value::List(items.into_iter().take(n).collect()))
             }
             Imp::Single => {
-                let items = match self.val(a.h(0)?)? {
-                    Value::List(items) => items,
-                    Value::Coll(c) => self.coll_items(&c)?,
-                    _ => return trap("single takes a list"),
-                };
-                if items.len() == 1 || self.waiting() {
-                    // Waiting on answers, the run is only finding what to read.
-                    if items.is_empty() {
-                        return trap("waiting on what it reads");
-                    }
-                    return self.ret_h(Value::List(items.into_iter().take(1).collect()));
-                }
-                if items.is_empty() {
-                    return trap(
-                        "single: nothing matches; widen what it looks in, or check the words",
-                    );
-                }
-                let mut why = format!("single: {} match, not one; say which:", items.len());
-                for item in items.iter().take(SINGLE_LISTS) {
-                    let _ = write!(why, "\n{}", self.show(item).lines().next().unwrap_or(""));
-                }
-                if items.len() > SINGLE_LISTS {
-                    let _ = write!(why, "\n… {} more", items.len().saturating_sub(SINGLE_LISTS));
-                }
-                trap(why)
+                let items = self.items_of(self.val(a.h(0)?)?, "single")?;
+                self.ret_h(self.single(items)?)
             }
             Imp::Me => match self.inputs()?.me {
                 Some(me) => self.ret_h(Value::Principal(me)),
@@ -285,16 +252,8 @@ impl Core {
                 let ty = self.text(a.h(1)?)?;
                 let id = self.text(a.h(2)?)?;
                 let inputs = self.inputs()?;
-                let alias = inputs
-                    .sources
-                    .iter()
-                    .find(|(_, known)| *known == app)
-                    .map_or_else(
-                        || app.rsplit('.').next().unwrap_or(&app).to_owned(),
-                        |(alias, _)| alias.clone(),
-                    );
                 let shown = Shown {
-                    literal: format!("@{alias}.{ty}:{id}"),
+                    literal: format!("@{}.{ty}:{id}", app_name(&app, &inputs)),
                     app: app.clone(),
                     ty,
                     id,
@@ -304,21 +263,8 @@ impl Core {
                 self.ret_h(self.value_of_shown(&shown, local)?)
             }
             Imp::MatchGroup => {
-                let Value::Tuple(fields) = self.val(a.h(0)?)? else {
-                    return trap("group takes a match");
-                };
-                let n = a.long(1)?;
-                let at = tilolang::host::value_field("Match", "groups").unwrap_or(4);
-                let Some(Value::List(groups)) = fields.get(at) else {
-                    return trap("the match holds no groups");
-                };
-                let Some(group) = usize::try_from(n).ok().and_then(|n| groups.get(n)) else {
-                    return trap(format!(
-                        "group({n}): the pattern has {} groups; 0 is the whole match",
-                        groups.len().saturating_sub(1)
-                    ));
-                };
-                self.ret_h(group.clone())
+                let group = match_group(&self.val(a.h(0)?)?, a.long(1)?)?;
+                self.ret_h(group)
             }
             _ => trap("not a query import"),
         }
@@ -375,7 +321,7 @@ impl Core {
         let mut unsearched: Vec<String> = Vec::new();
         for req in &requests {
             let app = req.app().to_owned();
-            let name = self.app_name(&app, &inputs);
+            let name = app_name(&app, &inputs);
             match self.answered(req, &inputs)? {
                 Answered::Here(json) => {
                     let answer: GrepAnswer = serde_json::from_value(json)
@@ -396,16 +342,16 @@ impl Core {
             docs.len()
         };
         if !self.waiting() {
-            let total: usize = searched.iter().map(|(_, n)| n).sum();
-            let per_app: Vec<String> = searched
-                .iter()
-                .map(|(name, n)| format!("{name} {n}"))
-                .collect();
             let mut said = format!(
-                "grep /{pattern}/: {} {} in {resources} of {total} resources searched ({})",
+                "grep /{pattern}/: {} {} in {resources} of {} resources searched ({})",
                 rows.len(),
                 if rows.len() == 1 { "match" } else { "matches" },
-                per_app.join(", ")
+                searched.iter().map(|(_, n)| n).sum::<usize>(),
+                searched
+                    .iter()
+                    .map(|(name, n)| format!("{name} {n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
             for u in &uncovered {
                 let _ = write!(said, "; {u}");
@@ -417,34 +363,58 @@ impl Core {
         }
         let mut out = Vec::with_capacity(rows.len());
         for (m, local) in rows {
-            let doc = self.value_of_shown(&m.doc, local)?;
-            out.push(Value::Tuple(vec![
-                doc,
-                Value::Text(m.anchor),
-                Value::Text(m.text),
-                Value::Text(m.line),
-                Value::List(m.groups.into_iter().map(Value::Text).collect()),
-                Value::Text(m.kind),
-                Value::Opt(
-                    m.written_by
-                        .map(|w| Box::new(Value::Principal(crate::ids::Principal::new(w)))),
-                ),
-                Value::Opt(m.changed.map(|c| Box::new(Value::Text(c)))),
-            ]));
+            out.push(self.match_value(m, local)?);
         }
         Ok(Value::List(out))
     }
 
-    /// How programs call `app`.
-    fn app_name(&self, app: &str, inputs: &ProgramInputs) -> String {
-        inputs
-            .sources
-            .iter()
-            .find(|(_, known)| known == app)
-            .map_or_else(
-                || app.rsplit('.').next().unwrap_or(app).to_owned(),
-                |(alias, _)| alias.clone(),
-            )
+    /// A match as a `host.Match`: a tuple of its fields in their order.
+    fn match_value(&self, m: MatchRow, local: bool) -> HResult<Value> {
+        let doc = self.value_of_shown(&m.doc, local)?;
+        Ok(Value::Tuple(vec![
+            doc,
+            Value::Text(m.anchor),
+            Value::Text(m.text),
+            Value::Text(m.line),
+            Value::List(m.groups.into_iter().map(Value::Text).collect()),
+            Value::Text(m.kind),
+            Value::Opt(
+                m.written_by
+                    .map(|w| Box::new(Value::Principal(crate::ids::Principal::new(w)))),
+            ),
+            Value::Opt(m.changed.map(|c| Box::new(Value::Text(c)))),
+        ]))
+    }
+
+    /// The items of a list (or a collection read whole) handed to `what`.
+    fn items_of(&self, list: Value, what: &str) -> HResult<Vec<Value>> {
+        match list {
+            Value::List(items) => Ok(items),
+            Value::Coll(c) => Ok(self.coll_items(&c)?),
+            _ => trap(format!("{what} takes a list")),
+        }
+    }
+
+    /// `single()`: the one item, or an error listing the candidates.
+    fn single(&self, items: Vec<Value>) -> HResult<Value> {
+        if items.len() == 1 || self.waiting() {
+            // Waiting on answers, the run is only finding what to read.
+            if items.is_empty() {
+                return trap("waiting on what it reads");
+            }
+            return Ok(Value::List(items.into_iter().take(1).collect()));
+        }
+        if items.is_empty() {
+            return trap("single: nothing matches; widen what it looks in, or check the words");
+        }
+        let mut why = format!("single: {} match, not one; say which:", items.len());
+        for item in items.iter().take(SINGLE_LISTS) {
+            let _ = write!(why, "\n{}", self.show(item).lines().next().unwrap_or(""));
+        }
+        if items.len() > SINGLE_LISTS {
+            let _ = write!(why, "\n… {} more", items.len().saturating_sub(SINGLE_LISTS));
+        }
+        trap(why)
     }
 
     /// `find("words")` with no type: the resources of every app the program may read whose
@@ -467,7 +437,7 @@ impl Core {
                     }
                 }
                 Answered::Unavailable(why) => {
-                    unsearched.push(format!("{} ({why})", self.app_name(&app, &inputs)));
+                    unsearched.push(format!("{} ({why})", app_name(&app, &inputs)));
                 }
                 Answered::Asked => {}
             }
@@ -665,7 +635,7 @@ impl Core {
                 None => groups.push((shown, key, vec![item])),
             }
         }
-        groups.sort_by(|a, b| b.2.len().cmp(&a.2.len()));
+        groups.sort_by_key(|group| std::cmp::Reverse(group.2.len()));
         Value::List(
             groups
                 .into_iter()
@@ -683,7 +653,7 @@ impl Core {
 
     /// One line per item: the item (a resource by its literal and title, a match by where it
     /// is), then each of `fields`.
-    fn rows(&self, items: &[Value], fields: &[String], ty: &str) -> HResult<Vec<String>> {
+    fn rows(&self, items: &[Value], fields: &[String], ty: &str) -> Vec<String> {
         let host_value = ty
             .strip_prefix(&format!("{}.", tilolang::HOST_APP))
             .filter(|name| tilolang::host::value_type(name).is_some());
@@ -709,7 +679,7 @@ impl Core {
         if lines.is_empty() {
             lines.push("(none)".to_owned());
         }
-        Ok(lines)
+        lines
     }
 
     /// The field `name` of `target` as a row prints it.
@@ -780,6 +750,36 @@ impl Core {
         }
         self.show(value)
     }
+}
+
+/// How programs call `app`.
+fn app_name(app: &str, inputs: &ProgramInputs) -> String {
+    inputs
+        .sources
+        .iter()
+        .find(|(_, known)| known == app)
+        .map_or_else(
+            || app.rsplit('.').next().unwrap_or(app).to_owned(),
+            |(alias, _)| alias.clone(),
+        )
+}
+
+/// Group `n` of a `host.Match`, the whole match for 0.
+fn match_group(m: &Value, n: i64) -> HResult<Value> {
+    let Value::Tuple(fields) = m else {
+        return trap("group takes a match");
+    };
+    let at = tilolang::host::value_field("Match", "groups").unwrap_or(4);
+    let Some(Value::List(groups)) = fields.get(at) else {
+        return trap("the match holds no groups");
+    };
+    let Some(group) = usize::try_from(n).ok().and_then(|n| groups.get(n)) else {
+        return trap(format!(
+            "group({n}): the pattern has {} groups; 0 is the whole match",
+            groups.len().saturating_sub(1)
+        ));
+    };
+    Ok(group.clone())
 }
 
 /// The indexes `hits` and `around` of each on either side, in order, within `0..len`.

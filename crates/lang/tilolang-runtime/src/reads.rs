@@ -175,7 +175,11 @@ fn line_kind(line: &str, in_code: bool) -> (&'static str, &str) {
         }
     }
     let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
-    if digits > 0 && trimmed[digits..].starts_with(". ") {
+    if digits > 0
+        && trimmed
+            .get(digits..)
+            .is_some_and(|rest| rest.starts_with(". "))
+    {
         return ("list", line);
     }
     ("paragraph", line)
@@ -398,6 +402,50 @@ impl Core {
         who.all(|w| w == first).then(|| first.to_owned())
     }
 
+    /// The matches of `re` in the text of `target`, leaving out the kinds of block `not`.
+    fn matches_in(
+        &self,
+        target: &ResourceRef,
+        text: &TextOf,
+        re: &regex::Regex,
+        not: &[String],
+        changed: Option<&str>,
+    ) -> Vec<MatchRow> {
+        let mut out = Vec::new();
+        let mut doc: Option<Shown> = None;
+        let mut writer: Option<Option<String>> = None;
+        for part in text.parts.iter().filter(|p| !not.contains(&p.kind)) {
+            for caps in re.captures_iter(&part.text) {
+                let Some(whole) = caps.get(0) else {
+                    continue;
+                };
+                let authored = text.authored.iter().find(|(anchor, start, end, _)| {
+                    *anchor == part.anchor && *start <= whole.start() && whole.end() <= *end
+                });
+                let written_by = match authored {
+                    Some((.., who)) => Some(who.clone()),
+                    None => writer
+                        .get_or_insert_with(|| self.sole_writer(target))
+                        .clone(),
+                };
+                out.push(MatchRow {
+                    doc: doc.get_or_insert_with(|| self.shown(target)).clone(),
+                    anchor: part.anchor.clone(),
+                    text: whole.as_str().to_owned(),
+                    line: part.text.clone(),
+                    groups: caps
+                        .iter()
+                        .map(|g| g.map_or_else(String::new, |g| g.as_str().to_owned()))
+                        .collect(),
+                    kind: part.kind.clone(),
+                    written_by,
+                    changed: changed.map(str::to_owned),
+                });
+            }
+        }
+        out
+    }
+
     /// The grep `req` over this runtime's records.
     pub(crate) fn grep_local(&self, req: &ReadRequest) -> Result<GrepAnswer, String> {
         let ReadRequest::Grep {
@@ -455,42 +503,12 @@ impl Core {
                 }
             }
             answer.searched = answer.searched.saturating_add(1);
-            let mut doc: Option<Shown> = None;
-            let mut writer: Option<Option<String>> = None;
-            for part in &text.parts {
-                if not.contains(&part.kind) {
-                    continue;
+            let changed = last.as_ref().map(|v| v.at.as_str());
+            for row in self.matches_in(&target, &text, &re, not, changed) {
+                if row.written_by.is_none() {
+                    unwritten = unwritten.saturating_add(1);
                 }
-                for caps in re.captures_iter(&part.text) {
-                    let Some(whole) = caps.get(0) else {
-                        continue;
-                    };
-                    let authored = text.authored.iter().find(|(anchor, start, end, _)| {
-                        *anchor == part.anchor && *start <= whole.start() && whole.end() <= *end
-                    });
-                    let written_by = match authored {
-                        Some((.., who)) => Some(who.clone()),
-                        None => writer
-                            .get_or_insert_with(|| self.sole_writer(&target))
-                            .clone(),
-                    };
-                    if written_by.is_none() {
-                        unwritten = unwritten.saturating_add(1);
-                    }
-                    answer.matches.push(MatchRow {
-                        doc: doc.get_or_insert_with(|| self.shown(&target)).clone(),
-                        anchor: part.anchor.clone(),
-                        text: whole.as_str().to_owned(),
-                        line: part.text.clone(),
-                        groups: caps
-                            .iter()
-                            .map(|g| g.map_or_else(String::new, |g| g.as_str().to_owned()))
-                            .collect(),
-                        kind: part.kind.clone(),
-                        written_by,
-                        changed: last.as_ref().map(|v| v.at.clone()),
-                    });
-                }
+                answer.matches.push(row);
             }
         }
         if unwritten > 0 {
@@ -552,7 +570,7 @@ impl Core {
             });
             ranked.push((u8::from(!titled), self.shown(&target)));
         }
-        ranked.sort_by(|a, b| a.0.cmp(&b.0));
+        ranked.sort_by_key(|(rank, _)| *rank);
         ranked.into_iter().map(|(_, shown)| shown).collect()
     }
 
