@@ -128,55 +128,6 @@ pub enum WindowsEffect {
 }
 
 impl WindowsEffect {
-    /// The service operation this effect asks for, and the item it names.
-    pub(crate) fn operation(&self) -> (&'static str, String) {
-        let none = String::new;
-        let path = |path: &Option<AbsolutePath>| {
-            path.as_ref()
-                .map(AbsolutePath::to_string_lossy)
-                .unwrap_or_default()
-        };
-        match self {
-            Self::Show { app } => ("windows.show", app.clone()),
-            Self::Install { path: file } => ("windows.install", path(file)),
-            Self::ImportIso { path: file } => ("windows.import-iso", path(file)),
-            Self::Recovery => ("windows.recovery", none()),
-            Self::Start => ("windows.start", none()),
-            Self::Restart => ("windows.restart", none()),
-            Self::Suspend => ("windows.suspend", none()),
-            Self::Resume => ("windows.resume", none()),
-            Self::Shutdown => ("windows.shutdown", none()),
-            Self::TemporaryNetwork => ("windows.temporary-network", none()),
-            Self::UpdateNetwork => ("windows.update-network", none()),
-            Self::RevokeNetwork => ("windows.revoke-network", none()),
-            Self::InstallPrivateCapsule => ("windows.confirm-capsule-install", none()),
-            Self::InstallWindowsAppliance => ("windows.confirm-vm-install", none()),
-            Self::Launch { app } => ("windows.launch", app.clone()),
-            Self::LaunchVmFallback { app } => ("windows.launch-vm-fallback", app.clone()),
-            Self::OpenFile { app, .. } => ("windows.open-file", app.clone()),
-            Self::Publish { app } => ("windows.publish", app.clone()),
-            Self::RetryInstall { capsule } => ("windows.retry-install", capsule.clone()),
-            Self::EscalateInstall { capsule } => ("windows.escalate-install", capsule.clone()),
-            Self::RemoveLauncher { app } => ("windows.remove-launcher", app.clone()),
-            Self::Uninstall { app } => ("windows.uninstall", app.clone()),
-            Self::DeleteData { capsule } => ("windows.delete-data", capsule.clone()),
-        }
-    }
-
-    /// The operation's argument as the service handlers read it.
-    pub(crate) fn payload(&self) -> Vec<u8> {
-        let encoded = match self {
-            Self::OpenFile { app, path } => serde_json::to_vec(&[
-                app.clone(),
-                path.as_ref()
-                    .map(AbsolutePath::to_string_lossy)
-                    .unwrap_or_default(),
-            ]),
-            other => serde_json::to_vec(&other.operation().1),
-        };
-        encoded.unwrap_or_default()
-    }
-
     /// Whether its answer waits on the managed appliance.
     pub(crate) fn waits_for_appliance(&self) -> bool {
         matches!(
