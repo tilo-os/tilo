@@ -10,6 +10,11 @@
 //! an ordinary app hosted on a layer of its own: the notification banners
 //! and quick settings. What the chrome asks of its host comes back as
 //! [`DesktopAsk`]s, carried out here.
+//!
+//! The session also hosts the system services it was started with
+//! ([`Options::services`]): connectivity, audio and the rest publish their
+//! resources beside the desktop's, and [`Session::invoke`] reaches their
+//! actions as it reaches the desktop's, by address.
 
 #![cfg(target_os = "linux")]
 
@@ -29,12 +34,14 @@ use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
+use tilo_service::Started;
 use tilo_surface_host::{DesktopHost, Placement, WidgetHost, desktop_with};
 use ui::application::ComponentRunnerInputs;
 use ui::headless::FrameHarness;
 use ui::host_operation::ResourceOperationStart;
 
 pub use tilo_quick_settings::host::PanelHost;
+pub use tilo_service::{Service, Services};
 
 use chrome::{SessionChrome, SessionRules};
 use panels::{Banners, Held, Popover};
@@ -57,6 +64,9 @@ pub struct Options {
     /// What quick settings reads of the device and carries out on it;
     /// without one, the bar's status cluster opens nothing.
     pub quick_settings: Option<Rc<dyn PanelHost>>,
+    /// The system services the session hosts: what they publish is the
+    /// session's, beside the desktop's.
+    pub services: Vec<Box<dyn Service>>,
 }
 
 impl Default for Options {
@@ -68,6 +78,7 @@ impl Default for Options {
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
             quick_settings: None,
+            services: Vec::new(),
         }
     }
 }
@@ -81,6 +92,8 @@ struct Shared {
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// Whether quick settings is open, when the session has it.
     quick_settings: Option<Rc<Cell<bool>>>,
+    /// The system services.
+    services: RefCell<Services>,
 }
 
 impl Shared {
@@ -238,11 +251,16 @@ impl Session {
             }
         });
 
+        let mut services = Services::default();
+        for service in options.services {
+            services.add(service);
+        }
         let shared = Rc::new(Shared {
             handle,
             asks,
             intents,
             quick_settings,
+            services: RefCell::new(services),
         });
         Ok(Self {
             compositor,
@@ -304,19 +322,37 @@ impl Session {
         [desk, chrome]
     }
 
-    /// Everything the desktop publishes now: the desk's resource (its
-    /// windows among its children) and the chrome's, with their actions.
+    /// Everything the session publishes now: the desk's resource (its
+    /// windows among its children) and the chrome's, with their actions,
+    /// then the services'.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
-        self.each_layer(|host| host.resources()).concat()
+        let mut resources = self.each_layer(|host| host.resources()).concat();
+        resources.extend(self.shared.services.borrow().resources());
+        resources
+    }
+
+    /// What the service publishing `resource` reads of it now, as JSON;
+    /// `None` when no service publishes it.
+    #[must_use]
+    pub fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        self.shared.services.borrow().read(resource)
+    }
+
+    /// Wait until every device call the services started has landed, and
+    /// take them in: what a headless run does before it reads.
+    pub fn settle_services(&self) {
+        self.shared.services.borrow_mut().settle();
     }
 
     /// Invoke the published action `action` of resource `resource`, as
     /// any caller of the action protocol does, and carry out what it asked
-    /// of the session.
+    /// of the session. A service's action that runs on the device is
+    /// accepted at once; its result lands in the service's reading.
     ///
     /// # Errors
-    /// The door's refusal: no such resource or action, or bad arguments.
+    /// The door's refusal: no such resource or action, bad arguments, or
+    /// one the device cannot do now.
     pub fn invoke(
         &mut self,
         resource: &str,
@@ -329,9 +365,20 @@ impl Session {
                 .is_some()
                 .then(|| host.invoke_published(resource, action, arguments))
         });
-        let started = desk
-            .or(chrome)
-            .unwrap_or_else(|| Err(DoorError::Unknown(address.clone())))?;
+        let started = match desk.or(chrome) {
+            Some(started) => started,
+            None => match self
+                .shared
+                .services
+                .borrow_mut()
+                .invoke(resource, action, arguments)
+            {
+                Some(Ok(Started::Done(output))) => Ok(ResourceOperationStart::Completed(output)),
+                Some(Ok(Started::Accepted)) => Ok(ResourceOperationStart::Accepted),
+                Some(Err(error)) => Err(error),
+                None => Err(DoorError::Unknown(address)),
+            },
+        }?;
         self.shared.follow_asks();
         Ok(started)
     }
@@ -365,6 +412,7 @@ impl Session {
     /// The compositor failed.
     pub fn step(&mut self, timeout: std::time::Duration) -> Result<(), Error> {
         self.compositor.dispatch(timeout)?;
+        self.shared.services.borrow_mut().poll();
         self.shared.follow_asks();
         self.compositor.render()?;
         self.shared.follow_asks();
@@ -378,6 +426,7 @@ impl Session {
     pub fn run(&mut self, mut stop: impl FnMut(&Compositor) -> bool) -> Result<(), Error> {
         let shared = Rc::clone(&self.shared);
         self.compositor.run(|compositor| {
+            shared.services.borrow_mut().poll();
             shared.follow_asks();
             stop(compositor)
         })

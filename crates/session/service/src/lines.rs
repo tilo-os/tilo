@@ -285,3 +285,74 @@ impl Service for Remote {
         self.take()
     }
 }
+
+/// A service in a child process, started by the session: its readings and
+/// door as [`Remote`]; dropping it closes the child's input, which stops
+/// it, and reaps it.
+pub struct Process {
+    remote: Remote,
+    child: std::process::Child,
+}
+
+impl Process {
+    /// Start `command` with piped standard input and output and serve what
+    /// it writes as a service whose specs `publish` builds, waiting for
+    /// its first readings; `wake` is called after each event.
+    ///
+    /// # Errors
+    /// The command did not start, or closed before its first readings.
+    pub fn spawn(
+        mut command: std::process::Command,
+        publish: Publish,
+        wake: Option<Wake>,
+    ) -> std::io::Result<Self> {
+        use std::process::Stdio;
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let (Some(input), Some(output)) = (child.stdin.take(), child.stdout.take()) else {
+            return Err(std::io::Error::other("the service's pipes are missing"));
+        };
+        let events = Remote::events(std::io::BufReader::new(output), wake)?;
+        let mut remote = Remote::new(publish, events, Box::new(input));
+        remote.wait_for_readings();
+        if remote.readings.is_empty() {
+            let _ = child.wait();
+            return Err(std::io::Error::other(
+                "the service closed before it read anything",
+            ));
+        }
+        Ok(Self { remote, child })
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        self.remote.requests = Box::new(std::io::sink());
+        let _ = self.child.wait();
+    }
+}
+
+impl Service for Process {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        self.remote.resources()
+    }
+
+    fn read(&self, resource: &str) -> Option<Value> {
+        self.remote.read(resource)
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        self.remote.invoke(resource, action, arguments)
+    }
+
+    fn poll(&mut self) -> bool {
+        self.remote.poll()
+    }
+}
