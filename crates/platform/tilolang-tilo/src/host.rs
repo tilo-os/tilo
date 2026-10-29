@@ -597,20 +597,31 @@ impl Host {
         self.inner.suspended.borrow_mut().pop_front()
     }
 
-    /// Carry out the outside effects of this device that wait in the record: each goes to the
-    /// sink, and what settles is queued for the door like any other change. Returns how many
-    /// were delivered.
+    /// Carry out the outside effects of this device that wait in the record
+    /// ([`Runtime::settle`]): each is marked as being handed over, then goes to the sink, and
+    /// what became of it is queued for the door like any other change. Returns how many
+    /// changes that wrote. What `delivery(r)` reads follows the record either way.
     ///
     /// # Errors
     /// No sink is set, or the store failed.
     pub fn settle_outbox(&self) -> Result<usize, String> {
         if self.inner.store.outbox_pending_count() == 0 {
+            self.inner.runtime.refresh_deliveries();
             return Ok(0);
         }
         self.inner
             .runtime
             .settle()
-            .map(|report| report.delivered)
+            .map(|report| {
+                [
+                    report.failed.len(),
+                    report.marked,
+                    report.waiting,
+                    report.unknown,
+                ]
+                .into_iter()
+                .fold(report.delivered, usize::saturating_add)
+            })
             .map_err(|error| error.to_string())
     }
 

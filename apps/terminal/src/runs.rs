@@ -33,6 +33,9 @@ pub struct Asked {
     pub command: String,
     /// Who asked: whom the run is attributed to.
     pub requested_by: String,
+    /// An agent asked: a shell that renders for agents does so for this
+    /// run.
+    pub agent: bool,
     pub reply: ui::framework::EffectReply,
 }
 
@@ -83,6 +86,29 @@ pub enum Mark {
     /// The command ended with `status`, the one numbered `number` when the
     /// shell numbers its runs.
     Ended { status: i32, number: Option<u64> },
+    /// A background job started as run `number`: job `job` of the shell,
+    /// `command` in `cwd`. It runs beside whatever the shell runs next.
+    JobStarted {
+        number: u64,
+        job: u32,
+        command: String,
+        cwd: String,
+    },
+    /// What follows is output of job run `number` (`open`), or no longer is.
+    JobOutput { number: u64, open: bool },
+    /// Job run `number` ended with `status`.
+    JobEnded { number: u64, status: i32 },
+    /// The shell asks for the person's history: the newest `limit` command
+    /// lines past the `skip` newest that contain `matching`.
+    History(HistoryAsk),
+}
+
+/// A question of the shell's line editor to the person's history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryAsk {
+    pub skip: usize,
+    pub limit: usize,
+    pub matching: String,
 }
 
 /// A piece of the pty stream: output, or one of the session's marks.
@@ -100,6 +126,9 @@ pub struct Marks {
     key: String,
     /// An `ESC ]` sequence still arriving.
     pending: Vec<u8>,
+    /// The shell said at its last prompt that it reads marks on its input
+    /// (`in=1`): a run asked for, an answer from the history.
+    reads_input: bool,
 }
 
 const START: &[u8] = b"\x1b]133;";
@@ -110,7 +139,20 @@ impl Marks {
         Self {
             key: key.into(),
             pending: Vec::new(),
+            reads_input: false,
         }
+    }
+
+    /// The key the session's marks carry.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Whether the shell reads Terminal's marks on its input.
+    #[must_use]
+    pub const fn reads_input(&self) -> bool {
+        self.reads_input
     }
 
     /// The pieces of `bytes`, which follow what was pushed before.
@@ -180,7 +222,7 @@ impl Marks {
     }
 
     /// The mark `body` (what follows `133;`) names, when it carries the key.
-    fn mark(&self, body: &[u8]) -> Option<Mark> {
+    fn mark(&mut self, body: &[u8]) -> Option<Mark> {
         let body = std::str::from_utf8(body).ok()?;
         let mut fields = body.split(';');
         let kind = fields.next()?;
@@ -189,12 +231,22 @@ impl Marks {
         let mut cwd = None;
         let mut number = None;
         let mut status = None;
+        let mut job = None;
+        let mut reads_input = false;
+        let mut skip = None;
+        let mut limit = None;
+        let mut matching = None;
         for field in fields {
             match field.split_once('=') {
                 Some(("k", value)) => key = Some(value),
                 Some(("cmd", value)) => command = Some(decode(value)?),
                 Some(("cwd", value)) => cwd = Some(decode(value)?),
                 Some(("t", value)) => number = value.parse().ok(),
+                Some(("j", value)) => job = value.parse().ok(),
+                Some(("in", value)) => reads_input = value == "1",
+                Some(("s", value)) => skip = value.parse().ok(),
+                Some(("n", value)) => limit = value.parse().ok(),
+                Some(("q", value)) => matching = Some(decode(value)?),
                 Some(_) => {}
                 None => status = field.parse().ok(),
             }
@@ -202,17 +254,39 @@ impl Marks {
         if key != Some(self.key.as_str()) {
             return None;
         }
-        match kind {
-            "A" => Some(Mark::Prompt),
-            "C" => Some(Mark::Started {
+        match (kind, job) {
+            ("A", _) => {
+                self.reads_input = reads_input;
+                Some(Mark::Prompt)
+            }
+            ("C", Some(job)) => Some(Mark::JobStarted {
+                number: number?,
+                job,
+                command: command?,
+                cwd: cwd.unwrap_or_default(),
+            }),
+            ("C", None) => Some(Mark::Started {
                 command: command?,
                 cwd: cwd.unwrap_or_default(),
                 number,
             }),
-            "D" => Some(Mark::Ended {
+            ("D", Some(_)) => Some(Mark::JobEnded {
+                number: number?,
+                status: status.unwrap_or(0),
+            }),
+            ("D", None) => Some(Mark::Ended {
                 status: status.unwrap_or(0),
                 number,
             }),
+            ("J" | "E", _) => Some(Mark::JobOutput {
+                number: number?,
+                open: kind == "J",
+            }),
+            ("H", _) => Some(Mark::History(HistoryAsk {
+                skip: skip.unwrap_or(0),
+                limit: limit.unwrap_or(0),
+                matching: matching.unwrap_or_default(),
+            })),
             _ => None,
         }
     }
@@ -239,12 +313,32 @@ pub struct FinishedRun {
     pub exit: i32,
     pub output: Vec<u8>,
     pub truncated: bool,
+    /// The shell's job number, for a background job's run: it is no line
+    /// the person or a request typed.
+    pub job: Option<u32>,
 }
 
-/// The run going on in a session.
+impl FinishedRun {
+    /// Keep `bytes` of its output, up to [`MAX_OUTPUT_BYTES`].
+    fn keep(&mut self, bytes: &[u8]) {
+        let room = MAX_OUTPUT_BYTES.saturating_sub(self.output.len());
+        if bytes.len() > room {
+            self.truncated = true;
+        }
+        self.output
+            .extend_from_slice(bytes.get(..room.min(bytes.len())).unwrap_or_default());
+    }
+}
+
+/// The run going on in a session, and the background jobs running beside
+/// it.
 #[derive(Debug, Default)]
 pub struct Runs {
     open: Option<FinishedRun>,
+    /// Job runs, by their number.
+    jobs: std::collections::BTreeMap<u64, FinishedRun>,
+    /// The job run whose output is arriving now.
+    job_output: Option<u64>,
 }
 
 impl Runs {
@@ -252,16 +346,48 @@ impl Runs {
     pub fn follow(&mut self, piece: &Piece, now_ms: i64) -> Option<FinishedRun> {
         match piece {
             Piece::Output(bytes) => {
-                if let Some(run) = &mut self.open {
-                    let room = MAX_OUTPUT_BYTES.saturating_sub(run.output.len());
-                    if bytes.len() > room {
-                        run.truncated = true;
-                    }
-                    run.output
-                        .extend_from_slice(bytes.get(..room.min(bytes.len())).unwrap_or_default());
+                let run = match self.job_output {
+                    Some(number) => self.jobs.get_mut(&number),
+                    None => self.open.as_mut(),
+                };
+                if let Some(run) = run {
+                    run.keep(bytes);
                 }
                 None
             }
+            Piece::Mark(Mark::JobStarted {
+                number,
+                job,
+                command,
+                cwd,
+            }) => {
+                self.jobs.insert(
+                    *number,
+                    FinishedRun {
+                        command: command.clone(),
+                        cwd: cwd.clone(),
+                        number: Some(*number),
+                        started_ms: now_ms,
+                        ended_ms: now_ms,
+                        exit: 0,
+                        output: Vec::new(),
+                        truncated: false,
+                        job: Some(*job),
+                    },
+                );
+                None
+            }
+            Piece::Mark(Mark::JobOutput { number, open }) => {
+                self.job_output = open.then_some(*number);
+                None
+            }
+            Piece::Mark(Mark::JobEnded { number, status }) => {
+                let mut run = self.jobs.remove(number)?;
+                run.ended_ms = now_ms;
+                run.exit = *status;
+                Some(run)
+            }
+            Piece::Mark(Mark::History(_)) => None,
             Piece::Mark(Mark::Started { command, cwd, .. }) => {
                 self.open = Some(FinishedRun {
                     command: command.clone(),
@@ -272,6 +398,7 @@ impl Runs {
                     exit: 0,
                     output: Vec::new(),
                     truncated: false,
+                    job: None,
                 });
                 None
             }

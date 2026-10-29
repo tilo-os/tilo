@@ -26,6 +26,8 @@ while `system/fs/` owns the collaborative filesystem service.
 ## Developer tools and fixtures
 
 - `dev/frame-link`: encoded-frame network simulator and `flatpak-share-demo`.
+- `dev/nested-session-bus`: the build environment's dbus-daemon in a cargo-built executable, the
+  private session bus of a nested session on hosts without one.
 - `dev/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.
 - `dev/ux-bench`: runs the `scripts/ux-bench` journeys against the native shell tree (macOS).
 - `dev/collab-probe`: sandboxed collaboration test app, driven by

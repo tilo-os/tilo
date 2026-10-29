@@ -937,7 +937,9 @@ impl Shell {
                 SpecialParameter::ProcessId => {
                     ParamValue::single(Some(self.host.pid().to_string()))
                 }
-                SpecialParameter::LastBackgroundProcessId => ParamValue::single(None),
+                SpecialParameter::LastBackgroundProcessId => {
+                    ParamValue::single(self.last_background.map(|pid| pid.to_string()))
+                }
                 SpecialParameter::ShellName => ParamValue::single(Some(self.arg0.clone())),
             },
             Parameter::Named(name) => ParamValue::single(self.named(name)),
