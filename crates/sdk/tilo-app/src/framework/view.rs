@@ -753,6 +753,31 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         EffectsHandle { status }
     }
 
+    /// Answer the effect vocabulary `E` on the window `W` the view laid
+    /// out, as [`Self::effects`] does: `handle` gets the window itself for
+    /// the call, so an effect answers at once from what the window shows
+    /// (the page, the caret). The window is found by its type in the view's
+    /// tree when the effect starts; an effect invoked while it is not open
+    /// is refused. What finishes later reaches state the window shares.
+    pub fn window_effects<E: Effect, W: ui_core::widget::Widget + 'static>(
+        &self,
+        handle: impl FnMut(&mut W, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) -> EffectsHandle {
+        let status: StatusSource = Rc::default();
+        if let Some(gate) = &self.gate {
+            gate.read_while_unmounted();
+        }
+        let source = Rc::clone(&status);
+        let kept = super::effect::KeptSpecs::default();
+        self.effects.publish::<E>(self.alive.clone(), move || {
+            current_specs(&source, &kept, E::specs)
+        });
+        if self.effects.env().is_some() {
+            self.effects.handle_in_window(self.alive.clone(), handle);
+        }
+        EffectsHandle { status }
+    }
+
     /// Jobs the view starts on its own, with nobody invoking an effect: a
     /// fetch when what it shows changes. See [`Jobs`](super::Jobs).
     pub fn jobs(&self) -> super::Jobs<R> {
