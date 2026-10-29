@@ -260,7 +260,7 @@ pub(super) fn sample() -> People {
 pub(super) fn sample_member() -> People {
     let mut people = sample();
     people.ownership = None;
-    people.status = "Bob Hellauer owns this workspace.".to_owned();
+    "Bob Hellauer owns this workspace.".clone_into(&mut people.status);
     for person in &mut people.people {
         person.you = person.key == "ada";
         person.can_manage = false;
