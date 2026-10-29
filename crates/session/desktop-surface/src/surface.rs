@@ -47,6 +47,7 @@ use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 mod arrivals;
 #[cfg(test)]
 mod close_motion_tests;
+mod displays;
 mod history;
 mod live_shares;
 mod notices;
@@ -644,6 +645,9 @@ pub struct DesktopSurface {
     unrouted_control: Option<ui::tilo_actions::ControlInvocation>,
     /// The pointer in logical coordinates, while search is open.
     search_pointer: Point,
+    /// The pointer in logical coordinates, as it last moved over the
+    /// surface.
+    pointer: Point,
     platform: ui::platform::PlatformConventions,
     /// The host's retained workspace history, when it keeps one.
     history: Option<Box<dyn HistorySource>>,
@@ -843,6 +847,7 @@ impl DesktopSurface {
             search_owners: HashMap::new(),
             unrouted_control: None,
             search_pointer: Point::ZERO,
+            pointer: Point::ZERO,
             platform: ui::platform::PlatformConventions::default(),
             history: None,
             activity_requests: None,
@@ -1754,6 +1759,7 @@ impl DesktopSurface {
     /// Accent the active group of the shown strip and lay out against the
     /// host's viewport.
     fn present(&mut self) {
+        self.lay_out_displays();
         let (route, width) = {
             let shared = self.shared.borrow();
             (
@@ -2604,12 +2610,21 @@ impl Widget for DesktopSurface {
             }
         }
         let child = children.first().copied();
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+        }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
         } = event
         {
+            if self
+                .shown_row_ref()
+                .is_none_or(|row| row.group_under_cursor().is_none())
+            {
+                self.focus_display_at(self.pointer);
+            }
             self.focus_clicked_group();
             self.reveal_on_release = self.shown.and_then(|strip| {
                 let group = self.rows.get(&strip)?.group_under_cursor()?;

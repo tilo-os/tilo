@@ -51,6 +51,13 @@ pub enum DesktopAction {
     /// Choose the empty desk's launchpad card `card` (its slug, such as
     /// `notes`), or `apps` for the applications.
     Launchpad { card: String },
+    /// Move focus `steps` windows along the shown strip, onto the
+    /// neighbouring display past either end of the focused one.
+    StepFocus { steps: i64 },
+    /// Move focus to display `display`.
+    FocusDisplay { display: u32 },
+    /// Move the focused window `steps` displays on (back when negative).
+    MoveToDisplay { steps: i64 },
 }
 
 impl DesktopAction {
@@ -217,10 +224,39 @@ pub fn tab_resource_id(tab: u64) -> String {
     format!("desktop:tab:{tab}")
 }
 
-/// The desk's resource and its actions, with each tab of `tabs`
-/// (`(tab, title)`) a resource of its own that can be focused and closed.
+/// The kind of a display's resource.
+pub const DISPLAY_KIND: &str = "desktop.display";
+
+/// The address of display `display`'s resource.
 #[must_use]
-pub fn desk_resource(tabs: &[(u64, String)]) -> ResourceSpec {
+pub fn display_resource_id(display: u32) -> String {
+    format!("desktop:display:{display}")
+}
+
+/// The desk's resource and its actions, with each tab of `tabs`
+/// (`(tab, title)`) a resource of its own that can be focused and closed,
+/// and, across several displays, each of `displays` (in reading order) one
+/// that can be focused.
+#[must_use]
+pub fn desk_resource(tabs: &[(u64, String)], displays: &[u32]) -> ResourceSpec {
+    let screens = displays.iter().enumerate().map(|(index, display)| {
+        let display = *display;
+        let number = index.saturating_add(1).to_string();
+        ResourceSpec::new(
+            display_resource_id(display),
+            DISPLAY_KIND,
+            crate::i18n::t_args(
+                "desktop-display-name",
+                &[("number", number.as_str().into())],
+            ),
+        )
+        .with_action(action(
+            "focus",
+            t("desktop-action-focus-display"),
+            Vec::new(),
+            move |_| DesktopAction::FocusDisplay { display },
+        ))
+    });
     let windows = tabs.iter().map(|(id, title)| {
         let id = *id;
         ResourceSpec::new(tab_resource_id(id), WINDOW_KIND, title.clone())
@@ -244,5 +280,29 @@ pub fn desk_resource(tabs: &[(u64, String)]) -> ResourceSpec {
             Vec::new(),
             |_| DesktopAction::OpenSearch,
         ))
-        .with_children(windows)
+        .with_action(action(
+            "step-focus",
+            t("desktop-action-step-focus"),
+            vec![ActionParam::required_owned(
+                "steps",
+                ParamType::Integer,
+                t("desktop-action-param-window-steps"),
+            )],
+            |args| DesktopAction::StepFocus {
+                steps: count(args, "steps"),
+            },
+        ))
+        .with_action(action(
+            "move-to-display",
+            t("desktop-action-move-to-display"),
+            vec![ActionParam::required_owned(
+                "steps",
+                ParamType::Integer,
+                t("desktop-action-param-display-steps"),
+            )],
+            |args| DesktopAction::MoveToDisplay {
+                steps: count(args, "steps"),
+            },
+        ))
+        .with_children(windows.chain(screens))
 }
