@@ -27,8 +27,6 @@ de-DE dictation-delivery-unknown glyph
 de-DE dictation-edit-rejected glyph
 de-DE dictation-transcript-retained glyph
 de-DE editor-hint-focused glyph
-de-DE guide-message-esc-cancels glyph
-de-DE guide-press-new-shortcut glyph
 de-DE nearby-drop-failed-body glyph
 de-DE notification-source-caption glyph
 de-DE qs-clipboard-mime-bytes glyph
@@ -47,8 +45,6 @@ en-US dictation-delivery-unknown glyph
 en-US dictation-edit-rejected glyph
 en-US dictation-transcript-retained glyph
 en-US editor-hint-focused glyph
-en-US guide-message-esc-cancels glyph
-en-US guide-press-new-shortcut glyph
 en-US nearby-drop-failed-body glyph
 en-US notification-source-caption glyph
 en-US qs-clipboard-mime-bytes glyph
