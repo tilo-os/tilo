@@ -48,6 +48,7 @@ fn main() -> ExitCode {
             guest::file_action(&prog_name, rest)
         }
         "ush" => host(rest),
+        ush::shell_host::SHELL_COMMAND => Ok(ush::shell_host::main(rest)),
         name if guest::is_legacy_shim(name) => guest::legacy_launch(name, rest),
         _ => dispatch(rest),
     };
@@ -85,6 +86,7 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
             ush::approved_checks::run_init(rest).map_err(anyhow::Error::msg)
         }
         Some("ush" | "run") => host(rest),
+        Some("sh") => Ok(ush::shell_host::main(rest)),
         Some("pkg") => guest::pkg(rest),
         Some("perm") => guest::perm(rest),
         Some("scan") => guest::scan(rest),
@@ -107,7 +109,8 @@ const USAGE: &str = "\
 tilo-ush — an application runtime that hosts a shell.
 
 On the host:
-  ush [-c COMMAND] [-v] [--environment RECORD]   open a shell in an environment
+  ush [-c COMMAND] [-v] [--environment RECORD] [--shell ush|linux]
+                                                  open a shell in an environment
   tilo-ush serve [--socket PATH]                  hand guests to apps that ask
 
 Inside a guest:
@@ -158,6 +161,14 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
             }
             "--environment" => {
                 opts.environment = Some(value()?);
+                i = i.saturating_add(2);
+            }
+            "--shell" => {
+                opts.shell = match value()?.as_str() {
+                    "ush" => tilo_environment::Shell::Ush,
+                    "linux" | "bash" => tilo_environment::Shell::Linux,
+                    other => anyhow::bail!("--shell is `ush` or `linux`, not `{other}`"),
+                };
                 i = i.saturating_add(2);
             }
             "--host-root" => {
@@ -914,17 +925,10 @@ explain when the host does not offer them.\n";
     /// `--json` prints one object instead of a sentence: the action, its
     /// entry and how many operations it did, or `error` and why.
     pub fn file_action(name: &str, args: &[String]) -> anyhow::Result<i32> {
-        use ush::file_actions::cli;
-
-        let Some(tool) = cli::Tool::of(name) else {
-            anyhow::bail!("{name} is not a file action this runtime answers");
-        };
-        let (json, args) = cli::take_json(args);
-        let action = match cli::parse(tool, &args) {
-            Ok(action) => action,
-            Err(error) => return Ok(file_refused(json, name, &error.to_string())),
-        };
-        run_file_action(name, action, json)
+        let cwd = std::env::current_dir()?;
+        Ok(with_command_io(|io| {
+            ush::file_actions::command::run(name, args, &cwd, io)
+        }))
     }
 
     /// Carry out `action` for the command `name`, through the broker inside
@@ -934,73 +938,28 @@ explain when the host does not offer them.\n";
         action: ush::file_actions::FileAction,
         json: bool,
     ) -> anyhow::Result<i32> {
-        use ush::file_actions::{Recoverable, anchored, perform};
-
-        let verb = action.verb();
         let cwd = std::env::current_dir()?;
-        let action = anchored(action, &cwd);
-        if broker_socket().exists() {
-            return Ok(match ask(&Request::FileAction { action })? {
-                Response::FileAction { id, operations } => {
-                    file_done(json, verb, Some(&id), operations)
-                }
-                Response::Denied { reason } => file_refused(json, name, &reason),
-                other => report(other),
-            });
-        }
+        Ok(with_command_io(|io| {
+            ush::file_actions::command::run_action(name, action, json, &cwd, io)
+        }))
+    }
+
+    /// Run a file command answering on this process's own streams.
+    fn with_command_io<T>(f: impl FnOnce(&mut ush::file_actions::command::Io<'_>) -> T) -> T {
+        use std::io::IsTerminal as _;
+
         let home = tilo_paths::xdg::data_home().unwrap_or_else(|| PathBuf::from("/nonexistent"));
-        let store = Recoverable::at(store_dir(&home));
-        let policy = ush::policy::Policy::unbounded();
-        let done = match &action {
-            ush::file_actions::FileAction::Restore(op) => store
-                .entry(&op.kept)
-                .ok_or_else(|| format!("{}: nothing kept under that id", op.kept))
-                .and_then(|entry| {
-                    store
-                        .restore(&op.kept, &entry.path)
-                        .map(|()| 1)
-                        .map_err(|error| error.to_string())
-                }),
-            action => perform(action, &policy, &store, None)
-                .map(|done| done.len())
-                .map_err(|(error, _)| error.to_string()),
+        let broker = broker_socket();
+        let mut out = std::io::stdout();
+        let mut err = std::io::stderr();
+        let mut io = ush::file_actions::command::Io {
+            out: &mut out,
+            err: &mut err,
+            broker: broker.exists().then_some(broker.as_path()),
+            recoverable: store_dir(&home),
+            progress: std::io::stderr().is_terminal(),
         };
-        Ok(match done {
-            Ok(operations) => file_done(json, verb, None, operations),
-            Err(reason) => file_refused(json, name, &reason),
-        })
-    }
-
-    /// Say what a file command did; `entry` names it in the environment's
-    /// History when it was the record's action.
-    fn file_done(json: bool, verb: &str, entry: Option<&str>, operations: usize) -> i32 {
-        if json {
-            println!(
-                "{}",
-                serde_json::json!({"action": verb, "entry": entry, "operations": operations})
-            );
-            return 0;
-        }
-        let word = if operations == 1 {
-            "operation"
-        } else {
-            "operations"
-        };
-        if entry.is_some() {
-            println!("done ({operations} {word}); undo it from the environment's History");
-        } else {
-            println!("done ({operations} {word}); `history` lists what it kept aside");
-        }
-        0
-    }
-
-    fn file_refused(json: bool, name: &str, reason: &str) -> i32 {
-        if json {
-            println!("{}", serde_json::json!({"action": name, "error": reason}));
-        } else {
-            eprintln!("{name}: {reason}");
-        }
-        1
+        f(&mut io)
     }
 
     /// `history [--json]` — what this environment's file actions removed or

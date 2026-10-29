@@ -4,7 +4,7 @@
 
 use crate::i18n::t;
 use crate::sessions::OpenState;
-use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget};
+use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget, Shell};
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,7 +147,11 @@ fn target_label(
 ) -> String {
     match target {
         SessionTarget::Host => t("terminal-target-host"),
-        SessionTarget::Environment { record, location } => {
+        SessionTarget::Environment {
+            record,
+            location,
+            shell,
+        } => {
             let name = record
                 .as_deref()
                 .and_then(|key| environments.iter().find(|env| env.key == key))
@@ -165,6 +169,10 @@ fn target_label(
                     },
                     |env| env.name.clone(),
                 );
+            let name = match shell {
+                Shell::Ush => name,
+                Shell::Linux => format!("{name} ({})", t("terminal-shell-linux")),
+            };
             match location {
                 Location::ThisDevice => name,
                 Location::Relay { .. } => format!("{name} on {}", location_label(location, relays)),
@@ -178,12 +186,13 @@ fn target_label(
 }
 
 /// Parse an agent's or a person's spelled-out target: `host`,
-/// `environment`, `environment:<record>` or `legacy:<vm>`.
+/// `environment`, `environment:<record>`, `linux`, `linux:<record>` (the
+/// environment as a full Linux session) or `legacy:<vm>`.
 pub fn parse_target_argument(raw: &str) -> Option<SessionTarget> {
     let raw = raw.trim();
     // `…@<relay endpoint id>` runs an environment on that relay.
     let (raw, location) = match raw.split_once('@') {
-        Some((base, relay)) if base.starts_with("environment") => (
+        Some((base, relay)) if base.starts_with("environment") || base.starts_with("linux") => (
             base,
             Location::Relay {
                 relay: relay.to_ascii_lowercase(),
@@ -196,6 +205,9 @@ pub fn parse_target_argument(raw: &str) -> Option<SessionTarget> {
         None if raw == "host" => SessionTarget::Host,
         None if raw == "environment" => SessionTarget::default_environment(),
         Some(("environment", record)) => SessionTarget::environment(record),
+        // A full Linux session: bash in the environment's guest.
+        None if raw == "linux" => SessionTarget::default_environment().in_shell(Shell::Linux),
+        Some(("linux", record)) => SessionTarget::environment(record).in_shell(Shell::Linux),
         Some(("legacy", vm)) => SessionTarget::Legacy { vm: vm.to_owned() },
         _ => return None,
     }
@@ -628,16 +640,22 @@ impl TerminalWidget {
             &self.sessions.legacy_vms,
         );
         let mut rows = Vec::with_capacity(targets.len() + 2);
-        // Picking another environment keeps it where the current one runs.
+        // Picking another environment keeps it where, and in the shell, the
+        // current one runs.
         let here = self
             .sessions
             .target
             .as_ref()
             .and_then(SessionTarget::location)
             .cloned();
+        let shell = self.sessions.target.as_ref().and_then(SessionTarget::shell);
         for target in targets {
             let target = match here.clone() {
                 Some(location) => target.at(location),
+                None => target,
+            };
+            let target = match shell {
+                Some(shell) => target.in_shell(shell),
                 None => target,
             };
             rows.push(PickerRow {
@@ -646,6 +664,29 @@ impl TerminalWidget {
                 separated: false,
                 row: TargetMenuRow::Open(target),
             });
+        }
+        // The current environment in ush's own shell, or as a full Linux
+        // session (bash in the guest).
+        if let Some(current) = self
+            .sessions
+            .target
+            .as_ref()
+            .filter(|t| t.location() == Some(&Location::ThisDevice))
+        {
+            for (index, (choice, key)) in [
+                (Shell::Ush, "terminal-shell-ush"),
+                (Shell::Linux, "terminal-shell-linux"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                rows.push(PickerRow {
+                    label: format!("{} {}", t("terminal-shell"), t(key)),
+                    current: current.shell() == Some(choice),
+                    separated: index == 0,
+                    row: TargetMenuRow::Open(current.in_shell(choice)),
+                });
+            }
         }
         if let Some(here) = here.filter(|_| !self.sessions.relays.is_empty()) {
             let places =

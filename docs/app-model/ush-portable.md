@@ -4,7 +4,8 @@ Commands run where they can, and a container or VM starts only where a
 command needs one.
 
 Status: decided 2026-10-28 (see [Decisions](#decisions)), built in slices
-(see [Order of work](#order-of-work)).
+(see [Order of work](#order-of-work)). The shell and tier 1 are in
+[`ush.md`](ush.md), "The session's shell".
 
 ## Problem
 
