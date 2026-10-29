@@ -1728,7 +1728,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
 
         let _ = pump(&mut h, &cursor_moved_at(power.center()));
         assert!(pump(&mut h, &mouse_press()));
-        assert!(h.host.layers.power_menu.is_open());
+        assert!(h.host.power_menu_open());
         assert!(!h.chrome.borrow().overlays.quick_settings);
     }
 
@@ -1750,7 +1750,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
         let _ = pump(&mut h, &cursor_moved_at(painted_power));
         assert!(pump(&mut h, &mouse_press()));
         assert!(
-            h.host.layers.power_menu.is_open(),
+            h.host.power_menu_open(),
             "clicking the visibly transformed Power tile must open its menu"
         );
         assert!(!h.chrome.borrow().overlays.quick_settings);
@@ -2662,8 +2662,15 @@ fn overlay_cases() -> [OverlayCase; 5] {
         },
         OverlayCase {
             name: "power-menu",
-            open: |h| h.host.force_power_menu_for_visual_test(false),
-            rect: |h| h.host.layers.power_menu.panel_rect(h.host.rect),
+            open: |h| h.host.force_power_menu_for_visual_test(),
+            rect: |h| {
+                h.host
+                    .power_menu_semantic_rects()
+                    .into_iter()
+                    .map(|(_, rect)| rect)
+                    .reduce(|all, rect| all.union(rect))
+                    .unwrap_or(Rect::ZERO)
+            },
             modal: false,
         },
     ]

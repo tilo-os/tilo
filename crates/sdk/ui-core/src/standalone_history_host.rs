@@ -123,6 +123,20 @@ impl HostHistoryLayout {
     }
 }
 
+/// The kind of the open History session's resource.
+pub(crate) const HISTORY_SESSION_KIND: &str = "tilo.host.history.session";
+
+/// `action` on the open History session among `resources`, when one is open.
+pub(crate) fn session_action_address(
+    resources: &[ResourceSpec],
+    action: &str,
+) -> Option<tilo_actions::ActionAddress> {
+    resources
+        .iter()
+        .find(|resource| resource.kind == HISTORY_SESSION_KIND)
+        .map(|resource| tilo_actions::ActionAddress::new(resource.id.as_str(), action))
+}
+
 /// Every action address `resources` publish.
 pub(crate) fn addresses(
     resources: Vec<ResourceSpec>,
@@ -1438,7 +1452,7 @@ fn session_resource(session: uuid::Uuid) -> ResourceSpec {
         .of_kind(tilo_actions::ActionKind::Read);
     ResourceSpec::new(
         format!("tilo.host.history:{session}"),
-        "tilo.host.history.session",
+        HISTORY_SESSION_KIND,
         I18nManager::lookup_plain("standalone-history-title"),
     )
     .with_action(select)

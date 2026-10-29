@@ -77,6 +77,22 @@ impl RecordSet {
         Ok(true)
     }
 
+    /// The route of the record `want` names while it opens off the frame: the room's own
+    /// document, whose route is this set's package and room alone. Its identity is checked when
+    /// it is taken in, and nothing reads or writes it before, so naming its route admits no
+    /// document. `None` when it is not opening.
+    pub(super) fn opening_route(
+        &self,
+        want: &RecordCheckout,
+    ) -> Option<Result<crate::collaboration::RouteSpec, RecordOpenError>> {
+        let opening = self.opening.get(&want.id)?;
+        Some(if opening.checkout.kind == want.kind {
+            self.wire_route(&want.id)
+        } else {
+            Err(RecordOpenError::IdentityMismatch)
+        })
+    }
+
     /// Take in the record `id` was opening, once it is decoded (waiting for it with `wait`):
     /// it is open from then on, as [`Self::try_open_record`] opens it. Whether it is.
     pub(super) fn take_in_opening(

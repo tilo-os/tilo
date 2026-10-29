@@ -154,11 +154,17 @@ Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest 
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
 `Option<host.Version>` (`.who`, `.at`, `.what`), `history(r)` all of them, oldest first.
 
-**Collections.** `items.remove_where(pred)` removes what the predicate holds of and gives how
+**Collections.** An item is its id: a reference to it names its document and id
+(`@board.Card:root-x/i3`), wherever the item is. `items.remove(x)` removes an item with
+everything in it; `items.remove_where(pred)` removes what the predicate holds of and gives how
 many went. A move names a neighbour, `items.move(x, after: y)` or `before: y`, or a place,
 `items.move(x, to: i)` (what a drag gives): the place is resolved, when the action runs, to the
 item it then comes before, and the move is recorded beside it, so concurrent moves converge
-where each person meant.
+where each person meant. The collection a move is called on is where the item goes, from
+whichever collection of the document holds it: `done.cards.move(card, to: done.cards.len())`
+takes a card from its column to the foot of `done`, the same card, with its history and every
+reference to it. An item cannot go inside itself. How moves, edits and removals made at the same
+time merge is convergence.md, "Storage and sync".
 
 **Flows** invoke actions by calling them. `try act(args)` gives a `Result<T, Text>` (`Result<(),
 Text>` for an action without a result) instead of failing:

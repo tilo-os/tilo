@@ -61,7 +61,7 @@ pub struct ProgramReply {
 }
 
 /// A REPL session: the names earlier programs bound, with their values.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Session {
     bound: Vec<(Binding, Value)>,
 }

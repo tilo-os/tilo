@@ -23,6 +23,7 @@ pub mod effects;
 pub mod host;
 pub mod index;
 pub mod instance;
+pub mod items;
 pub mod meta;
 pub mod publish;
 pub mod reading;

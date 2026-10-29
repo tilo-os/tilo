@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use tilolang_cli::dev::{self, DevOptions};
 use tilolang_cli::package::{self, BuildOptions};
+use tilolang_cli::repl::{self, ReplOptions};
 use tilolang_cli::run::{self, RunOptions};
 
 const USAGE: &str = "\
@@ -31,6 +32,13 @@ usage:
   tilolang describe [DIR] [--search DIR]...
       print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
       a native app (its committed surface.toml) and a tilolang package alike
+  tilolang repl [--session SESSION | --door SOCKET | --real] [--color always|never]
+      tilolang typed against a running session through its agent door: the nested session
+      started last by default (SESSION: its --ready file, runtime directory or control socket,
+      where the REPL is admitted and granted the session's tilolang apps), another session's
+      door, or the person's own session (--real), where the person admits it. Each entry is a
+      program for the door's `tilo` tool, run as the REPL's task: lets are kept, refs (n3) name
+      what answers showed, a bulk change previews until `confirm`, `undo` takes a step back.
   tilolang check|fmt|ids ...
       the compiler's commands (tilolangc --help); `use` also finds native apps in --path";
 
@@ -42,6 +50,7 @@ fn main() -> ExitCode {
         Some("run") => run_command(rest),
         Some("dev") => dev_command(rest),
         Some("describe") => describe_command(rest),
+        Some("repl") => repl_command(rest),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
@@ -196,4 +205,26 @@ fn dev_command(args: &[String]) -> Result<(), String> {
         runtime_identity,
         repo,
     })
+}
+
+fn repl_command(args: &[String]) -> Result<(), String> {
+    let mut options = ReplOptions::default();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--session" => options.session = Some(PathBuf::from(value(&mut iter, arg)?)),
+            "--door" => options.door = Some(PathBuf::from(value(&mut iter, arg)?)),
+            "--real" => options.real = true,
+            "--color" => {
+                options.color = match value(&mut iter, arg)?.as_str() {
+                    "always" => Some(true),
+                    "never" => Some(false),
+                    "auto" => None,
+                    other => return Err(format!("--color is always, never or auto, not {other}")),
+                }
+            }
+            other => return Err(format!("unknown option {other}\n{USAGE}")),
+        }
+    }
+    repl::repl(&options)
 }
