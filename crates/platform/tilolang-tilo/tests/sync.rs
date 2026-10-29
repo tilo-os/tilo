@@ -73,7 +73,6 @@ fn listen(replica: &Replica, doc: &str) -> Rc<RefCell<Vec<ChangeSummary>>> {
 fn retype(grace: &mut Replica, meta: &tilolang_runtime::Meta, root: &str, item: &str, text: &str) {
     let edit = Edit::new(
         vec![
-            Segment::Field(field_id(meta, "TodoList", "items")),
             Segment::Item(Id::from_raw(item)),
             Segment::Field(field_id(meta, "Item", "text")),
         ],
@@ -106,7 +105,7 @@ fn a_peers_edit_of_one_item_reaches_the_runtime_as_that_items_field() {
     assert_eq!(
         heard[0].fields,
         vec![FieldKey {
-            resource: format!("{root}/{}:{}", field_id(&meta, "TodoList", "items"), ids[1]),
+            resource: format!("{root}/{}", ids[1]),
             field: field_id(&meta, "Item", "text"),
         }],
         "only the retyped item's text, not the whole record"
@@ -147,11 +146,7 @@ fn the_mirror_follows_the_record_without_copying_it() {
     assert!(stats.incremental_syncs >= 2, "{stats:?}");
     // The runtime reads what the record holds.
     let items = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
-    let first = items.item(
-        &field_id(&meta, "TodoList", "items"),
-        &ids[0],
-        type_id(&meta, "Item"),
-    );
+    let first = items.item(&ids[0], type_id(&meta, "Item"));
     assert_eq!(
         ada.host.runtime().read(&first, "text").unwrap(),
         Value::text("almond milk")
@@ -200,11 +195,7 @@ fn what_the_runtime_read_follows_every_change_after() {
     let (mut ada, mut grace, meta, root) = room();
     let ids = item_ids(&ada, &meta, &root);
     let list = tilolang_runtime::value::ResourceRef::root(&root, type_id(&meta, "TodoList"));
-    let first = list.item(
-        &field_id(&meta, "TodoList", "items"),
-        &ids[0],
-        type_id(&meta, "Item"),
-    );
+    let first = list.item(&ids[0], type_id(&meta, "Item"));
     let count = |ada: &Replica| match ada.host.runtime().read(&list, "items").unwrap() {
         Value::List(items) => items.len(),
         other => panic!("{other:?}"),

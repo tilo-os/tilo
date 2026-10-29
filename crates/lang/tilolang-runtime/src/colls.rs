@@ -200,10 +200,10 @@ impl Core {
             .set(self.items_built.get().saturating_add(1));
         if coll.item.is_empty() {
             // A collection of a union's types: the item's own type.
-            let target = coll.target.item(&coll.field, id, String::new());
+            let target = coll.target.item(id, String::new());
             let ty = self.stored_type(&target);
             return Value::Ref(crate::value::RefValue {
-                target: Rc::new(coll.target.item(&coll.field, id, ty)),
+                target: Rc::new(coll.target.item(id, ty)),
                 author: coll.author.clone(),
             });
         }

@@ -2455,7 +2455,8 @@ impl RecordStore {
     }
 
     /// The route native component admission joins before the factory runs:
-    /// the open record's, a live New reservation's, or an exact native original
+    /// the open record's, a live New reservation's, the room's record while
+    /// it opens off the frame ([`Self::begin_opening`]), or an exact native original
     /// creation capture whose genesis the factory has yet to write. This does
     /// not make the record publishable before the owner's Initialize reply.
     pub(crate) fn admission_route(
@@ -2470,15 +2471,8 @@ impl RecordStore {
                 }
                 return set.wire_route(&checkout.id);
             }
-            // The room's record this device holds, still decoding off the
-            // frame (`begin_opening`): its route is the set's own. Nothing
-            // reads or writes it before it is taken in, and taking it in
-            // checks its identity, as opening it does.
-            if let Some(opening) = set.opening.get(&checkout.id) {
-                if opening.checkout != *checkout {
-                    return Err(RecordOpenError::IdentityMismatch);
-                }
-                return set.wire_route(&checkout.id);
+            if let Some(route) = set.opening_route(checkout) {
+                return route;
             }
             if set
                 .open

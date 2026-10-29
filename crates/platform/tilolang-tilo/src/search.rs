@@ -113,7 +113,7 @@ fn collect(
                 collect(
                     meta,
                     item,
-                    &format!("{path}/{}:{}", field.id, item_id.as_str()),
+                    &crate::index::derive::item_path(path, item_id.as_str()),
                     reader,
                     out,
                 );
