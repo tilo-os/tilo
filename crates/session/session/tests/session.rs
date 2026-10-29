@@ -23,9 +23,11 @@ use tilo_compositor::{Compositor, OutputConfig};
 use tilo_desktop::desktop_actions::{CHROME_RESOURCE, WINDOW_KIND};
 use tilo_onboarding::OnboardingEffect;
 use tilo_quick_settings::QsEffect;
+use tilo_quick_settings::device::Device;
+use tilo_quick_settings::device::testing::{Kept, Machine};
 use tilo_quick_settings::host::FixtureHost;
 use tilo_quick_settings::scenarios;
-use tilo_session::{Options, Session};
+use tilo_session::{DeviceHost, Options, QuickSettings, Session};
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use tilo_sheets::power::PowerEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsEffect;
@@ -329,6 +331,24 @@ fn publisher(session: &Session, action: &str) -> Option<String> {
     find(&session.resources(), action)
 }
 
+/// The resource publishing `action`, once the action is available.
+fn offering(session: &Session, action: &str) -> Option<String> {
+    fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            let offered = resource.actions.iter().any(|offered| {
+                offered.id == action
+                    && offered.contract.availability == tilo_actions::Availability::Available
+            });
+            if offered {
+                Some(resource.id.as_str().to_owned())
+            } else {
+                find(&resource.children, action)
+            }
+        })
+    }
+    find(&session.resources(), action)
+}
+
 fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     match value {
         serde_json::Value::Object(map) => map,
@@ -344,7 +364,7 @@ fn quick_settings_publishes_its_effects_and_they_reach_the_device() {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            quick_settings: Some(lent),
+            quick_settings: Some(QuickSettings::Lent(lent)),
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -371,6 +391,61 @@ fn quick_settings_publishes_its_effects_and_they_reach_the_device() {
     session.step(Duration::from_millis(1)).unwrap();
     let open = session.compositor().screenshot("HEADLESS-1").unwrap();
     assert_ne!(open.rgba, closed.rgba, "the panel shows under the bar");
+}
+
+#[test]
+fn quick_settings_reads_the_device_and_its_power_menu_opens_the_sheet() {
+    use tilo_sheets::Seat as _;
+    let _settled = ui::motion::testing::settled();
+    let machine = Machine::laptop();
+    let reads = machine.clone();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            quick_settings: Some(QuickSettings::Device(Box::new(move |wake| {
+                DeviceHost::new(
+                    Device {
+                        reads: std::sync::Arc::new(reads.clone()),
+                        dispatcher: std::sync::Arc::new(reads),
+                        preferences: Box::new(Kept::default()),
+                    },
+                    wake,
+                )
+            }))),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+
+    // The device's readings land on the session's loop: the panel then
+    // offers turning Bluetooth off, which the machine has.
+    let bluetooth = QsEffect::SET_BLUETOOTH.id;
+    pump(&mut session, &mut [], |session, _| {
+        offering(session, bluetooth).is_some()
+    });
+    let panel = offering(&session, bluetooth).unwrap();
+    session
+        .invoke(
+            &panel,
+            bluetooth,
+            &arguments(serde_json::json!({ "on": false })),
+        )
+        .expect("turn Bluetooth off");
+    pump(&mut session, &mut [], |_, _| {
+        machine.calls().contains(&"bluetooth:false".to_owned())
+    });
+
+    // What only the desktop does comes back to the session: the power menu.
+    let menu = QsEffect::POWER_MENU.id;
+    session
+        .invoke(&panel, menu, &serde_json::Map::new())
+        .expect("power menu");
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .power_menu()
+            .is_some_and(|seat| seat.presentation().is_open())
+    });
 }
 
 #[test]

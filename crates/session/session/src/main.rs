@@ -7,7 +7,8 @@
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
     use tilo_compositor::{DisplayConfig, OutputConfig};
-    use tilo_session::{Options, Session};
+    use tilo_quick_settings::device::PlayerLink;
+    use tilo_session::{DeviceHost, Options, QuickSettings, Session};
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = match args.iter().position(|arg| arg == "--") {
@@ -30,6 +31,14 @@ fn main() -> std::process::ExitCode {
 
     let options = Options {
         setup: setup(ours.iter().any(|arg| arg == "--host-desktop")),
+        quick_settings: Some(QuickSettings::Device(Box::new(|wake| {
+            let device = DeviceHost::os(wake);
+            match PlayerLink::helper() {
+                Ok(players) => device.follow_players(players),
+                Err(error) => eprintln!("tilo-session: no media helper: {error}"),
+            }
+            device
+        }))),
         session_actions: os_actions::perform_session_action,
         ..Options::default()
     };
