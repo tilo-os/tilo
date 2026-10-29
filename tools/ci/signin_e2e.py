@@ -335,6 +335,8 @@ class Run:
         self.shell: Shell | None = None
         self.old_image: str | None = args.pre_pam_tilo_image
         self.old_archive: str | None = args.pre_pam_tilo_archive
+        # The device settings the current boot was started with, and what they replaced.
+        self.boot_devices: dict[str, str | None] = {}
 
     # -- reporting ------------------------------------------------------------------------------
 
@@ -590,16 +592,19 @@ cryptsetup close e2e-target
 
     def boot(self, label: str, **devices: str) -> None:
         """`devices` are vm.sh's device settings for this boot only (TILO_VM_INPUT,
-        TILO_VM_AUDIO_WAV)."""
+        TILO_VM_AUDIO_WAV). They stay set until the next boot: vm.sh's input commands (`tap`)
+        read them too."""
         c = self.cycle
         c.boots += 1
         say(f"--- boot {c.boots}: {label}")
-        saved = dict(c.env)
+        for name, before in self.boot_devices.items():
+            if before is None:
+                c.env.pop(name, None)
+            else:
+                c.env[name] = before
+        self.boot_devices = {name: c.env.get(name) for name in devices}
         c.env.update(devices)
-        try:
-            c.vm("boot-target", "--2d", "--tpm", timeout=600)
-        finally:
-            c.env = saved
+        c.vm("boot-target", "--2d", "--tpm", timeout=600)
         c.hotplug_shell()
 
     def classify(self, text: str) -> str:
