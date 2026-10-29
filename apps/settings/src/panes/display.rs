@@ -37,7 +37,7 @@ use ui::widget::{Dropdown, Slider, Toggle};
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
-use crate::host::{Followed, PaneCx};
+use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
 use crate::prefs::{DisplayPrefs, NightLightPrefs};
 use crate::resource::Settings;
@@ -875,27 +875,6 @@ impl BrightnessControl for NoBrightness {
 /// ambient light sensor is present, as the background probe found them.
 type HardwareProbe = (Result<f32, String>, bool);
 
-/// The session's pending display change (its `display_transaction`
-/// section), read through the settings document Settings reaches over its
-/// channel to the shell: the host writes it, Settings only reads it.
-#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub(crate) struct PendingDisplayChange(serde_json::Map<String, serde_json::Value>);
-
-impl ui::storage::SettingsSchema for PendingDisplayChange {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display_transaction");
-}
-
-impl PendingDisplayChange {
-    /// The transaction the section holds, if it holds one.
-    fn transaction(&self) -> Option<DisplayTransaction> {
-        if !self.0.contains_key("id") {
-            return None;
-        }
-        serde_json::from_value(serde_json::Value::Object(self.0.clone())).ok()
-    }
-}
-
 /// The Displays area's model, shared by the area and the page showing it.
 pub type SharedModel = Rc<std::cell::RefCell<DisplayModel>>;
 
@@ -965,7 +944,6 @@ impl DisplayArea {
     /// One row per connected display and per trusted layout tool.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
-        let offer = |effect: DisplayEffect| SettingsEffect::from(effect).bound();
         let mut rows: Vec<LiveRow> = model
             .connected_outputs()
             .into_iter()
@@ -979,18 +957,7 @@ impl DisplayArea {
                 .map(DisplayModel::device_output_row),
         );
         rows.extend(model.shared_display_rows());
-        for tool in &model.trusted_tools() {
-            rows.push(
-                LiveRow::new(
-                    format!("settings.display-tool:{}", tool.executable),
-                    "settings.display-tool",
-                    tool.name().to_owned(),
-                )
-                .operation(offer(DisplayEffect::ForgetDisplayTool {
-                    tool: tool.executable.clone(),
-                })),
-            );
-        }
+        rows.extend(model.trusted_tools().iter().map(DisplayModel::tool_row));
         rows
     }
 }
@@ -1011,8 +978,9 @@ pub struct DisplayModel {
     outputs_read: bool,
     device_displays: Vec<settings_store::device_displays::DeviceDisplay>,
     person_devices: Vec<settings_store::person_displays::PersonDevice>,
-    /// The display change being tried, as the settings document shows it.
-    pending_change: Followed<PendingDisplayChange>,
+    /// The display change being tried, as the settings document showed it
+    /// to the page ([`Self::saw_pending_change`]).
+    pending_change: Option<DisplayTransaction>,
     pending_device_move: Option<settings_store::device_displays::DeviceDisplayMove>,
     awaiting_device_move: Option<(settings_store::device_displays::DeviceDisplayMove, Instant)>,
     shared_move_revisions: Option<Vec<(String, u64)>>,
@@ -1071,6 +1039,21 @@ pub struct DisplayModel {
 }
 
 impl DisplayModel {
+    /// A trusted layout tool's row: it can be asked about again.
+    fn tool_row(tool: &settings_store::display_tools::DisplayTool) -> LiveRow {
+        LiveRow::new(
+            format!("settings.display-tool:{}", tool.executable),
+            "settings.display-tool",
+            tool.name().to_owned(),
+        )
+        .operation(
+            SettingsEffect::from(DisplayEffect::ForgetDisplayTool {
+                tool: tool.executable.clone(),
+            })
+            .bound(),
+        )
+    }
+
     fn device_movable(display: &settings_store::device_displays::DeviceDisplay) -> bool {
         display.online && !display.local && display.revision != 0
     }
@@ -1210,7 +1193,7 @@ impl DisplayModel {
             wake.wake();
         }));
         let mut model = Self {
-            pending_change: cx.follow::<PendingDisplayChange>(),
+            pending_change: None,
             cx,
             of_device: true,
             brightness_control: control,
@@ -1363,7 +1346,7 @@ impl DisplayModel {
     /// it what they drive.
     fn detached(cx: PaneCx) -> Self {
         Self {
-            pending_change: cx.follow::<PendingDisplayChange>(),
+            pending_change: None,
             cx,
             of_device: false,
             brightness_control: Arc::new(NoBrightness),
@@ -1534,7 +1517,7 @@ impl DisplayModel {
     fn transaction(&self) -> Option<DisplayTransaction> {
         let shown = self
             .of_device
-            .then(|| self.pending_change.get().transaction())
+            .then(|| self.pending_change.clone())
             .flatten();
         let answered = self
             .host_state
@@ -1814,6 +1797,7 @@ impl DisplayModel {
 
     fn output_binding<I: 'static>(
         &self,
+        dispatcher: &ui::framework::Dispatcher<Settings>,
         display: &str,
         effect: impl ui::tilo_resource::Binds<SettingsEffect, I>,
     ) -> Option<ui::tilo_actions::ActionBinding<I>> {
@@ -1821,17 +1805,17 @@ impl DisplayModel {
             .connected_outputs()
             .into_iter()
             .find(|output| output.connector == display)?;
-        self.cx
-            .row_binding(&self.output_row(output).into_resource(), effect)
+        crate::on_row::binding(dispatcher, &self.output_row(output).into_resource(), effect)
     }
 
     fn bind_output<I: 'static, C: ui::framework::ActionControl<I>>(
         &self,
+        dispatcher: &ui::framework::Dispatcher<Settings>,
         display: &str,
         control: C,
         effect: impl ui::tilo_resource::Binds<SettingsEffect, I>,
     ) -> C {
-        match self.output_binding(display, effect) {
+        match self.output_binding(dispatcher, display, effect) {
             Some(binding) => control.bind_action(binding),
             None => control.unavailable(),
         }
@@ -1845,6 +1829,7 @@ impl DisplayModel {
     /// A toggle for `field` of `display`, invoking `set` with it.
     fn toggle(
         &self,
+        dispatcher: &ui::framework::Dispatcher<Settings>,
         display: &str,
         field: &str,
         on: bool,
@@ -1852,6 +1837,7 @@ impl DisplayModel {
     ) -> Toggle {
         let target = display.to_owned();
         self.bind_output(
+            dispatcher,
             display,
             Toggle::from_state(&LocalState::new(on)).with_id(&Self::id(display, field)),
             set.map(move |on: bool| (target.clone(), on)),
@@ -1861,6 +1847,7 @@ impl DisplayModel {
     /// A slider for `field` of `display`, invoking `set` with it.
     fn slider(
         &self,
+        dispatcher: &ui::framework::Dispatcher<Settings>,
         display: &str,
         field: &str,
         value: f64,
@@ -1868,6 +1855,7 @@ impl DisplayModel {
     ) -> Slider {
         let target = display.to_owned();
         self.bind_output(
+            dispatcher,
             display,
             Slider::from_state(&LocalState::new(value))
                 .shows_value()
@@ -1879,6 +1867,7 @@ impl DisplayModel {
     /// A chooser for `field` of `display`, invoking `set` with the choice.
     fn choice(
         &self,
+        dispatcher: &ui::framework::Dispatcher<Settings>,
         display: &str,
         field: &str,
         choices: Vec<String>,
@@ -1887,6 +1876,7 @@ impl DisplayModel {
     ) -> Dropdown {
         let target = display.to_owned();
         self.bind_output(
+            dispatcher,
             display,
             Dropdown::from_state(choices, &LocalState::new(current.to_owned()))
                 .with_id(&Self::id(display, field))
@@ -2406,7 +2396,10 @@ impl DisplayModel {
 
     /// Certified peer connectors at their observed shared logical positions.
     /// Observation alone never makes a screen movable or grants input access.
-    fn build_device_arrangement_card(&self) -> Option<SettingsSection> {
+    fn build_device_arrangement_card(
+        &self,
+        dispatcher: &ui::framework::Dispatcher<Settings>,
+    ) -> Option<SettingsSection> {
         use super::display_arrangement::{
             ArrangedDisplay, DisplayArrangement, SharedDisplayState, placement::Placement,
         };
@@ -2480,13 +2473,13 @@ impl DisplayModel {
                 let key = display.key();
                 let target = key.clone();
                 let revision = display.revision;
-                self.cx
-                    .row_binding(
-                        &DisplayModel::device_output_row(display).into_resource(),
-                        effect(DisplayEffect::MOVE_DEVICE_DISPLAY)
-                            .map(move |(x, y): (i32, i32)| (target.clone(), revision, x, y)),
-                    )
-                    .map(|binding| (key, binding))
+                crate::on_row::binding(
+                    dispatcher,
+                    &DisplayModel::device_output_row(display).into_resource(),
+                    effect(DisplayEffect::MOVE_DEVICE_DISPLAY)
+                        .map(move |(x, y): (i32, i32)| (target.clone(), revision, x, y)),
+                )
+                .map(|binding| (key, binding))
             })
             .collect();
         Some(section(
@@ -2507,6 +2500,7 @@ impl DisplayModel {
     /// over.
     fn arrangement_canvas(
         &self,
+        dispatcher: &ui::framework::Dispatcher<Settings>,
         connected: &[&DisplayOutput],
     ) -> super::display_arrangement::DisplayArrangement {
         let displays = self.arranged_displays(connected);
@@ -2516,6 +2510,7 @@ impl DisplayModel {
             .filter_map(|display| {
                 let connector = display.connector.clone();
                 self.output_binding(
+                    dispatcher,
                     &display.connector,
                     effect(DisplayEffect::MOVE_DISPLAY)
                         .map(move |(x, y): (i32, i32)| (connector.clone(), x, y)),
@@ -2621,15 +2616,22 @@ impl DisplayModel {
         self.poll_background();
         self.poll_device();
         self.poll_selection();
-        if self.pending_change.refresh() {
-            // Kept, reverted or rejected, here or in the shell's own
-            // prompt: the page shows what now stands.
-            self.changed = true;
-            if let Some(transaction) = self.transaction() {
-                self.settle(&transaction);
-            }
-        }
         std::mem::take(&mut self.changed)
+    }
+
+    /// Take in the display change the settings document shows (its
+    /// [`PendingDisplayChange`] section), as the page read it: kept,
+    /// reverted or rejected, here or in the shell's own prompt, the page
+    /// shows what now stands.
+    pub(crate) fn saw_pending_change(&mut self, change: Option<DisplayTransaction>) {
+        if self.pending_change == change {
+            return;
+        }
+        self.pending_change = change;
+        self.changed = true;
+        if let Some(transaction) = self.transaction() {
+            self.settle(&transaction);
+        }
     }
 
     /// Whether background work is still running, so the window keeps
@@ -2664,8 +2666,9 @@ impl DisplayModel {
         .into_iter()
         .flatten()
         .collect();
-        // The pending display change is followed through the settings
-        // document ([`PendingDisplayChange`]), never by watching a file.
+        // The pending display change is read through the settings document
+        // ([`PendingDisplayChange`], recorded by the page), never by
+        // watching a file.
         let watched =
             crate::watch::shared(&mut self.following, || crate::watch::Watched::files(&files));
         Some(watched)

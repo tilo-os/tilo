@@ -1,11 +1,14 @@
 //! The desktop's own sections: how the shell is navigated, which app opens
-//! each kind of file, the clock and the displays' arrangement. The session
-//! keeps them like every other section, so an agent reads and changes them
-//! whether or not Settings is open.
+//! each kind of file, the clock, the displays' arrangement and the display
+//! change being tried. The session keeps them like every other section, so
+//! an agent reads and changes them whether or not Settings is open.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use settings_store::hardware::{
+    DisplayConfig, DisplaySet, DisplayTransaction, DisplayTransactionState,
+};
 use settings_store::person_displays::Arrangement;
 use ui::tilo_resource;
 
@@ -193,5 +196,61 @@ impl AutomaticDisplayPrefs {
     pub fn set_automatic_display_input(&mut self, on: bool) -> Result<(), tilo_resource::Refusal> {
         self.automatic_display_input = on;
         Ok(())
+    }
+}
+
+/// The display change being tried on this device, as the session writes it:
+/// what was asked for, the displays it was arranged for, what it replaces
+/// and how it stands. The session alone changes it (a change applied, kept,
+/// reverted or refused); Settings shows it and asks the session to keep or
+/// revert it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, ui::tilo_resource::Model)]
+#[serde(default)]
+pub struct PendingDisplayChange {
+    /// The change's id; none is pending while it is 0.
+    #[model(readonly)]
+    pub id: u64,
+    /// How it stands: asked for, awaiting an answer, kept, reverted or
+    /// refused.
+    #[model(readonly)]
+    pub state: DisplayTransactionState,
+    /// The monitors the change was arranged for.
+    #[model(readonly)]
+    pub set: DisplaySet,
+    /// The arrangement before it, which reverting restores.
+    #[model(readonly)]
+    pub previous: DisplayConfig,
+    /// The arrangement being tried.
+    #[model(readonly)]
+    pub candidate: DisplayConfig,
+    /// When it reverts unless kept, in Unix milliseconds.
+    #[model(readonly)]
+    pub deadline_unix_ms: Option<u64>,
+    /// The session's diagnostic, in its own terms.
+    #[model(readonly)]
+    pub message: Option<String>,
+}
+
+impl ui::storage::SettingsSchema for PendingDisplayChange {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(settings_store::hardware::DISPLAY_TRANSACTION_SECTION);
+}
+
+#[ui::tilo_resource::resource(kind = "settings.display-change", label = "Display change")]
+impl PendingDisplayChange {}
+
+impl PendingDisplayChange {
+    /// The change the section holds, if it holds one.
+    #[must_use]
+    pub fn transaction(&self) -> Option<DisplayTransaction> {
+        (self.id != 0).then(|| DisplayTransaction {
+            id: self.id,
+            state: self.state,
+            set: self.set.clone(),
+            previous: self.previous.clone(),
+            candidate: self.candidate.clone(),
+            deadline_unix_ms: self.deadline_unix_ms,
+            message: self.message.clone(),
+        })
     }
 }

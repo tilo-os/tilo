@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use provider_settings_ui::bound::{SettingRows as _, record_item};
 use ui::LocalState;
-use ui::framework::{ActionControl, Actions, ViewCx};
+use ui::framework::{ActionControl, Actions, Dispatcher, ViewCx};
 use ui::widget::{Button, Element, Toggle};
 
 use super::{
@@ -22,7 +22,7 @@ use super::{
 };
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
-use crate::prefs::{DisplayPrefs, NightLightPrefs, SharedDisplayPrefs};
+use crate::prefs::{DisplayPrefs, NightLightPrefs, PendingDisplayChange, SharedDisplayPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{block, error_row, value_row};
@@ -36,27 +36,50 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
     let held = area(app)?;
     let following = held.model().borrow_mut().follow();
     let shown = held.shown.clone();
-    let actions = cx.actions();
+    let (actions, dispatcher) = (cx.actions(), cx.dispatcher());
     let app = Rc::clone(app);
     let shared = cx.settings::<SharedDisplayPrefs>();
     cx.record(&shared, move |cx| {
         let arrangement = cx.value(|prefs: &SharedDisplayPrefs| prefs.arrangement.clone());
         cx.switch(&arrangement, move |cx, _| {
-            let (app, actions, shown, following) = (
+            let (app, actions, dispatcher, shown, following) = (
                 Rc::clone(&app),
                 actions.clone(),
+                dispatcher.clone(),
                 shown.clone(),
                 following.clone(),
             );
-            let night_light = cx.settings::<NightLightPrefs>();
-            cx.record(&night_light, move |cx| {
-                // The part keeps the displays followed while it is shown.
-                cx.switch(&shown, move |cx, _| {
-                    let _followed = &following;
-                    match area(&app) {
-                        Some(area) => page(cx, &actions, &area.model().borrow()),
-                        None => crate::widgets::page(Vec::new()),
+            // The change being tried, as the session wrote it: the model
+            // takes it in before the page shows it.
+            let pending = cx.settings::<PendingDisplayChange>();
+            cx.record(&pending, move |cx| {
+                let change = cx.value(PendingDisplayChange::transaction);
+                cx.switch(&change, move |cx, change| {
+                    let (app, actions, dispatcher, shown, following) = (
+                        Rc::clone(&app),
+                        actions.clone(),
+                        dispatcher.clone(),
+                        shown.clone(),
+                        following.clone(),
+                    );
+                    if let Some(area) = area(&app) {
+                        area.model().borrow_mut().saw_pending_change(change.clone());
                     }
+                    let night_light = cx.settings::<NightLightPrefs>();
+                    cx.record(&night_light, move |cx| {
+                        // The part keeps the displays followed while it is
+                        // shown.
+                        cx.switch(&shown, move |cx, _| {
+                            let _followed = &following;
+                            match area(&app) {
+                                Some(area) => {
+                                    page(cx, &actions, &dispatcher, &area.model().borrow())
+                                }
+                                None => crate::widgets::page(Vec::new()),
+                            }
+                        })
+                    })
+                    .unwrap_or_else(|| crate::widgets::page(Vec::new()))
                 })
             })
             .unwrap_or_else(|| crate::widgets::page(Vec::new()))
@@ -68,6 +91,7 @@ pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Eleme
 fn page(
     cx: &ViewCx<NightLightPrefs>,
     actions: &Actions<Settings>,
+    dispatcher: &Dispatcher<Settings>,
     model: &DisplayModel,
 ) -> Element {
     let connected = model.connected_outputs();
@@ -77,21 +101,21 @@ fn page(
     // no brightness outside the selected display's. Then the comforts that
     // are not one display's, and the displays of other devices.
     let mut cards: Vec<SettingsSection> = model.safety_card(cx, actions).into_iter().collect();
-    cards.push(model.arrangement_card(actions, &connected));
+    cards.push(model.arrangement_card(actions, dispatcher, &connected));
     if let Some(notice) = &model.notice {
         cards.push(section(&t("display-card-title"), rows(vec![note(notice)])));
     }
     if let Some(output) = model.selected_output() {
-        cards.push(model.output_card(cx, actions, output, &connected));
+        cards.push(model.output_card(cx, actions, dispatcher, output, &connected));
     }
     cards.push(night_light_card(cx));
-    if let Some(shared) = model.build_shared_displays_card(cx) {
+    if let Some(shared) = model.build_shared_displays_card(cx, dispatcher) {
         cards.push(shared);
     }
-    if let Some(devices) = model.build_device_arrangement_card() {
+    if let Some(devices) = model.build_device_arrangement_card(dispatcher) {
         cards.push(devices);
     }
-    if let Some(tools) = model.trusted_tools_card(cx, actions) {
+    if let Some(tools) = model.trusted_tools_card(cx, dispatcher) {
         cards.push(tools);
     }
     crate::widgets::page(cards)
@@ -150,6 +174,7 @@ impl DisplayModel {
     fn arrangement_card(
         &self,
         actions: &Actions<Settings>,
+        dispatcher: &Dispatcher<Settings>,
         connected: &[&DisplayOutput],
     ) -> SettingsSection {
         if connected.is_empty() {
@@ -163,7 +188,7 @@ impl DisplayModel {
             );
         }
         let disconnected = self.outputs.len() - connected.len();
-        let canvas = self.arrangement_canvas(connected);
+        let canvas = self.arrangement_canvas(dispatcher, connected);
         let identify = invoking(
             actions,
             Button::new("settings.display.identify", &t("display-identify"))
@@ -194,6 +219,7 @@ impl DisplayModel {
         &self,
         cx: &ViewCx<NightLightPrefs>,
         actions: &Actions<Settings>,
+        dispatcher: &Dispatcher<Settings>,
         output: &DisplayOutput,
     ) -> Vec<Item> {
         if output.builtin {
@@ -235,6 +261,7 @@ impl DisplayModel {
         let mut out_rows = vec![crate::widgets::choice_row_stacked(
             &t("display-brightness"),
             Box::new(self.slider(
+                dispatcher,
                 &output.connector,
                 "brightness",
                 f64::from(*level),
@@ -255,6 +282,7 @@ impl DisplayModel {
         &self,
         cx: &ViewCx<NightLightPrefs>,
         actions: &Actions<Settings>,
+        dispatcher: &Dispatcher<Settings>,
         output: &DisplayOutput,
         connected: &[&DisplayOutput],
     ) -> SettingsSection {
@@ -274,13 +302,14 @@ impl DisplayModel {
                     .saturating_mul(1920),
                 ..output.unconfigured()
             });
-        let mut output_rows = self.output_brightness_rows(cx, actions, output);
-        output_rows.extend(self.output_mode_rows(output, &config));
-        output_rows.extend(self.output_primary_rows(output, connected, &config));
-        output_rows.extend(self.output_capability_rows(output, &config));
+        let mut output_rows = self.output_brightness_rows(cx, actions, dispatcher, output);
+        output_rows.extend(self.output_mode_rows(dispatcher, output, &config));
+        output_rows.extend(self.output_primary_rows(dispatcher, output, connected, &config));
+        output_rows.extend(self.output_capability_rows(dispatcher, output, &config));
         output_rows.push(setting_row(
             &t("display-use"),
             Box::new(self.toggle(
+                dispatcher,
                 &output.connector,
                 "enabled",
                 config.enabled,
@@ -294,6 +323,7 @@ impl DisplayModel {
     /// sits is the arrangement canvas's alone (by hand or arrow keys).
     fn output_primary_rows(
         &self,
+        dispatcher: &Dispatcher<Settings>,
         output: &DisplayOutput,
         connected: &[&DisplayOutput],
         config: &OutputConfig,
@@ -319,6 +349,7 @@ impl DisplayModel {
             setting_row(
                 &t("display-scale"),
                 Box::new(self.choice(
+                    dispatcher,
                     &output.connector,
                     "scale",
                     scale_choices,
@@ -329,6 +360,7 @@ impl DisplayModel {
             setting_row(
                 &t("display-rotation"),
                 Box::new(self.choice(
+                    dispatcher,
                     &output.connector,
                     "transform",
                     transform_options(),
@@ -341,6 +373,7 @@ impl DisplayModel {
                 Box::new({
                     let display = output.connector.clone();
                     self.bind_output(
+                        dispatcher,
                         &output.connector,
                         Toggle::from_state(&LocalState::new(config.primary))
                             .with_id(&Self::id(&output.connector, "primary")),
@@ -352,6 +385,7 @@ impl DisplayModel {
             setting_row(
                 &t("display-mirroring"),
                 Box::new(self.choice(
+                    dispatcher,
                     &output.connector,
                     "mirror",
                     mirror_choices,
@@ -364,7 +398,12 @@ impl DisplayModel {
 
     /// Why the display is dark, if it is; then its resolution and, for that
     /// resolution, its refresh rate. Both choose one of the display's modes.
-    fn output_mode_rows(&self, output: &DisplayOutput, config: &OutputConfig) -> Vec<Item> {
+    fn output_mode_rows(
+        &self,
+        dispatcher: &Dispatcher<Settings>,
+        output: &DisplayOutput,
+        config: &OutputConfig,
+    ) -> Vec<Item> {
         let mut out_rows = Vec::new();
         if let Some(reason) = output.unavailable_reason {
             out_rows.push(value_row(
@@ -403,6 +442,7 @@ impl DisplayModel {
             &t("display-resolution"),
             Box::new(
                 self.bind_output(
+                    dispatcher,
                     &output.connector,
                     Dropdown::from_state(resolutions, &LocalState::new(resolution_label(current)))
                         .with_id(&Self::id(&output.connector, "mode"))
@@ -422,6 +462,7 @@ impl DisplayModel {
             &t("display-refresh-rate"),
             Box::new(
                 self.bind_output(
+                    dispatcher,
                     &output.connector,
                     Dropdown::from_state(rates, &LocalState::new(refresh_label(current)))
                         .with_id(&Self::id(&output.connector, "refresh"))
@@ -440,7 +481,12 @@ impl DisplayModel {
     }
 
     /// HDR / variable-refresh-rate / colour-profile rows.
-    fn output_capability_rows(&self, output: &DisplayOutput, config: &OutputConfig) -> Vec<Item> {
+    fn output_capability_rows(
+        &self,
+        dispatcher: &Dispatcher<Settings>,
+        output: &DisplayOutput,
+        config: &OutputConfig,
+    ) -> Vec<Item> {
         let mut out_rows = Vec::new();
 
         if output.hdr {
@@ -448,6 +494,7 @@ impl DisplayModel {
                 &crate::i18n::t("display-hdr"),
                 &crate::i18n::t("display-hdr-description"),
                 Box::new(self.toggle(
+                    dispatcher,
                     &output.connector,
                     "hdr",
                     config.hdr,
@@ -458,6 +505,7 @@ impl DisplayModel {
                 &crate::i18n::t("display-hdr-sdr-brightness"),
                 &crate::i18n::t("display-hdr-sdr-brightness-description"),
                 crate::widgets::trailing_slider(Box::new(self.slider(
+                    dispatcher,
                     &output.connector,
                     "sdr_brightness",
                     sdr_brightness_fraction(config.sdr_brightness_nits),
@@ -478,6 +526,7 @@ impl DisplayModel {
                 &crate::i18n::t("display-vrr"),
                 &crate::i18n::t("display-vrr-description"),
                 Box::new(self.toggle(
+                    dispatcher,
                     &output.connector,
                     "vrr",
                     config.vrr,
@@ -519,6 +568,7 @@ impl DisplayModel {
             out_rows.push(setting_row(
                 &t("display-colour-profile"),
                 Box::new(self.choice(
+                    dispatcher,
                     &output.connector,
                     "color_profile",
                     choices,
@@ -610,7 +660,7 @@ impl DisplayModel {
     fn trusted_tools_card(
         &self,
         cx: &ViewCx<NightLightPrefs>,
-        actions: &Actions<Settings>,
+        dispatcher: &Dispatcher<Settings>,
     ) -> Option<SettingsSection> {
         let tools = self.trusted_tools();
         if tools.is_empty() {
@@ -622,8 +672,9 @@ impl DisplayModel {
                 cx.setting(tool.name())
                     .id("settings.display.tool.forget")
                     .button(&t("display-tools-forget"), |button| {
-                        invoking(
-                            actions,
+                        crate::on_row::bind_invocation(
+                            dispatcher,
+                            &DisplayModel::tool_row(&tool).into_resource(),
                             button,
                             DisplayEffect::ForgetDisplayTool {
                                 tool: tool.executable.clone(),

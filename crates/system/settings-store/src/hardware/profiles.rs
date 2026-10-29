@@ -52,6 +52,9 @@ pub struct DisplaySet {
 
 crate::read_through_json_value!(DisplaySet);
 
+#[cfg(feature = "model")]
+tilo_resource::json_model!(DisplaySet);
+
 impl DisplaySet {
     pub fn of<'a>(outputs: impl IntoIterator<Item = AttachedOutput<'a>>) -> Self {
         let outputs: Vec<AttachedOutput<'a>> = outputs.into_iter().collect();

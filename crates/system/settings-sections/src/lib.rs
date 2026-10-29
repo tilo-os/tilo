@@ -89,6 +89,7 @@ sections!(
     desktop::ClockPrefs,
     desktop::SharedDisplayPrefs,
     desktop::AutomaticDisplayPrefs,
+    desktop::PendingDisplayChange,
     osk::OskSourceSettings,
     device_vpn::DeviceVpnPrefs,
     mobile_data::MobileDataUsage,

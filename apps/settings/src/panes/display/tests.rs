@@ -35,6 +35,11 @@ pub(super) fn read_model<V: 'static>(
     .expect("the Settings window is mounted")
 }
 
+/// A dispatcher for building the page's controls outside the window.
+pub(super) fn dispatcher() -> ui::framework::Dispatcher<crate::resource::Settings> {
+    ui::framework::testing::dispatcher(settings_sections::APP_ID)
+}
+
 /// Let the window take in what changed and draw it.
 pub(super) fn frame(app: &mut App) {
     for _ in 0..4 {
@@ -1432,7 +1437,7 @@ fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
     }
     let _guard = crate::prefs::test_env::ConfigGuard::new();
     let mut pane = laptop_with_monitor();
-    assert!(pane.build_device_arrangement_card().is_none());
+    assert!(pane.build_device_arrangement_card(&dispatcher()).is_none());
     pane.device_displays = vec![settings_store::device_displays::DeviceDisplay {
         device: "certified-peer".into(),
         device_label: "Peer laptop".into(),
@@ -1449,7 +1454,7 @@ fn peer_displays_are_inspectable_accessible_and_not_an_input_grant() {
         revision: 1,
     }];
     let card = pane
-        .build_device_arrangement_card()
+        .build_device_arrangement_card(&dispatcher())
         .expect("discovered peer has a real canvas");
     let mut names = Vec::new();
     let arrangement = crate::widgets::page(vec![card]);
@@ -1546,7 +1551,7 @@ fn the_canvas_is_the_one_display_selection() {
         Some("HDMI-A-1")
     );
     let connected = pane.connected_outputs();
-    let canvas = pane.arrangement_canvas(&connected);
+    let canvas = pane.arrangement_canvas(&dispatcher(), &connected);
     let tiles = canvas.accessibility().unwrap().children;
     let chosen: Vec<_> = tiles
         .iter()
@@ -1559,7 +1564,7 @@ fn the_canvas_is_the_one_display_selection() {
 
     // Chosen on the canvas by pointer.
     let connected = pane.connected_outputs();
-    let canvas = pane.arrangement_canvas(&connected);
+    let canvas = pane.arrangement_canvas(&dispatcher(), &connected);
     drop(connected);
     let mut host = ui::headless::FrameHarness::for_root(
         ui::State::new(),
@@ -1692,7 +1697,7 @@ fn choosing_or_dragging_a_display_shows_nothing_on_the_screens() {
     pane.normalize_selection();
     // Point at the monitor, press it and drag it on the mounted canvas.
     let connected = pane.connected_outputs();
-    let canvas = pane.arrangement_canvas(&connected);
+    let canvas = pane.arrangement_canvas(&dispatcher(), &connected);
     drop(connected);
     let mut host = ui::headless::FrameHarness::for_root(
         ui::State::new(),
@@ -1804,32 +1809,54 @@ fn resolution_and_refresh_rate_each_choose_one_mode() {
     assert_eq!(mode_for_refresh(&modes, modes[2], "59.94 Hz"), None);
 }
 
+/// The window on the Displays page over this device's laptop and monitor,
+/// and the settings document the shell writes the pending display change
+/// to.
+fn device_on_displays() -> (App, ui::storage::SettingsDocument) {
+    let mut app = laptop_on_displays();
+    change_model(&mut app, |model| model.of_device = true);
+    let document = app
+        .settings::<crate::prefs::PendingDisplayChange>()
+        .document()
+        .clone();
+    (app, document)
+}
+
+/// Write `transaction` where the shell writes the pending display change,
+/// in its stored form.
+fn shell_writes(document: &ui::storage::SettingsDocument, transaction: &DisplayTransaction) {
+    let section = serde_json::to_value(transaction).unwrap();
+    document
+        .update_section(
+            settings_store::hardware::DISPLAY_TRANSACTION_SECTION,
+            section.as_object().unwrap().clone(),
+        )
+        .unwrap();
+}
+
 /// Settings reads the pending display change through its settings document,
 /// the channel to the shell, never by watching the session's file: a change
-/// kept or reverted elsewhere reaches the page.
+/// the shell writes reaches the page, which asks to keep or revert it.
 #[test]
 fn the_pending_display_change_is_read_through_the_settings_document() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
-    let profile = tempfile::tempdir().unwrap().keep();
-    let file = settings_store::profile(&profile);
-    let mut pane = DisplayModel::detached(PaneCx::in_profile(profile))
-        .with_outputs(laptop_with_monitor().outputs);
-    pane.of_device = true;
-    assert!(pane.transaction().is_none());
+    let (mut app, document) = device_on_displays();
+    frame(&mut app);
+    assert!(read_model(&mut app, |model| model.transaction().is_none()));
+    let set = read_model(&mut app, DisplayModel::display_set);
     let mut transaction =
-        DisplayTransaction::prepare_request(pane.display_set(), DisplayConfig::default()).unwrap();
+        DisplayTransaction::prepare_request(set, DisplayConfig::default()).unwrap();
     transaction.state = DisplayTransactionState::AwaitingConfirmation;
-    let section = serde_json::to_value(&transaction).unwrap();
-    settings_store::SettingsSource::update_section(
-        &file,
-        "display_transaction",
-        section.as_object().unwrap().clone(),
-    )
-    .unwrap();
-    assert!(pane.poll(), "the page follows the document");
-    let shown = pane.transaction().expect("the pending change is shown");
+    shell_writes(&document, &transaction);
+    frame(&mut app);
+    let shown =
+        read_model(&mut app, DisplayModel::transaction).expect("the pending change is shown");
     assert_eq!(shown.id, transaction.id);
     assert_eq!(shown.state, DisplayTransactionState::AwaitingConfirmation);
+    let ids = page_ids(&mut app);
+    for id in ["settings.display.keep", "settings.display.revert"] {
+        assert!(ids.iter().any(|shown| shown == id), "{id}: {ids:?}");
+    }
 }
 
 /// Every name, description and value the page's widgets say.
@@ -1852,19 +1879,15 @@ fn page_words(widget: &dyn Widget, words: &mut Vec<String>) {
 #[test]
 fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
     let _guard = crate::prefs::test_env::ConfigGuard::new();
-    let profile = tempfile::tempdir().unwrap().keep();
-    let file = settings_store::profile(&profile);
-    let mut pane = DisplayModel::detached(PaneCx::in_profile(profile))
-        .with_outputs(laptop_with_monitor().outputs);
-    pane.of_device = true;
+    let (mut app, document) = device_on_displays();
     let diagnostic = "Rejected unsupported display plan: UnsupportedMode(\"DP-1\")";
+    let set = read_model(&mut app, DisplayModel::display_set);
     let mut transaction =
-        DisplayTransaction::prepare_request(pane.display_set(), DisplayConfig::default()).unwrap();
+        DisplayTransaction::prepare_request(set, DisplayConfig::default()).unwrap();
     // How often the page says each outcome: a refusal is said by its own
     // card, so it has no notice, and the page says it no more often than it
     // says one notice.
     let mut times_said = Vec::new();
-    let mut app = laptop_on_displays();
     for (state, said, notice) in [
         (
             DisplayTransactionState::Confirmed,
@@ -1885,15 +1908,13 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
         transaction.id += 1;
         transaction.state = state;
         transaction.message = Some(diagnostic.into());
-        let section = serde_json::to_value(&transaction).unwrap();
-        settings_store::SettingsSource::update_section(
-            &file,
-            "display_transaction",
-            section.as_object().unwrap().clone(),
-        )
-        .unwrap();
-        assert!(pane.poll(), "the page follows the document");
-        assert_eq!(pane.notice, notice.then(|| t(said)), "{state:?}");
+        shell_writes(&document, &transaction);
+        frame(&mut app);
+        assert_eq!(
+            read_model(&mut app, |model| model.notice.clone()),
+            notice.then(|| t(said)),
+            "{state:?}: the page follows the document"
+        );
         // The window's page, over the change as the compositor answered it.
         let answered = transaction.clone();
         change_model(&mut app, move |model| {
@@ -1920,7 +1941,9 @@ fn a_refused_or_settled_display_change_is_said_in_the_persons_words() {
         "the page says a refusal once, as it says a kept change"
     );
     assert_eq!(
-        pane.inspection()["transaction"]["message"],
+        read_model(&mut app, |model| {
+            model.inspection()["transaction"]["message"].clone()
+        }),
         diagnostic,
         "the inspection still carries it"
     );

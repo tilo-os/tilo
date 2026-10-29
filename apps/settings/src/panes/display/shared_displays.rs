@@ -6,10 +6,11 @@ use super::{
 };
 use provider_settings_ui::bound::{SettingRows as _, record_item};
 use settings_store::person_displays::{Arrangement, Layout, ResolvedDisplay};
-use ui::framework::ViewCx;
+use ui::framework::{Dispatcher, ViewCx};
 use ui::tilo_resource::Effect;
 
 pub use crate::prefs::{AutomaticDisplayPrefs, NightLightPrefs, SharedDisplayPrefs};
+use crate::resource::Settings;
 
 impl DisplayModel {
     /// The person's display arrangement, as stored now.
@@ -25,18 +26,6 @@ impl DisplayModel {
                 SharedDisplayPrefs::ARRANGE_DISPLAYS.with(next.to_value()),
             )
             .map_err(|error| t_args("display-shared-save-failed", &[("error", error.into())]))
-    }
-
-    fn bind_shared_row<I: 'static, C: ui::framework::ActionControl<I>>(
-        &self,
-        row: &ui::tilo_actions::ResourceSpec,
-        control: C,
-        effect: impl ui::tilo_resource::Binds<SettingsEffect, I>,
-    ) -> C {
-        match self.cx.row_binding(row, effect) {
-            Some(binding) => control.bind_action(binding),
-            None => control.unavailable(),
-        }
     }
 
     pub(super) fn shared_layout(&self) -> Layout {
@@ -254,6 +243,7 @@ impl DisplayModel {
     pub(super) fn build_shared_displays_card(
         &self,
         cx: &ViewCx<NightLightPrefs>,
+        dispatcher: &Dispatcher<Settings>,
     ) -> Option<SettingsSection> {
         let layout = self.shared_layout();
         if layout.displays.is_empty() && layout.inactive.is_empty() {
@@ -270,7 +260,8 @@ impl DisplayModel {
             let device = display.device.clone();
             let output = display.output.clone();
             let revision = self.shared_revision(&device, &output);
-            let toggle = self.bind_shared_row(
+            let toggle = crate::on_row::bind(
+                dispatcher,
                 &row,
                 Toggle::from_state(&LocalState::new(display.enabled)),
                 effect(DisplayEffect::INCLUDE_SHARED_DISPLAY)
@@ -305,7 +296,8 @@ impl DisplayModel {
                     .collect::<Vec<_>>();
                 let device = display.device.clone();
                 let output = display.output.clone();
-                let choice = self.bind_shared_row(
+                let choice = crate::on_row::bind(
+                    dispatcher,
                     &row,
                     Dropdown::from_state(
                         options,
@@ -347,7 +339,9 @@ fn shared_displays(layout: &Layout) -> impl Iterator<Item = (&ResolvedDisplay, b
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panes::display::tests::{App, change_model, frame, on_displays, read_model};
+    use crate::panes::display::tests::{
+        App, change_model, dispatcher, frame, on_displays, read_model,
+    };
 
     fn devices() -> Vec<settings_store::person_displays::PersonDevice> {
         vec![settings_store::person_displays::PersonDevice {
@@ -447,7 +441,10 @@ mod tests {
         read_model(app, |model| {
             let mut found = Vec::new();
             visit(
-                crate::widgets::page(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
+                crate::widgets::page(vec![
+                    model.build_device_arrangement_card(&dispatcher()).unwrap(),
+                ])
+                .as_ref(),
                 &mut found,
             );
             found
@@ -459,7 +456,10 @@ mod tests {
         read_model(app, |model| {
             let mut found = Vec::new();
             names(
-                crate::widgets::page(vec![model.build_device_arrangement_card().unwrap()]).as_ref(),
+                crate::widgets::page(vec![
+                    model.build_device_arrangement_card(&dispatcher()).unwrap(),
+                ])
+                .as_ref(),
                 &mut found,
             );
             found

@@ -438,6 +438,9 @@ pub enum DisplayTransactionState {
 
 crate::read_through_json_value!(DisplayTransactionState);
 
+#[cfg(feature = "model")]
+tilo_resource::json_model!(DisplayTransactionState);
+
 /// The section a [`DisplayTransaction`] is stored in, whole.
 pub const DISPLAY_TRANSACTION_SECTION: &str = "display_transaction";
 
@@ -1052,6 +1055,9 @@ pub struct DisplayConfig {
 }
 
 crate::read_through_json_value!(DisplayConfig);
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(DisplayConfig);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DisplayConfigError {
