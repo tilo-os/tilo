@@ -248,7 +248,7 @@ impl ShellOverlayHost {
         }
         // Empty canvas is the canvas's: the caret, a band, panning and
         // zooming, and what is typed at the caret.
-        if self.route_canvas_event(event, *ctx.modifiers) {
+        if self.route_canvas_event(event, *ctx.modifiers, ctx.scale_factor) {
             *ctx.handled = true;
             return;
         }

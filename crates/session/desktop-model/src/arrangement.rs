@@ -119,7 +119,13 @@ pub const CANVAS_GAP: u32 = 24;
 pub struct Arrangement {
     #[serde(default)]
     pub kind: ArrangementKind,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // Read through the id-key helper: a workspace is stored flattened, where
+    // a map's numeric keys arrive as strings.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "crate::serde_ids::deserialize_id_btree_map"
+    )]
     pub places: BTreeMap<GroupId, CanvasPlace>,
 }
 
@@ -378,6 +384,15 @@ mod tests {
         let mut arrangement = canvas(&[(1, CanvasPlace::new(0, 0, 10, 10))]);
         assert!(arrangement.retain_groups(|id| id != 1));
         assert!(arrangement.places.is_empty());
+    }
+
+    #[test]
+    fn a_stored_workspace_keeps_its_canvas() {
+        let mut workspace = crate::Workspace::create("Desk");
+        workspace.arrangement = canvas(&[(920_001, CanvasPlace::new(40, -8, 400, 300))]);
+        let json = serde_json::to_string(&workspace).expect("serialises");
+        let back: crate::Workspace = serde_json::from_str(&json).expect("reads back");
+        assert_eq!(back.arrangement, workspace.arrangement);
     }
 
     #[test]

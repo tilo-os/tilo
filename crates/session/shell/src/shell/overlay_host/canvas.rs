@@ -147,6 +147,10 @@ struct Press {
     pans: bool,
     /// It travelled past the click slop: a drag.
     dragging: bool,
+    /// The finger making it, for a touch; `None` for the pointer.
+    touch: Option<u64>,
+    /// When it went down: a finger held still this long is a right-click.
+    since: Instant,
 }
 
 /// The canvas's state on this device.
@@ -229,6 +233,31 @@ impl ShellOverlayHost {
     /// Whether the caret on the canvas has the keyboard.
     pub fn canvas_takes_keys(&self) -> bool {
         self.canvas.shown.is_some() && self.canvas.caret.is_some()
+    }
+
+    /// The caret as the input method serves it: a text field where the
+    /// caret is drawn, so a finger's tap raises the on-screen keyboard.
+    pub(super) fn canvas_ime_field(&self) -> Option<ui::ime::ImeWindowState> {
+        if !self.canvas_takes_keys() {
+            return None;
+        }
+        let caret = self.canvas.caret.as_ref()?;
+        let rect = caret.composition.ime_cursor_rect().or_else(|| {
+            self.to_screen(caret.at)
+                .map(|p| Rect::from_center_size(p, (2.0, 20.0)))
+        })?;
+        Some(ui::ime::ImeWindowState::from_rect(
+            ui::ime::InputContent::TEXT,
+            rect,
+        ))
+    }
+
+    /// What the input method may compare the caret's text by.
+    pub(super) fn canvas_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        let caret = self.canvas.caret.as_ref()?;
+        caret
+            .composition
+            .ime_edit_fingerprint(&caret.text, &caret.selection, key)
     }
 
     /// The deck's corner and size on screen: where the canvas is drawn.
@@ -535,11 +564,13 @@ impl ShellOverlayHost {
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
+        scale: f64,
     ) -> bool {
         if !self.canvas_shown() {
             return false;
         }
         match event {
+            WindowEvent::Touch(touch) => self.canvas_touch(touch, scale),
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button,
@@ -604,6 +635,8 @@ impl ShellOverlayHost {
                     now: at,
                     pans: button == MouseButton::Middle,
                     dragging: false,
+                    touch: None,
+                    since: Instant::now(),
                 });
                 true
             }
@@ -611,11 +644,98 @@ impl ShellOverlayHost {
         }
     }
 
-    fn canvas_pointer_moved(&mut self) -> bool {
-        let (Some(mut press), Some(at)) = (self.canvas.press, self.last_cursor) else {
+    /// A finger on empty canvas: a tap is the caret, a drag a band, a still
+    /// hold the menu a right-click opens. Two fingers are a pan or a pinch
+    /// ([`Self::canvas_touch_gesture`]).
+    fn canvas_touch(&mut self, touch: &winit::event::Touch, scale: f64) -> bool {
+        use winit::event::TouchPhase;
+        let at = Point::new(touch.location.x / scale, touch.location.y / scale);
+        match touch.phase {
+            TouchPhase::Started => {
+                if self.canvas.press.is_some() {
+                    // A second finger: a pan or a pinch, never a band.
+                    self.canvas.press = None;
+                    self.bump_chrome();
+                    return true;
+                }
+                if !self.canvas_on_empty_space(at) {
+                    return false;
+                }
+                self.canvas.pinch = None;
+                self.canvas.press = Some(Press {
+                    start: at,
+                    now: at,
+                    pans: false,
+                    dragging: false,
+                    touch: Some(touch.id),
+                    since: Instant::now(),
+                });
+                true
+            }
+            TouchPhase::Moved => {
+                if self
+                    .canvas
+                    .press
+                    .is_none_or(|press| press.touch != Some(touch.id))
+                {
+                    return false;
+                }
+                self.canvas_moved_to(at, ui::gesture::TouchGestureArena::TAP_SLOP)
+            }
+            TouchPhase::Ended => {
+                if self
+                    .canvas
+                    .press
+                    .is_none_or(|press| press.touch != Some(touch.id))
+                {
+                    return false;
+                }
+                self.canvas_release()
+            }
+            TouchPhase::Cancelled => self.canvas.press.take().is_some(),
+        }
+    }
+
+    /// When a finger held still on empty canvas becomes a right-click.
+    pub(super) fn canvas_deadline(&self) -> Option<Instant> {
+        let press = self
+            .canvas
+            .press
+            .filter(|p| p.touch.is_some() && !p.dragging)?;
+        Some(press.since + ui::interaction::TouchPointerEmulator::LONG_PRESS)
+    }
+
+    /// A finger held still on empty canvas long enough opens its menu, as
+    /// a right-click there does. Whether it did.
+    pub(super) fn fire_canvas_long_press(&mut self, now: Instant) -> bool {
+        if self.canvas_deadline().is_none_or(|due| now < due) {
+            return false;
+        }
+        let Some(press) = self.canvas.press.take() else {
             return false;
         };
-        let slop = 4.0;
+        match self.thing_at(press.start) {
+            Some(seed) => self.open_thing_menu(seed, press.start),
+            None => false,
+        }
+    }
+
+    fn canvas_pointer_moved(&mut self) -> bool {
+        let Some(at) = self.last_cursor else {
+            return false;
+        };
+        if self.canvas.press.is_none_or(|press| press.touch.is_some()) {
+            return false;
+        }
+        self.canvas_moved_to(at, 4.0)
+    }
+
+    /// The press on empty canvas moved to `at`: past `slop` it is a drag
+    /// that pans or draws a band.
+    fn canvas_moved_to(&mut self, at: Point, slop: f64) -> bool {
+        let Some(mut press) = self.canvas.press else {
+            return false;
+        };
         let travelled = at - press.now;
         press.now = at;
         if !press.dragging && (at - press.start).hypot() > slop {
