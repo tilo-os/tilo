@@ -129,3 +129,19 @@ kind = "undoable"
 id = "reset-stopwatch"
 kind = "undoable"
 
+[[resources]]
+kind = "clocks.on-devices"
+label = "Clocks on each device"
+version = 1
+fields = [
+  { path = "devices", type = "BTreeMap<String, OnThisDevice>" },
+]
+
+[[resources.verbs]]
+id = "keep"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "kept", required = true, schema = {} },
+]
+

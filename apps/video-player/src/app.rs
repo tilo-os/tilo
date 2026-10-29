@@ -61,12 +61,12 @@ use ui::widget::{
 
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, LaunchInput, Live,
-    RunMode, Setting, ViewCx,
+    PersonRecord, RunMode, Setting, ViewCx,
 };
 use ui::tilo_resource::{ActionDecl, Id};
 
 use crate::actions::VideoEffect;
-use crate::preferences::{PLAYBACK_RATES, PlayerSettings, RecentMedia, ResumePoints};
+use crate::preferences::{PLAYBACK_RATES, PlayerSettings, RecentMedia, RecentVideos, ResumePoints};
 use crate::shared::{Library as PlayerResource, library as verbs};
 
 /// The playback preferences the player follows.
@@ -330,9 +330,12 @@ pub(crate) struct PlayerState {
     /// Playback watched together with everyone who has the same video open.
     together: Together,
     preferences: PlaybackPreferences,
-    /// This device's settings, where a live window keeps its preferences
-    /// and recent videos; `None` for a capture or a past version.
+    /// This device's settings, where a live window keeps its preferences;
+    /// `None` for a capture or a past version.
     setting: Option<Setting<PlayerSettings>>,
+    /// The recent videos record and this device's id, where a live window
+    /// keeps its recent videos; `None` for a capture or a past version.
+    recents: Option<(PersonRecord<RecentVideos>, String)>,
     /// Where each video left off on this device, by its opaque identity, so
     /// opening it again resumes: see [`ResumePoints`].
     resume: ResumePoints,
@@ -639,6 +642,7 @@ impl PlayerState {
             together: Together::default(),
             preferences,
             setting: None,
+            recents: None,
             resume: ResumePoints::default(),
             resume_write: None,
             pending_resume: None,
@@ -726,6 +730,13 @@ impl PlayerState {
                 let setting = cx.settings::<PlayerSettings>();
                 self.adopt_settings(&setting.get());
                 self.setting = Some(setting);
+                self.recents = cx
+                    .person::<RecentVideos>()
+                    .zip(cx.device().map(str::to_owned));
+                if let Some((record, device)) = &self.recents {
+                    let rows = record.with(|recent| recent.on(device));
+                    self.adopt_recent(&rows);
+                }
                 self.open_launch(&cx.launch());
             }
             RunMode::Capture => {
@@ -735,13 +746,16 @@ impl PlayerState {
         }
     }
 
-    /// Follow this device's stored preferences, the levels it plays at, its
-    /// recent videos and where each of them left off.
+    /// Follow this device's stored preferences, the levels it plays at.
     fn adopt_settings(&mut self, stored: &PlayerSettings) {
         self.preferences = PlaybackPreferences::from_settings(stored);
         configure_player_settings(&mut self.player, self.preferences);
-        self.recent = stored
-            .recent_history
+        self.dirty = true;
+    }
+
+    /// Follow this device's recent videos and where each of them left off.
+    fn adopt_recent(&mut self, rows: &crate::preferences::RecentHistory) {
+        self.recent = rows
             .iter()
             .map(|entry| LocalMediaEntry {
                 id: entry.id.clone(),
@@ -752,7 +766,7 @@ impl PlayerState {
         // Rows are newest first; the map is oldest first, so it drops the
         // same row a bounded recent history would.
         self.resume.clear();
-        for entry in stored.recent_history.iter().rev() {
+        for entry in rows.iter().rev() {
             // A row read back from a launch is a place to resume from, never
             // an instruction to start playing: a restart never autoplays.
             self.resume

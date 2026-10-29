@@ -98,7 +98,7 @@ mod timeline;
 pub mod transcript;
 mod window_bar;
 
-pub use app::ChatApp;
+pub use app::{ChatApp, ChatWindow};
 
 impl ChatApp {
     /// Bind a mount-local model capability supplied by the host.

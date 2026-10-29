@@ -28,7 +28,7 @@ fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
 /// Apply what `app` submitted to `doc`, as the host does after a pass,
 /// without showing it the result yet.
 fn land(app: &PhotosApp, doc: &mut AutoCommit) {
-    if let Some(dispatch) = &app.dispatch {
+    if let Some(dispatch) = &app.state().dispatch {
         ui::framework::testing::resolve(dispatch, doc).expect("submitted edits apply");
     }
 }
@@ -36,7 +36,7 @@ fn land(app: &PhotosApp, doc: &mut AutoCommit) {
 /// Apply what `app` submitted to `doc`, as the host does after a pass, and
 /// show it the result.
 fn settle(app: &mut PhotosApp, doc: &mut AutoCommit) {
-    let Some(dispatch) = app.dispatch.clone() else {
+    let Some(dispatch) = app.state().dispatch.clone() else {
         return;
     };
     if !ui::framework::testing::resolve(&dispatch, doc)
@@ -49,15 +49,15 @@ fn settle(app: &mut PhotosApp, doc: &mut AutoCommit) {
 }
 
 /// Present `doc`'s library to `app`, as the framework does after a change.
-fn present(app: &mut PhotosApp, doc: &AutoCommit) {
+fn present(app: &PhotosApp, doc: &AutoCommit) {
     let state =
         <PhotoLibrary as ui::tilo_resource::Resource>::read(doc).expect("the library reads");
-    app.adopt_resource_state(&Rc::new(state));
+    app.state().adopt_resource_state(&Rc::new(state));
 }
 use crate::actions::PhotosEffect;
 use crate::model::{Album, LibraryPhoto};
 use crate::shots_pattern;
-use automerge::ROOT;
+use automerge::{AutoCommit, ROOT};
 use ui::tilo_resource::{Invoke, Resource as _};
 
 /// Apply `invoke` to `doc`, as the door does.
@@ -93,12 +93,12 @@ fn test_app() -> PhotosApp {
 /// Stage the screenshot scenario `name` as a capture does: its photographs
 /// in the app's content store, its actions applied, its view state posed on
 /// the next sync.
-fn stage(app: &mut PhotosApp, doc: &mut AutoCommit, name: &str) {
-    crate::sample::put_content(&app.content);
+fn stage(app: &PhotosApp, doc: &mut AutoCommit, name: &str) {
+    crate::sample::put_content(&app.state().content);
     for action in crate::sample::scenario(Some(name)) {
         apply(doc, &action).expect("the scenario's actions apply");
     }
-    app.stage_scenario(name);
+    app.state().stage_scenario(name);
 }
 
 fn has_resource_id(resource: &tilo_actions::ResourceSpec, id: &str) -> bool {
@@ -111,11 +111,11 @@ fn has_resource_id(resource: &tilo_actions::ResourceSpec, id: &str) -> bool {
 
 /// Lay the chrome out at `width`, as a frame would, which declares the
 /// window bar's slots.
-fn lay_out_header(app: &mut PhotosApp, width: f64) {
+fn lay_out_header(app: &PhotosApp, width: f64) {
     let theme = Theme::dark();
-    app.rect = Rect::new(0.0, 0.0, width, 800.0);
-    app.chrome.inspector.scale_for(&theme);
-    app.place_chrome();
+    app.state().rect = Rect::new(0.0, 0.0, width, 800.0);
+    app.state().chrome.inspector.scale_for(&theme);
+    app.state().place_chrome();
 }
 
 /// The window's shell laid out at `width`, and the link the window bar
@@ -138,7 +138,8 @@ fn laid_out_shell(width: f64) -> (ui::headless::FrameHarness, ui::widget::Window
 
 /// The names of the commands the window bar offers.
 fn toolbar_names(app: &PhotosApp) -> Vec<String> {
-    app.window_bar()
+    app.state()
+        .window_bar()
         .actions
         .into_iter()
         .map(|action| action.name)
@@ -146,7 +147,8 @@ fn toolbar_names(app: &PhotosApp) -> Vec<String> {
 }
 
 fn bar_command(app: &PhotosApp, name: &str) -> Option<ui::window_toolbar::ToolbarAction> {
-    app.window_bar()
+    app.state()
+        .window_bar()
         .actions
         .into_iter()
         .find(|action| action.name == name)
@@ -154,12 +156,12 @@ fn bar_command(app: &PhotosApp, name: &str) -> Option<ui::window_toolbar::Toolba
 
 /// Press the window bar's command named `name`, as the desktop hands the
 /// press to the app. Returns whether the bar offered it.
-fn press_bar(app: &mut PhotosApp, name: &str) -> bool {
+fn press_bar(app: &PhotosApp, name: &str) -> bool {
     let Some(action) = bar_command(app, name) else {
         return false;
     };
     ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: action.id });
-    app.apply_window_toolbar();
+    app.state().apply_window_toolbar();
     true
 }
 
@@ -173,17 +175,17 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
-        stage(&mut app, &mut doc, "opened");
+        stage(&app, &mut doc, "opened");
         sync(&mut app, &mut doc);
-        assert!(!app.library_mode, "a photograph is open");
-        assert!(app.viewer.is_some(), "the photograph has a viewer");
+        assert!(!app.state().library_mode, "a photograph is open");
+        assert!(app.state().viewer.is_some(), "the photograph has a viewer");
 
         // Full screen is the window's, and the app asks for it.
         assert_eq!(
             ui::widget::FullscreenProvider::fullscreen_intent(&app),
             Some(false)
         );
-        app.toggle_presentation();
+        app.state().toggle_presentation();
         assert_eq!(
             ui::widget::FullscreenProvider::fullscreen_intent(&app),
             Some(true),
@@ -191,7 +193,7 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
         );
         // Leaving full screen any other way ends the presentation.
         ui::widget::FullscreenProvider::on_fullscreen_changed(&mut app, false);
-        assert!(!app.presenting);
+        assert!(!app.state().presenting);
         assert_eq!(
             ui::widget::FullscreenProvider::fullscreen_intent(&app),
             Some(false)
@@ -202,44 +204,48 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
-        stage(&mut app, &mut doc, "library");
+        stage(&app, &mut doc, "library");
         sync(&mut app, &mut doc);
-        let order = app.photo_order();
+        let order = app.state().photo_order();
         assert!(
             order.len() >= 2,
             "the sample library has several photographs"
         );
         let first = order[0].clone();
-        app.show_photo(&first);
+        app.state().show_photo(&first);
         sync(&mut app, &mut doc);
 
-        app.toggle_slide_show();
-        assert!(app.slide_show_running(), "the slide show runs");
-        assert!(app.presenting, "a slide show is a presentation");
+        app.state().toggle_slide_show();
+        assert!(app.state().slide_show_running(), "the slide show runs");
+        assert!(app.state().presenting, "a slide show is a presentation");
         assert!(
             Widget::next_wake_deadline(&app).is_some(),
             "the window sleeps until the next photograph is due"
         );
 
         // Stepping goes to the next photograph in the chronology, and wraps.
-        assert!(app.step_photo(true));
-        assert_eq!(app.open_photo_id(), Some(order[1].as_str()));
-        app.show_photo(&order[order.len() - 1]);
+        assert!(app.state().step_photo(true));
+        assert_eq!(app.state().open_photo_id(), Some(order[1].as_str()));
+        app.state().show_photo(&order[order.len() - 1]);
         assert!(
-            app.step_photo(true),
+            app.state().step_photo(true),
             "the last photograph wraps to the first"
         );
-        assert_eq!(app.open_photo_id(), Some(order[0].as_str()));
-        assert!(app.step_photo(false));
+        assert_eq!(app.state().open_photo_id(), Some(order[0].as_str()));
+        assert!(app.state().step_photo(false));
         assert_eq!(
-            app.open_photo_id(),
+            app.state().open_photo_id(),
             Some(order[order.len() - 1].as_str()),
             "and the first wraps back to the last"
         );
-        app.toggle_slide_show();
-        assert!(!app.slide_show_running(), "the same control stops it");
+        app.state().toggle_slide_show();
         assert!(
-            Widget::next_wake_deadline(&app).is_none() || app.notice_said.deadline().is_some(),
+            !app.state().slide_show_running(),
+            "the same control stops it"
+        );
+        assert!(
+            Widget::next_wake_deadline(&app).is_none()
+                || app.state().notice_said.deadline().is_some(),
             "a stopped slide show asks for no wake of its own"
         );
     }
@@ -249,14 +255,14 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
         use ui::content_zoom::{ContentZoom, ZoomStep};
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
-        stage(&mut app, &mut doc, "opened");
+        stage(&app, &mut doc, "opened");
         sync(&mut app, &mut doc);
-        let before = app.viewer.as_ref().expect("a viewer").zoom();
+        let before = app.state().viewer.as_ref().expect("a viewer").zoom();
         let factor = app
             .zoom_content(ZoomStep::In)
             .expect("the photograph takes the gesture");
         assert!(factor > before, "the picture grew");
-        let shown = app.viewer.as_ref().expect("a viewer").zoom();
+        let shown = app.state().viewer.as_ref().expect("a viewer").zoom();
         assert!(
             (shown - factor).abs() < 1e-6,
             "the surface shows the factor it answered: {shown} against {factor}"
@@ -265,10 +271,10 @@ fn the_open_photograph_can_be_presented_slid_and_zoomed() {
             .zoom_content(ZoomStep::Reset)
             .expect("reset is the picture's own size");
         assert!((reset - 1.0).abs() < 1e-6);
-        assert!((app.viewer.as_ref().expect("a viewer").zoom() - 1.0).abs() < 1e-6);
+        assert!((app.state().viewer.as_ref().expect("a viewer").zoom() - 1.0).abs() < 1e-6);
 
         // In the library the gesture belongs to the window, not the grid.
-        app.show_library();
+        app.state().show_library();
         assert_eq!(app.zoom_content(ZoomStep::In), None);
     }
 }
@@ -338,13 +344,14 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
         let waiting = OpenImage::new("/not-present/yet.png", 1200, 800, "0".repeat(64));
-        app.show_photo(&crate::test_doc::put_image(&mut doc, &waiting));
+        app.state()
+            .show_photo(&crate::test_doc::put_image(&mut doc, &waiting));
         sync(&mut app, &mut doc);
-        assert_eq!(app.canvas_state, CanvasState::Loading);
-        assert!(!app.has_image());
-        assert_eq!(app.empty_state_text().0, tr("photos-loading-title"));
+        assert_eq!(app.state().canvas_state, CanvasState::Loading);
+        assert!(!app.state().has_image());
+        assert_eq!(app.state().empty_state_text().0, tr("photos-loading-title"));
         assert_eq!(
-            app.command_hits(),
+            app.state().command_hits(),
             vec![Hit::Open],
             "a photo whose bytes have not arrived offers no edit or export"
         );
@@ -353,29 +360,30 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
             "bad.png",
             1200,
             800,
-            app.content.put(b"not image data").unwrap(),
+            app.state().content.put(b"not image data").unwrap(),
         );
-        app.show_photo(&crate::test_doc::put_image(&mut doc, &bad));
+        app.state()
+            .show_photo(&crate::test_doc::put_image(&mut doc, &bad));
         sync(&mut app, &mut doc);
-        assert_eq!(app.canvas_state, CanvasState::Error);
-        assert_eq!(app.empty_state_text().0, tr("photos-error-title"));
+        assert_eq!(app.state().canvas_state, CanvasState::Error);
+        assert_eq!(app.state().empty_state_text().0, tr("photos-error-title"));
     }
 
     eprintln!("phase places_camera_feedback_is_presentation_only_and_respects_reduced_motion");
     {
         let mut app = test_app();
-        let original = app.places_viewport;
-        app.zoom_places_by(1.0);
-        assert!(app.places_viewport.zoom > original.zoom);
-        assert!(app.places_camera_feedback.is_some());
+        let original = app.state().places_viewport;
+        app.state().zoom_places_by(1.0);
+        assert!(app.state().places_viewport.zoom > original.zoom);
+        assert!(app.state().places_camera_feedback.is_some());
         assert!(app.needs_animation_frame());
 
         app.set_motion_reduced(true);
-        assert!(app.places_camera_feedback.is_none());
+        assert!(app.state().places_camera_feedback.is_none());
         assert!(!app.needs_animation_frame());
 
-        app.zoom_places_by(1.0);
-        assert!(app.places_camera_feedback.is_none());
+        app.state().zoom_places_by(1.0);
+        assert!(app.state().places_camera_feedback.is_none());
     }
 }
 
@@ -430,24 +438,26 @@ fn people_review_commits_only_explicit_canonical_actions() {
             &Invoke::edit(&crate::resource::insert(&photo)).unwrap(),
         )
         .unwrap();
-        assert!(app.people_controller_mut().add_cluster(
+        assert!(app.state().people_controller_mut().add_cluster(
             "manual-person",
             [photo_id.clone()],
             crate::people::ProposalOrigin::ImportedOrManual,
         ));
         assert_eq!(
-            app.people_controller_mut()
+            app.state()
+                .people_controller_mut()
                 .confirm_suggestion("manual-person", "Sam"),
             crate::people::PeopleChange::Updated
         );
-        assert!(app.approve_people_cluster("manual-person"));
+        assert!(app.state().approve_people_cluster("manual-person"));
         settle(&mut app, &mut doc);
         assert_eq!(
             crate::test_doc::photo(&doc, &photo_id).unwrap().people(),
             ["Sam"]
         );
         assert_eq!(
-            app.people_controller()
+            app.state()
+                .people_controller()
                 .cluster("manual-person")
                 .unwrap()
                 .origin,
@@ -485,53 +495,66 @@ fn people_review_commits_only_explicit_canonical_actions() {
             &Invoke::edit(&crate::resource::insert(&second)).unwrap(),
         )
         .unwrap();
-        assert!(app.people_controller_mut().add_cluster(
+        assert!(app.state().people_controller_mut().add_cluster(
             "review-me",
             [first_id.clone()],
             crate::people::ProposalOrigin::ImportedOrManual,
         ));
 
-        app.select_people_item(PeopleSelection::Suggestion("review-me".to_owned()));
-        app.people_name_input.set_text("Sam");
-        app.handle_people_intent(PeopleIntent::ApproveSuggestion);
+        app.state()
+            .select_people_item(PeopleSelection::Suggestion("review-me".to_owned()));
+        app.state().people_name_input.set_text("Sam");
+        app.state()
+            .handle_people_intent(PeopleIntent::ApproveSuggestion);
         settle(&mut app, &mut doc);
         assert_eq!(
             crate::test_doc::photo(&doc, &first_id).unwrap().people(),
             ["Sam"]
         );
         assert!(
-            app.people_controller().cluster("review-me").unwrap().hidden,
+            app.state()
+                .people_controller()
+                .cluster("review-me")
+                .unwrap()
+                .hidden,
             "an approved local proposal leaves the active review queue"
         );
 
-        app.select_people_item(PeopleSelection::Approved("Sam".to_owned()));
-        app.people_name_input.set_text("Samuel");
-        app.handle_people_intent(PeopleIntent::SaveName);
+        app.state()
+            .select_people_item(PeopleSelection::Approved("Sam".to_owned()));
+        app.state().people_name_input.set_text("Samuel");
+        app.state().handle_people_intent(PeopleIntent::SaveName);
         settle(&mut app, &mut doc);
         assert_eq!(
             crate::test_doc::photo(&doc, &first_id).unwrap().people(),
             ["Samuel"]
         );
-        app.handle_people_intent(PeopleIntent::MergeApprovedInto("Alex".to_owned()));
+        app.state()
+            .handle_people_intent(PeopleIntent::MergeApprovedInto("Alex".to_owned()));
         settle(&mut app, &mut doc);
         assert_eq!(
             crate::test_doc::photo(&doc, &first_id).unwrap().people(),
             ["Alex"]
         );
 
-        app.select_people_item(PeopleSelection::Approved("Alex".to_owned()));
-        app.handle_people_intent(PeopleIntent::BrowseApproved);
-        assert_eq!(app.active_person.as_deref(), Some("Alex"));
-        assert_eq!(app.library_destination, LibraryDestination::Timeline);
-        assert!(!app.people_mode);
+        app.state()
+            .select_people_item(PeopleSelection::Approved("Alex".to_owned()));
+        app.state()
+            .handle_people_intent(PeopleIntent::BrowseApproved);
+        assert_eq!(app.state().active_person.as_deref(), Some("Alex"));
+        assert_eq!(
+            app.state().library_destination,
+            LibraryDestination::Timeline
+        );
+        assert!(!app.state().people_mode);
     }
 
     eprintln!("phase people_rejection_is_reversible_and_accessibility_activates_the_same_control");
     {
-        let mut app = test_app();
+        let app = test_app();
         let doc = crate::test_doc::new_doc();
         assert!(
-            app.people_controller_mut().add_cluster(
+            app.state().people_controller_mut().add_cluster(
                 "dismiss-me",
                 [
                     "photos.photo:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -540,39 +563,47 @@ fn people_review_commits_only_explicit_canonical_actions() {
                 crate::people::ProposalOrigin::ImportedOrManual,
             )
         );
-        app.library_mode = true;
-        app.people_mode = true;
-        app.library_destination = LibraryDestination::People;
-        app.select_people_item(PeopleSelection::Suggestion("dismiss-me".to_owned()));
-        app.refresh_people_controls();
+        app.state().library_mode = true;
+        app.state().people_mode = true;
+        app.state().library_destination = LibraryDestination::People;
+        app.state()
+            .select_people_item(PeopleSelection::Suggestion("dismiss-me".to_owned()));
+        app.state().refresh_people_controls();
 
         let reject = app
+            .state()
             .people_controls
             .iter()
             .position(|control| matches!(control.intent, PeopleIntent::RejectSuggestion))
             .unwrap();
-        assert!(app.perform_library_semantic_action(
+        assert!(app.state().perform_library_semantic_action(
             &format!("photos:people:control:{reject}"),
             &AccessAction::Activate,
             &doc,
         ));
-        let cluster = app.people_controller().cluster("dismiss-me").unwrap();
+        let state = app.state();
+        let cluster = state.people_controller().cluster("dismiss-me").unwrap();
         assert!(cluster.hidden && cluster.rejected);
+        drop(state);
 
-        app.select_people_item(PeopleSelection::Suggestion("dismiss-me".to_owned()));
-        app.refresh_people_controls();
+        app.state()
+            .select_people_item(PeopleSelection::Suggestion("dismiss-me".to_owned()));
+        app.state().refresh_people_controls();
         let restore = app
+            .state()
             .people_controls
             .iter()
             .position(|control| matches!(control.intent, PeopleIntent::RestoreSuggestion))
             .unwrap();
-        assert!(app.perform_library_semantic_action(
+        assert!(app.state().perform_library_semantic_action(
             &format!("photos:people:control:{restore}"),
             &AccessAction::Activate,
             &doc,
         ));
-        let cluster = app.people_controller().cluster("dismiss-me").unwrap();
+        let state = app.state();
+        let cluster = state.people_controller().cluster("dismiss-me").unwrap();
         assert!(!cluster.hidden && !cluster.rejected);
+        drop(state);
     }
 }
 
@@ -584,16 +615,16 @@ fn the_commands_are_the_window_bars_and_no_header_row_is_drawn() {
         std::fs::write(&path, pixels::encode_png(&shots_pattern(40, 20)).unwrap()).unwrap();
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
-        app.open_path(&path.to_string_lossy());
+        app.state().open_path(&path.to_string_lossy());
         settle(&mut app, &mut doc);
         if library {
-            app.show_library();
+            app.state().show_library();
         }
         sync(&mut app, &mut doc);
         let (_shell, link) = laid_out_shell(width);
-        app.chrome.bar = Some(link);
-        lay_out_header(&mut app, width);
-        let toolbar = app.window_bar();
+        app.state().chrome.bar = Some(link);
+        lay_out_header(&app, width);
+        let toolbar = app.state().window_bar();
         assert!(
             toolbar.sidebar.is_some(),
             "{width}px: the sidebar's toggle is a slot"
@@ -618,14 +649,20 @@ fn the_commands_are_the_window_bars_and_no_header_row_is_drawn() {
 fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
     eprintln!("phase date_index_uses_timeline_rows_and_preserves_virtual_scroll_anchor");
     {
-        let mut app = test_app();
-        app.timeline_index_metrics = ScrollMetrics::new(100.0, 10.0, 20.0);
-        assert!(app.apply_timeline_index_intent(&DateIndexIntent::ScrollTo { position: 0.5 }));
-        assert!((app.timeline_scroll_y - 45.0).abs() < f64::EPSILON);
+        let app = test_app();
+        app.state().timeline_index_metrics = ScrollMetrics::new(100.0, 10.0, 20.0);
+        assert!(
+            app.state()
+                .apply_timeline_index_intent(&DateIndexIntent::ScrollTo { position: 0.5 })
+        );
+        assert!((app.state().timeline_scroll_y - 45.0).abs() < f64::EPSILON);
         // A hover preview may redraw a label but must never mutate the scroll
         // anchor or create an accidental shared action.
-        assert!(app.apply_timeline_index_intent(&DateIndexIntent::PreviewChanged(None)));
-        assert!((app.timeline_scroll_y - 45.0).abs() < f64::EPSILON);
+        assert!(
+            app.state()
+                .apply_timeline_index_intent(&DateIndexIntent::PreviewChanged(None))
+        );
+        assert!((app.state().timeline_scroll_y - 45.0).abs() < f64::EPSILON);
     }
 
     eprintln!("phase date_index_labels_keep_non_iso_values_honest");
@@ -688,17 +725,21 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
             &mut doc,
             &crate::model::PhotoLibrary::of(vec![newer, older], Vec::new()),
         );
-        let mut app = test_app();
-        app.view_timeline(
-            &crate::test_doc::library(&doc),
-            Some(&crate::actions::TimelineAnchor::Day {
-                day: "2026-08-01".into(),
-            }),
-        )
-        .expect("a published day anchor jumps to its timeline boundary");
-        assert!(app.library_mode);
-        assert_eq!(app.library_destination, LibraryDestination::Timeline);
-        assert!(app.timeline_scroll_y > 0.0);
+        let app = test_app();
+        app.state()
+            .view_timeline(
+                &crate::test_doc::library(&doc),
+                Some(&crate::actions::TimelineAnchor::Day {
+                    day: "2026-08-01".into(),
+                }),
+            )
+            .expect("a published day anchor jumps to its timeline boundary");
+        assert!(app.state().library_mode);
+        assert_eq!(
+            app.state().library_destination,
+            LibraryDestination::Timeline
+        );
+        assert!(app.state().timeline_scroll_y > 0.0);
     }
 }
 
@@ -717,17 +758,23 @@ fn timeline_anchor_uses_current_library_instead_of_cached_day_offset() {
     let anchor = crate::actions::TimelineAnchor::Day {
         day: "2026-08-01".into(),
     };
-    let mut app = test_app();
-    app.view_timeline(&previous, Some(&anchor)).unwrap();
-    assert_eq!(app.timeline_scroll_y, 0.0);
+    let app = test_app();
+    app.state().view_timeline(&previous, Some(&anchor)).unwrap();
+    assert_eq!(app.state().timeline_scroll_y, 0.0);
 
     // The day still exists in the cache, but now has another day before it.
     // A resource open must resolve against the library it was dispatched on.
-    app.view_timeline(&current, Some(&anchor)).unwrap();
-    let mut fresh = test_app();
-    fresh.view_timeline(&current, Some(&anchor)).unwrap();
-    assert!(fresh.timeline_scroll_y > 0.0);
-    assert_eq!(app.timeline_scroll_y, fresh.timeline_scroll_y);
+    app.state().view_timeline(&current, Some(&anchor)).unwrap();
+    let fresh = test_app();
+    fresh
+        .state()
+        .view_timeline(&current, Some(&anchor))
+        .unwrap();
+    assert!(fresh.state().timeline_scroll_y > 0.0);
+    assert_eq!(
+        app.state().timeline_scroll_y,
+        fresh.state().timeline_scroll_y
+    );
 }
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -765,13 +812,13 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
 
     eprintln!("phase cancelled_or_stale_analysis_can_never_persist");
     {
-        let mut app = test_app();
+        let app = test_app();
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
-        app.analysis_rx = receiver;
+        app.state().analysis_rx = receiver;
         let doc = crate::test_doc::new_doc();
 
         let cancelled = tilo_actions::InvocationId::new();
-        app.cancelled_analysis.insert(cancelled);
+        app.state().cancelled_analysis.insert(cancelled);
         sender
             .send(AnalysisResult {
                 invocation: cancelled,
@@ -786,9 +833,9 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
                 },
             })
             .unwrap();
-        present(&mut app, &doc);
-        app.drain_analysis_results();
-        assert!(app.take_settled(cancelled).is_none());
+        present(&app, &doc);
+        app.state().drain_analysis_results();
+        assert!(app.state().take_settled(cancelled).is_none());
 
         let stale = tilo_actions::InvocationId::new();
         sender
@@ -805,10 +852,10 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
                 },
             })
             .unwrap();
-        present(&mut app, &doc);
-        app.drain_analysis_results();
+        present(&app, &doc);
+        app.state().drain_analysis_results();
         assert!(matches!(
-            app.take_settled(stale),
+            app.state().take_settled(stale),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. })
                 if error.code == "photos.analysis_stale"
         ));
@@ -819,7 +866,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
     {
         let mut app = test_app();
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
-        app.analysis_rx = receiver;
+        app.state().analysis_rx = receiver;
         let mut doc = crate::test_doc::new_doc();
         let content = "a".repeat(64);
         let photo = LibraryPhoto::from_image(OpenImage::new(
@@ -885,9 +932,9 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             })
             .unwrap();
 
-        present(&mut app, &doc);
+        present(&app, &doc);
 
-        app.drain_analysis_results();
+        app.state().drain_analysis_results();
         settle(&mut app, &mut doc);
         let analysis = crate::test_doc::photo(&doc, &id)
             .unwrap()
@@ -913,7 +960,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             &crate::model::PhotoLibrary::of(vec![photo], Vec::new()),
         );
         let invocation = tilo_actions::InvocationId::new();
-        app.library_analysis.begin(
+        app.state().library_analysis.begin(
             invocation,
             [id.clone()],
             0,
@@ -921,14 +968,15 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             "b".repeat(64),
         );
         assert_eq!(
-            app.library_analysis
+            app.state()
+                .library_analysis
                 .take_next(|_| Some("one.png".into()))
                 .as_deref(),
             Some(id.as_str())
         );
-        app.active_analysis.insert(invocation);
-        present(&mut app, &doc);
-        app.drain_library_analysis_result(AnalysisResult {
+        app.state().active_analysis.insert(invocation);
+        present(&app, &doc);
+        app.state().drain_library_analysis_result(AnalysisResult {
             invocation,
             photo_id: id.clone(),
             content: content.clone(),
@@ -957,11 +1005,11 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         assert_eq!(stored.provenance.scope, "shared");
         assert_eq!(stored.provenance.model_id, "vision-local");
         assert_eq!(
-            app.library_analysis.phase,
+            app.state().library_analysis.phase,
             crate::library_analysis::LibraryAnalysisPhase::Complete
         );
         assert!(matches!(
-            app.take_settled(invocation),
+            app.state().take_settled(invocation),
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
     }
@@ -976,8 +1024,8 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         use winit::keyboard::ModifiersState;
 
         let mut app = test_app();
-        app.library_mode = true;
-        app.canvas_rect = Rect::new(0.0, 48.0, 1_280.0, 800.0);
+        app.state().library_mode = true;
+        app.state().canvas_rect = Rect::new(0.0, 48.0, 1_280.0, 800.0);
         let mut doc = crate::test_doc::new_doc();
         let pinch = ui::testing::Dispatch::new().doc(&mut doc).send(
             &mut app,
@@ -989,7 +1037,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         );
         let handled = pinch.handled;
         assert!(handled);
-        let after_pinch = app.timeline_density;
+        let after_pinch = app.state().timeline_density;
 
         let ctrl = winit::event::Modifiers::from(ModifiersState::CONTROL);
         let handled = ui::testing::Dispatch::new()
@@ -999,7 +1047,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
             .send(&mut app, &ui::synthetic_input::mouse_wheel(0.0, -1.0))
             .handled;
         assert!(handled);
-        assert_eq!(app.timeline_density, after_pinch + 1);
+        assert_eq!(app.state().timeline_density, after_pinch + 1);
     }
 
     eprintln!("phase density_reanchors_the_same_first_photo");
@@ -1017,29 +1065,43 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
             library.add_photo(photo);
         }
         crate::test_doc::set_library(&mut doc, &library);
-        app.show_library();
-        app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 800.0);
-        app.timeline_density = 1;
+        app.state().show_library();
+        app.state().canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 800.0);
+        app.state().timeline_density = 1;
         sync(&mut app, &mut doc);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
-        app.timeline_scroll_y = 900.0;
+        app.state().draw_library(
+            None,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+        );
+        app.state().timeline_scroll_y = 900.0;
         let (photo, screen_y) = {
-            let visible = app
+            let state = app.state();
+            let visible = state
                 .timeline_projection
-                .visible_photos(app.timeline_scroll_y, app.timeline_viewport_height);
+                .visible_photos(state.timeline_scroll_y, state.timeline_viewport_height);
             let first = visible
                 .iter()
                 .find(|entry| entry.y + entry.height >= 0.0)
                 .unwrap();
             (first.photo.id.clone(), first.y)
         };
-        assert!(app.adjust_timeline_density(true));
-        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
-        let visible = app
+        assert!(app.state().adjust_timeline_density(true));
+        app.state().draw_library(
+            None,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+        );
+        let state = app.state();
+        let visible = state
             .timeline_projection
-            .visible_photos(app.timeline_scroll_y, app.timeline_viewport_height);
+            .visible_photos(state.timeline_scroll_y, state.timeline_viewport_height);
         let restored = visible
             .iter()
             .find(|entry| entry.photo.id == photo)
@@ -1062,44 +1124,51 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
             library.add_photo(photo);
         }
         crate::test_doc::set_library(&mut doc, &library);
-        app.show_library();
-        app.canvas_rect = Rect::new(0.0, 48.0, 390.0, 796.0);
+        app.state().show_library();
+        app.state().canvas_rect = Rect::new(0.0, 48.0, 390.0, 796.0);
         sync(&mut app, &mut doc);
 
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
         let theme = Theme::dark().with_text_scale(2.0);
         text.set_text_scale(theme.text_scale);
-        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        app.state()
+            .draw_library(None, &mut scene, Affine::IDENTITY, &mut text, &theme);
 
-        assert!(app.metadata_filter_cards.is_empty());
-        assert!(
-            app.library_cards
-                .first()
-                .is_some_and(|(_, rect, _)| rect.y0 < app.canvas_rect.y1),
-            "the first photograph must remain above the fold at 200%"
-        );
-        assert!(
-            app.command_hits().contains(&Hit::Smaller) && app.command_hits().contains(&Hit::Larger),
-            "density stays reachable from the header at 200%"
-        );
+        assert!(app.state().metadata_filter_cards.is_empty());
+        {
+            let state = app.state();
+            assert!(
+                state
+                    .library_cards
+                    .first()
+                    .is_some_and(|(_, rect, _)| rect.y0 < state.canvas_rect.y1),
+                "the first photograph must remain above the fold at 200%"
+            );
+            let hits = state.command_hits();
+            assert!(
+                hits.contains(&Hit::Smaller) && hits.contains(&Hit::Larger),
+                "density stays reachable from the header at 200%"
+            );
+        }
 
-        let before = app.timeline_density;
-        assert!(app.perform_library_semantic_action(
+        let before = app.state().timeline_density;
+        assert!(app.state().perform_library_semantic_action(
             "photos:timeline:density-in",
             &AccessAction::Focus,
             &doc,
         ));
         assert_eq!(
-            app.timeline_density, before,
+            app.state().timeline_density,
+            before,
             "semantic focus must not navigate"
         );
-        assert!(app.perform_library_semantic_action(
+        assert!(app.state().perform_library_semantic_action(
             "photos:timeline:density-in",
             &AccessAction::Activate,
             &doc,
         ));
-        assert_eq!(app.timeline_density, before + 1);
+        assert_eq!(app.state().timeline_density, before + 1);
         assert_eq!(crate::test_doc::library(&doc), library);
     }
 }
@@ -1127,37 +1196,40 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
                 }],
             ),
         );
-        app.library_cards = vec![
+        app.state().library_cards = vec![
             (first.id.clone(), Rect::new(0.0, 0.0, 44.0, 44.0), false),
             (second.id.clone(), Rect::new(48.0, 0.0, 92.0, 44.0), false),
         ];
-        app.library_albums = vec![("photos.album:trip".into(), "Trip".into(), 0)];
-        app.begin_selection();
-        app.toggle_library_selection(&first.id, false);
-        app.toggle_library_selection(&second.id, true);
+        app.state().library_albums = vec![("photos.album:trip".into(), "Trip".into(), 0)];
+        app.state().begin_selection();
+        app.state().toggle_library_selection(&first.id, false);
+        app.state().toggle_library_selection(&second.id, true);
         assert_eq!(
-            app.selected_photo_ids.len(),
+            app.state().selected_photo_ids.len(),
             2,
             "range selects visible cards"
         );
-        app.set_selected_favorite(true);
+        app.state().set_selected_favorite(true);
         settle(&mut app, &mut doc);
         assert!(
             crate::test_doc::library(&doc)
                 .all_photos()
                 .all(|photo| photo.favorite)
         );
-        assert!(!app.selection_mode, "selection itself never persists");
+        assert!(
+            !app.state().selection_mode,
+            "selection itself never persists"
+        );
 
-        app.library_cards = vec![
+        app.state().library_cards = vec![
             (first.id.clone(), Rect::new(0.0, 0.0, 44.0, 44.0), true),
             (second.id.clone(), Rect::new(48.0, 0.0, 92.0, 44.0), true),
         ];
-        app.begin_selection();
-        app.select_all_visible();
+        app.state().begin_selection();
+        app.state().select_all_visible();
         let mut selected_ids = [first.id.clone(), second.id.clone()];
         selected_ids.sort_unstable();
-        assert!(app.perform_library_semantic_action(
+        assert!(app.state().perform_library_semantic_action(
             "photos:selection:favorite",
             &AccessAction::Activate,
             &doc,
@@ -1168,7 +1240,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
                 Invoke::edit(&crate::model::photo_paths(id).favorite.set(false)).unwrap()
             }));
         assert_eq!(
-            invocation(app.last_library_action.as_ref()),
+            invocation(app.state().last_library_action.as_ref()),
             invocation(Some(&expected_favorite)),
             "the AT batch control submits the field edits an agent would"
         );
@@ -1179,25 +1251,25 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             "the same batch command also has an explicit unfavorite result"
         );
 
-        app.begin_selection();
-        app.select_all_visible();
-        assert!(app.perform_library_semantic_action(
+        app.state().begin_selection();
+        app.state().select_all_visible();
+        assert!(app.state().perform_library_semantic_action(
             "photos:selection:choose-album",
             &AccessAction::Activate,
             &doc,
         ));
-        assert!(app.selection_album_chooser);
-        assert!(app.perform_library_semantic_action(
+        assert!(app.state().selection_album_chooser);
+        assert!(app.state().perform_library_semantic_action(
             "photos:selection:destination:photos.album:trip",
             &AccessAction::Activate,
             &doc,
         ));
         assert_eq!(
-            app.selection_destination_album.as_deref(),
+            app.state().selection_destination_album.as_deref(),
             Some("photos.album:trip"),
             "the target album is an explicit, stable choice rather than the current view"
         );
-        app.add_selected_to_destination_album();
+        app.state().add_selected_to_destination_album();
         land(&app, &mut doc);
         let paths = crate::model::album_paths("photos.album:trip").photo_ids;
         let expected_membership = Invoke::group(
@@ -1206,7 +1278,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
                 .map(|id| Invoke::edit(&paths.insert(id)).unwrap()),
         );
         assert_eq!(
-            invocation(app.last_library_action.as_ref()),
+            invocation(app.state().last_library_action.as_ref()),
             invocation(Some(&expected_membership)),
             "the pointer batch control files each photograph as an agent would"
         );
@@ -1221,7 +1293,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
 
     eprintln!("phase destination_chooser_lists_every_album_and_refuses_a_stale_target");
     {
-        let mut app = test_app();
+        let app = test_app();
         let mut doc = crate::test_doc::new_doc();
         let photo = LibraryPhoto::from_image(OpenImage::fixture("/photos/one.png", 20, 10));
         let albums: Vec<_> = (1..=7)
@@ -1235,46 +1307,46 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             &mut doc,
             &crate::model::PhotoLibrary::of(vec![photo.clone()], albums.clone()),
         );
-        present(&mut app, &doc);
-        app.library_albums = albums
+        present(&app, &doc);
+        app.state().library_albums = albums
             .iter()
             .map(|album| (album.id.clone(), album.name.clone(), 0))
             .collect();
-        app.library_cards = vec![(photo.id.clone(), Rect::ZERO, false)];
-        app.begin_selection();
-        app.select_all_visible();
-        assert!(app.perform_library_semantic_action(
+        app.state().library_cards = vec![(photo.id.clone(), Rect::ZERO, false)];
+        app.state().begin_selection();
+        app.state().select_all_visible();
+        assert!(app.state().perform_library_semantic_action(
             "photos:selection:choose-album",
             &AccessAction::Activate,
             &doc,
         ));
-        assert!(app.perform_library_semantic_action(
+        assert!(app.state().perform_library_semantic_action(
             "photos:selection:destination-next",
             &AccessAction::Activate,
             &doc,
         ));
-        assert_eq!(app.selection_album_page, 1);
-        assert!(app.perform_library_semantic_action(
+        assert_eq!(app.state().selection_album_page, 1);
+        assert!(app.state().perform_library_semantic_action(
             "photos:selection:destination:photos.album:destination-7",
             &AccessAction::Activate,
             &doc,
         ));
         assert_eq!(
-            app.selection_destination_album.as_deref(),
+            app.state().selection_destination_album.as_deref(),
             Some("photos.album:destination-7")
         );
         crate::test_doc::set_library(
             &mut doc,
             &crate::model::PhotoLibrary::of(vec![photo], Vec::new()),
         );
-        present(&mut app, &doc);
-        assert!(!app.perform_library_semantic_action(
+        present(&app, &doc);
+        assert!(!app.state().perform_library_semantic_action(
             "photos:selection:destination:photos.album:destination-7",
             &AccessAction::Activate,
             &doc,
         ));
         assert_eq!(
-            app.notice.as_deref(),
+            app.state().notice.as_deref(),
             Some(tr("photos-album-gone").as_str())
         );
     }
@@ -1294,7 +1366,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             library.add_photo(photo);
         }
         crate::test_doc::set_library(&mut doc, &library);
-        app.show_library();
+        app.state().show_library();
         sync(&mut app, &mut doc);
         let new_album = bar_command(&app, &tr("photos-new-album")).expect("New album is offered");
         if let Some(open) = bar_command(&app, &tr("photos-open")) {
@@ -1303,72 +1375,82 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
                 "Open and New album look different"
             );
         }
-        app.begin_new_album();
+        app.state().begin_new_album();
         sync(&mut app, &mut doc);
-        assert!(app.album_editor);
+        assert!(app.state().album_editor);
         assert!(
             bar_command(&app, &tr("photos-new-album")).is_none(),
             "while an album is being made, its editor stands for New album"
         );
-        app.sync_inspector();
+        app.state().sync_inspector();
         assert!(
-            app.chrome.inspector.is_open(),
+            app.state().chrome.inspector.is_open(),
             "the editor opens in the inspector"
         );
-        app.canvas_rect = Rect::new(0.0, 56.0, 920.0, 772.0);
+        app.state().canvas_rect = Rect::new(0.0, 56.0, 920.0, 772.0);
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_library(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
+        app.state().draw_library(
+            None,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+        );
         let before = crate::test_doc::library(&doc);
-        app.pointer = Point::new(400.0, 400.0);
+        app.state().pointer = Point::new(400.0, 400.0);
         ui::testing::Dispatch::new()
             .doc(&mut doc)
             .send(&mut app, &ui::synthetic_input::mouse_wheel(0.0, -3.0));
-        assert!(!app.can_page_library(false));
-        assert!(app.can_page_library(true));
-        lay_out_header(&mut app, 1280.0);
+        assert!(!app.state().can_page_library(false));
+        assert!(app.state().can_page_library(true));
+        lay_out_header(&app, 1280.0);
         let previous = bar_command(&app, &tr("photos-a11y-previous-photos"))
             .expect("paging is the window bar's");
         let next =
             bar_command(&app, &tr("photos-a11y-next-photos")).expect("paging is the window bar's");
         assert!(!previous.enabled && next.enabled);
 
-        assert!(app.perform_library_semantic_action(
+        assert!(app.state().perform_library_semantic_action(
             "photos:album-editor:next-page",
             &AccessAction::Activate,
             &doc,
         ));
-        assert_eq!(app.library_offset, 24);
-        assert!(app.perform_library_semantic_action(
+        assert_eq!(app.state().library_offset, 24);
+        assert!(app.state().perform_library_semantic_action(
             "photos:album-editor:previous-page",
             &AccessAction::Activate,
             &doc,
         ));
         // The preceding activation is valid from the second page and leaves
         // the editor's membership draft local.
-        assert_eq!(app.library_offset, 0);
+        assert_eq!(app.state().library_offset, 0);
 
-        app.page_library(true);
-        assert_eq!(app.library_offset, 24);
-        app.page_library(true);
-        assert_eq!(app.library_offset, 48);
-        app.page_library(true);
-        assert_eq!(app.library_offset, 48);
-        app.page_library(false);
-        assert_eq!(app.library_offset, 24);
-        app.page_library(false);
-        assert_eq!(app.library_offset, 0);
+        app.state().page_library(true);
+        assert_eq!(app.state().library_offset, 24);
+        app.state().page_library(true);
+        assert_eq!(app.state().library_offset, 48);
+        app.state().page_library(true);
+        assert_eq!(app.state().library_offset, 48);
+        app.state().page_library(false);
+        assert_eq!(app.state().library_offset, 24);
+        app.state().page_library(false);
+        assert_eq!(app.state().library_offset, 0);
         assert_eq!(crate::test_doc::library(&doc), before);
     }
 
     eprintln!("phase concurrent_album_drafts_mint_distinct_stable_ids");
     {
-        let mut left = test_app();
-        let mut right = test_app();
-        left.begin_new_album();
-        right.begin_new_album();
-        let left_id = left.album_editor_id.expect("left draft id");
-        let right_id = right.album_editor_id.expect("right draft id");
+        let left = test_app();
+        let right = test_app();
+        left.state().begin_new_album();
+        right.state().begin_new_album();
+        let left_id = left.state().album_editor_id.clone().expect("left draft id");
+        let right_id = right
+            .state()
+            .album_editor_id
+            .clone()
+            .expect("right draft id");
         assert!(left_id.starts_with("photos.album:"));
         assert!(right_id.starts_with("photos.album:"));
         assert_ne!(left_id, right_id);
@@ -1392,28 +1474,31 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
                 }],
             ),
         );
-        app.show_albums();
+        app.state().show_albums();
         sync(&mut app, &mut doc);
-        assert_eq!(app.library_destination, LibraryDestination::Albums);
+        assert_eq!(app.state().library_destination, LibraryDestination::Albums);
         assert_eq!(
-            app.library_album_covers.get(&album_id),
+            app.state().library_album_covers.get(&album_id),
             Some(&vec![photo_id])
         );
 
-        assert!(app.perform_library_semantic_action(
+        assert!(app.state().perform_library_semantic_action(
             &format!("photos:album-edit:{album_id}"),
             &AccessAction::Activate,
             &doc,
         ));
-        assert!(app.album_editor);
-        app.cancel_album_editor();
-        assert!(app.perform_library_semantic_action(
+        assert!(app.state().album_editor);
+        app.state().cancel_album_editor();
+        assert!(app.state().perform_library_semantic_action(
             &format!("photos:library-album:{album_id}"),
             &AccessAction::Activate,
             &doc,
         ));
-        assert_eq!(app.active_album.as_deref(), Some(album_id.as_str()));
-        assert_eq!(app.library_destination, LibraryDestination::Timeline);
+        assert_eq!(app.state().active_album.as_deref(), Some(album_id.as_str()));
+        assert_eq!(
+            app.state().library_destination,
+            LibraryDestination::Timeline
+        );
     }
 }
 
@@ -1421,15 +1506,15 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
 fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
     eprintln!("phase cancelling_a_portal_invocation_is_terminal_and_drops_late_results");
     {
-        let mut app = test_app();
+        let app = test_app();
         let invocation = tilo_actions::InvocationId::new();
         let (tx, rx) = std::sync::mpsc::channel();
-        app.picker = Some(rx);
-        app.resource_invocation = Some(invocation);
+        app.state().picker = Some(rx);
+        app.state().resource_invocation = Some(invocation);
 
-        app.cancel_invocation(invocation);
-        assert!(app.picker.is_none());
-        assert!(app.resource_invocation.is_none());
+        app.state().cancel_invocation(invocation);
+        assert!(app.state().picker.is_none());
+        assert!(app.state().resource_invocation.is_none());
         assert!(
             tx.send(ui::portal::PortalOutcome::Opened("/late.png".into()))
                 .is_err(),
@@ -1437,9 +1522,9 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
         );
 
         let direct = tilo_actions::InvocationId::new();
-        app.pending_resource_open = Some((direct, "/late-direct.png".into()));
-        app.cancel_invocation(direct);
-        assert!(app.pending_resource_open.is_none());
+        app.state().pending_resource_open = Some((direct, "/late-direct.png".into()));
+        app.state().cancel_invocation(direct);
+        assert!(app.state().pending_resource_open.is_none());
     }
 
     eprintln!("phase library_removal_requires_confirmation_and_routes_through_the_action_host");
@@ -1452,13 +1537,24 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
             &mut doc,
             &crate::model::PhotoLibrary::of(vec![photo], Vec::new()),
         );
-        app.show_library();
+        app.state().show_library();
         sync(&mut app, &mut doc);
         let target = format!("photos:library-remove:{id}");
-        assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &doc));
+        assert!(app.state().perform_library_semantic_action(
+            &target,
+            &AccessAction::Activate,
+            &doc
+        ));
         assert!(crate::test_doc::library(&doc).photo(&id).is_some());
-        assert_eq!(app.library_remove_confirm.as_deref(), Some(id.as_str()));
-        assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &doc));
+        assert_eq!(
+            app.state().library_remove_confirm.as_deref(),
+            Some(id.as_str())
+        );
+        assert!(app.state().perform_library_semantic_action(
+            &target,
+            &AccessAction::Activate,
+            &doc
+        ));
         settle(&mut app, &mut doc);
         assert!(crate::test_doc::library(&doc).photo(&id).is_none());
     }
@@ -1473,7 +1569,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         let mut doc = crate::test_doc::new_doc();
         sync(&mut app, &mut doc);
 
-        let empty = app.accessibility_tree();
+        let empty = app.accessibility().unwrap();
         assert_eq!(empty.role, Role::Group);
         // Photos opens on the library, not on an empty viewer.
         assert_eq!(empty.children[0].role, Role::List);
@@ -1494,25 +1590,27 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         );
 
         let image = OpenImage::fixture("/tmp/accessible.png", 100, 50);
-        app.show_photo(&crate::test_doc::put_image(&mut doc, &image));
-        app.original = Some(("/tmp/accessible.png".into(), shots_pattern(100, 50)));
-        app.original_identity = Some(decode_key(&image));
-        present(&mut app, &doc);
-        app.refresh();
+        app.state()
+            .show_photo(&crate::test_doc::put_image(&mut doc, &image));
+        app.state().original = Some(("/tmp/accessible.png".into(), shots_pattern(100, 50)));
+        app.state().original_identity = Some(decode_key(&image));
+        present(&app, &doc);
+        app.state().refresh();
         sync(&mut app, &mut doc);
-        lay_out_header(&mut app, 1280.0);
+        lay_out_header(&app, 1280.0);
         assert!(
-            press_bar(&mut app, &tr("photos-command-rotate-right")),
+            press_bar(&app, &tr("photos-command-rotate-right")),
             "a photograph offers rotate right"
         );
         settle(&mut app, &mut doc);
         assert_eq!(
-            crate::test_doc::photo_edits(&doc, app.open_photo_id().unwrap()).rotate_quarters,
+            crate::test_doc::photo_edits(&doc, app.state().open_photo_id().unwrap())
+                .rotate_quarters,
             1
         );
 
         sync(&mut app, &mut doc);
-        let opened = app.accessibility_tree();
+        let opened = app.accessibility().unwrap();
         assert_eq!(
             opened.children[0].name.as_deref(),
             Some("accessible.png — edited")
@@ -1555,35 +1653,45 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 
     eprintln!("phase metadata_sheet_focus_tracks_each_adaptive_section");
     {
-        let mut app = test_app();
+        let app = test_app();
         for focus in 0..5 {
-            app.set_metadata_editor_focus(focus);
-            assert_eq!(app.metadata_editor_focus, focus);
-            assert_eq!(app.metadata_folder_input.is_focused(), focus == 0);
-            assert_eq!(app.metadata_people_input.is_focused(), focus == 1);
-            assert_eq!(app.metadata_tags_input.is_focused(), focus == 2);
+            app.state().set_metadata_editor_focus(focus);
+            assert_eq!(app.state().metadata_editor_focus, focus);
+            assert_eq!(app.state().metadata_folder_input.is_focused(), focus == 0);
+            assert_eq!(app.state().metadata_people_input.is_focused(), focus == 1);
+            assert_eq!(app.state().metadata_tags_input.is_focused(), focus == 2);
         }
-        app.set_metadata_editor_focus(99);
-        assert_eq!(app.metadata_editor_focus, 4);
-        assert!(
-            !app.metadata_folder_input.is_focused()
-                && !app.metadata_people_input.is_focused()
-                && !app.metadata_tags_input.is_focused()
-                && !app.metadata_captured_at_input.is_focused(),
-            "button focus must leave a single semantic keyboard owner"
-        );
+        app.state().set_metadata_editor_focus(99);
+        assert_eq!(app.state().metadata_editor_focus, 4);
+        {
+            let state = app.state();
+            assert!(
+                !state.metadata_folder_input.is_focused()
+                    && !state.metadata_people_input.is_focused()
+                    && !state.metadata_tags_input.is_focused()
+                    && !state.metadata_captured_at_input.is_focused(),
+                "button focus must leave a single semantic keyboard owner"
+            );
+        }
 
-        app.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
+        app.state()
+            .set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
         for focus in 0..6 {
-            app.set_metadata_editor_focus(focus);
-            assert_eq!(app.metadata_editor_focus, focus);
-            assert_eq!(app.metadata_captured_at_input.is_focused(), focus == 0);
-            assert_eq!(app.metadata_place_input.is_focused(), focus == 1);
-            assert_eq!(app.metadata_latitude_input.is_focused(), focus == 2);
-            assert_eq!(app.metadata_longitude_input.is_focused(), focus == 3);
+            app.state().set_metadata_editor_focus(focus);
+            assert_eq!(app.state().metadata_editor_focus, focus);
+            assert_eq!(
+                app.state().metadata_captured_at_input.is_focused(),
+                focus == 0
+            );
+            assert_eq!(app.state().metadata_place_input.is_focused(), focus == 1);
+            assert_eq!(app.state().metadata_latitude_input.is_focused(), focus == 2);
+            assert_eq!(
+                app.state().metadata_longitude_input.is_focused(),
+                focus == 3
+            );
         }
-        app.set_metadata_editor_focus(99);
-        assert_eq!(app.metadata_editor_focus, 5);
+        app.state().set_metadata_editor_focus(99);
+        assert_eq!(app.state().metadata_editor_focus, 5);
     }
 
     eprintln!("phase metadata_sheet_footer_never_covers_a_focused_field");
@@ -1594,19 +1702,20 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         for (scale, (w, h)) in [(1.0_f32, (1200.0_f32, 800.0_f32)), (2.0, (800.0, 900.0))] {
             let mut app = test_app();
             let mut doc = crate::test_doc::new_doc();
-            app.show_library();
-            stage(&mut app, &mut doc, "metadata-edit");
+            app.state().show_library();
+            stage(&app, &mut doc, "metadata-edit");
             let theme = Theme::dark().with_text_scale(scale);
             let mut tr = TextRenderer::new();
             tr.set_text_scale(theme.text_scale);
             for frame in 0..3 {
                 if frame == 1 {
                     assert!(
-                        app.metadata_editor,
+                        app.state().metadata_editor,
                         "the metadata-edit scenario opens the sheet"
                     );
-                    app.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
-                    app.set_metadata_editor_focus(3);
+                    app.state()
+                        .set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
+                    app.state().set_metadata_editor_focus(3);
                 }
                 let mut taffy: TaffyTree<()> = TaffyTree::new();
                 let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1647,13 +1756,14 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                     &ui::presence::PresenceCtx::empty(),
                 );
             }
-            let body = app.editor_scroll_viewport;
-            let captured = app.metadata_longitude_input.get_rect();
+            let body = app.state().editor_scroll_viewport;
+            let captured = app.state().metadata_longitude_input.get_rect();
             assert!(
                 captured.y0 >= body.y0 - 0.01 && captured.y1 <= body.y1 + 0.01,
                 "{scale}×: the focused Longitude field {captured:?} is inside the visible body {body:?}"
             );
             let footer: Vec<_> = app
+                .state()
                 .metadata_editor_buttons
                 .iter()
                 .filter(|(hit, _)| {
@@ -1668,7 +1778,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             );
             if (scale - 1.0).abs() < f32::EPSILON {
                 assert!(
-                    app.editor_scroll.offset().y.abs() < f64::EPSILON,
+                    app.state().editor_scroll.offset().y.abs() < f64::EPSILON,
                     "1× holds the whole sheet without scrolling"
                 );
             }
@@ -1685,8 +1795,8 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         let (w, h) = (420.0_f32, 800.0_f32);
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
-        app.show_library();
-        stage(&mut app, &mut doc, "metadata-edit");
+        app.state().show_library();
+        stage(&app, &mut doc, "metadata-edit");
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         tr.set_text_scale(theme.text_scale);
@@ -1732,16 +1842,18 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         };
         frame(&mut app);
         assert!(
-            app.metadata_editor,
+            app.state().metadata_editor,
             "the metadata-edit scenario opens the sheet"
         );
-        app.set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
+        app.state()
+            .set_metadata_editor_section(MetadataEditorSection::TimeAndPlace);
         frame(&mut app);
 
         // The list's viewport runs from the section tabs to the footer, so
         // no empty sheet is left below the fields it shows.
-        let body = app.editor_scroll_viewport;
+        let body = app.state().editor_scroll_viewport;
         let footer_top = app
+            .state()
             .metadata_editor_buttons
             .iter()
             .find(|(hit, _)| *hit == MetadataEditorHit::Cancel)
@@ -1758,17 +1870,18 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         );
         // At rest the list's lower edge falls between fields: no field is
         // cut through its middle with empty sheet left below it.
-        let edge = app.editor_scroll.offset().y + body.height();
+        let edge = app.state().editor_scroll.offset().y + body.height();
+        let bands = app.state().editor_field_bands.clone();
         assert!(
-            !app.editor_field_bands
+            !bands
                 .iter()
                 .any(|band| band.y0 < edge - 0.5 && band.y1 > edge + 0.5),
-            "the list rests cutting a field at {edge}: {:?}",
-            app.editor_field_bands
+            "the list rests cutting a field at {edge}: {bands:?}",
         );
         // The list scrolls, so a field its edge cuts at rest is still
         // reachable: the wheel brings the last one fully into view.
         let content_bottom = app
+            .state()
             .editor_field_bands
             .last()
             .map(|band| band.y1)
@@ -1778,7 +1891,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             "a short sheet holds the whole field list, so nothing scrolls: {content_bottom} in {}",
             body.height()
         );
-        app.pointer = body.center();
+        app.state().pointer = body.center();
         let mut reached = false;
         for _ in 0..8 {
             ui::testing::dispatch(
@@ -1790,19 +1903,20 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                 },
             );
             frame(&mut app);
-            let body = app.editor_scroll_viewport;
+            let body = app.state().editor_scroll_viewport;
             // The coordinates are the row the Time and place list ends on.
-            let last = app.metadata_longitude_input.get_rect();
+            let last = app.state().metadata_longitude_input.get_rect();
             if last.y1 <= body.y1 + 0.01 && last.y0 >= body.y0 - 0.01 && last.height() > 0.0 {
                 reached = true;
                 break;
             }
         }
+        let state = app.state();
         assert!(
             reached,
             "the last field never comes fully into view: {:?} in {:?}",
-            app.metadata_longitude_input.get_rect(),
-            app.editor_scroll_viewport
+            state.metadata_longitude_input.get_rect(),
+            state.editor_scroll_viewport
         );
     }
 
@@ -1810,10 +1924,11 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         "phase opened_viewer_exposes_shared_context_without_creating_a_second_metadata_store"
     );
     {
-        let mut app = test_app();
+        let app = test_app();
         let mut doc = crate::test_doc::new_doc();
         let image = OpenImage::fixture("/tmp/harbour.png", 1_200, 800);
-        app.show_photo(&crate::test_doc::put_image(&mut doc, &image));
+        app.state()
+            .show_photo(&crate::test_doc::put_image(&mut doc, &image));
         let mut library = crate::test_doc::library(&doc);
         let (_, photo) = library
             .photos
@@ -1836,11 +1951,11 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         }));
         crate::test_doc::set_library(&mut doc, &library);
         let before = crate::test_doc::library(&doc);
-        app.original = Some((image.name.clone(), shots_pattern(1_200, 800)));
-        present(&mut app, &doc);
-        app.refresh();
+        app.state().original = Some((image.name.clone(), shots_pattern(1_200, 800)));
+        present(&app, &doc);
+        app.state().refresh();
 
-        let canvas = app.accessibility_tree().children[0].clone();
+        let canvas = app.accessibility().unwrap().children[0].clone();
         let description = canvas
             .description
             .expect("open image carries its shared context");
@@ -1873,12 +1988,13 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
         let image = OpenImage::fixture("/pictures/München-夏.png", 800, 400);
-        app.show_photo(&crate::test_doc::put_image(&mut doc, &image));
+        app.state()
+            .show_photo(&crate::test_doc::put_image(&mut doc, &image));
         sync(&mut app, &mut doc);
-        let before = app.library_index.stats();
+        let before = app.state().library_index.stats();
         sync(&mut app, &mut doc);
         assert_eq!(
-            app.library_index.stats(),
+            app.state().library_index.stats(),
             before,
             "unchanged sync rebuilt search"
         );
@@ -1957,7 +2073,8 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         );
         sync(&mut app, &mut doc);
         assert!(
-            app.library_index
+            app.state()
+                .library_index
                 .resource(&crate::resource::photo_resource_id(&first_id))
                 .is_some()
         );
@@ -1967,27 +2084,34 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
         let second_id = second.id.clone();
         library.add_photo(second);
         crate::test_doc::set_library(&mut doc, &library);
-        app.force_search_refresh_error = true;
+        app.state().force_search_refresh_error = true;
         sync(&mut app, &mut doc);
 
         assert!(
-            app.library_index
+            app.state()
+                .library_index
                 .resource(&crate::resource::photo_resource_id(&first_id))
                 .is_some()
         );
         assert!(
-            app.library_index
+            app.state()
+                .library_index
                 .resource(&crate::resource::photo_resource_id(&second_id))
                 .is_none()
         );
-        assert!(
-            app.status().contains(
-                app.search_refresh_error
-                    .as_deref()
-                    .expect("a refused index refresh is explained")
-            )
-        );
+        {
+            let state = app.state();
+            assert!(
+                state.status().contains(
+                    state
+                        .search_refresh_error
+                        .as_deref()
+                        .expect("a refused index refresh is explained")
+                )
+            );
+        }
         let diagnostic = app
+            .state()
             .search_status_row()
             .expect("a rejected refresh is a row a caller can read")
             .into_resource();
@@ -2002,6 +2126,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     }
 }
 
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
     eprintln!("phase a_large_library_fills_a_bounded_background_thumbnail_queue");
@@ -2019,37 +2144,52 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
         crate::test_doc::set_library(&mut doc, &library);
         sync(&mut app, &mut doc);
 
-        assert_eq!(app.thumbnail_visible_ids.len(), 24);
-        assert!(app.thumbnail_queued.len() <= THUMBNAIL_QUEUE_LIMIT);
-        assert!(app.thumbnail_queued.len() >= 2);
-        assert!(app.library_thumbnails.len() <= THUMBNAIL_QUEUE_LIMIT);
+        assert_eq!(app.state().thumbnail_visible_ids.len(), 24);
+        assert!(app.state().thumbnail_queued.len() <= THUMBNAIL_QUEUE_LIMIT);
+        assert!(app.state().thumbnail_queued.len() >= 2);
+        assert!(app.state().library_thumbnails.len() <= THUMBNAIL_QUEUE_LIMIT);
         assert!(
-            app.thumbnail_generation
+            app.state()
+                .thumbnail_generation
                 .is_some_and(|generation| generation > 0)
         );
     }
 
     eprintln!("phase a_stale_thumbnail_result_cannot_populate_a_replaced_library_slice");
     {
-        let mut app = test_app();
-        app.thumbnail_generation = Some(8);
-        app.thumbnail_visible_ids = vec!["photos.photo:current".into()];
-        app.thumbnail_queued.insert("photos.photo:current".into());
-        app.accept_thumbnail_result(ThumbnailResult {
+        let app = test_app();
+        app.state().thumbnail_generation = Some(8);
+        app.state().thumbnail_visible_ids = vec!["photos.photo:current".into()];
+        app.state()
+            .thumbnail_queued
+            .insert("photos.photo:current".into());
+        app.state().accept_thumbnail_result(ThumbnailResult {
             generation: 7,
             id: "photos.photo:current".into(),
             preview: Some(shots_pattern(16, 8)),
         });
-        assert!(app.library_thumbnails.is_empty());
-        assert!(app.thumbnail_queued.contains("photos.photo:current"));
+        assert!(app.state().library_thumbnails.is_empty());
+        assert!(
+            app.state()
+                .thumbnail_queued
+                .contains("photos.photo:current")
+        );
 
-        app.accept_thumbnail_result(ThumbnailResult {
+        app.state().accept_thumbnail_result(ThumbnailResult {
             generation: 8,
             id: "photos.photo:current".into(),
             preview: Some(shots_pattern(16, 8)),
         });
-        assert!(app.library_thumbnails.contains_key("photos.photo:current"));
-        assert!(!app.thumbnail_queued.contains("photos.photo:current"));
+        assert!(
+            app.state()
+                .library_thumbnails
+                .contains_key("photos.photo:current")
+        );
+        assert!(
+            !app.state()
+                .thumbnail_queued
+                .contains("photos.photo:current")
+        );
     }
 
     eprintln!("phase completed_thumbnail_wakes_its_idle_host_for_success_and_failure");
@@ -2064,47 +2204,48 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
             .unwrap();
         let app = test_app();
         let stored = app
+            .state()
             .content
             .put(&pixels::encode_png(&shots_pattern(16, 8)).unwrap())
             .unwrap();
         let missing = tilo_content::hash_bytes(b"never stored");
         for (content, succeeds) in [(stored, true), (missing, false)] {
             let image = OpenImage::new("thumbnail.png", 16, 8, content);
-            let request = thumbnail_request(&image, &app.content);
+            let request = thumbnail_request(&image, &app.state().content);
             let key = request.key();
-            app.thumbnail_service.request(request);
+            app.state().thumbnail_service.request(request);
             let event = receiver
                 .recv_timeout(tilo_test_env::hang_bound())
                 .expect("thumbnail completion must wake the idle host without user input");
             assert!(scope.accepts(&event));
-            let settled = app.thumbnail_service.peek(&key).unwrap();
+            let settled = app.state().thumbnail_service.peek(&key).unwrap();
             assert_eq!(settled.ready().is_some(), succeeds);
         }
     }
 
     eprintln!("phase exhausted_thumbnail_generation_fails_closed_without_reusing_a_token");
     {
-        let mut app = test_app();
-        app.thumbnail_generation = Some(u64::MAX);
-        app.thumbnail_visible_ids = vec!["photos.photo:before".into()];
-        app.library_thumbnails.insert(
+        let app = test_app();
+        app.state().thumbnail_generation = Some(u64::MAX);
+        app.state().thumbnail_visible_ids = vec!["photos.photo:before".into()];
+        app.state().library_thumbnails.insert(
             "photos.photo:before".into(),
             to_peniko(&shots_pattern(16, 8)),
         );
         let photo = LibraryPhoto::from_image(OpenImage::fixture("/photos/after.png", 16, 8));
         let id = photo.id.clone();
 
-        app.schedule_library_thumbnail(vec![photo], true);
-        assert_eq!(app.thumbnail_generation, None);
-        assert!(app.thumbnail_queued.is_empty());
-        assert!(app.library_thumbnails.is_empty());
+        app.state().schedule_library_thumbnail(vec![photo], true);
+        assert_eq!(app.state().thumbnail_generation, None);
+        assert!(app.state().thumbnail_queued.is_empty());
+        assert!(app.state().library_thumbnails.is_empty());
 
-        app.accept_thumbnail_result(ThumbnailResult {
+        app.state().accept_thumbnail_result(ThumbnailResult {
             generation: u64::MAX,
             id,
             preview: Some(shots_pattern(16, 8)),
         });
-        assert!(app.library_thumbnails.is_empty());
+        assert!(app.state().library_thumbnails.is_empty());
     }
 }
 
@@ -2115,8 +2256,8 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
     {
         let mut app = test_app();
         let mut doc = crate::test_doc::new_doc();
-        app.show_library();
-        stage(&mut app, &mut doc, "library");
+        app.state().show_library();
+        stage(&app, &mut doc, "library");
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         // Two frames: the first lays out roomy, the second refits the toolbar
@@ -2161,7 +2302,7 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
                 &ui::presence::PresenceCtx::empty(),
             );
         }
-        let rects = app.library_card_action_rects();
+        let rects = app.state().library_card_action_rects();
         assert!(!rects.is_empty(), "the library scenario paints cards");
         for (card, details, _remove, star) in &rects {
             let left_inset = details.x0 - card.x0;
@@ -2187,34 +2328,35 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
         });
         crate::test_doc::set_library(&mut doc, &library);
         sync(&mut app, &mut doc);
-        app.show_library();
-        app.active_album = Some("photos.album:trip".into());
+        app.state().show_library();
+        app.state().active_album = Some("photos.album:trip".into());
         sync(&mut app, &mut doc);
         assert!(
-            app.command_hits().contains(&Hit::EditAlbum),
+            app.state().command_hits().contains(&Hit::EditAlbum),
             "an open album is edited from the header"
         );
 
-        app.begin_edit_album();
+        app.state().begin_edit_album();
         let theme = Theme::dark();
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        lay_out_header(&mut app, 1280.0);
-        app.sync_inspector();
-        app.chrome.inspector.resolve(app.rect);
-        app.draw_album_editor(
+        app.state().rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        lay_out_header(&app, 1280.0);
+        app.state().sync_inspector();
+        let rect = app.state().rect;
+        app.state().chrome.inspector.resolve(rect);
+        app.state().draw_album_editor(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
             &theme,
             &PresenceCtx::empty(),
         );
-        let panel = app.chrome.inspector.sidebar_rect();
+        let panel = app.state().chrome.inspector.sidebar_rect();
         assert!(panel.width() > 0.0, "the editor opens in the inspector");
         let control = ui::widget::ControlSize::Regular.height(&theme);
-        assert!(app.album_editor_hits.len() >= 3);
-        for (hit, rect) in &app.album_editor_hits {
+        assert!(app.state().album_editor_hits.len() >= 3);
+        for (hit, rect) in &app.state().album_editor_hits.clone() {
             assert!(
                 rect.height() >= control - 0.5,
                 "{hit:?} is not a regular control: {rect:?}"
@@ -2232,28 +2374,31 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
 fn background_work_dashboards_pause_cancel_page_and_reflow() {
     eprintln!("phase visible_analysis_pause_uses_the_published_operation_envelope");
     {
-        let mut app = test_app();
-        app.library_analysis.begin(
+        let app = test_app();
+        app.state().library_analysis.begin(
             tilo_actions::InvocationId::new(),
             ["photos.photo:one".to_owned()],
             0,
             "Verified model".to_owned(),
             "r1".to_owned(),
         );
-        assert!(app.activate_library_analysis(LibraryAnalysisHit::Pause));
+        assert!(
+            app.state()
+                .activate_library_analysis(LibraryAnalysisHit::Pause)
+        );
         assert_eq!(
-            app.library_analysis.phase,
+            app.state().library_analysis.phase,
             crate::library_analysis::LibraryAnalysisPhase::Paused
         );
     }
 
     eprintln!("phase analysis_dashboard_reflows_to_phone_width_with_real_shared_controls");
     {
-        let mut app = test_app();
-        app.show_library_analysis();
-        app.canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
-        app.library_analysis_coverage = (12, 34, 5);
-        app.library_analysis_capability = Some(tilo_vision::LocalVisionCapability {
+        let app = test_app();
+        app.state().show_library_analysis();
+        app.state().canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
+        app.state().library_analysis_coverage = (12, 34, 5);
+        app.state().library_analysis_capability = Some(tilo_vision::LocalVisionCapability {
             profile_id: "local".into(),
             model_id: "vision".into(),
             model_label: "Local vision".into(),
@@ -2261,7 +2406,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         });
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_library_analysis(
+        app.state().draw_library_analysis(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -2269,6 +2414,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             &PresenceCtx::empty(),
         );
         let start = app
+            .state()
             .library_analysis_buttons
             .iter()
             .find(|(hit, _)| *hit == LibraryAnalysisHit::Start)
@@ -2279,8 +2425,9 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             start.height() >= ui::widget::ControlSize::Regular.height(&Theme::dark()) - 0.5,
             "Analyze photos is a regular control: {start:?}"
         );
-        assert!(start.x0 >= app.canvas_rect.x0 && start.x1 <= app.canvas_rect.x1);
-        let tree = app.accessibility_tree();
+        let canvas = app.state().canvas_rect;
+        assert!(start.x0 >= canvas.x0 && start.x1 <= canvas.x1);
+        let tree = app.accessibility().unwrap();
         assert!(
             tree.children
                 .iter()
@@ -2291,13 +2438,19 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
     eprintln!("phase folder_status_effect_and_semantic_stop_share_cancellation");
     {
         let mut app = test_app();
-        app.canvas_rect = Rect::new(0.0, 48.0, 1_000.0, 720.0);
-        app.rect = Rect::new(0.0, 0.0, 1_000.0, 768.0);
-        app.show_directory_import_progress_for_shot();
+        app.state().canvas_rect = Rect::new(0.0, 48.0, 1_000.0, 720.0);
+        app.state().rect = Rect::new(0.0, 0.0, 1_000.0, 768.0);
+        app.state().show_directory_import_progress_for_shot();
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_directory_import_status(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark());
+        app.state().draw_directory_import_status(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+        );
         let stop = app
+            .state()
             .directory_import_buttons
             .iter()
             .find(|(hit, _)| *hit == DirectoryStatusHit::Stop)
@@ -2306,52 +2459,62 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         assert!(stop.width() >= 32.0 && stop.height() >= 32.0);
 
         let mut doc = crate::test_doc::new_doc();
-        app.answer_effect(
-            PhotosEffect::StopImport,
-            tilo_actions::InvocationId::new(),
-            &crate::test_doc::library(&doc),
-        )
-        .expect("the stop effect is answered");
+        app.state()
+            .answer_effect(
+                PhotosEffect::StopImport,
+                tilo_actions::InvocationId::new(),
+                &crate::test_doc::library(&doc),
+            )
+            .expect("the stop effect is answered");
         sync(&mut app, &mut doc);
-        let job = app
+        let state = app.state();
+        let job = state
             .directory_import
             .as_ref()
             .expect("job remains until worker exits");
         assert!(job.cancelled);
         assert!(job.cancel.load(Ordering::Acquire));
+        drop(state);
 
-        app.show_directory_import_progress_for_shot();
-        assert!(app.perform_directory_semantic_action(
+        app.state().show_directory_import_progress_for_shot();
+        assert!(app.state().perform_directory_semantic_action(
             "photos:directory-import:stop",
             &AccessAction::Activate,
         ));
-        let job = app
+        let state = app.state();
+        let job = state
             .directory_import
             .as_ref()
             .expect("semantic stop keeps receipt pending");
         assert!(job.cancelled && job.cancel.load(Ordering::Acquire));
+        drop(state);
     }
 
     eprintln!("phase folder_issue_details_are_bounded_paged_and_semantically_operable");
     {
-        let mut app = test_app();
-        app.rect = Rect::new(0.0, 0.0, 1_000.0, 760.0);
-        app.canvas_rect = Rect::new(0.0, 48.0, 1_000.0, 730.0);
-        app.show_directory_import_errors_for_shot();
+        let app = test_app();
+        app.state().rect = Rect::new(0.0, 0.0, 1_000.0, 760.0);
+        app.state().canvas_rect = Rect::new(0.0, 48.0, 1_000.0, 730.0);
+        app.state().show_directory_import_errors_for_shot();
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_directory_import_details(
+        app.state().draw_directory_import_details(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
             &Theme::dark(),
             &PresenceCtx::empty(),
         );
-        let receipt = app.directory_import_receipt.as_ref().expect("receipt");
+        let receipt = app
+            .state()
+            .directory_import_receipt
+            .clone()
+            .expect("receipt");
         assert!(receipt.failures.len() <= DIRECTORY_FAILURE_DETAIL_LIMIT);
         assert_eq!(receipt.failure_count, 27);
         let dialog = app
-            .accessibility_tree()
+            .accessibility()
+            .unwrap()
             .children
             .into_iter()
             .find(|node| node.role == Role::Dialog)
@@ -2381,33 +2544,34 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
                     .unwrap_or_default()
                     .contains("/home/")
         }));
-        assert!(app.perform_directory_semantic_action(
+        assert!(app.state().perform_directory_semantic_action(
             "photos:directory-import:details-close",
             &AccessAction::Activate,
         ));
-        assert!(!app.directory_import_details_open);
-        assert!(app.perform_directory_semantic_action(
+        assert!(!app.state().directory_import_details_open);
+        assert!(app.state().perform_directory_semantic_action(
             "photos:directory-import:dismiss",
             &AccessAction::Activate,
         ));
-        assert!(app.directory_import_receipt.is_none());
+        assert!(app.state().directory_import_receipt.is_none());
     }
 
     eprintln!("phase folder_status_and_details_adapt_to_phone_geometry");
     {
-        let mut app = test_app();
-        app.rect = Rect::new(0.0, 0.0, 390.0, 780.0);
-        app.canvas_rect = Rect::new(0.0, 48.0, 390.0, 750.0);
-        app.show_directory_import_progress_for_shot();
+        let app = test_app();
+        app.state().rect = Rect::new(0.0, 0.0, 390.0, 780.0);
+        app.state().canvas_rect = Rect::new(0.0, 48.0, 390.0, 750.0);
+        app.state().show_directory_import_progress_for_shot();
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw_directory_import_status(
+        app.state().draw_directory_import_status(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
             &Theme::high_contrast(),
         );
         let controls = app
+            .state()
             .directory_import_buttons
             .iter()
             .filter_map(|(_, button)| {
@@ -2416,16 +2580,17 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             })
             .collect::<Vec<_>>();
         assert_eq!(controls.len(), 2);
+        let canvas = app.state().canvas_rect;
         assert!(controls.iter().all(|rect| {
             rect.width() >= 32.0
                 && rect.height() >= 32.0
-                && rect.x0 >= app.canvas_rect.x0
-                && rect.x1 <= app.canvas_rect.x1
+                && rect.x0 >= canvas.x0
+                && rect.x1 <= canvas.x1
         }));
         assert!(controls[0].x1 <= controls[1].x0 || controls[1].x1 <= controls[0].x0);
 
-        app.show_directory_import_errors_for_shot();
-        app.draw_directory_import_details(
+        app.state().show_directory_import_errors_for_shot();
+        app.state().draw_directory_import_details(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -2433,11 +2598,13 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
             &PresenceCtx::empty(),
         );
         let layout = app
+            .state()
             .directory_import_details_layout
-            .as_ref()
+            .clone()
             .expect("phone details layout");
-        assert!(layout.card.x0 >= app.rect.x0 && layout.card.x1 <= app.rect.x1);
-        assert!(layout.card.y0 >= app.rect.y0 && layout.card.y1 <= app.rect.y1);
+        let rect = app.state().rect;
+        assert!(layout.card.x0 >= rect.x0 && layout.card.x1 <= rect.x1);
+        assert!(layout.card.y0 >= rect.y0 && layout.card.y1 <= rect.y1);
         assert!(layout.close.is_some_and(|rect| rect.width() >= 32.0));
     }
 }
@@ -2449,6 +2616,7 @@ fn crop_to_view_uses_the_edited_image_aspect_ratio() {
         let mut doc = crate::test_doc::new_doc();
         let original = shots_pattern(400, 200);
         let hash = app
+            .state()
             .content
             .put(&pixels::encode_png(&original).unwrap())
             .unwrap();
@@ -2464,9 +2632,10 @@ fn crop_to_view_uses_the_edited_image_aspect_ratio() {
             rotate_quarters: quarters,
         };
         crate::test_doc::set_photo_edits(&mut doc, &id, edits);
-        app.show_photo(&id);
+        app.state().show_photo(&id);
         sync(&mut app, &mut doc);
-        let viewer = app.viewer.as_mut().unwrap();
+        let mut state = app.state();
+        let viewer = state.viewer.as_mut().unwrap();
         let mut taffy = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
         let node = viewer.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
@@ -2480,7 +2649,8 @@ fn crop_to_view_uses_the_edited_image_aspect_ratio() {
             )
             .unwrap();
         viewer.apply_layout(&taffy, node, Point::ORIGIN);
-        app.set_zoom(2.0);
+        state.set_zoom(2.0);
+        drop(state);
         let expected = if quarters == 0 {
             Rect01 {
                 x: 0.0,
@@ -2496,9 +2666,9 @@ fn crop_to_view_uses_the_edited_image_aspect_ratio() {
                 h: 1.0,
             }
         };
-        assert_eq!(app.visible_rect(), expected);
-        app.pending.set(Some(Hit::CropToView));
-        app.drain_pending();
+        assert_eq!(app.state().visible_rect(), expected);
+        app.state().pending.set(Some(Hit::CropToView));
+        app.state().drain_pending();
         settle(&mut app, &mut doc);
         assert_eq!(
             crate::test_doc::photo_edits(&doc, &id),
@@ -2557,8 +2727,9 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         let payload = PhotosEffect::ExportEditedContent {
             photo: ui::tilo_resource::Id::from_raw(resource_id.clone()),
         };
-        let mut app = editing(PhotosApp::with_content(store.clone()));
+        let app = editing(PhotosApp::with_content(store.clone()));
         let started = app
+            .state()
             .answer_effect(
                 payload.clone(),
                 tilo_actions::InvocationId::new(),
@@ -2594,6 +2765,7 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         // The photograph as it is when the export runs: edits since are in it.
         crate::test_doc::set_photo_edits(&mut doc, &resource_id, crate::model::Edits::default());
         let output = app
+            .state()
             .answer_effect(
                 payload,
                 tilo_actions::InvocationId::new(),
@@ -2624,18 +2796,19 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         let encoded = |resource_id: String| PhotosEffect::ExportEditedContent {
             photo: ui::tilo_resource::Id::from_raw(resource_id),
         };
-        let mut app = test_app();
+        let app = test_app();
         for payload in [
             encoded(photo_id),
             encoded("photos.photo:wrong-target".into()),
         ] {
             assert!(
-                app.answer_effect(
-                    payload.clone(),
-                    tilo_actions::InvocationId::new(),
-                    &crate::test_doc::library(&doc)
-                )
-                .is_err()
+                app.state()
+                    .answer_effect(
+                        payload.clone(),
+                        tilo_actions::InvocationId::new(),
+                        &crate::test_doc::library(&doc)
+                    )
+                    .is_err()
             );
         }
     }
@@ -2650,27 +2823,28 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
 fn sync_never_frees_a_laid_out_child() {
     let mut app = PhotosApp::new();
     let mut doc = crate::test_doc::new_doc();
-    stage(&mut app, &mut doc, "people");
+    stage(&app, &mut doc, "people");
     sync(&mut app, &mut doc);
-    app.refresh_people_controls();
-    let laid_out = app.people_controls.as_ptr();
+    app.state().refresh_people_controls();
+    let laid_out = app.state().people_controls.as_ptr();
     assert!(
-        !app.people_controls.is_empty(),
+        !app.state().people_controls.is_empty(),
         "the People surface has controls"
     );
-    app.people_show_hidden = !app.people_show_hidden;
+    let hidden = app.state().people_show_hidden;
+    app.state().people_show_hidden = !hidden;
     sync(&mut app, &mut doc);
     assert!(
-        std::ptr::eq(app.people_controls.as_ptr(), laid_out),
+        std::ptr::eq(app.state().people_controls.as_ptr(), laid_out),
         "a sync between building the tree and measuring it keeps the People buttons"
     );
 
     let mut app = PhotosApp::new();
     let mut doc = crate::test_doc::new_doc();
-    stage(&mut app, &mut doc, "opened");
+    stage(&app, &mut doc, "opened");
     sync(&mut app, &mut doc);
     assert!(
-        app.viewer.is_some(),
+        app.state().viewer.is_some(),
         "the opened scenario shows a photograph"
     );
     assert!(

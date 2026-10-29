@@ -43,7 +43,22 @@ use phrases::Phrases;
 use tilolang_tilo::instance::room::RoomRecord;
 
 /// The record kind of an app's room record: every tilolang package keeps its resources in it.
-pub const RECORD_KIND: &str = "tilolang.room";
+pub const RECORD_KIND: &str = tilolang_tilo::RECORD_KIND;
+
+/// The route an instance of `meta`'s package for `person` in `room` joins: the person's own
+/// record of the workspace for an app whose records are each member's own (`records: .own`),
+/// which only their devices are admitted to, else the workspace's record of the app.
+#[must_use]
+pub fn route_of(
+    meta: &tilolang_tilo::tilolang::PackageMeta,
+    room: uuid::Uuid,
+    person: &str,
+) -> collaboration::RouteSpec {
+    match tilolang_tilo::own_record(meta, person) {
+        Some(record) => collaboration::RouteSpec::record(meta.app.clone(), room, record),
+        None => collaboration::RouteSpec::app(meta.app.clone(), room),
+    }
+}
 
 /// Why an instance the session handed over does not run.
 #[derive(Debug, thiserror::Error)]
@@ -219,6 +234,11 @@ impl TilolangHost {
     /// The instances running.
     pub fn instances(&self) -> impl Iterator<Item = &Hosted> {
         self.running.iter().map(|running| &running.hosted)
+    }
+
+    /// The instances running, to drive one.
+    pub fn instances_mut(&mut self) -> impl Iterator<Item = &mut Hosted> {
+        self.running.iter_mut().map(|running| &mut running.hosted)
     }
 
     /// How many instances are being opened.
@@ -420,7 +440,7 @@ impl TilolangHost {
             &collaboration::record::RecordKind::new(RECORD_KIND),
             broker,
             identity.as_fd(),
-            collaboration::RouteSpec::app(request.app.clone(), room),
+            route_of(&bundle.meta, room, &request.person),
             Some(request.person.clone()),
         )
         .map_err(|error| AdmitError::Join(format!("{error:?}")))?;

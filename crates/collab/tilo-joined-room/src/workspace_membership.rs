@@ -53,6 +53,7 @@ impl NativeWorkspaceOwner {
             && !matches!(
                 command,
                 Command::Member { .. }
+                    | Command::Settings(_)
                     | Command::Grant { .. }
                     | Command::Revoke { .. }
                     | Command::AddAgent { .. }

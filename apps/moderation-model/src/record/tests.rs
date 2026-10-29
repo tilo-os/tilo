@@ -1,4 +1,4 @@
-use ui::tilo_resource::Replica;
+use ui::tilo_resource::{NonBlank, Replica};
 
 use super::*;
 
@@ -13,7 +13,7 @@ fn report(replica: &mut Replica<Moderation>, person: &str, reason: &str) -> Resu
             app: Some("so.tilo.chat".into()),
             record: Some("general".into()),
             item: Some("m1".into()),
-            reason: reason.into(),
+            reason: NonBlank::parse(reason).expect("a test reason says something"),
         }))
         .map(drop)
         .map_err(|error| error.to_string())
@@ -64,8 +64,11 @@ fn reports_are_bounded() {
         "nobody reports themselves"
     );
     assert!(
-        report(&mut ada, MALLORY, "   ").is_err(),
-        "a reason is needed"
+        ui::serde_json::from_value::<moderation::Report>(
+            ui::serde_json::json!({"person": MALLORY, "reason": "   "})
+        )
+        .is_err(),
+        "a reason is needed, where the arguments are read"
     );
     assert!(report(&mut ada, MALLORY, &"x".repeat(MAX_REASON_CHARS + 1)).is_err());
     report(&mut ada, MALLORY, "spam").unwrap();

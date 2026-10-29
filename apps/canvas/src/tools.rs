@@ -298,8 +298,10 @@ pub struct Tools {
     pub kept: LocalState<Option<ui::portal::SaveDestination>>,
     /// What the last file request came to, said beside the title.
     pub notice: LocalState<Option<String>>,
-    /// The artworks opened or saved lately, newest first.
-    pub recents: LocalState<crate::document::RecentArtworks>,
+    /// The artworks opened or saved lately, by device, newest first.
+    pub recents: LocalState<Rc<crate::document::ArtworkRecents>>,
+    /// The device whose recent artworks are shown.
+    pub device: Rc<str>,
     /// The welcome over a blank artwork was put away.
     pub welcomed: LocalState<bool>,
     /// What was chosen from the artwork's menu, until it is carried out.
@@ -483,7 +485,8 @@ impl Default for Tools {
             file: LocalState::new(None),
             kept: LocalState::new(None),
             notice: LocalState::new(None),
-            recents: LocalState::new(crate::document::RecentArtworks::default()),
+            recents: LocalState::new(Rc::default()),
+            device: Rc::from(""),
             welcomed: LocalState::new(false),
             menu: LocalState::new(String::new()),
             export: crate::panels::export::Choices::default(),

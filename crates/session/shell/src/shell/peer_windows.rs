@@ -1406,10 +1406,6 @@ mod tests {
         else {
             panic!("the saved failure card must offer recovery, not only static text");
         };
-        assert!(
-            !card.uses_host_record(),
-            "a recovery control does not acquire scratch custody"
-        );
         let id = format!("reopen-window:{tab}");
         assert!(
             ui::widget::controls::control_action_bindings(card.as_ref())

@@ -44,6 +44,7 @@ pub mod strip_navigator;
 pub mod strip_switcher;
 pub mod text_entry;
 pub mod topbar;
+pub mod window_flight;
 pub mod window_switcher;
 pub mod workspace_menu;
 pub mod workspace_settings;

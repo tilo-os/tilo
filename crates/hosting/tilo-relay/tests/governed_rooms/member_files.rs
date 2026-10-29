@@ -37,7 +37,7 @@ async fn a_visitors_file_as_large_as_the_host_keeps_reaches_it() {
     )
     .await
     .unwrap();
-    let room = create_and_enter(&relay, &host, &laptop, "Lounge").await;
+    let room = create_and_enter(&relay, &laptop, "Lounge").await;
     super::sealed_records::join(&relay, &laptop, &room.room, &bob, &phone, [5; 32])
         .await
         .unwrap();

@@ -209,7 +209,7 @@ mod tests {
         let mut strip = Strip::new(StripId(10), "Lounge");
         for (id, _) in windows {
             strip.window_groups.push(WindowGroup {
-                id: id + 100,
+                id: id.wrapping_add(100),
                 tabs: vec![Tab {
                     id: *id,
                     title: format!("tab {id}"),

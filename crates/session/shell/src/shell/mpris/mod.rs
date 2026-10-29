@@ -1050,6 +1050,7 @@ fn now_playing_from_properties(
         crate::shell::now_playing::PlayerSnapshot {
             bus_name: bus_name.to_string(),
             identity,
+            app: None,
             status,
             title: metadata_string(metadata, "xesam:title").and_then(|title| clean_text(&title)),
             artist,

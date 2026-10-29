@@ -5,7 +5,7 @@ use super::*;
 
 #[test]
 fn a_home_on_its_way_steps_its_placeholder_on_at_deadlines() {
-    let mut app = MusicApp::new();
+    let mut app = Music::new();
     app.reload(&crate::seed::empty_document());
     app.use_worker(crate::stream::StreamWorker::spawn_offline());
     app.catalogue_connected = true;

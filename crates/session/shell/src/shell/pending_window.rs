@@ -194,10 +194,6 @@ impl Widget for PendingWindow {
 }
 
 impl AppWidget for PendingWindow {
-    fn uses_host_record(&self) -> bool {
-        false
-    }
-
     fn app_kind(&self) -> AppKind {
         AppKind::Settings
     }

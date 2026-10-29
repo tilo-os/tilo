@@ -164,14 +164,10 @@ fn oversized_request_is_refused_before_app_decoder() {
 
 #[test]
 fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
-    let fixture = crate::bound_dispatch::legacy_document_tests::Fixture::in_room(
+    let fixture = crate::history_mode::owner::RecordOwnerFixture::in_room(
         983,
         "77777777-7777-4777-8777-777777777777",
     );
-    fixture
-        .store
-        .require_invocation_provenance(&fixture.checkout)
-        .unwrap();
     let current = Arc::new(AtomicBool::new(true));
     let checked = current.clone();
     let request = crate::invocation_scope::PublishedInvocationRequest {
@@ -184,7 +180,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
     };
     let lease = crate::invocation_scope::PublishedInvocationLease::new(
         request,
-        fixture.target.owner.broker_route().unwrap(),
+        fixture.owner.broker_route().unwrap(),
         Arc::new(move || {
             checked
                 .load(Ordering::Acquire)
@@ -194,11 +190,9 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
     )
     .with_owner_token(Arc::new(983_u64))
     .unwrap();
-    let scope = crate::invocation_scope::ResourceInvocationScope::for_owner(
-        fixture.target.owner.clone(),
-        lease,
-    )
-    .unwrap();
+    let scope =
+        crate::invocation_scope::ResourceInvocationScope::for_owner(fixture.owner.clone(), lease)
+            .unwrap();
     let resource = resource();
     let encoded = encoded();
     let selected = select(&READERS, &resource, &resource.actions[0], &encoded)

@@ -747,7 +747,10 @@ fn lay_out_window(
             app.layout.remount && !app.layout.structure_dirty && (!rebuild || remount_only);
         #[cfg(test)]
         let remount_probe = crate::profiling::frame_probe::span("layout.remount");
-        let remounted_now = in_place && app.remount_in_place();
+        let remounted_now = in_place && {
+            let _entry = app.enter_wake_scope();
+            app.remount_in_place()
+        };
         #[cfg(test)]
         drop(remount_probe);
         remounted |= remounted_now;

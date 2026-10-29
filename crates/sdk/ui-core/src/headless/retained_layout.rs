@@ -3,9 +3,9 @@
 //!
 //! `node_map` holds a `*mut dyn Widget` per taffy node, built from the tree
 //! and kept while no widget reports a structure change. The pointers a build
-//! registers are adopted at once ([`FrameHarness::admit_layout_maps`]), and
+//! registers are adopted at once ([`crate::host_core::HostCore::admit_layout_maps`]), and
 //! every structure check walks the live tree first
-//! ([`FrameHarness::layout_maps_stale`]): a widget that replaced children
+//! ([`crate::host_core::HostCore::layout_maps_stale`]): a widget that replaced children
 //! without reporting it makes the maps stale and the layout is built again,
 //! instead of the frame calling through a pointer to a freed widget. See
 //! [`crate::retained_widgets`].
@@ -21,61 +21,6 @@ impl FrameHarness {
         self.node_map.clear();
         self.layout_maps.clear();
         self.layout_built = false;
-    }
-
-    /// Every tree the layout maps can name: the app root, framework
-    /// History's composition around it, the action palette and the
-    /// standalone History chrome.
-    #[inline(never)]
-    fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget)) {
-        visit(self.root.as_ref());
-        if let Some(history) = self.history.as_deref() {
-            visit(history);
-        }
-        if let Some(palette) = self.action_palette.as_deref() {
-            visit(palette);
-        }
-        self.document_history.for_each_widget(visit);
-    }
-
-    /// Right after a build registered widgets in the maps, before any
-    /// widget code runs: find each of them in the live tree.
-    pub(super) fn admit_layout_maps(&mut self) {
-        let mut maps = std::mem::take(&mut self.layout_maps);
-        // SAFETY: every pointer not yet adopted was registered by the build
-        // that just ran on these trees, and no widget code ran since.
-        unsafe {
-            maps.admit(
-                &self.node_map,
-                &|visit| self.visit_layout_roots(visit),
-                &self.taffy,
-            );
-        }
-        self.layout_maps = maps;
-    }
-
-    /// Whether the maps name a widget that is no longer in the tree: a
-    /// widget replaced children without reporting it. The maps are then
-    /// forgotten, so nothing reads them before the layout is built again.
-    pub(super) fn layout_maps_stale(&mut self) -> bool {
-        if self.node_map.is_empty() {
-            return false;
-        }
-        let mut relaid = Vec::new();
-        if self
-            .layout_maps
-            .still_live(&|visit| self.visit_layout_roots(visit), &mut relaid)
-        {
-            let removed =
-                crate::retained_widgets::let_go_under(&relaid, &mut self.taffy, &mut self.node_map);
-            self.bindings.forget(&removed);
-            if self.focused.is_some_and(|node| removed.contains(&node)) {
-                self.focused = None;
-            }
-            return false;
-        }
-        self.discard_layout_tree();
-        true
     }
 
     /// Retire the maps before a model service's callbacks, as

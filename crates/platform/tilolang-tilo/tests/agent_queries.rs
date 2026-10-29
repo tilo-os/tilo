@@ -7,6 +7,7 @@
 //! holds no records: what a program asks of an app is answered by that app's host
 //! (`read-for-program`) while it runs.
 
+use std::fmt::Write as _;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
@@ -147,7 +148,7 @@ fn grep_reads_several_apps_and_each_match_says_where_it_is() {
 #[test]
 fn grep_knows_block_kinds_groups_times_and_writers() {
     let w = world();
-    let body = r#"> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist"#;
+    let body = r"> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist";
     let wrote = w.run(&format!(
         "journal.write(journal.entries, \"Launch\", \"{body}\")"
     ));
@@ -211,7 +212,7 @@ fn find_takes_the_palettes_words_or_a_type_and_its_filters() {
     let grouped =
         printed(&w.run(r#"find("standup").of(Note).group(.pinned).map(g -> g.items.len())"#));
     assert_eq!(grouped, "5", "one group: no standup is pinned");
-    let taken = printed(&w.run(r#"find(Note, pinned: false).take(2).len()"#));
+    let taken = printed(&w.run(r"find(Note, pinned: false).take(2).len()"));
     assert_eq!(taken, "2");
 }
 
@@ -241,7 +242,7 @@ fn read_states_the_size_first_and_shows_what_matches_with_anchors() {
     w.run(&format!(
         "journal.write(journal.entries, \"Long plan\", \"{body}\")"
     ));
-    let first = printed(&w.run(r#"read(journal.entries.items.single())"#));
+    let first = printed(&w.run(r"read(journal.entries.items.single())"));
     let mut lines = first.lines();
     let head = lines.next().unwrap();
     assert!(
@@ -377,7 +378,7 @@ fn a_session_of_the_agents_doc_examples() {
     let mut transcript = String::new();
     for entry in entries {
         let answer = w.run(entry);
-        transcript.push_str(&format!("tl> {}\n", entry.replace('\n', "\n... ")));
+        let _ = writeln!(transcript, "tl> {}", entry.replace('\n', "\n... "));
         for line in answer["output"].as_array().into_iter().flatten() {
             transcript.push_str(line.as_str().unwrap_or_default());
             transcript.push('\n');
@@ -386,17 +387,20 @@ fn a_session_of_the_agents_doc_examples() {
             Some("done") => {}
             Some("rejected") => {
                 for line in answer["detail"].as_array().into_iter().flatten() {
-                    transcript.push_str(&format!("error: {}\n", line.as_str().unwrap_or_default()));
+                    let _ = writeln!(transcript, "error: {}", line.as_str().unwrap_or_default());
                 }
             }
-            _ => transcript.push_str(&format!(
-                "error: {}\n",
-                answer["detail"].as_str().unwrap_or("the program failed")
-            )),
+            _ => {
+                let _ = writeln!(
+                    transcript,
+                    "error: {}",
+                    answer["detail"].as_str().unwrap_or("the program failed")
+                );
+            }
         }
         let changed = answer["changed"].as_u64().unwrap_or(0);
         if changed > 0 {
-            transcript.push_str(&format!("({changed} changed)\n"));
+            let _ = writeln!(transcript, "({changed} changed)");
         }
     }
     println!("{transcript}");

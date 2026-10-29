@@ -9,9 +9,6 @@ publish.workspace = true
 license.workspace = true
 
 [features]
-# Explicit native RAM custody qualification: requires a qualified tmpfs backing
-# or permission to create a noswap fixture in a private mount namespace.
-signal-profile-native-test = []
 # Provisioning against the current Linux account requires a disposable root fixture.
 native-current-device-qualification = []
 # Wall-clock idle qualification belongs to the scheduled performance lane.
@@ -145,7 +142,6 @@ tilo-control = { path = "../control-cli" }
 emoji = { path = "../../text/emoji" }
 # Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
 # written to settings.
-tilo-secret-vault = { path = "../../system/secret-vault" }
 # The speech backend the toolkit screen reader uses, for narrating chrome.
 tilo-tts = { path = "../../system/tts" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
@@ -224,13 +220,17 @@ runtime-portal = { path = "../../runtime/runtime-portal" }
 # `data_home()` — where per-user state lives, which is also where the
 # records apps wrote are found.
 tilo-cli-kit = { path = "../../runtime/cli" }
+# Search: the launcher the shell hosts as its search surface, always: it is
+# the shell's own surface, not a user app.
+launcher-app = { path = "../../../apps/launcher" }
 terminal = { path = "../../../apps/terminal", optional = true }
 messages = { path = "../../../apps/messages" }
 passwords = { path = "../../../apps/passwords" }
 tilo-messaging = { path = "../../platform/tilo-messaging" }
 accounts = { path = "../../system/accounts" }
 tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
-tilo-messaging-protocol = { path = "../../system/messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"] }
+# The messaging service's door and the client Messages shown here uses.
+tilo-messaging-service = { path = "../messaging-service", default-features = false }
 file-explorer = { path = "../../../apps/file-explorer" }
 browser = { path = "../../../apps/browser", optional = true }
 notes = { path = "../../../apps/notes", optional = true }
@@ -503,7 +503,8 @@ p256 = { version = "0.14", features = ["ecdsa"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # Pairing-broker tests talk to a local broker on a loaded runner; the
 # toolkit's test support bounds that exchange only against a hang.
-ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
+# `mpris`: the now-playing tests publish a player the way an app does.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support", "mpris"] }
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["test-support"] }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 # The NTFS mount service's socket loop, served by a stand-in backend, for

@@ -811,6 +811,81 @@ impl Host {
         Ok(self.inner.store.create_with_id(&record, &id)?)
     }
 
+    /// Run each loaded package's migrations (`migration action`) on the resources an earlier
+    /// version of it wrote: once on each resource of the migration's subject type that holds
+    /// something in a field the type now keeps `(previously)` (or, for a type without such a
+    /// field, that the migration has not run on), as an ordinary action of the viewer's, which
+    /// records in the same change that it ran. Returns how many ran. A migration that is
+    /// refused or fails leaves its resource as it was, to be tried again the next time.
+    pub fn migrate(&self) -> usize {
+        let mut ran = 0;
+        for package in self.packages() {
+            for migration in package.meta.migrations() {
+                let Some(ty) = migration
+                    .params
+                    .first()
+                    .and_then(|subject| package.meta.type_named(&subject.ty))
+                else {
+                    continue;
+                };
+                let previously: Vec<&str> = ty
+                    .fields
+                    .iter()
+                    .filter(|f| f.role.as_deref() == Some("previously"))
+                    .map(|f| f.id.as_str())
+                    .collect();
+                for doc in self.inner.store.resources_of(&package.meta.app, &ty.id) {
+                    if self
+                        .inner
+                        .store
+                        .migrated(&doc, &migration.id)
+                        .unwrap_or(true)
+                        || !self.holds_previously(&doc, &previously)
+                    {
+                        continue;
+                    }
+                    let subject = Value::resource(&ResourceRef::root(&doc, ty.id.clone()));
+                    self.inner
+                        .store
+                        .set_migrating(Some((migration.id.clone(), doc.clone())));
+                    let outcome = self
+                        .inner
+                        .runtime
+                        .invoke_action(&self.inner.viewer, (migration.id.as_str(), vec![subject]));
+                    self.inner.store.set_migrating(None);
+                    match outcome {
+                        Ok(InvokeOutcome::Done(_)) => ran += 1,
+                        other => tracing::warn!(
+                            app = package.meta.app,
+                            migration = migration.name,
+                            doc,
+                            ?other,
+                            "a migration did not run"
+                        ),
+                    }
+                }
+            }
+        }
+        ran
+    }
+
+    /// Whether the resource `doc` holds anything in the fields `previously` (none: whether it
+    /// may hold what an earlier version wrote, which only the migration can tell).
+    fn holds_previously(&self, doc: &str, previously: &[&str]) -> bool {
+        if previously.is_empty() {
+            return true;
+        }
+        let Ok(record) = self.inner.store.record(doc) else {
+            return false;
+        };
+        let Ok(empty) = crate::record::DynRecord::empty(record.schema()) else {
+            return false;
+        };
+        previously
+            .iter()
+            .any(|field| record.get(field) != empty.get(field))
+    }
+
     /// Open the window of `app`'s root resource, through the default view of its type.
     ///
     /// # Errors

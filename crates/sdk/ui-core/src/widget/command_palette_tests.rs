@@ -72,7 +72,8 @@ fn palette_card_geometry_and_rows() {
         assert!(p.row_rect(1).unwrap().y1 <= p.list_bottom_y());
         tr.set_text_scale(1.0); // palette paint's already-scaled theme space
         let mut rows_scene = Scene::new();
-        p.draw_result_rows(&mut rows_scene, Affine::IDENTITY, &mut tr, &theme);
+        p.results
+            .draw_list(&mut rows_scene, Affine::IDENTITY, &mut tr, &theme);
         let first = p.row_rect(0).unwrap();
         let second = p.row_rect(1).unwrap();
         let header = Rect::new(first.x0, p.list_top_y(), first.x1, first.y0);
@@ -102,7 +103,7 @@ fn palette_card_geometry_and_rows() {
         p.push(CommandEntry::new("a", "Alpha"));
         p.push(CommandEntry::new("b", "Bravo"));
         // Must accommodate input row + filter strip + 2 result rows.
-        p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
+        p.set_rect(Rect::new(0.0, 0.0, 360.0, 280.0));
         let mid_row_1 = p.row_rect(1).unwrap().center();
         assert_eq!(p.row_at(mid_row_1), Some(1));
         assert!(p.row_at(Point::new(1000.0, 1000.0)).is_none());
@@ -146,10 +147,10 @@ fn palette_card_geometry_and_rows() {
         assert_eq!(
             heights,
             vec![
-                TWO_LINE_ROW_HEIGHT,
-                ROW_HEIGHT,
-                ROW_HEIGHT,
-                TWO_LINE_ROW_HEIGHT
+                p.results.row_band(true),
+                p.results.row_band(false),
+                p.results.row_band(false),
+                p.results.row_band(true)
             ],
             "a title alone is a single-line row, a title over a secondary line a two-line row"
         );
@@ -508,7 +509,7 @@ fn search_filters_toggle_scope_and_filetypes() {
     fn filter_strip_sits_below_input_row_and_above_results() {
         let mut p = CommandPalette::new();
         p.push(CommandEntry::new("a", "Alpha"));
-        p.rect = Rect::new(0.0, 0.0, 360.0, 280.0);
+        p.set_rect(Rect::new(0.0, 0.0, 360.0, 280.0));
         let input = p.input_row_rect();
         let strip = p.filter_strip_rect();
         let row0 = p.row_rect(0).expect("seeded row 0 must lay out");
@@ -609,7 +610,7 @@ fn query_editing_follows_the_caret_selection_and_ime() {
         palette.push(CommandEntry::new("jp", "東京"));
         palette.push(CommandEntry::new("en", "London"));
         palette.set_focus(true);
-        palette.rect = Rect::new(0.0, 0.0, 420.0, 260.0);
+        palette.set_rect(Rect::new(0.0, 0.0, 420.0, 260.0));
         let mut document = automerge::AutoCommit::new();
         let modifiers = Modifiers::default();
 
@@ -889,13 +890,13 @@ fn command_mode_navigates_filters_and_scrolls() {
         let cmd = seeded_command_palette();
         let (cw, _) = cmd.desired_size();
         assert_eq!(cw, CMD_CARD_WIDTH);
-        assert_eq!(cmd.row_height(), TWO_LINE_ROW_HEIGHT);
+        assert_eq!(cmd.row_height(), cmd.results.row_band(true));
         assert_eq!(cmd.filter_block(), 0.0, "no filter strip in command mode");
 
         let search = CommandPalette::new();
         let (sw, _) = search.desired_size();
         assert_eq!(sw, SEARCH_CARD_WIDTH);
-        assert_eq!(search.row_height(), ROW_HEIGHT);
+        assert_eq!(search.row_height(), search.results.row_band(false));
         assert!(search.filter_block() > 0.0, "search keeps its filter strip");
     }
 
@@ -1019,21 +1020,14 @@ fn grouped_results_plan_headers_counts_and_painted_hits() {
             CommandEntry::new("b", "calc.rs").group("Files"),
             CommandEntry::new("c", "calculator.rs").group("Files"),
         ]);
-        let headers: Vec<&str> = p
-            .rows
-            .iter()
-            .filter_map(|r| match r {
-                VisualRow::Header { label, .. } => Some(label.as_str()),
-                VisualRow::Entry(_) => None,
-            })
+        let headers: Vec<String> = p
+            .results
+            .header_list()
+            .into_iter()
+            .map(|(label, ..)| label)
             .collect();
         assert_eq!(headers, vec!["Applications", "Files"]);
-        assert_eq!(
-            p.rows.len(),
-            5,
-            "two headers plus three entries: {:?}",
-            p.rows
-        );
+        assert_eq!(p.results.len(), 3, "three entries under them");
     }
 
     fn a_trimmed_section_reports_its_untrimmed_count() {
@@ -1043,13 +1037,9 @@ fn grouped_results_plan_headers_counts_and_painted_hits() {
             CommandEntry::new("a", "one").group("Files").group_total(40),
             CommandEntry::new("b", "two").group("Files").group_total(40),
         ]);
-        match &p.rows[0] {
-            VisualRow::Header { label, total, .. } => {
-                assert_eq!(label, "Files");
-                assert_eq!(*total, 40);
-            }
-            VisualRow::Entry(i) => panic!("expected a header, got entry row {i}"),
-        }
+        let headers = p.results.header_list();
+        assert_eq!(headers[0].0, "Files");
+        assert_eq!(headers[0].1, Some(40));
     }
 
     fn a_scrolled_list_hit_tests_the_row_it_painted() {

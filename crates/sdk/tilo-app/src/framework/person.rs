@@ -13,7 +13,7 @@ use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, Chang
 
 use super::live::Live;
 use super::record::{Held, RecordDoor};
-use super::section::{Opener, SectionDoor, SectionKind, record_kind};
+use super::section::{SectionDoor, SectionKind};
 use tilo_resource::{Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::history_mode::HistoryOwner;
@@ -233,8 +233,7 @@ type OpenKey = (&'static str, String);
 /// The person's records a root's views opened, shared by every scope of the
 /// root: one [`PersonRecord`] per resource kind.
 pub(crate) struct PersonState {
-    /// The person's shared records ([`tilo_resource::SharedRecord`]) and
-    /// settings sections.
+    /// The person's shared records ([`tilo_resource::SharedRecord`]).
     records: PersonRecords,
     /// The app's own records of a kind, in the workspace it is open in;
     /// none for a host that keeps only the shared ones (the session's
@@ -543,36 +542,19 @@ impl PersonState {
         Ok(shared)
     }
 
-    /// The settings section `kind` held as a record of the person's, opened
-    /// on first use: its edits are their steps, undone and redone like any
-    /// of theirs, and each writes the section's value to the settings
-    /// document with what made it and who. A device-local section has a
-    /// record per device, as its values do.
-    pub(crate) fn open_section(
-        &self,
-        kind: Rc<SectionKind>,
-        device: Option<&str>,
-    ) -> Option<Rc<SectionDoor>> {
-        let name = record_kind(kind.kind, kind.device_local, device);
-        let key = (self.app_id, name.clone());
-        if let Some(open) = self.opened.borrow().get(&key) {
-            return Rc::clone(open).downcast::<SectionDoor>().ok();
+    /// The settings section `kind` held as a record, opened on first use and
+    /// published with the undo and redo of each invoker's steps on it.
+    pub(crate) fn open_section(&self, kind: Rc<SectionKind>) -> Rc<SectionDoor> {
+        let key = (self.app_id, kind.kind.to_owned());
+        if let Some(door) = self
+            .opened
+            .borrow()
+            .get(&key)
+            .and_then(|open| Rc::clone(open).downcast::<SectionDoor>().ok())
+        {
+            return door;
         }
-        let label = kind.kind;
-        let door = SectionDoor::person(
-            kind,
-            Opener {
-                records: self.records.clone(),
-                name,
-                owners: Rc::clone(&self.owners),
-            },
-            self.app_id,
-            self.app_title,
-            self.me.clone(),
-        )
-        .map_err(|error| tracing::warn!(kind = label, %error, "settings section unavailable"))
-        .ok()?;
-        let door = Rc::new(door);
+        let door = Rc::new(SectionDoor::new(kind));
         let stepping = Rc::downgrade(&door);
         self.publish(
             key,
@@ -586,7 +568,7 @@ impl PersonState {
                 }),
             },
         );
-        Some(door)
+        door
     }
 
     /// The person's records `owner` keeps: this app's own, or another app's,

@@ -43,7 +43,7 @@ pub(crate) struct SheetAnswer {
     pub mode: SheetMode,
     pub kind: ChannelKind,
     /// The name as it will be kept: a text channel's normalised.
-    pub name: String,
+    pub name: ui::tilo_resource::NonBlank,
     /// The category it goes under; `None` for none.
     pub category: Option<Id>,
     pub topic: String,
@@ -202,7 +202,7 @@ impl ChannelSheet {
 
     /// The answers as they would be applied, when they are complete.
     pub(crate) fn answer(&self) -> Option<SheetAnswer> {
-        let name = if self.shows_channel_fields() && self.kind == ChannelKind::Text {
+        let name: String = if self.shows_channel_fields() && self.kind == ChannelKind::Text {
             channel_slug(self.name.value(), false)
         } else {
             self.name
@@ -212,9 +212,7 @@ impl ChannelSheet {
                 .take(MAX_NAME_CHARS)
                 .collect()
         };
-        if name.is_empty() {
-            return None;
-        }
+        let name = ui::tilo_resource::NonBlank::parse(&name)?;
         Some(SheetAnswer {
             mode: self.mode.clone(),
             kind: self.kind,
@@ -614,10 +612,14 @@ mod tests {
         assert_eq!(sheet.answer(), None, "no name yet");
         sheet.name.set_text("Stand Up");
         let answer = sheet.answer().expect("named");
-        assert_eq!(answer.name, "Stand Up", "a voice channel keeps its name");
+        assert_eq!(
+            answer.name.as_str(),
+            "Stand Up",
+            "a voice channel keeps its name"
+        );
         assert_eq!(answer.category.as_deref(), Some("cat_design"));
         assert_eq!(answer.kind, ChannelKind::Voice);
         sheet.kind = ChannelKind::Text;
-        assert_eq!(sheet.answer().expect("named").name, "stand-up");
+        assert_eq!(sheet.answer().expect("named").name.as_str(), "stand-up");
     }
 }

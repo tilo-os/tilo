@@ -1,16 +1,15 @@
 //! Room administration from a device: the names of the actions a relay
 //! serves for it, and the requests they carry.
 //!
-//! A relay serves what it governs as actions over `Envelope::RemoteAction`,
-//! addressed to its own device, on a workspace the caller holds there:
+//! A relay serves what it governs as actions addressed to its own device:
 //!
 //! - a room's own governance (provider `tilo.workspace`, named in
-//!   `tilo-actions`), on the room's workspace;
+//!   `tilo-actions`), over `Envelope::RemoteAction` on the room's workspace;
 //! - the host's own business, which no room decides (creating, listing and
 //!   entering rooms, letting an app author a room), as provider
 //!   [`HOST_ACTIONS_PROVIDER`], to the devices of the relay's own person
-//!   only, on any workspace they hold there: the person's continuity
-//!   workspace before they hold any room;
+//!   only, over `Envelope::HostAction` on their session with it, naming no
+//!   workspace ([`ask_host`]), or on a room's workspace they hold there;
 //! - what a member does for themselves (claiming their topology namespace,
 //!   recording their own effect receipt, and having the host create the
 //!   empty record of an app they open there first) as provider
@@ -23,7 +22,48 @@ pub mod govern;
 pub mod private;
 
 use serde::{Deserialize, Serialize};
+use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
 use tilo_workspace_join::{GovernedMember, MemberRole};
+
+use crate::client::RelayClient;
+use crate::transport::Envelope;
+
+/// Ask `client`'s host its own operation `invoke`, directly over the
+/// session (a device of the host's person asks; no workspace is named), and
+/// answer its receipt.
+///
+/// # Errors
+///
+/// The session closed before the host answered, or the invocation could not
+/// be encoded.
+pub async fn ask_host(
+    client: &RelayClient,
+    invoke: InvokeRequest,
+) -> Result<ReceiptStatus, String> {
+    let invocation = invoke.invocation;
+    let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(invoke))
+        .encode()
+        .map_err(|error| error.to_string())?;
+    client
+        .send(Envelope::HostAction { frame })
+        .map_err(|_| "the host's session closed".to_string())?;
+    loop {
+        match client.recv().await {
+            Some(Envelope::HostAction { frame }) => {
+                let message = RemoteActionFrame::decode(&frame)
+                    .map_err(|error| error.to_string())?
+                    .message;
+                if let RemoteActionMessage::Receipt(receipt) = message
+                    && receipt.invocation == invocation
+                {
+                    return Ok(receipt.status);
+                }
+            }
+            Some(_) => {}
+            None => return Err("the host's session closed".into()),
+        }
+    }
+}
 
 /// The provider a relay answers its host operations under: creating,
 /// listing and entering the rooms it governs. Only the devices of the

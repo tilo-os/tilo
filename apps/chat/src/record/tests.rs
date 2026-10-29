@@ -494,7 +494,7 @@ fn an_edit_keeps_the_earlier_text_and_a_delete_removes_the_message() {
 fn channels_and_categories_are_made_moved_and_deleted() {
     let mut ada = room();
     ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
-        name: "Projects".into(),
+        name: "Projects".parse().unwrap(),
     }))
     .unwrap();
     let projects = ada
@@ -507,7 +507,7 @@ fn channels_and_categories_are_made_moved_and_deleted() {
         .id;
     for name in ["#alpha", "beta"] {
         ada.apply(Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-            name: name.into(),
+            name: name.parse().unwrap(),
             category: Some(id(&projects)),
             kind: None,
             topic: None,
@@ -516,7 +516,7 @@ fn channels_and_categories_are_made_moved_and_deleted() {
     }
     assert!(
         ada.apply(Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-            name: "x".into(),
+            name: "x".parse().unwrap(),
             category: Some(id("cat_gone")),
             kind: None,
             topic: None,
@@ -593,8 +593,10 @@ fn channels_and_categories_are_made_moved_and_deleted() {
 fn the_rooms_channels_are_arranged_in_one_go() {
     let mut ada = room();
     for name in ["A", "B"] {
-        ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory { name: name.into() }))
-            .unwrap();
+        ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
+            name: name.parse().unwrap(),
+        }))
+        .unwrap();
     }
     let category = |replica: &Replica<Chat>, name: &str| {
         replica
@@ -611,7 +613,7 @@ fn the_rooms_channels_are_arranged_in_one_go() {
         ada.apply(
             Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
                 id: channel.into(),
-                name: channel.trim_start_matches("c_").into(),
+                name: channel.trim_start_matches("c_").parse().unwrap(),
                 category: Some(id(under)),
                 kind: None,
                 topic: None,
@@ -694,7 +696,7 @@ fn a_channel_is_filed_only_under_a_category_that_exists() {
     let mut ada = room();
     let create = |category| {
         Chat::CREATE_CHANNEL.with(chat::CreateChannel {
-            name: "project".into(),
+            name: "project".parse().unwrap(),
             category: Some(category),
             kind: None,
             topic: None,
@@ -708,7 +710,7 @@ fn a_channel_is_filed_only_under_a_category_that_exists() {
         "no hidden channel is created"
     );
     ada.apply(Chat::CREATE_CATEGORY.with(chat::CreateCategory {
-        name: "Work".into(),
+        name: "Work".parse().unwrap(),
     }))
     .unwrap();
     let work = ada
@@ -867,13 +869,13 @@ fn an_agent_is_named_once_for_everyone() {
     let mut ada = room();
     ada.apply(Chat::NAME_AGENT.with(chat::NameAgent {
         participant: AGENT.into(),
-        name: "Tide".into(),
+        name: "Tide".parse().unwrap(),
     }))
     .unwrap();
     assert!(
         ada.apply(Chat::NAME_AGENT.with(chat::NameAgent {
             participant: BO.into(),
-            name: "Not an agent".into(),
+            name: "Not an agent".parse().unwrap(),
         }))
         .is_err()
     );
@@ -896,7 +898,7 @@ fn plain_changes_are_field_edits_at_their_paths() {
     let mut ada = talk.chat;
     ada.apply(Chat::RENAME_CHANNEL.with(chat::RenameChannel {
         channel: id("c_chat"),
-        name: "#lobby".into(),
+        name: "#lobby".parse().unwrap(),
     }))
     .unwrap();
     ada.apply(Chat::ARCHIVE_CHANNEL.with(chat::ArchiveChannel {
@@ -1187,11 +1189,18 @@ fn the_rooms_layout_is_kept_by_its_moderators() {
     }
     // Talking in a channel is every member's.
     assert_eq!(field("mark-read"), Some(None));
+    assert!(
+        serde_json::from_value::<chat::RenameChannel>(
+            serde_json::json!({"channel": "c_chat", "name": "  "})
+        )
+        .is_err(),
+        "a blank name is refused where the arguments are read"
+    );
     let mut talk = Talk::new();
     talk.chat
         .apply(Chat::RENAME_CHANNEL.with(chat::RenameChannel {
             channel: id("c_chat"),
-            name: "  ".into(),
+            name: "#".parse().unwrap(),
         }))
         .unwrap_err();
 }
@@ -1206,7 +1215,7 @@ fn a_guest_reports_a_message_or_a_person_and_only_moderators_decide() {
     bo.apply(Chat::REPORT_MESSAGE.with(chat::ReportMessage {
         message: message.to_string(),
         author: ADA.into(),
-        reason: "spam".into(),
+        reason: "spam".parse().unwrap(),
     }))
     .unwrap();
     let state = bo.state().unwrap();
@@ -1216,14 +1225,14 @@ fn a_guest_reports_a_message_or_a_person_and_only_moderators_decide() {
     assert!(
         bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
             person: id(BO),
-            reason: "me".into(),
+            reason: "me".parse().unwrap(),
         }))
         .is_err(),
         "nobody reports themselves"
     );
     bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
         person: id(ADA),
-        reason: "spamming the channel".into(),
+        reason: "spamming the channel".parse().unwrap(),
     }))
     .unwrap();
     assert_eq!(

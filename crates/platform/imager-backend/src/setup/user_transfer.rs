@@ -1,14 +1,15 @@
 //! Private installer migration coordinator. Source grants and credentials never
-//! enter collaborative app state. A selected home copy finishes and verifies
-//! before Flatpak mutates the new user's installation. Originals stay intact.
+//! enter collaborative app state. The selected data travels as a sealed Home
+//! unit, admitted at the target before Flatpak mutates the new user's
+//! installation. Originals stay intact.
 use super::{
     flatpak_transfer::{
         self as flatpak, InstalledRef, Runner,
         portable::{OfflineRunner, PortableFlatpakSource, SealedApplications},
     },
-    home_transfer::{self, HomeReview},
-    migration::{CopyProgress, CopyReport},
-    migration_worker::{WorkerEvent, WorkerOutcome},
+    migration_durability::Identity,
+    portable_home_media::{HomeSource, SealedHome, application_data_exclusions},
+    portable_transfer::{ArchiveProgress, ExportSummary},
 };
 use std::{
     path::PathBuf,
@@ -17,7 +18,6 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, TryRecvError},
     },
-    time::Duration,
 };
 
 mod adoption;
@@ -27,7 +27,6 @@ pub use adoption::{
 pub mod applications;
 mod durable;
 pub use durable::{publish as publish_private_artifact, read as read_private_artifact};
-mod namespace;
 mod storage;
 #[cfg(test)]
 mod tests;
@@ -35,12 +34,19 @@ mod tests;
 #[derive(Clone, Debug)]
 pub struct TransferRequest {
     pub source_home: PathBuf,
+    /// A new directory; the admitted Home unit becomes this tree.
     pub target_home: PathBuf,
     pub private_journals: PathBuf,
     pub copy_home: bool,
     pub copy_flatpak: bool,
-    /// System refs only. User refs travel in the selected home/Flatpak data copy.
+    /// System refs only. User refs travel in the selected home/Flatpak data.
     pub system_refs: Vec<InstalledRef>,
+}
+impl TransferRequest {
+    /// The private workspace that holds the sealed Home unit.
+    fn home_workspace(&self) -> PathBuf {
+        self.private_journals.join("home")
+    }
 }
 
 /// The selected system applications. They always arrive as one sealed
@@ -68,7 +74,9 @@ impl Applications {
 #[derive(Clone)]
 pub struct TransferReview {
     request: TransferRequest,
-    copies: Vec<HomeReview>,
+    /// The reviewed source, until its Home unit is sealed.
+    source: Option<Arc<HomeSource>>,
+    summary: TransferSummary,
     applications: Option<Applications>,
     recovered: bool,
     application_recovery: bool,
@@ -81,11 +89,11 @@ pub struct TransferReview {
 #[derive(Default)]
 struct Phase {
     busy: bool,
+    attempted: bool,
     applications_complete: bool,
     sealed: Option<SealedApplications>,
-    attempted: std::collections::BTreeSet<usize>,
-    complete:
-        std::collections::BTreeMap<usize, (CopyReport, super::migration_durability::Identity)>,
+    /// The admitted Home unit and the identity of its tree at admission.
+    home: Option<(SealedHome, Identity)>,
 }
 struct PhaseLease(Arc<Mutex<Phase>>);
 impl Drop for PhaseLease {
@@ -106,31 +114,45 @@ pub struct TransferSummary {
     pub runtime_sockets: u64,
     pub system_applications: usize,
 }
+impl TransferSummary {
+    fn new(home: &ExportSummary, request: &TransferRequest) -> Self {
+        Self {
+            files: home.files,
+            bytes: home.bytes,
+            links: home.links,
+            special_files: home.special_files,
+            runtime_sockets: home.runtime_sockets,
+            system_applications: request
+                .system_refs
+                .iter()
+                .filter(|item| item.app_id().is_some())
+                .count(),
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct TransferReport {
-    pub copies: Vec<CopyReport>,
+    /// The Home unit was sealed and admitted at the target.
+    pub admitted: bool,
     pub flatpak: flatpak::RestoreReport,
     pub cancelled: bool,
 }
 impl TransferReport {
     pub fn complete(&self) -> bool {
-        !self.cancelled
-            && self.copies.iter().all(CopyReport::complete)
-            && self.flatpak.failed.is_empty()
+        self.admitted && !self.cancelled && self.flatpak.failed.is_empty()
     }
 }
 
 #[derive(Debug)]
 pub enum TransferEvent {
-    CopyProgress(CopyProgress),
+    Progress(ArchiveProgress),
     RestoringApplications,
     Finished(Result<TransferReport, String>),
 }
 
-/// Review the exact home/subtrees, target and system refs. Flatpak-only review
-/// reserves a fresh private target skeleton because each subtree has its own
-/// pinned parent. No source is modified and no existing destination is adopted.
+/// Review the exact home or Flatpak data, target and system refs. Nothing is
+/// sealed yet; no source is modified and no existing destination is adopted.
 pub fn review(
     request: TransferRequest,
     applications: Option<Applications>,
@@ -143,20 +165,15 @@ pub fn review(
     if durable::pending(&request).map_err(|error| error.to_string())? {
         return recover(&flatpak::NativeRunner, request, applications);
     }
-    let copies = if request.copy_home {
-        vec![home_transfer::review(
-            &request.source_home,
-            &request.target_home,
-            &request.private_journals.join("home-import"),
-        )?]
-    } else {
-        let copies = storage::review_flatpak_data(&request)?;
-        namespace::save(&request)?;
-        copies
-    };
+    let source = review_source(&request)?;
+    let summary = TransferSummary::new(
+        &source.summary().map_err(|error| error.to_string())?,
+        &request,
+    );
     Ok(TransferReview {
         request,
-        copies,
+        source: Some(source),
+        summary,
         applications,
         recovered: false,
         application_recovery: false,
@@ -166,14 +183,15 @@ pub fn review(
     })
 }
 
-/// Renew explicit grants and revalidate actual retained home/fidelity receipts.
-/// Saved phase labels or success reports are never accepted as copy proof.
+/// Renew explicit grants and reopen the sealed Home unit, re-authenticating
+/// its package and the admitted tree. Saved phase labels or success reports
+/// are never accepted as proof.
 ///
 /// # Errors
-/// Refuses changed grants/selections, missing copy or original-app receipts,
-/// changed user data, repository trust, objects, or completed application output.
-/// An interrupted signed application transaction is repaired only after the
-/// original copied user data passes independent fidelity verification.
+/// Refuses changed grants/selections, a changed unit or admitted tree,
+/// missing original-app receipts, repository trust, objects, or completed
+/// application output. An interrupted signed application transaction is
+/// repaired only after the admitted user data passes verification.
 pub fn recover(
     runner: &impl Runner,
     request: TransferRequest,
@@ -182,36 +200,40 @@ pub fn recover(
     validate_applications(&request, applications.as_ref())?;
     storage::validate_grants(&request)?;
     let application_recovery = durable::validate_recovery(&request)?;
-    let copies = if request.copy_home {
-        vec![HomeReview::recover(
-            &request.source_home,
-            &request.target_home,
-            &request.private_journals.join("home-import"),
-        )?]
-    } else {
-        namespace::recover(&request)?
+    let mut phase = Phase {
+        attempted: true,
+        ..Phase::default()
     };
-    let mut phase = Phase::default();
+    let (source, summary) = match reopen_home(&request, application_recovery)? {
+        Some(unit) => {
+            let summary = TransferSummary::new(unit.summary(), &request);
+            phase.home = Some((unit, storage::target_identity(&request.target_home)?));
+            (None, summary)
+        }
+        None if application_recovery => {
+            return Err("The sealed data for this transfer is missing".into());
+        }
+        None => {
+            let source = review_source(&request)?;
+            let summary = TransferSummary::new(
+                &source.summary().map_err(|error| error.to_string())?,
+                &request,
+            );
+            (Some(source), summary)
+        }
+    };
     let verified_applications = if application_recovery {
         applications::validate_recovery(&request)?;
-        let reports = verify_copies_after_applications(&request, &copies)?;
         applications::verify_original_config(&request)?;
-        let verified = applications::verify_output(&request, runner)?;
-        for (index, (copy, report)) in copies.iter().zip(reports).enumerate() {
-            phase.complete.insert(
-                index,
-                (report, storage::target_identity(copy.destination())?),
-            );
-        }
-        verified
+        applications::verify_output(&request, runner)?
     } else {
         false
     };
     phase.applications_complete = verified_applications;
-    phase.attempted.extend(0..copies.len());
     Ok(TransferReview {
         request,
-        copies,
+        source,
+        summary,
         applications,
         recovered: true,
         application_recovery,
@@ -219,6 +241,42 @@ pub fn recover(
         phase: Arc::new(Mutex::new(phase)),
         _source_guard: None,
     })
+}
+
+/// The whole home, or only the user's Flatpak installation and app data.
+fn review_source(request: &TransferRequest) -> Result<Arc<HomeSource>, String> {
+    storage::validate_target(request)?;
+    let exclusions = if request.copy_home {
+        Vec::new()
+    } else {
+        application_data_exclusions(&request.source_home).map_err(|error| error.to_string())?
+    };
+    HomeSource::review_with_cancel_selected(
+        &request.source_home,
+        &exclusions,
+        &AtomicBool::new(false),
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Reopen the Home unit an earlier attempt sealed, if there is one.
+fn reopen_home(
+    request: &TransferRequest,
+    applications: bool,
+) -> Result<Option<SealedHome>, String> {
+    let workspace = request.home_workspace();
+    match std::fs::symlink_metadata(&workspace) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    SealedHome::reopen(
+        &workspace,
+        &request.target_home,
+        applications,
+        &AtomicBool::new(false),
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// System refs arrive only in a sealed unit that carries every selected app.
@@ -239,58 +297,13 @@ fn validate_applications(
     }
 }
 
-fn verify_copies_after_applications(
-    request: &TransferRequest,
-    copies: &[HomeReview],
-) -> Result<Vec<CopyReport>, String> {
-    if request.copy_home {
-        Ok(vec![
-            copies
-                .first()
-                .ok_or("Original whole-home proof is missing")?
-                .verify_after_applications()?,
-        ])
-    } else {
-        namespace::verify(request, copies)
-    }
-}
-
 impl TransferReview {
     pub fn retain_source_guard(&mut self, guard: Arc<dyn Send + Sync>) {
         self._source_guard = Some(guard);
     }
 
-    pub fn summary(&self) -> Result<TransferSummary, String> {
-        let mut result = TransferSummary::default();
-        for copy in &self.copies {
-            result.files = result
-                .files
-                .checked_add(copy.summary.files)
-                .ok_or("File count exceeds bounds")?;
-            result.bytes = result
-                .bytes
-                .checked_add(copy.summary.bytes)
-                .ok_or("Byte count exceeds bounds")?;
-            result.links = result
-                .links
-                .checked_add(copy.summary.links)
-                .ok_or("Link count exceeds bounds")?;
-            result.special_files = result
-                .special_files
-                .checked_add(copy.summary.special_files)
-                .ok_or("Special-file count exceeds bounds")?;
-            result.runtime_sockets = result
-                .runtime_sockets
-                .checked_add(copy.summary.runtime_sockets)
-                .ok_or("Runtime-socket count exceeds bounds")?;
-        }
-        result.system_applications = self
-            .request
-            .system_refs
-            .iter()
-            .filter(|item| item.app_id().is_some())
-            .count();
-        Ok(result)
+    pub fn summary(&self) -> &TransferSummary {
+        &self.summary
     }
     pub fn recovered(&self) -> bool {
         self.recovered
@@ -298,7 +311,7 @@ impl TransferReview {
     pub fn target_home(&self) -> &std::path::Path {
         &self.request.target_home
     }
-    /// Promotion can consume only this operation's completed whole-home copy.
+    /// Promotion can consume only this operation's admitted Home unit.
     pub fn review_promotion(
         &self,
         home: &std::path::Path,
@@ -347,7 +360,7 @@ impl TransferReview {
         let phase = self
             .phase
             .lock()
-            .map_err(|_| "Copy receipts became unavailable")?;
+            .map_err(|_| "Transfer receipts became unavailable")?;
         if self.request.copy_flatpak
             && !self.request.system_refs.is_empty()
             && !phase.applications_complete
@@ -356,23 +369,19 @@ impl TransferReview {
                 "Reviewed application restoration has not been independently completed".into(),
             );
         }
-        if phase.busy || phase.complete.len() != self.copies.len() {
-            return Err("Selected copy is incomplete or still busy".into());
-        }
-        for (index, copy) in self.copies.iter().enumerate() {
-            let (report, identity) = phase
-                .complete
-                .get(&index)
-                .ok_or("Selected copy receipt missing")?;
-            if !report.complete() || storage::target_identity(copy.destination())? != *identity {
-                return Err("Verified copy destination changed".into());
-            }
+        let (unit, identity) = match (&phase.home, phase.busy) {
+            (Some(home), false) => home,
+            _ => return Err("Selected data is not admitted yet or still busy".into()),
+        };
+        if storage::target_identity(unit.root())? != *identity {
+            return Err("Admitted data destination changed".into());
         }
         if !self.request.copy_home {
             if !self.request.copy_flatpak {
                 return Err("No application selection was reviewed".into());
             }
-            namespace::verify_promotion(&self.request, &self.copies, phase.applications_complete)?;
+            unit.verify(phase.applications_complete, &AtomicBool::new(false))
+                .map_err(|error| error.to_string())?;
             if phase.applications_complete {
                 applications::verify_checkpoint(&self.request)?;
             }
@@ -385,13 +394,9 @@ impl TransferReview {
         .with_application_consent(self.request.copy_flatpak)
     }
 
-    pub fn copy_count(&self) -> usize {
-        self.copies.len()
-    }
-
     /// Synchronous orchestration, useful with a fixture CLI. Native callers use
-    /// `start` to avoid blocking UI threads. Cancellation drains the copy worker
-    /// before reporting terminal state; partial verified output is retained.
+    /// `start` to avoid blocking UI threads. Cancellation stops sealing before
+    /// anything is admitted; a sealed unit is reopened on retry.
     pub fn execute(
         &self,
         runner: &impl OfflineRunner,
@@ -404,12 +409,6 @@ impl TransferReview {
             report.cancelled = true;
             return Ok(report);
         }
-        if !self.request.copy_home {
-            namespace::validate_grants(&self.request)?;
-        }
-        for copy in &self.copies {
-            copy.retain_review()?;
-        }
         durable::save(&self.request).map_err(|error| error.to_string())?;
         let _lease = {
             let mut phase = self
@@ -419,30 +418,22 @@ impl TransferReview {
             if phase.busy {
                 return Err("This transfer is already running".into());
             }
-            if !retry && !phase.attempted.is_empty() {
+            if !retry && phase.attempted {
                 return Err("Use Retry to resume this transfer".into());
             }
             phase.busy = true;
+            phase.attempted = true;
             PhaseLease(Arc::clone(&self.phase))
         };
-        if self.application_recovery {
-            let proofs = verify_copies_after_applications(&self.request, &self.copies)?;
-            applications::verify_original_config(&self.request)?;
-            let mut phase = self
-                .phase
-                .lock()
-                .map_err(|_| "Transfer phase became unavailable")?;
-            for (index, (copy, proof)) in self.copies.iter().zip(proofs).enumerate() {
-                phase.complete.insert(
-                    index,
-                    (proof, storage::target_identity(copy.destination())?),
-                );
+        let unit = match self.home(cancelled, &mut event) {
+            Ok(unit) => unit,
+            Err(_) if cancelled.load(Ordering::Relaxed) => {
+                report.cancelled = true;
+                return Ok(report);
             }
-        }
-        report = self.execute_copies(cancelled, &mut event)?;
-        if report.cancelled || !report.copies.iter().all(CopyReport::complete) {
-            return Ok(report);
-        }
+            Err(error) => return Err(error),
+        };
+        report.admitted = true;
         if cancelled.load(Ordering::Relaxed) {
             report.cancelled = true;
             return Ok(report);
@@ -451,20 +442,74 @@ impl TransferReview {
             event(TransferEvent::RestoringApplications);
         }
         if !self.request.system_refs.is_empty() {
-            self.restore_applications(runner, cancelled, &mut report)?;
+            self.restore_applications(runner, cancelled, &unit, &mut report)?;
         }
         Ok(report)
     }
 
-    /// Deploy the sealed applications unit after the copied user data is
-    /// independently verified, then checkpoint the verified output.
+    /// The admitted Home unit: sealed from the reviewed source on first use,
+    /// reopened when an earlier attempt sealed it.
+    fn home(
+        &self,
+        cancelled: &AtomicBool,
+        event: &mut impl FnMut(TransferEvent),
+    ) -> Result<SealedHome, String> {
+        let admitted = self
+            .phase
+            .lock()
+            .map_err(|_| "Transfer phase became unavailable")?
+            .home
+            .clone();
+        if let Some((unit, identity)) = admitted {
+            if storage::target_identity(unit.root())? != identity {
+                return Err("Transferred directory was replaced; review again".into());
+            }
+            return Ok(unit);
+        }
+        let source = self
+            .source
+            .as_ref()
+            .ok_or("The reviewed source is no longer available; review again")?;
+        let workspace = self.request.home_workspace();
+        match std::fs::symlink_metadata(&workspace) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                super::migration::PinnedDirectory::open_absolute(&self.request.private_journals)
+                    .and_then(|journals| journals.create_child(std::ffi::OsStr::new("home")))
+                    .map_err(|error| error.to_string())?;
+            }
+            Err(error) => return Err(error.to_string()),
+            Ok(_) => {}
+        }
+        let unit = SealedHome::seal(
+            source,
+            &workspace,
+            &self.request.target_home,
+            cancelled,
+            &mut |progress| {
+                event(TransferEvent::Progress(progress));
+                Ok(())
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let identity = storage::target_identity(unit.root())?;
+        self.phase
+            .lock()
+            .map_err(|_| "Transfer phase became unavailable")?
+            .home = Some((unit.clone(), identity));
+        Ok(unit)
+    }
+
+    /// Deploy the sealed applications unit after the admitted user data is
+    /// verified again, then checkpoint the verified output.
     fn restore_applications(
         &self,
         runner: &impl OfflineRunner,
         cancelled: &AtomicBool,
+        home: &SealedHome,
         report: &mut TransferReport,
     ) -> Result<(), String> {
-        verify_copies_after_applications(&self.request, &self.copies)?;
+        home.verify(true, cancelled)
+            .map_err(|error| error.to_string())?;
         applications::verify_original_config(&self.request)?;
         if self.application_recovery {
             durable::applications_started(&self.request).map_err(|error| error.to_string())?;
@@ -501,7 +546,8 @@ impl TransferReview {
         }
         report.cancelled = cancelled.load(Ordering::Relaxed);
         if report.flatpak.failed.is_empty() && !report.cancelled {
-            verify_copies_after_applications(&self.request, &self.copies)?;
+            home.verify(true, cancelled)
+                .map_err(|error| error.to_string())?;
             applications::checkpoint(&self.request, runner, unit.deployments())?;
             self.phase
                 .lock()
@@ -557,77 +603,6 @@ impl TransferReview {
             .map_err(|_| "Transfer phase became unavailable")?
             .sealed = Some(unit.clone());
         Ok(unit)
-    }
-
-    fn execute_copies(
-        &self,
-        cancelled: &AtomicBool,
-        event: &mut impl FnMut(TransferEvent),
-    ) -> Result<TransferReport, String> {
-        let mut report = TransferReport::default();
-        for (index, copy) in self.copies.iter().enumerate() {
-            let completed = self
-                .phase
-                .lock()
-                .map_err(|_| "Transfer phase became unavailable")?
-                .complete
-                .get(&index)
-                .cloned();
-            if let Some((verified, identity)) = completed {
-                if storage::target_identity(copy.destination())? != identity {
-                    return Err("Transferred directory was replaced; review again".into());
-                }
-                report.copies.push(verified);
-                continue;
-            }
-            let attempted = self
-                .phase
-                .lock()
-                .map_err(|_| "Transfer phase became unavailable")?
-                .attempted
-                .contains(&index);
-            let mut worker = if attempted {
-                copy.retry()?
-            } else {
-                copy.start()?
-            };
-            self.phase
-                .lock()
-                .map_err(|_| "Transfer phase became unavailable")?
-                .attempted
-                .insert(index);
-            loop {
-                if cancelled.load(Ordering::Relaxed) {
-                    worker.cancel();
-                }
-                match worker.try_next() {
-                    Some(WorkerEvent::Progress(progress)) => {
-                        event(TransferEvent::CopyProgress(progress))
-                    }
-                    Some(WorkerEvent::Finished(WorkerOutcome::Complete(result))) => {
-                        let identity = storage::target_identity(copy.destination())?;
-                        self.phase
-                            .lock()
-                            .map_err(|_| "Transfer phase became unavailable")?
-                            .complete
-                            .insert(index, (result.clone(), identity));
-                        report.copies.push(result);
-                        break;
-                    }
-                    Some(WorkerEvent::Finished(WorkerOutcome::Incomplete(result))) => {
-                        report.cancelled = result.cancelled || cancelled.load(Ordering::Relaxed);
-                        report.copies.push(result);
-                        return Ok(report);
-                    }
-                    Some(WorkerEvent::Finished(WorkerOutcome::Failed(error))) => return Err(error),
-                    Some(WorkerEvent::Finished(WorkerOutcome::Interrupted)) => {
-                        return Err("Data transfer stopped before completion".into());
-                    }
-                    _ => std::thread::sleep(Duration::from_millis(10)),
-                }
-            }
-        }
-        Ok(report)
     }
 
     pub fn start(&self, retry: bool) -> Result<TransferWorker, String> {

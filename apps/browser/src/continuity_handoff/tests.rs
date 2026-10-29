@@ -17,10 +17,10 @@ impl ResourceApp for TestBrowser {
         let engine = cx.take_lent::<std::sync::Arc<ui::webview::test_engine::TestEngine>>();
         assert!(engine.is_some(), "test browser requires its lent engine");
         let engine = engine.unwrap_or_else(ui::webview::test_engine::TestEngine::new);
-        cx.surface(crate::BrowserWindow::new(
-            crate::BrowserWidget::with_engine(engine, true),
-            false,
-        ))
+        crate::resource::browser_view(
+            cx,
+            crate::BrowserWindow::new(crate::BrowserWidget::with_engine(engine, true), false),
+        )
     }
 }
 struct Fixture {
@@ -125,7 +125,7 @@ fn authenticated_subset_commits_actual_personal_bookmarks_and_full_history_and_r
         )))?;
         history.invoke(
             &BrowsingHistory::VISIT.with(crate::history::browsing_history::Visit {
-                url: "https://existing.test/".into(),
+                url: "https://existing.test/".parse().unwrap(),
                 title: "Existing visit".into(),
                 at: 1,
             }),
@@ -571,10 +571,10 @@ impl ResourceApp for OpeningBrowser {
         let engine = cx.take_lent::<std::sync::Arc<ui::webview::test_engine::TestEngine>>();
         assert!(engine.is_some(), "test browser requires its lent engine");
         let engine = engine.unwrap_or_else(ui::webview::test_engine::TestEngine::new);
-        cx.surface(crate::BrowserWindow::new(
-            crate::BrowserWidget::with_engine(engine, true),
-            false,
-        ))
+        crate::resource::browser_view(
+            cx,
+            crate::BrowserWindow::new(crate::BrowserWidget::with_engine(engine, true), false),
+        )
     }
 }
 #[test]

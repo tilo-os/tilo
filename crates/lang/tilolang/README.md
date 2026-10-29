@@ -30,6 +30,36 @@ have, and its actions change them there; what it creates goes under the new id. 
 before is signed into the app's manifest, and installing it over an app of that id from another
 publisher is refused; from the same publisher it takes that app's place.
 
+A package migrates its own records when its schema changes shape. The field the type no longer
+uses stays, marked `(previously)`: its values stay in the records, and only a migration reads
+it. A `migration action` on the type moves what it held to where the type keeps it now:
+
+```
+type Column {
+    title: Text (title)
+    cards: Collection<Card>
+}
+
+type Board {
+    columns: Collection<Column>
+    cards: Collection<Card> (previously)
+}
+
+/// Puts each card of a board from before into its column, in the order the board showed them.
+migration action place_cards(b: Board) {
+    for card in b.cards {
+        let col = card.column
+        col.cards.move(card, to: col.cards.len())
+    }
+}
+```
+
+The platform runs it once on each resource of its type that holds something in a `(previously)`
+field (a type without one: once on each resource), as an ordinary action of the person whose
+window opened the data: it is in history, undone like any other, and records in the same change
+that it ran. A migration is never offered. It cannot delete anything; moving items between
+collections keeps their ids and history.
+
 To start a package, make a directory next to the others with one file:
 
 ```
@@ -43,14 +73,14 @@ root Counter
 
 default view counter for Counter
 
-action increment(c: Counter) {
+primary action increment(c: Counter) (icon: .plus) {
     c.value += 1
 }
 
 view counter(c: Counter) {
     page {
-        heading("{c.value}")
-        button("+1", on: increment(c), style: .primary) as plus
+        text("{c.value}", role: .numeric)
+        button(increment(c)) as plus
     }
 }
 ```
@@ -225,13 +255,13 @@ view notebook(nb: Notebook) {
     page {
         stack(gap: .section) {
             row(distribute: .between) {
-                heading("Notes")
-                button("New note", on: new_note(nb), style: .primary) as new
+                text("Notes", role: .title)
+                button(new_note(nb)) as new
             }
             button("Sort by title", on: set(order, .title))
             for n in listed(nb, order) {
-                button(n.title, on: open(n), style: .plain)
-                text(n.body, style: .caption, truncate, min: 11rem)
+                button(n.title, on: open(n))
+                text(n.body, role: .caption, truncate, min: 11rem)
             }
         }
     }
@@ -239,12 +269,13 @@ view notebook(nb: Notebook) {
 ```
 
 The options and their values: `gap:`/`padding:` `.tight .related .sibling .section .group`;
-`align:` `.start .center .end .stretch`; `distribute:` `.start .center .end .between`;
-`collapse:` `.stack .drawer .navigate`; `side:` `.leading .trailing`; `at:` the nine positions
-`.top_leading` ... `.bottom_trailing`; `axis:` `.vertical .horizontal`; button `style:`
-`.secondary .primary .destructive .plain`; text `style:` `.body .title .heading .caption .label
-.code`. `space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation`
-(`.portrait .landscape .ultrawide`) compare with the same literals.
+`align:` `.start .center .end .stretch`; `distribute:` `.start .center .end .between`; `collapse:`
+`.stack .drawer .navigate`; `side:` `.leading .trailing`; `at:` the nine positions `.top_leading`
+... `.bottom_trailing`; `axis:` `.vertical .horizontal`; text `role:` `.body .title .caption
+.numeric`. A button takes its look from its action, `primary action` or `destructive action`, and
+its label and icon from the action too unless it names them (`button(n.title, on: open(n))`).
+`space.width_class` (`.compact .medium .expanded .wide`) and `space.orientation` (`.portrait
+.landscape .ultrawide`) compare with the same literals.
 
 **View state** (workspace-model.md, "In the language") is declared at the top of a view:
 `window name: T = default` is the window's and shared, `lens name: T = default` is each

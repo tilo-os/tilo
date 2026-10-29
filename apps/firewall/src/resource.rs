@@ -7,14 +7,14 @@
 //! because the deletion must win over a concurrent edit; taking in what
 //! firewalld reported is the `import` verb. After every change, each device
 //! running the app applies the stored configuration to its own firewalld (a
-//! job of its window, the latest configuration winning); what it applied
-//! last is that device's own setting, so an unchanged configuration is not
-//! pushed again.
+//! job of its window, the latest configuration winning); what each device
+//! applied last is in a record beside it ([`AppliedConfig`]), so an
+//! unchanged configuration is not pushed again.
 
-use serde::{Deserialize, Serialize};
-use ui::framework::{ResourceApp, SeedCx, Setting, ViewCx};
+use std::collections::BTreeMap;
+
+use ui::framework::{PersonRecord, ResourceApp, SeedCx, ViewCx};
 use ui::prelude::Effect;
-use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{self, Availability, Derived, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::widget::Element;
 
@@ -174,31 +174,49 @@ pub enum FirewallEffect {
     ReadBlocked,
 }
 
-/// What this device last pushed to (or read from) its firewalld, so the
-/// projection applies a configuration once rather than on every launch.
-/// Never leaves the device: another device's firewalld is its own.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// What each device last pushed to (or read from) its firewalld, by device,
+/// so the projection applies a configuration once rather than on every
+/// launch: a record Firewall keeps beside its own in the workspace, each
+/// device reading and writing only its own entry, since another device's
+/// firewalld is its own.
+#[derive(tilo_resource::Model, Clone, Debug, Default, PartialEq)]
 pub struct AppliedConfig {
-    /// The applied configuration in canonical JSON.
-    pub config: Option<String>,
+    /// The applied configuration in canonical JSON, by device.
+    pub devices: BTreeMap<String, String>,
 }
 
-impl SettingsSchema for AppliedConfig {
-    const SCOPE: Scope = Scope::DeviceLocal;
+#[resource(kind = "firewall.applied", label = "Applied configuration")]
+impl AppliedConfig {
+    /// `device`'s firewalld holds `config`, in canonical JSON.
+    #[action(housekeeping)]
+    pub fn applied(&mut self, device: String, config: String) {
+        self.devices.insert(device, config);
+    }
 }
 
-/// The stored configuration still to apply on this device, keyed by its
-/// canonical form: nothing while there is none, while it is invalid, or once
-/// this device applied exactly it.
+impl AppliedConfig {
+    /// What `device` applied last, in canonical JSON.
+    #[must_use]
+    pub fn on(&self, device: &str) -> Option<&str> {
+        self.devices.get(device).map(String::as_str)
+    }
+}
+
+/// The [`AppliedConfig`] record and this device's id.
+pub(crate) type AppliedOnDevice = (PersonRecord<AppliedConfig>, String);
+
+/// The stored configuration still to apply on a device that last applied
+/// `applied`, keyed by its canonical form: nothing while there is none,
+/// while it is invalid, or once the device applied exactly it.
 pub(crate) fn pending_apply(
     config: &FirewallConfig,
-    applied: &AppliedConfig,
+    applied: Option<&str>,
 ) -> Vec<(String, FirewallConfig)> {
     if config.zones.is_empty() || config.validate().is_err() {
         return Vec::new();
     }
     let canonical = config.to_json();
-    if applied.config.as_deref() == Some(canonical.as_str()) {
+    if applied == Some(canonical.as_str()) {
         return Vec::new();
     }
     vec![(canonical, config.clone())]
@@ -221,6 +239,13 @@ pub(crate) fn apply_on_device(config: &FirewallConfig, door: &Door, allow_host: 
     // A unit test must never change the host it runs on. The plan is the
     // same data the product path would execute.
     if allow_host && !cfg!(test) {
+        // A firewalld that holds the configuration already, as the one it
+        // was imported from does, is not given it again.
+        if crate::backend::import().map(|held| held.canonical().to_json())
+            == Some(config.canonical().to_json())
+        {
+            return Ok(0);
+        }
         backend.apply(config)?;
     } else {
         backend.plan_only(config)?;
@@ -244,9 +269,9 @@ pub(crate) fn applied_status(applied: &Applied) -> Notice {
 }
 
 /// Remember that this device's firewalld holds `config`.
-pub(crate) fn remember_applied(applied: &Setting<AppliedConfig>, config: &FirewallConfig) {
-    let config = Some(config.to_json());
-    if let Err(error) = applied.set(AppliedConfig { config }) {
+pub(crate) fn remember_applied((record, device): &AppliedOnDevice, config: &FirewallConfig) {
+    let applied = AppliedConfig::APPLIED.with((device.clone(), config.to_json()));
+    if let Err(error) = record.invoke(&applied) {
         tracing::warn!(%error, "could not remember the applied firewall configuration");
     }
 }
@@ -337,22 +362,17 @@ impl ResourceApp for FirewallShell {
     }
 
     /// A new record starts with what firewalld on the creating device
-    /// already has, which that device therefore need not apply again. A
-    /// device without a readable firewalld starts empty and offers a retry,
-    /// and so does a record created without a window: it is no device's.
+    /// already has, which that device therefore does not push again
+    /// ([`apply_on_device`]). A device without a readable firewalld starts
+    /// empty and offers a retry, and so does a record created without a
+    /// window: it is no device's.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Firewall>> {
-        let Some(host) = cx.host().filter(|host| host.capture().is_none()) else {
+        if cx.host().is_none_or(|host| host.capture().is_some()) {
             return Vec::new();
-        };
+        }
         let Ok(config) = read_device() else {
             return Vec::new();
         };
-        let applied = AppliedConfig {
-            config: Some(config.canonical().to_json()),
-        };
-        if let Err(error) = host.settings::<AppliedConfig>().set(&applied) {
-            tracing::warn!(%error, "could not remember the imported firewall configuration");
-        }
         vec![Firewall::import_of(&config)]
     }
 }
@@ -415,24 +435,21 @@ mod tests {
     #[test]
     fn a_device_applies_each_stored_configuration_once() {
         let config = sample_config().canonical();
-        let fresh = AppliedConfig::default();
-        let pending = pending_apply(&config, &fresh);
+        let pending = pending_apply(&config, None);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].1, config);
 
-        let applied = AppliedConfig {
-            config: Some(config.to_json()),
-        };
-        assert!(pending_apply(&config, &applied).is_empty());
+        let applied = config.to_json();
+        assert!(pending_apply(&config, Some(&applied)).is_empty());
 
         let mut changed = config.clone();
         changed.panic_mode = true;
-        assert_eq!(pending_apply(&changed, &applied).len(), 1);
+        assert_eq!(pending_apply(&changed, Some(&applied)).len(), 1);
 
-        assert!(pending_apply(&FirewallConfig::empty(), &fresh).is_empty());
+        assert!(pending_apply(&FirewallConfig::empty(), None).is_empty());
         let mut invalid = config;
         invalid.zones[0].services.push("bad service".into());
-        assert!(pending_apply(&invalid, &fresh).is_empty());
+        assert!(pending_apply(&invalid, None).is_empty());
     }
 
     /// The published root offers start/stop and panic as document edits
@@ -477,10 +494,10 @@ mod tests {
             "{retry:?}"
         );
 
-        let remembered = app.settings::<AppliedConfig>();
+        let remembered = app.person::<AppliedConfig>().unwrap();
         let stored = app.state().config().to_json();
         let applied = app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
-            remembered.get().config.as_deref() == Some(stored.as_str())
+            remembered.with(|applied| applied.on("test-device") == Some(stored.as_str()))
         });
         assert!(applied, "the device remembers the configuration it applied");
 
@@ -490,7 +507,7 @@ mod tests {
         assert!(!app.state().enabled);
         let stopped = app.state().config().to_json();
         let reapplied = app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
-            remembered.get().config.as_deref() == Some(stopped.as_str())
+            remembered.with(|applied| applied.on("test-device") == Some(stopped.as_str()))
         });
         assert!(reapplied, "the edit reached this device's firewall");
     }

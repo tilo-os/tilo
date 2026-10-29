@@ -1,11 +1,169 @@
-//! The room's saved grant sets and sandbox capabilities, which its governor
-//! alone writes and every member reads from the room's governance document
-//! ([`tilo_desktop_model::projection::workspace_presets_of`],
+//! The room's own settings: its name, its saved grant sets and their
+//! assignment, the actions its apps may use of each other and its apps'
+//! sandbox capabilities, which every member reads from the room's
+//! governance document ([`tilo_desktop_model::projection::workspace_presets_of`],
 //! [`tilo_desktop_model::projection::room_sandbox_of`]).
+//!
+//! A member's device writes a change to them itself, signed with its own
+//! key; the room's admission decides it against the writer's own grants
+//! where they made it (`room::membership`), here and on every device that
+//! receives it.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
-use super::{SystemTime, err};
+use super::{StatePeer, SystemTime, err};
+use crate::workspace_membership::SettingsChange;
 use ed25519_dalek::SigningKey;
+use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, roles};
 use tilo_desktop_model::projection;
+use tilo_user_identity::DeviceCert;
+
+impl StatePeer {
+    /// Make `change` to the room's settings as `caller`, signed by `key`,
+    /// the caller's own device. Answers whether governance changed.
+    pub(super) fn apply_settings_change(
+        &mut self,
+        caller: &DeviceCert,
+        change: &SettingsChange,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let member = self.permissions(caller.device_public_key, now)?;
+        let bound = roles::foreign_device_bound();
+        let authority = member.authority(&bound);
+        let seconds = now
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let mut workspace = self.settings_workspace()?;
+        let refused = |error: &dyn std::fmt::Display| error.to_string();
+        match change {
+            SettingsChange::Rename { name } => {
+                let name = crate::workspace_membership::valid_room_name(name)?.to_owned();
+                if self.governance().room_name().as_deref() == Some(name.as_str()) {
+                    return Ok(false);
+                }
+                self.governance_mut().author_room_name(&name, key, now)?;
+                Ok(true)
+            }
+            SettingsChange::SavePreset { preset } => {
+                workspace
+                    .save_preset_with_at(&authority, preset.clone(), seconds)
+                    .map_err(|error| refused(&error))?;
+                self.governance_mut()
+                    .put_governed_presets(&workspace.presets, key, now)
+            }
+            SettingsChange::AssignPreset {
+                preset,
+                subject,
+                lifetime,
+            } => {
+                let assigned = workspace
+                    .assign_preset_with_at(
+                        &member.person,
+                        &authority,
+                        preset,
+                        subject,
+                        lifetime,
+                        seconds,
+                    )
+                    .map_err(|error| refused(&error))?;
+                let grants: Vec<Grant> = workspace
+                    .policy
+                    .grants
+                    .iter()
+                    .filter(|grant| assigned.contains(&grant.id))
+                    .cloned()
+                    .collect();
+                self.governance_mut().put_governed_grants(&grants, key, now)
+            }
+            SettingsChange::GrantAppAction(action) => {
+                if action.target_app == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID {
+                    return Err("governing the workspace is granted to people, not apps".into());
+                }
+                // Enough for any action that at most changes the room
+                // undoably: an outside effect still asks.
+                let grant = Grant::new(
+                    format!("app-action:{}", uuid::Uuid::new_v4().simple()),
+                    Subject::App(action.app.clone()),
+                    action.node(&workspace.node()),
+                    KindSet::READ_UNDOABLE,
+                    Answer::Allow,
+                    Subject::person(member.person.as_str()),
+                )
+                .with_lifetime(Lifetime::UntilRevoked);
+                self.apply_member_change(
+                    caller,
+                    &tilo_action_policy::Change::Grant(grant),
+                    key,
+                    now,
+                )
+            }
+            SettingsChange::RevokeAppAction(action) => {
+                // Every grant given for the action, through a grant here or
+                // by answering the app's ask in place.
+                let subject = Subject::App(action.app.clone());
+                let node = action.node(&workspace.node());
+                let revoked: Vec<_> = workspace
+                    .policy
+                    .grants
+                    .iter()
+                    .filter(|grant| {
+                        grant.subject == subject && (grant.node == node || node.covers(&grant.node))
+                    })
+                    .map(|grant| grant.id.clone())
+                    .collect();
+                if revoked.is_empty() {
+                    return Ok(false);
+                }
+                self.governance_mut()
+                    .remove_governed_grants(&revoked, key, now)
+            }
+            SettingsChange::GrantSandbox { capability } => {
+                if !capability.persists_across_restart() {
+                    return Err(
+                        "a capability that ends with a session or a single use is never \
+                         written into the room"
+                            .into(),
+                    );
+                }
+                let mut capability = capability.clone();
+                if capability.id.trim().is_empty() {
+                    capability.id = format!("cap-{}", uuid::Uuid::new_v4().simple());
+                }
+                workspace.grant_sandbox(
+                    capability
+                        .granted_by(collab_types::caps::Principal::Person(member.person.clone())),
+                );
+                self.governance_mut()
+                    .put_governed_sandbox(&workspace.sandbox, key, now)
+            }
+            SettingsChange::RevokeSandbox { capability } => {
+                if !workspace.revoke_sandbox(capability) {
+                    return Ok(false);
+                }
+                self.governance_mut()
+                    .put_governed_sandbox(&workspace.sandbox, key, now)
+            }
+        }
+    }
+
+    /// The room's governance as a workspace reads it: its name, policy,
+    /// sandbox and grant sets.
+    fn settings_workspace(&self) -> Result<tilo_desktop_model::Workspace, String> {
+        let doc = self
+            .core
+            .room_doc
+            .as_deref()
+            .ok_or("room governance missing")?;
+        let room = tilo_desktop_model::ids::RoomId::parse(&self.core.room)
+            .ok_or("the room is not a UUID")?;
+        let mut workspace = tilo_desktop_model::Workspace::in_room(
+            tilo_desktop_model::ids::WorkspaceId(0),
+            room,
+            String::new(),
+        );
+        crate::room::adopt_room(&mut workspace, doc, &[]);
+        Ok(workspace)
+    }
+}
 
 impl PeerGovernance<'_> {
     /// The grant sets the room has saved, as its governance records them.
@@ -21,13 +179,13 @@ impl PeerGovernance<'_> {
 }
 
 impl PeerGovernanceMut<'_> {
-    /// Make the room's saved grant sets `presets`, as the governor `key`
-    /// decided. A set grants nothing itself; assigning it writes grants.
+    /// Make the room's saved grant sets `presets`, written by `key`. A set
+    /// grants nothing itself; assigning it writes grants.
     /// Answers whether governance changed.
     ///
     /// # Errors
     ///
-    /// `key` is not the governance writer, or governance cannot be updated.
+    /// `key` is not a member's device, or governance cannot be updated.
     pub fn put_governed_presets(
         self,
         presets: &[tilo_action_policy::Preset],
@@ -39,12 +197,12 @@ impl PeerGovernanceMut<'_> {
         })
     }
 
-    /// Make the room's sandbox capabilities `sandbox`, as the governor `key`
-    /// decided. Answers whether governance changed.
+    /// Make the room's sandbox capabilities `sandbox`, written by `key`.
+    /// Answers whether governance changed.
     ///
     /// # Errors
     ///
-    /// `key` is not the governance writer, or governance cannot be updated.
+    /// `key` is not a member's device, or governance cannot be updated.
     pub fn put_governed_sandbox(
         self,
         sandbox: &[collab_types::caps::CapOverride],
@@ -56,16 +214,15 @@ impl PeerGovernanceMut<'_> {
         })
     }
 
-    /// Write `edit` into the room's governance document as the governor
-    /// `key`, and admit it the way every member admits the governor's
-    /// changes.
+    /// Write `edit` into the room's governance document as `key`, and
+    /// admit it the way every member admits it.
     pub(super) fn author(
         self,
         key: &SigningKey,
         now: SystemTime,
         edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), automerge::AutomergeError>,
     ) -> Result<bool, String> {
-        self.peer.require_governance_writer(key, now)?;
+        self.peer.require_member_writer(key, now)?;
         let mut doc = self
             .peer
             .core
@@ -73,9 +230,7 @@ impl PeerGovernanceMut<'_> {
             .clone()
             .ok_or("room governance missing")?;
         let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         edit(&mut doc).map_err(err)?;
         doc.commit();
         if doc.get_heads() == before {

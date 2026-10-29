@@ -289,23 +289,17 @@ read's wait and re-checks it only when an identity file, the membership or a tim
 registered announces a change; when one of those cannot be followed it re-checks every
 200 ms, five times a second per read, forever. R09 measures that on the installed desktop.
 
-A workspace is natively committed only when a relay of another of the person's devices
-governs it: a host that may not own workspaces (one that may is a node, whose rooms are
-stewarded, not committed). One VM has no second device, so R09 makes one the way a person
-enrolls a home server out of band, as the slot user and only into its throwaway identity
-(`TILO_IDENTITY_ROOT`; a slot without one leaves R09 unobservable):
+Every new workspace is placed on this device's own host, which governs its room: the native
+owner enrolls with that host as a member and the apps' records are sealed with the content
+keys its steward hands the broker. R09 makes one with `workspace.create` and waits until the
+state dump's `native_authority` holds its room.
 
-1. `tilo-enroll device-key` makes the relay's key in an owner-only directory of the slot
-   user's runtime dir.
-2. `tilo-enroll certify --capability host --capability read-all --home-peer-service <relay
-   endpoint id> --home-peer-addr 127.0.0.1:<port>` certifies it with the identity's root,
-   lists it in the identity's devices and records it in `$TILO_IDENTITY_ROOT/peers/home-peers.json`
-   as a home peer listening on loopback (`24000 + uid % 8000`); `tilo-enroll install-cert`
-   gives the relay its certificate.
-3. `tilo-relay run` starts as the transient user unit `tilo-acceptance-home-relay`.
-4. `workspace.create` makes a workspace and `invitation.issue` invites into it, which shares
-   it on the home relay and enrolls this device into it; R09 waits until the state dump's
-   `native_authority` holds the workspace's room under the relay's governance.
+The room has no other member device, so R09 does not cover what a second member's presence
+brings (announcements arriving from another device, the host serving a live peer). On one VM
+the way to add one is having the person's home relay host the workspace as well (Settings,
+Devices & Sync): that switch is bound to its row, which the action catalogue does not offer,
+and its `tilo.hosting` step answers only callers confined to a room, which the admin control
+socket is not.
 
 It then opens Notes and Files there (R02's opener) and, over the idle window, sums the
 context switches of the compositor's `tilo-collab-bro` threads and of every app's
@@ -313,9 +307,7 @@ context switches of the compositor's `tilo-collab-bro` threads and of every app'
 `idle_shared_broker_wakeups_per_s` (1/s), the shovels within
 `idle_shared_shovel_wakeups_per_s` (0). A compositor with no broker thread or apps with no
 shovel leave it unobservable. Afterwards it closes the windows, returns to the workspace the
-run was in, stops the relay (its journal is `R09-home-relay.log`) and removes the relay from
-the home-peer registry. It runs before R07, A16 and R05, which judge the apps it opens too.
-An image whose `tilo-enroll` predates `certify --home-peer-service` leaves R09 unobservable.
+run was in. It runs before R07, A16 and R05, which judge the apps it opens too.
 
 ### Performance records
 

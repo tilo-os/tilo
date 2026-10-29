@@ -535,8 +535,11 @@ impl NativeWorkspaceOwner {
         Ok(reports)
     }
     /// The room changes `message` carries when one of the owner's devices,
-    /// other than this one, sent it: the room's governance, which retires
-    /// what this member published once it carries it.
+    /// other than this one, sent it, or this device's own room host: the
+    /// room's governance, which retires what this member published once it
+    /// carries it. This device's host signs with this device's key; what it
+    /// sends is told from this replica's own writes by the host's actor its
+    /// changes are made under ([`tilo_peer_state::room_host_actor`]).
     fn governance_changes(
         candidate: &NativeCommittedView,
         origin: TransportOrigin,
@@ -550,7 +553,16 @@ impl NativeWorkspaceOwner {
         let NeighbourMsg::SyncResp { changes, .. } = message else {
             return None;
         };
-        (author != candidate.device().device_public_key && candidate.peer.signed_by_owner(&author))
+        let from_governance = if author == candidate.device().device_public_key {
+            let host = tilo_peer_state::room_host_actor(&author);
+            changes.iter().any(|bytes| {
+                automerge::Change::from_bytes(bytes.clone())
+                    .is_ok_and(|change| change.actor_id() == &host)
+            })
+        } else {
+            candidate.peer.signed_by_owner(&author)
+        };
+        from_governance
             .then(|| publication::change_hashes(changes).ok())
             .flatten()
     }

@@ -14,6 +14,10 @@ use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget}
 use crate::standalone_history_host::{HostHistoryLayout, StandaloneHistoryHost};
 use crate::widget::Widget;
 
+mod controls;
+
+pub(crate) use controls::{ControlHost, json_argument};
+
 /// A host's document and laid-out widget tree, borrowed for one read.
 pub(crate) struct HostTree<'a> {
     pub(crate) state: &'a crate::State,
@@ -210,8 +214,99 @@ pub(crate) struct HostDocument<'a> {
     pub(crate) state: &'a mut crate::State,
     pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
-    pub(crate) permissions: &'a crate::permissions::PermissionContext,
+    /// Who acts here: the author of what this host writes for its person.
     pub(crate) author: &'a crate::permissions::UserId,
+}
+
+/// One invocation a host hands a door: who asks, with what argument, under
+/// which confirmation, invocation and context.
+#[derive(Clone, Copy)]
+pub(crate) struct ResourceInvocation<'a> {
+    pub(crate) address: &'a tilo_actions::ActionAddress,
+    pub(crate) actor: &'a str,
+    pub(crate) argument: Option<&'a str>,
+    pub(crate) confirmation_satisfied: bool,
+    pub(crate) broker_admitted: bool,
+    pub(crate) confirmation_evidence: Option<&'a serde_json::Value>,
+    pub(crate) invocation: Option<tilo_actions::InvocationId>,
+    pub(crate) ambient_context: Option<&'a tilo_actions::ActionContext>,
+    pub(crate) scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
+}
+
+impl<'a> ResourceInvocation<'a> {
+    pub(crate) fn new(address: &'a tilo_actions::ActionAddress, actor: &'a str) -> Self {
+        Self {
+            address,
+            actor,
+            argument: None,
+            confirmation_satisfied: false,
+            broker_admitted: false,
+            confirmation_evidence: None,
+            invocation: None,
+            ambient_context: None,
+            scope: None,
+        }
+    }
+
+    pub(crate) fn argument(mut self, argument: Option<&'a str>) -> Self {
+        self.argument = argument;
+        self
+    }
+
+    pub(crate) fn confirmed(mut self, confirmed: bool) -> Self {
+        self.confirmation_satisfied = confirmed;
+        self
+    }
+
+    pub(crate) fn broker_admitted(mut self, admitted: bool) -> Self {
+        self.broker_admitted = admitted;
+        self
+    }
+
+    pub(crate) fn evidence(mut self, evidence: Option<&'a serde_json::Value>) -> Self {
+        self.confirmation_evidence = evidence;
+        self
+    }
+
+    pub(crate) fn invocation(mut self, invocation: Option<tilo_actions::InvocationId>) -> Self {
+        self.invocation = invocation;
+        self
+    }
+
+    pub(crate) fn ambient_context(
+        mut self,
+        context: Option<&'a tilo_actions::ActionContext>,
+    ) -> Self {
+        self.ambient_context = context;
+        self
+    }
+
+    pub(crate) fn scope(
+        mut self,
+        scope: Option<&'a crate::invocation_scope::ResourceInvocationScope>,
+    ) -> Self {
+        self.scope = scope;
+        self
+    }
+}
+
+/// A host's laid-out tree, writable: what letting go of nodes touches.
+pub(crate) struct HostLayout<'a> {
+    pub(crate) taffy: &'a mut TaffyTree<()>,
+    pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
+    pub(crate) bindings: &'a mut crate::bound_dispatch::BoundNodeMap,
+    pub(crate) focused: &'a mut Option<NodeId>,
+}
+
+/// What laying a host's widgets out again in place touches.
+pub(crate) struct HostRemount<'a> {
+    pub(crate) root: &'a mut dyn Widget,
+    pub(crate) state: &'a crate::State,
+    pub(crate) theme: &'a crate::theme::Theme,
+    pub(crate) taffy: &'a mut TaffyTree<()>,
+    pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
+    pub(crate) bindings: &'a mut crate::bound_dispatch::BoundNodeMap,
+    pub(crate) close_reports: &'a mut Vec<crate::application::ComponentCloseReport>,
 }
 
 pub(crate) trait HostCore {
@@ -220,6 +315,163 @@ pub(crate) trait HostCore {
 
     /// The host's document, writable, beside its bindings.
     fn document(&mut self) -> HostDocument<'_>;
+
+    /// Every tree the layout maps can name: the app root and what the host
+    /// lays out around and over it.
+    fn visit_layout_roots(&self, visit: &mut dyn FnMut(&dyn Widget));
+
+    /// The walk the layout maps were admitted against.
+    fn adopted_layout_mut(&mut self) -> &mut crate::retained_widgets::Adopted;
+
+    /// The laid-out tree, writable.
+    fn layout_mut(&mut self) -> HostLayout<'_>;
+
+    /// Forget the layout maps and build the layout again before anything
+    /// reads them.
+    fn discard_layout_maps(&mut self);
+
+    /// The maps were just admitted.
+    fn layout_admitted(&mut self) {}
+
+    /// Whether a widget replaced children since the maps were admitted, so
+    /// they no longer describe the live tree.
+    fn composition_replaced(&mut self) -> bool;
+
+    /// Right after a build registered widgets in the maps, before any
+    /// widget code runs: find each of them in the live tree.
+    fn admit_layout_maps(&mut self) {
+        self.layout_admitted();
+        let mut maps = std::mem::take(self.adopted_layout_mut());
+        let tree = self.tree();
+        // SAFETY: every pointer not yet adopted was registered by the build
+        // that just ran on these trees, and no widget code ran since.
+        unsafe {
+            maps.admit(
+                tree.node_map,
+                &|visit| self.visit_layout_roots(visit),
+                tree.taffy,
+            );
+        }
+        *self.adopted_layout_mut() = maps;
+    }
+
+    /// Whether the maps name a widget that is no longer in the tree: a
+    /// widget replaced children without reporting it. The maps are then
+    /// forgotten and the layout built again, so nothing reads them first.
+    fn layout_maps_stale(&mut self) -> bool {
+        if self.tree().node_map.is_empty() {
+            return false;
+        }
+        let maps = std::mem::take(self.adopted_layout_mut());
+        let mut relaid = Vec::new();
+        let live = maps.still_live(&|visit| self.visit_layout_roots(visit), &mut relaid);
+        *self.adopted_layout_mut() = maps;
+        if live {
+            let layout = self.layout_mut();
+            let removed =
+                crate::retained_widgets::let_go_under(&relaid, layout.taffy, layout.node_map);
+            layout.bindings.forget(&removed);
+            if layout.focused.is_some_and(|node| removed.contains(&node)) {
+                *layout.focused = None;
+            }
+            return false;
+        }
+        self.discard_layout_maps();
+        true
+    }
+
+    /// Where focus is, as an identity that survives a rebuild. The mapped
+    /// tree is read only while it still is the live composition; once a
+    /// widget replaced children since the maps were admitted, the focused
+    /// control is found in the live tree instead.
+    fn capture_focus_identity(&mut self) -> Option<crate::widget::layout::CompositionFocus> {
+        let replaced = self.composition_replaced();
+        let tree = self.tree();
+        if replaced || tree.node_map.is_empty() {
+            return crate::widget::layout::CompositionFocus::capture_live(tree.root);
+        }
+        // SAFETY: no widget was replaced since the maps were admitted, so
+        // they describe this exclusively owned live tree.
+        unsafe {
+            crate::widget::layout::CompositionFocus::capture(
+                tree.focused,
+                tree.node_map,
+                tree.bindings,
+            )
+        }
+    }
+
+    /// What laying the widgets out again in place touches.
+    fn remount_parts(&mut self) -> HostRemount<'_>;
+
+    /// A remount is about to be tried: whether the host's laid-out tree
+    /// allows one (it is built, and nothing else asked for a rebuild).
+    fn begin_remount(&mut self) -> bool;
+
+    /// The remount mounted `built` fresh nodes and admitted them.
+    fn remounted(&mut self, built: usize);
+
+    /// Whether the composition changed since the maps were admitted (and
+    /// the layout must be built again).
+    fn composition_dirty(&mut self) -> bool;
+
+    /// Carry out the change the root's widgets make in place
+    /// ([`crate::widget::StructureChange::Children`]) in the retained tree:
+    /// mount what they added, unmount what they let go of, keep the rest.
+    /// `false` when the change needs the whole tree built again instead:
+    /// History is not live, a widget did not carry it out, or it set off
+    /// another.
+    fn remount_in_place(&mut self) -> bool {
+        // History lays out its own chrome around the app; while it is live,
+        // the app's widgets change only what is theirs.
+        if !self.begin_remount()
+            || self.tree().history.is_some_and(|history| {
+                !history.live_interactive() || history.returning_live() || history.review_is_open()
+            })
+        {
+            return false;
+        }
+        let parts = self.remount_parts();
+        // Components a widget replaced report their close here, as before a
+        // rebuild.
+        parts
+            .close_reports
+            .extend(crate::component_lifecycle::take_component_close_reports(
+                parts.root,
+            ));
+        let mapped = parts.node_map.len();
+        let mut remount = crate::widget::Remount::new(parts.taffy, parts.theme, parts.node_map);
+        let applied = parts.root.remount_children(&mut remount);
+        let (mounted, unmounted) = remount.finish();
+        let built = (parts.node_map.len() + unmounted.len()).saturating_sub(mapped);
+        // The rows it mounted are checked against the live tree at once, as
+        // a build's are, so the next structure check finds the maps live.
+        self.admit_layout_maps();
+        let parts = self.remount_parts();
+        // A change no widget carried out, or any other beside it, needs the
+        // whole tree.
+        if !applied || parts.root.take_structure_change() != crate::widget::StructureChange::None {
+            return false;
+        }
+        parts.bindings.forget(&unmounted);
+        for (parent, child) in mounted {
+            // SAFETY: the host exclusively owns this tree, its maps and
+            // widgets; the remount above admitted `child` into both.
+            if !unsafe {
+                parts
+                    .bindings
+                    .admit_mounted(parent, child, parts.taffy, parts.node_map)
+            } {
+                return false;
+            }
+        }
+        // The mounted widgets are synced before they are measured, as a
+        // rebuild syncs its fresh ones; a sync that replaces delegates needs
+        // the whole tree after all.
+        parts.root.sync(&parts.state.doc, &parts.state.root);
+        self.remounted(built);
+        !self.composition_dirty()
+    }
 
     /// Something is about to reach a laid-out widget, which may change what
     /// the host presents next.
@@ -245,6 +497,69 @@ pub(crate) trait HostCore {
         &mut self,
         prepared: PreparedContinuation,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>;
+
+    /// A History write changed the document: present and persist it.
+    fn history_changed_document(&mut self);
+
+    /// Build the fresh read-only app root a History preview draws.
+    fn build_history_preview(
+        &mut self,
+        factory: &crate::standalone_history_host::PreviewRootFactory,
+    ) -> Result<Box<dyn Widget>, String> {
+        factory()
+    }
+
+    /// Carry out what History asked of the host since it last looked: write
+    /// a restore the person confirmed, then build the preview a selection
+    /// asked for. Whether a preview was installed.
+    fn settle_history_requests(&mut self) -> bool {
+        let (host, _) = self.document_history_with_tree();
+        if let Some(confirmed) = host.take_confirmed_restore() {
+            let author = self.document().author.clone();
+            let result = self.apply_history_restore(&confirmed, author);
+            self.document_history_with_tree().0.report_restore(&result);
+        }
+        let (host, _) = self.document_history_with_tree();
+        if !host.has_preview_request() {
+            return false;
+        }
+        let root = host.preview_root().and_then(|factory| {
+            self.build_history_preview(&factory)
+                .inspect_err(|error| tracing::debug!(%error, "history preview root refused"))
+                .ok()
+        });
+        self.with_history(|host, context| host.install_preview(root, context));
+        true
+    }
+
+    /// The one write behind every restore, from the History pane or an
+    /// action: one attributed, undoable change, presented and persisted like
+    /// any other.
+    fn apply_history_restore(
+        &mut self,
+        confirmed: &crate::standalone_history::ConfirmedHistoryRestore,
+        author: crate::permissions::UserId,
+    ) -> Result<bool, HistoryError> {
+        let result = crate::standalone_history::apply_restore(
+            self.document().state,
+            confirmed,
+            Some(author),
+        );
+        self.history_written(result)
+    }
+
+    /// Present and persist what a History write changed, and show History
+    /// the document as it now is.
+    fn history_written(
+        &mut self,
+        result: Result<bool, HistoryError>,
+    ) -> Result<bool, HistoryError> {
+        if matches!(result, Ok(true)) {
+            self.history_changed_document();
+        }
+        let _ = self.with_history(StandaloneHistoryHost::refresh);
+        result
+    }
 
     fn with_history<R>(
         &mut self,
@@ -332,7 +647,6 @@ pub(crate) trait HostCore {
     fn dispatch_semantic_node<R>(
         &mut self,
         node: NodeId,
-        action: &crate::a11y::Action,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, String> {
         self.widget_reached();
@@ -343,12 +657,7 @@ pub(crate) trait HostCore {
                 document.bindings,
                 document.node_map,
                 node,
-                action,
                 document.state,
-                crate::bound_dispatch::SemanticCaller {
-                    authority: document.permissions,
-                    author: document.author,
-                },
                 callback,
             )
         }
@@ -440,6 +749,49 @@ pub(crate) trait HostCore {
                 PendingControlStatus::Refused(reason)
             }
         })
+    }
+
+    /// History asked about its held-back controls: the tree it lays out is
+    /// about to change under the host's maps.
+    fn history_commands_arrived(&mut self);
+
+    /// Carry out what the registered History and the History surfaces
+    /// embedded in the app asked of their held-back controls: review,
+    /// confirm or cancel each, while History still holds input. Whether
+    /// anything asked.
+    fn service_pending_history_commands(&mut self) -> bool {
+        let commands = self
+            .registered_history_mut()
+            .map_or_else(Vec::new, |history| history.drain_pending_control_commands());
+        let embedded = crate::history_mode::embedded::drain_pending_commands(self.host_root_mut());
+        let asked = !commands.is_empty() || !embedded.is_empty();
+        if asked {
+            self.history_commands_arrived();
+        }
+        for command in commands {
+            let (token, confirmation) = match command {
+                ContinuationCommand::Review(token) => (token, None),
+                ContinuationCommand::Confirm(token, value) => (token, Some(value)),
+                ContinuationCommand::Cancel(token) => {
+                    if let Some(history) = self.registered_history_mut() {
+                        history.cancel_pending_control(&token);
+                    }
+                    continue;
+                }
+            };
+            let Some(prepared) =
+                self.registered_history_mut()
+                    .and_then(|history| match confirmation.as_deref() {
+                        Some(value) => history.prepare_pending_control_typed(&token, value),
+                        None => history.prepare_pending_control(&token, false),
+                    })
+            else {
+                continue;
+            };
+            self.settle_history_control(prepared, confirmation.is_some());
+        }
+        self.service_embedded_history_commands(embedded);
+        asked
     }
 
     /// Serve what History surfaces embedded in the app asked of their

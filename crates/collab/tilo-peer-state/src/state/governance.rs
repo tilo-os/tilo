@@ -371,9 +371,7 @@ impl PeerGovernanceMut<'_> {
             .map_err(err)?
             .ok_or("governed identities missing")?
             .1;
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         let mut changed = false;
         for (id, bytes, mut identity) in rows {
             let root = identity.device_cert.user_public_key;
@@ -435,6 +433,7 @@ impl PeerGovernanceMut<'_> {
             .as_ref()
             .ok_or("room governance missing")?;
         let mut document = (**cached).clone();
+        document.set_actor(self.peer.room_actor_of(key));
         match crate::governance::install_workspace_delegation(
             &mut document,
             &self.peer.core.authority,
@@ -498,7 +497,8 @@ impl PeerGovernanceMut<'_> {
             .as_ref()
             .ok_or("room governance missing")?;
         let mut document = (**cached).clone();
-        match crate::governance::admit_invited_member(&mut document, redemption, key, now)? {
+        document.set_actor(self.peer.room_actor_of(key));
+        match crate::governance::admit_invited_member(&mut document, redemption, now)? {
             crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
             crate::governance::AdmissionOutcome::Applied { changes } => {
                 let room = self.peer.core.room.clone();
@@ -572,9 +572,7 @@ impl PeerGovernanceMut<'_> {
             delegate: None,
         };
         let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         doc.put(
             &identities,
             hex::encode(device.device_public_key),
@@ -676,9 +674,7 @@ impl PeerGovernanceMut<'_> {
             .ok_or("governed peers missing")?
             .1;
         let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         for id in &devices {
             doc.put(&peers, id, name).map_err(err)?;
         }
@@ -776,9 +772,7 @@ impl PeerGovernanceMut<'_> {
             .ok_or("room governance missing")?;
         let before = doc.get_heads();
         let grants = governed_map(&doc, "grants")?;
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         for id in ids {
             if doc.get(&grants, id.as_str()).map_err(err)?.is_some() {
                 doc.delete(&grants, id.as_str()).map_err(err)?;
@@ -809,9 +803,7 @@ impl PeerGovernanceMut<'_> {
             .ok_or("room governance missing")?;
         let before = doc.get_heads();
         let map = governed_map(&doc, "grants")?;
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         for grant in grants {
             if grant.id.as_str().trim().is_empty()
                 || grant.node.room_id() != Some(self.peer.core.room.as_str())
@@ -868,9 +860,7 @@ impl PeerGovernanceMut<'_> {
             return Ok(false);
         }
         let before = doc.get_heads();
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
+        doc.set_actor(self.peer.room_actor_of(key));
         if member {
             doc.delete(&members, person.as_str()).map_err(err)?;
             crate::state::delete_member_joined(&mut doc, &person)?;

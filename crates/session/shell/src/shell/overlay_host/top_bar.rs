@@ -343,8 +343,8 @@ impl ShellOverlayHost {
     /// where a finger lands) though no modal holds input: the bar a maximized
     /// window shows over its client, the open strip switcher, the top bar
     /// shown over the windows, the capture tool's receipt and recording bar,
-    /// a notification banner. A press there is the shell's, never the
-    /// window's beneath.
+    /// a notification banner, a desk widget. A press there is the shell's,
+    /// never the window's beneath.
     pub(crate) fn chrome_band_captures_pointer_at(&self, p: Option<Point>) -> bool {
         p.is_some_and(|p| {
             self.maximized_chrome_captures_pointer_at(p)
@@ -352,6 +352,7 @@ impl ShellOverlayHost {
                 || self.top_bar_captures_pointer_at(p)
                 || self.fullscreen_bar_captures_pointer_at(p)
                 || self.capture_studio.takes_pointer_at(p)
+                || self.desk_captures_pointer_at(p)
         }) || self.notification_banner_captures_pointer_at(p)
     }
 

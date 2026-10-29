@@ -195,7 +195,10 @@ fn a_receiver_refuses_a_members_admission_without_a_valid_invitation() {
         now,
     );
     let mut doc = (**peer.core.room_doc.as_ref().unwrap()).clone();
-    crate::governance::admit_invited_member(&mut doc, &invited, &editor_key, now).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        editor_key.verifying_key().to_bytes().to_vec(),
+    ));
+    crate::governance::admit_invited_member(&mut doc, &invited, now).unwrap();
     let ledger = doc.get(ROOT, "invitation_receipts_v1").unwrap().unwrap().1;
     let key = hex::encode(invited.join().invite_id());
     let mut receipt: RedemptionReceipt =

@@ -12,5 +12,5 @@ toolbar-row 1 apps/mail/src/compose.rs
 # The browser's address row; the hairline under it is the page's edge.
 # Not a toolbar row, only the band's hairline borrowed: Writer's ruler wants
 # a divider of its own instead.
-window-header 1 apps/maps/src/app.rs
+window-header 1 apps/maps/src/app/window.rs
 history-in-row 1 apps/maps/src/app/state.rs

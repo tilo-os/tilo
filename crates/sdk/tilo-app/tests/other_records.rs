@@ -568,21 +568,19 @@ fn a_live_row_offers_another_records_field_edit() {
 }
 
 #[test]
-fn a_settings_section_opens_the_persons_record_only_when_first_written() {
+fn a_settings_section_is_kept_in_the_settings_document_alone() {
     let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
     // The person record of playback is declared and kept open; the display
-    // section is published from its stored value without a record of its
-    // own.
+    // section is the settings document's, with no record of its own.
     assert_eq!(app.open_person_records(), 1);
     assert!(published(&mut app, "settings:test.display").contains(&"field-edit".to_owned()));
-    assert_eq!(app.open_person_records(), 1, "publishing creates no record");
     app.call_on(
         "settings:test.display",
         "field-edit",
         serde_json::json!({ "edit": { "path": [{ "field": "high_contrast" }], "op": "set", "value": true } }),
     )
     .unwrap();
-    assert_eq!(app.open_person_records(), 2, "the first write keeps it");
+    assert_eq!(app.open_person_records(), 1, "a write keeps no record");
     assert!(app.settings::<Display>().get().high_contrast);
     app.call_on(
         "settings:test.display",

@@ -1033,6 +1033,10 @@ impl ApplicationHost {
         initial_view: Option<ApplicationLocalView>,
         runner_inputs: ComponentRunnerInputs,
     ) -> Result<PreparedComponentInputs, LaunchError> {
+        // An app that keeps each member's own opens the person's own record of the workspace.
+        if let Some(own) = definition.member_record_of(&self.author) {
+            return self.prepare_record(definition, instance_id, own, runner_inputs);
+        }
         let records = self.records_for(definition)?;
         if definition.keeps_room_record() {
             let primary = RecordCheckout::package_primary(definition.record_kind.clone());
@@ -1255,6 +1259,7 @@ mod native_process_tests {
             optional: vec![],
             opens: &[],
             room_record: false,
+            member_record: false,
             opens_before_record: false,
             create: rejected_factory,
         }
@@ -1327,6 +1332,51 @@ mod native_process_tests {
             restored_record.target,
             LaunchTarget::Record { .. }
         ));
+    }
+
+    #[test]
+    fn a_window_of_an_app_kept_as_each_members_own_opens_the_persons_own_record() {
+        use crate::application_test_support as probe;
+        let mut definition = definition(probe::APP);
+        definition.room_record = true;
+        definition.member_record = true;
+        let room = "3f2b1c00-0000-4000-8000-00000000000c";
+        let record_of = |person: &str| {
+            let temp = tempfile::tempdir().unwrap();
+            let mut native = NativeProcessHost::open_with(
+                &definition,
+                NativeProcessEnvironment {
+                    workspace_id: Some(room.into()),
+                    participation: Some("author".into()),
+                    continuity_instance: Some("61".into()),
+                    ..environment(temp.path())
+                },
+                UserId(person.into()),
+            )
+            .unwrap();
+            native
+                .prepare_launch(&definition, None, probe::runner_inputs())
+                .unwrap()
+                .context
+                .record()
+                .id
+                .clone()
+        };
+        let (ada, bo) = ("ab".repeat(32), "cd".repeat(32));
+        assert_eq!(
+            record_of(&ada),
+            RecordId::of_member(&ada, "host.probe").unwrap(),
+            "Ada's window opens her own record of the workspace"
+        );
+        assert_eq!(
+            record_of(&bo),
+            RecordId::of_member(&bo, "host.probe").unwrap(),
+            "Bo's opens his, never hers"
+        );
+        assert!(
+            record_of("person-a").is_package_primary(),
+            "someone without a root identity is a member of no workspace: the room's record"
+        );
     }
 
     #[test]

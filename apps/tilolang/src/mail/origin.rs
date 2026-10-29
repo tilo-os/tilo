@@ -212,7 +212,7 @@ fn types_of(host: &Host, app: &str) -> Option<(Types, String)> {
 
 impl ImapOrigin {
     /// The records the room holds already, read once: what was taken in before stays as it is.
-    fn load(&self, host: &Host, types: Types, root: ResourceRef) -> State {
+    fn load(host: &Host, types: Types, root: ResourceRef) -> State {
         let mut state = State {
             types,
             root,
@@ -371,43 +371,7 @@ impl ImapOrigin {
         };
         let mut touched: BTreeSet<String> = BTreeSet::new();
         // New conversations first: their messages go inside them.
-        let mut new_threads: Vec<String> = Vec::new();
-        let mut writes = Vec::new();
-        for m in &changes.messages {
-            if acct.messages.contains_key(&m.key)
-                || acct.threads.contains_key(&m.thread)
-                || new_threads.contains(&m.thread)
-            {
-                continue;
-            }
-            let mut fields = Vec::new();
-            put(&t.thread, &mut fields, "key", text(&m.thread));
-            put(&t.thread, &mut fields, "account", text(&changes.account));
-            put(&t.thread, &mut fields, "subject", text(&m.subject));
-            writes.push(OriginWrite::Insert {
-                owner: acct.record.clone(),
-                field: threads_field.to_owned(),
-                ty: t.thread.ty.clone(),
-                fields,
-            });
-            new_threads.push(m.thread.clone());
-        }
-        if let Ok(made) = host
-            .runtime()
-            .apply_origin("imap", writes, Some(now.to_owned()))
-        {
-            for (key, record) in new_threads.into_iter().zip(made) {
-                if let Some(record) = record {
-                    acct.threads.insert(
-                        key,
-                        Thr {
-                            record,
-                            keys: Vec::new(),
-                        },
-                    );
-                }
-            }
-        }
+        take_in_threads(host, now, t, acct, threads_field, changes);
         // Then the messages: new ones inserted, known ones brought to what the server says
         // unless someone changed them here and the server has not been told yet.
         let mut writes = Vec::new();
@@ -456,7 +420,6 @@ impl ImapOrigin {
                 }
             }
         }
-        let inserted_from = writes.len() - new_messages.len();
         // The inserts are in `writes` interleaved with updates; find their results by order.
         let Ok(made) = host
             .runtime()
@@ -464,7 +427,6 @@ impl ImapOrigin {
         else {
             return false;
         };
-        let _ = inserted_from;
         let mut made_iter = made.into_iter().flatten();
         for m in new_messages {
             let Some(record) = made_iter.next() else {
@@ -538,20 +500,19 @@ impl ImapOrigin {
                 continue;
             }
             let before = held.confirmed.clone();
-            if now_people.unread != before.unread || now_people.flagged != before.flagged {
-                if let Some(request) =
+            if (now_people.unread != before.unread || now_people.flagged != before.flagged)
+                && let Some(request) =
                     self.connector
                         .flag(&account, &mkey, now_people.unread, now_people.flagged)
-                {
-                    self.pending.insert(
-                        request,
-                        Pending::Write {
-                            account: account.clone(),
-                            key: mkey.clone(),
-                            before: before.clone(),
-                        },
-                    );
-                }
+            {
+                self.pending.insert(
+                    request,
+                    Pending::Write {
+                        account: account.clone(),
+                        key: mkey.clone(),
+                        before: before.clone(),
+                    },
+                );
             }
             if now_people.mailbox != before.mailbox
                 && let Some(request) = self.connector.move_to(&account, &mkey, &now_people.mailbox)
@@ -587,7 +548,7 @@ impl ImapOrigin {
     }
 
     /// A write the server refused: the message is put back as the server holds it.
-    fn put_back(&mut self, host: &Host, now: &str, account: &str, key: &str, before: People) {
+    fn put_back(&mut self, host: &Host, now: &str, account: &str, key: &str, before: &People) {
         let Some(state) = self.state.as_mut() else {
             return;
         };
@@ -599,7 +560,7 @@ impl ImapOrigin {
             return;
         };
         held.confirmed = before.clone();
-        let mut writes = vec![people_write(t, &held.record, &before)];
+        let mut writes = vec![people_write(t, &held.record, before)];
         let thread = held.thread.clone();
         writes.extend(summarize(host, t, acct, &BTreeSet::from([thread])));
         let _ = host
@@ -633,6 +594,54 @@ impl ImapOrigin {
         }
         let _ = now;
         writes
+    }
+}
+
+/// The conversations a server's changes start, each a record in its account.
+fn take_in_threads(
+    host: &Host,
+    now: &str,
+    t: &Types,
+    acct: &mut Acct,
+    threads_field: &str,
+    changes: &Changes,
+) {
+    let mut new_threads: Vec<String> = Vec::new();
+    let mut writes = Vec::new();
+    for m in &changes.messages {
+        if acct.messages.contains_key(&m.key)
+            || acct.threads.contains_key(&m.thread)
+            || new_threads.contains(&m.thread)
+        {
+            continue;
+        }
+        let mut fields = Vec::new();
+        put(&t.thread, &mut fields, "key", text(&m.thread));
+        put(&t.thread, &mut fields, "account", text(&changes.account));
+        put(&t.thread, &mut fields, "subject", text(&m.subject));
+        writes.push(OriginWrite::Insert {
+            owner: acct.record.clone(),
+            field: threads_field.to_owned(),
+            ty: t.thread.ty.clone(),
+            fields,
+        });
+        new_threads.push(m.thread.clone());
+    }
+    if let Ok(made) = host
+        .runtime()
+        .apply_origin("imap", writes, Some(now.to_owned()))
+    {
+        for (key, record) in new_threads.into_iter().zip(made) {
+            if let Some(record) = record {
+                acct.threads.insert(
+                    key,
+                    Thr {
+                        record,
+                        keys: Vec::new(),
+                    },
+                );
+            }
+        }
     }
 }
 
@@ -685,11 +694,10 @@ fn summarize(host: &Host, t: &Types, acct: &Acct, threads: &BTreeSet<String>) ->
             .iter()
             .filter_map(|k| acct.messages.get(k))
             .collect();
-        if msgs.is_empty() {
-            continue;
-        }
         msgs.sort_by_key(|m| m.received);
-        let newest = msgs[msgs.len() - 1];
+        let Some(&newest) = msgs.last() else {
+            continue;
+        };
         let mut senders: Vec<&str> = Vec::new();
         for m in msgs.iter().rev() {
             if !senders.contains(&m.from_name.as_str()) {
@@ -739,9 +747,11 @@ fn summarize(host: &Host, t: &Types, acct: &Acct, threads: &BTreeSet<String>) ->
     let mut unread: BTreeMap<&str, i64> = BTreeMap::new();
     let mut total: BTreeMap<&str, i64> = BTreeMap::new();
     for m in acct.messages.values() {
-        *total.entry(m.confirmed.mailbox.as_str()).or_default() += 1;
+        let n = total.entry(m.confirmed.mailbox.as_str()).or_default();
+        *n = n.saturating_add(1);
         if m.confirmed.unread {
-            *unread.entry(m.confirmed.mailbox.as_str()).or_default() += 1;
+            let u = unread.entry(m.confirmed.mailbox.as_str()).or_default();
+            *u = u.saturating_add(1);
         }
     }
     for (key, record) in &acct.boxes {
@@ -770,30 +780,14 @@ fn summarize(host: &Host, t: &Types, acct: &Acct, threads: &BTreeSet<String>) ->
 
 /// Seconds since the epoch of an ISO time `YYYY-MM-DDTHH:MM:SSZ`; 0 for anything else.
 fn seconds_of(iso: &str) -> u64 {
-    let num = |a: usize, b: usize| iso.get(a..b).and_then(|s| s.parse::<i64>().ok());
-    let (Some(y), Some(mo), Some(d), Some(h), Some(mi), Some(s)) = (
-        num(0, 4),
-        num(5, 7),
-        num(8, 10),
-        num(11, 13),
-        num(14, 16),
-        num(17, 19),
-    ) else {
-        return 0;
-    };
-    // Days from civil (Howard Hinnant).
-    let y = if mo <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (mo + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    u64::try_from(days * 86_400 + h * 3600 + mi * 60 + s).unwrap_or(0)
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .and_then(|at| u64::try_from(at.timestamp()).ok())
+        .unwrap_or(0)
 }
 
 impl Origin for ImapOrigin {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "imap"
     }
 
@@ -818,7 +812,7 @@ impl Origin for ImapOrigin {
             let Ok(root) = cx.host.root_of(cx.app) else {
                 return polled;
             };
-            let state = self.load(cx.host, types, root.clone());
+            let state = Self::load(cx.host, types, root.clone());
             let changed = Rc::clone(&self.changed);
             let mut store = cx.host.store().clone();
             store.subscribe(
@@ -873,7 +867,7 @@ impl Origin for ImapOrigin {
                         before,
                     }) => {
                         self.trouble.insert(account.clone(), reason);
-                        self.put_back(cx.host, &cx.now, &account, &key, before);
+                        self.put_back(cx.host, &cx.now, &account, &key, &before);
                         polled.wrote = true;
                     }
                     None => {}

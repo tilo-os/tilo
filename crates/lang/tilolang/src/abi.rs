@@ -184,6 +184,7 @@ imports! {
     RichEmpty = "rich_empty" ([H] -> [I32]);
     RichTime = "rich_time" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
+    Dated = "dated" ([H, H] -> [H]);
     UiActions = "ui_actions" ([H, H, H] -> []);
 
     SpaceI = "space_i" ([H] -> [I64]);

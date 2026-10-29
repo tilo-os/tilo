@@ -278,6 +278,22 @@ impl EmbeddedApp {
         &mut self.app
     }
 
+    /// Build the app's tree when it has none yet, or, with `restructured`,
+    /// when its structure changed since its last frame. The app is otherwise
+    /// built as it is drawn, and focus or a key its host hands it before
+    /// then (the key typed right after the shortcut that showed it) finds no
+    /// control to land on.
+    fn build_tree(&mut self, restructured: bool) {
+        if self.app.layout.root_node.is_some() && !restructured {
+            return;
+        }
+        self.runs();
+        if self.app.surface_build_tree(&mut self.damage) {
+            self.app.mark_semantic_tree_stale();
+            self.wants_frame.set(true);
+        }
+    }
+
     /// The root widget of the app's component: what an app's own tests
     /// reach into, as they would in the app's window.
     pub fn component_root_mut(&mut self) -> Option<&mut dyn Widget> {
@@ -395,6 +411,8 @@ impl Widget for EmbeddedApp {
             self.app.set_theme(theme.clone());
             self.wants_frame.set(true);
         }
+        // Mounted, the app has its controls before it is first painted.
+        self.build_tree(false);
         let style = taffy::Style {
             size: taffy::Size::from_percent(1.0, 1.0),
             ..taffy::Style::default()
@@ -602,6 +620,7 @@ impl Widget for EmbeddedApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         self.runs();
+        self.build_tree(false);
         self.entering_backwards = ctx.modifiers.state().shift_key();
         let local = self.local_event(event, ctx.scale_factor);
         self.app.set_surface_modifiers(*ctx.modifiers);
@@ -682,6 +701,9 @@ impl Widget for EmbeddedApp {
         }
         self.focused = focused;
         if focused {
+            // Focus lands on the controls the app shows now, though no frame
+            // has painted them yet.
+            self.build_tree(true);
             if !self.app.restore_focused_control(self.restore_focus.take())
                 || self.app.focused_control().is_none()
             {
@@ -927,10 +949,6 @@ impl crate::widget::CompleteContentProvider for EmbeddedApp {
 }
 
 impl AppWidget for EmbeddedApp {
-    /// The app keeps its own record; the host binds none for it.
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn device_local_resources(&self) -> Option<Vec<tilo_actions::ResourceSpec>> {
         self.device_local.then(|| {
             crate::widget::published_resources(self.app.root_widget.as_ref(), &self.app.state.doc)
@@ -1050,7 +1068,19 @@ fn access_subtree(
         .iter()
         .filter_map(|child| access_subtree(tree, child, offset))
         .collect();
+    // The app's tree marks both its focused widget and the part of it that
+    // has the keyboard (a dialog and its field). Here every node is the
+    // tile's descendant and the first focused one is taken as the focus, so
+    // only the innermost keeps the mark.
+    if access.state.focused && access.children.iter().any(holds_focus) {
+        access.state.focused = false;
+    }
     Some(access)
+}
+
+/// Whether `node` or a node under it is marked focused.
+fn holds_focus(node: &crate::a11y::AccessNode) -> bool {
+    node.state.focused || node.children.iter().any(holds_focus)
 }
 
 /// The semantic node a key path from [`access_subtree`] names.
@@ -1122,6 +1152,31 @@ mod theme_repaint_tests {
             .of(&scene)
             .expect("the tile's parts are well nested");
         (scene, parts)
+    }
+
+    /// Focus a host gives an app it just mounted lands on the app's control
+    /// before anything is painted: the key typed right after the shortcut
+    /// that showed it reaches that control.
+    #[test]
+    fn focus_given_before_the_first_paint_lands_on_the_apps_control() {
+        for laid_out in [false, true] {
+            let app = App::new_with_controlled_inputs(
+                crate::state::State::new(),
+                Box::new(crate::widget::Button::new("probe", "Probe")),
+            );
+            let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+            if laid_out {
+                layout(&mut tile, &Theme::light());
+            }
+            tile.set_focus(true);
+            assert!(
+                tile.app.focused_control().is_some(),
+                "the button has focus (laid out: {laid_out})"
+            );
+            assert!(tile.needs_redraw(), "the tree built asks for its frame");
+            let _ = paint(&mut tile, &Theme::light());
+            assert!(tile.app.focused_control().is_some(), "and keeps it painted");
+        }
     }
 
     #[test]

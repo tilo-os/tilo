@@ -145,7 +145,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         let (mut app, doc) = app();
         let (outgoing, requests) = std::sync::mpsc::channel();
         let (incoming, incoming_rx) = std::sync::mpsc::channel();
-        app.engine = Some(EngineHandle {
+        app.state().engine = Some(EngineHandle {
             tx: outgoing,
             rx: incoming_rx,
         });
@@ -196,6 +196,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         let (old, old_raw) = sent_by_server(&account, 41, 1_000, "From last year.");
         let (newer, newer_raw) = sent_by_server(&account, 42, 2_000, "From last week.");
         let request = first
+            .state()
             .post_engine(EngineRequest::fetch(config.clone(), Folder::Inbox))
             .unwrap();
         first_requests.try_recv().unwrap();
@@ -258,6 +259,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
             .merge_peer_document(first_record.record().document().unwrap())
             .unwrap();
         let refresh = second
+            .state()
             .post_engine(EngineRequest::fetch(config.clone(), Folder::Inbox))
             .unwrap();
         second_requests.try_recv().unwrap();
@@ -332,6 +334,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
 
         // Once its server answers again, it is asked only for what is newer.
         second
+            .state()
             .post_engine(EngineRequest::fetch(config, Folder::Inbox))
             .unwrap();
         assert!(matches!(

@@ -251,9 +251,9 @@ fn tree_view() -> Element {
 fn search_results() -> Element {
     let mut view = SearchResultsView::new().with_test_id("results");
     view.set_groups(vec![
-        SearchGroup {
-            kind: "Contacts".into(),
-            results: vec![
+        SearchGroup::new(
+            "Contacts",
+            vec![
                 SearchResult::new("Contacts", "Alice Ng", "a")
                     .with_subtitle("alice@example.com")
                     .with_icon(Icon::Mail),
@@ -263,15 +263,15 @@ fn search_results() -> Element {
                     .with_subtitle("Mathematics")
                     .with_icon(Icon::Mail),
             ],
-        },
-        SearchGroup {
-            kind: "Apps".into(),
-            results: vec![
+        ),
+        SearchGroup::new(
+            "Apps",
+            vec![
                 SearchResult::new("Apps", "Calculator", "c").with_icon(Icon::Terminal),
                 SearchResult::new("Apps", "Calendar", "d").with_icon(Icon::Calendar),
                 SearchResult::new("Apps", "Camera", "e"),
             ],
-        },
+        ),
     ]);
     Box::new(view)
 }

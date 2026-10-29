@@ -8,6 +8,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use tilo_contact_directory::routing::Route;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct ServiceAccount {
     pub service: String,
     pub account: String,

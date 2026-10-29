@@ -970,8 +970,8 @@ acceptance remain open. The subsystem tests do not declare the full app complete
 
 ### Native signed-account startup and existing credential permissions
 
-The shell now has an executable Signal account startup path in
-`shell::in_process::messaging`. It binds the existing opaque signed personal
+The messaging service (`tilo-messaging`, `crates/session/messaging-service`)
+has the executable Signal account startup path. It binds the existing opaque signed personal
 admission to the native host's current cryptographic custody and separately to
 the SDK profile device identifier. A foreign current certificate, another root,
 changed device key, retired execution or unavailable selected identity refuses.
