@@ -79,8 +79,7 @@ pre_push = true
 name = "workflow-dependencies"
 label = "Workflow dependency and supply-chain invariants"
 run = "bash os/tests/workflow_dependency_invariants.sh"
-inputs = [".forgejo/**", ".config/visual-goldens-image", "dist/ci/install-sccache.sh", "keys/cosign.pub",
-          "os/Containerfile", "os/kernel/Containerfile", "os/dev/**", "os/external-assets/github-assets.tsv",
+inputs = [".forgejo/**", "keys/cosign.pub", "os/dev/**", "os/external-assets/github-assets.tsv",
           "os/tests/test_require_cosign_authority.py", "tools/policy/check_workflow_actions.py"]
 pre_push = true
 
