@@ -143,14 +143,14 @@ impl Session {
 
     /// The host's frames and the window's, until neither has anything left to do.
     fn settle(&mut self) {
-        let mut quiet = 0;
+        let mut quiet = 0_u32;
         while quiet < 20 {
             let changed = self.host.turn();
             self.window.relayout();
             if changed {
                 quiet = 0;
             } else {
-                quiet += 1;
+                quiet = quiet.saturating_add(1);
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
         }
