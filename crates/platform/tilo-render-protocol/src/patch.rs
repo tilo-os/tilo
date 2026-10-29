@@ -644,6 +644,13 @@ pub enum ToApp {
         me: String,
         others: Vec<(String, String)>,
     },
+    /// The view of `lane` has `width` by `height` of the window, in `rem` (the body text size
+    /// after the person's setting): what its `space` reads (layout.md, "Responding to space").
+    Space {
+        lane: Lane,
+        width: f32,
+        height: f32,
+    },
 }
 
 /// Largest batch either side sends or accepts.
