@@ -205,10 +205,18 @@ impl Hosting {
             return Err("only its own person's devices ask a host to stop serving a room".into());
         }
         let path = self.record_path(room);
-        let workspace_id = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<HostedRecord>(&text).ok())
-            .map(|record| record.workspace_id);
+        // No record: the room was not hosted here. One that does not read
+        // is an error, never "not hosted": that would forget the room while
+        // it went on being served.
+        let workspace_id = match std::fs::read_to_string(&path) {
+            Ok(text) => Some(
+                serde_json::from_str::<HostedRecord>(&text)
+                    .map_err(|error| format!("the room's hosting record does not read: {error}"))?
+                    .workspace_id,
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("the room's hosting record does not read: {error}")),
+        };
         let served = self.served.lock_recover().remove(room).is_some();
         if let Some(workspace_id) = workspace_id {
             stop_serving(&self.services, workspace_id).await?;
@@ -387,8 +395,12 @@ fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, Stri
 /// Take `body`, a change the governor published, into `peer` when it is
 /// governance. Whether governance changed.
 fn follow(peer: &mut StatePeer, governor: [u8; 32], body: &[u8], now: SystemTime) -> bool {
-    let Ok(message) = postcard::from_bytes::<NeighbourMsg>(body) else {
-        return false;
+    let message = match postcard::from_bytes::<NeighbourMsg>(body) {
+        Ok(message) => message,
+        Err(error) => {
+            tracing::warn!(room = %peer.room(), %error, "a change the governor published does not decode");
+            return false;
+        }
     };
     if matches!(message, NeighbourMsg::AppDocument { .. }) {
         return false;

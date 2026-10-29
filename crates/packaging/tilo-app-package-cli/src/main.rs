@@ -794,7 +794,9 @@ fn cmd_sign(identity_path: &Path, file: &Path) -> Result<()> {
         );
     }
     // Sign with the has_signature bit already set so verify recomputes the same bytes.
+    // Signing makes a new package, so it is written at this build's format.
     let mut pre_signed = signed.clone();
+    pre_signed.format = tilo_app_package::TAPP_FORMAT_VERSION;
     pre_signed.signature = Some([0u8; 64]);
     let sig = identity
         .sign_signed_root(&pre_signed)

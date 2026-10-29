@@ -36,11 +36,6 @@ pub fn guest_shell_path() -> PathBuf {
     Path::new(crate::GUEST_BIN_DIR).join(SHELL_COMMAND)
 }
 
-/// Whether `shell` is this shell.
-pub fn is_ush(shell: &Path) -> bool {
-    shell.file_name().is_some_and(|name| name == SHELL_COMMAND)
-}
-
 /// Set by the `SIGINT` handler: the person pressed Ctrl-C.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 

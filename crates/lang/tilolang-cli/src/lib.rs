@@ -3,6 +3,7 @@
 
 pub mod describe;
 pub mod dev;
+pub mod layout_check;
 pub mod package;
 pub mod repl;
 pub mod run;

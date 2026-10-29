@@ -466,19 +466,43 @@ impl Hosted {
         self.directory.publish(&surface.resources(), descriptors);
     }
 
-    /// Run what the broker delivered on the instance's connection.
+    /// Run what the broker delivered on the instance's connection. Every event that waits on an
+    /// answer from the instance is answered: an invocation with its outcome, a handoff step with
+    /// what the host does of it. The rest says something the instance does not keep (presence,
+    /// cursors, the room's context, results of requests it never makes).
     fn delivered(&mut self, event: CollabEvent) -> bool {
-        let CollabEvent::Invocation {
-            id,
-            invocation,
-            resource,
-            action,
-            argument,
-            actor,
-            context,
-        } = event
-        else {
-            return false;
+        let (id, invocation, resource, action, argument, actor, context) = match event {
+            CollabEvent::Invocation {
+                id,
+                invocation,
+                resource,
+                action,
+                argument,
+                actor,
+                context,
+            } => (id, invocation, resource, action, argument, actor, context),
+            CollabEvent::Handoff { request } => {
+                self.handoff(&request);
+                return true;
+            }
+            CollabEvent::InvocationCancellation { id } => {
+                // An invocation runs to its end in the frame it arrives in and is answered
+                // there: by the time its cancellation arrives nothing of it is left to stop.
+                tracing::debug!(id, "a cancellation of an invocation already answered");
+                return false;
+            }
+            CollabEvent::TaskRun(_)
+            | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::TaskRunControl { .. }
+            | CollabEvent::WorkspaceControl { .. } => {
+                tracing::warn!(
+                    app = self.spec.app,
+                    instance = self.spec.instance,
+                    "a task or workspace request reached an app instance, which does not run them"
+                );
+                return false;
+            }
+            _ => return false,
         };
         let address = ActionAddress::new(resource, action);
         // The invoker is who the broker admitted, with the participant and the person it acts
@@ -495,9 +519,7 @@ impl Hosted {
                 invocation,
                 Refused::new("permission_denied", "this is another member's own record"),
             );
-            self.record
-                .manager_mut()
-                .send(CollabRequest::UpdateInvocation { id, update });
+            self.answer_invocation(id, update);
             return true;
         }
         let attributed = context
@@ -508,10 +530,74 @@ impl Hosted {
             Ok(output) => InvocationUpdate::Succeeded { invocation, output },
             Err(error) => failed(invocation, error),
         };
-        self.record
-            .manager_mut()
-            .send(CollabRequest::UpdateInvocation { id, update });
+        self.answer_invocation(id, update);
         true
+    }
+
+    /// Hand the broker the outcome of the invocation `id`. An answer the connection does not
+    /// take leaves its invoker waiting until the broker ends the invocation with the connection:
+    /// that is said here.
+    fn answer_invocation(&mut self, id: u64, update: InvocationUpdate) {
+        if let Err(error) = self
+            .record
+            .manager_mut()
+            .try_send(CollabRequest::UpdateInvocation { id, update })
+        {
+            tracing::error!(
+                app = self.spec.app,
+                instance = self.spec.instance,
+                id,
+                %error,
+                "an invocation's outcome did not reach the broker"
+            );
+        }
+    }
+
+    /// Answer the shell's handoff step `request`: a checkpoint writes the record's on-disk copy
+    /// and is done; a retirement is refused with why, as the tilolang host does not move a
+    /// record to another workspace; an owner view is presentation the instance has no window
+    /// of its own for, and wants no answer.
+    fn handoff(&mut self, request: &collaboration::handoff::HandoffRequest) {
+        use collaboration::handoff::{HandoffReport, HandoffRequest};
+        let report = match request {
+            HandoffRequest::Checkpoint { token } => {
+                self.record.flush();
+                HandoffReport::Done {
+                    token: *token,
+                    heads: Vec::new(),
+                }
+            }
+            HandoffRequest::Retire { token, .. } => {
+                tracing::warn!(
+                    app = self.spec.app,
+                    instance = self.spec.instance,
+                    "the shell asked a tilolang instance to retire its record, which it cannot"
+                );
+                HandoffReport::Failed {
+                    token: *token,
+                    reason: "a tilolang app's instance does not move its record to another \
+                             workspace"
+                        .to_owned(),
+                }
+            }
+            HandoffRequest::OwnerView { .. } => return,
+        };
+        let app_id = self.record.route().app_id.clone();
+        if let Err(error) = self
+            .record
+            .manager_mut()
+            .try_send(CollabRequest::ReportHandoff {
+                app_id,
+                message: report.encode(),
+            })
+        {
+            tracing::error!(
+                app = self.spec.app,
+                instance = self.spec.instance,
+                %error,
+                "a handoff step's answer did not reach the shell"
+            );
+        }
     }
 
     /// Build the action `address` names for `invoker`, through the spec the instance publishes

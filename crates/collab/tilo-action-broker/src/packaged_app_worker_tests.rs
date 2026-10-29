@@ -616,8 +616,7 @@ async fn a_renamed_app_keeps_the_record_of_the_id_it_had_before() {
             let as_earlier = kept
                 .publish_action_directory(&env.route.app_id, directory())
                 .await
-                .err()
-                .expect("it never publishes as the app it was");
+                .expect_err("it never publishes as the app it was");
             assert!(
                 as_earlier.to_string().contains("must match"),
                 "{as_earlier:?}"

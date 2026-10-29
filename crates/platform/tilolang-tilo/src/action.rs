@@ -769,18 +769,58 @@ pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
         .filter_map(|entry| {
             let Ok(Some((AmValue::Object(ObjType::Map), held))) = doc.get(&outbox, entry.as_str())
             else {
+                tracing::warn!(
+                    app,
+                    id,
+                    entry,
+                    "an outbox entry is not a map: it is not read"
+                );
                 return None;
             };
-            Some(StoredEntry {
-                capability: text(&held, "capability")?,
-                payload: serde_json::from_str(&text(&held, "payload")?).ok()?,
-                owner: text(&held, "owner")?,
-                settled: text(&held, "settled"),
+            let read = || -> Result<(String, Json, String), String> {
+                let capability = text(&held, "capability").ok_or("it names no capability")?;
+                let payload = text(&held, "payload").ok_or("it holds no payload")?;
+                let payload = serde_json::from_str(&payload)
+                    .map_err(|error| format!("its payload does not decode: {error}"))?;
+                let owner = text(&held, "owner").ok_or("it names no device to carry it out")?;
+                Ok((capability, payload, owner))
+            };
+            let settled = text(&held, "settled");
+            let mut stored = StoredEntry {
+                capability: String::new(),
+                payload: Json::Null,
+                owner: String::new(),
+                settled,
+                // Absent until it is settled, and when settled with no reason.
                 reason: text(&held, "reason").unwrap_or_default(),
+                // Absent while it is queued (`outbox_state`).
                 state: text(&held, "state").unwrap_or_default(),
                 detail: text(&held, "detail").unwrap_or_default(),
                 entry,
-            })
+            };
+            match read() {
+                Ok((capability, payload, owner)) => {
+                    stored.capability = capability;
+                    stored.payload = payload;
+                    stored.owner = owner;
+                }
+                // Nothing can carry out an effect that does not read, so it never would
+                // settle: it stands rejected, with why, where `delivery(r)` reads it, and no
+                // device takes it up.
+                Err(why) if stored.settled.is_none() => {
+                    tracing::warn!(
+                        app,
+                        id,
+                        entry = stored.entry,
+                        why,
+                        "an outbox entry is unreadable"
+                    );
+                    stored.settled = Some("rejected".to_owned());
+                    stored.reason = format!("the queued effect is unreadable: {why}");
+                }
+                Err(_) => {}
+            }
+            Some(stored)
         })
         .collect()
 }
@@ -1007,4 +1047,49 @@ pub fn resource_ids(doc: &Doc, app: &str) -> Vec<String> {
     ids.sort();
     ids.dedup();
     ids
+}
+
+#[cfg(test)]
+mod outbox_tests {
+    use super::*;
+
+    /// A record of `app` holding the resource `id` with an outbox of `entries` (key, payload).
+    fn holding(app: &str, id: &str, entries: &[(&str, &str)]) -> Doc {
+        let mut doc = Doc::new();
+        let records = doc
+            .put_object(&ROOT, RECORDS_KEY, ObjType::Map)
+            .expect("records");
+        let held = doc.put_object(&records, app, ObjType::Map).expect("app");
+        let resource = doc.put_object(&held, id, ObjType::Map).expect("resource");
+        let outbox = doc
+            .put_object(&resource, OUTBOX_KEY, ObjType::Map)
+            .expect("outbox");
+        for (key, payload) in entries {
+            let entry = doc.put_object(&outbox, *key, ObjType::Map).expect("entry");
+            doc.put(&entry, "capability", "smtp.send")
+                .expect("capability");
+            doc.put(&entry, "payload", *payload).expect("payload");
+            doc.put(&entry, "owner", "device").expect("owner");
+        }
+        doc
+    }
+
+    #[test]
+    fn an_outbox_entry_that_does_not_read_stands_rejected_with_why() {
+        let doc = holding("app", "r", &[("1", "[\"to\"]"), ("2", "{not json")]);
+        let entries = outbox_entries(&doc, "app", "r");
+        assert_eq!(entries.len(), 2, "no entry is left out");
+        assert_eq!(entries[0].settled, None, "the readable one waits");
+        assert_eq!(entries[0].payload, serde_json::json!(["to"]));
+        let unreadable = &entries[1];
+        assert_eq!(unreadable.settled.as_deref(), Some("rejected"));
+        assert!(
+            unreadable.reason.contains("payload"),
+            "{}",
+            unreadable.reason
+        );
+        let delivery = unreadable.delivery();
+        assert_eq!(delivery.state, "rejected");
+        assert!(!delivery.reason.is_empty());
+    }
 }

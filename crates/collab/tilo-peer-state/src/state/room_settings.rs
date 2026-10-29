@@ -117,23 +117,7 @@ impl StatePeer {
                     .remove_governed_grants(&revoked, key, now)
             }
             SettingsChange::GrantSandbox { capability } => {
-                if !capability.persists_across_restart() {
-                    return Err(
-                        "a capability that ends with a session or a single use is never \
-                         written into the room"
-                            .into(),
-                    );
-                }
-                let mut capability = capability.clone();
-                if capability.id.trim().is_empty() {
-                    capability.id = format!("cap-{}", uuid::Uuid::new_v4().simple());
-                }
-                workspace.grant_sandbox(
-                    capability
-                        .granted_by(collab_types::caps::Principal::Person(member.person.clone())),
-                );
-                self.governance_mut()
-                    .put_governed_sandbox(&workspace.sandbox, key, now)
+                self.grant_room_sandbox(&mut workspace, &member.person, capability, key, now)
             }
             SettingsChange::RevokeSandbox { capability } => {
                 if !workspace.revoke_sandbox(capability) {
@@ -143,6 +127,34 @@ impl StatePeer {
                     .put_governed_sandbox(&workspace.sandbox, key, now)
             }
         }
+    }
+
+    /// Write `capability` into the room's sandbox as granted by `person`.
+    /// Only a capability that outlives a restart is ever written there.
+    fn grant_room_sandbox(
+        &mut self,
+        workspace: &mut tilo_desktop_model::Workspace,
+        person: &str,
+        capability: &collab_types::caps::CapOverride,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        if !capability.persists_across_restart() {
+            return Err(
+                "a capability that ends with a session or a single use is never \
+                 written into the room"
+                    .into(),
+            );
+        }
+        let mut capability = capability.clone();
+        if capability.id.trim().is_empty() {
+            capability.id = format!("cap-{}", uuid::Uuid::new_v4().simple());
+        }
+        workspace.grant_sandbox(
+            capability.granted_by(collab_types::caps::Principal::Person(person.to_owned())),
+        );
+        self.governance_mut()
+            .put_governed_sandbox(&workspace.sandbox, key, now)
     }
 
     /// The room's governance as a workspace reads it: its name, policy,

@@ -181,9 +181,10 @@ An unsupported supervisor is refused before Terminal sends an open request.
 This control connection retains the same authenticated caller for every request;
 each Host request still checks the current owner grant and original requester.
 A successful version-two session reply includes `"protocol":2` and exactly two
-close-on-exec descriptors, in order: the PTY master and a private session lease;
-a session that negotiated `editor_protocol` appends the editor capability as a
-third, last descriptor.
+close-on-exec descriptors, in order: the PTY master and a private session lease.
+The supervisor offers no native editor capability: an `editor_protocol` in a
+request is ignored, since an environment session runs ush's own shell, which
+does not serve it.
 The control connection remains available for subsequent targets. Requests are
 bounded to 4096 bytes and eight active leases. Malformed requests close control;
 completed sequential sessions do not exhaust a lifetime request counter.
@@ -359,16 +360,20 @@ same ones: Left, Right, Home, End, `Ctrl+A/E/B/F`, `Alt+B/F` and
 empty line ends the session. An open quote, a trailing `\` or an open block
 asks for more lines with `$PS2`. A paste (bracketed) goes in as it is,
 newlines included, and runs only on Enter. The editor reads keys through the
-shell's host (`Host::edit_mode` switches the terminal), so it is the same on
-a device, on a host and in a browser.
+shell's host (`Host::edit_mode` switches the terminal; on the Tilo side it
+is the session's pty, switched by `ush::tilo_side::DevicePlace`), so it is the
+same on a device, on a host and in a browser.
 
 **History** is the person's own record, `terminal.history` (see [Search and
 history](#search-and-history)): Up and Down recall it, newest first, after
 the lines this shell ran; `Ctrl+R` searches it; `history` lists it, numbered,
 oldest first. It follows the person across sessions and devices, and the
 shell keeps no history file. A host that holds the record answers the shell
-itself; in a guest the editor asks Terminal on the session's terminal, under
-the session's key, and Terminal answers on the input, a page at a time:
+itself (`Host::history`; on the Tilo side, the place the shell runs in,
+`ush_tilo::Place::history`). On a device the record is Terminal's, so the
+editor of the session's shell, on the Tilo side or in a guest alike, asks
+Terminal on the session's terminal, under the session's key, and Terminal
+answers on the input, a page at a time:
 
 ```text
 shell → ESC ] 133 ; H ; k=<key> ; s=<skip> ; n=<limit> ; q=<b64> BEL
@@ -386,15 +391,25 @@ built-in, one of Tilo's own commands, a function, an alias or one of the
 environment's tools on `PATH`; after `$`, a variable; a word starting with
 `-`, one of the options of the shell's own command it follows; anything else,
 a path, read through the host, so only what the environment's grants show.
-A second Tab lists what it could become.
+A second Tab lists what it could become. On the Tilo side the environment's
+tools are named from the images its guest is built from (the runtime and its
+tools, as the record names them), along the guest's `PATH`, without starting
+the guest; an image this device does not hold yet is not fetched for it.
 
 **Jobs.** `cmd &` runs as a job beside the shell, on a copy of it: the
 shell's own commands run concurrently in the shell's process, and a program
-runs in the guest in a process group of the job's. `jobs`, `fg`, `bg`,
+runs in the guest in a process group of the job's: `exec-serve` makes the
+group for the job's first program and says which it is, the job's next
+programs join it, and the shell stops, continues and ends it over the
+program's socket ([`guest_exec`](../../crates/runtime/ush/src/guest_exec.rs)).
+While the job is in the foreground the group holds the terminal, whichever of
+its streams the terminal is. `jobs`, `fg`, `bg`,
 `wait` and `kill %n` (or the number `$!` gives) move them. Each line the
 person runs is the foreground job: Ctrl+C interrupts it, and Ctrl+Z stops it
-and gives the prompt back (a program gets the terminal's signals itself; the
-shell's own commands stop at their next write or step). What a stopped line
+and gives the prompt back (a program gets the terminal's signals itself, and
+the server tells the shell it stopped; a Ctrl+Z that reaches the shell stops
+the job's programs with it; the shell's own commands stop at their next write
+or step). What a stopped line
 had changed in the shell before it stopped stays with the job, as in a
 subshell. A background job reads nothing from the terminal, and its output
 reaches the screen through the shell, so it keeps a run of its own: its file
@@ -410,15 +425,14 @@ input ← ESC ] 133 ; R ; k=<key> ; cmd=<b64> [; agent=1] BEL
 ```
 
 The line shows as if typed and runs; an agent's run takes the agent
-rendering of Tilo's own commands without asking for it. A bash session gets
+rendering of Tilo's own commands without asking for it. The Host's bash gets
 the line typed, as before.
 
-**A full Linux session** is still there: Terminal's target picker has
-"Shell: Linux (bash)" for the current environment, and `linux` or
-`linux:<record>` names one in a `run`'s or an agent's target. The target
-carries the choice (`"shell":"linux"` in `open-session`; a target that names
-none runs ush's shell), so a session reopens in the shell it ran. An
-environment on a relay runs bash there for now.
+An environment session always runs ush's shell; there is no other shell to
+pick. bash is an ordinary program in the session's guest: `bash script.sh`
+runs a script, and `bash` alone starts an interactive bash, as any program
+runs there. A stored target that still names `"shell":"linux"` opens the
+same environment in ush's shell.
 
 ## Command runs
 
@@ -441,12 +455,10 @@ marks its runs with, chosen by Terminal for that session:
 {"op":"open-session","target":{"kind":"environment"},"runs":"3f6c…"}
 ```
 
-`runs` is 16 to 64 letters and digits. ush's own shell writes the marks
-itself. Otherwise an interactive session's shell starts
-the same way on the Host and in a guest: as the session's login shell. A
-`bash` starts on an rc file of `ush`'s own (`/run/ush/shell.bash` in a guest)
-that runs what must come before the person's files (the native editor's
-builtin, in a guest), then what `bash --login` reads (`/etc/profile`, then the
+`runs` is 16 to 64 letters and digits. ush's own shell, which every
+environment session runs, writes the marks itself. The Host target runs the
+person's own login shell instead. A `bash` there starts on an rc file of
+`ush`'s own that runs what `bash --login` reads (`/etc/profile`, then the
 first of `~/.bash_profile`, `~/.bash_login` and `~/.profile`, else
 `~/.bashrc`); any other shell starts with `-l`. With a key, the session
 answers `"runs":true`, and the rc file ends by writing three marks into the
@@ -725,8 +737,7 @@ two people editing one document at once is the CRDT's own collaboration.
 ## Commands
 
 ```
-ush [-c COMMAND] [-v] [--environment RECORD] [--shell ush|linux]
-                                                a shell in an environment
+ush [-c COMMAND] [-v] [--environment RECORD]    ush's shell in an environment
 ush-sh [-c SCRIPT | FILE] [-i]                  ush's own shell, in a guest
 tilo-ush serve [--socket PATH]                  hand guests to apps that ask
 

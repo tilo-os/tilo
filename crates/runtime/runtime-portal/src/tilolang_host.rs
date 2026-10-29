@@ -274,7 +274,13 @@ pub fn take_door() -> Option<Descriptor> {
     #[cfg(target_os = "linux")]
     {
         static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        let fd: i32 = std::env::var(DOOR_FD_ENV).ok()?.parse().ok()?;
+        let raw = std::env::var(DOOR_FD_ENV).ok()?;
+        let Ok(fd) = raw.parse::<i32>() else {
+            eprintln!(
+                "tilo-portal: the session's door descriptor {raw:?} is not a number; this host has no door"
+            );
+            return None;
+        };
         if fd < 0 || TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return None;
         }

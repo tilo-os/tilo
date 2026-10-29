@@ -9,7 +9,9 @@ use mail::engine::{EngineEvent, EngineRequest, EngineRequestKind};
 use mail::model::{AccountConfig, Draft, Folder, Mailbox, Message};
 use mail::sync::{Want, Window};
 
-use crate::connector::{AccountRef, Changes, Event, ImapMessage, MailConnector, Outgoing, Request};
+use crate::connector::{
+    AccountRef, Changes, Event, ImapMessage, MailConnector, Outgoing, Request, Unmade,
+};
 
 /// The key a message is known by.
 #[must_use]
@@ -126,7 +128,16 @@ impl EngineConnector {
         let id = request.request_id();
         let kind = request.kind();
         let account = request.account().to_owned();
-        self.requests.send(request).ok()?;
+        if self.requests.send(request).is_err() {
+            // The engine's worker is gone: what it would have answered is answered by
+            // `events` as it finds the worker gone.
+            tracing::error!(
+                account,
+                ?kind,
+                "the mail engine stopped: a request was not made"
+            );
+            return None;
+        }
         self.pending.insert(id, (kind, account, to));
         Some(id)
     }
@@ -228,8 +239,8 @@ impl MailConnector for EngineConnector {
         self.request(EngineRequest::search(config, text.to_owned()))
     }
 
-    fn send(&mut self, account: &str, message: Outgoing) -> Option<Request> {
-        let config = self.config(account)?;
+    fn send(&mut self, account: &str, message: Outgoing) -> Result<Request, Unmade> {
+        let config = self.config(account).ok_or(Unmade::NoAccount)?;
         let mut draft = Draft {
             to: message.to,
             cc: message.cc,
@@ -246,24 +257,81 @@ impl MailConnector for EngineConnector {
             .map(str::to_owned)
             .collect();
         self.request(EngineRequest::send(config, Box::new(draft)))
+            .ok_or(Unmade::EngineStopped)
     }
 
     fn watch(&mut self, account: &str) {
         if let Some(config) = self.config(account) {
+            // A watch is answered only by what arrives: one not made is said by `request`.
             let _ = self.request(EngineRequest::watch(config));
         }
     }
 
     fn events(&mut self) -> Vec<Event> {
         let mut out = Vec::new();
-        while let Some(event) = self
-            .events
-            .as_ref()
-            .and_then(|events| events.try_recv().ok())
-        {
+        while let Some(event) = self.next_event(&mut out) {
             self.engine_event(event, &mut out);
         }
         out
+    }
+}
+
+/// Why what the engine held is answered unmade, once its worker ended.
+const WHY: &str = "the mail engine stopped";
+
+impl EngineConnector {
+    /// The engine's next answer, for a connector that reads them; `None` once none waits, or
+    /// the worker ended, which answers every request it held into `out`.
+    fn next_event(&mut self, out: &mut Vec<Event>) -> Option<EngineEvent> {
+        match self.events.as_ref()?.try_recv() {
+            Ok(event) => Some(event),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.engine_stopped(out);
+                None
+            }
+        }
+    }
+
+    /// Ask for the changes of `mailbox`, where a message of `account` was moved: they say its
+    /// new place on the server.
+    fn ask_moved(&mut self, account: &str, mailbox: &str) {
+        if self.changes(account, mailbox).is_none() {
+            tracing::warn!(
+                account,
+                mailbox,
+                "a moved message's new place was not asked for"
+            );
+        }
+    }
+
+    /// The engine's worker ended: every request it did not answer is answered here, so nothing
+    /// waits on it. A send it never made waits to go online (`Unsent`); a write is refused, so
+    /// what it changed is put back; a read leaves its account unreachable.
+    pub fn engine_stopped(&mut self, out: &mut Vec<Event>) {
+        if self.pending.is_empty() {
+            return;
+        }
+        tracing::error!(
+            requests = self.pending.len(),
+            "{WHY}: its requests are answered unsent"
+        );
+        for (request, (kind, account, _)) in std::mem::take(&mut self.pending) {
+            out.push(match kind {
+                EngineRequestKind::Send => Event::Unsent {
+                    request,
+                    reason: WHY.to_owned(),
+                },
+                EngineRequestKind::StoreFlag | EngineRequestKind::Move => Event::Refused {
+                    request,
+                    reason: WHY.to_owned(),
+                },
+                _ => Event::Unreachable {
+                    account,
+                    reason: WHY.to_owned(),
+                },
+            });
+        }
     }
 }
 
@@ -373,7 +441,7 @@ impl EngineConnector {
                 // A moved message has a new place on the server: its new mailbox's
                 // changes say which.
                 if let Some(to) = to {
-                    let _ = self.changes(&account, &to);
+                    self.ask_moved(&account, &to);
                 }
             }
             EngineEvent::Connected { .. }

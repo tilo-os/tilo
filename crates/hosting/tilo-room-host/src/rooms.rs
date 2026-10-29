@@ -1697,9 +1697,11 @@ impl Rooms {
     )]
     async fn absorb(&self, room: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
         let host = &self.inner.host;
-        let Ok(message) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) else {
-            return Ok(());
-        };
+        // Every member's record write reaches the governor here, so this is
+        // where one that does not decode is reported (the layout and content
+        // classifiers that read the same body before it leave it to this).
+        let message = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+            .map_err(|error| format!("a member's write does not decode: {error}"))?;
         // The relay's own device writes records through the room too: the
         // actions it runs for members (a visitor linking their Discord
         // account) are committed as that device, and the governor's copy,
@@ -2138,9 +2140,18 @@ impl Rooms {
             if retained.author == self.inner.host.cert.device_public_key {
                 continue;
             }
-            if let Ok(message) = postcard::from_bytes(&retained.body)
-                && self.recalls(room, &message)
-            {
+            let message = match postcard::from_bytes(&retained.body) {
+                Ok(message) => message,
+                Err(error) => {
+                    tracing::warn!(
+                        author = %hex::encode(retained.author),
+                        %error,
+                        "a retained write does not decode; it is not replayed"
+                    );
+                    continue;
+                }
+            };
+            if self.recalls(room, &message) {
                 let followed = room.follow(retained.author, message);
                 changed |= followed.changed;
                 again |= followed.replay_wanted;

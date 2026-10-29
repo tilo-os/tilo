@@ -54,6 +54,9 @@ mod inbound_bridge;
 use inbound_bridge::InboundBridge;
 #[path = "inbound_document.rs"]
 mod inbound_document;
+#[path = "realtime_stream.rs"]
+mod realtime_stream;
+use realtime_stream::spawn_realtime_stream;
 #[path = "broker_key_fetch.rs"]
 mod key_fetch;
 #[path = "broker_key_schedule.rs"]
@@ -4364,24 +4367,54 @@ async fn person_room_presentation(
     struct Root {
         user_public_key: [u8; 32],
     }
-    let launch = runtime_collab::CertifiedJoinIdentity::decode(presentation).ok()??;
-    let root: Root = serde_json::from_slice(&launch.device_certificate).ok()?;
+    // The person's records then cannot be reached; the log says why.
+    let unavailable = |reason: &dyn std::fmt::Display| {
+        tracing::warn!(%reason, "no join proof for the person's own room");
+    };
+    let launch = match runtime_collab::CertifiedJoinIdentity::decode(presentation) {
+        Ok(Some(launch)) => launch,
+        // A connection without a certified identity.
+        Ok(None) => return None,
+        Err(error) => {
+            unavailable(&format_args!(
+                "the launch identity does not decode: {error}"
+            ));
+            return None;
+        }
+    };
+    let root: Root = match serde_json::from_slice(&launch.device_certificate) {
+        Ok(root) => root,
+        Err(error) => {
+            unavailable(&format_args!(
+                "the device certificate does not decode: {error}"
+            ));
+            return None;
+        }
+    };
     let room = collab_types::person_room(&root.user_public_key).to_string();
     if room == launch.workspace_id {
         return None;
     }
-    let proof = match signer {
-        LocalSdkDocumentSigner::Host(identity) => {
-            identity.sign_collaboration_join(&room).await.ok()?
-        }
+    let signed = match signer {
+        LocalSdkDocumentSigner::Host(identity) => identity
+            .sign_collaboration_join(&room)
+            .await
+            .map_err(|error| error.to_string()),
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             let (identity, asked) = (std::sync::Arc::clone(identity), room.clone());
             tokio::task::spawn_blocking(move || identity.sign_collaboration_join(&asked))
                 .await
-                .ok()?
-                .ok()?
+                .map_err(|error| error.to_string())
+                .and_then(|signed| signed.map_err(|error| error.to_string()))
         }
         LocalSdkDocumentSigner::Inherited(_) => return None,
+    };
+    let proof = match signed {
+        Ok(proof) => proof,
+        Err(error) => {
+            unavailable(&format_args!("signing the join failed: {error}"));
+            return None;
+        }
     };
     let bytes = runtime_collab::CertifiedJoinIdentity {
         workspace_id: room.clone(),
@@ -5427,32 +5460,22 @@ async fn link_settings(
     })
 }
 
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
-)]
-async fn spawn_realtime_stream(
-    channel: &runtime_collab::ChannelHandle,
-    inbound_tx: &InboundBridge,
-) {
-    if let Ok(stream) = channel.subscribe_realtime().await {
-        let tx = inbound_tx.clone();
-        tokio::task::spawn_local(async move {
-            while let Ok(bytes) = stream.read().await {
-                if bytes.len() > collab_types::realtime::MAX_REALTIME_WIRE_BYTES {
-                    continue;
-                }
-                let Ok(event) =
-                    serde_json::from_slice::<collab_types::realtime::RealtimeEvent>(&bytes)
-                else {
-                    continue;
-                };
-                if !event.valid() || !tx.send_durable(CollabEvent::Realtime(event)).await {
-                    break;
-                }
+/// The ops of a history page the local broker sent for `artifact`. One
+/// that does not decode is left out of the page and logged: the broker
+/// pages only what it admitted, so it is a fault on that side.
+pub(super) fn decode_paged_ops(
+    artifact: collab_types::ArtifactId,
+    ops: &[Vec<u8>],
+) -> Vec<SignedOp> {
+    ops.iter()
+        .filter_map(|bytes| match postcard::from_bytes::<SignedOp>(bytes) {
+            Ok(op) => Some(op),
+            Err(error) => {
+                tracing::warn!(artifact = %artifact.0, %error, "collab: history page op does not decode");
+                None
             }
-        });
-    }
+        })
+        .collect()
 }
 
 fn parse_invocation_context(id: u64, json: &str) -> Option<tilo_actions::ActionContext> {
@@ -6558,11 +6581,7 @@ async fn dispatch_sdk_request(
             {
                 Ok(batch) => {
                     let mut payloads = Vec::new();
-                    let decoded: Vec<SignedOp> = batch
-                        .ops
-                        .into_iter()
-                        .filter_map(|bytes| postcard::from_bytes::<SignedOp>(&bytes).ok())
-                        .collect();
+                    let decoded = decode_paged_ops(artifact, &batch.ops);
                     let oldest_seq = decoded.iter().map(|op| op.seq).min();
                     let ops = decoded
                         .into_iter()
@@ -7256,7 +7275,13 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
             // An undecodable scope cannot truthfully identify a target. Drop
             // it instead of inventing a tab and making malformed presence
             // look like a collaborator left some unrelated surface.
-            let key: PresenceKey = postcard::from_bytes(&evt.key_bytes).ok()?;
+            let key: PresenceKey = match postcard::from_bytes(&evt.key_bytes) {
+                Ok(key) => key,
+                Err(error) => {
+                    tracing::warn!(user = %evt.user_id, %error, "collab: refused presence whose key does not decode");
+                    return None;
+                }
+            };
             let payload = match other {
                 runtime_collab::PresencePayload::Caret { pos } => PresencePayload::Caret {
                     // A wire-supplied offset that doesn't fit `usize` on this
@@ -7278,9 +7303,22 @@ fn translate_presence_event(evt: runtime_collab::PresenceEvent) -> Option<Collab
                     PresencePayload::Following { target }
                 }
                 runtime_collab::PresencePayload::InteractionJson(json) => {
-                    let update: tilo_actions::SemanticInteraction =
-                        serde_json::from_str(&json).ok()?;
-                    update.validate().ok()?;
+                    let update = match serde_json::from_str::<tilo_actions::SemanticInteraction>(
+                        &json,
+                    )
+                    .map_err(|error| error.to_string())
+                    .and_then(|update| {
+                        update
+                            .validate()
+                            .map(|()| update)
+                            .map_err(|error| error.to_string())
+                    }) {
+                        Ok(update) => update,
+                        Err(error) => {
+                            tracing::warn!(user = %evt.user_id, %error, "collab: refused a presence interaction");
+                            return None;
+                        }
+                    };
                     PresencePayload::Interaction(Box::new(update))
                 }
                 runtime_collab::PresencePayload::Status { text, automatic } => {

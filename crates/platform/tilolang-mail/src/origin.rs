@@ -24,7 +24,7 @@ use tilolang_tilo::runtime::origin::OriginWrite;
 use tilolang_tilo::runtime::store::{FieldKey, Store as _};
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
-use super::connector::{Changes, Event, ImapMessage, MailConnector, Outgoing, Request};
+use super::connector::{Changes, Event, ImapMessage, MailConnector, Outgoing, Request, Unmade};
 
 /// The mailboxes every account shows, in order: key, name, role.
 pub const MAILBOXES: &[(&str, &str)] = &[
@@ -805,12 +805,17 @@ fn summarize(host: &Host, t: &Types, acct: &Acct, threads: &BTreeSet<String>) ->
     writes
 }
 
-/// Seconds since the epoch of an ISO time `YYYY-MM-DDTHH:MM:SSZ`; 0 for anything else.
+/// Seconds since the epoch of an ISO time `YYYY-MM-DDTHH:MM:SSZ`; 0 for anything else, which
+/// is said: the record holds a time the origin did not write.
 fn seconds_of(iso: &str) -> u64 {
-    chrono::DateTime::parse_from_rfc3339(iso)
-        .ok()
-        .and_then(|at| u64::try_from(at.timestamp()).ok())
-        .unwrap_or(0)
+    match chrono::DateTime::parse_from_rfc3339(iso) {
+        // Before the epoch is the epoch.
+        Ok(at) => u64::try_from(at.timestamp()).unwrap_or(0),
+        Err(error) => {
+            tracing::warn!(iso, %error, "a message's received time is not a time");
+            0
+        }
+    }
 }
 
 impl Origin for ImapOrigin {
@@ -868,7 +873,9 @@ impl Origin for ImapOrigin {
                     polled.wrote |= self.take_in(cx.host, &cx.now, &changes);
                 }
                 Event::Arrived { account } => {
-                    let _ = self.connector.changes(&account, "inbox");
+                    if self.connector.changes(&account, "inbox").is_none() {
+                        tracing::warn!(account, "new mail arrived and was not asked for");
+                    }
                 }
                 Event::Unreachable { account, reason } => {
                     self.trouble.insert(account, reason);
@@ -981,12 +988,20 @@ impl Origin for ImapOrigin {
             references: field(6),
         };
         match self.connector.send(&account, message) {
-            Some(request) => {
+            Ok(request) => {
+                // Resolved by the connector's answer to `request` (`Accepted`, `Refused` or
+                // `Unsent`, which it gives for every request, the engine stopping included):
+                // the poll that takes it in settles again.
                 self.pending.insert(request, Pending::Send(key.clone()));
                 self.sends.insert(key, Sending::Going);
                 Delivery::Pending
             }
-            None => Delivery::Rejected(format!("no mail account {account} on this device")),
+            Err(Unmade::NoAccount) => {
+                Delivery::Rejected(format!("no mail account {account} on this device"))
+            }
+            // The message never left: it waits to go online, as one the server was not reached
+            // for does.
+            Err(Unmade::EngineStopped) => Delivery::Offline("the mail engine stopped".to_owned()),
         }
     }
 }

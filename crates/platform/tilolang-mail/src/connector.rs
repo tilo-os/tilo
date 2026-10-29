@@ -98,6 +98,15 @@ pub enum Event {
     },
 }
 
+/// Why a request was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unmade {
+    /// The workspace has no such account on this device.
+    NoAccount,
+    /// The engine that talks to the servers stopped.
+    EngineStopped,
+}
+
 /// The connector to the mail servers of the workspace's accounts.
 pub trait MailConnector {
     /// The workspace's mail accounts.
@@ -111,7 +120,10 @@ pub trait MailConnector {
     /// Search the account's server.
     fn search(&mut self, account: &str, text: &str) -> Option<Request>;
     /// Send a message from the account.
-    fn send(&mut self, account: &str, message: Outgoing) -> Option<Request>;
+    ///
+    /// # Errors
+    /// Why the send was not made: no such account here, or the engine is gone.
+    fn send(&mut self, account: &str, message: Outgoing) -> Result<Request, Unmade>;
     /// Keep told of new mail in the account's inbox.
     fn watch(&mut self, account: &str);
     /// What the servers answered since last asked; never waits.

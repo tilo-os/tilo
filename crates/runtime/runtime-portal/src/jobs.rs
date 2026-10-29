@@ -524,6 +524,7 @@ pub fn pid_of_pidfd(pidfd: BorrowedFd<'_>) -> io::Result<u32> {
 /// or one outside this pid namespace (`0`).
 #[must_use]
 pub fn pid_in_fdinfo(info: &str) -> Option<u32> {
+    // optional-decode: the kernel's own text; a line that is not a number reads as no process
     let pid: i64 = info
         .lines()
         .find_map(|line| line.strip_prefix("Pid:"))?

@@ -33,6 +33,9 @@ tilolang-tilo = { path = "../../platform/tilolang-tilo" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 toml.workspace = true
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# The UI host's half of a window and the patch protocol to it: what `layout-check` lays out.
+tilo-ui-host = { path = "../../platform/tilo-ui-host" }
+tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 
 [dev-dependencies]
 collab-types = { path = "../../collab/collab-types" }

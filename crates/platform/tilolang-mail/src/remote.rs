@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
-use crate::connector::{AccountRef, Event, MailConnector, Outgoing, Request};
+use crate::connector::{AccountRef, Event, MailConnector, Outgoing, Request, Unmade};
 use crate::wire::{self, FromConnector, ToConnector};
 
 /// What the reading thread hands the origin: a message, or that the connector is gone.
@@ -133,12 +133,17 @@ impl MailConnector for RemoteConnector {
         })
     }
 
-    fn send(&mut self, account: &str, message: Outgoing) -> Option<Request> {
+    fn send(&mut self, account: &str, message: Outgoing) -> Result<Request, Unmade> {
+        if self.gone.is_none() && !self.accounts.iter().any(|a| a.id == account) {
+            return Err(Unmade::NoAccount);
+        }
+        // Gone, or going as it is asked: the connector never got it, so it waits to go online.
         self.ask(account, |request| ToConnector::Send {
             request,
             account: account.to_owned(),
             message,
         })
+        .ok_or(Unmade::EngineStopped)
     }
 
     fn watch(&mut self, account: &str) {

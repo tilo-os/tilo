@@ -60,11 +60,13 @@ fn formatted(
 
 /// The calendar day `YYYY-MM-DD`.
 fn day_of(text: &str) -> Option<NaiveDate> {
+    // optional-decode: a value that is not a day is shown as the text it is
     NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()
 }
 
 /// The instant `YYYY-MM-DDTHH:MM:SSZ`.
 fn moment_of(text: &str) -> Option<DateTime<Utc>> {
+    // optional-decode: a value that is not an instant is shown as the text it is
     DateTime::parse_from_rfc3339(text)
         .ok()
         .map(|at| at.with_timezone(&Utc))

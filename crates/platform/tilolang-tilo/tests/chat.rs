@@ -240,6 +240,227 @@ fn two_people_post_live_in_one_channel_with_replies_and_a_thread() {
     }
 }
 
+/// Who reacted with each emoji, as the row's reactions show it.
+fn reactions(row: &UiNode) -> Vec<(String, Vec<Principal>)> {
+    let Some(node) = find(row, "ui.Reactions") else {
+        return Vec::new();
+    };
+    let Some(Value::Map(entries)) = node.props.get("reactions") else {
+        panic!("reactions as a map: {:?}", node.props);
+    };
+    entries
+        .iter()
+        .map(|(emoji, who)| {
+            let Value::List(who) = who else {
+                panic!("who reacted, as a set: {who:?}");
+            };
+            let who = who
+                .iter()
+                .map(|p| match p {
+                    Value::Principal(p) => p.clone(),
+                    other => panic!("a principal: {other:?}"),
+                })
+                .collect();
+            (emoji.as_text().unwrap_or_default().to_owned(), who)
+        })
+        .collect()
+}
+
+#[test]
+fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let m = call(
+        &ada,
+        "send",
+        vec![design.clone(), rich("Shots are up."), Value::Opt(None)],
+    );
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
+    let mut ben_design = ben.host.open_resource(&target(&design), None).unwrap();
+    assert!(
+        reactions(&rows(&mut ada_design)[0]).is_empty(),
+        "no reactions yet"
+    );
+
+    // Both react with the same emoji before either hears of the other's.
+    call(&ada, "react", vec![m.clone(), Value::text("👍")]);
+    ada.commit();
+    call(&ben, "react", vec![m.clone(), Value::text("👍")]);
+    call(&ben, "react", vec![m.clone(), Value::text("🎉")]);
+    ben.commit();
+    ada.sync_with(&mut ben);
+    let both = vec![
+        (
+            "👍".to_owned(),
+            vec![Principal::new("ada"), Principal::new("ben")],
+        ),
+        ("🎉".to_owned(), vec![Principal::new("ben")]),
+    ];
+    for view in [&mut ada_design, &mut ben_design] {
+        let mut shown = reactions(&rows(view)[0]);
+        shown.sort();
+        let mut want = both.clone();
+        want.sort();
+        assert_eq!(shown, want, "neither reaction is lost");
+        let node = find(&rows(view)[0], "ui.Reactions").cloned().unwrap();
+        assert!(node.events.contains_key("toggle"), "a pill toggles");
+    }
+
+    // Ada's second press takes hers back; Ben's stays.
+    call(&ada, "react", vec![m, Value::text("👍")]);
+    ada.commit();
+    ada.sync_with(&mut ben);
+    for view in [&mut ada_design, &mut ben_design] {
+        let shown = reactions(&rows(view)[0]);
+        assert!(
+            shown.contains(&("👍".to_owned(), vec![Principal::new("ben")])),
+            "{shown:?}"
+        );
+    }
+}
+
+/// Every text `row` shows.
+fn shown_in(row: &UiNode) -> Vec<String> {
+    let mut out = Vec::new();
+    texts(row, &mut out);
+    out
+}
+
+#[test]
+fn enter_in_the_composer_sends_and_empties_it() {
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let mut view = ada.host.open_resource(&target(&design), None).unwrap();
+    let input = find(view.tree(), "ui.RichInput")
+        .expect("the composer")
+        .clone();
+    assert!(
+        input.events.contains_key("submit"),
+        "the composer sends on Enter"
+    );
+    view.edit(&input.key, &rich("Is the build out?")).unwrap();
+    let outcome = view.fire(&input.key, "submit").unwrap();
+    assert!(
+        matches!(outcome, InvokeOutcome::Done(_)),
+        "sent: {outcome:?}"
+    );
+    ada.commit();
+    assert_eq!(said(&mut view), ["Is the build out?"]);
+    assert!(
+        matches!(view.bound_value(&input.key), Some(Value::Rich(r)) if r.is_empty()),
+        "the composer is empty again"
+    );
+}
+
+#[test]
+fn its_author_edits_a_message_in_place_and_anyone_pins_it() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    let mut ada_design = ada.host.open_resource(&target(&design), None).unwrap();
+    let mut ben_design = ben.host.open_resource(&target(&design), None).unwrap();
+    post(&mut ada, &ada_design, "The bulid is on the test machines.");
+
+    // Edit on Ada's message puts an editor holding what it says in its place; Save keeps the
+    // new text, which both see.
+    let row = rows(&mut ada_design).remove(0);
+    let edit = button(&row, "Edit").expect("Edit on a message");
+    ada_design.press(&edit).unwrap();
+    let row = rows(&mut ada_design).remove(0);
+    let editor = find(&row, "ui.RichInput")
+        .expect("the editor in the message's place")
+        .key
+        .clone();
+    assert!(
+        matches!(ada_design.bound_value(&editor), Some(Value::Rich(r)) if r.written_text() == "The bulid is on the test machines."),
+        "the editor starts from what the message says"
+    );
+    ada_design
+        .edit(&editor, &rich("The build is on the test machines."))
+        .unwrap();
+    let save = button(&row, "Save").expect("Save beside the editor");
+    let outcome = ada_design.press(&save).unwrap();
+    assert!(
+        matches!(outcome, InvokeOutcome::Done(_)),
+        "saved: {outcome:?}"
+    );
+    ada.commit();
+    ada.sync_with(&mut ben);
+    for view in [&mut ada_design, &mut ben_design] {
+        assert_eq!(said(view), ["The build is on the test machines."]);
+        let row = rows(view).remove(0);
+        assert!(find(&row, "ui.RichInput").is_none(), "the editor is gone");
+    }
+
+    // Only its author edits a message: Ben has no Edit on Ada's, and editing it as Ben is
+    // refused with the reason.
+    let row = rows(&mut ben_design).remove(0);
+    assert!(button(&row, "Edit").is_none(), "no Edit on someone else's");
+    let message = ben_design
+        .event_action(&button(&row, "Pin").expect("Pin"), "press")
+        .expect("Pin runs on the message")
+        .args[0]
+        .clone();
+    let meta = ben.host.package(APP).unwrap().meta;
+    let edit_id = meta
+        .actions
+        .iter()
+        .find(|a| a.name == "edit")
+        .unwrap()
+        .id
+        .clone();
+    let refused = ben.host.runtime().invoke_action(
+        &Principal::new("ben"),
+        (edit_id.as_str(), vec![message, rich("Not mine to say.")]),
+    );
+    assert!(
+        !matches!(refused, Ok(InvokeOutcome::Done(_))),
+        "Ben's edit of Ada's message is refused: {refused:?}"
+    );
+    assert_eq!(
+        said(&mut ben_design),
+        ["The build is on the test machines."]
+    );
+
+    // Ben pins it; both see it pinned.
+    let row = rows(&mut ben_design).remove(0);
+    let pin = button(&row, "Pin").expect("Pin on a message");
+    ben_design.press(&pin).unwrap();
+    ben.commit();
+    ada.sync_with(&mut ben);
+    for view in [&mut ada_design, &mut ben_design] {
+        let row = rows(view).remove(0);
+        assert!(
+            shown_in(&row).contains(&"Pinned".to_owned()),
+            "{:?}",
+            shown_in(&row)
+        );
+        let mut labels = Vec::new();
+        find_all(&row, "ui.Button", &mut labels);
+        let labels: Vec<_> = labels
+            .iter()
+            .map(|b| format!("{:?}", b.props.get("label")))
+            .collect();
+        assert!(
+            button(&row, "Unpin").is_some(),
+            "Pin turns into Unpin: {labels:?}"
+        );
+    }
+}
+
 /// Chat as it was before channels: conversations of messages made of parts.
 const BEFORE: &str = include_str!("chat_before_channels/app.tl");
 const BEFORE_IDS: &str = include_str!("chat_before_channels/app.ids");

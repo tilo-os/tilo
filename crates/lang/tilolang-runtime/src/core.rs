@@ -47,6 +47,10 @@ pub enum Delivery {
     /// The service refused it, for this reason. It is never tried again.
     Rejected(String),
     /// Handed over; the service has not answered yet. Asked again on the next settle.
+    ///
+    /// Resolved by the sink that says it: it is obliged to have its owner settle again once
+    /// the service answered (an origin reports `Polled::settle` from the poll that took the
+    /// answer in), and to answer every effect it took, its service going away included.
     Pending,
     /// The service could not be reached, for this reason, so it never got it: the effect waits
     /// to go online and is tried again when the network comes back.
@@ -289,20 +293,21 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
             Abort, ActOpen, ActRef, ActSet, ActThen, Actions, ArgAt, CollInsert, CollMove,
-            CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, Dated, Delivery,
-            EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
-            EventValue, Filters, FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop,
-            InvokerPush, IsError, IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen,
-            ListNew, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys,
-            MapPut, MapRemove, Members, MetaOf, ModelCall, NoneV, Now, Outside, Phrase,
-            PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Query,
-            QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF,
-            ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty,
-            RichNew, RichPart, RichTime, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI,
-            Speakers, StateAt, StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke,
-            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions,
-            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
-            UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, WorkspaceMembers,
+            CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, Dated,
+            Delivery, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
+            EventPart, EventValue, Filters, FloatToStr, IdentPart, IntToStr, Invoke, Invoker,
+            InvokerPop, InvokerPush, IsError, IsSome, Lenses, ListEnd, ListGetF, ListGetH,
+            ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListReverse,
+            ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, Members,
+            MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalKind,
+            PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew, RecSetF,
+            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
+            ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart, RichTime,
+            SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet,
+            StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
+            TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor, UiBind, UiBindState,
+            UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            VersionEnd, Versions, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -340,9 +345,11 @@ impl Core {
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
-            | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | SetAdd | SetRemove
-            | MapPut | MapRemove | MapGetH | MapKeys | RecNew | RecSetI | RecSetF | RecSetH
-            | RefLit | RefEq | RefIs | RefId => self.resource_import(imp, a),
+            | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong
+            | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
+            | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId => {
+                self.resource_import(imp, a)
+            }
             ActRef | Invoke | TryInvoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
             | PrincipalName | QueueBlock | Now | PrincipalNamed | InvokerPush | InvokerPop => {
                 self.effect_import(imp, a)
@@ -350,8 +357,8 @@ impl Core {
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet | ActThen | ActOpen
             | UiActions => self.ui_import(imp, a),
-            EventValue | Actions | Lenses | Delivery | MetaOf | Versions | VersionEnd | Phrase
-            | Dated => self.platform_import(imp, a),
+            EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
+            | VersionEnd | Phrase | Dated => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

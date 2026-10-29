@@ -1449,9 +1449,16 @@ impl Resolver<'_> {
                     );
                     return Ty::Error;
                 }
+                // A field's map may hold a set per key (`Map<Set<Principal>>`, who reacted with
+                // each emoji): stored element by element, so it is a field's container too.
+                let set_per_key = field_position
+                    && name.name == "Map"
+                    && args.first().is_some_and(|a| {
+                        matches!(&a.kind, TypeExprKind::Generic(inner, _) if inner.name == "Set")
+                    });
                 let inner = args
                     .first()
-                    .map_or(Ty::Error, |a| self.resolve_type(a, false));
+                    .map_or(Ty::Error, |a| self.resolve_type(a, set_per_key));
                 let boxed = Box::new(inner);
                 let ty = match name.name.as_str() {
                     "List" => Ty::List(boxed),
@@ -1730,10 +1737,11 @@ impl Resolver<'_> {
                     }
                 }
             }
-            if matches!(kind, CKind::Action | CKind::Flow)
-                && params.iter().any(|p| mentions_principal(&p.ty))
-            {
-                self.err("E048", name.span, format!("{} `{}` takes a Principal parameter; actions and flows are what callers invoke, and a caller could pass anyone. Read `invoker` inside the action instead", kind.word(), name.name));
+            // An action may take a person to act on (`share(n, with: Principal)`, `assign(t,
+            // to: Principal)`): its form asks for one of the workspace's members. Who acts is
+            // always `invoker`. A flow runs on its own and takes none.
+            if kind == CKind::Flow && params.iter().any(|p| mentions_principal(&p.ty)) {
+                self.err("E048", name.span, format!("{} `{}` takes a Principal parameter; a flow runs on its own, and a caller could pass anyone. Read `invoker` inside the actions it runs instead", kind.word(), name.name));
             }
             let result = match (kind, result) {
                 (CKind::View, _) => Ty::View,

@@ -1059,7 +1059,8 @@ impl Reconciler {
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let names: Vec<String> = cases.iter().map(|case| case.name.clone()).collect();
-        if cases.len() <= 4 {
+        // A few cases are segments; more, or people and resources (`menu`), a menu.
+        if cases.len() <= 4 && !flag(node, "menu") {
             let segments = cases
                 .iter()
                 .map(|case| Segment::new(case.label.clone()))
@@ -1082,20 +1083,23 @@ impl Reconciler {
                     .unwrap_or_default(),
             );
             let chosen = labels.clone();
+            let placeholder = crate::date::shown(node, "placeholder").unwrap_or_default();
             Box::new(
-                Dropdown::from_state(labels, &state).on_change(move |label| {
-                    if let Some(case) = chosen
-                        .iter()
-                        .position(|shown| shown == label)
-                        .and_then(|index| names.get(index))
-                    {
-                        sink.borrow_mut().push(UiEvent::Fire(
-                            key.clone(),
-                            format!("pick.{case}"),
-                            None,
-                        ));
-                    }
-                }),
+                Dropdown::from_state(labels, &state)
+                    .with_placeholder(&placeholder)
+                    .on_change(move |label| {
+                        if let Some(case) = chosen
+                            .iter()
+                            .position(|shown| shown == label)
+                            .and_then(|index| names.get(index))
+                        {
+                            sink.borrow_mut().push(UiEvent::Fire(
+                                key.clone(),
+                                format!("pick.{case}"),
+                                None,
+                            ));
+                        }
+                    }),
             )
         }
     }

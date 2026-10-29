@@ -118,15 +118,26 @@ pub fn without_rows(node: &UiNode) -> UiNode {
 /// The props a column's header takes from the window shown in it.
 const HEADER_PROPS: &[&str] = &["title", "count", "content_kind"];
 
+/// Whether `nodes` only stand in for content not chosen yet: empty states, or nothing.
+fn placeholder(nodes: &[UiNode]) -> bool {
+    nodes.iter().all(|node| {
+        node.kind == kind("EmptyState") || (node.kind == "fragment" && placeholder(&node.children))
+    })
+}
+
 /// The window's shell: the root's shell, with the window after it (its shell, keys carrying
 /// [`DETAIL`]) as its content column. Beside an overview the next column is the content; in
 /// place of the root's content it is pushed, with Back: a shell that can go back carries the
-/// event [`BACK`], which the window answers itself.
+/// event [`BACK`], which the window answers itself. Beside a sidebar, a root whose content only
+/// stands in for what the sidebar chooses (a chat's channels over "No channel open") has
+/// nothing to go back to: the sidebar is how one goes elsewhere.
 #[must_use]
 pub fn compose(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     let overview = has_overview(root);
     let mut shell = root.clone();
-    if !overview {
+    let chooses =
+        !slot_children(root, "sidebar").is_empty() && placeholder(slot_children(root, "content"));
+    if !overview && !chooses {
         // A window of a page or a document goes back from the window after it.
         shell.events.insert(BACK.to_owned(), Event::default());
         shell
@@ -341,6 +352,18 @@ mod tests {
         assert_eq!(pushed.props.get("can_go_back"), Some(&Value::Bool(true)));
         let alone = compose(&page, None);
         assert_eq!(alone.props.get("can_go_back"), Some(&Value::Bool(false)));
+        // Beside a sidebar over a placeholder, the sidebar chooses: no Back.
+        let channels = shell(
+            "channels",
+            vec![
+                ("sidebar", vec![node("NavList", "nav", &[])]),
+                ("content", vec![node("EmptyState", "none", &[])]),
+            ],
+            &[],
+        );
+        let chosen = compose(&channels, Some(&detail));
+        assert!(!chosen.events.contains_key(BACK));
+        assert_eq!(chosen.props.get("can_go_back"), None);
     }
 
     #[test]

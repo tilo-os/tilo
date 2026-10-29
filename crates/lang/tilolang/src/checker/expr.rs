@@ -242,7 +242,9 @@ impl Checker<'_> {
             return Ex::local(id, ty);
         }
         if name == "invoker" {
-            if self.st.ctx == Ctx::Action {
+            // An action's requirement also says, where the action is presented, whether the
+            // person looking may invoke it: there `invoker` is them.
+            if self.st.ctx == Ctx::Action || self.st.invoker == super::Invoker::Viewer {
                 return Ex::host(Imp::Invoker, vec![], Ty::Principal);
             }
             self.err(

@@ -441,7 +441,7 @@ fn start(key: &HostKey) -> std::io::Result<Host> {
         pid = child.id(),
         "tilolang host started"
     );
-    let (followed, key, kept) = (Arc::clone(&door), key.clone(), storage.clone());
+    let (followed, key, kept) = (Arc::clone(&door), key.clone(), storage);
     std::thread::Builder::new()
         .name("tilolang-host".into())
         .spawn(move || {

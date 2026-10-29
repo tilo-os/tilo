@@ -42,19 +42,27 @@ impl Line {
             .map_err(|error| format!("the door went away: {error}"))
     }
 
-    /// The next message, or `None` once the door closed the connection.
-    fn next(&self) -> Option<Json> {
+    /// The next message: `None` once the door closed the connection (or it broke, which is
+    /// logged), `Some(Err(why))` for a line that is not a JSON message.
+    fn next(&self) -> Option<Result<Json, String>> {
         let mut line = String::new();
         match self.reader.borrow_mut().read_line(&mut line) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => serde_json::from_str(&line).ok().or(Some(Json::Null)),
+            Ok(0) => None,
+            Err(error) => {
+                tracing::warn!(%error, "the task's program connection broke");
+                None
+            }
+            Ok(_) => Some(
+                serde_json::from_str(&line)
+                    .map_err(|error| format!("the door sent a line that is not JSON: {error}")),
+            ),
         }
     }
 
     fn ask(&self, request: &Json) -> Result<Json, String> {
         self.send(request)?;
         self.next()
-            .ok_or_else(|| "the door closed the task".to_owned())
+            .ok_or_else(|| "the door closed the task".to_owned())?
     }
 }
 
@@ -92,8 +100,7 @@ impl TaskDoor for Line {
             reply
                 .get(key)
                 .and_then(Json::as_str)
-                .unwrap_or_default()
-                .to_owned()
+                .map_or_else(|| format!("the door gave no reason ({key})"), str::to_owned)
         };
         if let Some(output) = reply.get("ok") {
             Answered::Done(output.clone())
@@ -101,8 +108,13 @@ impl TaskDoor for Line {
             Answered::Refused(why("refused"))
         } else if reply.get("asks").is_some() {
             Answered::Asks(why("asks"))
-        } else {
+        } else if reply.get("failed").is_some() {
             Answered::Failed(why("failed"))
+        } else {
+            Answered::Failed(format!(
+                "the door answered the invocation with neither ok, failed, refused nor asks: \
+                 {reply}"
+            ))
         }
     }
 }
@@ -155,23 +167,43 @@ impl Task {
 
     /// Answer what the door sent: run a program and say how it went. `false` once the door
     /// closed the task.
+    ///
+    /// Everything the door sends is answered: a line that is not a program to run is answered
+    /// `failed` with why, so the door never waits on a message the host dropped.
     pub fn serve(&self) -> bool {
         let Some(message) = self.line.next() else {
             return false;
         };
-        let Some(run) = message.get("run") else {
-            tracing::warn!("the door sent the task something other than a program");
-            return true;
+        let answer = match message.and_then(|message| program(&message)) {
+            Ok((source, confirm)) => self.session.run(&source, confirm),
+            Err(why) => {
+                tracing::warn!(
+                    why,
+                    "the door sent the task something that is not a program"
+                );
+                json!({"kind": "program", "state": "failed", "detail": why})
+            }
         };
-        let source = run["source"].as_str().unwrap_or_default();
-        let confirm = run["confirm"].as_bool().unwrap_or(false);
-        let answer = self.session.run(source, confirm);
         if let Err(error) = self.line.send(&json!({ "answer": answer })) {
             tracing::warn!(%error, "a program's answer did not reach the door");
             return false;
         }
         true
     }
+}
+
+/// The program `message` asks the task to run, and whether its changes are confirmed.
+fn program(message: &Json) -> Result<(String, bool), String> {
+    let run = message.get("run").ok_or_else(|| {
+        format!("the door sent the task something other than a program: {message}")
+    })?;
+    let source = run
+        .get("source")
+        .and_then(Json::as_str)
+        .ok_or("the door sent a program without its source")?;
+    // An absent `confirm` is a run not confirmed yet: its changes are previewed first.
+    let confirm = run.get("confirm").and_then(Json::as_bool).unwrap_or(false);
+    Ok((source.to_owned(), confirm))
 }
 
 /// The bundles the sealed memfd `fd` holds, `len` bytes of them.
@@ -190,4 +222,81 @@ fn bundles(fd: &OwnedFd, len: u64) -> Result<Vec<Bundle>, String> {
                 .map_err(|error| error.to_string())
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A task over no packages, its program connection's far end returned as the door's.
+    fn task() -> (Task, BufReader<UnixStream>, UnixStream) {
+        let (ours, door) = UnixStream::pair().expect("a socket pair");
+        let line = Rc::new(Line {
+            reader: RefCell::new(BufReader::new(ours.try_clone().expect("a clone"))),
+            writer: RefCell::new(ours.try_clone().expect("a clone")),
+        });
+        let session = TaskSession::new("task", None, &(Rc::clone(&line) as Rc<dyn TaskDoor>), &[])
+            .expect("a session");
+        let task = Task {
+            line,
+            watched: OwnedFd::from(ours),
+            session,
+        };
+        (
+            task,
+            BufReader::new(door.try_clone().expect("a clone")),
+            door,
+        )
+    }
+
+    fn answer(reader: &mut BufReader<UnixStream>) -> Json {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("an answer");
+        serde_json::from_str(&line).expect("a JSON answer")
+    }
+
+    #[test]
+    fn a_line_that_is_not_json_is_answered_failed() {
+        let (task, mut reader, mut door) = task();
+        door.write_all(b"{not json\n").expect("sent");
+        assert!(task.serve(), "the task goes on");
+        let answer = answer(&mut reader);
+        assert_eq!(answer["answer"]["state"], "failed");
+        let detail = answer["answer"]["detail"].as_str().unwrap_or_default();
+        assert!(detail.contains("not JSON"), "{detail}");
+    }
+
+    #[test]
+    fn a_message_that_is_not_a_program_is_answered_failed() {
+        let (task, mut reader, mut door) = task();
+        door.write_all(b"{\"walk\": {}}\n").expect("sent");
+        assert!(task.serve());
+        assert_eq!(answer(&mut reader)["answer"]["state"], "failed");
+        door.write_all(b"{\"run\": {\"confirm\": true}}\n")
+            .expect("sent");
+        assert!(task.serve());
+        let answer = answer(&mut reader);
+        assert_eq!(answer["answer"]["state"], "failed");
+        assert!(
+            answer["answer"]["detail"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("without its source")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_reply_fails_the_request_with_why() {
+        let (task, mut reader, mut door) = task();
+        let asking = std::thread::spawn(move || {
+            let mut asked = String::new();
+            reader.read_line(&mut asked).expect("asked");
+            door.write_all(b"garbage\n").expect("sent");
+            (reader, door)
+        });
+        let read = task.line.read("app", "item");
+        let _ends = asking.join().expect("the door");
+        let why = read.expect_err("an unreadable reply fails the read");
+        assert!(why.contains("not JSON"), "{why}");
+    }
 }

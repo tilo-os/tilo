@@ -343,23 +343,15 @@ fn the_picker_lists_environments_the_host_and_legacy_vms_only_when_reported() {
     let manage = crate::i18n::t("terminal-target-manage");
     assert_eq!(labels[0], "Default");
     assert_eq!(labels[1], "Work");
-    // The environments, the device's own shell, then the shell the current
-    // environment runs (ush's own, or a full Linux session), then Manage.
+    // The environments, the device's own shell, then Manage: there is one
+    // shell, so no shell to choose.
     assert_eq!(
         widget.target_menu_checked(),
-        Some(vec![false, true, false, true, false, false]),
-        "the current target, and the shell it runs, are checked"
+        Some(vec![false, true, false, false]),
+        "the current target is checked"
     );
     assert_eq!(labels[2], host);
-    let shell = crate::i18n::t("terminal-shell");
-    assert_eq!(
-        labels[3],
-        format!("{shell} {}", crate::i18n::t("terminal-shell-ush"))
-    );
-    assert_eq!(
-        labels[4],
-        format!("{shell} {}", crate::i18n::t("terminal-shell-linux"))
-    );
+    assert_eq!(labels.len(), 4, "{labels:?}");
     assert_eq!(labels.last(), Some(&manage));
     assert!(!labels.iter().any(|l| l.contains("linux")));
 
@@ -439,7 +431,17 @@ fn targets_are_spelled_out_for_agents() {
         crate::parse_target_argument("host"),
         Some(SessionTarget::Host)
     );
-    for bad in ["", "environment:../etc", "vm:linux", "legacy:"] {
+    // A full Linux session is no longer a target: bash is a program in the
+    // environment's guest.
+    for bad in [
+        "",
+        "environment:../etc",
+        "vm:linux",
+        "legacy:",
+        "linux",
+        "linux:work",
+        "linux:work@0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    ] {
         assert_eq!(crate::parse_target_argument(bad), None, "{bad}");
     }
 }
@@ -1277,16 +1279,8 @@ fn the_target_picker_is_in_the_window_bar_and_the_content_has_no_chrome() {
             .filter(|choice| choice.current)
             .map(|choice| choice.label.as_str())
             .collect::<Vec<_>>(),
-        vec![
-            location.label.as_str(),
-            format!(
-                "{} {}",
-                crate::i18n::t("terminal-shell"),
-                crate::i18n::t("terminal-shell-ush")
-            )
-            .as_str(),
-        ],
-        "the picker marks the current target, and that it runs ush's own shell"
+        vec![location.label.as_str()],
+        "the picker marks the current target"
     );
 
     // The content holds only the terminal: no chip, no header above the grid.

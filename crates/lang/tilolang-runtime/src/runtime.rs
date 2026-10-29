@@ -410,6 +410,35 @@ impl Runtime {
         self.core.complete_args(action, given)
     }
 
+    /// The default of the parameter `at` of `action`, computed now over the arguments before
+    /// it: what its form starts filled in with. `None` when it has none.
+    ///
+    /// # Errors
+    ///
+    /// A default that traps.
+    pub fn default_argument(
+        &self,
+        action: &str,
+        at: usize,
+        before: &[Value],
+    ) -> Result<Option<Value>, RuntimeError> {
+        self.core.default_argument(action, at, before)
+    }
+
+    /// The workspace's members as the host last gave them ([`Self::set_members`]).
+    #[must_use]
+    pub fn members(&self) -> Vec<crate::members::Member> {
+        self.core.members.borrow().list().to_vec()
+    }
+
+    /// When `text` says something is due ("tomorrow 9"), read now in the person's zone.
+    #[must_use]
+    pub fn dated(&self, text: &str) -> tilolang::natural::Dated {
+        let now = tilolang::calendar::instant(&self.core.clock_now()).unwrap_or(0);
+        let offset = self.core.zone.borrow().as_ref().map_or(0, |zone| zone());
+        tilolang::natural::dated(text, now, offset)
+    }
+
     /// Run a flow. It finishes, or suspends on a suggestion waiting for a decision.
     ///
     /// # Errors
@@ -661,6 +690,8 @@ impl Runtime {
                     };
                     let mut store = self.core.store.borrow_mut();
                     match delivered {
+                        // Stays handed over: the sink settles it again once answered
+                        // (`Delivery::Pending`).
                         Delivery::Pending => {}
                         Delivery::Delivered => {
                             store.outbox_settle(
@@ -682,6 +713,8 @@ impl Runtime {
                         }
                     }
                 }
+                // Resolved by `retry_waiting`, which the origin calls when its service is
+                // reachable again.
                 OutboxState::Waiting { .. } if !retry => {}
                 OutboxState::Queued | OutboxState::Waiting { .. } => {
                     let sending = OutboxState::Sending {

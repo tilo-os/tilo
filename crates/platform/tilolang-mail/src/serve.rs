@@ -366,7 +366,7 @@ impl Connector {
             return;
         };
         match attached.connector.send(account, message) {
-            Some(engine) => {
+            Ok(engine) => {
                 self.send_of.insert(engine, key.clone());
                 self.sends.insert(
                     key,
@@ -376,12 +376,20 @@ impl Connector {
                     },
                 );
             }
-            None => {
+            Err(crate::connector::Unmade::NoAccount) => {
                 let refused = Event::Refused {
                     request,
                     reason: format!("no mail account {account} in the settings"),
                 };
                 self.tell(session, &FromConnector::Event(refused));
+            }
+            // The engine never got it: it waits to go online.
+            Err(crate::connector::Unmade::EngineStopped) => {
+                let unsent = Event::Unsent {
+                    request,
+                    reason: "the mail engine stopped".to_owned(),
+                };
+                self.tell(session, &FromConnector::Event(unsent));
             }
         }
     }
