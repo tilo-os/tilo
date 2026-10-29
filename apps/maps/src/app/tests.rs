@@ -154,7 +154,7 @@ fn scaled_host_keeps_the_map_full_bleed_and_frames_the_plan() {
             hosted
                 .harness()
                 .set_theme(Theme::dark().with_ui_scale(scale));
-            let app = hosted.surface_mut::<MapsApp>();
+            let app = hosted.surface_mut::<MapWindow>().app();
             assert_eq!(
                 app.rect,
                 Rect::new(0.0, 0.0, 1440.0, 810.0),
@@ -212,7 +212,7 @@ fn clipped_departures_are_not_pointer_or_accessibility_targets() {
         TestApp::<crate::MapsShell>::capture_at(Some("transit"), (1440, 810)).expect("transit map");
     hosted.harness().set_theme(Theme::dark().with_ui_scale(1.5));
     {
-        let app = hosted.surface_mut::<MapsApp>();
+        let mut app = hosted.surface_mut::<MapWindow>().app();
         assert!(
             !app.click_targets
                 .iter()
@@ -227,7 +227,7 @@ fn clipped_departures_are_not_pointer_or_accessibility_targets() {
         app.scroll_panel(-1.0);
     }
     hosted.harness().relayout();
-    let app = hosted.surface_mut::<MapsApp>();
+    let app = hosted.surface_mut::<MapWindow>().app();
     assert!(
         app.click_targets
             .iter()
@@ -242,6 +242,7 @@ fn clipped_departures_are_not_pointer_or_accessibility_targets() {
     {
         assert!(target.rect.y0 >= panel.y0 && target.rect.y1 <= panel.y1);
     }
+    drop(app);
     hosted.harness().close_components();
 }
 
@@ -269,7 +270,10 @@ fn road_mode_changes_keep_the_new_estimate_not_the_old_accepted_duration() {
     use ui::framework::testing::TestApp;
     let mut hosted =
         TestApp::<crate::MapsShell>::capture_at(Some("directions"), (1440, 810)).expect("road map");
-    hosted.surface_mut::<MapsApp>().set_mode(TravelMode::Bike);
+    hosted
+        .surface_mut::<MapWindow>()
+        .app()
+        .set_mode(TravelMode::Bike);
     hosted.harness().relayout();
     assert_eq!(hosted.state().mode, TravelMode::Bike);
     assert_eq!(
@@ -279,7 +283,8 @@ fn road_mode_changes_keep_the_new_estimate_not_the_old_accepted_duration() {
     );
     assert_eq!(
         hosted
-            .surface_mut::<MapsApp>()
+            .surface_mut::<MapWindow>()
+            .app()
             .model
             .route
             .as_ref()
@@ -291,7 +296,12 @@ fn road_mode_changes_keep_the_new_estimate_not_the_old_accepted_duration() {
     hosted.invoke(Workspace::CLEAR_ROUTE.invoke()).unwrap();
     hosted.harness().relayout();
     assert!(
-        hosted.surface_mut::<MapsApp>().model.route.is_none(),
+        hosted
+            .surface_mut::<MapWindow>()
+            .app()
+            .model
+            .route
+            .is_none(),
         "clearing the route must also discard its local estimate"
     );
     hosted.harness().close_components();
@@ -985,7 +995,7 @@ fn the_platform_search_finds_and_opens_places_in_a_window() {
 
     let mut app = ui::framework::testing::TestApp::<crate::MapsShell>::new().unwrap();
     // Hermetic: the geocoder is out of reach, its answer is handed in below.
-    app.with_surface(|maps: &mut MapsApp| maps.online = false)
+    app.with_surface(|window: &mut MapWindow| window.app().online = false)
         .unwrap();
     let mut cafe = crate::model::Place::new(
         "cafe-glueck",
@@ -1027,14 +1037,15 @@ fn the_platform_search_finds_and_opens_places_in_a_window() {
         .unwrap();
     app.settle();
     assert_eq!(
-        app.with_surface(|maps: &mut MapsApp| maps.model.selected.clone()),
+        app.with_surface(|window: &mut MapWindow| window.app().model.selected.clone()),
         Some(Some("cafe-glueck".to_owned()))
     );
 
     // The window hands the query on; the geocoder's answer is found by it.
     search.search_page(&SearchQuery::new("Theatiner"), None, 50, 50);
     app.settle();
-    app.with_surface(|maps: &mut MapsApp| {
+    app.with_surface(|window: &mut MapWindow| {
+        let mut maps = window.app();
         maps.place_search.answer(
             "Theatiner",
             vec![crate::model::Place::new(
@@ -1072,7 +1083,8 @@ fn the_platform_search_finds_and_opens_places_in_a_window() {
 #[test]
 fn directions_to_a_found_place_route_there_from_its_row() {
     let mut app = ui::framework::testing::TestApp::<crate::MapsShell>::new().unwrap();
-    app.with_surface(|maps: &mut MapsApp| {
+    app.with_surface(|window: &mut MapWindow| {
+        let mut maps = window.app();
         // Hermetic: the geocoder and the router are out of reach.
         maps.online = false;
         maps.place_search.answer(
@@ -1092,7 +1104,8 @@ fn directions_to_a_found_place_route_there_from_its_row() {
     app.call_on("maps.place:osm-w-1", "directions", serde_json::json!({}))
         .expect("directions to the found place");
     app.settle();
-    app.with_surface(|maps: &mut MapsApp| {
+    app.with_surface(|window: &mut MapWindow| {
+        let maps = window.app();
         assert_eq!(maps.model.panel, Panel::Directions);
         assert_eq!(maps.model.selected.as_deref(), Some("osm-w-1"));
         assert_eq!(maps.model.dest_name, "Theatinerstraße 18");
