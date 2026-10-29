@@ -72,7 +72,7 @@ pub enum DefaultAppsEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: DefaultAppsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let (kind, package) = match effect {
         DefaultAppsEffect::SetDefaultApp { kind, app } => (kind, app),
@@ -80,12 +80,10 @@ pub(crate) fn answer(
             if !app.host().reaches_devices() {
                 return Err("only a window someone uses opens workspace settings".into());
             }
-            return Ok(crate::device_read::job(
+            return Ok(app.job(
                 cx,
                 open_workspace_defaults,
-                |_: &mut SettingsApp, opened: Result<(), String>, _| {
-                    opened.map(|()| Effected::done())
-                },
+                |_: &SettingsApp, opened: Result<(), String>, _| opened.map(|()| Effected::done()),
             ));
         }
     };

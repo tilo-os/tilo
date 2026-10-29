@@ -59,15 +59,15 @@ pub enum ShortcutEffect {
 pub(crate) fn answer(
     _app: &SettingsApp,
     effect: ShortcutEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     match effect {
         ShortcutEffect::ChoosePasteApp => {
             let purpose = t("settings-paste-choose-purpose");
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || choose_app(&purpose),
-                |app: &mut SettingsApp, chosen: Result<Option<ChosenApp>, String>, _| {
+                |app: &SettingsApp, chosen: Result<Option<ChosenApp>, String>, _| {
                     // Chose none: nothing changes.
                     let Some(chosen) = chosen? else {
                         return Ok(Effected::done());

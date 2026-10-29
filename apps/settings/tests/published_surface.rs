@@ -64,7 +64,7 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
     let mut app = TestApp::<SettingsShell>::new().expect("settings opens headlessly");
     app.settle();
     let bindings = app
-        .surface::<settings::SettingsApp, _>(|settings| {
+        .with_widget::<settings::SettingsWindow, _>(|settings| {
             ui::widget::controls::control_action_bindings(&*settings)
         })
         .expect("the settings surface is mounted");
@@ -125,7 +125,7 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
     );
     app.settle();
     let selected = app
-        .surface::<settings::SettingsApp, _>(|settings| settings.selected())
+        .with_widget::<settings::SettingsWindow, _>(|settings| settings.selected())
         .expect("the settings surface is mounted");
     assert_eq!(selected, Category::Bluetooth);
 }

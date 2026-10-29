@@ -15,7 +15,7 @@ use crate::widgets::{El, SettingsSection, caption, note, row, rows, section_with
 pub(super) fn discover(
     app: &SettingsApp,
     prefs: String,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let revision = {
         let shared = crate::panes::accounts::area(app)
@@ -27,14 +27,14 @@ pub(super) fn discover(
         pane.changed = true;
         revision
     };
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || accounts::thunderbird::discover(Path::new(&prefs)),
-        move |app: &mut SettingsApp, outcome, _| finish(app, revision, outcome),
+        move |app: &SettingsApp, outcome, _| finish(app, revision, outcome),
     ))
 }
 
-pub(super) fn choose(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>) -> EffectAnswer {
+pub(super) fn choose(app: &SettingsApp, cx: &mut EffectCx<Settings>) -> EffectAnswer {
     if !app.host().reaches_devices() {
         return Err(t("accounts-import-chooser-unavailable"));
     }
@@ -50,7 +50,7 @@ pub(super) fn choose(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>
     };
     let title = t("accounts-import-title");
     let accept = t("accounts-import-choose");
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || {
             let result = ui::portal::PickRequest::open(&title, &accept)
@@ -67,7 +67,7 @@ pub(super) fn choose(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>
                 _ => Err(DiscoveryError::Read),
             }
         },
-        move |app: &mut SettingsApp, outcome, _| match outcome {
+        move |app: &SettingsApp, outcome, _| match outcome {
             Ok(Some(candidates)) => finish(app, revision, Ok(candidates)),
             Ok(None) => {
                 let shared = crate::panes::accounts::area(app)

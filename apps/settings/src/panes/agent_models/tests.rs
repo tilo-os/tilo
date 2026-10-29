@@ -730,16 +730,12 @@ fn model_request_limits_use_the_published_settings_effects() {
     }
     .save_in(&settings)
     .unwrap();
+    crate::area::replace_in_next_window(move |_| {
+        let area = crate::panes::agent_models::AgentModelsArea::new(&PaneCx::in_profile(path));
+        area.model().borrow_mut().follow_local_profile = false;
+        area
+    });
     let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    app.surface_mut::<SettingsApp>()
-        .attach_host(PaneCx::in_profile(path), None);
-    app.surface_mut::<SettingsApp>()
-        .areas()
-        .find::<crate::panes::agent_models::AgentModelsArea>()
-        .unwrap()
-        .model()
-        .borrow_mut()
-        .follow_local_profile = false;
     let open = crate::categories::Category::AgentModels;
     app.effect_on(
         &crate::effects::pane_row_id(open),
@@ -914,7 +910,7 @@ fn a_stalled_model_manager_never_holds_the_window() {
     crate::effects::show_pane(&mut app, crate::categories::Category::AgentModels);
     let gate = crate::stall::Stall::new();
     let stalled = Arc::clone(&gate);
-    app.with_widget::<SettingsApp, _>(move |settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
         let model = crate::panes::agent_models::area(settings).unwrap().model();
         let mut model = model.borrow_mut();
         model.follow_local_profile = false;
@@ -941,7 +937,7 @@ fn a_stalled_model_manager_never_holds_the_window() {
         .expect("the window draws its next frame");
     gate.assert_held("the click");
     let shown = |app: &mut TestApp<crate::resource::SettingsShell>| {
-        app.with_widget::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
             let model = crate::panes::agent_models::area(settings)
                 .unwrap()
                 .model()

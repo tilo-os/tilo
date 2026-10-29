@@ -161,7 +161,7 @@ pub enum BluetoothEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: BluetoothEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     if effect == BluetoothEffect::RefreshBluetooth {
         // A dongle plugged in a moment ago is seen without waiting.
@@ -190,10 +190,10 @@ pub(crate) fn answer(
         return Err(t("settings-bluetooth-device-gone"));
     }
     let name = name.unwrap_or_default();
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || carry_out(control.as_ref(), &effect, &name),
-        |app: &mut SettingsApp, outcome: Result<String, String>, _| {
+        |app: &SettingsApp, outcome: Result<String, String>, _| {
             let model = crate::panes::bluetooth::area(app)
                 .ok_or_else(crate::area::missing)?
                 .model();
@@ -1548,9 +1548,13 @@ mod tests {
         use ui::tilo_actions::Availability;
 
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        let radios = app.surface_mut::<SettingsApp>().host().radios().clone();
+        let radios = app
+            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+                settings.host().radios().clone()
+            })
+            .expect("the Settings window is mounted");
         let device_rows = |app: &mut TestApp<SettingsShell>| {
-            app.surface::<SettingsApp, _>(|settings| {
+            app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
                 crate::panes::bluetooth::area(settings)
                     .unwrap()
                     .rows()
@@ -1559,7 +1563,7 @@ mod tests {
             .unwrap()
         };
         let pane = |app: &mut TestApp<SettingsShell>| {
-            app.surface::<SettingsApp, _>(|settings| {
+            app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
                 let model = crate::panes::bluetooth::area(settings)
                     .unwrap()
                     .model()
@@ -1715,7 +1719,7 @@ mod tests {
         crate::effects::show_pane(&mut app, crate::categories::Category::Bluetooth);
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<SettingsApp, _>(move |settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
             crate::panes::bluetooth::area(settings)
                 .unwrap()
                 .model()

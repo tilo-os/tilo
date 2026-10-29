@@ -1185,7 +1185,7 @@ fn a_stalled_update_control_never_holds_the_window() {
         windows_support: Arc::new(|| WindowsReadiness::NotOffered),
     };
     let model = app
-        .with_widget::<SettingsApp, _>(move |settings| {
+        .with_widget::<crate::window::SettingsWindow, _>(move |settings| {
             let shared = std::rc::Rc::clone(crate::panes::updates::area(settings).unwrap().model());
             *shared.borrow_mut() = UpdatesModel::reading(settings.host().clone(), readers);
             shared

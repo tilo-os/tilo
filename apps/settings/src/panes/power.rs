@@ -672,7 +672,7 @@ pub enum PowerEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PowerEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let not = |value: &str| format!("`{value}` is not offered");
     match effect {
@@ -691,7 +691,7 @@ pub(crate) fn answer(
                 return Err(unsupported());
             }
             let control = Arc::clone(&area.control);
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || {
                     if offered.is_none()
@@ -704,7 +704,7 @@ pub(crate) fn answer(
                     }
                     control.set_profile(profile).map(|()| profile)
                 },
-                |app: &mut SettingsApp, outcome: Result<PowerProfile, String>, _| {
+                |app: &SettingsApp, outcome: Result<PowerProfile, String>, _| {
                     let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
                     let mut notices = area.notices.get();
                     let answer = match outcome {
@@ -744,7 +744,7 @@ pub(crate) fn answer(
                 return Err(not_offered());
             }
             let control = Arc::clone(&area.control);
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || {
                     if offered.is_none() && !offers(control.charge_cap().as_ref()) {
@@ -752,7 +752,7 @@ pub(crate) fn answer(
                     }
                     control.set_charge_limit(percent).map(|cap| (percent, cap))
                 },
-                |app: &mut SettingsApp, outcome: Result<(u32, ChargeCapCapability), String>, _| {
+                |app: &SettingsApp, outcome: Result<(u32, ChargeCapCapability), String>, _| {
                     let area = crate::panes::power::area(app).ok_or_else(crate::area::missing)?;
                     let mut notices = area.notices.get();
                     let answer = match outcome {
@@ -1668,13 +1668,12 @@ mod tests {
     #[test]
     fn a_stalled_power_daemon_never_holds_the_window() {
         ui::i18n::I18nManager::init("en-US");
-        let mut app = TestApp::<SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<SettingsApp, _>(move |settings| {
-            settings.replace_area(PowerArea::over(Arc::new(StalledPower(stalled))));
-        })
-        .expect("the Settings window is mounted");
+        crate::area::replace_in_next_window(move |_| {
+            PowerArea::over(Arc::new(StalledPower(stalled)))
+        });
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
 
         crate::effects::show_pane(&mut app, crate::categories::Category::Power);
         app.harness()

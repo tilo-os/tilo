@@ -28,7 +28,7 @@
 
 use std::time::{Duration, Instant};
 
-use settings::SettingsApp;
+use settings::SettingsWindow;
 use settings::categories::Category;
 use ui::headless::{Framed, viewport};
 
@@ -118,11 +118,14 @@ fn budget(label: &str, p50: u64, limit_us: u64) {
     }
 }
 
-fn mount(config: &crate::support::ScratchConfig) -> Framed<SettingsApp> {
+fn mount(config: &crate::support::ScratchConfig) -> Framed<settings::SettingsWindow> {
     mount_on(config, Category::DEFAULT)
 }
 
-fn mount_on(config: &crate::support::ScratchConfig, category: Category) -> Framed<SettingsApp> {
+fn mount_on(
+    config: &crate::support::ScratchConfig,
+    category: Category,
+) -> Framed<settings::SettingsWindow> {
     Framed::new(
         ui::State::new(),
         config.app().with_category(category),
@@ -133,7 +136,7 @@ fn mount_on(config: &crate::support::ScratchConfig, category: Category) -> Frame
 
 /// Switch to `category`'s page the way the open action does, and lay the
 /// window out again. The hosted click around it is measured in [`hosted`].
-fn switch(app: &mut Framed<SettingsApp>, category: Category) {
+fn switch(app: &mut Framed<settings::SettingsWindow>, category: Category) {
     Framed::split(app).0.select(category);
     Framed::harness_mut(app).relayout();
 }
@@ -270,7 +273,7 @@ fn keystroke_in_window_search() {
     let mut app = mount(&config);
     let mut search = ui::widget::SearchDriver::default();
     {
-        let settings: &mut SettingsApp = &mut app;
+        let settings: &mut SettingsWindow = &mut app;
         search.open(ui::window_toolbar::SearchOffer::of(settings).into());
     }
     let mut query = String::new();
@@ -278,7 +281,7 @@ fn keystroke_in_window_search() {
     for ch in "displaysoundnetwork".chars() {
         query.push(ch);
         let t = Step::start();
-        let settings: &mut SettingsApp = &mut app;
+        let settings: &mut SettingsWindow = &mut app;
         search.drive(
             settings,
             &query,

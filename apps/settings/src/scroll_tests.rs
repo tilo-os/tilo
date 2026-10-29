@@ -113,7 +113,7 @@ fn scroll_and_change_each_pane() {
             }
             let after = content_offset(app.harness().root_widget());
             assert_eq!(
-                app.with_widget::<SettingsApp, _>(|s| s.selected()),
+                app.with_widget::<crate::window::SettingsWindow, _>(|s| s.selected()),
                 Some(category)
             );
             assert!(

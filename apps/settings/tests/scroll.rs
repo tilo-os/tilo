@@ -1,7 +1,7 @@
 //! Driven scrolling test for the settings content pane.
 //!
 //! A category whose section cards overflow a short window must scroll. This
-//! builds the *real* composed `SettingsApp` tree, lays it out at a short
+//! builds the *real* composed `SettingsWindow` tree, lays it out at a short
 //! viewport, then drives the genuine winit wheel + keyboard path and asserts
 //! the content pane's `Scrollable` actually moved its child. Geometry is read
 //! only through the public `Widget` trait (`name`, `get_rect`, `children`) so
@@ -13,8 +13,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use settings::SettingsWindow;
 use settings::categories::Category;
-use settings::settings_app::SettingsApp;
 use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -22,7 +22,7 @@ use vello::kurbo::Point;
 use winit::event::{Modifiers, WindowEvent};
 
 struct Harness {
-    app: Framed<SettingsApp>,
+    app: Framed<settings::SettingsWindow>,
     /// Dropped after the app whose account stores it holds.
     _config: crate::support::ScratchConfig,
 }
@@ -59,7 +59,7 @@ impl Harness {
 /// The content pane's `Scrollable` is the one furthest to the right (the
 /// sidebar's own `Scrollable` hugs the left edge). Returns `(offset, viewport_h,
 /// content_h)` where `offset` is how far it has shifted its child up.
-fn content_scroll(app: &SettingsApp) -> (f64, f64, f64) {
+fn content_scroll(app: &SettingsWindow) -> (f64, f64, f64) {
     fn collect<'a>(w: &'a dyn Widget, out: &mut Vec<&'a dyn Widget>) {
         if w.name() == "Scrollable" {
             out.push(w);

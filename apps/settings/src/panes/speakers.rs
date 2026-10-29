@@ -52,7 +52,7 @@ crate::area::pane_area! {
         SpeakersArea::poll(self);
     }
 
-    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+    fn handle_collab_event(&self, event: &ui::collaboration::CollabEvent) {
         if let Some(model) = self.model.get() {
             model.borrow_mut().handle_collab_event(event);
         }
@@ -195,7 +195,7 @@ pub enum SpeakerFlow {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: SpeakerEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     if !effect.command().valid() {
         return Err(
@@ -216,7 +216,7 @@ pub(crate) fn answer(
 pub(crate) fn answer_flow(
     app: &SettingsApp,
     step: SpeakerFlow,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    _cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let job = crate::panes::speakers::area(app)
         .ok_or_else(crate::area::missing)?

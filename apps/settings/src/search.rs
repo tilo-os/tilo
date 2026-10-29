@@ -146,13 +146,17 @@ mod tests {
                     .expect("the mounted app opens the hit's anchor");
                 app.harness().relayout();
                 assert_eq!(
-                    app.surface::<crate::SettingsApp, _>(|surface| surface.selected()),
+                    app.with_widget::<crate::window::SettingsWindow, _>(
+                        |surface| surface.selected()
+                    ),
                     Some(category),
                     "search opens {category:?} at width {width}"
                 );
                 if width == 440 {
                     assert_eq!(
-                        app.surface::<crate::SettingsApp, _>(|surface| surface.sidebar_open()),
+                        app.with_widget::<crate::window::SettingsWindow, _>(
+                            |surface| surface.sidebar_open()
+                        ),
                         Some(false),
                         "the narrow search result opens content rather than the category list"
                     );

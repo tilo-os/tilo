@@ -441,7 +441,7 @@ fn take_secret(buffer: &Mutex<String>) -> Zeroizing<String> {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: NetworkEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     if effect == NetworkEffect::InspectNetworkState {
         return crate::panes::network::area(app)
@@ -463,18 +463,16 @@ pub(crate) fn answer(
 
 /// Carry out what an effect began: nothing more, or its work on a worker,
 /// landing in the model.
-pub(crate) fn answer_begun(begun: Begun, cx: &mut EffectCx<Settings, SettingsApp>) -> Effected {
+pub(crate) fn answer_begun(begun: Begun, cx: &mut EffectCx<Settings>) -> Effected {
     match begun {
         Begun::Done => Effected::done(),
-        Begun::Work(work) => {
-            crate::device_read::job(cx, work, |app: &mut SettingsApp, landed: Landed, _| {
-                crate::panes::network::area(app)
-                    .ok_or_else(crate::area::missing)?
-                    .model()
-                    .borrow_mut()
-                    .land(landed)
-            })
-        }
+        Begun::Work(work) => app.job(cx, work, |app: &SettingsApp, landed: Landed, _| {
+            crate::panes::network::area(app)
+                .ok_or_else(crate::area::missing)?
+                .model()
+                .borrow_mut()
+                .land(landed)
+        }),
     }
 }
 

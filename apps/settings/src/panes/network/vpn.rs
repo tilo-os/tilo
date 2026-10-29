@@ -318,7 +318,7 @@ pub enum VpnEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: VpnEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let begun = super::area(app)
         .ok_or_else(crate::area::missing)?

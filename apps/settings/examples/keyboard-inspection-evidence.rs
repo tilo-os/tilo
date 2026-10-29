@@ -1,5 +1,5 @@
 //! Actual narrow Settings page with native configuration fixture; never a desktop capture.
-use settings::{SettingsApp, categories::Category};
+use settings::{SettingsWindow, categories::Category};
 use ui::{State, headless::FrameHarness, theme::Theme, widget::Widget as _};
 use winit::keyboard::{KeyboardLayout, KeyboardLayoutKey};
 
@@ -53,8 +53,10 @@ fn main() -> Result<(), String> {
         ("high-contrast", Theme::high_contrast()),
     ] {
         for width in [600, 1100] {
-            let mut app = SettingsApp::with_config_root(output.join("private-config"))
-                .with_category(Category::Keyboard);
+            let mut app = SettingsWindow::detached(settings::SettingsApp::with_config_root(
+                output.join("private-config"),
+            ))
+            .with_category(Category::Keyboard);
             app.observe_physical_input(ui::widget::PhysicalInput::Focused(true));
             app.observe_physical_input(ui::widget::PhysicalInput::Layout(Some(
                 std::sync::Arc::clone(&snapshot),

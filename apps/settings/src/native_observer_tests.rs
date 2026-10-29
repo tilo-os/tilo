@@ -5,8 +5,8 @@
 //! committing the document's pending changes: the observer is a witness, not
 //! a writer.
 
-use crate::SettingsApp;
 use crate::categories::Category;
+use SettingsWindow;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 use ui::headless::Framed;
@@ -20,7 +20,11 @@ fn root() -> automerge::ObjId {
 
 /// Settings over the production headless host, which settles the narrow
 /// breakpoint's structural pass before the first input as the live host does.
-fn hosted(config: &crate::prefs::test_env::ScratchConfig, w: f32, h: f32) -> Framed<SettingsApp> {
+fn hosted(
+    config: &crate::prefs::test_env::ScratchConfig,
+    w: f32,
+    h: f32,
+) -> Framed<SettingsWindow> {
     Framed::new(
         ui::State::new(),
         config.app(),
@@ -29,7 +33,7 @@ fn hosted(config: &crate::prefs::test_env::ScratchConfig, w: f32, h: f32) -> Fra
     )
 }
 
-fn wide(config: &crate::prefs::test_env::ScratchConfig) -> Framed<SettingsApp> {
+fn wide(config: &crate::prefs::test_env::ScratchConfig) -> Framed<SettingsWindow> {
     hosted(config, 1200.0, 1800.0)
 }
 
@@ -40,20 +44,20 @@ fn draws_native_legends() -> bool {
     tilo_keyboard_map::is_installed("us").unwrap_or(false)
 }
 
-fn snapshot(h: &Framed<SettingsApp>) -> serde_json::Value {
+fn snapshot(h: &Framed<SettingsWindow>) -> serde_json::Value {
     Framed::harness(h).native_input_snapshot().unwrap()
 }
 
-fn heads(h: &mut Framed<SettingsApp>) -> Vec<ChangeHash> {
+fn heads(h: &mut Framed<SettingsWindow>) -> Vec<ChangeHash> {
     Framed::harness_mut(h).state_mut().doc.get_heads()
 }
 
 /// Recompose after a change made directly on the app.
-fn rebuild(h: &mut Framed<SettingsApp>) {
+fn rebuild(h: &mut Framed<SettingsWindow>) {
     Framed::harness_mut(h).relayout();
 }
 
-fn select(h: &mut Framed<SettingsApp>, category: Category) {
+fn select(h: &mut Framed<SettingsWindow>, category: Category) {
     h.select(category);
     rebuild(h);
     // The keyboard is drawn off the UI thread; the page shows it once it is.
@@ -70,8 +74,8 @@ fn select(h: &mut Framed<SettingsApp>, category: Category) {
 /// Type `query` into the window bar's search, as the bar hands it to the
 /// app: the search narrows the sidebar's list in place. Settings draws no
 /// search field of its own.
-fn bar_search(h: &mut Framed<SettingsApp>, search: &mut ui::widget::SearchDriver, query: &str) {
-    let app: &mut SettingsApp = h;
+fn bar_search(h: &mut Framed<SettingsWindow>, search: &mut ui::widget::SearchDriver, query: &str) {
+    let app: &mut SettingsWindow = h;
     if search.in_place() == ui::widget::InPlace::Nothing {
         search.open(ui::window_toolbar::SearchOffer::of(app).into());
     }
@@ -252,7 +256,7 @@ fn keyboard_map_pressed(widget: &dyn Widget, key: PhysicalKey) -> Option<bool> {
         .find_map(|child| keyboard_map_pressed(child, key))
 }
 
-fn dispatch_preview_key(h: &mut Framed<SettingsApp>, state: ElementState) {
+fn dispatch_preview_key(h: &mut Framed<SettingsWindow>, state: ElementState) {
     let logical = winit::keyboard::Key::Character("z".into());
     dispatch_preview_event(
         h,
@@ -271,7 +275,7 @@ fn dispatch_preview_key(h: &mut Framed<SettingsApp>, state: ElementState) {
     );
 }
 
-fn dispatch_preview_event(h: &mut Framed<SettingsApp>, event: &WindowEvent) {
+fn dispatch_preview_event(h: &mut Framed<SettingsWindow>, event: &WindowEvent) {
     Framed::harness_mut(h).dispatch_to_root(event);
 }
 

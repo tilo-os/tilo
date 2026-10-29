@@ -212,7 +212,7 @@ fn resolve(language: &str, choices: &[String]) -> Option<Chosen> {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: LanguageEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let LanguageEffect::ChooseLanguage { language } = effect;
     let languages = area(app).ok_or_else(crate::area::missing)?;
@@ -234,10 +234,10 @@ pub(crate) fn answer(
     languages.failed.set(None);
     languages.installing.set(Some(locale.clone()));
     let chosen = locale.clone();
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || install(&locale),
-        move |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+        move |app: &SettingsApp, outcome: Result<(), String>, _| {
             let area = area(app).ok_or_else(crate::area::missing)?;
             area.installing.set(None);
             match outcome {

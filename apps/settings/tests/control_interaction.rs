@@ -14,7 +14,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use settings::SettingsApp;
+use settings::SettingsWindow;
 use settings::categories::Category;
 use ui::headless::{Framed, viewport};
 use ui::widget::Widget;
@@ -27,12 +27,12 @@ const H: f32 = 1800.0;
 
 /// Mount `app` in the production frame host at `(w, h)` and run its first
 /// frame.
-fn lay_out_at(app: SettingsApp, w: f32, h: f32) -> Framed<SettingsApp> {
+fn lay_out_at(app: SettingsWindow, w: f32, h: f32) -> Framed<settings::SettingsWindow> {
     Framed::new(ui::State::new(), app, viewport((w, h)), ui::Theme::dark())
 }
 
 /// Rebuild and re-lay-out exactly as the host does on structure-dirty.
-fn relayout(app: &mut Framed<SettingsApp>, (w, h): (f32, f32)) {
+fn relayout(app: &mut Framed<settings::SettingsWindow>, (w, h): (f32, f32)) {
     Framed::harness_mut(app)
         .relayout_themed(viewport((w, h)), ui::Theme::dark())
         .expect("settings frame lays out");
@@ -40,12 +40,12 @@ fn relayout(app: &mut Framed<SettingsApp>, (w, h): (f32, f32)) {
 
 /// Drive a full left-click (cursor move → press → release) at `p` through
 /// the production event path.
-fn click_at(app: &mut Framed<SettingsApp>, p: Point) {
+fn click_at(app: &mut Framed<settings::SettingsWindow>, p: Point) {
     Framed::harness_mut(app).click_at(p.x, p.y);
 }
 
 /// The host's `sync` against the live document.
-fn sync(app: &mut Framed<SettingsApp>) {
+fn sync(app: &mut Framed<settings::SettingsWindow>) {
     let (app, state) = Framed::split(app);
     app.sync(&state.doc, &state.root);
 }

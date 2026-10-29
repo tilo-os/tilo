@@ -126,7 +126,7 @@ pub enum PrinterEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PrinterEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::printers::area(app)
         .ok_or_else(crate::area::missing)?
@@ -144,10 +144,10 @@ pub(crate) fn answer(
             let discovered = model.borrow().discovered.clone();
             let queues = model.borrow().printers.clone();
             let service = Arc::clone(&model.borrow().service);
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || carry_out(service.as_ref(), &discovered, &queues, &effect),
-                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                |app: &SettingsApp, outcome: Result<(), String>, _| {
                     let model = crate::panes::printers::area(app)
                         .ok_or_else(crate::area::missing)?
                         .model();

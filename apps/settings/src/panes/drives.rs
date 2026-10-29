@@ -88,7 +88,7 @@ pub enum DrivesEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     operation: DrivesEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::drives::area(app)
         .ok_or_else(crate::area::missing)?
@@ -788,7 +788,7 @@ mod tests {
             grant("b2", "Stick", false, Mode::OpenSafely),
         ]);
         let service = running.service();
-        app.surface::<SettingsApp, _>(|app| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|app| {
             assert!(
                 crate::panes::drives::area(app).unwrap().rows().is_empty(),
                 "nothing read, nothing offered"
@@ -808,7 +808,7 @@ mod tests {
             &SettingsEffect::from(DrivesEffect::ForgetDrive { grant: "a1".into() }),
         )
         .unwrap();
-        app.surface::<SettingsApp, _>(|app| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|app| {
             crate::panes::drives::area(app)
                 .unwrap()
                 .model()

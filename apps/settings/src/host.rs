@@ -55,7 +55,7 @@ impl<T> Section for T where
 
 /// The published actions of section `T`, held for the panes.
 fn held<T: Section>(
-    cx: &ui::framework::SurfaceCx<Settings>,
+    cx: &ui::framework::ViewCx<Settings>,
     sections: &mut HashMap<TypeId, Box<dyn Any>>,
 ) {
     let section = cx.settings::<T>();
@@ -66,7 +66,7 @@ fn held<T: Section>(
 
 /// Every section's published actions, for the panes of the surface attached
 /// through `cx`.
-fn sections(cx: &ui::framework::SurfaceCx<Settings>) -> HashMap<TypeId, Box<dyn Any>> {
+fn sections(cx: &ui::framework::ViewCx<Settings>) -> HashMap<TypeId, Box<dyn Any>> {
     let mut sections = HashMap::new();
     held::<crate::prefs::AppearancePrefs>(cx, &mut sections);
     held::<crate::prefs::AppearanceDevicePrefs>(cx, &mut sections);
@@ -213,7 +213,7 @@ impl PaneCx {
     }
 
     /// The panes of the surface attached through `cx`.
-    pub fn attached(cx: &ui::framework::SurfaceCx<Settings>) -> Self {
+    pub fn attached(cx: &ui::framework::ViewCx<Settings>) -> Self {
         let launcher_admin = crate::take_launcher_provider_admin();
         let mut provider_admin = if cx.mode().is_live() {
             launcher_admin

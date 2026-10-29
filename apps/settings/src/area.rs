@@ -8,7 +8,7 @@
 //! is the panes' business (their [`Part`]s, brought together in
 //! [`registry`]), so the window's code names none of them.
 
-use std::any::{Any, TypeId};
+use std::any::Any;
 
 use ui::widget::Widget;
 
@@ -49,12 +49,12 @@ pub trait PaneArea: Any {
     }
 
     /// Collaboration requests of the area's host actions.
-    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+    fn take_collab_requests(&self) -> Vec<ui::collaboration::CollabRequest> {
         Vec::new()
     }
 
     /// A collaboration event for the area's host actions.
-    fn handle_collab_event(&mut self, _event: &ui::collaboration::CollabEvent) {}
+    fn handle_collab_event(&self, _event: &ui::collaboration::CollabEvent) {}
 
     /// What the window bar's search queries while `category`'s pane is
     /// shown, when the pane lists the answer to a query (models on Hugging
@@ -128,16 +128,25 @@ impl Areas {
     }
 
     /// Put `area` in place of the area of its type.
-    pub fn replace<A: PaneArea>(&mut self, area: A) {
-        let wanted = TypeId::of::<A>();
+    fn replace(&mut self, area: Box<dyn PaneArea>) {
+        let wanted = area.as_any().type_id();
         if let Some(slot) = self
             .0
             .iter_mut()
             .find(|held| held.as_any().type_id() == wanted)
         {
-            *slot = Box::new(area);
+            *slot = area;
         } else {
-            self.0.push(Box::new(area));
+            self.0.push(area);
+        }
+    }
+
+    /// Put the areas a test asked for ([`replace_in_next_window`]) in place
+    /// of the areas of their types.
+    #[cfg(test)]
+    pub(crate) fn take_replacements(&mut self, context: &AreaContext<'_>) {
+        for make in REPLACEMENTS.with(std::cell::RefCell::take) {
+            self.replace(make(context));
         }
     }
 
@@ -145,11 +154,28 @@ impl Areas {
     pub fn iter(&self) -> impl Iterator<Item = &dyn PaneArea> {
         self.0.iter().map(|area| &**area)
     }
+}
 
-    /// Every area, to hand collaboration traffic to.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn PaneArea>> {
-        self.0.iter_mut()
-    }
+/// What makes an area in place of one a window would make, for a test.
+#[cfg(test)]
+type Replacement = Box<dyn FnOnce(&AreaContext<'_>) -> Box<dyn PaneArea>>;
+
+#[cfg(test)]
+thread_local! {
+    static REPLACEMENTS: std::cell::RefCell<Vec<Replacement>> =
+        std::cell::RefCell::default();
+}
+
+/// Make the next window this thread attaches hold the area `make` makes in
+/// its context, in place of the area of its type: a stand-in a test drives
+/// (a daemon that stalls).
+#[cfg(test)]
+pub fn replace_in_next_window<A: PaneArea>(make: impl FnOnce(&AreaContext<'_>) -> A + 'static) {
+    REPLACEMENTS.with(|replacements| {
+        replacements
+            .borrow_mut()
+            .push(Box::new(move |context| Box::new(make(context))));
+    });
 }
 
 /// What an area is made in: the window's host and the person's accounts.

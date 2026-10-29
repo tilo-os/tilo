@@ -21,7 +21,7 @@ use crate::settings_app::SettingsApp;
 type App = ui::framework::testing::TestApp<crate::SettingsShell>;
 
 fn document(app: &mut App) -> ui::storage::SettingsDocument {
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         super::super::area(settings)
             .unwrap()
             .cx
@@ -47,7 +47,7 @@ fn checked(widget: &dyn Widget, id: &str) -> Option<bool> {
 
 /// Whether the page says `text`.
 fn draws(app: &mut App, text: &str) -> bool {
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         let model = super::super::area(settings).unwrap().model();
         let model = model.borrow();
         super::shown(&model).iter().any(|line| line.contains(text))

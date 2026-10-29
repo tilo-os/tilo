@@ -2686,7 +2686,7 @@ impl UpdatesArea {
 pub(crate) fn answer(
     app: &crate::settings_app::SettingsApp,
     effect: UpdatesEffect,
-    cx: &mut ui::framework::EffectCx<crate::resource::Settings, crate::settings_app::SettingsApp>,
+    cx: &mut ui::framework::EffectCx<crate::resource::Settings>,
 ) -> ui::framework::EffectAnswer {
     let reply = cx.reply();
     crate::panes::updates::area(app)

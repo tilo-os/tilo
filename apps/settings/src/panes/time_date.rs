@@ -553,7 +553,7 @@ impl TimeDateArea {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: TimeDateEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let clock = Arc::clone(
         &crate::panes::time_date::area(app)
@@ -573,7 +573,7 @@ pub(crate) fn answer(
         return Ok(Effected::done());
     }
     let manual_zone = matches!(effect, TimeDateEffect::SetTimeZone { .. });
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || match effect {
             TimeDateEffect::SetAutomaticTime { on } => clock
@@ -591,7 +591,7 @@ pub(crate) fn answer(
                     .map_err(|error| format!("time zone could not be changed: {error}"))
             }
         },
-        move |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+        move |app: &SettingsApp, outcome: Result<(), String>, _| {
             let area = crate::panes::time_date::area(app).ok_or_else(crate::area::missing)?;
             // What the clock took is read off the UI thread too.
             area.reading.refresh();
@@ -1430,13 +1430,12 @@ mod tests {
     #[test]
     fn a_stalled_timedated_never_holds_the_window() {
         ui::i18n::I18nManager::init("en-US");
-        let mut app = TestApp::<SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<SettingsApp, _>(move |settings| {
-            settings.replace_area(TimeDateArea::over(Arc::new(StalledClock(stalled))));
-        })
-        .expect("the Settings window is mounted");
+        crate::area::replace_in_next_window(move |_| {
+            TimeDateArea::over(Arc::new(StalledClock(stalled)))
+        });
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
 
         crate::effects::show_pane(&mut app, crate::categories::Category::TimeDate);
         app.harness()

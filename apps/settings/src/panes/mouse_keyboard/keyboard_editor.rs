@@ -1210,7 +1210,7 @@ mod tests {
 
     fn fixture_app(scenario: &str, viewport: (u32, u32)) -> TestApp<SettingsShell> {
         let mut app = TestApp::<SettingsShell>::new().unwrap();
-        app.surface::<SettingsApp, _>(|surface| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|surface| {
             crate::panes::mouse_keyboard::area(surface)
                 .unwrap()
                 .live
@@ -1450,7 +1450,7 @@ mod tests {
             },
         );
         perform(&mut app, InputEffect::CloseSourcePicker);
-        app.surface::<SettingsApp, _>(|surface| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|surface| {
             assert_eq!(
                 osk_profile(
                     &crate::panes::mouse_keyboard::area(surface)
@@ -1476,7 +1476,7 @@ mod tests {
                 source: "azerty".into(),
             },
         );
-        app.surface::<SettingsApp, _>(|surface| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|surface| {
             let stored = osk_profile(
                 &crate::panes::mouse_keyboard::area(surface)
                     .unwrap()
@@ -1707,7 +1707,7 @@ mod tests {
             .get()
             .keyboard_assignments["fixture-input-1"]
             .clone();
-        app.surface::<SettingsApp, _>(|surface| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|surface| {
             crate::panes::mouse_keyboard::area(surface)
                 .unwrap()
                 .devices
@@ -1728,7 +1728,7 @@ mod tests {
             }))
             .is_err()
         );
-        app.surface::<SettingsApp, _>(|surface| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|surface| {
             crate::panes::mouse_keyboard::area(surface)
                 .unwrap()
                 .devices
@@ -1780,7 +1780,7 @@ mod tests {
         }
         let mut app = fixture_app("keyboard-osk", (440, 820));
         let document = app
-            .surface::<SettingsApp, _>(|surface| {
+            .with_widget::<crate::window::SettingsWindow, _>(|surface| {
                 crate::panes::mouse_keyboard::area(surface)
                     .unwrap()
                     .document
@@ -1797,7 +1797,7 @@ mod tests {
         };
         settings.set(&preferences).unwrap();
         app.settle();
-        app.surface::<SettingsApp, _>(|surface| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|surface| {
             let legacy = osk_profile(
                 &crate::panes::mouse_keyboard::area(surface)
                     .unwrap()
@@ -1826,7 +1826,7 @@ mod tests {
         assert!(!settings.get().personalization);
         assert_eq!(settings.get().layouts, ["azerty", "qwerty"]);
         let mut app = app.reopen().unwrap();
-        app.surface::<SettingsApp, _>(|surface| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|surface| {
             let stored = osk_profile(
                 &crate::panes::mouse_keyboard::area(surface)
                     .unwrap()

@@ -65,19 +65,17 @@ pub enum AboutEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AboutEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     match effect {
         AboutEffect::BackUpIdentity => {
             if !app.host().reaches_devices() {
                 return Err("only a window someone uses opens the identity backup".into());
             }
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || os_actions::open_tool(portable_identity_backup_intent(), None),
-                |_: &mut SettingsApp, opened: Result<(), String>, _| {
-                    opened.map(|()| Effected::done())
-                },
+                |_: &SettingsApp, opened: Result<(), String>, _| opened.map(|()| Effected::done()),
             ))
         }
         AboutEffect::OpenProblem { record } => {

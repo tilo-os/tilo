@@ -152,7 +152,7 @@ fn published_google_mail_reauth_uses_browser_and_preserves_the_mailbox() {
                     .with_gmail_profile_endpoint(format!("{}/profile", gmail.url())),
             )
             .with_browser_opener(browser.clone());
-        app.surface::<crate::SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
             *crate::panes::accounts::area(settings)
                 .unwrap()
                 .model()
@@ -168,7 +168,7 @@ fn published_google_mail_reauth_uses_browser_and_preserves_the_mailbox() {
         .unwrap();
         app.call_on("settings.root", "save-account-form", serde_json::json!({}))
             .unwrap();
-        app.surface::<crate::SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
             let shared = crate::panes::accounts::area(settings).unwrap().model();
             let mut pane = shared.borrow_mut();
             assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
@@ -302,7 +302,7 @@ fn published_service_choices_use_the_same_sign_in_form() {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
     let mut pane = AccountsPane::in_root(root.clone());
     command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
-    app.surface::<crate::SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         *crate::panes::accounts::area(settings)
             .unwrap()
             .model()
@@ -318,7 +318,7 @@ fn published_service_choices_use_the_same_sign_in_form() {
         }),
     )
     .unwrap();
-    app.surface::<crate::SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         let shared = crate::panes::accounts::area(settings).unwrap().model();
         let mut pane = shared.borrow_mut();
         assert!(pane.sign_in_open());

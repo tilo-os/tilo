@@ -218,7 +218,7 @@ pub enum AudioEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AudioEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::audio::area(app)
         .ok_or_else(crate::area::missing)?
@@ -231,10 +231,10 @@ pub(crate) fn answer(
         // click is answered and painted at once.
         Plan::Device { key, work, settle } => {
             let work = model.changes.submit(key, work);
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 work,
-                move |app: &mut SettingsApp, ran: Option<Result<(), String>>, _| {
+                move |app: &SettingsApp, ran: Option<Result<(), String>>, _| {
                     // Replaced by a newer change of the same kind before it
                     // ran: that one settles the model.
                     let Some(result) = ran else {
@@ -3254,7 +3254,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<SettingsApp, _>(move |settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
             crate::panes::audio::area(settings)
                 .unwrap()
                 .model()
@@ -3272,7 +3272,7 @@ mod tests {
             .expect("the window draws its next frame");
         gate.assert_held("the click");
         let shows_set_level = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
-            app.with_widget::<SettingsApp, _>(|settings| {
+            app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
                 (crate::panes::audio::area(settings)
                     .unwrap()
                     .model()

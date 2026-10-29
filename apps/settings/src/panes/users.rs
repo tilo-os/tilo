@@ -110,7 +110,7 @@ pub enum UsersEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: UsersEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::users::area(app)
         .ok_or_else(crate::area::missing)?
@@ -139,13 +139,13 @@ pub(crate) fn answer(
         _ => Zeroizing::new(String::new()),
     };
     let created = matches!(effect, UsersEffect::CreateUser { .. });
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || {
             let outcome = carry_out(&backends, &users, &effect, &password);
             (outcome, Reread::of(&backends))
         },
-        move |app: &mut SettingsApp, (outcome, reread): (Result<(), String>, Option<Reread>), _| {
+        move |app: &SettingsApp, (outcome, reread): (Result<(), String>, Option<Reread>), _| {
             let model = crate::panes::users::area(app)
                 .ok_or_else(crate::area::missing)?
                 .model();
@@ -1605,7 +1605,7 @@ mod tests {
         crate::effects::show_pane(&mut app, crate::categories::Category::Users);
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<SettingsApp, _>(move |settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
             crate::panes::users::area(settings)
                 .unwrap()
                 .model()
@@ -1653,23 +1653,21 @@ mod tests {
         use crate::resource::SettingsShell;
         use ui::prelude::TestApp;
 
-        let mut app = TestApp::<SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
         // The accounts as a window has them before it has read them, their
         // read waiting on AccountsService.
-        app.with_widget::<SettingsApp, _>(move |settings| {
-            let held = crate::panes::users::area(settings).unwrap();
-            let area = UsersArea::new(&held.cx, held.remote.clone());
+        crate::area::replace_in_next_window(move |context| {
+            let area = UsersArea::new(context.cx, ui::RemoteActions::current());
             assert!(area.read.start(move || {
                 crate::device_read::off_ui_thread();
                 // The samples, once AccountsService answers.
                 let _ = stalled.wait();
                 None
             }));
-            settings.replace_area(area);
-        })
-        .expect("the Settings window is mounted");
+            area
+        });
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
 
         ui::rt::mark_ui_thread();
         app.start_effect(&SettingsEffect::from(UsersEffect::CreateUser {
@@ -1682,7 +1680,7 @@ mod tests {
             .expect("the window draws its next frame");
         gate.assert_held("the change");
         let open = app
-            .with_widget::<SettingsApp, _>(|settings| {
+            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
                 crate::panes::users::area(settings).unwrap().is_open()
             })
             .unwrap();
@@ -1696,7 +1694,7 @@ mod tests {
             })
         });
         let open = app
-            .with_widget::<SettingsApp, _>(|settings| {
+            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
                 crate::panes::users::area(settings).unwrap().is_open()
             })
             .unwrap();

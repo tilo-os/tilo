@@ -83,7 +83,7 @@ pub enum PermissionsEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PermissionsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     match effect {
         PermissionsEffect::SetSecretsAccess { app: id, allowed } => {
@@ -95,10 +95,10 @@ pub(crate) fn answer(
         }
         PermissionsEffect::StopDesktopControl { grant } => {
             let reader = Arc::clone(&area(app).ok_or_else(crate::area::missing)?.reader);
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || reader.stop_desktop_control(&grant),
-                |app: &mut SettingsApp, done: Result<(), String>, _| {
+                |app: &SettingsApp, done: Result<(), String>, _| {
                     area(app)
                         .ok_or_else(crate::area::missing)?
                         .reading
@@ -111,7 +111,7 @@ pub(crate) fn answer(
             if !app.host().reaches_devices() {
                 return Err("only a window someone uses opens workspace settings".into());
             }
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || {
                     os_actions::open_tool(
@@ -121,9 +121,7 @@ pub(crate) fn answer(
                         None,
                     )
                 },
-                |_: &mut SettingsApp, opened: Result<(), String>, _| {
-                    opened.map(|()| Effected::done())
-                },
+                |_: &SettingsApp, opened: Result<(), String>, _| opened.map(|()| Effected::done()),
             ))
         }
     }
@@ -137,7 +135,7 @@ const SECRET_SERVICE: &str = "/usr/libexec/tilo/tilo-secret-service";
 /// again (off the UI thread too) so the pane shows what it took.
 fn secret_command(
     app: &SettingsApp,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
     args: Vec<String>,
 ) -> EffectAnswer {
     let reader = Arc::clone(
@@ -145,10 +143,10 @@ fn secret_command(
             .ok_or_else(crate::area::missing)?
             .reader,
     );
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || reader.secret_command(&args),
-        |app: &mut SettingsApp, done: Result<(), String>, _| {
+        |app: &SettingsApp, done: Result<(), String>, _| {
             crate::panes::permissions::area(app)
                 .ok_or_else(crate::area::missing)?
                 .reading
@@ -1422,13 +1420,12 @@ mod tests {
     #[test]
     fn a_stalled_device_read_never_holds_privacy_and_security() {
         ui::i18n::I18nManager::init("en-US");
-        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = Arc::clone(&gate);
-        app.with_widget::<SettingsApp, _>(move |settings| {
-            settings.replace_area(PermissionsArea::over(Arc::new(StalledReader(stalled))));
-        })
-        .expect("the Settings window is mounted");
+        crate::area::replace_in_next_window(move |_| {
+            PermissionsArea::over(Arc::new(StalledReader(stalled)))
+        });
+        let mut app = ui::prelude::TestApp::<crate::resource::SettingsShell>::new().unwrap();
         app.harness().resize((1280, 4096)).unwrap();
 
         crate::effects::show_pane(&mut app, crate::categories::Category::Permissions);

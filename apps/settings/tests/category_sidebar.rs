@@ -1,6 +1,6 @@
 //! Asserts the sidebar advertises one entry per category.
 //!
-//! Constructs `SettingsApp`, runs `build_layout` + `apply_layout` at a
+//! Constructs `SettingsWindow`, runs `build_layout` + `apply_layout` at a
 //! wide size (so the two-pane layout with the full sidebar is built), then
 //! reads the navigation list's rows. Each category is a row named by its
 //! display label, so the count is exact.

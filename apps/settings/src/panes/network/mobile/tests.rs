@@ -91,7 +91,11 @@ fn mobile_settings_follow_the_kernel_until_read_then_modem_manager() {
     use ui::tilo_actions::Availability;
 
     let mut app = App::new().unwrap();
-    let radios = app.surface_mut::<SettingsApp>().host().radios().clone();
+    let radios = app
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            settings.host().radios().clone()
+        })
+        .expect("the Settings window is mounted");
     radios.set(Present::NONE);
     app.settle();
     let no_modem = unavailable("no_modem", "No mobile broadband modem on this device");
@@ -118,7 +122,7 @@ fn mobile_settings_follow_the_kernel_until_read_then_modem_manager() {
     radios.set(Present::ALL);
     // Once read, ModemManager's answer is the one: the scripted device
     // has no modem, whatever the kernel says.
-    app.with_surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         area(settings).unwrap().model();
     })
     .unwrap();
@@ -134,7 +138,7 @@ fn only_a_locked_sim_offers_unlocking_and_only_a_blocked_one_the_puk() {
 
     let mut app = App::new().unwrap();
     let (_, locked) = scripted(Some(MobileSample::Locked));
-    app.with_surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         *area(settings).unwrap().model().borrow_mut() = locked;
     })
     .unwrap();
@@ -150,7 +154,7 @@ fn only_a_locked_sim_offers_unlocking_and_only_a_blocked_one_the_puk() {
     );
 
     let (_, registered) = scripted(Some(MobileSample::Registered));
-    app.with_surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         *area(settings).unwrap().model().borrow_mut() = registered;
     })
     .unwrap();
@@ -210,7 +214,7 @@ fn hosted(sample: MobileSample) -> (Arc<ScriptedModem>, App) {
     let mut app = App::new().unwrap();
     let device = Arc::new(ScriptedModem::new(Some(sample)));
     let service = Arc::clone(&device) as Arc<dyn MobileService>;
-    app.with_surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         let area = area(settings).unwrap();
         let model = MobileModel::loaded_from(area.cx.clone(), service);
         *area.model().borrow_mut() = model;
@@ -230,7 +234,9 @@ fn settle_until(app: &mut App, done: impl Fn(&MobileModel) -> bool) {
     loop {
         app.settle();
         let reached = app
-            .surface::<SettingsApp, _>(|settings| done(&area(settings).unwrap().model().borrow()))
+            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+                done(&area(settings).unwrap().model().borrow())
+            })
             .unwrap();
         if reached {
             return;
@@ -249,7 +255,7 @@ fn shown(app: &mut App) -> Vec<String> {
 }
 
 fn lock(app: &mut App) -> Option<SimLock> {
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         area(settings)
             .unwrap()
             .model()
@@ -322,7 +328,7 @@ fn a_locked_sim_is_unlocked_from_the_password_prompt() {
         model.in_flight == 0 && model.modem().and_then(|modem| modem.retries.pin) == Some(1)
     });
     assert!(
-        app.surface::<SettingsApp, _>(|settings| area(settings)
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| area(settings)
             .unwrap()
             .model()
             .borrow()
@@ -347,7 +353,7 @@ fn a_locked_sim_is_unlocked_from_the_password_prompt() {
         assert!(!said.iter().any(|text| text.contains(code)));
         assert!(!device.changes().iter().any(|change| change.contains(code)));
         let inspection = app
-            .surface::<SettingsApp, _>(|settings| {
+            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
                 area(settings)
                     .unwrap()
                     .model()
@@ -452,7 +458,7 @@ fn changing_the_pin_asks_for_the_current_one_and_a_new_one() {
         model.in_flight == 0 && model.modem().and_then(|modem| modem.retries.pin) == Some(2)
     });
     assert!(
-        app.surface::<SettingsApp, _>(|settings| area(settings)
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| area(settings)
             .unwrap()
             .model()
             .borrow()

@@ -181,7 +181,7 @@ fn peer_drag_uses_the_mounted_app_semantic_door_and_fixed_revision() {
         }),
     )
     .unwrap();
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         crate::panes::display::area(settings)
             .unwrap()
             .model()
@@ -239,7 +239,7 @@ fn peer_drag_uses_the_mounted_app_semantic_door_and_fixed_revision() {
         serde_json::json!({"x":0,"y":1080}),
     )
     .unwrap();
-    let intent = app.surface::<SettingsApp, _>(<SettingsApp as ui::framework::ResourceSurface<Settings, SettingsEffect>>::take_host_intent).flatten().expect("the real mounted surface carries the typed host intent");
+    let intent = app.with_widget::<crate::window::SettingsWindow, _>(<SettingsApp as ui::framework::ResourceSurface<Settings, SettingsEffect>>::take_host_intent).flatten().expect("the real mounted surface carries the typed host intent");
     let ui::widget::AppHostIntent::MoveDeviceDisplay { request, .. } = intent else {
         panic!("typed topology request");
     };
@@ -278,7 +278,7 @@ fn connected_display_controls_publish_their_parameter_actions() {
             "{action} is published on the connected display: {surface}"
         );
         let bindings = app
-            .surface::<SettingsApp, _>(|settings| {
+            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
                 ui::widget::controls::control_action_bindings(&*settings)
             })
             .expect("mounted Settings");
@@ -295,7 +295,7 @@ fn connected_display_controls_publish_their_parameter_actions() {
         "place-display stays an action: {surface}"
     );
     let bindings = app
-        .surface::<SettingsApp, _>(|settings| {
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
             ui::widget::controls::control_action_bindings(&*settings)
         })
         .expect("mounted Settings");

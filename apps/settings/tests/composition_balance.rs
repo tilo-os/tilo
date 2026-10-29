@@ -1,4 +1,4 @@
-use settings::SettingsApp;
+use settings::SettingsWindow;
 use settings::categories::Category;
 use ui::headless::Framed;
 use ui::widget::Widget;
@@ -8,7 +8,7 @@ use vello::kurbo::Rect;
 const W: f32 = 1200.0;
 const H: f32 = 760.0;
 
-fn lay_out(app: SettingsApp) -> Framed<SettingsApp> {
+fn lay_out(app: SettingsWindow) -> Framed<settings::SettingsWindow> {
     lay_out_at(app, W, H)
 }
 

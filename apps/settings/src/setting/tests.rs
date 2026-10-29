@@ -49,7 +49,7 @@ fn searching(query: &str) -> TestApp<SettingsShell> {
     let mut app = TestApp::<SettingsShell>::new().expect("Settings mounts");
     app.harness().resize(VIEWPORT).unwrap();
     settle(&mut app);
-    app.surface::<SettingsApp, _>(|settings| settings.narrow_sidebar(query))
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.narrow_sidebar(query))
         .expect("the window is Settings");
     settle(&mut app);
     app
@@ -61,7 +61,7 @@ fn content_left() -> f64 {
 }
 
 fn found(app: &mut TestApp<SettingsShell>) -> Vec<&'static str> {
-    app.with_widget::<SettingsApp, _>(|settings| settings.found_settings())
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.found_settings())
         .unwrap_or_default()
 }
 
@@ -204,7 +204,7 @@ fn toggling_a_setting_found_by_search_applies_it_as_its_pane_does() {
     .expect("the setting opens in its pane");
     settle(&mut app);
     assert_eq!(
-        app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
         Some(Category::Accessibility)
     );
     assert!(
@@ -376,7 +376,7 @@ fn every_indexed_choice_names_the_field_its_row_shows() {
             let holds = match super::entry(setting.id).map(|entry| &entry.shown) {
                 // Listed by name with what it is set to, as its pane reads it.
                 Some(super::Shown::Value(read)) => app
-                    .surface::<SettingsApp, _>(|settings| {
+                    .with_widget::<crate::window::SettingsWindow, _>(|settings| {
                         read(settings, &super::Follows::default())
                     })
                     .flatten()

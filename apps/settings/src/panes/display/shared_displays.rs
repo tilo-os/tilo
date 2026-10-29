@@ -662,7 +662,7 @@ mod tests {
             &crate::effects::open_pane(open),
         )
         .unwrap();
-        app.surface::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
             crate::panes::display::area(settings)
                 .unwrap()
                 .model()
@@ -716,7 +716,7 @@ mod tests {
         let mut observed = devices();
         observed[0].online = true;
         observed[0].outputs[0].enabled = false;
-        app.surface::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
             settings
                 .areas()
                 .find::<crate::panes::display::DisplayArea>()
@@ -727,7 +727,7 @@ mod tests {
         });
         app.settle();
         let mut captions = Vec::new();
-        app.surface::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
             let model = settings
                 .areas()
                 .find::<crate::panes::display::DisplayArea>()
@@ -754,7 +754,7 @@ mod tests {
         assert!(offered(&mut app, "include-shared-display"));
         assert!(!offered(&mut app, "order-shared-display"));
 
-        app.surface::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
             settings
                 .areas()
                 .find::<crate::panes::display::DisplayArea>()
@@ -867,7 +867,7 @@ mod tests {
             &crate::effects::open_pane(open),
         )
         .unwrap();
-        app.surface::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
             crate::panes::display::area(settings)
                 .unwrap()
                 .model()
@@ -913,7 +913,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(after["automatic_input"], false);
-        app.surface::<SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
             let privacy = settings
                 .areas()
                 .find::<crate::panes::display::DisplayArea>()

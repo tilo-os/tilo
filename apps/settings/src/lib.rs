@@ -4,11 +4,12 @@
 //! contextual Workspace Settings surface; cross-cutting domains share a
 //! resolver instead of letting either UI write the other's state.
 //!
-//! `SettingsApp` (in [`settings_app`]) is the root widget: a categorized
-//! sidebar plus a content pane per category, responsive between a two-pane
-//! desktop layout and a single-pane narrow layout. The binary in `main.rs`
-//! runs [`SettingsShell`] on the app framework: the live window, or one of
-//! the screenshot [`scenarios`].
+//! The window ([`window`]) is the view of the [`Settings`] resource: a
+//! categorized sidebar plus a content pane per category, responsive between
+//! a two-pane desktop layout and a single-pane narrow layout, over the
+//! [`SettingsApp`] it shares with its effects and rows. The binary in
+//! `main.rs` runs [`SettingsShell`] on the app framework: the live window,
+//! or one of the screenshot [`scenarios`].
 //!
 //! ## Module map
 //!
@@ -88,6 +89,7 @@ pub mod sidebar;
 pub(crate) mod stall;
 pub mod watch;
 pub mod widgets;
+pub mod window;
 
 pub mod account_probe;
 pub mod device_fleet;
@@ -98,6 +100,7 @@ pub mod panes;
 pub mod speaker_setup;
 
 pub use settings_app::SettingsApp;
+pub use window::SettingsWindow;
 
 pub use resource::{Settings, SettingsShell, parse_settings_uri};
 

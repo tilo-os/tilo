@@ -56,7 +56,7 @@ pub enum DiskUnlockEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     operation: DiskUnlockEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::disk_unlock::area(app)
         .ok_or_else(crate::area::missing)?
@@ -902,7 +902,7 @@ mod tests {
     fn a_network_button_runs_the_enrolment_with_the_new_list() {
         let authority = FakeAuthority::new(Ok(vec![volume(Sealing::Cleartext, &["Home"])]));
         let mut app = ui::prelude::TestApp::<crate::SettingsShell>::new().unwrap();
-        app.surface::<SettingsApp, _>(|app| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|app| {
             let mut model = DiskUnlockModel::with_authority(app.host().clone(), authority.clone());
             model.settle();
             *crate::panes::disk_unlock::area(app)
@@ -923,7 +923,7 @@ mod tests {
         app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
             authority.calls.lock().unwrap().len() == 1
         });
-        app.surface::<SettingsApp, _>(|app| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|app| {
             crate::panes::disk_unlock::area(app)
                 .unwrap()
                 .model()
@@ -938,7 +938,7 @@ mod tests {
                 vec!["Home".to_owned(), "Office 5G".to_owned()]
             )]
         );
-        app.surface::<SettingsApp, _>(|app| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|app| {
             assert_eq!(
                 crate::panes::disk_unlock::area(app)
                     .unwrap()
@@ -983,7 +983,7 @@ mod tests {
             authority.calls.lock().unwrap().last().unwrap().1,
             vec!["Office 5G".to_owned()]
         );
-        app.surface::<SettingsApp, _>(|app| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|app| {
             let model = crate::panes::disk_unlock::area(app)
                 .unwrap()
                 .model()

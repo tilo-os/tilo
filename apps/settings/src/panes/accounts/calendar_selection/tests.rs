@@ -160,7 +160,7 @@ fn calendar_review_is_discoverable_and_operable_through_settings_resources() {
     vault.try_save().unwrap();
 
     let mut app = TestApp::<SettingsShell>::new().unwrap();
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         let mut pane = crate::panes::accounts::area(settings)
             .unwrap()
             .model()

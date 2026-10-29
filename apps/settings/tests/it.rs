@@ -10,7 +10,7 @@
 /// suite run never reads the user's accounts, replays their interrupted
 /// account journal or writes a migration marker into their config.
 mod support {
-    use settings::SettingsApp;
+    use settings::SettingsWindow;
     use ui::widget::Widget;
     use vello::kurbo::Rect;
 
@@ -103,7 +103,7 @@ mod support {
 
     /// The pane the window shows.
     pub fn selected(app: &mut Window) -> settings::categories::Category {
-        app.surface::<SettingsApp, _>(|settings| settings.selected())
+        app.with_widget::<settings::SettingsWindow, _>(|settings| settings.selected())
             .expect("settings hosts its surface")
     }
 
@@ -121,8 +121,10 @@ mod support {
             }
         }
 
-        pub fn app(&self) -> SettingsApp {
-            SettingsApp::with_config_root(self.dir.path().join("tilo"))
+        pub fn app(&self) -> SettingsWindow {
+            SettingsWindow::detached(settings::SettingsApp::with_config_root(
+                self.dir.path().join("tilo"),
+            ))
         }
     }
 }

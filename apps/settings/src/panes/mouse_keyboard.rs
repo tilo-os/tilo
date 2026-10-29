@@ -994,7 +994,7 @@ fn position(input: &Input, source: &str) -> Result<usize, String> {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: InputEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     // An effect on the input sources needs this device's list of them,
     // which is read off the UI thread: it answers once the list is in.
@@ -1003,15 +1003,13 @@ pub(crate) fn answer(
         && area.catalog.pending()
     {
         let wait = area.catalog.waiting();
-        return Ok(crate::device_read::job(cx, wait, move |app, (), cx| {
-            answer(app, effect, cx)
-        }));
+        return Ok(app.job(cx, wait, move |app, (), cx| answer(app, effect, cx)));
     }
     let answered = answer_read(app, effect.clone());
     // One that checks a level or a key against the keyboard's drawing
     // answers once the drawing is compiled, off the UI thread.
     if let Some(drawing) = crate::keyboard_preview::take_needed() {
-        return Ok(crate::device_read::job(
+        return Ok(app.job(
             cx,
             move || drawing.compile(),
             move |app, (), cx| answer(app, effect, cx),

@@ -168,7 +168,7 @@ pub(super) fn show_add_source(app: &mut TestApp<SettingsShell>, viewport: (u32, 
     // them once the read has landed.
     tilo_test_env::wait_until("the device's layouts are read", || {
         app.settle();
-        app.with_widget::<crate::settings_app::SettingsApp, _>(|settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
             !crate::panes::mouse_keyboard::area(settings)
                 .unwrap()
                 .catalog_pending()
@@ -263,7 +263,7 @@ fn dropdown_language_mounted_settings_flow_is_clear_and_keyboard_operable() {
                 panic!(
                     "{name}: the chooser is still on the page after Escape closed its list \
                      ({error}); showing {:?}",
-                    app.with_widget::<crate::settings_app::SettingsApp, _>(|settings| (
+                    app.with_widget::<crate::window::SettingsWindow, _>(|settings| (
                         settings.selected(),
                         settings.sidebar_open()
                     ))

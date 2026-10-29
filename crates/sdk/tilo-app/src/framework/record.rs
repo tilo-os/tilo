@@ -665,6 +665,22 @@ fn follow_publication(
     });
 }
 
+impl<R: Resource, T: 'static> ViewCx<R, T> {
+    /// The published actions of another record than the app's own, for
+    /// controls a view builds outside a part over that record
+    /// ([`Self::record`]): a hand widget bound to a settings section's field
+    /// edits. `None` where the record cannot be held.
+    pub fn record_actions<P: Resource>(&self, record: &impl OtherRecord<P>) -> Option<Actions<P>> {
+        let door = record.door(sealed::Storage(&self.storage))?.0;
+        Some(record_actions(
+            self.dispatch.app_id(),
+            &self.storage,
+            self.alive.clone(),
+            door,
+        ))
+    }
+}
+
 impl<R: Resource> SurfaceCx<R> {
     /// The published actions of another record than the app's own — the
     /// person's own record, a settings section: a hand surface binds its

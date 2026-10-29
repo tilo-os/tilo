@@ -195,20 +195,20 @@ pub enum StorageEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: StorageEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let area = crate::panes::storage::area(app).ok_or_else(crate::area::missing)?;
     match effect {
         StorageEffect::CleanUpCaches => {
             let preview = area.model().borrow_mut().begin_clean_up()?;
             let device = area.device();
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || -> Result<StorageScan, String> {
                     device.clean_up(&preview)?;
                     Ok(device.scan())
                 },
-                |app: &mut SettingsApp, cleaned: Result<StorageScan, String>, _| {
+                |app: &SettingsApp, cleaned: Result<StorageScan, String>, _| {
                     crate::panes::storage::area(app)
                         .ok_or_else(crate::area::missing)?
                         .model()
@@ -285,16 +285,16 @@ pub(crate) fn answer(
 /// message it answers with once the shell took it.
 fn open_tool(
     area: &StorageArea,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
     intent: ToolIntent,
     opened: &'static str,
 ) -> Effected {
     let device = area.device();
     let on_behalf_of = ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes());
-    crate::device_read::job(
+    app.job(
         cx,
         move || device.open_tool(intent, on_behalf_of),
-        move |_: &mut SettingsApp, result: Result<(), String>, _| {
+        move |_: &SettingsApp, result: Result<(), String>, _| {
             result.map(|()| Effected::value(t(opened)))
         },
     )
@@ -1617,7 +1617,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let gate = crate::stall::Stall::new();
         let stalled = std::sync::Arc::clone(&gate);
-        app.with_widget::<SettingsApp, _>(move |settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
             settings
                 .areas()
                 .find::<crate::panes::storage::StorageArea>()
@@ -1731,7 +1731,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let record = std::sync::Arc::clone(&asked);
-        app.with_widget::<SettingsApp, _>(move |settings| {
+        app.with_widget::<crate::window::SettingsWindow, _>(move |settings| {
             settings
                 .areas()
                 .find::<crate::panes::storage::StorageArea>()

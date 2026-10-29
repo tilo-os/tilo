@@ -37,11 +37,11 @@ crate::area::pane_area! {
     fn poll(&self) {
         DeviceMeshArea::poll(self);
     }
-    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
-        ui::widget::Collaborative::take_collab_requests(self.remote_mut())
+    fn take_collab_requests(&self) -> Vec<ui::collaboration::CollabRequest> {
+        ui::widget::Collaborative::take_collab_requests(&mut self.remote())
     }
-    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
-        ui::widget::Collaborative::handle_collab_event(self.remote_mut(), event);
+    fn handle_collab_event(&self, event: &ui::collaboration::CollabEvent) {
+        ui::widget::Collaborative::handle_collab_event(&mut self.remote(), event);
     }
 }
 
@@ -467,7 +467,7 @@ const SERVICES: [&str; 4] = [
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: DeviceMeshEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::device_mesh::area(app)
         .ok_or_else(crate::area::missing)?
@@ -504,11 +504,6 @@ impl DeviceMeshArea {
             read: crate::device_read::DeviceRead::default(),
             remote: ui::RemoteActions::current(),
         }
-    }
-
-    /// The client the window's connection carries pairing requests on.
-    pub(crate) fn remote_mut(&mut self) -> &mut ui::RemoteActions {
-        &mut self.remote
     }
 
     /// The same client, for another area that acts through the host.

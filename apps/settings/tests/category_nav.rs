@@ -18,7 +18,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use settings::SettingsApp;
+use settings::SettingsWindow;
 use settings::categories::Category;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -43,7 +43,7 @@ fn row_is_active(app: &mut Window, label: &str) -> bool {
 /// commands — proof the composition, including the new category's content
 /// pane, actually paints rather than collapsing to nothing.
 fn renders_something(app: &mut Window) -> bool {
-    app.surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<settings::SettingsWindow, _>(|settings| {
         let theme = ui::Theme::dark();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::empty();

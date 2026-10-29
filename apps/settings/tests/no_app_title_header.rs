@@ -12,7 +12,7 @@
 //! pill. The selected category's label is the page's heading, not a duplicate
 //! app header, and there is no subtitle under it.
 
-use settings::SettingsApp;
+use settings::SettingsWindow;
 use settings::categories::Category;
 use ui::headless::Framed;
 use ui::widget::Widget;
@@ -21,7 +21,7 @@ use ui::{AppWidget, IconDescriptor};
 const W: f32 = 1200.0;
 const H: f32 = 760.0;
 
-fn lay_out(app: SettingsApp) -> Framed<SettingsApp> {
+fn lay_out(app: SettingsWindow) -> Framed<settings::SettingsWindow> {
     Framed::new(
         ui::State::new(),
         app,
@@ -33,7 +33,7 @@ fn lay_out(app: SettingsApp) -> Framed<SettingsApp> {
 /// Every accessible name rendered anywhere in the composed tree, including
 /// the nodes a widget publishes for parts it paints itself (the shell's
 /// column headings).
-fn rendered_names(app: &SettingsApp) -> Vec<String> {
+fn rendered_names(app: &SettingsWindow) -> Vec<String> {
     fn collect(node: ui::a11y::AccessNode, out: &mut Vec<String>) {
         if let Some(name) = node.name.clone() {
             out.push(name);
@@ -60,7 +60,7 @@ fn rendered_names(app: &SettingsApp) -> Vec<String> {
 }
 
 /// Whether the tree publishes a heading named `label`.
-fn has_heading(app: &SettingsApp, label: &str) -> bool {
+fn has_heading(app: &SettingsWindow, label: &str) -> bool {
     fn found(node: &ui::a11y::AccessNode, label: &str) -> bool {
         (matches!(node.role, ui::a11y::Role::Heading { .. }) && node.name.as_deref() == Some(label))
             || node.children.iter().any(|child| found(child, label))

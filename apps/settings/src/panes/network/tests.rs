@@ -715,7 +715,7 @@ fn hosted_model(
     service: Arc<dyn NetworkService>,
 ) -> NetworkModel {
     let cx = app
-        .surface::<SettingsApp, _>(|settings| {
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
             crate::panes::network::area(settings).unwrap().cx.clone()
         })
         .unwrap();
@@ -726,7 +726,7 @@ fn mount_network(
     app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
     observed: NetworkModel,
 ) -> Option<()> {
-    app.with_surface::<SettingsApp, _>(|settings| {
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         *crate::panes::network::area(settings)
             .unwrap()
             .model()
@@ -743,7 +743,7 @@ fn settle_until(
     loop {
         app.settle();
         let reached = app
-            .surface::<SettingsApp, _>(|settings| {
+            .with_widget::<crate::window::SettingsWindow, _>(|settings| {
                 let model = crate::panes::network::area(settings)
                     .unwrap()
                     .model()
@@ -786,7 +786,7 @@ fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
         "test stand-ins cannot masquerade as device observations"
     );
     let row_ids = app
-        .surface::<SettingsApp, _>(|settings| {
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
             settings
                 .areas()
                 .find::<crate::panes::network::NetworkArea>()
@@ -1380,7 +1380,7 @@ fn profile_settings_round_trip_through_the_effect_layer() {
     }
     let held = fake.settings.lock().unwrap()["home-uuid"].clone();
     let read = app
-        .surface::<SettingsApp, _>(|settings| {
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
             crate::panes::network::area(settings)
                 .unwrap()
                 .model()
@@ -2490,7 +2490,11 @@ fn without_a_wifi_radio_wifi_is_unavailable_until_one_is_plugged_in() {
     snapshot.wifi_enabled = Some(Ok(false));
     wired_only.adopt_snapshot(snapshot).unwrap();
     mount_network(&mut app, wired_only).unwrap();
-    let radios = app.surface_mut::<SettingsApp>().host().radios().clone();
+    let radios = app
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            settings.host().radios().clone()
+        })
+        .expect("the Settings window is mounted");
 
     radios.set(Present::NONE);
     app.settle();

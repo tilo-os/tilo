@@ -36,6 +36,7 @@ pub fn mute_shown(english: &str) -> String {
 /// so the text stack keeps its font cache instead of rebuilding it per test.
 pub mod test_env {
     use crate::settings_app::SettingsApp;
+    use crate::window::SettingsWindow;
 
     /// Holds the redirected environment for a test's duration.
     pub struct ConfigGuard {
@@ -87,8 +88,8 @@ pub mod test_env {
         }
 
         /// The app over this scratch config root.
-        pub fn app(&self) -> SettingsApp {
-            SettingsApp::with_config_root(self.dir.path().join("tilo"))
+        pub fn app(&self) -> SettingsWindow {
+            SettingsWindow::detached(SettingsApp::with_config_root(self.dir.path().join("tilo")))
         }
     }
 }

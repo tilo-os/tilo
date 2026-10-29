@@ -208,7 +208,7 @@ const STAGED: &str = "Display change staged. Apply it to preview the new configu
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: DisplayEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     if matches!(
         effect,
@@ -241,7 +241,7 @@ pub(crate) fn answer(
         } else {
             ui::collaboration::DisplayOrigin::LocalHost
         };
-        return Ok(crate::device_read::job(
+        return Ok(app.job(
             cx,
             move || request_host_display(&command, original),
             move |app, result, _| {

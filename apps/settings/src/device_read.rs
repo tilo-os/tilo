@@ -402,29 +402,28 @@ impl Landing {
 }
 
 /// The context an effect of Settings answers in.
-pub type Cx = ui::framework::EffectCx<crate::resource::Settings, crate::settings_app::SettingsApp>;
+pub type Cx = ui::framework::EffectCx<crate::resource::Settings>;
 
 /// What takes a job's erased result in on the UI thread.
 type ErasedThen = Box<
-    dyn FnOnce(
-        &mut crate::settings_app::SettingsApp,
-        Erased,
-        &mut Cx,
-    ) -> ui::framework::EffectAnswer,
+    dyn FnOnce(&crate::settings_app::SettingsApp, Erased, &mut Cx) -> ui::framework::EffectAnswer,
 >;
 
 /// Run `work` off the UI thread as the effect's job, then `then` with its
-/// result on the UI thread: [`ui::framework::EffectCx::thread`], with the
-/// result erased so the framework's job plumbing is compiled once for
-/// every effect of Settings rather than once per result type.
-pub fn job<T: Send + 'static>(
+/// result and `app` on the UI thread: [`ui::framework::EffectCx::thread`],
+/// with the result erased so the framework's job plumbing is compiled once
+/// for every effect of Settings rather than once per result type. A job
+/// that finishes after its window closed is answered as failed.
+pub(crate) fn job<T: Send + 'static>(
     cx: &mut Cx,
+    app: std::rc::Weak<crate::settings_app::SettingsApp>,
     work: impl FnOnce() -> T + Send + 'static,
-    then: impl FnOnce(&mut crate::settings_app::SettingsApp, T, &mut Cx) -> ui::framework::EffectAnswer
+    then: impl FnOnce(&crate::settings_app::SettingsApp, T, &mut Cx) -> ui::framework::EffectAnswer
     + 'static,
 ) -> ui::framework::Effected {
     erased_job(
         cx,
+        app,
         Box::new(move || Box::new(work()) as Erased),
         Box::new(move |app, value, cx| match value.downcast::<T>() {
             Ok(value) => then(app, *value, cx),
@@ -433,10 +432,18 @@ pub fn job<T: Send + 'static>(
     )
 }
 
-fn erased_job(cx: &mut Cx, work: Work, then: ErasedThen) -> ui::framework::Effected {
+fn erased_job(
+    cx: &mut Cx,
+    app: std::rc::Weak<crate::settings_app::SettingsApp>,
+    work: Work,
+    then: ErasedThen,
+) -> ui::framework::Effected {
     cx.thread(
         move |_| work(),
-        move |app: &mut crate::settings_app::SettingsApp, value: Erased, cx| then(app, value, cx),
+        move |(), value: Erased, cx| {
+            let app = app.upgrade().ok_or_else(crate::area::missing)?;
+            then(&app, value, cx)
+        },
     )
 }
 

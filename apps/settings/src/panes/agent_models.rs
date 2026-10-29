@@ -475,7 +475,7 @@ fn model_effect(model: &InstalledLocalModel, action: ModelAction) -> AgentModels
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AgentModelsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let shared = crate::panes::agent_models::area(app)
         .ok_or_else(crate::area::missing)?
@@ -541,7 +541,7 @@ pub(crate) fn answer(
                 model.hub.reviewing = None;
             }
             drop(model);
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 // The manager is asked again on the job too: the answer
                 // carries what the change left, read off the UI thread.
@@ -549,9 +549,7 @@ pub(crate) fn answer(
                     let outcome = work.run(control.as_ref());
                     (outcome, control.snapshot())
                 },
-                |app: &mut SettingsApp,
-                 (outcome, snapshot): (Result<String, String>, Snapshot),
-                 _| {
+                |app: &SettingsApp, (outcome, snapshot): (Result<String, String>, Snapshot), _| {
                     let model = crate::panes::agent_models::area(app)
                         .ok_or_else(crate::area::missing)?
                         .model();

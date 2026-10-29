@@ -1,9 +1,9 @@
 //! One module per settings category content pane.
 //!
-//! Each pane exposes `build() -> Box<dyn Widget>` returning that category's
-//! body. The pane header (icon + title + subtitle) is owned by
-//! `settings_app`, so the modules here focus on the category-specific
-//! content.
+//! A pane bound to its settings sections is view code over them
+//! ([`view`]); the others are built by their area ([`PART`]). The pane's
+//! title is the window's ([`crate::window`]), so the modules here focus on
+//! the category-specific content.
 //!
 //! Panes fall into two groups:
 //! - **Hardware panes** (network, bluetooth, sound, displays) own an
@@ -53,3 +53,15 @@ pub use part::PART;
 
 /// Every part of Settings: its own and the panes'.
 pub const PARTS: &[&crate::area::Part] = &[&crate::effects::PART, &PART];
+
+/// `category`'s pane as view code over the settings sections it binds
+/// (`cx.record(&section, ..)`), for the panes built that way; `None` for a
+/// pane its area builds ([`crate::area::PaneEntry`]).
+pub(crate) fn view(
+    cx: &mut ui::framework::ViewCx<crate::resource::Settings>,
+    app: &std::rc::Rc<crate::settings_app::SettingsApp>,
+    category: crate::categories::Category,
+) -> Option<ui::widget::Element> {
+    let _ = (cx, app, category);
+    None
+}

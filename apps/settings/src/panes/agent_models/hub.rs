@@ -617,7 +617,7 @@ impl crate::area::PaneQuery for super::AgentModelsArea {
 pub(crate) fn answer(
     mut model: std::cell::RefMut<'_, AgentModelsModel>,
     effect: AgentModelsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     match effect {
         AgentModelsEffect::ReviewHubVariant { variant, show } => {
@@ -648,10 +648,10 @@ pub(crate) fn answer(
             model.hub.working = true;
             let control = Arc::clone(&model.control);
             drop(model);
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || control.hub_model(reference.trim()),
-                |app: &mut SettingsApp, offer: Result<HubModelOffer, String>, _| {
+                |app: &SettingsApp, offer: Result<HubModelOffer, String>, _| {
                     let shared = area(app).ok_or_else(crate::area::missing)?.model();
                     let mut model = shared.borrow_mut();
                     model.hub.working = false;
@@ -712,7 +712,7 @@ fn search(
     mut model: std::cell::RefMut<'_, AgentModelsModel>,
     query: &str,
     format: Option<String>,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let format = format.unwrap_or_else(|| format_name(HubFormat::Gguf).into());
     let query = query.trim().to_owned();
@@ -726,13 +726,13 @@ fn search(
     let cleared = model.hub.cleared;
     let control = Arc::clone(&model.control);
     drop(model);
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         {
             let (query, format) = (query.clone(), format.clone());
             move || control.hub_search(&query, &format)
         },
-        move |app: &mut SettingsApp, results: Result<Vec<HubSearchResult>, String>, _| {
+        move |app: &SettingsApp, results: Result<Vec<HubSearchResult>, String>, _| {
             let shared = area(app).ok_or_else(crate::area::missing)?.model();
             let mut model = shared.borrow_mut();
             model.hub.searching = model.hub.searching.saturating_sub(1);
@@ -751,17 +751,17 @@ fn search(
 /// Change the stored Hugging Face token on a worker, then read back
 /// whether one is stored, which the token group shows.
 fn token_job(
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
     control: Arc<dyn LocalModelControl>,
     change: impl FnOnce(&dyn LocalModelControl) -> Result<String, String> + Send + 'static,
 ) -> Effected {
-    crate::device_read::job(
+    app.job(
         cx,
         move || {
             let outcome = change(control.as_ref());
             (outcome, control.hub_token())
         },
-        |app: &mut SettingsApp,
+        |app: &SettingsApp,
          (outcome, stored): (Result<String, String>, Result<HubTokenState, String>),
          _| {
             let shared = area(app).ok_or_else(crate::area::missing)?.model();

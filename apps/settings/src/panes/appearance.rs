@@ -242,7 +242,7 @@ pub enum AppearanceEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AppearanceEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let host = app.host();
     match effect {
@@ -259,7 +259,7 @@ pub(crate) fn answer(
 /// Ask for a picture through the file-chooser portal, then hand it to the
 /// Wallpaper portal, which previews it and asks before applying it. The
 /// pane shows where the request stands.
-fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>) -> EffectAnswer {
+fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings>) -> EffectAnswer {
     if !app.host().reaches_devices() {
         return Err("only a window someone uses opens the file chooser".into());
     }
@@ -279,7 +279,7 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>)
     let accept = t("settings-appearance-choose");
     let pictures = t("settings-appearance-pictures");
     let confirm = t("settings-appearance-confirm-preview");
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         move || {
             let pick = ui::portal::PickRequest::open(&title, &accept)
@@ -314,7 +314,7 @@ fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>)
                 )),
             }
         },
-        |app: &mut SettingsApp, outcome: Result<Option<String>, String>, _| match outcome {
+        |app: &SettingsApp, outcome: Result<Option<String>, String>, _| match outcome {
             Ok(None) => {
                 app.wallpaper_status().set(None);
                 Ok(Effected::done())
@@ -974,7 +974,7 @@ mod tests {
         app.harness().send(&ui::synthetic_input::mouse_release());
         settle(&mut app);
         assert_eq!(
-            app.with_widget::<SettingsApp, _>(|settings| settings.selected()),
+            app.with_widget::<crate::window::SettingsWindow, _>(|settings| settings.selected()),
             Some(Category::Accessibility)
         );
         let accessibility = shown_ids(&mut app);

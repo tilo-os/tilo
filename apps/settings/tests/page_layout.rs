@@ -110,7 +110,7 @@ fn every_page_keeps_its_controls_inside_their_rows_at_the_laptop_size_and_in_sma
                 .unwrap_or_else(|error| panic!("{slug} at {width}x{height} opens: {error:?}"));
             app.settle();
             let problems = app
-                .surface::<settings::SettingsApp, _>(|settings| {
+                .with_widget::<settings::SettingsWindow, _>(|settings| {
                     let mut problems = Vec::new();
                     walk(&*settings, f64::from(width), &mut problems);
                     problems

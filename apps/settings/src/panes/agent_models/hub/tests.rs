@@ -249,8 +249,7 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
     assert!(app.harness().a11y_node_named("Format").is_some());
 
     let mut driver = SearchDriver::default();
-    {
-        let settings = app.surface_mut::<SettingsApp>();
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         let offer = InPlace::of(settings);
         assert_eq!(
             offer,
@@ -265,7 +264,8 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
             None,
             false
         ));
-    }
+    })
+    .expect("the Settings window is mounted");
     assert!(
         app.harness()
             .wait_until(tilo_test_env::hang_bound(), |harness| {
@@ -278,8 +278,7 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
         "the search looks for the chosen file family only"
     );
 
-    {
-        let settings = app.surface_mut::<SettingsApp>();
+    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
         driver.drive(
             settings,
             "helpful",
@@ -287,7 +286,8 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
             None,
             true,
         );
-    }
+    })
+    .expect("the Settings window is mounted");
     app.settle();
     assert!(
         app.harness()
@@ -298,9 +298,11 @@ fn the_window_bar_search_searches_hugging_face_on_agent_models() {
 
     crate::effects::show_pane(&mut app, Category::DEFAULT);
     app.settle();
-    let settings = app.surface_mut::<SettingsApp>();
+    let offer = app
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| InPlace::of(settings))
+        .expect("the Settings window is mounted");
     assert_eq!(
-        InPlace::of(settings),
+        offer,
         InPlace::List,
         "on a pane without a query the window's search narrows the sidebar"
     );

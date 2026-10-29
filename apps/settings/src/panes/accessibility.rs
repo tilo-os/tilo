@@ -174,7 +174,7 @@ pub enum AccessibilityEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AccessibilityEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    _cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     use AccessibilityEffect as E;
     let not = |value: &str, what: &str| format!("`{value}` is not a {what}");

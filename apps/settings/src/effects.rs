@@ -42,11 +42,8 @@ pub type DecodeEffect =
     fn(&str, &serde_json::Map<String, serde_json::Value>) -> Result<Box<dyn AreaEffect>, String>;
 
 /// [`EffectFamily::answer`].
-pub type AnswerEffect = fn(
-    &mut SettingsApp,
-    Box<dyn std::any::Any>,
-    &mut EffectCx<Settings, SettingsApp>,
-) -> EffectAnswer;
+pub type AnswerEffect =
+    fn(&SettingsApp, Box<dyn std::any::Any>, &mut EffectCx<Settings>) -> EffectAnswer;
 
 /// An area's effect vocabulary: the `#[derive(Effect)]` enum and the family
 /// that answers it.
@@ -231,9 +228,9 @@ impl Effect for SettingsEffect {
 
 /// Answer `effect` on `app`, in the module of its area.
 pub fn answer(
-    app: &mut SettingsApp,
+    app: &SettingsApp,
     effect: SettingsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     if let Some(waiting) = after_area_read(app, &effect, cx) {
         return Ok(waiting);
@@ -251,7 +248,7 @@ pub fn answer(
 fn after_area_read(
     app: &SettingsApp,
     effect: &SettingsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> Option<ui::framework::Effected> {
     let id = effect.id();
     let read = crate::area::registry()
@@ -267,9 +264,7 @@ fn after_area_read(
     (read.start)(app);
     let wait = (read.wait)(app)?;
     let effect = effect.clone();
-    Some(crate::device_read::job(cx, wait, move |app, (), cx| {
-        answer(app, effect, cx)
-    }))
+    Some(app.job(cx, wait, move |app, (), cx| answer(app, effect, cx)))
 }
 
 effect_family!(NavigationEffect => answer_navigation);
@@ -621,7 +616,7 @@ pub enum NavigationEffect {
 fn answer_navigation(
     app: &SettingsApp,
     effect: NavigationEffect,
-    _cx: &mut EffectCx<Settings, SettingsApp>,
+    _cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     match effect {
         NavigationEffect::OpenPane { pane } => {
@@ -647,7 +642,7 @@ mod tests {
     fn mounted_live_rows_do_not_rebuild_unrelated_pane_declarations() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let (rows, phases) = app
-            .surface::<SettingsApp, _>(|app| {
+            .with_widget::<crate::window::SettingsWindow, _>(|app| {
                 ui::tilo_resource::profiling::observe(|| super::rows(app))
             })
             .unwrap();
@@ -667,7 +662,7 @@ mod tests {
     fn mounted_display_asking_bindings_preserve_metadata_payload_and_output_custody() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
         let rows = app
-            .surface::<SettingsApp, _>(|app| super::rows(app))
+            .with_widget::<crate::window::SettingsWindow, _>(|app| super::rows(app))
             .unwrap();
         let row = rows
             .into_iter()
@@ -760,7 +755,9 @@ mod tests {
     #[test]
     fn mounted_live_row_bindings_preserve_flattened_metadata_and_payloads() {
         let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
-        let resource_rows = app.surface::<SettingsApp, _>(|app| rows(app)).unwrap();
+        let resource_rows = app
+            .with_widget::<crate::window::SettingsWindow, _>(|app| rows(app))
+            .unwrap();
         let mut compared = 0;
         for row in resource_rows {
             for spec in row.into_resource().actions {

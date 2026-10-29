@@ -899,7 +899,7 @@ mod tests {
                 let mut live =
                     TestApp::<crate::resource::SettingsShell>::new().expect("live settings opens");
                 let status = codec_status(Some(scenario)).expect("formats fixture status");
-                live.with_surface::<crate::SettingsApp, ()>(|settings| {
+                live.with_widget::<crate::window::SettingsWindow, ()>(|settings| {
                     let model =
                         crate::panes::updates::UpdatesModel::sample(settings.host().clone())
                             .with_codec_pack(

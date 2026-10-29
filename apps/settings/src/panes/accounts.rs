@@ -69,11 +69,11 @@ crate::area::pane_area! {
     fn poll(&self) {
         AccountsArea::poll(self);
     }
-    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
-        ui::widget::Collaborative::take_collab_requests(&mut self.remote)
+    fn take_collab_requests(&self) -> Vec<ui::collaboration::CollabRequest> {
+        ui::widget::Collaborative::take_collab_requests(&mut self.remote.clone())
     }
-    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
-        ui::widget::Collaborative::handle_collab_event(&mut self.remote, event);
+    fn handle_collab_event(&self, event: &ui::collaboration::CollabEvent) {
+        ui::widget::Collaborative::handle_collab_event(&mut self.remote.clone(), event);
     }
 }
 
@@ -250,7 +250,7 @@ pub enum AccountsEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AccountsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     match effect {
         AccountsEffect::RemoveBrowserServiceSession { session_id } => {
@@ -334,7 +334,7 @@ pub(crate) fn answer(
 fn answer_import(
     model: &mut AccountsPane,
     effect: AccountsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> Result<EffectAnswer, AccountsEffect> {
     Ok(match effect {
         AccountsEffect::DiscoverThunderbirdAccounts { .. }
@@ -368,7 +368,7 @@ fn answer_import(
 fn answer_model(
     app: &SettingsApp,
     effect: AccountsEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let shared = crate::panes::accounts::area(app)
         .ok_or_else(crate::area::missing)?
@@ -474,7 +474,7 @@ fn submit_account_form(model: &mut AccountsPane) -> Result<(), String> {
 fn commit_thunderbird_import(
     model: &mut AccountsPane,
     revision: u64,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     // No account work under way: answered at once, as before.
     if model.lane.is_idle() {
@@ -506,7 +506,7 @@ fn commit_thunderbird_import(
 fn recover_mode(
     model: std::cell::RefMut<'_, AccountsPane>,
     account: String,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     if model.sign_in.is_some() {
         return Err("Close the account connection form before recovering its mode change".into());
@@ -517,14 +517,14 @@ fn recover_mode(
 fn test_account(
     model: std::cell::RefMut<'_, AccountsPane>,
     account: &str,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let check = model.connection_check(account)?;
     drop(model);
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         check,
-        |_: &mut SettingsApp, outcome: Result<String, String>, _| complete_account_check(outcome),
+        |_: &SettingsApp, outcome: Result<String, String>, _| complete_account_check(outcome),
     ))
 }
 
@@ -537,14 +537,14 @@ fn complete_account_check(outcome: Result<String, String>) -> EffectAnswer {
 fn cloud(
     model: std::cell::RefMut<'_, AccountsPane>,
     request: CloudRequest,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let send = model.cloud.request(request)?;
     drop(model);
-    Ok(crate::device_read::job(
+    Ok(app.job(
         cx,
         send,
-        |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+        |app: &SettingsApp, outcome: Result<(), String>, _| {
             crate::panes::accounts::area(app)
                 .ok_or_else(crate::area::missing)?
                 .model()

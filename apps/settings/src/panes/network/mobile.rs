@@ -181,7 +181,7 @@ pub enum MobileEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: MobileEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let area = area(app).ok_or_else(crate::area::missing)?;
     if effect == MobileEffect::InspectMobileState {
@@ -193,11 +193,9 @@ pub(crate) fn answer(
     let begun = area.model().borrow_mut().begin(effect)?;
     Ok(match begun {
         Begun::Done => Effected::done(),
-        Begun::Work(work) => {
-            crate::device_read::job(cx, work, |app: &mut SettingsApp, landed, _| {
-                area_of(app)?.model().borrow_mut().land(landed)
-            })
-        }
+        Begun::Work(work) => app.job(cx, work, |app: &SettingsApp, landed, _| {
+            area_of(app)?.model().borrow_mut().land(landed)
+        }),
     })
 }
 
