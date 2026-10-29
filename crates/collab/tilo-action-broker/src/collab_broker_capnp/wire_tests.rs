@@ -656,6 +656,46 @@ async fn task_runs_and_their_calls_are_only_for_a_delegated_agent() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn an_app_takes_its_invocations_and_answers_only_its_own() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let room = Room::new(&[13]);
+            let mut endpoint = room.endpoint(13);
+            let channel = endpoint.channel;
+            assert_eq!(
+                endpoint
+                    .call(Request::Subscribe {
+                        channel,
+                        topic: Topic::Invocations { stable_ids: true },
+                    })
+                    .await,
+                Ok(Reply::Subscribed)
+            );
+            for call in [
+                InvocationCall::Complete {
+                    code: String::new(),
+                    message: String::new(),
+                },
+                InvocationCall::Update("{}".into()),
+                InvocationCall::Cancelled,
+            ] {
+                assert!(
+                    endpoint
+                        .call(Request::Invocation {
+                            channel,
+                            id: 404,
+                            call: call.clone(),
+                        })
+                        .await
+                        .is_err(),
+                    "{call:?}: an invocation the app was never handed"
+                );
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn the_wire_client_calls_and_subscribes_against_the_host() {
     use runtime_collab::wire::client::{Client, Delivery};
     tokio::task::LocalSet::new()

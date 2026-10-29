@@ -145,7 +145,7 @@ use runtime_collab::raw::{
     context_stream, invocation_stream, presence_event, presence_handle, presence_payload,
     presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
-use runtime_collab::wire::{ContextUpdate, Reply, Report, TaskCall};
+use runtime_collab::wire::{ContextUpdate, InvocationCall, Reply, Report, TaskCall};
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
 };
@@ -9997,81 +9997,17 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::SubscribeInvocationsParams,
         mut results: channel_handle::SubscribeInvocationsResults,
     ) -> Promise<(), capnp::Error> {
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        let stable = match params.get() {
-            Ok(request) => request.get_stable_invocation_ids(),
-            Err(error) => return Promise::err(error),
-        };
-        // Stream replacement and resolved dispatch share the admission boundary:
-        // an admitted old token must never dispatch to a replacement stream.
-        let Ok(admission) = self.state.admission_lock.lock() else {
-            return Promise::err(capnp::Error::failed(
-                "invocation admission registry unavailable".into(),
-            ));
-        };
-        if let Err(error) = self
-            .state
-            .revalidate_admission(&self.route(), &self.verified_identity)
-        {
-            return Promise::err(error);
-        }
-        if let Ok(mut directories) = self.state.canonical_directories.lock() {
-            directories.stream_replaced(self.peer_id);
-        } else {
-            return Promise::err(capnp::Error::failed(
-                "canonical stream registry unavailable".into(),
-            ));
-        }
-        if let Ok(mut capabilities) = self.state.stable_invocation_subscribers.lock() {
-            if stable {
-                capabilities.insert(self.peer_id);
-            } else {
-                capabilities.remove(&self.peer_id);
+        let stream = params
+            .get()
+            .and_then(|request| self.invocation_feed(request.get_stable_invocation_ids()));
+        match stream {
+            Ok(stream) => {
+                let client: invocation_stream::Client = capnp_rpc::new_client(stream);
+                results.get().set_stream(client);
+                Promise::ok(())
             }
-        } else {
-            return Promise::err(capnp::Error::failed(
-                "application capability registry unavailable".into(),
-            ));
+            Err(error) => Promise::err(error),
         }
-        let (tx, rx) = mpsc::unbounded_channel();
-        if let Ok(mut subscribers) = self.state.invocation_subscribers.lock() {
-            subscribers.insert(self.peer_id, tx);
-        } else {
-            return Promise::err(capnp::Error::failed(
-                "invocation subscriber registry unavailable".into(),
-            ));
-        }
-        drop(admission);
-        self.state.invocation_streams_changed();
-        // The app the launcher attested, else the one this channel names.
-        let (app, room) = self
-            .lease
-            .as_ref()
-            .and_then(|lease| lease.local_media.as_ref())
-            .map_or_else(
-                || {
-                    let route = self.route();
-                    (route.app_id, route.cluster_id)
-                },
-                |app| (app.app_id.clone(), app.workspace_id.clone()),
-            );
-        let delivered = invocation_delivery_notice(&self.state.services, app, room);
-        let client: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer {
-            host_guard: HostWorkerReadGuard::for_channel(
-                &self.state,
-                self.peer_id,
-                &self.verified_identity,
-            ),
-            rx: invocation_queue(self.peer_id, rx),
-            delivered,
-        });
-        results.get().set_stream(client);
-        Promise::ok(())
     }
 
     fn subscribe_task_runs(
@@ -10178,138 +10114,37 @@ impl channel_handle::Server for CapnpChannelHandle {
         })
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the pending entry borrows the registry until it is staged; the lint misreads the borrow"
-    )]
     fn complete_invocation(
         self: Rc<Self>,
         params: channel_handle::CompleteInvocationParams,
         _results: channel_handle::CompleteInvocationResults,
     ) -> Promise<(), capnp::Error> {
-        let state = self.state.clone();
-        let peer_id = self.peer_id;
-        let route = self.route();
-        let identity = self.verified_identity.clone();
-        let host_guard = HostWorkerReadGuard::for_channel(&state, peer_id, &identity);
-        Promise::from_future(async move {
-            let _owner_order = if state.durable_owner_required
-                || state.publisher.requires_owner_for(&route.cluster_id)
-            {
-                Some(state.owner_commit_order.lock().await)
-            } else {
-                None
-            };
-            HostWorkerReadGuard::check(host_guard.as_ref())?;
-            if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
-            {
-                state.revalidate_admission(&route, &identity)?;
-            }
+        let answer = (|| {
             let request = params.get()?;
-            let id = request.get_id();
-            let completion = InvocationCompletion {
-                code: request.get_code()?.to_str()?.to_owned(),
-                message: request.get_message()?.to_str()?.to_owned(),
-            };
-            if !completion.code.is_empty() && completion.message.trim().is_empty() {
-                return Err(capnp::Error::failed(
-                    "failed invocation completion requires a message".into(),
-                ));
-            }
-            let (staged, update) = {
-                let registry = state
-                    .pending_invocations
-                    .lock()
-                    .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
-                let pending = registry
-                    .get(&id)
-                    .filter(|pending| pending.peer_id == peer_id)
-                    .ok_or_else(|| {
-                        capnp::Error::failed(
-                            "an application may complete only its own invocation".into(),
-                        )
-                    })?;
-                if completion.code.is_empty() {
-                    pending
-                        .result
-                        .validate(&tilo_actions::ActionOutput::default())
-                        .map_err(|error| {
-                            capnp::Error::failed(format!(
-                                "legacy completion violated its published result contract: {error}"
-                            ))
-                        })?;
-                }
-                let invocation = pending.update.invocation();
-                let update = if completion.code.is_empty() {
-                    tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput::default(),
-                    }
-                } else {
-                    tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: completion.code.clone(),
-                            message: completion.message.clone(),
-                            details: None,
-                            retryable: false,
-                        },
-                    }
-                };
-                (pending.clone(), update)
-            };
-            state
-                .commit_effect_before_terminal(&staged, &update)
-                .await?;
-            HostWorkerReadGuard::check(host_guard.as_ref())?;
-            if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
-            {
-                state.revalidate_admission(&route, &identity)?;
-            }
-            state
-                .settle_definite_outcome(peer_id, id, &staged.update, &update)
-                .await?;
-            let pending = state
-                .pending_invocations
-                .lock()
-                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?
-                .remove(&id)
-                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
-            state.publish_activity(pending.activity.as_ref(), &update);
-            state.record_completion(id, pending.completion_owner(), update.clone());
-            if let Ok(mut requests) = state.cancellation_requests.lock() {
-                requests.remove(&id);
-            }
-            let _ = pending.tx.send(completion);
-            state.record_effect_receipt(&pending, &update);
-            Ok(())
-        })
+            Ok::<_, capnp::Error>(self.invocation_call(
+                request.get_id(),
+                InvocationCall::Complete {
+                    code: request.get_code()?.to_str()?.to_owned(),
+                    message: request.get_message()?.to_str()?.to_owned(),
+                },
+            ))
+        })();
+        Promise::from_future(async move { answer?.await.map(drop) })
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the RPC validates the complete invocation lifecycle state machine"
-    )]
     fn update_invocation(
         self: Rc<Self>,
         params: channel_handle::UpdateInvocationParams,
         _results: channel_handle::UpdateInvocationResults,
     ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
+        let answer = (|| {
             let request = params.get()?;
-            let update =
-                serde_json::from_str(request.get_update_json()?.to_str()?).map_err(|error| {
-                    capnp::Error::failed(format!("invalid invocation update: {error}"))
-                })?;
-            self.state
-                .apply_invocation_update(
-                    self.peer_id,
-                    request.get_id(),
-                    update,
-                    Some((self.route(), self.verified_identity.clone())),
-                )
-                .await
-        })
+            Ok::<_, capnp::Error>(self.invocation_call(
+                request.get_id(),
+                InvocationCall::Update(request.get_update_json()?.to_str()?.to_owned()),
+            ))
+        })();
+        Promise::from_future(async move { answer?.await.map(drop) })
     }
 
     fn invocation_cancellation(
@@ -10317,42 +10152,14 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::InvocationCancellationParams,
         mut results: channel_handle::InvocationCancellationResults,
     ) -> Promise<(), capnp::Error> {
-        let checked = HostWorkerReadGuard::check(
-            HostWorkerReadGuard::for_channel(&self.state, self.peer_id, &self.verified_identity)
-                .as_ref(),
-        );
-        if let Err(error) = checked {
-            return Promise::err(error);
-        }
-        let request = match params.get() {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
-        let id = request.get_id();
-        let owns = self
-            .state
-            .pending_invocations
-            .lock()
-            .ok()
-            .and_then(|pending| pending.get(&id).map(|job| job.peer_id == self.peer_id))
-            .unwrap_or(false);
-        if !owns {
-            return Promise::err(capnp::Error::failed("unknown invocation id".into()));
-        }
-        let cancelled = self
-            .state
-            .cancellation_requests
-            .lock()
-            .is_ok_and(|requests| requests.contains(&id));
-        if !cancelled {
-            results.get().set_cancelled(false);
-            return Promise::ok(());
-        }
-        // The application hears of the request once it is durable.
-        let durable = self.state.invocation_in_flight(id);
+        let answer = params
+            .get()
+            .map(|request| self.invocation_call(request.get_id(), InvocationCall::Cancelled));
         Promise::from_future(async move {
-            durable.wait().await.map_err(capnp::Error::failed)?;
-            results.get().set_cancelled(true);
+            let Reply::Cancelled(cancelled) = answer?.await? else {
+                return Err(capnp::Error::failed("unexpected invocation answer".into()));
+            };
+            results.get().set_cancelled(cancelled);
             Ok(())
         })
     }
@@ -11891,40 +11698,64 @@ impl action_catalogue_stream::Server for ActionCatalogueStreamServer {
     }
 }
 
+impl InvocationStreamServer {
+    /// The next invocation handed to the app.
+    #[allow(
+        clippy::future_not_send,
+        reason = "the stream is served on the connection's single-threaded local set"
+    )]
+    async fn next(&self) -> Result<InvocationEnvelope, capnp::Error> {
+        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+        let mut guard = self.rx.lock().await;
+        let invocation = guard.recv().await.ok_or_else(|| {
+            capnp::Error::disconnected("application invocation stream closed".into())
+        })?;
+        drop(guard);
+        HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+        if let Some(delivered) = &self.delivered {
+            delivered();
+        }
+        Ok(invocation)
+    }
+}
+
+impl InvocationEnvelope {
+    /// The invocation as the app receives it on the collaboration wire.
+    fn on_wire(self) -> Result<runtime_collab::wire::Invocation, capnp::Error> {
+        Ok(runtime_collab::wire::Invocation {
+            id: self.id,
+            invocation: *self.invocation.0.as_bytes(),
+            resource: self.resource,
+            action: self.action,
+            argument: self.argument,
+            actor: self.actor,
+            context: self
+                .context
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| capnp::Error::failed(error.to_string()))?,
+        })
+    }
+}
+
 impl invocation_stream::Server for InvocationStreamServer {
     fn read(
         self: Rc<Self>,
         _params: invocation_stream::ReadParams,
         mut results: invocation_stream::ReadResults,
     ) -> Promise<(), capnp::Error> {
-        let rx = self.rx.clone();
         Promise::from_future(async move {
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            let mut guard = rx.lock().await;
-            let invocation = guard.recv().await.ok_or_else(|| {
-                capnp::Error::disconnected("application invocation stream closed".into())
-            })?;
-            drop(guard);
-            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
-            if let Some(delivered) = &self.delivered {
-                delivered();
-            }
+            let invocation = self.next().await?.on_wire()?;
             let mut result = results.get();
             result.set_id(invocation.id);
-            result.set_invocation_uuid(invocation.invocation.0.as_bytes());
+            result.set_invocation_uuid(&invocation.invocation);
             result.set_resource(&invocation.resource);
             result.set_action(&invocation.action);
             result.set_argument(invocation.argument.as_deref().unwrap_or(""));
             result.set_has_argument(invocation.argument.is_some());
             result.set_actor(&invocation.actor);
-            let context = invocation
-                .context
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(|error| capnp::Error::failed(error.to_string()))?
-                .unwrap_or_default();
-            result.set_context_json(&context);
+            result.set_context_json(invocation.context.as_deref().unwrap_or(""));
             Ok(())
         })
     }

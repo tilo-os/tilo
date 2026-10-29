@@ -81,6 +81,12 @@ pub enum Request {
         of: Changes,
         after: u64,
     },
+    /// What the app says, or asks, of an invocation it was handed.
+    Invocation {
+        channel: Handle,
+        id: u64,
+        call: InvocationCall,
+    },
     /// A delegated agent's call about the task run `run_id` it holds under
     /// `lease`.
     Task {
@@ -114,6 +120,32 @@ pub enum Participant {
     Person { handle: String },
     /// The workspace agent `id` the person delegated to this device.
     Agent { id: String },
+}
+
+/// What an app says, or asks, of an invocation it was handed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InvocationCall {
+    /// It ended: `code` empty for success, else the failure and its message.
+    Complete { code: String, message: String },
+    /// Where it got to, as `tilo_actions::InvocationUpdate` JSON.
+    Update(String),
+    /// Whether its cancellation was asked, answered as [`Reply::Cancelled`].
+    Cancelled,
+}
+
+/// An invocation of one of the app's published actions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Invocation {
+    /// The id the app answers it by.
+    pub id: u64,
+    /// Its stable invocation id, as UUID bytes.
+    pub invocation: [u8; 16],
+    pub resource: String,
+    pub action: String,
+    pub argument: Option<String>,
+    pub actor: String,
+    /// The `tilo_actions::ActionContext` it was invoked in, as JSON.
+    pub context: Option<String>,
 }
 
 /// What an agent says or asks about a task run it holds.
@@ -273,6 +305,9 @@ pub enum Topic {
     Context,
     /// The task runs the workspace hands this delegated agent.
     TaskRuns,
+    /// The invocations of the app's published actions, replacing any
+    /// stream it held; `stable_ids` asks for stable invocation ids.
+    Invocations { stable_ids: bool },
 }
 
 /// The host's answer to a call that succeeded.
@@ -284,6 +319,8 @@ pub enum Reply {
     /// What the call opened.
     Opened(Handle),
     Room(RoomStatus),
+    /// Whether an invocation's cancellation was asked.
+    Cancelled(bool),
     /// Whether a task run was cancelled, and the control it shows now as
     /// JSON, if any.
     TaskCancelled {
@@ -333,6 +370,8 @@ pub enum Event {
         bytes: Vec<u8>,
     },
     Context(ContextUpdate),
+    /// An invocation handed to this app.
+    Invocation(Invocation),
     /// A task run handed to this agent, as `TaskRunEnvelope` JSON (its
     /// action context is free-form JSON, which postcard cannot carry).
     TaskRun(String),

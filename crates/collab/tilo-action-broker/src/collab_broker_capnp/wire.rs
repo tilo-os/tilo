@@ -15,8 +15,8 @@
 use std::cell::Cell;
 
 use runtime_collab::wire::{
-    Call, Changes, ContextUpdate, Event, FRAMING, Handle, HostFrame, Join, Participant,
-    Publication, Read, Reply, Report, Request, Service, TaskCall, TaskStep, Topic,
+    Call, Changes, ContextUpdate, Event, FRAMING, Handle, HostFrame, InvocationCall, Join,
+    Participant, Publication, Read, Reply, Report, Request, Service, TaskCall, TaskStep, Topic,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -1329,6 +1329,234 @@ impl CapnpChannelHandle {
         }))
     }
 
+    /// Start handing this app the invocations of its published actions,
+    /// replacing any stream it held; `stable` asks for stable invocation ids.
+    pub(super) fn invocation_feed(
+        &self,
+        stable: bool,
+    ) -> Result<InvocationStreamServer, capnp::Error> {
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        // Stream replacement and resolved dispatch share the admission boundary:
+        // an admitted old token must never dispatch to a replacement stream.
+        let Ok(admission) = self.state.admission_lock.lock() else {
+            return Err(capnp::Error::failed(
+                "invocation admission registry unavailable".into(),
+            ));
+        };
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        if let Ok(mut directories) = self.state.canonical_directories.lock() {
+            directories.stream_replaced(self.peer_id);
+        } else {
+            return Err(capnp::Error::failed(
+                "canonical stream registry unavailable".into(),
+            ));
+        }
+        if let Ok(mut capabilities) = self.state.stable_invocation_subscribers.lock() {
+            if stable {
+                capabilities.insert(self.peer_id);
+            } else {
+                capabilities.remove(&self.peer_id);
+            }
+        } else {
+            return Err(capnp::Error::failed(
+                "application capability registry unavailable".into(),
+            ));
+        }
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut subscribers) = self.state.invocation_subscribers.lock() {
+            subscribers.insert(self.peer_id, tx);
+        } else {
+            return Err(capnp::Error::failed(
+                "invocation subscriber registry unavailable".into(),
+            ));
+        }
+        drop(admission);
+        self.state.invocation_streams_changed();
+        // The app the launcher attested, else the one this channel names.
+        let (app, room) = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .map_or_else(
+                || {
+                    let route = self.route();
+                    (route.app_id, route.cluster_id)
+                },
+                |app| (app.app_id.clone(), app.workspace_id.clone()),
+            );
+        let delivered = invocation_delivery_notice(&self.state.services, app, room);
+        Ok(InvocationStreamServer {
+            host_guard: HostWorkerReadGuard::for_channel(
+                &self.state,
+                self.peer_id,
+                &self.verified_identity,
+            ),
+            rx: invocation_queue(self.peer_id, rx),
+            delivered,
+        })
+    }
+
+    /// What the app says, or asks, of the invocation `id` it was handed.
+    pub(super) fn invocation_call(&self, id: u64, call: InvocationCall) -> Answer<Reply> {
+        match call {
+            InvocationCall::Complete { code, message } => {
+                self.complete_invocation(id, code, message)
+            }
+            InvocationCall::Update(update) => {
+                let state = self.state.clone();
+                let peer_id = self.peer_id;
+                let admission = Some((self.route(), self.verified_identity.clone()));
+                Box::pin(async move {
+                    let update = serde_json::from_str(&update).map_err(|error| {
+                        capnp::Error::failed(format!("invalid invocation update: {error}"))
+                    })?;
+                    state
+                        .apply_invocation_update(peer_id, id, update, admission)
+                        .await?;
+                    Ok(Reply::Done)
+                })
+            }
+            InvocationCall::Cancelled => self.invocation_cancellation(id),
+        }
+    }
+
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the pending entry borrows the registry until it is staged; the lint misreads the borrow"
+    )]
+    fn complete_invocation(&self, id: u64, code: String, message: String) -> Answer<Reply> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        let route = self.route();
+        let identity = self.verified_identity.clone();
+        let host_guard = HostWorkerReadGuard::for_channel(&state, peer_id, &identity);
+        Box::pin(async move {
+            let _owner_order = if state.durable_owner_required
+                || state.publisher.requires_owner_for(&route.cluster_id)
+            {
+                Some(state.owner_commit_order.lock().await)
+            } else {
+                None
+            };
+            HostWorkerReadGuard::check(host_guard.as_ref())?;
+            if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
+            {
+                state.revalidate_admission(&route, &identity)?;
+            }
+            let completion = InvocationCompletion { code, message };
+            if !completion.code.is_empty() && completion.message.trim().is_empty() {
+                return Err(capnp::Error::failed(
+                    "failed invocation completion requires a message".into(),
+                ));
+            }
+            let (staged, update) = {
+                let registry = state
+                    .pending_invocations
+                    .lock()
+                    .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?;
+                let pending = registry
+                    .get(&id)
+                    .filter(|pending| pending.peer_id == peer_id)
+                    .ok_or_else(|| {
+                        capnp::Error::failed(
+                            "an application may complete only its own invocation".into(),
+                        )
+                    })?;
+                if completion.code.is_empty() {
+                    pending
+                        .result
+                        .validate(&tilo_actions::ActionOutput::default())
+                        .map_err(|error| {
+                            capnp::Error::failed(format!(
+                                "legacy completion violated its published result contract: {error}"
+                            ))
+                        })?;
+                }
+                let invocation = pending.update.invocation();
+                let update = if completion.code.is_empty() {
+                    tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    }
+                } else {
+                    tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: completion.code.clone(),
+                            message: completion.message.clone(),
+                            details: None,
+                            retryable: false,
+                        },
+                    }
+                };
+                (pending.clone(), update)
+            };
+            state
+                .commit_effect_before_terminal(&staged, &update)
+                .await?;
+            HostWorkerReadGuard::check(host_guard.as_ref())?;
+            if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
+            {
+                state.revalidate_admission(&route, &identity)?;
+            }
+            state
+                .settle_definite_outcome(peer_id, id, &staged.update, &update)
+                .await?;
+            let pending = state
+                .pending_invocations
+                .lock()
+                .map_err(|_| capnp::Error::failed("invocation registry unavailable".into()))?
+                .remove(&id)
+                .ok_or_else(|| capnp::Error::failed("unknown invocation id".into()))?;
+            state.publish_activity(pending.activity.as_ref(), &update);
+            state.record_completion(id, pending.completion_owner(), update.clone());
+            if let Ok(mut requests) = state.cancellation_requests.lock() {
+                requests.remove(&id);
+            }
+            let _ = pending.tx.send(completion);
+            state.record_effect_receipt(&pending, &update);
+            Ok(Reply::Done)
+        })
+    }
+
+    fn invocation_cancellation(&self, id: u64) -> Answer<Reply> {
+        let checked = HostWorkerReadGuard::check(
+            HostWorkerReadGuard::for_channel(&self.state, self.peer_id, &self.verified_identity)
+                .as_ref(),
+        );
+        if let Err(error) = checked {
+            return Box::pin(std::future::ready(Err(error)));
+        }
+        let owns = self
+            .state
+            .pending_invocations
+            .lock()
+            .ok()
+            .and_then(|pending| pending.get(&id).map(|job| job.peer_id == self.peer_id))
+            .unwrap_or(false);
+        if !owns {
+            return Box::pin(std::future::ready(Err(capnp::Error::failed(
+                "unknown invocation id".into(),
+            ))));
+        }
+        let cancelled = self
+            .state
+            .cancellation_requests
+            .lock()
+            .is_ok_and(|requests| requests.contains(&id));
+        if !cancelled {
+            return ready(Reply::Cancelled(false));
+        }
+        // The application hears of the request once it is durable.
+        let durable = self.state.invocation_in_flight(id);
+        Box::pin(async move {
+            durable.wait().await.map_err(capnp::Error::failed)?;
+            Ok(Reply::Cancelled(true))
+        })
+    }
+
     /// News of the record's content from now on.
     pub(super) fn subscribe_content(
         &self,
@@ -1718,6 +1946,16 @@ impl WireConnection {
                 Ok(session) => session.command(service, &body, &on_behalf_of),
                 Err(error) => Box::pin(std::future::ready(Err(error))),
             },
+            Request::Invocation {
+                channel,
+                id: invocation,
+                call,
+            } => {
+                let answer = self
+                    .channel(channel)
+                    .map(|session| session.invocation_call(invocation, call));
+                Box::pin(async move { answer?.await.map_err(|error| error.to_string()) })
+            }
             Request::Task {
                 channel,
                 run_id,
@@ -1765,7 +2003,8 @@ impl WireConnection {
             | Request::Room { .. }
             | Request::Command { .. }
             | Request::Changed { .. }
-            | Request::Task { .. } => Err("answered when done".into()),
+            | Request::Task { .. }
+            | Request::Invocation { .. } => Err("answered when done".into()),
             Request::Publish {
                 channel,
                 publication: Publication::Report(report),
@@ -1845,6 +2084,10 @@ impl WireConnection {
                         tokio::task::spawn_local(pump(feed, id, frames, |update| {
                             Some(Event::Context(update))
                         }))
+                    }
+                    Topic::Invocations { stable_ids } => {
+                        let stream = session.invocation_feed(stable_ids).map_err(failed)?;
+                        tokio::task::spawn_local(pump_invocations(stream, id, frames))
                     }
                     Topic::TaskRuns => {
                         let feed = session.task_run_feed().map_err(failed)?;
@@ -1942,6 +2185,34 @@ async fn pump<T>(
                 }
             }
             Ok(None) => break "the channel's fanout closed".to_owned(),
+            Err(error) => break error.to_string(),
+        }
+    };
+    let _ = frames.send(HostFrame::Ended {
+        subscription,
+        reason,
+    });
+}
+
+async fn pump_invocations(
+    stream: InvocationStreamServer,
+    subscription: u64,
+    frames: mpsc::UnboundedSender<HostFrame>,
+) {
+    let reason = loop {
+        match stream.next().await.and_then(InvocationEnvelope::on_wire) {
+            Ok(invocation) => {
+                let event = Event::Invocation(invocation);
+                if frames
+                    .send(HostFrame::Event {
+                        subscription,
+                        event,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
             Err(error) => break error.to_string(),
         }
     };
