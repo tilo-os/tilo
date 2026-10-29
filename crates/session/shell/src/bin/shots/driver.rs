@@ -2093,6 +2093,7 @@ impl ShellDriver {
             "notifications-one" => self.scene_notifications_one(),
             "notifications-dnd" => self.scene_notifications_dnd(),
             "notifications-graphics" => self.scene_notifications_graphics(),
+            "notifications-call" => return self.scene_notifications_call(),
             "multi-group" => self.scene_multi_group(),
             "maximized" => return self.scene_maximized(),
             "two-groups-focus" => self.scene_two_groups_focus(),
@@ -3562,6 +3563,30 @@ impl ShellDriver {
                     .with_shown_at(settled_at),
             );
         });
+    }
+
+    /// An incoming call over a maximized window: the call's card stands
+    /// below the window's bar, never over its History, restore or close,
+    /// and offers its answers on the card.
+    fn scene_notifications_call(&mut self) -> Result<(), String> {
+        use tilo_desktop::notifications::{Addressed, Notification};
+        self.scene_maximized()?;
+        let settled_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        self.with_chrome(|st| {
+            let mut call = Notification::new("Jonas is calling", "Video call")
+                .with_from("Jonas", "peer:jonas")
+                .with_addressed(Addressed::IncomingCall)
+                .with_dismiss_after(Duration::from_secs(60))
+                .with_shown_at(settled_at);
+            call.actions = vec![
+                ("answer".into(), "Answer".into()),
+                ("decline".into(), "Decline".into()),
+            ];
+            st.push_notification_full(call);
+        });
+        Ok(())
     }
 
     /// The notice a desktop shows once it gave a dead GPU up for software, as the

@@ -447,6 +447,31 @@ impl ShellOverlayHost {
         self.strip_pan_quantum = quantum;
     }
 
+    /// Each window's bar on screen, from the window's top edge to where its
+    /// content starts: the band holding its tabs, location and window
+    /// controls (History, maximize or restore, close). A window showing no
+    /// bar (a fullscreen presentation) has none.
+    pub(super) fn window_bars_on_screen(&self) -> Vec<vello::kurbo::Rect> {
+        let mut bars = Vec::new();
+        for (_, ptr) in self.rows_on_screen() {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor; read-only.
+            let row: &GroupRow = unsafe { &*ptr };
+            for group in &row.groups {
+                let window = ui::widget::Widget::get_rect(group);
+                let Some(content) = group.content_rect_for_tab(group.active_tab_id()) else {
+                    continue;
+                };
+                if content.y0 > window.y0 + 0.5 && window.width() > 0.0 {
+                    bars.push(vello::kurbo::Rect::new(
+                        window.x0, window.y0, window.x1, content.y0,
+                    ));
+                }
+            }
+        }
+        bars
+    }
+
     /// The strips with a row on screen, top to bottom.
     pub(super) fn rows_on_screen(&self) -> Vec<(StripId, *mut GroupRow)> {
         let mut rows: Vec<(f64, StripId, *mut GroupRow)> = self
