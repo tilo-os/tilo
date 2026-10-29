@@ -247,7 +247,7 @@ fn imported_report_must_name_a_supported_architecture_and_model() {
         Err("installer-preview-target-report-architecture-fixed")
     );
 
-    let unsupported = report(Some("riscv64"), vec![supported_graphics()])
+    let unsupported = report(Some("s390x"), vec![supported_graphics()])
         .to_json()
         .unwrap();
     assert_eq!(
