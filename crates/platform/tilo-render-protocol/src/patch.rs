@@ -500,6 +500,10 @@ pub enum ToUi {
     Ask(Option<Ask>),
     /// Someone asked to see the window ("Show this window"): it comes forward.
     Activate,
+    /// The app ran the first `fired` presses the window sent (`ToApp::Fire`), and sent what
+    /// they opened before this. What the person typed after a press goes to the app once it
+    /// ran it, into the field focused then.
+    Took { fired: u64 },
 }
 
 /// What the person did, as the window tells its app.
@@ -575,6 +579,13 @@ pub enum ToApp {
     },
     /// An input method is composing in the focused control, or stopped.
     Composing(bool),
+    /// What the window calls the room's participants now: `me` for the person at the window,
+    /// and each of `others` by id. An app whose instance runs out of the window's process names
+    /// people only by these.
+    Names {
+        me: String,
+        others: Vec<(String, String)>,
+    },
 }
 
 /// Largest batch either side sends or accepts.

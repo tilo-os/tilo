@@ -47,7 +47,6 @@ use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
     Caller, Committer, Planner, Publications, host_resource, publish_package,
 };
-use tilolang_tilo::runtime::{NameHost, Principal};
 use tilolang_tilo::{HostEffect, OpenEffect};
 
 use crate::phrases::Phrases;
@@ -233,15 +232,6 @@ impl Platform for HostPlatform {
     }
 }
 
-/// A principal as the room names them: by the id their changes carry.
-struct ById;
-
-impl NameHost for ById {
-    fn name(&self, who: &Principal) -> String {
-        who.0.clone()
-    }
-}
-
 /// Where an instance keeps what it keeps: its room record's on-disk copy and its indexes, under
 /// its package's directory in the host's storage.
 pub struct Kept {
@@ -338,7 +328,8 @@ impl Hosted {
                 sink: None,
             },
             Rc::new(platform),
-            Rc::new(ById),
+            // People by what the window calls them, once it said (`ToApp::Names`).
+            Rc::new(tilolang_tilo::names::Unnamed),
             window,
         );
         let registry = ActionRegistry::with(tilolang_tilo::instance::room::register);

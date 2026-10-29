@@ -447,15 +447,25 @@ fn apply_one(
                 doc.put(&held, "settled", outcome.as_str())?;
             }
         }
-        DynEdit::Migrated { id, migration } => {
-            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
-                return Err(ActionError::Refused(format!("there is no resource `{id}`")));
-            };
-            let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
-            doc.put(&done, migration.as_str(), true)?;
-        }
+        DynEdit::Migrated { id, migration } => mark_migrated(doc, &app, id, migration)?,
         DynEdit::In { .. } => {}
     }
+    Ok(())
+}
+
+/// Record in the resource `id` (in the app's records map `app`) that the migration `migration`
+/// ran on it.
+fn mark_migrated(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    migration: &str,
+) -> Result<(), ActionError> {
+    let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
+        return Err(ActionError::Refused(format!("there is no resource `{id}`")));
+    };
+    let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
+    doc.put(&done, migration, true)?;
     Ok(())
 }
 

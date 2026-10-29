@@ -168,7 +168,8 @@ fn reads_node(standing: &Standing, people: &People, who: &Principal, node: &Tree
         Some(agent) => policy.party_of(Subject::agent(agent)),
         None => policy.party(people.person_of(standing, &who.0)),
     };
-    let cx = Context::at_time(std::time::SystemTime::now());
+    let earlier = crate::schema::earlier_ids();
+    let cx = Context::at_time(std::time::SystemTime::now()).with_earlier_ids(&earlier);
     Policy::person(party)
         .decide(node, ActionKind::Read, &cx)
         .answer

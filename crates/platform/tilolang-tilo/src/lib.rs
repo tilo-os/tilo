@@ -26,6 +26,7 @@ pub mod instance;
 pub mod items;
 pub mod members;
 pub mod meta;
+pub mod names;
 pub mod origin;
 pub mod publish;
 pub mod reading;

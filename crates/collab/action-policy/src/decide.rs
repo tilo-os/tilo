@@ -47,8 +47,8 @@ pub fn decide<'g>(
     let mut best: Option<&'g Grant> = None;
     for grant in grants {
         if !grant.kinds.contains(kind)
-            || !subjects.contains(&grant.subject)
-            || !grant.node.covers(node)
+            || !cx.subject_matches(&grant.subject, subjects)
+            || !cx.covers(&grant.node, node)
             || !grant.is_live(cx)
         {
             continue;
@@ -152,7 +152,7 @@ impl<'g> Party<'g> {
                 .iter()
                 .any(|subject| matches!(subject, Subject::Person(person) if person == member));
             let held_off = self.held_off.iter().copied().find(|grant| {
-                grant.kinds.contains(kind) && grant.node.covers(node) && grant.is_live(cx)
+                grant.kinds.contains(kind) && cx.covers(&grant.node, node) && grant.is_live(cx)
             });
             return match (theirs, held_off) {
                 (true, None) => Decision {
@@ -169,14 +169,14 @@ impl<'g> Party<'g> {
                 },
             };
         }
-        if self.owns.iter().any(|owned| owned.covers(node)) {
+        if self.owns.iter().any(|owned| cx.covers(owned, node)) {
             return Decision {
                 answer: Answer::Allow,
                 basis: Basis::Owner,
             };
         }
         if let Some(deny) = self.held_off.iter().copied().find(|grant| {
-            grant.kinds.contains(kind) && grant.node.covers(node) && grant.is_live(cx)
+            grant.kinds.contains(kind) && cx.covers(&grant.node, node) && grant.is_live(cx)
         }) {
             return Decision {
                 answer: Answer::Deny,
