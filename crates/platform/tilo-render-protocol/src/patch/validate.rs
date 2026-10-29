@@ -648,6 +648,12 @@ impl<'a> Validator<'a> {
                         self.string(name)?;
                     }
                 }
+                ToApp::Space { width, height, .. } => {
+                    if !(width.is_finite() && height.is_finite() && *width >= 0.0 && *height >= 0.0)
+                    {
+                        return Err(Refused::invalid("a space is no size"));
+                    }
+                }
                 ToApp::Back | ToApp::Answer(_) | ToApp::Undo | ToApp::Composing(_) => {}
             }
         }

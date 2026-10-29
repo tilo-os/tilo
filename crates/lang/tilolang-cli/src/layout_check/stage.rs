@@ -7,11 +7,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilo_render_protocol::patch::local::pair;
-use tilo_render_protocol::patch::{Lane, ResourceRef, ToApp, Value};
+use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
-use tilolang_tilo::runtime::space::Space;
 use tilolang_tilo::runtime::{NameHost, Principal};
 use tilolang_tilo::tilolang::Compiled;
 use ui::headless::FrameHarness;
@@ -133,8 +132,8 @@ impl Staged {
         }
     }
 
-    /// Lay the window out at `viewport` under `theme`, for a person using `input`, each view
-    /// offered the window's space in `rem` (`rem` being the theme's body size).
+    /// Lay the window out at `viewport` under `theme`, for a person using `input`. The window
+    /// tells each view the space layout gave it, as the live window does.
     pub fn lay_out(
         &mut self,
         viewport: (u32, u32),
@@ -143,17 +142,6 @@ impl Staged {
         display_scale: f64,
     ) -> Result<(), String> {
         theme.reduce_motion = true;
-        let rem = f64::from(ui::widget::arrange::rem_of(&theme));
-        let space = Space::from_rem(f64::from(viewport.0) / rem, f64::from(viewport.1) / rem);
-        let mut moved = false;
-        for lane in [Lane::Root, Lane::Detail] {
-            if let Some(view) = self.instance.view(lane) {
-                moved |= view.borrow_mut().set_space("", space);
-            }
-        }
-        if moved {
-            self.instance.moved();
-        }
         self.harness.set_input_scale(display_scale)?;
         self.harness.set_interaction_environment(input);
         self.harness
