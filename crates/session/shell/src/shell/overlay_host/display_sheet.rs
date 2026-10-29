@@ -74,7 +74,9 @@ impl ShellOverlayHost {
         let open = self.overlay_flags().projection;
         let polled = self.display_sheet.poll(open) | self.close_settled_projection();
         self.follow_display_sheet();
-        shown | acted | polled
+        // What the shell told the app this frame is shown this frame.
+        let told = (acted || polled) && self.layers.display_sheet.update(doc, path);
+        shown | acted | polled | told
     }
 
     fn carry_out_display_choice(&mut self, effect: DisplaysEffect) {

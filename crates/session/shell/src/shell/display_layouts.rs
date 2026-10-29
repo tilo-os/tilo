@@ -156,9 +156,6 @@ pub(crate) struct DisplayLayouts {
     person: Option<SharedDisplayView>,
 }
 
-/// One of the person's other devices' screens, as the sheet lists it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-
 impl DisplayLayouts {
     fn refresh_person(&mut self) {
         self.person = shared_display_actions::published();

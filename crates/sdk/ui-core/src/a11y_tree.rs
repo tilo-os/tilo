@@ -284,6 +284,8 @@ pub struct SemanticNode {
     pub name: Option<String>,
     /// A field's contents, a slider's readout, etc.
     pub value: Option<String>,
+    /// What is said after the name: a dialog's situation and keys.
+    pub description: Option<String>,
     pub state: AccessState,
     /// `None` for the root and resource nodes. Virtual rows and cells publish
     /// their viewport geometry even though they have no retained widget.
@@ -335,6 +337,7 @@ impl SemanticNode {
             && self.role == other.role
             && self.name == other.name
             && self.value == other.value
+            && self.description == other.description
             && self.state == other.state
             && self.bounds == other.bounds
             && self.actions == other.actions
@@ -418,6 +421,7 @@ impl SemanticTree {
                 role: Role::Window,
                 name: Some("Tilo application window".into()),
                 value: None,
+                description: None,
                 state: AccessState::default(),
                 bounds: None,
                 actions: Vec::new(),
@@ -664,6 +668,7 @@ impl SemanticTree {
                 role: Role::Window,
                 name: Some("Tilo application window".into()),
                 value: None,
+                description: None,
                 state: AccessState::default(),
                 bounds: None,
                 actions: Vec::new(),
@@ -1608,6 +1613,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             } else {
                 access.value.clone()
             },
+            description: access.description.clone(),
             state,
             bounds: Some(w.get_rect()),
             actions,
@@ -1680,6 +1686,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             } else {
                 access.value.clone()
             },
+            description: access.description.clone(),
             state: access.state,
             bounds: access.bounds.map(crate::a11y::AccessBounds::to_rect),
             actions: if semantic_target.is_some() {
@@ -1881,6 +1888,7 @@ mod tests {
                 role: Role::Button,
                 name: Some("Save".into()),
                 value: None,
+                description: None,
                 state: AccessState::default(),
                 bounds: Some(Rect::new(0.0, 0.0, 10.0, 10.0)),
                 actions: Vec::new(),

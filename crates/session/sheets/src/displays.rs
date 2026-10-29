@@ -364,7 +364,16 @@ impl Sheet {
         };
         status.map_or_else(
             || t("display-sheet-a11y-description"),
-            |status| format!("{status}. {}", t("display-sheet-a11y-description")),
+            |status| {
+                // A status that ends its own sentence ("Saving…") gets no
+                // second full stop.
+                let stop = if status.ends_with(['.', '…', '!', '?']) {
+                    ""
+                } else {
+                    "."
+                };
+                format!("{status}{stop} {}", t("display-sheet-a11y-description"))
+            },
         )
     }
 
@@ -486,6 +495,7 @@ impl DisplaysSeat {
             self.pin.borrow_mut().clear();
         }
         *self.sheet.borrow_mut() = sheet;
+        self.presentation.wake();
     }
 
     /// What the sheet shows now.
@@ -540,6 +550,7 @@ impl ResourceApp for DisplaysApp {
         let pin = cx.local(String::new());
         if let Some(seat) = &seat {
             *seat.shown.borrow_mut() = Some(shown.clone());
+            seat.presentation.wake_with(cx.waker());
         }
         let asking = seat.clone();
         cx.effects(move |effect: DisplaysEffect, _cx| match &asking {
@@ -718,7 +729,9 @@ impl Parts {
         self.dispatch.effect(effect);
     }
 
-    /// The PIN is typed or submitted: the shell connects with it.
+    /// The PIN is submitted: the shell connects with it, reading it from
+    /// the seat when it carries out the choice, so the seat keeps it while
+    /// the field is emptied.
     fn submit_pin(&self) {
         let Shown { sheet, .. } = self.shown.get();
         if let Some(receiver) = sheet.receivers.iter().find(|receiver| receiver.chosen) {
@@ -727,9 +740,6 @@ impl Parts {
             });
         }
         self.pin.set(String::new());
-        if let Some(seat) = &self.seat {
-            seat.pin.borrow_mut().clear();
-        }
     }
 }
 
@@ -1032,13 +1042,15 @@ fn stream_options(stream: &Stream, parts: &Parts) -> Element {
     )
 }
 
+const PIN_FIELD: &str = "display-receiver-pin";
+
 /// The chosen receiver's PIN or password: kept in the seat for the shell,
 /// never in an action, and Enter connects with it.
 fn pin_field(spot: Option<&Spot>, parts: &Parts) -> Element {
     let typed = parts.seat.clone();
     let submitted = parts.clone();
     let mut field = TextInput::from_state(&parts.pin)
-        .with_id("display-receiver-pin")
+        .with_id(PIN_FIELD)
         .with_placeholder(t("wireless-credential-placeholder"))
         .with_accessible_name(t("wireless-credential-label"))
         .with_secret(true)
@@ -1225,6 +1237,19 @@ impl Keys {
         }
     }
 
+    /// The highlight is on the PIN: the keyboard is the field's. The sheet
+    /// keeps the keyboard to itself, so it hands the field its focus here.
+    fn focus_pin(&mut self) {
+        fn find(widget: &mut dyn Widget) -> bool {
+            if widget.test_id() == Some(PIN_FIELD) {
+                widget.set_focus(true);
+                return true;
+            }
+            widget.children_mut().into_iter().any(find)
+        }
+        find(self.content.as_mut());
+    }
+
     fn act(&self, spot: &Spot) {
         let sheet = self.shown.get().sheet;
         let next = activate(&sheet, spot, &self.dispatch);
@@ -1270,20 +1295,37 @@ impl ui::widget::Decorator for Keys {
                 (key.logical_key.clone(), key.repeat)
             }
             _ => {
+                if matches!(event, WindowEvent::Ime(_))
+                    && self.shown.get().spot() == Some(Spot::Pin)
+                {
+                    self.focus_pin();
+                }
                 self.content.handle_event(event, ctx);
                 return;
             }
         };
         let modifiers = ctx.modifiers.state();
         let on_pin = self.shown.get().spot() == Some(Spot::Pin);
-        // Typing, Space and Enter in the PIN field are the field's.
-        let typing = matches!(&key, Key::Character(_) | Key::Named(NamedKey::Space))
-            && !modifiers.super_key();
-        if typing || (on_pin && matches!(key, Key::Named(NamedKey::Enter))) {
+        // Typing, Space, Enter and editing in the PIN field are the field's.
+        let typing = matches!(
+            &key,
+            Key::Character(_)
+                | Key::Named(
+                    NamedKey::Space
+                        | NamedKey::Enter
+                        | NamedKey::Backspace
+                        | NamedKey::Delete
+                        | NamedKey::ArrowLeft
+                        | NamedKey::ArrowRight
+                        | NamedKey::Home
+                        | NamedKey::End
+                )
+        ) && !modifiers.super_key();
+        if on_pin && typing {
+            self.focus_pin();
             self.content.handle_event(event, ctx);
-            if *ctx.handled {
-                return;
-            }
+            *ctx.handled = true;
+            return;
         }
         let spot = self.shown.get().spot();
         match &key {

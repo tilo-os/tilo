@@ -1079,6 +1079,7 @@ fn access_subtree(
     let mut access = crate::a11y::AccessNode::new(node.role);
     access.name.clone_from(&node.name);
     access.value.clone_from(&node.value);
+    access.description.clone_from(&node.description);
     access.state = node.state;
     access.state.focused &= focused;
     access.key = Some(crate::a11y::hash_key(&id.as_str()));

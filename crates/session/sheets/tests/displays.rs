@@ -321,6 +321,7 @@ fn a_receiver_that_asks_for_a_pin_is_chosen_first_and_the_pin_never_enters_an_ac
         }]
     );
     assert!(!format!("{asked:?}").contains("4321"));
+    assert_eq!(seat.pin(), "4321", "the shell connects with the PIN typed");
 }
 
 #[test]

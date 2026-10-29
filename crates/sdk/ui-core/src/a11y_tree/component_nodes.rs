@@ -510,6 +510,7 @@ pub(super) fn resource_semantic_node(
         role: Role::Group,
         name: Some(resource.label.clone()),
         value: None,
+        description: None,
         state: AccessState::default(),
         bounds: None,
         actions,
