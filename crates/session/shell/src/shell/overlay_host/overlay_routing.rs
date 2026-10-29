@@ -125,8 +125,7 @@ impl ShellOverlayHost {
             return true;
         }
         // So does the directory sheet, whose search takes pasted links.
-        if self.directory_sheet.is_open() && self.handle_directory_event(event, *ctx.modifiers) {
-            *ctx.handled = true;
+        if self.route_directory(event, ctx) {
             return true;
         }
 

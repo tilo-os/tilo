@@ -3313,22 +3313,10 @@ desk-monitor-memory-short = RAM
 
 
 ## "Join a workspace…": the directory of public workspaces.
-directory-title = Join a workspace
-directory-search = Search public workspaces, or paste a link or code
-directory-link-or-code = Join with a link or code
-directory-close = Close
-directory-loading = Looking for public workspaces…
-directory-empty = No public workspaces here yet. Type a site like tilo.coffee and press Enter to see its workspaces.
-directory-no-match = Nothing matches “{ $query }”. Press Enter to look it up as a site.
 directory-failed = The directory could not be read: { $error }
 directory-join-failed = Couldn't join { $name }: { $error }
-directory-join = Join
-directory-open = Open
 directory-joining = Joining…
-directory-join-named = Join { $name }
-directory-open-named = Open { $name }
 directory-community-tag = { $host }'s own
-directory-try-again = Try again
 directory-already-joining = You're already joining { $name }. It opens as soon as it's ready.
 directory-join-failed-line = Didn't join: { $error }
 directory-here-now = { $count } here now

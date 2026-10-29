@@ -108,7 +108,6 @@ impl ShellOverlayHost {
     pub(super) fn append_modal_sheet_accessibility(&self, root: &mut AccessNode) {
         let mut sheets = Vec::new();
         let mut waiting = None;
-        sheets.extend(self.directory_sheet.accessibility());
         if self.file_picker_place().dialog_rect().is_some()
             && let Some(mut picker) = self
                 .file_picker_overlay
@@ -223,18 +222,6 @@ impl ShellOverlayHost {
                 self.portal_dialogs
                     .perform_accessibility_action(target, action),
             );
-        }
-        if crate::shell::directory_sheet::is_accessibility_target(target) {
-            let Some(outcome) = self
-                .directory_sheet
-                .perform_accessibility_action(target, action)
-            else {
-                return Some(false);
-            };
-            if let Some(request) = outcome.request {
-                self.run_directory_request(request);
-            }
-            return Some(outcome.consumed);
         }
         if let Some(encoded) = target.strip_prefix(FILE_PICKER_PREFIX) {
             let Ok(keys) = encoded

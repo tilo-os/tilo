@@ -93,8 +93,18 @@ impl ShellOverlayHost {
 
         // Owns the keyboard while up, so it must sit above the palette
         // that opened it.
+        let directory_outputs = self.layer_outputs();
         overlay_part(scene, "shell.directory", desktop, |scene| {
-            self.draw_directory_sheet(scene, transform, text_renderer, theme);
+            use super::layers::ShellLayer as _;
+            self.layers.directory.draw(&mut LayerPaint {
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                geometry: self.layer_geometry(&directory_outputs),
+                thumbnails: &mut self.window_previews,
+            });
             None
         });
 

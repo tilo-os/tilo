@@ -266,6 +266,7 @@ mod palette_run;
 mod palette_search;
 mod people_overlay;
 use palette_search::LaunchpadMark;
+mod directory_sheet_app;
 mod display_confirm_sheet;
 mod nested_shortcuts;
 mod peer_sync;

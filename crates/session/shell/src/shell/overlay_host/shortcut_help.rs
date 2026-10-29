@@ -123,7 +123,7 @@ impl ShellOverlayHost {
             || self.workspace_settings_overlay.member_sheet_is_open()
             || self.file_picker_overlay.widget().is_some()
             || self.peer_sync_overlay.visible()
-            || self.directory_sheet.visible()
+            || self.directory_sheet.is_open()
             || self.portal_dialogs.view().is_some()
     }
 }

@@ -27,6 +27,7 @@ impl ShellOverlayHost {
                 // Stacked and published above, or an app that publishes its
                 // own tree as a child of the host.
                 LayerId::ShortcutHelp
+                | LayerId::Directory
                 | LayerId::DisplayConfirmation
                 | LayerId::WindowSwitcher
                 | LayerId::EmojiPicker
@@ -414,6 +415,7 @@ impl ShellOverlayHost {
             LayerId::NowPlaying => self.now_playing_accessibility_rect(child_path),
             LayerId::MemberSheet
             | LayerId::ShortcutHelp
+            | LayerId::Directory
             | LayerId::DisplayLayouts
             // Stacked; answered above.
             | LayerId::DisplayConfirmation
@@ -455,6 +457,7 @@ impl ShellOverlayHost {
             LayerId::Overview => self.focus_overview_accessibility(child_path),
             LayerId::MemberSheet
             | LayerId::ShortcutHelp
+            | LayerId::Directory
             | LayerId::DisplayLayouts
             // Stacked; answered above.
             | LayerId::DisplayConfirmation

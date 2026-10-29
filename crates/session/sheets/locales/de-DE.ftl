@@ -62,3 +62,19 @@ guide-touch-next-workspace = Nächster Arbeitsbereich
 guide-touch-open-overview = Übersicht öffnen
 guide-touch-close-overview = Übersicht schließen
 guide-reset = Auf Standard zurücksetzen
+
+## Public workspaces
+
+directory-title = Einem Arbeitsbereich beitreten
+directory-search = Öffentliche Arbeitsbereiche suchen oder Link oder Code einfügen
+directory-link-or-code = Mit Link oder Code beitreten
+directory-loading = Öffentliche Arbeitsbereiche werden gesucht…
+directory-empty = Hier gibt es noch keine öffentlichen Arbeitsbereiche. Gib eine Website wie tilo.coffee ein und drücke die Eingabetaste, um ihre Arbeitsbereiche zu sehen.
+directory-no-match = Nichts passt zu „{ $query }“. Drücke die Eingabetaste, um es als Website nachzuschlagen.
+directory-failed = Das Verzeichnis konnte nicht gelesen werden: { $error }
+directory-join = Beitreten
+directory-open = Öffnen
+directory-joining = Wird beigetreten…
+directory-join-named = { $name } beitreten
+directory-open-named = { $name } öffnen
+directory-try-again = Erneut versuchen

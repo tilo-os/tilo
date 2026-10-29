@@ -73,7 +73,7 @@ impl ShellOverlayHost {
                 fullscreen_hint: self.fullscreen_hint_fading(now),
                 window_previews: self.window_previews.changed(),
                 peer_sync: self.peer_sync_overlay.needs_animation_frame(),
-                directory_sheet: self.directory_sheet.needs_animation_frame(),
+                directory_sheet: self.layers.directory.is_animating(now),
                 feedback_picker: self.feedback_picker.needs_animation_frame(now),
                 control_hints: self.control_hints_animating(now),
             },
@@ -586,6 +586,7 @@ impl ShellOverlayHost {
             // workspace.
             LayerId::CommandPalette => self.palette_visible,
             LayerId::MemberSheet => self.workspace_settings_overlay.member_sheet_is_open(),
+            LayerId::Directory => self.directory_sheet.is_open(),
             LayerId::Overview => flags.overview,
             LayerId::WorkspaceSettings => flags.ws_settings,
             LayerId::Collaborators => flags.collaborators,

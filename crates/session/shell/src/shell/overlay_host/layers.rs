@@ -66,6 +66,8 @@ pub(crate) enum LayerId {
     PowerMenu,
     CommandPalette,
     MemberSheet,
+    /// "Join a workspace…", an app ([`tilo_sheets::directory`]).
+    Directory,
     Overview,
     WorkspaceSettings,
     Collaborators,
@@ -76,7 +78,7 @@ pub(crate) enum LayerId {
 }
 
 impl LayerId {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::DisplayConfirmation,
         Self::WindowSwitcher,
         Self::Dictation,
@@ -86,6 +88,7 @@ impl LayerId {
         Self::PowerMenu,
         Self::CommandPalette,
         Self::MemberSheet,
+        Self::Directory,
         Self::Overview,
         Self::WorkspaceSettings,
         Self::Collaborators,
@@ -99,7 +102,7 @@ impl LayerId {
     pub(crate) const fn is_app(self) -> bool {
         matches!(
             self,
-            Self::PowerMenu | Self::DisplayConfirmation | Self::ShortcutHelp
+            Self::PowerMenu | Self::DisplayConfirmation | Self::ShortcutHelp | Self::Directory
         )
     }
 
@@ -146,6 +149,7 @@ impl LayerId {
             Self::DisplayLayouts
             | Self::WorkspaceSettings
             | Self::MemberSheet
+            | Self::Directory
             | Self::ShortcutHelp => Surface::shell(
                 Role::Dialog,
                 Anchor::Center,
@@ -614,6 +618,8 @@ pub(crate) struct OverlayStack {
     pub(crate) display_confirm: SheetHost<tilo_sheets::display_confirm::ConfirmSeat>,
     /// The transaction that question waits on.
     pub(crate) display_question: DisplayQuestion,
+    /// "Join a workspace…", an app the host routes itself.
+    pub(crate) directory: SheetHost<tilo_sheets::directory::DirectorySeat>,
     /// The shortcut guide, an app ([`tilo_sheets::shortcut_guide`]). The
     /// host routes it itself: a chord the guide waits for is the shell's.
     pub(crate) shortcut_guide: SheetHost<tilo_sheets::shortcut_guide::GuideSeat>,
