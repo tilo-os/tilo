@@ -867,20 +867,52 @@ fn node_with<'a>(tree: &'a patch::Node, name: &str, value: &str) -> Option<&'a p
         .find_map(|child| node_with(child, name, value))
 }
 
-/// How often the instance built its surface to publish it.
-fn publications(phases: &[tilo_resource::profiling::Sample]) -> usize {
+/// How often the phase `name` ran.
+fn calls(phases: &[tilo_resource::profiling::Sample], name: &str) -> usize {
     phases
         .iter()
-        .find(|phase| phase.phase == "tl.host.publish")
+        .find(|phase| phase.phase == name)
         .map_or(0, |phase| phase.calls)
 }
 
-/// A notebook of `held` notes, the first of them open in the window as the person made it; how
-/// often the instance built its surface while the person typed `typed` into the open note's
-/// field whose placeholder is `field`, a key at a time, each followed by the host's frames until
-/// it is quiet, as its loop runs them; and the resource labels it publishes then.
-fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
-    let (mut host, mut window, sent, inbox, _route) = running_app("ada", NOTES, notes());
+/// What the instance did while the person typed into a note, and what it publishes then.
+struct Typed {
+    /// How often it built its whole surface to publish it.
+    built: usize,
+    /// How often it published only the labels that moved.
+    relabeled: usize,
+    /// The resource labels it publishes, as it holds them.
+    labels: Vec<String>,
+    /// The resource labels the broker holds, from every delta the instance sent it.
+    broker: Vec<String>,
+    /// The resource labels the instance's directory finds for what was typed, asked after.
+    found: Vec<String>,
+}
+
+/// The resource labels of the surface the broker holds once it applied every delta the
+/// instance sent.
+fn broker_labels(sent: &Sent) -> Vec<String> {
+    let mut table = collaboration::SurfaceTable::default();
+    for request in sent.borrow().iter() {
+        if let CollabRequest::PublishActionSurface { delta, .. } = request {
+            table.apply(delta).expect("the broker takes every delta");
+        }
+    }
+    table
+        .actions()
+        .into_iter()
+        .map(|action| action.resource_label)
+        .collect()
+}
+
+/// A notebook of `held` notes, the first of them open in the window as the person made it; what
+/// the instance did while the person typed `typed` into the open note's field whose placeholder
+/// is `field`, a key at a time, each followed by the host's frames until it is quiet, as its loop
+/// runs them.
+fn typing(held: usize, field: &str, typed: &str) -> Typed {
+    let directory = Rc::new(RefCell::new(Directory::default()));
+    let (mut host, mut window, sent, inbox, _route) =
+        running_with("ada", NOTES, notes(), Rc::clone(&directory));
     settle(&mut host, &mut window);
     // The person starts a note from the empty notebook: it opens beside the list.
     let button = node_with(window.root.as_ref().unwrap(), "label", "New note")
@@ -924,7 +956,7 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
     .clone();
     let target = window.detail_target.clone().expect("the note is open");
     let documents = documents_sent(&sent);
-    let mut built = 0;
+    let (mut built, mut relabeled) = (0, 0);
     let mut shown = String::new();
     for (seq, key) in typed.chars().enumerate() {
         let ((), phases) = tilo_resource::profiling::observe(|| {
@@ -940,7 +972,8 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
             settle(&mut host, &mut window);
         });
         shown.push(key);
-        built = publications(&phases).saturating_add(built);
+        built = calls(&phases, "tl.host.publish").saturating_add(built);
+        relabeled = calls(&phases, "tl.host.relabel").saturating_add(relabeled);
     }
     assert!(
         documents_sent(&sent) > documents,
@@ -954,34 +987,76 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
         .iter()
         .map(|action| action.resource_label.clone())
         .collect();
-    (built, labels)
+    let found = page(
+        &mut host,
+        &mut window,
+        &directory,
+        ActionDirectoryQuery {
+            needle: typed.to_owned(),
+            ..query()
+        },
+    )
+    .rows
+    .into_iter()
+    .map(|row| row.resource_label)
+    .collect();
+    Typed {
+        built,
+        relabeled,
+        labels,
+        broker: broker_labels(&sent),
+        found,
+    }
 }
 
 #[test]
 fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook() {
     // A note's body is read by no label: typing it publishes nothing, with one note or with
     // two hundred, rather than the whole notebook's surface on every frame.
-    let (one, _) = typing(1, "Write something", "draft");
-    let (many, _) = typing(200, "Write something", "draft");
-    assert_eq!(
-        one, 0,
-        "typing a body built the surface {one} times with one note"
-    );
-    assert_eq!(
-        many, 0,
-        "typing a body built the surface {many} times with 200 notes"
-    );
-    // A note's title is its label: each key that changes it publishes it, once. Typed at
-    // the start of the title the note was made with.
-    let (titled, labels) = typing(3, "Title", "abc");
-    assert!(
-        (1..=3).contains(&titled),
-        "typing a title built the surface {titled} times for 3 keys"
-    );
-    assert!(
-        labels.iter().any(|label| label == "abcUntitled"),
-        "the published surface names the note by its new title: {labels:?}"
-    );
+    for held in [1, 200] {
+        let body = typing(held, "Write something", "draft");
+        assert_eq!(
+            (body.built, body.relabeled),
+            (0, 0),
+            "typing a body published the surface (whole, labels) with {held} notes"
+        );
+    }
+    // A note's title is its label: each key publishes that label alone, the same work with one
+    // note as with two hundred, and never the whole surface. Typed at the start of the title
+    // the note was made with.
+    for held in [1, 200] {
+        let title = typing(held, "Title", "abc");
+        assert_eq!(
+            title.built, 0,
+            "typing a title built the whole surface with {held} notes"
+        );
+        assert_eq!(
+            title.relabeled, 3,
+            "typing a title published its label {} times for 3 keys with {held} notes",
+            title.relabeled
+        );
+        assert!(
+            title.labels.iter().any(|label| label == "abcUntitled"),
+            "the instance names the note by its new title with {held} notes: {:?}",
+            title.labels
+        );
+        assert!(
+            title.broker.iter().any(|label| label == "abcUntitled"),
+            "the broker's copy names the note by its new title with {held} notes"
+        );
+        assert!(
+            title.found.iter().any(|label| label == "abcUntitled"),
+            "the instance's directory finds the note by its new title with {held} notes: {:?}",
+            title.found
+        );
+        assert!(
+            !title
+                .broker
+                .iter()
+                .any(|label| label == "aUntitled" || label == "abUntitled"),
+            "the broker's copy still names the note by an earlier title with {held} notes"
+        );
+    }
 }
 
 /// The title of the note `target` names, as the instance's runtime reads it.
