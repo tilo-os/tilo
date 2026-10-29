@@ -232,14 +232,12 @@ newer `PROFILE_RELEASE`) or whose kill switch they turned off.
   packet too large answered with "fragmentation needed".
 - Two network namespaces through real TUN devices set up by the helper's
   Linux backend (`tests/netns_tunnel.rs`), skipped without `/dev/net/tun`,
-  `ip`, `nft` and user namespaces unless `TILO_REQUIRE_TUN=1`; t's
-  `device-vpn-namespaces` check provides them.
+  `ip`, `nft` and user namespaces unless `TILO_REQUIRE_TUN=1`.
 - The controller's kill switch and refusal handling (`controller.rs`).
 - The profile kill switch: the decisions (`profile.rs`), the nftables script
   (`service/plan.rs`), and the helper holding, replacing, lifting and
   refusing blocks (`service/tests.rs`); in a user and network namespace on
-  the Linux backend (`tests/netns_profile_block.rs`, in
-  `device-vpn-namespaces`), the block coming and going with the profile's
+  the Linux backend (`tests/netns_profile_block.rs`), the block coming and going with the profile's
   state as checked by real sends, a caller other than the seat's shell
   refused through the real socket server, a block left by a helper that
   aborted kept by the next one (also once the owner's session is gone)

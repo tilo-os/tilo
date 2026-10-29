@@ -189,12 +189,12 @@ record and public identity are documented in the infra repository at
 `operations/local-model-release-20261005/README.md`. It is independent of the
 development, registry, OS, and runtime signing keys.
 
-Run `t dispatch publish-model-catalog --ref stable` to reproduce and publish the
-reviewed catalog (`tools/release/local-model-catalog.sh`). The compiler check,
-`model-catalog-compiler`, receives no model signing key. `sign-model-catalog`
+`tools/release/local-model-catalog.sh` reproduces and publishes the reviewed
+catalog from `stable`, in separate steps. Its `compiler` step receives no model
+signing key. `sign`
 fetches the public weights and license, checks their pinned receipts, signs with
 `TILO_MODEL_CATALOG_SIGNING_KEY` and compares both outputs with the checked-in
-image inputs; `publish-model-catalog` uploads them and verifies anonymous
+image inputs; `publish` uploads them and verifies anonymous
 downloads after publication.
 It never changes the catalog carried by an already-installed OS; normal image
 releases deliver that trust and catalog update.
@@ -309,21 +309,21 @@ a person adds from Hugging Face or a file allows every kind, and the signed
 runtime that serves its format on this machine's architecture and hardware
 runs it.
 
-Releases: `t dispatch review-model-catalog --ref stable` signs the source with
+Releases: `tools/release/local-model-catalog.sh review` on `stable` signs the source with
 those runtimes for review; its `source.json` and `catalog.json` are checked in
-as `dist/local-models/catalog-source.json` and the image's catalog. `t
-dispatch publish-model-catalog --ref stable` then signs it again (it must
-reproduce the checked-in bytes) and uploads the runtime archives and the
+as `dist/local-models/catalog-source.json` and the image's catalog. Its `sign`
+and `publish` steps then sign it again (it must
+reproduce the checked-in bytes) and upload the runtime archives and the
 catalog to their immutable package URLs. A release image carries that
 catalog.
 
 Dev images get the runtimes from main without a release.
-`model-catalog-dev-<arch>` signs the same source with the runtimes its tree
-builds for that architecture and a throwaway key, and `os-dev-image-<arch>`
+`tools/release/local-model-catalog.sh dev <arch>` signs the same source with the runtimes its tree
+builds for that architecture and a throwaway key, and `os/dev/build-dev-image.sh`
 puts that catalog and its key in place of the release's: the development key
 that signs the dev image vouches for both, as it does for the dev image's
-env-runtime. Main uploads each runtime's archive to its immutable package URL
-with the dev package token (`publish-model-runtime-<id>`) when t has room; a
+env-runtime. `local-model-catalog.sh publish-runtime <id>` uploads each runtime's archive to its
+immutable package URL with the dev package token from main; a
 dev image is not held back for it, so after a runtime changes, installing it
 on a dev device fails to download until main has published it. The builds are
 reproducible to the byte (archives are written in name order without times or

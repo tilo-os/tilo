@@ -45,8 +45,6 @@ order:
 
 **Goal: getting out of a job takes a kernel escape, not a misconfiguration.**
 Escaping must give an attacker nothing worth more than the job already had.
-Secrets never rest on job nodes, as described under
-[Secrets and publishing](#secrets-and-publishing).
 
 Out of scope: side channels between jobs on one node (cache timing, Rowhammer),
 and denial of service through kernel locks that no cgroup accounts.
@@ -54,7 +52,7 @@ and denial of service through kernel locks that no cgroup accounts.
 ## The process tree
 
 ```text
-worker (t / ush)                       caller's namespaces, its own cgroup leaf
+worker (ush)                           caller's namespaces, its own cgroup leaf
  └─ job init (pid 1)                   clone3 → new user, mount, pid, net, ipc, uts, cgroup ns,
      │                                 born inside the job's cgroup (CLONE_INTO_CGROUP),
      │                                 then execve of the worker's program as `tilo-job-init`
@@ -83,8 +81,8 @@ reads its plan from a memory file: every path, argument, mount, Landlock rule
 and the seccomp program, prepared by the worker. In order, the init:
 
 1. Waits on a pipe until the worker has written its `uid_map`/`gid_map` and run
-   the caller's setup hook. t's hook attaches pasta to the job's network
-   namespace and installs its nftables. If the worker closes the pipe instead,
+   the caller's setup hook, which may attach pasta to the job's network
+   namespace and install its nftables. If the worker closes the pipe instead,
    the init exits.
 2. Makes `/` private (`MS_REC|MS_PRIVATE`), then builds the new root on a
    tmpfs. The root is either an image's unpacked root filesystem, bound
@@ -171,7 +169,7 @@ root's files (a dynamic loader, a setuid helper) still trusts them for a job tha
 runs as uid 1000. A job whose uid has no entry in the root's `/etc/passwd` (a
 nested job in an image that knows only root) gets one, `job` at home in `/tmp`
 with root's shell, and a group entry likewise: the root's files with the line
-added, bound read-only over them. t hands the blocks out
+added, bound read-only over them. The caller hands the blocks out
 from `0x70000000` up and falls back to the shared uid, loudly, where a trial job
 shows it can't.
 
@@ -180,8 +178,8 @@ shows it can't.
 | Path | Mount | Landlock |
 |---|---|---|
 | `/` | image root or tmpfs with `/usr`, `/etc` read-only | read, execute |
-| workspace (`/src` in t) | bind, read-only or read-write per check | full rights when read-write |
-| target (`/target` in t) | bind, read-write: the warm build directory | full rights |
+| workspace | bind, read-only or read-write per check | full rights when read-write |
+| target | bind, read-write: the warm build directory | full rights |
 | `/tmp` | bind of the job's scratch directory (on disk: builds write gigabytes there) | full rights |
 | `/dev` | tmpfs with bound device nodes | full rights (`IOCTL_DEV` included, for ttys) |
 | `/proc` | new procfs of the job's PID namespace | read |
@@ -240,8 +238,8 @@ over its own network namespace, so `socket(AF_NETLINK, …)` with
 `NETLINK_ROUTE` stays allowed, because bubblewrap brings up `lo` with it.
 `setns`, `bpf`, io_uring, the keyrings, `userfaultfd`, `perf_event_open`,
 kexec and modules stay refused too. Such a job runs without Landlock, which
-refuses every mount to a process it confines. t selects the profile per check
-with `nested_sandboxes`. Such a job is uid 1000 (`NESTING_ID`) inside, not
+refuses every mount to a process it confines. The caller selects the profile per job.
+Such a job is uid 1000 (`NESTING_ID`) inside, not
 root: its root would hold no capability, and since Linux 5.12 mapping the
 parent namespace's uid 0 into a new user namespace (`unshare
 --map-root-user`, bubblewrap) takes `CAP_SETFCAP`, so writing `uid_map` fails
@@ -282,7 +280,7 @@ must never happen. Capping `jobs/` below the pod limit makes the kernel choose
 an OOM victim among the jobs instead. `memory.min` on `worker/` keeps the worker
 from being reclaimed into a stall.
 
-A job's `memory.max` may be above what the scheduler reserved for it: t gives
+A job's `memory.max` may be above what the scheduler reserved for it: a caller can give
 each job twice its reservation, at least 2 GiB more, so a build that briefly
 needs more than it usually does gets it from what other jobs leave unused,
 instead of failing. The budget therefore bounds reservations, not limits. The
@@ -336,7 +334,7 @@ starts:
 
 The grant grammar both modes share used to live in `collab-types`, which pulls
 in Tilo's identity and wire types. It now has a crate of its own,
-`tilo-net-grants`, that `collab-types` re-exports. t can depend on egress
+`tilo-net-grants`, that `collab-types` re-exports. A caller can depend on egress
 without the collaboration stack.
 
 ### Micro-VM steps
@@ -353,8 +351,8 @@ machine is an ordinary job. `job::vm` builds it:
   triple fault resets it, which ends QEMU), `virt` on arm64; virtio-mmio
   devices only. The guest gets the step's cores and memory, and its own
   `/dev/kvm` (nested virtualisation) only when the step asks for KVM.
-- **Guest**: a kernel and a static busybox, pinned by digest (t builds them
-  reproducibly as a check's outputs, from the Kata guest kernel's
+- **Guest**: a kernel and a static busybox, pinned by digest (built
+  reproducibly from the Kata guest kernel's
   configuration with the RAID6 benchmark off, which alone halved boot). Per step, `prepare` writes an
   initramfs with busybox, `vm/init.sh` and a generated job file.
 - **Inputs over virtio-fs**: every input, the root included, is a directory
@@ -436,19 +434,6 @@ a directory. It never runs anything the caller names. Reservations a caller
 sets are capped by its pod's budget, and every job sits under its pod's
 `jobs/`, so a compromised worker gains no more than its pod already had.
 
-## Node pools
-
-| Pool | Runs | Seccomp | Notes |
-|---|---|---|---|
-| **workers** | untrusted and trusted checks of `main`, branches, working copies, micro-VM steps included | CI | many jobs per node, warm build directories |
-| **release** | jobs of trusted runs of `stable` and tags, which may receive secrets and identity tokens | CI | same sandbox, nodes that take nothing else |
-
-Release nodes use the same sandbox as everyone else. What separates them is
-scheduling: they take only jobs of trusted runs on `stable` and release tags, so
-no untrusted code ever shares their kernel, and an escape from a release job
-finds only other release jobs. A VM per release job buys little on top of that.
-It costs the warm build directory and a second or more per job.
-
 ### Worker pods
 
 Today's workers are privileged pods without a cgroup namespace. They can write
@@ -480,45 +465,6 @@ The infrastructure changes this needs, none of which the library makes:
    worker's own, so the pod limit never fires before a job's.
 5. `kernel.io_uring_disabled=2` on worker nodes, so io_uring is closed even to
    a process that slips past the filter.
-6. Release and privileged pools as separate node groups (taints and labels),
-   and the worker pods of each pool started with their labels.
-
-## Secrets and publishing
-
-- No secret rests on a job node. Stored secrets live in the server's encrypted
-  configuration. The server hands a job's secrets to that job's lease only,
-  while it runs; nothing is written to the node's disk.
-- Publishing uses t's short-lived OpenID Connect tokens: a job of a trusted run
-  asks the server for a token per audience, valid for minutes and for one
-  repository, reference and commit. The registry and the cloud exchange it for
-  narrowly scoped credentials. There is nothing long-lived on a node to steal.
-- Release jobs run in this sandbox, on nodes that take only `stable` and tag
-  jobs.
-
-## How t uses it
-
-t's worker builds a `JobSpec` from a check:
-
-- **root**: the check's image (unpacked once per node, read-only)
-- **mounts**: sources at `/src` (read-only, read-write or an overlay), the
-  workspace's build directory at `/target`, shared caches, the jobserver FIFO
-  at `/run/t-jobserver`, the job's scratch directory at `/tmp`
-- **environment**: exactly what the project and check declare, plus `PATH`,
-  `HOME=/tmp`, `CARGO_TARGET_DIR`, `CARGO_MAKEFLAGS`
-- **network**: `Loopback`, or `PublicInternet` through pasta, with the cluster's
-  ranges denied
-- **limits**: from the check's size: `memory.max`, `cpu.weight`, `pids.max`,
-  `io.max`
-- **seccomp**: CI, or nested for checks that start sandboxes of their own
-- **micro-VM steps** (`vm = true`, or `privileged = true`): the check's image
-  as the guest's root disk, made once per image and node; its sources, and the
-  outputs of the checks it needs, as a read-only disk per step, copy-on-write
-  in the guest; its outputs back through the output disk
-
-t selects the runner with `sandbox = "job"` in the worker's configuration, with
-`"bwrap"` (the previous runner) as the fallback. A worker that can't create the
-namespaces logs why at startup and uses bwrap, as do nodes that run checks
-without an image.
 
 ## How ush uses it
 
@@ -546,7 +492,6 @@ be `setrlimit` only. On other platforms `spawn` returns `Unsupported` today.
 | a job | the worker's environment or memory | a kernel bug: pid 1 is non-dumpable, its environment zeroed, the job holds no capability |
 | a worker (today, privileged) | the node | nothing more: closing this is the `hostUsers: false` + broker step |
 | a worker (target) | the node | a second kernel bug |
-| a release job | secrets of other runs | nothing on the node: secrets are per lease and in memory; identity tokens expire in minutes |
 
 ## Tests
 
@@ -554,7 +499,7 @@ be `setrlimit` only. On other platforms `spawn` returns `Unsupported` today.
 user namespaces (or root) are available. Elsewhere every test prints why it
 skipped. Limits tests also need a delegated cgroup; quota tests need
 `JOB_SANDBOX_TEST_XFS` pointing at a directory on an XFS filesystem mounted with
-`prjquota`. Run them where the kernel can: through `t`, or in a throwaway pod.
+`prjquota`. Run them where the kernel can, for example in a throwaway pod.
 
 - isolation: a job can't see a neighbour's processes or files, can't reach a
   server on the host's loopback, and can read `/proc/<pid>/environ` only of

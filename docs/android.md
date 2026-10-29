@@ -305,7 +305,7 @@ Useful probes:
 - An AVD configured with a hardware keyboard never shows the soft keyboard,
   but `adb shell input text` still types into the focused field.
 
-Nothing in CI runs on a device. t's `android` check runs
-`cargo clippy -D warnings` on every app's `<app>-android` example for
+Nothing in CI runs on a device. The `android` job of `check.yml` runs
+`cargo clippy -D warnings` on every selected app's `<app>-android` example for
 `aarch64-linux-android` and `x86_64-linux-android` (tools/ci/clippy-android.sh);
 it is a type check, not an APK build.

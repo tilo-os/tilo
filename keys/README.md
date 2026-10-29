@@ -38,8 +38,8 @@
 | `operational/extension-manifests.crt` | no (tracked, **after the ceremony**) | The same for `extensions.pub` and the `extension-manifests` purpose. |
 | `tpm2-pcr-signing.private.pem` | **YES** (git-excluded) | Development-only PCR-prediction key for local experiments. It does not match the tracked public key; production signs with AWS KMS. |
 | `tpm2-pcr-signing.public.pem` | no (tracked) | PCR-prediction **public** key of AWS KMS `alias/tilo-pcr-prediction` (RSA-2048). Baked into the image and initramfs; release CI verifies every PCR 11 prediction and target-UKI signature against it. |
-| `cosign-dev.pub` | no (tracked) | Development-signing **public** key of AWS KMS `alias/tilo-dev-signing` (ECDSA P-256). Development candidates (`dev_signed` products in `tools/ci/products.toml`, and per-ref dev images from branches) carry its signature; only t's checks on tilo/tilo branches can sign with it (role `TiloTDevSigner`), and nothing that verifies a release accepts it. |
-| `extensions.pub` | no (tracked) | Public key of the **operational extension-manifest key**, AWS KMS `alias/tilo-extension-manifests` (ECDSA P-256). Installed as `/usr/share/tilo/extensions.pub`; images without the release root accept a downloaded system extension's manifest only with a signature from this key, never from the OS key. Only t's `publish-extension-manifests` check on main can sign (role `TiloTExtensionManifestSigner`, identity-token audience `tilo-extension-manifests`). |
+| `cosign-dev.pub` | no (tracked) | Development-signing **public** key of AWS KMS `alias/tilo-dev-signing` (ECDSA P-256). Development candidates (dev images, and per-ref dev images from branches) carry its signature; only CI on tilo/tilo branches can sign with it (role `TiloTDevSigner`), and nothing that verifies a release accepts it. |
+| `extensions.pub` | no (tracked) | Public key of the **operational extension-manifest key**, AWS KMS `alias/tilo-extension-manifests` (ECDSA P-256). Installed as `/usr/share/tilo/extensions.pub`; images without the release root accept a downloaded system extension's manifest only with a signature from this key, never from the OS key. Only `tools/ci/publish/extension-manifests.sh publish` on main can sign (role `TiloTExtensionManifestSigner`, OIDC audience `tilo-extension-manifests`). |
 | `efi-signing.crt` | no (tracked) | Tilo release EFI certificate (RSA-2048, code signing), self-signed through AWS KMS `alias/tilo-efi-signing`. Release UKIs carry its Authenticode signature; owners enroll it in firmware `db`. DER SHA-256 `6ce12ddcd6da3a8b678868f3979a61834f7ee1402a49773485748d4442eb0496` (`TILO_EFI_SIGNING_CERT_SHA256`). |
 
 ## The release trust model
@@ -110,8 +110,8 @@ public anyway (images, their digests, the operational certificates).
 ## Owner steps
 
 Commands below run from a checkout of this repository unless a step says
-*offline*. Each step's outcome is a commit pushed to `main`; t enforces the
-rest: its `release-trust` check (and `release-trust-expiry`, daily) fails for a
+*offline*. Each step's outcome is a commit pushed to `main`;
+`python3 tools/signing/release_trust.py check-committed` checks the rest: it fails for a
 committed certificate that does not certify the KMS key's public half, has
 under `TILO_RELEASE_OPERATIONAL_MIN_REMAINING_DAYS` (14) days left, or does not
 chain to the root, and every certified signature is verified through the
@@ -209,8 +209,8 @@ images verify `cosign.pub` itself and would refuse the new key.
    Save its public key: `cosign public-key --key awskms:///<key ARN> > new.pub`.
 2. *Offline*, issue its certificate (`issue ... --public-key new.pub`).
 3. In one commit: the certificate in `keys/operational/`, `new.pub` as
-   `keys/cosign.pub` (or `keys/extensions.pub`), and the key reference in
-   `tools/ci/products.toml` (`signing_env`, or the extension check's `env`).
+   `keys/cosign.pub` (or `keys/extensions.pub`); then point the `COSIGN_KEY_REF` secret of
+   the jobs that sign with it at the new key.
 4. CI's own checks pin `keys/cosign.pub`, so artifacts still pinned under the
    old key (`os/kernel-snapshot.env`, `os/kernel-buildroot-snapshot.env`,
    `os/legacy-guest-snapshot.env`, the RPM and env-runtime snapshots) must be
@@ -280,10 +280,10 @@ The file-based keys are a development-only compatibility path, git-excluded and
 `us-east-1`) for all release identities: `alias/tilo-release-signing`
 (Cosign, the `os-images` operational key), `alias/tilo-extension-manifests`
 (the `extension-manifests` operational key), `alias/tilo-pcr-prediction`
-(PCR/floor authority) and `alias/tilo-efi-signing` (EFI). `tools/ci/products.toml`
-names only key references, t's signing checks receive short-lived OIDC workload
-credentials for their roles (`TiloTReleaseSigner`, `TiloTExtensionManifestSigner`),
-and no private key can be exported. The EFI and PCR
+(PCR/floor authority) and `alias/tilo-efi-signing` (EFI). CI holds only key references
+(`COSIGN_KEY_REF`); signing jobs receive short-lived OIDC workload credentials for their
+roles (`AWS_SIGNING_ROLE_ARN`: `TiloTReleaseSigner`, `TiloTExtensionManifestSigner`), and no
+private key can be exported. The EFI and PCR
 operations run through the root-owned signer baked into the native runner image
 (`TILO_PCR_PREDICTION_SIGNER`). The release root is offline and held by the
 owner.

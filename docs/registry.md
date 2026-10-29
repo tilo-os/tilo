@@ -362,9 +362,7 @@ registry.tilo.so/tilo/tilo-registry-server@sha256:<digest>
 
 It runs as UID/GID 65532 and supports a read-only root filesystem. Mount the
 state directory read-write, mount `/tmp` as a small tmpfs, and probe
-`GET /health` on port 8443. On main, t's `publish-registry-server` check
-publishes only an immutable `sha-<full-source-revision>` tag and records the
-deployable digest in its `receipt.json`.
+`GET /health` on port 8443.
 
 Behind nginx / Caddy — see TLS below.
 

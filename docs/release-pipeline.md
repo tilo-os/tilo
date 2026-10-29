@@ -7,7 +7,7 @@ does not fan out into unrelated builds:
 |---|---|---|---|
 | Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned tapps and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package lanes; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
-| OS | A dispatch on `stable` or a `vX.Y.Z` tag (`t dispatch publish-os-release --ref stable`) | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
+| OS | `tools/ci/publish/os-release.sh` run on `stable` or a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
 | Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for stable releases | Six native host-package lanes; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
 
 Continuous app packaging runs on relevant `main` pushes. It selects affected
@@ -15,9 +15,7 @@ tapps, reuses unchanged members from the prior immutable collection, and advance
 the verified x86-64 channel only after publication succeeds. The packaging
 coordinator that would have dispatched qualification runs was never enabled and
 is gone; release-apps.yml keeps its guarded, disabled qualification path.
-[Publishing with t](publishing-on-t.md) lists what each publishing workflow still
-needs, including the Windows qualification.
-OS releases happen only when someone dispatches one on stable or a release tag;
+OS releases happen only when someone runs one on stable or a release tag;
 never per push.
 
 Kernel, base-image, RPM and kernel buildroot snapshots remain input-promotion
@@ -42,9 +40,8 @@ Pull requests use the cheapest lane that proves the affected boundary:
   distribution builds run weekly, on tags, or by explicit dispatch. Their
   sccache namespace is shared by architecture; compiler identity and native
   headers remain part of each cache key.
-- Full OS builds run on t when a check needs them (`os-image-<arch>`, keyed by
-  what each layer reads), on release candidates and when dispatched, not on
-  ordinary `main` pushes. Every OS image carries the Browser's Chromium engine
+- Full OS builds (`tools/ci/publish/os-image.sh`) do not run on ordinary
+  `main` pushes. Every OS image carries the Browser's Chromium engine
   runtime, built from the pinned CEF distribution in the image build.
 - Installer changes retain affected-package checks. Relevant protected `main`
   pushes also publish signed native Installer prereleases on all six existing
@@ -171,31 +168,26 @@ App collection or desktop payload publication does not release an OS version.
 
 ## OS releases
 
-An OS release is t's os-release chain (tools/ci/publish/os-release.sh, the `os` family of
-tools/ci/products.toml), dispatched on `stable` or a `vMAJOR.MINOR.PATCH` tag:
+An OS release is run on `stable` or a `vMAJOR.MINOR.PATCH` tag, one step of
+tools/ci/publish/os-release.sh at a time:
 
-```sh
-t dispatch publish-os-release --ref stable
-```
-
-- `os-release-image-<arch>` is the release image: the development image's layers
-  (os/image/layers.toml) with those marked `release` built again from a thin-LTO compile
-  (`os-compile-release-<arch>`) and with the registry owner's key (os/publication.env).
-- `os-release-seal-<arch>` checks the image inside, installs it, which seals its UKI with
-  the composefs digest the install computes, and boots it under KVM to the greeter. It also
-  runs on every release candidate (stable).
-- `sign-os-boot-<arch>` signs every UKI with the EFI key and the target's PCR 11
+- The release image (os/image/build-layer.sh with `TILO_OS_FLAVOUR=release`) is the
+  development image's layers (os/image/layers.toml) with those marked `release` built again
+  from a thin-LTO compile and with the registry owner's key (os/publication.env).
+- `seal` checks the image inside, installs it, which seals its UKI with
+  the composefs digest the install computes, and boots it under KVM to the greeter.
+- `sign-boot` signs every UKI with the EFI key and the target's PCR 11
   prediction for its generation with the PCR authority, both in KMS
   (tools/signing/boot-signer.sh), over what the seal left: no code of the image runs while
-  it holds the keys. `os-release-<arch>` verifies those signatures against the pinned
+  it holds the keys. `apply` verifies those signatures against the pinned
   keys, adds them under `/boot`, installs the image once more to prove the seal holds,
   and writes its SPDX SBOM and SLSA provenance.
-- `os-release-reproduce-<arch>` builds the release image again in one step, every action
-  from a compile without caches (`os-release-recompile-<arch>`), and must get the same
+- `reproduce` builds the release image again in one step, every action
+  from a compile without caches, and must get the same
   digest; a difference fails it with a report of where the images differ.
-- `sign-os-release` signs both images and their index (`os-release`) with the release
+- `sign` signs both images and their index (`index`) with the release
   key in KMS, and attests their provenance and a freshness statement valid for a day,
-  each with a transparency-log entry. `publish-os-release` publishes each image as
+  each with a transparency-log entry. `publish` publishes each image as
   `gen<N>-<arch>`, the index as `gen<N>`, on a final version tag as `<version>`, and last
   `latest`; a `gen<N>` already published is never moved.
 
@@ -206,28 +198,27 @@ The generation is the next one of the signed published series
 and answered "name unknown". A genuinely absent repository, a deleted or
 renamed one, and an unreadable one are otherwise the same answer, so the
 first publication is published from a tree whose generation was allocated
-that way on purpose with no signed series to read. `t test
-os-release-rehearsal-x86_64` runs the boot signing, signing and publishing of
-this tree with throwaway keys into an OCI layout, without credentials.
+that way on purpose with no signed series to read. `os-release.sh rehearse`
+runs the boot signing, signing and publishing of a sealed image with throwaway
+keys into an OCI layout, without credentials.
 
 ## Dev VM disks
 
-`publish-os-dev-<arch>` publishes main's dev image for one architecture, the dev channel, on
-main's newest head whenever t has room (and when dispatched: `t dispatch publish-os-dev-<arch>
---ref main`) once `os-dev-gate-<arch>` passed on it: the dev image (os/Containerfile.dev) on the
+`tools/ci/publish/os-dev-publish.sh image` publishes main's dev image for one architecture,
+the dev channel, once `tools/ci/publish/os-dev-gate.sh` passed on it: the dev image (os/Containerfile.dev) on the
 OS image of the same commit. The gate is what a dev device needs, checked on the path a device
 takes: the dev disk published last boots, stages the image with bootc and applies it live,
 restarts into it to a greeter that takes input with its boot assessment passed, and takes the
 next update live. A device falls back by itself from an image that does not boot, so the heavier
-`os-acceptance-<arch>` (devices, the desktop's journeys, the splash) gates stable releases and
-runs on main when t has room, without holding back the dev channel. It boots overlays of the
-disk `os-dev-disk-<arch>` installed (a 64 GiB sparse disk, `os/dev/build-image.sh`, never booted
-itself), which `publish-os-dev-disk-<arch>` publishes once it passed. The OS image goes to
+`tools/ci/publish/os-acceptance.sh` (devices, the desktop's journeys, the splash) gates stable
+releases without holding back the dev channel. It boots overlays of the disk
+`tools/ci/publish/os-dev-disk.sh` installed (a 64 GiB sparse disk, `os/dev/build-image.sh`,
+never booted itself), which `os-dev-publish.sh disk` publishes once it passed. The OS image goes to
 `registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>`, a development-only repository that
 production policy (`os/etc/containers/policy.json`) rejects, which
 `tools/policy/check_dev_image_contract.py` keeps so. Dev images are never
-signed with the OS release authority: `sign-dev-os-<arch>` signs each with the development key
-(`keys/cosign-dev.pub`, main only), which `publish-os-dev-<arch>` attaches.
+signed with the OS release authority: each is signed with the development key
+(`keys/cosign-dev.pub`, main only), which `os-dev-publish.sh` attaches.
 
 `os/dev/publish-dev-disk.sh` then writes, for one architecture:
 
@@ -298,8 +289,8 @@ To find the current tag, read the `org.opencontainers.image.version` label of
 
 ## Lenovo board successors
 
-A Lenovo board release (`publish-os-release-lenovo-83ed` on t, dispatched on stable or a
-release tag; the board images `os-board-<board>` are development images) publishes a separate
+A Lenovo board release (`os-release.sh sign-board` and `publish-board`, run on stable or a
+release tag; the board images `os-image.sh board` builds are development images) publishes a separate
 signed dense board series. Its fixed repository is `code.tilo.so/tilo/tilo`: each release retains
 both `lenovo-83ed-<source>`, the update origin its image names, and `lenovo-83ed-gen<N>`.
 `lenovo-83ed-latest` is a registry discovery hint, never permission to install an image. A

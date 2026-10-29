@@ -7,32 +7,6 @@ budget in `tools/perf/tapp-size-budget/budget.toml`, set at its measured size
 plus 1 % headroom, rounded up to 64 KiB. `tools/perf/tapp_size_ratchet.py`
 enforces the budgets in these places:
 
-- **One app's size, before a change lands** (`app-size/<app>-<arch>` in t, for example
-  `t test app-size/notes-aarch64`): compiles that app in the default collection's graph as a
-  release does, packages it with throwaway keys (`tools/apps/t-release.sh app-size`) and holds
-  its tapp to its budget. What every app's check builds alike, the shared runtime, its engines
-  and the packing tools, `thin-runtime-<arch>` builds once (`tools/apps/t-release.sh
-  thin-runtime`): each `app-size` check needs it, receives its build directory and compiles only
-  its app on it. Its key is what the app is built from: its own crate and the local crates it
-  reaches, the manifests and lockfile Cargo resolves the collection's graph from, the packaging
-  scripts, and the key of `thin-runtime-<arch>` (the runtime, its engines and the packing
-  tools; the tapp names the signed runtime bundle, which covers them). A change elsewhere,
-  another app's code included, leaves its result standing. `runtime-size-<arch>` does the same for the shared
-  runtime (docs/measurements/runtime-size.md). The push gate runs the aarch64 one of each app whose
-  files a commit changes, when t has the commit's shared runtime built; every main push that
-  changes the runtime builds it (`thin-runtime-aarch64` runs on `main`, and `idle`; the x86_64 one
-  only on `idle`, as only checks named for x86_64 use it). A commit that changes what the runtime is
-  built from, or more than three apps, skips it and says so; run the ones you need before you
-  push. `tools/ci/t_toml.py` generates one per app of the default collection, so a new app has
-  its own.
-- **The whole collection** (`app-sizes-x86_64`, `app-sizes-aarch64` in t) compiles the
-  default collection as a release does, packages it with throwaway keys
-  (`tools/apps/t-release.sh sizes`) and holds every tapp and the runtime to its budget. It runs
-  on each new head of `stable`, when dispatched (`t dispatch app-sizes-x86_64 --ref main`), and
-  on `main`'s newest head whenever t has room left (`idle`). There a failure is on `t main`, and
-  t bisects it to the commit that took an app over its budget and tells that commit's session,
-  before an image build packs the app. It does not run on every push to `main`: each run builds
-  the whole collection.
 - **Release / apps** (`Shipped tapps within their size budget`) measures each
   tapp it has just packaged and signed, which is the affected apps only. It
   fails when an app is over its budget or has none, so nothing is published.
@@ -42,13 +16,13 @@ enforces the budgets in these places:
   (`tools/apps/check-reproducible-tapp.sh`, the second time compiled again
   past the compiler cache) and fails on any byte that differs: an app whose
   package changes without its source re-sends itself in every OS update.
-- **t's `perf-footprint` check** (nightly) holds every published app to
+- **`tools/ci/perf-scheduled.sh footprint`** holds every published app to
   its budget. It also holds the apps' median, p90 and max to the fleet
   ceilings: the KPI targets, or an interim ceiling where the fleet does not
   meet a target yet. The budgets are those of the commit the newest release
   was built from, since the registry serves that release until the next one
-  publishes; `app-sizes-<arch>` holds a candidate's apps to its own budgets.
-- **t's `changes` check** runs `check-budget`, a text check. A budget or ceiling
+  publishes.
+- **`lint.yml`** runs `check-budget`, a text check. A budget or ceiling
   may only grow by what a raise file new in the same change adds. The budgeted
   apps must be exactly the default collection, so an app added to `apps/`
   brings its budget. A new app may start at the 6 MB max target until it is
@@ -78,7 +52,7 @@ list, and the registry holds every application to the 8 MB ceiling.
 The population is the default collection's apps. The runtime package is the
 runtime's own KPI. The runtime and provider stubs are not apps, and apps the
 registry still lists but this repository no longer builds are not counted. The
-nightly names every package it leaves out.
+footprint run names every package it leaves out.
 
 To raise a budget for an intended growth, add one file per change. Never edit
 the base numbers upward:
@@ -86,7 +60,7 @@ the base numbers upward:
 ```toml
 # tools/perf/tapp-size-budget/raises/<change>.toml
 reason = "the toolkit gained guarded OS dictation"  # at least 20 characters
-run = 90210                  # the run that measured the growth (or a t run: "r5260902b38")
+run = 90210                  # the run that measured the growth
 
 [apps."so.tilo.settings"]    # bytes added to each app's budget
 x86_64 = 65536
@@ -105,10 +79,8 @@ or removed once its target holds. To re-seed the budgets from the registry,
 run `python3 tools/perf/tapp_size_ratchet.py seed entries.json`, where
 `entries.json` is `https://apps.tilo.so/entries`.
 
-To see what makes an app large, `t test app-binaries-aarch64` (or `-x86_64`) builds the
-collection exactly as a release does but keeps the symbol tables, and `t outputs
-app-binaries-aarch64` puts the apps, `libruntime_dylib.so` and its engines in
-`target/app-binaries/aarch64/`. `nm -S --size-sort -C` on an app lists what it compiled itself;
+To see what makes an app large, build it as a release does but keep the symbol tables;
+`nm -S --size-sort -C` on the app then lists what it compiled itself;
 a toolkit type's generic code there (a widget, a dialog, a serde instance) is code every app
 using it compiles again, and is usually cheapest to fix in the toolkit. A warm build after a
 toolkit change takes about five minutes on sixteen cores.

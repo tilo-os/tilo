@@ -920,20 +920,15 @@ its content whenever the shots are taken: `${TODAY}`, `${TODAY+3}`, `${MON+2}`
 Each situation runs the app once, headless, in a fresh profile (its own HOME,
 XDG directories and runtime directory, no display, no session bus), and takes
 four pictures: dark and light, wide (1280x800) and compact (420x800). An app
-without a plan is photographed as it opens. One command builds every app on a
-t server, renders all of them there on the software renderer and downloads
-the result:
+without a plan is photographed as it opens.
 
-```bash
-t outputs app-screenshots      # -> target/app-screenshots/<app>/<situation>-<theme>-<size>.png
-```
-
-Each app's directory holds `manifest.json` (its situations, titles and
+Each app's directory (`<out>/<app>/`, pictures named
+`<situation>-<theme>-<size>.png`) holds `manifest.json` (its situations, titles and
 pictures) and `resources.json` (what its plan can invoke); `summary.json` at
 the top lists every situation that failed, with the end of its log, and
 `<situation>.log` beside the pictures has the whole log. With a build of the
-apps at hand (`tools/screenshots/build.sh DIR` makes one), the runner works
-locally too, one app or all; on a laptop take the GPU lock:
+apps at hand (`tools/screenshots/build.sh DIR` makes one), the runner takes
+one app or all, on the software renderer; on a laptop take the GPU lock:
 
 ```bash
 flock ~/TiloData/.gpu-lock tools/screenshots/run.py --bin-dir DIR/bin --lib-dir DIR/lib \
@@ -1001,7 +996,7 @@ memory pressure. Both take seconds once the shell tests are built.
 cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture
 ```
 
-It is part of the shell test target, so t's `test-x86_64/shell` check runs it
+It is part of the shell test target, so `check.yml`'s test shards run it
 whenever a change reaches the shell.
 
 **Liveness is an assertion.** With `TILO_TEST_CONTROL` set, a dev-build

@@ -387,22 +387,19 @@ the default `warn` shows a request for the host's own network).
 
 ## Build and run
 
-The image is built by t's `image-room-service-context` and `image-room-service`
-checks (`tools/ci/products.toml`, docs/publishing-on-t.md): the context step lays out the
-programs `room-service-binaries` builds (`tilo-relay` with feature `agents`, whose agent
+The image is built by `.forgejo/workflows/publish-site.yml`:
+`tools/ci/publish/room-service-context.sh` lays out the
+programs `room-service-binaries.sh` builds (`tilo-relay` with feature `agents`, whose agent
 participant links every web app because the host mounts the apps' own components, and
-`tilo-room-service`, in one cargo build) and the desktop bundle `web-desktop-bundle` builds
+`tilo-room-service`, in one cargo build) and the desktop bundle `web-desktop-bundle.sh` builds
 beside them for the web entry's image too; buildah
 assembles `container/Containerfile` from those outputs (`bin/`, `assets/`), then
-`container/test-image.sh` smoke-tests the archive. A dispatch on main (`t
-dispatch publish-room-service --ref main`) publishes
-`registry.tilo.so/tilo/room-service:dev-<commit>`, stable the signed
-`sha-<commit>` with a digest receipt (repository, digest, tags, source revision) that sets the
-`room-service` pointer; deployments pin the digest.
+`container/test-image.sh` smoke-tests the archive. A dispatch on main publishes
+`registry.tilo.so/tilo/room-service:dev-<commit>` with a digest receipt
+(repository, digest, tags, source revision); deployments pin the digest.
 
 Deployments pin this image and the web entry together, from one stable
-commit, in a GitOps repository. t's `cloud-deploy` check does that whenever
-stable moves (`tools/release/cloud_deploy.py`): the deploy target in that
+commit, in a GitOps repository, with `tools/release/cloud_deploy.py`: the deploy target in that
 repository lists the services, their manifests and the URL each reports its
 build at (this service's `/mode`), and `rollout`, which keeps it a dry run
 until it is true. It commits the new digests, waits until each moved service
@@ -437,7 +434,7 @@ gets in once an unused seat's hold ends, the caps and refusal counters on
 `/metrics`; then it restarts the service and checks the room, its spectator
 person, the guest ledger and each address's join window survive, and
 that SIGTERM stops the service and its relay within 20 seconds (eu1's
-grace period). t runs it as `browser-auth-e2e/limits`.
+grace period).
 
 `dev/owner-key-e2e.py` checks a throwaway room's owner routes the same way:
 it creates a room as a page does, then checks that nothing a guest link
@@ -445,8 +442,7 @@ shows (the room's host, its uuid, the link without its ticket), a wrong key
 or the uuid with the right key mints an invitation or opens the member
 stream, each refused as no such room and spending no guest slot; that the
 answer's `invitations` and `events` URLs work as given; and that an invitee
-still redeems their ticket at the room's uuid. t runs it as
-`browser-auth-e2e/owner-key`; `browser-auth-e2e` runs all three.
+still redeems their ticket at the room's uuid.
 
 ```sh
 python3 crates/hosting/tilo-room-service/dev/limits-e2e.py \

@@ -8,7 +8,7 @@ by the launcher, in its sandbox, under its own id and custody.
   the selection and the open item.
 - **The runtime loop.** Change the runtime (`apps/tilolang`, `tilolang-tilo`,
   `tilolang-runtime`) and build it. The running apps restart on the new runtime in
-  about 70 s, almost all of it the build on t. The session keeps running.
+  about 70 s, almost all of it the build. The session keeps running.
 
 ## Start
 
@@ -22,8 +22,7 @@ cargo build --profile nested --config 'profile.nested.inherits="release"' \
     --config profile.nested.incremental=true -p tilolang-cli --bin tilolang
 ```
 
-`cargo` builds on the build server (t) and copies the binary back; the examples
-below call the result `tilolang` (`target/nested/tilolang`).
+The examples below call the result `tilolang` (`target/nested/tilolang`).
 
 ```sh
 # Start a session and the app in it; from then on, every save reaches the app.
@@ -148,25 +147,9 @@ and are taken in place.
 The binary is built thin, as the session's own runtime bundle carries it: a few
 megabytes, linked against the session's `libruntime_dylib.so`. A thin build runs only on
 the runtime library of its own Cargo graph, because a Rust dylib's symbols carry crate
-hashes, so the build server builds it with the default collection's runtime plan, as the
+hashes, so it is built with the default collection's runtime plan, as the
 nested session's build does, and the tool refuses a build whose library is not the one
 the session runs: start the session on a build of the same checkout.
-
-### Local cargo or the build server
-
-Builds go through t, the repository's build server, as every build does: `cargo`
-forwards there. Measured on 2026-10-27, rebuilding `tilolang-app` with the nested
-profile after a one-line edit of `apps/tilolang/src/updates.rs`:
-
-| Builder | Wall time per rebuild |
-|---|---|
-| t (`cargo`, the default) | 81 s, 126 s, 650 s: queueing behind other jobs, then a 43 s to 5.7 min build, then copying the 108 MB binary back |
-| this machine (`TILO_CARGO_VIA_T=1 cargo`) | 10.7 s, 10.6 s, 10.9 s once warm; 2.5 min after an environment change invalidated the build scripts |
-
-A build on this machine is several times faster, but it is not used. Local builds
-compete with everything else on the laptop for memory, and they contributed to an
-out-of-memory kill of the desktop's terminals. t's build time is what keeps the
-runtime loop above a minute, and is tracked as t's to fix.
 
 ## Measuring
 
@@ -174,8 +157,7 @@ runtime loop above a minute, and is tracked as t's to fix.
 scripts/headless-examples/tilolang-dev-loops.py --runs 5
 ```
 
-The script edits, waits for the change on screen, and prints the medians. The
-runtime loop's builds go through t like any build. Medians of 5 runs on 2026-10-27,
+The script edits, waits for the change on screen, and prints the medians. Medians of 5 runs on 2026-10-27,
 headless on lavapipe, laptop load average around 12:
 
 | Loop | Median | Runs |
@@ -183,7 +165,7 @@ headless on lavapipe, laptop load average around 12:
 | App, save to the app's first frame of the new build | 47 ms | 48, 279, 46, 47, 46 ms |
 | App, save to the compositor's next frame of the app | 54 ms | 67, 299, 53, 54, 53 ms |
 | Runtime, edit to the restarted app's first frame | 68.4 s | 38.2, 97.9, 89.5, 68.4, 58.6 s |
-| Runtime, of which the build on t | 63.6 s | 35.1, 95.6, 81.9, 63.6, 57.0 s |
+| Runtime, of which the build | 63.6 s | 35.1, 95.6, 81.9, 63.6, 57.0 s |
 | Runtime, after the build: bake, install, restart | 3.1 s | |
 
 In the app loop, compiling and packing take 1 to 2 ms. `tilo-install` takes

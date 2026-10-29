@@ -168,8 +168,8 @@ Fedora 44 on x86-64 is the release-gated combination
 (`docs/install-contract.json`). ARM64 packages build and install-test in tagged
 and full-native runs, but no ARM64 combination is release-qualified or publicly
 supported.
-The packaged session is exercised on that combination by t's check
-`host-session-e2e`: the signed-route RPMs from a release are installed with dnf
+The packaged session is exercised on that combination by
+`dist/session/vm-e2e/run.py`: the signed-route RPMs from a release are installed with dnf
 on a stock Fedora 44 Cloud image, a person logs in to Tilo through the display
 manager's session menu, and the way back is taken as well — the same packages
 installed over a running session, signing out to the desktop the host had

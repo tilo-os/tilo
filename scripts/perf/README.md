@@ -48,7 +48,7 @@ executable stand-alone; the higher-level flow is described below.
   runtime's CPU per frame) and an idle desktop, judged against the 30 fps
   minimum, 120 fps and 50 ms activation goals. It refuses to report when the
   bundle's bytes, revision or profile, the WebGPU adapter or a quiet host
-  (`--max-load`) cannot be proven. t's performance run runs it as the
+  (`--max-load`) cannot be proven. The performance run runs it as the
   `browser` group (`tools/perf/adapters.py browser-qualification`);
   `docs/measurements/performance.md` has the hardware invocation.
 
@@ -60,7 +60,7 @@ executable stand-alone; the higher-level flow is described below.
   picture drawn is read back: startup to the first picture, capture-to-picture
   latency, frame rate, frames never drawn and click-to-session input latency,
   and a failure for any corrupt, misnamed or older picture, decoder error,
-  wrong last frame or lost press. t's performance run runs it as the
+  wrong last frame or lost press. The performance run runs it as the
   `stream` group (`tools/perf/adapters.py native-stream`).
 
 - Boot time of a qcow2 under QEMU + OVMF, from its serial console:
@@ -92,7 +92,7 @@ executable stand-alone; the higher-level flow is described below.
   server. Each is timed from the client's side of the control socket, after
   100 warm-up calls, with 1,000 samples. `--app PROVIDER:ID` adds an app
   action. With `--env-json` it writes `tools/perf/record.py` records.
-  t's performance run runs it as the `agent` group.
+  The performance run runs it as the `agent` group.
 
 - `agent_task.py (--socket PATH | --spawn SHELL [--seeder EXAMPLE] [--mcp CLIENT])` —
   a whole agent task the way an agent in a terminal of a Tilo login runs it:
@@ -108,7 +108,7 @@ executable stand-alone; the higher-level flow is described below.
   0. `--spawn` seeds a signed-in Notes desktop with the `agent_task_desktop`
   example of `shell` and serves its agent door in the profile; `--socket`
   takes a device's admin-control.sock (its agent.sock beside it) and works
-  in a workspace of its own. t's performance run runs it in the `agent`
+  in a workspace of its own. The performance run runs it in the `agent`
   group.
 
 ### Windowed desktop input
@@ -207,8 +207,7 @@ certify performance.
 
 - Rebuilding the bootc qcow2 to measure the boot-time delta against
   the baseline requires pulling the digest-pinned frozen RPM repo
-  (`registry.tilo.so/tilo/rpms`, anonymously readable). In CI t's
-  `os-image-{arch}` check rebuilds the image.
+  (`registry.tilo.so/tilo/rpms`, anonymously readable).
 
 Measurements are workload- and host-dependent. Record the image revision,
 CPU/memory/KVM settings, adapter, and `TILO_DISTROBOX` value with each result;

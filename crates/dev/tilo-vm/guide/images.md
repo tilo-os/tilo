@@ -6,7 +6,6 @@ packages, the pieces `os/components.toml` does not list. For those, rebuild the
 image and move the running VM onto it:
 
 ```sh
-tilo-vm vm upgrade --ref my-branch     # t builds and publishes the branch, the VM pins it, reboot
 tilo-vm vm upgrade --from sha:1a2b3c4  # main's build of a commit, the same way
 tilo-vm vm upgrade                     # back to the VM's channel's newest image
 tilo-vm vm rollback-image              # back to the image before, if the new one is bad

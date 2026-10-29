@@ -98,7 +98,7 @@ mounted image.
   sources with the serde attributes that shape the wire, and its Cap'n Proto
   schemas. `tools/policy/check_interfaces.py` fails when the file differs from
   the code (`check`, policy suite) and when it changed incompatibly since main
-  without a higher version (`against`, t's `changes` check). An added optional
+  without a higher version (`against`). An added optional
   field of a JSON message, an added Cap'n Proto struct field and a new type are
   compatible; every other change to what one side sends or reads is not.
 
