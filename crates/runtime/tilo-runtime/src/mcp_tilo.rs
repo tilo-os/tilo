@@ -389,15 +389,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Value, String> {
         task.send(&json!({"run": {"source": source, "confirm": confirm}}))
             .await?;
+        // Which instance answers for each app, found once per program.
+        let mut providers: Providers = BTreeMap::new();
         loop {
             let message = task.next().await?;
             if let Some(answer) = message.get("answer") {
                 return Ok(answer.clone());
             }
             let reply = if let Some(read) = message.get("read") {
-                Box::pin(self.task_read(read)).await
+                Box::pin(self.task_read(read, &mut providers)).await
             } else if let Some(call) = message.get("invoke") {
-                Box::pin(self.task_invoke(call)).await
+                Box::pin(self.task_invoke(call, &mut providers)).await
             } else {
                 json!({"err": "the door answers reads and invocations"})
             };
@@ -423,9 +425,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// The running instance of the app `app` (an id), to ask.
-    async fn provider_of(&self, app: &str) -> Result<Addressed, String> {
+    async fn provider_of(&self, app: &str, known: &mut Providers) -> Result<Addressed, String> {
+        if let Some(found) = known.get(app) {
+            return Ok(found.clone());
+        }
         let (_, running) = self.instances().await?;
-        running
+        let found = running
             .iter()
             .rev()
             .find(|(_, instance)| instance["app_id"].as_str() == Some(app))
@@ -436,15 +441,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .ok_or_else(|| {
                 let name = app_names(&[app.to_owned()]).join("");
                 format!("{name} is not open; open it with tilo_do {{path: \"{name}#open\"}}")
-            })
+            })?;
+        known.insert(app.to_owned(), found.clone());
+        Ok(found)
     }
 
     /// The task's read of `read` (`{app, item}`): the app's `read-values`, as the task.
-    async fn task_read(&self, read: &Value) -> Value {
+    async fn task_read(&self, read: &Value, providers: &mut Providers) -> Value {
         let (Some(app), Some(item)) = (read["app"].as_str(), read["item"].as_str()) else {
             return json!({"err": "a read names its app and item"});
         };
-        let provider = match self.provider_of(app).await {
+        let provider = match self.provider_of(app, providers).await {
             Ok(provider) => provider,
             Err(why) => return json!({"err": why}),
         };
@@ -474,7 +481,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// The task's invocation `call` (`{app, resource, action, arguments}`): invoked at the
     /// action's own app as the task, in this call's step, decided there.
-    async fn task_invoke(&self, call: &Value) -> Value {
+    async fn task_invoke(&self, call: &Value, providers: &mut Providers) -> Value {
         let (Some(app), Some(resource), Some(action)) = (
             call["app"].as_str(),
             call["resource"].as_str(),
@@ -482,7 +489,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         ) else {
             return json!({"failed": "an invocation names its app, resource and action"});
         };
-        let provider = match self.provider_of(app).await {
+        let provider = match self.provider_of(app, providers).await {
             Ok(provider) => provider,
             Err(why) => return json!({"failed": why}),
         };
@@ -527,6 +534,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         history_text(&self.programs.lock_recover())
     }
 }
+
+/// The instance that answers for each app, by app id.
+type Providers = BTreeMap<String, Addressed>;
 
 /// The resource every tilolang app answers a task's reads on, and the read.
 const HOST_RESOURCE: &str = "tl:host";

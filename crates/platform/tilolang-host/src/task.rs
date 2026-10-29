@@ -62,8 +62,9 @@ impl TaskDoor for Line {
         let reply = self.ask(&json!({"read": {"app": app, "item": item}}))?;
         match reply.get("ok") {
             Some(fields) => Ok(fields.clone()),
-            None => Err(reply["err"]
-                .as_str()
+            None => Err(reply
+                .get("err")
+                .and_then(Json::as_str)
                 .unwrap_or("the door did not read it")
                 .to_owned()),
         }
@@ -74,7 +75,13 @@ impl TaskDoor for Line {
             Ok(reply) => reply,
             Err(why) => return Answered::Failed(why),
         };
-        let why = |key: &str| reply[key].as_str().unwrap_or_default().to_owned();
+        let why = |key: &str| {
+            reply
+                .get(key)
+                .and_then(Json::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
         if let Some(output) = reply.get("ok") {
             Answered::Done(output.clone())
         } else if reply.get("refused").is_some() {
@@ -103,7 +110,7 @@ impl Task {
     /// The modules cannot be read or loaded, or the connection is unusable.
     pub fn open(request: &TaskRequest, fds: TaskFds) -> Result<Self, String> {
         let bundles = bundles(&fds.modules, request.modules_len)?;
-        let stream = UnixStream::from(OwnedFd::from(fds.program));
+        let stream = UnixStream::from(fds.program);
         let writer = stream.try_clone().map_err(|error| error.to_string())?;
         let watched = OwnedFd::from(stream.try_clone().map_err(|error| error.to_string())?);
         let line = Rc::new(Line {
@@ -112,7 +119,7 @@ impl Task {
         });
         let session = TaskSession::new(
             &request.task,
-            Rc::clone(&line) as Rc<dyn TaskDoor>,
+            &(Rc::clone(&line) as Rc<dyn TaskDoor>),
             &bundles,
         )?;
         tracing::info!(

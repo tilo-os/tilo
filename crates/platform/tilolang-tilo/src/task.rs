@@ -110,10 +110,10 @@ impl TaskSession {
     ///
     /// # Errors
     /// The runtime cannot start or a package does not load.
-    pub fn new(task: &str, door: Rc<dyn TaskDoor>, bundles: &[Bundle]) -> Result<Self, String> {
+    pub fn new(task: &str, door: &Rc<dyn TaskDoor>, bundles: &[Bundle]) -> Result<Self, String> {
         let reads = Rc::new(RefCell::new(Reads::default()));
         let store = TaskStore {
-            door: Rc::clone(&door),
+            door: Rc::clone(door),
             reads: Rc::clone(&reads),
             journals: HashMap::new(),
             fresh: 0,
@@ -137,7 +137,7 @@ impl TaskSession {
         reads.borrow_mut().apps = apps.keys().cloned().collect();
         let steps = Rc::new(RefCell::new(Steps::default()));
         runtime.set_invoker(DoorInvoker {
-            door: Rc::clone(&door),
+            door: Rc::clone(door),
             apps,
             steps: Rc::clone(&steps),
         });
@@ -163,15 +163,17 @@ impl TaskSession {
                 return answer;
             }
             *self.session.borrow_mut() = saved;
-            let ran = answer["state"] == "done";
+            let ran = answer.get("state") == Some(&json!("done"));
             if !ran || wants_preview(&steps.planned) {
                 // A provisional run that stopped before its end stopped on what an invocation
                 // it did not send would have answered: what follows is not known, so what is
                 // known is shown first.
                 let mut preview = answer;
-                preview["state"] = json!("preview");
-                preview["lets"] = json!([]);
-                preview["complete"] = json!(ran);
+                if let Some(fields) = preview.as_object_mut() {
+                    fields.insert("state".to_owned(), json!("preview"));
+                    fields.insert("lets".to_owned(), json!([]));
+                    fields.insert("complete".to_owned(), json!(ran));
+                }
                 return preview;
             }
         }
@@ -300,7 +302,7 @@ fn call_of(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
                 .iter()
                 .find(|declared| declared.id == *action)
                 .ok_or_else(|| format!("{app} declares no action {action}"))?;
-            let subject = meta.subject_of(&declared.params).and(args.first());
+            let subject = meta.subject_of(&declared.params).and_then(|_| args.first());
             let resource = match subject {
                 Some((_, Value::Ref(r))) => resource_id(app, &r.target.id_string()),
                 _ => package_resource_id(app),

@@ -320,6 +320,16 @@ impl HostInner {
         planned
     }
 
+    /// What `action` returned, for its invocation's answer.
+    fn returned_by(&self, action: &str, outcome: &InvokeOutcome) {
+        *self.returned.borrow_mut() = match outcome {
+            InvokeOutcome::Done(Value::Ref(made)) => {
+                Some((action.to_owned(), ResourceRef::clone(&made.target)))
+            }
+            _ => None,
+        };
+    }
+
     fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
         let action = package
@@ -381,13 +391,7 @@ impl HostInner {
             .runtime
             .invoke_action(&invoker, (request.action_id, args.clone()))
             .map_err(|error| error.to_string())?;
-        *self.returned.borrow_mut() = match &outcome {
-            InvokeOutcome::Done(Value::Ref(made)) => Some((
-                request.action_id.to_owned(),
-                ResourceRef::clone(&made.target),
-            )),
-            _ => None,
-        };
+        self.returned_by(request.action_id, &outcome);
         match outcome {
             InvokeOutcome::Done(Value::Ref(made))
                 if request.caller.is_none_or(|caller| !caller.agent) =>

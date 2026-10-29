@@ -154,7 +154,7 @@ fn task(refused: Vec<&'static str>) -> Task {
         })
         .collect();
     let session =
-        TaskSession::new("task-1", Rc::clone(&door) as Rc<dyn TaskDoor>, &bundles).unwrap();
+        TaskSession::new("task-1", &(Rc::clone(&door) as Rc<dyn TaskDoor>), &bundles).unwrap();
     Task { session, door }
 }
 

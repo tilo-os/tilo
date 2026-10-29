@@ -493,14 +493,7 @@ impl Hosted {
             self.record
                 .apply_invoked(&mut self.instance, &action, invoker, ambient)
                 .map_err(|error| Refused::new("action_failed", error.to_string()))?;
-            // What the action returned, by its published id: a task's program goes on with it.
-            let returned = host
-                .take_returned(&action.action_id)
-                .map(|made| tilolang_tilo::publish::resource_id(&action.app, &made.id_string()));
-            return Ok(tilo_actions::ActionOutput {
-                value: None,
-                resources: returned.into_iter().collect(),
-            });
+            return Ok(returned(&host, &action));
         }
         if address.resource == HOST_RESOURCE
             && encoded.type_id == <HostEffect as tilo_resource::Effect>::OPERATION
@@ -710,5 +703,17 @@ fn door_code(error: &tilo_actions::DoorError) -> &'static str {
         tilo_actions::DoorError::Unknown(_) => "action_unknown",
         tilo_actions::DoorError::Unavailable { .. } => "action_unavailable",
         _ => "action_invalid_arguments",
+    }
+}
+
+/// What the action `action` answers: the resource it returned, by its published id, which a
+/// task's program goes on with.
+fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_actions::ActionOutput {
+    let returned = host
+        .take_returned(&action.action_id)
+        .map(|made| tilolang_tilo::publish::resource_id(&action.app, &made.id_string()));
+    tilo_actions::ActionOutput {
+        value: None,
+        resources: returned.into_iter().collect(),
     }
 }
