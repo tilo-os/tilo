@@ -3315,6 +3315,10 @@ pub struct CapnpBrokerState {
     stopped: AtomicBool,
     /// Keyed by `join_channel`'s `channel_id`; lazily inserted on first join.
     channels: Mutex<HashMap<String, ChannelSubscribers>>,
+    /// The held committed-read waits (`Await`) of each channel, by
+    /// `channel_id`: a write fanned out on a channel's route changes what
+    /// its read answers, and wakes them ([`Self::wake_committed_reads`]).
+    committed_waits: Mutex<HashMap<String, Vec<Weak<tokio::sync::Notify>>>>,
     /// `Weak` so broker teardown isn't blocked by an outliving connection.
     fanout: Weak<FanoutState>,
     /// Durable validation, audit, redaction, and scrollback state.
@@ -4106,6 +4110,7 @@ impl CapnpBrokerState {
         (
             Arc::new(Self {
                 channels: Mutex::new(HashMap::new()),
+                committed_waits: Mutex::new(HashMap::new()),
                 lifecycle: RwLock::new(()),
                 accepting: AtomicBool::new(true),
                 stopped: AtomicBool::new(false),
@@ -7305,6 +7310,7 @@ impl CapnpBrokerState {
                 from_user_id,
                 ..
             } => {
+                self.wake_committed_reads(route);
                 Self::fanout_signed_incremental(
                     channels,
                     except,
