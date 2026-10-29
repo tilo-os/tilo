@@ -1136,7 +1136,7 @@ fn today_room() -> (Room, usize) {
     room.seed("tasks");
     room.seed("notes");
     let host = room.window.current_host().unwrap();
-    let list = host.root_of("so.tilo.lang.todo").unwrap();
+    let list = host.root_of("so.tilo.lang.tasks").unwrap();
     let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
@@ -1155,7 +1155,7 @@ fn today_room() -> (Room, usize) {
 
 fn cleanup_args(room: &Room) -> Json {
     let host = room.window.current_host().unwrap();
-    let list = host.root_of("so.tilo.lang.todo").unwrap().id_string();
+    let list = host.root_of("so.tilo.lang.tasks").unwrap().id_string();
     let notebook = host.root_of("so.tilo.lang.notes").unwrap().id_string();
     serde_json::json!({
         "flow": "so.tilo.lang.today.morning_cleanup",
@@ -1184,7 +1184,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "room",
         "agent-task:7",
         (
-            &agent_answers::AnswerScope::app("so.tilo.lang.todo"),
+            &agent_answers::AnswerScope::app("so.tilo.lang.tasks"),
             policy::ActionKind::Undoable,
         ),
         policy::Answer::Ask,
@@ -1194,7 +1194,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     room.window
         .instance
         .set_standing(Rc::new(move || Some(standing.clone())));
-    let todos = room.items_of("so.tilo.lang.todo", "items");
+    let todos = room.items_of("so.tilo.lang.tasks", "items");
     let notes = room.items_of("so.tilo.lang.notes", "items");
     let args = cleanup_args(&room);
     let waiting = room
@@ -1208,7 +1208,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "the window asks the person, as for a press"
     );
     assert_eq!(
-        room.items_of("so.tilo.lang.todo", "items"),
+        room.items_of("so.tilo.lang.tasks", "items"),
         todos,
         "nothing went while it waits"
     );
@@ -1225,7 +1225,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     assert_eq!(finished["state"], "done", "{finished}");
     assert_eq!(approvals, done, "one approval per removal");
     assert_eq!(
-        room.items_of("so.tilo.lang.todo", "items"),
+        room.items_of("so.tilo.lang.tasks", "items"),
         todos - done,
         "the done ones went, once"
     );
@@ -1239,7 +1239,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "it completes once"
     );
     room.settle();
-    assert_eq!(room.items_of("so.tilo.lang.todo", "items"), todos - done);
+    assert_eq!(room.items_of("so.tilo.lang.tasks", "items"), todos - done);
     assert_eq!(room.items_of("so.tilo.lang.notes", "items"), notes + 1);
 }
 
@@ -1371,7 +1371,7 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
     walk(&tree, &mut cards);
     assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
     assert!(
-        room.items_of("so.tilo.lang.todo", "items") >= 12,
+        room.items_of("so.tilo.lang.tasks", "items") >= 12,
         "the list holds its scenario"
     );
     assert!(
@@ -1592,7 +1592,7 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
 
     // Ticking a todo off changes what the todo card counts and previews, and nothing else.
     let host = room.window.current_host().unwrap();
-    let list = host.root_of("so.tilo.lang.todo").unwrap();
+    let list = host.root_of("so.tilo.lang.tasks").unwrap();
     let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
