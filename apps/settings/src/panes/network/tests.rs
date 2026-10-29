@@ -703,7 +703,7 @@ fn saved(uuid: &str, name: &str, last_used: u64) -> SavedNetworkProfile {
 fn model(fake: &Arc<FakeNetwork>) -> NetworkModel {
     let profile = tempfile::tempdir().unwrap().keep();
     NetworkModel::loaded_from(
-        PaneCx::in_profile(profile.to_path_buf()),
+        PaneCx::in_profile(profile),
         Arc::clone(fake) as Arc<dyn NetworkService>,
     )
 }
@@ -1932,7 +1932,7 @@ fn networks_saved_profiles_and_vpns_are_rows() {
         },
     ];
     let profile = tempfile::tempdir().unwrap().keep();
-    let cx = PaneCx::in_profile(profile.to_path_buf());
+    let cx = PaneCx::in_profile(profile);
     let area = NetworkArea::new(&cx);
     let _ = area.model.set(Rc::new(RefCell::new(model(&fake))));
     let ids: Vec<String> = area.rows().iter().map(|row| row.id().to_owned()).collect();
@@ -2651,7 +2651,7 @@ fn the_vpn_tool_opens_settings_where_it_asks() {
     *fake.vpns.lock().unwrap() = vec![work_vpn()];
     let profile = tempfile::tempdir().unwrap().keep();
     let mut model = NetworkModel::with_service(
-        PaneCx::in_profile(profile.to_path_buf()),
+        PaneCx::in_profile(profile),
         Arc::clone(&fake) as Arc<dyn NetworkService>,
     );
     run_vpn(

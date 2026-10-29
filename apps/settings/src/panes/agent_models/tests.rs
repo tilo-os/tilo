@@ -732,7 +732,7 @@ fn model_request_limits_use_the_published_settings_effects() {
     .unwrap();
     let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
     app.surface_mut::<SettingsApp>()
-        .attach_host(PaneCx::in_profile(path.clone()), None);
+        .attach_host(PaneCx::in_profile(path), None);
     app.surface_mut::<SettingsApp>()
         .areas()
         .find::<crate::panes::agent_models::AgentModelsArea>()
