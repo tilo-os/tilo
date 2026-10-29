@@ -35,7 +35,7 @@ impl PdfApp {
 
     /// Arm `colour` for the next mark. A selected mark takes it too, as an
     /// edit of the record.
-    fn set_marker_colour(&mut self, colour: Swatch) {
+    fn set_marker_colour(&mut self, colour: HighlightColor) {
         self.swatch = colour;
         if let Some(id) = self.selected_anno.as_deref() {
             self.submit(crate::actions::set_annotation_color_action(id, colour));

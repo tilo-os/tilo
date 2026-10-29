@@ -1024,18 +1024,21 @@ enum Delivered {
 impl PreparedMedia {
     fn pending_original_declaration(&self) -> Option<prepared_setup::OriginalSelectionPlan> {
         self.manifest
-            .offline_home
-            .clone()
+            .units
+            .offline_home()
+            .cloned()
             .map(prepared_setup::OriginalSelectionPlan::Home)
             .or_else(|| {
                 self.manifest
-                    .offline_applications
-                    .clone()
+                    .units
+                    .offline_applications()
+                    .cloned()
                     .map(prepared_setup::OriginalSelectionPlan::Applications)
             })
     }
     fn requires_original_export(&self) -> bool {
-        self.manifest.offline_home.is_some() || self.manifest.offline_applications.is_some()
+        self.manifest.units.offline_home().is_some()
+            || self.manifest.units.offline_applications().is_some()
     }
     #[cfg(test)]
     pub(in crate::setup) fn prepare(
@@ -1224,16 +1227,29 @@ impl PreparedMedia {
         let mail = prepare_mail(mail, &tree, password.as_bytes(), &binding, cancel)?;
         let mut manifest =
             Manifest::new(binding.clone(), identity.public_key(), account_ids.clone())?;
-        manifest.mail = mail;
-        manifest.portable_flatpak = applications.as_ref().map(|apps| apps.expectation.clone());
-        manifest.browser = browser
-            .as_ref()
-            .map(|browser| prepared_setup::BrowserHandoff {
-                plan: browser.plan.clone(),
-                payload: browser.expectation.clone(),
-            });
+        if !mail.is_empty() {
+            manifest.units.insert(prepared_setup::Unit::Mail(mail));
+        }
+        if let Some(apps) = &applications {
+            manifest
+                .units
+                .insert(prepared_setup::Unit::MediumApplications(
+                    prepared_setup::ApplicationsCarriage::Sealed {
+                        expectation: apps.expectation.clone(),
+                        alone: false,
+                    },
+                ));
+        }
+        if let Some(browser) = &browser {
+            manifest.units.insert(prepared_setup::Unit::Browser(
+                prepared_setup::BrowserHandoff {
+                    plan: browser.plan.clone(),
+                    payload: browser.expectation.clone(),
+                },
+            ));
+        }
         manifest.install_profile.clone_from(&profile);
-        manifest.retained_home = retained
+        let retained_home = retained
             .as_ref()
             .map(|intent| {
                 let plan = intent.for_media()?;
@@ -1250,7 +1266,12 @@ impl PreparedMedia {
             })
             .transpose()?
             .flatten();
-        if manifest.retained_home.as_ref().is_some_and(|home| {
+        if let Some(plan) = retained_home {
+            manifest
+                .units
+                .insert(prepared_setup::Unit::RetainedHome { plan, caller: None });
+        }
+        if manifest.units.retained_home().is_some_and(|home| {
             let source = home.as_plan();
             source.categories.home
                 && source.home_policy
@@ -1258,26 +1279,26 @@ impl PreparedMedia {
         }) {
             // Original writable Files consent is independent of Apps copying.
             // The canonical owner/root exchange binds even a Files-only setup.
-            manifest.retained_caller = Some(
+            manifest.units.set_retained_caller(Some(
                 retained
                     .as_ref()
                     .ok_or_else(|| io::Error::other("Shared original Files source grant missing"))?
                     .register_retained_caller(&binding, &identity.public_key(), cancel)?,
-            );
+            ))?;
         }
         if let Some(plan) = &planned_direct {
-            if let Some(retained) = &manifest.retained_home {
+            if let Some(retained) = manifest.units.retained_home() {
                 manifest.planned_btrfs_resize =
                     prepared_setup::PlannedBtrfsResize::from_review(retained, plan)?;
             }
         }
-        if manifest.retained_home.is_some() && home.is_some() {
+        if manifest.units.retained_home().is_some() && home.is_some() {
             return Err(io::Error::other(
                 "Shared original files and portable home copying cannot both be selected",
             ));
         }
         if home.is_some() {
-            manifest.portable_home = Some(prepared_setup::PortableHomePlan {
+            manifest.units.plan_home(prepared_setup::PortableHomePlan {
                 schema: 1,
                 selection: prepared_setup::PortableHomeSelection::FullHome,
                 applications: home_applications,
@@ -1335,7 +1356,9 @@ impl PreparedMedia {
                 .open(tree.join(prepared_setup::SERVICE_SESSIONS_FILE))?;
             file.write_all(artifact.as_bytes())?;
             file.sync_all()?;
-            manifest.service_sessions = Some(declaration);
+            manifest
+                .units
+                .insert(imager_backend::setup::prepared_setup::Unit::ServiceSessions(declaration));
         }
         work.progress.report("installer-media-phase-setup")?;
         manifest.write(&tree)?;
@@ -1390,7 +1413,7 @@ impl PreparedMedia {
             } else {
                 Some(prepared_setup::RetainedHomePlan::new(plan)?)
             };
-            if expected != manifest.retained_home {
+            if expected.as_ref() != manifest.units.retained_home() {
                 return Err(io::Error::other("The retained-files preparation changed"));
             }
         }
@@ -1509,12 +1532,12 @@ impl PreparedMedia {
                 "Shared-home custody cannot become offline copy",
             ));
         }
-        if self.manifest.portable_flatpak.as_ref()
+        if self.manifest.units.portable_flatpak()
             != self.applications.as_ref().map(|apps| &apps.expectation)
             || self
                 .manifest
-                .browser
-                .as_ref()
+                .units
+                .browser()
                 .map(|browser| &browser.payload)
                 != self.browser.as_ref().map(|browser| &browser.expectation)
         {
@@ -1730,7 +1753,7 @@ impl PreparedMedia {
             .map_err(|_| io::Error::other("Prepared setup custody unavailable"))?
             .verify_reviewed_ciphertext(cancel)?;
         #[cfg(target_os = "linux")]
-        if let Some(copy) = &self.manifest.original_copy {
+        if let Some(copy) = self.manifest.units.original_copy() {
             copy.bytes()?;
             self.retained
                 .as_ref()
@@ -1738,7 +1761,7 @@ impl PreparedMedia {
                 .validate_staging_copy(copy.source())?;
         }
         #[cfg(target_os = "linux")]
-        if self.manifest.computer_applications.is_some() {
+        if self.manifest.units.computer_applications().is_some() {
             let main = self
                 .retained
                 .as_ref()
@@ -1753,15 +1776,15 @@ impl PreparedMedia {
             apps.validate_staging_copy(copy.source())?;
             if self
                 .manifest
-                .retained_home
-                .as_ref()
+                .units
+                .retained_home()
                 .map(prepared_setup::RetainedHomePlan::as_plan)
                 != Some(&main.for_media()?)
             {
                 return Err(io::ErrorKind::PermissionDenied.into());
             }
         }
-        if let Some(pending) = &self.manifest.offline_applications {
+        if let Some(pending) = self.manifest.units.offline_applications() {
             let intent = self
                 .pending_applications_intent
                 .as_ref()
@@ -1790,7 +1813,7 @@ impl PreparedMedia {
             imager_backend::migration::check_cancel(cancel)?;
             return Ok(());
         }
-        if let Some(pending) = &self.manifest.offline_home {
+        if let Some(pending) = self.manifest.units.offline_home() {
             let home = self
                 .home
                 .as_ref()
@@ -1900,7 +1923,7 @@ impl PreparedMedia {
         if original_only {
             return Some(
                 serde_json::json!({"capture":"awaiting-original-boot", "contents_reviewed":false,
-                "sealed_budget":self.manifest.offline_home.as_ref().map(|plan| plan.sealed_reservation())}),
+                "sealed_budget":self.manifest.units.offline_home().map(|plan| plan.sealed_reservation())}),
             );
         }
         let preview = self.home_preview.lock().ok()?;
@@ -1914,14 +1937,14 @@ impl PreparedMedia {
         serde_json::json!({"public_key":hex::encode(self.public_key),
             "account_ids":self.account_ids,"sealed_bytes":self.sealed_bytes,
             "setup_binding":self.manifest.setup_binding,
-            "source_operation":self.manifest.retained_home.as_ref().map(|home|home.as_plan().operation_id.clone()),
+            "source_operation":self.manifest.units.retained_home().map(|home|home.as_plan().operation_id.clone()),
             "pending_computer_applications_scope":self.manifest.pending_computer_applications_scope().ok().flatten(),
             "portable_home":self.home.is_some(),
             "awaiting_offline_export":self.requires_original_export(),
             "browser":self.browser.is_some(),
-            "mail":self.manifest.mail.len(),
+            "mail":self.manifest.units.mail().len(),
             "shared_original_files":self.retained.as_ref().is_some_and(|intent| intent.source_plan().categories.home),
-            "independent_applications":self.manifest.offline_applications.is_some() || self.applications.is_some() || self.retained.as_ref().is_some_and(|intent| intent.source_plan().categories.flatpak)})
+            "independent_applications":self.manifest.units.offline_applications().is_some() || self.applications.is_some() || self.retained.as_ref().is_some_and(|intent| intent.source_plan().categories.flatpak)})
     }
     fn deliver_all_reporting(
         &self,
@@ -2089,23 +2112,24 @@ impl PreparedMedia {
 
     pub(crate) fn native_service_session_protocol(&self) -> Option<u32> {
         self.manifest
-            .service_sessions
-            .as_ref()
+            .units
+            .service_sessions()
             .map(|sessions| sessions.consumer_protocol)
     }
     pub(crate) fn native_applications_protocol(&self) -> Option<u32> {
-        if self.manifest.offline_applications.is_some() {
+        if self.manifest.units.offline_applications().is_some() {
             return Some(2);
         }
 
         self.manifest
-            .portable_flatpak
-            .as_ref()
+            .units
+            .portable_flatpak()
             .and_then(|applications| (applications.kind.consumer_protocol == 2).then_some(2))
     }
     pub(crate) fn native_home_archive_protocol(&self) -> Option<u32> {
-        (self.manifest.portable_home.is_some() || self.manifest.portable_flatpak.is_some())
-            .then_some(imager_backend::home_admission::ARCHIVE_PROTOCOL)
+        (self.manifest.units.portable_home().is_some()
+            || self.manifest.units.portable_flatpak().is_some())
+        .then_some(imager_backend::home_admission::ARCHIVE_PROTOCOL)
     }
 
     pub(in crate::setup) fn staging_artifact(
@@ -2447,12 +2471,21 @@ mod tests {
         // Build genuine authenticated pending ciphertext. The fixture supplies
         // the proposed reseal boundary; it does not simulate physical media.
         let value = Arc::get_mut(&mut artifact).unwrap();
-        value.manifest.portable_home = Some(prepared_setup::PortableHomePlan {
-            schema: 1,
-            selection: prepared_setup::PortableHomeSelection::FullHome,
-            applications: false,
-        });
-        value.manifest.offline_home = Some(declaration.clone());
+        value
+            .manifest
+            .units
+            .plan_home(prepared_setup::PortableHomePlan {
+                schema: 1,
+                selection: prepared_setup::PortableHomeSelection::FullHome,
+                applications: false,
+            });
+        value
+            .manifest
+            .units
+            .carry_home(
+                imager_backend::setup::prepared_setup::HomeCarriage::Offline(declaration.clone()),
+            )
+            .unwrap();
         let (package, receipt) = reseal_pending_fixture(value, &identity, root, password);
         (
             artifact,
@@ -2503,8 +2536,8 @@ mod tests {
                 "target:{}",
                 artifact
                     .manifest
-                    .offline_home
-                    .as_ref()
+                    .units
+                    .offline_home()
                     .unwrap()
                     .media()
                     .target_stable_id
@@ -2859,8 +2892,8 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        let expected = setup.manifest().portable_flatpak.as_ref().unwrap();
-        assert!(setup.manifest().portable_home.is_none());
+        let expected = setup.manifest().units.portable_flatpak().unwrap();
+        assert!(setup.manifest().units.portable_home().is_none());
         assert_eq!(expected.setup_binding, "portable-apps-binding");
         let storage = root.join("medium");
         std::fs::create_dir(&storage).unwrap();
@@ -2938,7 +2971,7 @@ mod tests {
             &AtomicBool::new(false),
         )
         .unwrap();
-        assert!(setup.manifest().portable_home.is_some());
+        assert!(setup.manifest().units.portable_home().is_some());
         prepared
             .validate_for_write(&AtomicBool::new(false))
             .unwrap();
@@ -3509,7 +3542,7 @@ pub(crate) fn selected_applications_media_fixture(root: &std::path::Path) -> Arc
     )
     .unwrap();
     assert_eq!(artifact.applications_protocol(), Some(2));
-    assert!(artifact.manifest.portable_home.is_none());
+    assert!(artifact.manifest.units.portable_home().is_none());
     artifact
 }
 

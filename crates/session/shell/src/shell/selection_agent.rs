@@ -122,7 +122,7 @@ impl SelectionSeed {
 
     /// This seed, with `text` already asked about it.
     #[must_use]
-    pub(crate) fn asking(mut self, text: String) -> Self {
+    pub(crate) fn asking(mut self, text: &str) -> Self {
         let text: String = text
             .trim()
             .chars()

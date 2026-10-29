@@ -18,10 +18,10 @@ use shell::compositor::state::State;
 use smithay::reexports::wayland_server::Resource as _;
 use vello::kurbo::Rect;
 use wayland_client::protocol::{wl_compositor, wl_output, wl_surface};
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 
-use crate::support::wayland;
+use crate::support::wayland::{self, Toplevel, create_toplevel};
 
 /// The shared `docked-laptop` arrangement — a double-density panel beside a
 /// monitor — with the identities of a 14" eDP panel and a 65" television
@@ -51,7 +51,7 @@ struct Client {
     configures: Arc<Mutex<Vec<(u32, i32, i32)>>>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface);
 
 impl Dispatch<wl_output::WlOutput, ()> for Client {
     fn event(
@@ -101,9 +101,6 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
         }
     }
 }
-
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
 
 struct Window {
     surface: wl_surface::WlSurface,
@@ -171,10 +168,11 @@ impl Harness {
         app_id: &str,
     ) -> Window {
         let qh = self.queue.handle();
-        let surface = compositor.create_surface(&qh, ());
-        let xdg_surface = wm.get_xdg_surface(&surface, &qh, ());
-        let toplevel = xdg_surface.get_toplevel(&qh, ());
-        toplevel.set_app_id(app_id.into());
+        let Toplevel {
+            surface,
+            xdg: xdg_surface,
+            toplevel,
+        } = create_toplevel(compositor, wm, &qh, app_id);
         self.pump();
         Window {
             surface,

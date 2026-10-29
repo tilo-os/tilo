@@ -477,6 +477,26 @@ relative-ago-years = { $count ->
         [one] vor { $count } Jahr
        *[other] vor { $count } Jahren
     }
+relative-ahead-moment = gleich
+relative-ahead-minutes = in { $count } Min.
+relative-ahead-hours = in { $count } Std.
+relative-ahead-tomorrow = morgen
+relative-ahead-days = { $count ->
+        [one] in { $count } Tag
+       *[other] in { $count } Tagen
+    }
+relative-ahead-weeks = { $count ->
+        [one] in { $count } Woche
+       *[other] in { $count } Wochen
+    }
+relative-ahead-months = { $count ->
+        [one] in { $count } Monat
+       *[other] in { $count } Monaten
+    }
+relative-ahead-years = { $count ->
+        [one] in { $count } Jahr
+       *[other] in { $count } Jahren
+    }
 
 # Dates, times and numbers (ui::format). Months are 1 = January … 12 =
 # December; weekdays are 1 = Monday … 7 = Sunday.
@@ -976,6 +996,8 @@ emoji-chooser-results = Passende Emoji
 emoji-chooser-no-results = Keine Emoji gefunden
 emoji-chooser-arriving = Weitere Emoji kommen gleich
 emoji-chooser-add = Emoji hinzufügen
+emoji-bar = Schnelle Reaktionen
+emoji-more = Weitere Emoji
 emoji-chooser-add-failed = Das Bild konnte nicht hinzugefügt werden: { $reason }
 emoji-chooser-tones = Hauttöne
 emoji-chooser-tone-hint = Hautton wählen

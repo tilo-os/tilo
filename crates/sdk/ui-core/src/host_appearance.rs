@@ -36,14 +36,13 @@ fn scheme(theme: winit::window::Theme) -> Scheme {
 }
 
 /// The shell supplies this process's settings through its app-scoped
-/// collaboration channel, or the launcher names the session document for
-/// Settings. Both own the theme the shell chrome already paints from.
+/// collaboration channel, which owns the theme the shell chrome already
+/// paints from.
 /// Sandboxes clear `XDG_CURRENT_DESKTOP` and may not expose the host Settings
 /// portal; its unset scheme must not paint the dark fallback over the shell's
 /// configured theme.
 pub(crate) fn session_document_owns_appearance() -> bool {
-    crate::host::environment().session_settings.is_some()
-        || settings_store::installed_source().is_some()
+    settings_store::installed_source().is_some()
 }
 
 /// Whether the host, not the Tilo shell, owns this process's appearance.
@@ -203,7 +202,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_named_session_document_owns_appearance_and_an_absent_one_does_not() {
+    fn the_shells_settings_own_appearance_and_their_absence_does_not() {
         struct RestoreSource(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
         impl Drop for RestoreSource {
             fn drop(&mut self) {
@@ -213,18 +212,7 @@ mod tests {
         let _restore = RestoreSource(settings_store::installed_source());
         settings_store::install_source(None);
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove(settings_store::SESSION_SETTINGS_ENV);
         assert!(!session_document_owns_appearance());
-        env.set(
-            settings_store::SESSION_SETTINGS_ENV,
-            "/run/tilo/app/.config/tilo/settings.json",
-        );
-        assert!(session_document_owns_appearance());
-        env.set(settings_store::SESSION_SETTINGS_ENV, "");
-        assert!(
-            !session_document_owns_appearance(),
-            "an empty path is not a session document"
-        );
 
         // A native app's sandbox has no session file or desktop name. Its
         // app-scoped shell settings still own appearance, including a custom

@@ -1084,7 +1084,7 @@ mod tests {
     #[test]
     fn sample_area_rows_do_not_wait_for_workers() {
         let profile = tempfile::tempdir().unwrap();
-        let area = PrintersArea::new(&PaneCx::in_file(profile.path().join("settings.json")));
+        let area = PrintersArea::new(&PaneCx::in_profile(profile.path().to_path_buf()));
         assert_eq!(
             area.rows().len(),
             2,
@@ -1227,7 +1227,7 @@ mod tests {
     #[test]
     fn the_shown_page_reads_the_queues_again_when_the_print_service_reports_a_change() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let service = Arc::new(FollowedPrinters {
             recording: RecordingService::new(),
             reads: std::sync::atomic::AtomicUsize::new(0),

@@ -8,7 +8,7 @@
 //!    regenerable from the bundled `.epub`).
 //!
 //! 2. **The shared annotation model** ([`Annotation`] / [`AnnoKind`] /
-//!    [`HiColor`]) — this is the part the PDF reader and word processor are
+//!    [`HighlightColor`]) — this is the part the PDF reader and word processor are
 //!    meant to reuse, so it is deliberately document-agnostic. An annotation
 //!    is an **anchor** (which document, where) plus a **payload** (what kind,
 //!    what colour, what note). See [`Annotation`] for the anchoring contract.
@@ -30,7 +30,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 use tilo_document::RichText;
-use ui::tilo_resource::{self, Bytes, JsonSchema, Model, Refusal};
+use ui::tilo_resource::{self, Bytes, Model, Refusal};
 use uuid::Uuid;
 use vello::peniko::Color;
 
@@ -247,68 +247,7 @@ impl AnnoKind {
     }
 }
 
-/// Highlight palette. Kept as a small enum (rather than raw RGB) so the colour
-/// stays semantic and the OS theme can map it to on-brand swatches. The reader
-/// resolves each to a concrete `Color` at draw time.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum HiColor {
-    #[default]
-    Yellow,
-    Green,
-    Blue,
-    Pink,
-    Purple,
-}
-
-impl HiColor {
-    pub const ALL: [HiColor; 5] = [
-        HiColor::Yellow,
-        HiColor::Green,
-        HiColor::Blue,
-        HiColor::Pink,
-        HiColor::Purple,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            HiColor::Yellow => "yellow",
-            HiColor::Green => "green",
-            HiColor::Blue => "blue",
-            HiColor::Pink => "pink",
-            HiColor::Purple => "purple",
-        }
-    }
-    /// The colour's name: its swatch's tooltip and accessible name.
-    pub fn name(self) -> &'static str {
-        match self {
-            HiColor::Yellow => "Yellow",
-            HiColor::Green => "Green",
-            HiColor::Blue => "Blue",
-            HiColor::Pink => "Pink",
-            HiColor::Purple => "Purple",
-        }
-    }
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "green" => HiColor::Green,
-            "blue" => HiColor::Blue,
-            "pink" => HiColor::Pink,
-            "purple" => HiColor::Purple,
-            _ => HiColor::Yellow,
-        }
-    }
-    /// Base RGB for the swatch. The reader applies alpha for the text overlay.
-    pub fn rgb(self) -> (u8, u8, u8) {
-        match self {
-            HiColor::Yellow => (250, 204, 21),  // amber-400
-            HiColor::Green => (52, 211, 153),   // emerald-400
-            HiColor::Blue => (96, 165, 250),    // blue-400
-            HiColor::Pink => (244, 114, 182),   // pink-400
-            HiColor::Purple => (167, 139, 250), // violet-400
-        }
-    }
-}
+pub use tilo_document::annotation::HighlightColor;
 
 /// The id an annotation is stored under in the library.
 pub fn annotation_key(id: Uuid) -> tilo_resource::Id {
@@ -360,7 +299,7 @@ pub struct Mark {
     #[model(whole)]
     pub text: RichText,
     /// Colour
-    pub color: HiColor,
+    pub color: HighlightColor,
     /// When it was made, ms since epoch. Used to sort the sidebar.
     pub created: u64,
     /// The logical annotation this row belongs to. A multi-paragraph
@@ -461,7 +400,7 @@ pub struct Annotation {
     pub note: String,
     /// The note or comment as written, as the editor shows it.
     pub blocks: Vec<ui::widget::BlockContent>,
-    pub color: HiColor,
+    pub color: HighlightColor,
     /// Creation time, ms since epoch. Used to sort the sidebar.
     pub created: u64,
     /// See [`Mark::group`].
@@ -482,7 +421,7 @@ impl Annotation {
             excerpt: String::new(),
             note: String::new(),
             blocks: Vec::new(),
-            color: HiColor::Yellow,
+            color: HighlightColor::Yellow,
             created: unix_now_ms(),
             group: id,
         }
@@ -514,7 +453,7 @@ impl Annotation {
         self
     }
     #[must_use]
-    pub fn with_color(mut self, c: HiColor) -> Self {
+    pub fn with_color(mut self, c: HighlightColor) -> Self {
         self.color = c;
         self
     }
@@ -1264,13 +1203,6 @@ mod tests {
     /// Colour, annotation, theme, mode, font, sort and composition values round-trip with stable names and defaults.
     #[test]
     fn model_enums_round_trip_with_stable_defaults() {
-        // --- phase: hicolor_round_trips ---
-        {
-            for c in HiColor::ALL {
-                assert_eq!(HiColor::from_str(c.as_str()), c);
-            }
-        }
-
         // --- phase: annokind_round_trips ---
         {
             for k in [AnnoKind::Bookmark, AnnoKind::Highlight, AnnoKind::Note] {

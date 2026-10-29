@@ -29,7 +29,7 @@ use library::{
     local_library_accessibility_nodes, shared_accessibility_nodes, shared_accessibility_targets,
 };
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::Path;
 use ui::widget::{AppModel, ModelPath};
 
@@ -106,6 +106,10 @@ struct LocalMediaEntry {
     title: String,
     source: media::Source,
 }
+
+/// The videos played lately, newest first, one per id.
+type RecentEntries =
+    ui::tilo_resource::Recents<LocalMediaEntry, { crate::preferences::RECENT_HISTORY_LIMIT }>;
 
 #[derive(Clone)]
 struct LibraryRowHit {
@@ -300,7 +304,7 @@ pub struct PlayerApp {
     library_visible: bool,
     library_tab: LibraryTab,
     queue: Vec<LocalMediaEntry>,
-    recent: VecDeque<LocalMediaEntry>,
+    recent: RecentEntries,
     current_queue_id: Option<String>,
     last_cursor: Point,
     /// A file-open portal request in flight, drained each `sync`. Requests are
@@ -339,6 +343,8 @@ pub struct PlayerApp {
     /// Where the shared library's edits and the player's own controls go:
     /// the framework's door, handed over when the surface is attached.
     dispatcher: Option<Dispatcher<PlayerResource>>,
+    /// The window bar's entries, carrying the effects they request.
+    bar: ui::framework::BarCommands<crate::actions::VideoEffect>,
     /// The shared library's verbs bound to what the player shows, published
     /// for the view that hosts it: the view reads it, so it does not hold
     /// the player.
@@ -568,13 +574,13 @@ impl PlayerApp {
         ui::host::install_default(ui::host::HostServices::recording().0);
         let preferences = PlaybackPreferences::default();
         let player = configured_player(mode, preferences);
-        Self::from_prepared(player, preferences, VecDeque::new(), mode)
+        Self::from_prepared(player, preferences, RecentEntries::default(), mode)
     }
 
     fn from_prepared(
         player: VideoPlayer,
         preferences: PlaybackPreferences,
-        recent: VecDeque<LocalMediaEntry>,
+        recent: RecentEntries,
         mode: RunMode,
     ) -> Self {
         let kept_retained = recent
@@ -628,6 +634,7 @@ impl PlayerApp {
             shot_loading: false,
             pending_pip: None,
             dispatcher: None,
+            bar: ui::framework::BarCommands::new(),
             playhead: None,
             shared_library: crate::shared::Library::default(),
             mode,

@@ -2,9 +2,9 @@
 
 use super::{
     CellFormat, Interchange, Invoke, MAX_CSV_MATERIALIZED_SLOTS, MAX_IMPORT_CELLS,
-    MAX_IMPORT_FILE_BYTES, PathBuf, PendingReveal, SheetsApp, Workbook, file_label, formula,
-    import_source, infer_entry, sheet_name_from_path, spreadsheet_export_request,
-    spreadsheet_import_request, verbs,
+    MAX_IMPORT_FILE_BYTES, PathBuf, PendingReveal, SheetsApp, Workbook, file_label, import_source,
+    infer_entry, sheet_name_from_path, spreadsheet_export_request, spreadsheet_import_request,
+    verbs,
 };
 
 impl SheetsApp {
@@ -410,12 +410,12 @@ impl SheetsApp {
     pub(super) fn table_from_snapshot(
         snap: &crate::workbook::SheetSnapshot,
     ) -> crate::xlsx::SheetTable {
-        let values = formula::recalculate_snapshot(snap);
+        let values = crate::calc::recalculate_snapshot(snap);
         let mut fmt = snap.fmt.clone();
         for (addr, raw) in &snap.raw {
             if !snap.fmt.contains_key(addr)
                 && let Some(body) = raw.strip_prefix('=')
-                && let Some(inferred) = formula::infer_result_format(body, &snap.fmt)
+                && let Some(inferred) = crate::calc::infer_result_format(body, &snap.fmt)
             {
                 fmt.insert(*addr, inferred);
             }

@@ -9,6 +9,8 @@ use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 use shell::shell::foreign::{PointRoute, store};
 
+use crate::support::wayland::{Toplevel, create_toplevel};
+
 #[derive(Default)]
 struct Client {
     globals: Vec<(u32, String, u32)>,
@@ -18,7 +20,7 @@ struct Client {
     pressed_keys: Vec<u32>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, seat);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     fn event(
@@ -61,9 +63,6 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore xdg_wm_dialog_v1::XdgWmDialogV1);
 delegate_noop!(Client: ignore xdg_dialog_v1::XdgDialogV1);
 
@@ -104,10 +103,11 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
 
-    let parent = compositor.create_surface(&qh, ());
-    let parent_xdg = wm.get_xdg_surface(&parent, &qh, ());
-    let parent_top = parent_xdg.get_toplevel(&qh, ());
-    parent_top.set_app_id("org.example.Editor".into());
+    let Toplevel {
+        surface: parent,
+        xdg: parent_xdg,
+        toplevel: parent_top,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.Editor");
     parent.commit();
     h.pump();
     let tabs = foreign_tabs(&h.state);
@@ -116,10 +116,11 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
 
     // What GTK sends for "Save changes?": a toplevel, its parent, the modal
     // hint, then the initial commit.
-    let child = compositor.create_surface(&qh, ());
-    let child_xdg = wm.get_xdg_surface(&child, &qh, ());
-    let child_top = child_xdg.get_toplevel(&qh, ());
-    child_top.set_app_id("org.example.Editor".into());
+    let Toplevel {
+        surface: child,
+        xdg: _,
+        toplevel: child_top,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.Editor");
     child_top.set_parent(Some(&parent_top));
     let dialog = dialogs.get_xdg_dialog(&child_top, &qh, ());
     dialog.set_modal();
@@ -309,10 +310,11 @@ fn a_parentless_system_prompt_is_a_sheet_and_leaves_the_strip_alone() {
 
     let mut keep = Vec::new();
     for app in ["org.example.Editor", "org.example.Browser"] {
-        let surface = compositor.create_surface(&qh, ());
-        let xdg = wm.get_xdg_surface(&surface, &qh, ());
-        let top = xdg.get_toplevel(&qh, ());
-        top.set_app_id(app.into());
+        let Toplevel {
+            surface,
+            xdg,
+            toplevel: top,
+        } = create_toplevel(&compositor, &wm, &qh, app);
         surface.commit();
         h.pump();
         keep.push((surface, xdg, top));
@@ -325,10 +327,11 @@ fn a_parentless_system_prompt_is_a_sheet_and_leaves_the_strip_alone() {
 
     let before = strip_view(&h.state);
 
-    let prompt = compositor.create_surface(&qh, ());
-    let prompt_xdg = wm.get_xdg_surface(&prompt, &qh, ());
-    let prompt_top = prompt_xdg.get_toplevel(&qh, ());
-    prompt_top.set_app_id("gcr-prompter".into());
+    let Toplevel {
+        surface: prompt,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, "gcr-prompter");
     prompt.commit();
     h.pump();
 
@@ -360,10 +363,11 @@ fn a_system_prompt_with_no_window_to_sit_on_is_a_system_modal_overlay() {
     let qh = h.queue.handle();
     let before = strip_view(&h.state);
 
-    let prompt = compositor.create_surface(&qh, ());
-    let prompt_xdg = wm.get_xdg_surface(&prompt, &qh, ());
-    let prompt_top = prompt_xdg.get_toplevel(&qh, ());
-    prompt_top.set_app_id("gcr-prompter".into());
+    let Toplevel {
+        surface: prompt,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, "gcr-prompter");
     prompt.commit();
     h.pump();
 
@@ -418,10 +422,11 @@ fn a_system_modal_opens_on_the_focused_display() {
     let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
     let qh = h.queue.handle();
 
-    let prompt = compositor.create_surface(&qh, ());
-    let prompt_xdg = wm.get_xdg_surface(&prompt, &qh, ());
-    let prompt_top = prompt_xdg.get_toplevel(&qh, ());
-    prompt_top.set_app_id("gcr-prompter".into());
+    let Toplevel {
+        surface: prompt,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, "gcr-prompter");
     prompt.commit();
     h.pump();
     let id = h.state.top_system_modal().expect("the prompt");
@@ -455,10 +460,11 @@ fn modal_and_fixed_size_dialogs_that_name_no_parent_are_sheets() {
     let dialogs = h.bind::<xdg_wm_dialog_v1::XdgWmDialogV1>("xdg_wm_dialog_v1", 1);
     let qh = h.queue.handle();
 
-    let window = compositor.create_surface(&qh, ());
-    let window_xdg = wm.get_xdg_surface(&window, &qh, ());
-    let window_top = window_xdg.get_toplevel(&qh, ());
-    window_top.set_app_id("org.example.Editor".into());
+    let Toplevel {
+        surface: window,
+        xdg: _,
+        toplevel: _,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.Editor");
     window.commit();
     h.pump();
     let host = foreign_tabs(&h.state)[0].0;
@@ -466,19 +472,21 @@ fn modal_and_fixed_size_dialogs_that_name_no_parent_are_sheets() {
     let before = strip_view(&h.state);
 
     // xdg_dialog_v1 modal, no parent, an app id nobody listed.
-    let modal = compositor.create_surface(&qh, ());
-    let modal_xdg = wm.get_xdg_surface(&modal, &qh, ());
-    let modal_top = modal_xdg.get_toplevel(&qh, ());
-    modal_top.set_app_id("org.example.Whatever".into());
+    let Toplevel {
+        surface: modal,
+        xdg: _,
+        toplevel: modal_top,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.Whatever");
     dialogs.get_xdg_dialog(&modal_top, &qh, ()).set_modal();
     modal.commit();
     h.pump();
 
     // A fixed-size window: min == max.
-    let fixed = compositor.create_surface(&qh, ());
-    let fixed_xdg = wm.get_xdg_surface(&fixed, &qh, ());
-    let fixed_top = fixed_xdg.get_toplevel(&qh, ());
-    fixed_top.set_app_id("org.example.Other".into());
+    let Toplevel {
+        surface: fixed,
+        xdg: _,
+        toplevel: fixed_top,
+    } = create_toplevel(&compositor, &wm, &qh, "org.example.Other");
     fixed_top.set_min_size(320, 200);
     fixed_top.set_max_size(320, 200);
     fixed.commit();

@@ -433,9 +433,9 @@ impl RichTextSource for RichTextField {
 /// Makes an edit of a person record's rich-text field the record's action.
 type Wrap<P> = Box<dyn Fn(&RichTextAction) -> <P as Resource>::Action>;
 
-/// Rich text stored in a field of one of the person's own records
-/// ([`PersonRecord`]): a draft, a private note. It follows the person to
-/// their other devices and never reaches the room the app is open in.
+/// Rich text stored in a field of a record the app keeps beside the one it
+/// shows ([`PersonRecord`]): a draft, a note. It is kept apart from the
+/// record the app shows, with the app's records in the workspace.
 ///
 /// `locate` finds the field's map in the record; `wrap` turns an edit of
 /// it into the record's own action (a field edit at its path), so the

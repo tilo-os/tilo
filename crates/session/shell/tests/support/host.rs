@@ -34,6 +34,24 @@ pub fn lay_out_with_theme<W: Widget + ?Sized>(
     height: f32,
     theme: &Theme,
 ) -> Layout {
+    lay_out_with_text(
+        host,
+        width,
+        height,
+        theme,
+        &mut ui::text_render::TextRenderer::new(),
+    )
+}
+
+/// As [`lay_out_with_theme`], measuring text with `tr`, for a caller that
+/// draws with the same renderer afterwards.
+pub fn lay_out_with_text<W: Widget + ?Sized>(
+    host: &mut W,
+    width: f32,
+    height: f32,
+    theme: &Theme,
+    tr: &mut ui::text_render::TextRenderer,
+) -> Layout {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let child = host.build_layout(&mut taffy, theme, &mut node_map);
@@ -46,7 +64,6 @@ pub fn lay_out_with_theme<W: Widget + ?Sized>(
             &[child],
         )
         .unwrap();
-    let mut tr = ui::text_render::TextRenderer::new();
     taffy
         .compute_layout_with_measure(
             root_node,
@@ -56,7 +73,7 @@ pub fn lay_out_with_theme<W: Widget + ?Sized>(
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = node_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                    unsafe { (*ptr).measure(known, available, tr) }
                 } else {
                     taffy::Size::ZERO
                 }

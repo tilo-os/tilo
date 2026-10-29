@@ -35,16 +35,13 @@ fn in_own_process(name: &str) -> bool {
 #[cfg(unix)]
 #[test]
 fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
-    use settings_store::{SessionPaths, SessionSettings, SettingsSource};
+    use settings_store::SettingsSource;
     const APP: &str = "so.tilo.monitor";
     if !in_own_process("a_write_before_the_channel_connects_lands_after_it_connects_in_order") {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let records = Arc::new(
-        SessionSettings::open(SessionPaths::beside(dir.path().join("settings.json"))).unwrap(),
-    );
-    let paths = records.paths().clone();
+    let records = settings_store::Store::open(dir.path()).unwrap();
     records
         .update_section(
             "app_personal",
@@ -67,7 +64,7 @@ fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
         "the writes show at once"
     );
     assert_eq!(
-        settings_store::load_at(&paths.person)["app_personal"][APP]["interval_ms"],
+        records.load()["app_personal"][APP]["interval_ms"],
         1000,
         "nothing reached the shell yet"
     );
@@ -86,7 +83,7 @@ fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
     let (fd, _, _thread) = stand_up_fake_broker(broker);
     let _manager = manager_on(fd, APP, Uuid::new_v4());
     eventually("the early writes reach the person's record", || {
-        let stored = &settings_store::load_at(&paths.person)["app_personal"][APP];
+        let stored = &records.load()["app_personal"][APP];
         stored["confirm_kill"] == true && stored["interval_ms"] == 2000
     });
     assert_eq!(
@@ -103,16 +100,13 @@ fn a_write_before_the_channel_connects_lands_after_it_connects_in_order() {
 #[cfg(unix)]
 #[test]
 fn an_apps_settings_reach_the_shells_records_and_follow_them() {
-    use settings_store::{SessionPaths, SessionSettings, SettingsSource};
+    use settings_store::SettingsSource;
     const APP: &str = "so.tilo.monitor";
     if !in_own_process("an_apps_settings_reach_the_shells_records_and_follow_them") {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let records = Arc::new(
-        SessionSettings::open(SessionPaths::beside(dir.path().join("settings.json"))).unwrap(),
-    );
-    let paths = records.paths().clone();
+    let records = settings_store::Store::open(dir.path()).unwrap();
     records
         .update_section(
             "app_personal",
@@ -139,16 +133,12 @@ fn an_apps_settings_reach_the_shells_records_and_follow_them() {
         prefs.get().interval_ms == 1000
     });
 
-    // The app's write lands in the person's record, which roams, and in
-    // the copy every other process reads.
+    // The app's write lands in the person's record.
     prefs.update(|prefs| prefs.confirm_kill = true).unwrap();
     eventually("the write reaches the person's record", || {
-        settings_store::load_at(&paths.person)["app_personal"][APP]["confirm_kill"] == true
+        records.load()["app_personal"][APP]["confirm_kill"] == true
     });
-    assert_eq!(
-        settings_store::load_at(&paths.copy)["app_personal"][APP]["interval_ms"],
-        1000
-    );
+    assert_eq!(records.load()["app_personal"][APP]["interval_ms"], 1000);
 
     // Another device's write, as the device fabric applies it, reaches
     // the app's settings.

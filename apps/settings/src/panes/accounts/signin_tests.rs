@@ -43,7 +43,9 @@ impl BrowserOpener for FakeBrowser {
 #[test]
 fn live_second_account_refusal_restores_already_published_metadata() {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    let record = app.person::<accounts::person::PersonAccounts>().unwrap();
+    let record = app
+        .shared_person::<accounts::person::PersonAccounts>()
+        .unwrap();
     let (_dir, root) = scratch_root();
     let root = root.with_person(record.clone());
     let mut existing = accounts::Account::new("a-drive", "google-drive");
@@ -83,7 +85,9 @@ fn live_second_account_refusal_restores_already_published_metadata() {
 #[test]
 fn live_pair_projection_failure_restores_person_metadata_and_keeps_recovery_intent() {
     let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-    let record = app.person::<accounts::person::PersonAccounts>().unwrap();
+    let record = app
+        .shared_person::<accounts::person::PersonAccounts>()
+        .unwrap();
     let (dir, root) = scratch_root();
     let root = root.with_person(record.clone());
     let first = accounts::Account::new("drive", "google-drive");
@@ -116,7 +120,9 @@ fn published_google_mail_reauth_uses_browser_and_preserves_the_mailbox() {
         let root = AccountRoot::at(dir.path());
         let mut app =
             ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
-        let record = app.person::<accounts::person::PersonAccounts>().unwrap();
+        let record = app
+            .shared_person::<accounts::person::PersonAccounts>()
+            .unwrap();
         let root = root.with_person(record);
         let mut account = accounts::Account::new("stable-mail-id", "email");
         account.set_config(&accounts::email::AccountConfig {
@@ -251,7 +257,7 @@ fn connected_account_files_handoff_is_typed_and_matches_files_resource() {
             ui::tilo_actions::remote::InvokeArgument::None
         ));
         let profile = tempfile::tempdir().unwrap();
-        let area = AccountsArea::new(&PaneCx::in_file(profile.path().join("settings.json")))
+        let area = AccountsArea::new(&PaneCx::in_profile(profile.path().to_path_buf()))
             .with_account_root(root.clone());
         let _ = area.model.set(Rc::new(std::cell::RefCell::new(pane)));
         let row = area

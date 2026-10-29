@@ -9201,32 +9201,21 @@ mod tests {
     }
 
     #[test]
-    fn roaming_settings_travel_through_the_session_records_and_their_copy() {
+    fn roaming_settings_travel_through_the_session_records() {
         let dir = tempfile::tempdir().unwrap();
-        let paths = settings_store::SessionPaths::beside(dir.path().join("settings.json"));
-        let open = || {
-            crate::shell::test_support::install_settings(Arc::new(
-                settings_store::SessionSettings::open(paths.clone()).unwrap(),
-            ))
-        };
-        let settings = open();
+        let store = settings_store::Store::open(dir.path()).unwrap();
+        let settings = crate::shell::test_support::install_settings(store.clone());
 
-        // A winner from another device reaches this process's readers and the
-        // copy the compositor boots from and apps read.
+        // A winner from another device reaches this process's readers.
         apply_roaming_settings(&BTreeMap::from([(
             "tilo.appearance.mode".to_string(),
             Value::from("light"),
         )]));
         assert_eq!(settings_store::load_section("appearance")["mode"], "light");
-        assert_eq!(
-            settings_store::load_section_at(&paths.copy, "appearance")["mode"],
-            "light"
-        );
 
-        // Settings, in its own process, writes the copy; the fabric publishes
-        // that edit, and a device-local leaf beside it stays out.
-        settings_store::update_section_at(
-            &paths.copy,
+        // An edit the person makes is published, and a device-local leaf
+        // beside it stays out.
+        settings_store::update_section(
             "appearance",
             serde_json::json!({"mode": "dark", "wallpaper_path": "/home/ada/sea.png"})
                 .as_object()
@@ -9240,19 +9229,18 @@ mod tests {
         );
 
         // A restarted session reads the same records.
+        settings_store::SettingsSource::flush_pending(&store);
         drop(settings);
-        std::fs::remove_file(&paths.copy).unwrap();
-        let _settings = open();
+        drop(store);
+        let _settings = crate::shell::test_support::install_settings(
+            settings_store::Store::open(dir.path()).unwrap(),
+        );
         assert_eq!(
             settings_store::load_section("appearance"),
             serde_json::json!({"mode": "dark", "wallpaper_path": "/home/ada/sea.png"})
                 .as_object()
                 .unwrap()
                 .clone()
-        );
-        assert_eq!(
-            settings_store::load_section_at(&paths.copy, "appearance")["mode"],
-            "dark"
         );
     }
 

@@ -1,5 +1,5 @@
 {
-  "format": 1,
+  "format": 2,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -1048,6 +1048,43 @@
       }
     },
     {
+      "name": "MenuSeparator",
+      "doc": "A rule between groups of a menu's commands.",
+      "semantics": {
+        "role": "Splitter"
+      }
+    },
+    {
+      "name": "EmojiBar",
+      "doc": "A row of emoji to react with, at the top of a menu: the ones the person uses most, then a button that opens the emoji picker for any other.",
+      "props": [
+        {
+          "name": "emoji",
+          "doc": "The emoji offered, in order: the person's most used first.",
+          "type": {
+            "list": "text"
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "more",
+          "doc": "A last button opens the emoji picker, for an emoji not offered.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "pick",
+          "doc": "An emoji was picked: carries it.",
+          "value": "text"
+        }
+      ],
+      "semantics": {
+        "role": "Toolbar"
+      }
+    },
+    {
       "name": "SwipeAction",
       "doc": "What swiping a row across does: one command on its item, uncovered under the row as it moves.",
       "props": [
@@ -1118,18 +1155,34 @@
       "slots": [
         {
           "name": "menu",
-          "doc": "The commands of the row's context menu: a right-click, the Menu key or a long press opens it, and selects the row.",
+          "doc": "What the item offers on its context menu (a right-click, the Menu key or a long press opens it, and selects the row): each of its allowed actions, after the menu the row's view placed (`attached`) and without those that menu placed already, so every action stays reachable.",
           "accepts": {
-            "component": "MenuItem"
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator",
+              "EmojiBar"
+            ]
           },
           "many": true
         },
         {
           "name": "swipe",
-          "doc": "What swiping the row across does.",
+          "doc": "What swiping the row from its trailing edge does, unless its view says (`attached`).",
           "accepts": {
             "component": "SwipeAction"
           }
+        },
+        {
+          "name": "attached",
+          "doc": "What the row's view attached to it (`ui.ContextMenu`, `ui.HoverToolbar`, `ui.Swipe` anywhere in the row's view): its own menu, first in the row's menu; a toolbar shown while the row is hovered or holds focus; a swipe either way.",
+          "accepts": {
+            "one_of": [
+              "ContextMenu",
+              "HoverToolbar",
+              "Swipe"
+            ]
+          },
+          "many": true
         },
         {
           "name": "row",
@@ -1141,6 +1194,70 @@
       "semantics": {
         "role": "ListItem",
         "presents": "item"
+      }
+    },
+    {
+      "name": "ContextMenu",
+      "doc": "A context menu of the view it stands in: a right-click, the Menu key or a long press opens it. Its commands come first, as the view placed them; the system adds what the item offers that the view did not place, a typing field to filter them, and asks before a destructive one.",
+      "slots": [
+        {
+          "name": "items",
+          "doc": "The menu's content, in order: commands, separators and an emoji bar.",
+          "accepts": {
+            "one_of": [
+              "MenuItem",
+              "MenuSeparator",
+              "EmojiBar"
+            ]
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Menu",
+        "attaches": true
+      }
+    },
+    {
+      "name": "HoverToolbar",
+      "doc": "Controls shown over the trailing edge of the view they stand in while it is hovered or holds focus: quick reactions, Reply. Tab reaches them from the view.",
+      "slots": [
+        {
+          "name": "content",
+          "doc": "The controls, in order: buttons, an emoji picker.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Toolbar",
+        "attaches": true
+      }
+    },
+    {
+      "name": "Swipe",
+      "doc": "What swiping the view it stands in across does: it follows the finger, uncovers the command and runs it when let go past the threshold, or springs back.",
+      "slots": [
+        {
+          "name": "leading",
+          "doc": "What swiping from the leading edge towards the trailing edge does.",
+          "accepts": {
+            "component": "SwipeAction"
+          }
+        },
+        {
+          "name": "trailing",
+          "doc": "What swiping from the trailing edge towards the leading edge does.",
+          "accepts": {
+            "component": "SwipeAction"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "attaches": true
       }
     },
     {

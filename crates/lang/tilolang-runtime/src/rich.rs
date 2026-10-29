@@ -170,6 +170,35 @@ impl RichValue {
         }
     }
 
+    /// Append the moment `at` (RFC 3339) as a run every reader reads in their own zone and
+    /// language (`tilo_doc::inline_time`); the run is the moment as written, for a reader that
+    /// shows text as it is.
+    pub fn push_time(&mut self, at: &str) {
+        if self.blocks.is_empty() {
+            self.blocks.push(paragraph(""));
+        }
+        let Some(last) = self.blocks.last_mut() else {
+            return;
+        };
+        let start = last.text.chars().count();
+        last.text.push_str(at);
+        let end = last.text.chars().count();
+        if start < end {
+            last.marks.push(MarkSpan {
+                start,
+                end,
+                name: tilo_doc::inline_time::MARK.to_owned(),
+                value: MarkValue::Str(
+                    tilo_doc::inline_time::InlineTime {
+                        at: at.to_owned(),
+                        show: tilo_doc::inline_time::Show::default(),
+                    }
+                    .mark_value(),
+                ),
+            });
+        }
+    }
+
     /// Append `other` with its formatting: its first paragraph continues the last one, the
     /// rest follow it.
     pub fn push_rich(&mut self, other: &Self) {

@@ -16,6 +16,7 @@ const TOOL: &str = "read_probe_receipt";
 struct Cli {
     #[arg(long)]
     socket: PathBuf,
+    /// The settings profile's root directory (`$XDG_CONFIG_HOME/tilo`).
     #[arg(long)]
     settings: PathBuf,
     #[arg(long)]
@@ -220,7 +221,9 @@ fn read_receipt(path: &Path) -> Result<Value, String> {
 }
 
 fn run(cli: &Cli) -> Result<(), String> {
-    let config = agent_provider_config::ProviderConfig::load_at(&cli.settings);
+    let settings =
+        settings_store::Store::follow(&cli.settings).map_err(|error| error.to_string())?;
+    let config = agent_provider_config::ProviderConfig::load_in(&settings);
     if !config.validation_errors().is_empty() {
         return Err("project provider config is invalid".into());
     }
@@ -281,7 +284,7 @@ fn run(cli: &Cli) -> Result<(), String> {
         "acceptance.json",
         &json!({"schema_version":1,"evidence":"observed_developer_gateway_tool_round_trip",
         "model":cli.model,"model_revision":model.revision,"profile":cli.profile,
-        "settings_sha256":hash(&fs::read(&cli.settings).map_err(|error|error.to_string())?),
+        "settings_sha256":hash(serde_json::to_string(&config).map_err(|error|error.to_string())?.as_bytes()),
         "probe_source_sha256":hash(include_str!("local-tool-acceptance.rs").as_bytes()),
         "request_sha256":[request1_hash,request2_hash],"response_sha256":[first_hash,second_hash],
         "elapsed_ms":[elapsed1,elapsed2],"max_output_tokens":cli.max_output_tokens,

@@ -1430,6 +1430,7 @@ fn tube_entry(
         boost,
         fields: vec![(text.into(), IndexWeight::Body)],
         secret: false,
+        references: Vec::new(),
     }
 }
 

@@ -26,9 +26,12 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
 
+mod emoji_row;
 mod published;
 mod query;
 use query::MenuQuery;
+
+pub use emoji_row::EmojiRow;
 
 /// What a menu row runs. Menus live on the UI thread with the widgets that
 /// open them, so a row takes the toolkit's usual single-threaded callback:
@@ -73,6 +76,10 @@ pub enum MenuItem {
     /// A line of secondary text about the rows around it ("Hosted by
     /// example.org"): read, never chosen. Keyboard and pointer pass over it.
     Caption(String),
+    /// A row of emoji to pick one from (a message's quick reactions), and a
+    /// last cell that opens the emoji picker for any other
+    /// ([`MenuItem::emoji_row`]).
+    Emoji(EmojiRow),
 }
 
 impl std::fmt::Debug for MenuItem {
@@ -86,6 +93,7 @@ impl std::fmt::Debug for MenuItem {
                 .finish(),
             MenuItem::Separator => f.write_str("MenuItem::Separator"),
             MenuItem::Caption(text) => f.debug_tuple("MenuItem::Caption").field(text).finish(),
+            MenuItem::Emoji(row) => f.debug_tuple("MenuItem::Emoji").field(&row.emoji).finish(),
         }
     }
 }
@@ -215,7 +223,7 @@ impl MenuItem {
     pub fn action_address(&self) -> Option<&tilo_actions::ActionAddress> {
         match self {
             MenuItem::Action { address, .. } => address.as_ref(),
-            MenuItem::Separator | MenuItem::Caption(_) => None,
+            MenuItem::Separator | MenuItem::Caption(_) | MenuItem::Emoji(_) => None,
         }
     }
 
@@ -290,7 +298,7 @@ impl MenuItem {
         match self {
             MenuItem::Action { label, .. } => Some(label.as_str()),
             MenuItem::Caption(text) => Some(text.as_str()),
-            MenuItem::Separator => None,
+            MenuItem::Separator | MenuItem::Emoji(_) => None,
         }
     }
 
@@ -299,7 +307,7 @@ impl MenuItem {
     pub fn checked(&self) -> Option<bool> {
         match self {
             MenuItem::Action { checked, .. } => *checked,
-            MenuItem::Separator | MenuItem::Caption(_) => None,
+            MenuItem::Separator | MenuItem::Caption(_) | MenuItem::Emoji(_) => None,
         }
     }
 
@@ -307,7 +315,7 @@ impl MenuItem {
     pub fn shortcut(&self) -> Option<&Shortcut> {
         match self {
             MenuItem::Action { shortcut, .. } => shortcut.as_ref(),
-            MenuItem::Separator | MenuItem::Caption(_) => None,
+            MenuItem::Separator | MenuItem::Caption(_) | MenuItem::Emoji(_) => None,
         }
     }
 
@@ -315,7 +323,7 @@ impl MenuItem {
     pub fn submenu_items(&self) -> Option<&[MenuItem]> {
         match self {
             MenuItem::Action { submenu, .. } => submenu.as_deref(),
-            MenuItem::Separator | MenuItem::Caption(_) => None,
+            MenuItem::Separator | MenuItem::Caption(_) | MenuItem::Emoji(_) => None,
         }
     }
 
@@ -330,7 +338,30 @@ impl MenuItem {
     }
 
     pub fn is_enabled(&self) -> bool {
-        matches!(self, MenuItem::Action { enabled: true, .. })
+        matches!(
+            self,
+            MenuItem::Action { enabled: true, .. } | MenuItem::Emoji(_)
+        )
+    }
+
+    /// Whether it is a rule between groups.
+    #[must_use]
+    pub fn is_separator(&self) -> bool {
+        matches!(self, MenuItem::Separator)
+    }
+
+    /// A row of `emoji` to pick one from: `pick` runs with the one chosen,
+    /// and `more`, when given, is a last cell that opens the emoji picker.
+    pub fn emoji_row(
+        emoji: Vec<String>,
+        pick: impl Fn(&str) + 'static,
+        more: Option<MenuAction>,
+    ) -> Self {
+        MenuItem::Emoji(EmojiRow {
+            emoji,
+            pick: std::rc::Rc::new(pick),
+            more,
+        })
     }
 }
 
@@ -466,6 +497,8 @@ pub struct ContextMenu {
     /// While a query narrows the rows, the panel's top edge stays where it
     /// opened: the field under the person's eyes does not move.
     pinned_top: Option<f64>,
+    /// The armed cell of an emoji row while that row is armed.
+    emoji_cell: usize,
 }
 
 impl Default for ContextMenu {
@@ -510,6 +543,7 @@ impl ContextMenu {
             asked: None,
             ask_at: Point::ZERO,
             pinned_top: None,
+            emoji_cell: 0,
         }
     }
 
@@ -780,6 +814,7 @@ impl ContextMenu {
             // A caption is a caption line with an `s1` of air either side,
             // tighter than a row: it is read with the rows above it.
             Some(MenuItem::Caption(_)) => (self.row_height * CAPTION_ROW_SHARE).ceil(),
+            Some(MenuItem::Emoji(_)) => (self.row_height * emoji_row::ROW_SHARE).ceil(),
             Some(MenuItem::Separator) if item_shown(self.owner_items(), index) => SEPARATOR_HEIGHT,
             Some(MenuItem::Separator) | None => 0.0,
         }
@@ -841,8 +876,10 @@ impl ContextMenu {
     }
 
     pub fn focus_item(&mut self, index: usize) -> bool {
-        if !matches!(self.items.get(index), Some(MenuItem::Action { .. }))
-            || !self.shown.contains(&index)
+        if !matches!(
+            self.items.get(index),
+            Some(MenuItem::Action { .. } | MenuItem::Emoji(_))
+        ) || !self.shown.contains(&index)
         {
             return false;
         }
@@ -1089,6 +1126,15 @@ impl ContextMenu {
                     self.selection = Some(idx);
                 }
                 self.close();
+            }
+            MenuItem::Emoji(row) => {
+                let picked = row.choose(self.emoji_cell);
+                if picked {
+                    if self.own_rows.is_none_or(|own| idx < own) {
+                        self.selection = Some(idx);
+                    }
+                    self.close();
+                }
             }
             MenuItem::Action { .. } | MenuItem::Separator | MenuItem::Caption(_) => {}
         }
@@ -1395,7 +1441,7 @@ fn label_inset(theme: &Theme) -> f64 {
 fn item_shown(items: &[MenuItem], index: usize) -> bool {
     let content = |item: &&MenuItem| !matches!(item, MenuItem::Separator);
     match items.get(index) {
-        Some(MenuItem::Action { .. } | MenuItem::Caption(_)) => true,
+        Some(MenuItem::Action { .. } | MenuItem::Caption(_) | MenuItem::Emoji(_)) => true,
         Some(MenuItem::Separator) => {
             let before = items.get(..index).unwrap_or_default();
             let after = items.get(index.saturating_add(1)..).unwrap_or_default();
@@ -1631,6 +1677,10 @@ impl ContextMenu {
                     );
                     y += row_height;
                 }
+                MenuItem::Emoji(row) => {
+                    self.paint_emoji_row(scene, transform, text_renderer, theme, (idx, row), y);
+                    y += row_height;
+                }
                 MenuItem::Separator if row_height <= 0.0 => {}
                 MenuItem::Separator => {
                     let sep_y = y + SEPARATOR_HEIGHT / 2.0;
@@ -1834,6 +1884,7 @@ impl Widget for ContextMenu {
                 self.hovered = self
                     .item_at([self.last_cursor.x, self.last_cursor.y])
                     .filter(|index| self.items[*index].is_enabled());
+                self.follow_emoji_cell();
                 // Hovering a row with a nested menu opens it; hovering
                 // another row closes it.
                 if let Some(row) = self.hovered {
@@ -1883,6 +1934,11 @@ impl Widget for ContextMenu {
                 }
                 Key::Named(NamedKey::ArrowUp) => {
                     self.move_hover(-1);
+                    *ctx.handled = true;
+                }
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight)
+                    if self.step_emoji_cell(matches!(key, Key::Named(NamedKey::ArrowRight))) =>
+                {
                     *ctx.handled = true;
                 }
                 Key::Named(NamedKey::Enter | NamedKey::ArrowRight)
@@ -1955,6 +2011,9 @@ impl Widget for ContextMenu {
                     }
                     winit::event::TouchPhase::Ended if self.active_touch == Some(touch.id) => {
                         self.active_touch = None;
+                        self.last_cursor = point;
+                        self.hovered = self.item_at([point.x, point.y]);
+                        self.follow_emoji_cell();
                         if self.place_query_caret(point) {
                             // A tap in the field types there.
                         } else if let Some(idx) = self.item_at([point.x, point.y]) {
@@ -2029,6 +2088,9 @@ impl Widget for ContextMenu {
             .iter()
             .filter_map(|&index| self.items.get(index).map(|item| (index, item)))
             .filter_map(|(index, item)| {
+                if let MenuItem::Emoji(row) = item {
+                    return Some(self.emoji_row_node(index, row));
+                }
                 if let MenuItem::Caption(text) = item {
                     // Read in place among the rows, never focused.
                     return Some(
@@ -2120,6 +2182,9 @@ impl Widget for ContextMenu {
         }
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
+        }
+        if self.activate_emoji_target(target) {
+            return true;
         }
         let Some(index) = target
             .strip_prefix("context-menu:item:")
@@ -3093,91 +3158,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod bounded_tests {
-    use super::*;
-
-    #[test]
-    fn bounded_menu_measures_and_clamps_in_every_viewport() {
-        fn bounded_menu_measures_scales_and_clamps_at_all_edges() {
-            let viewport = Rect::new(10.0, 20.0, 110.0, 95.0);
-            for anchor in [
-                Rect::new(10.0, 20.0, 30.0, 40.0),
-                Rect::new(90.0, 20.0, 110.0, 40.0),
-                Rect::new(10.0, 75.0, 30.0, 95.0),
-                Rect::new(90.0, 75.0, 110.0, 95.0),
-            ] {
-                let mut menu = ContextMenu::new();
-                for _ in 0..8 {
-                    menu.push(MenuItem::action(
-                        "Sehr lange übersetzte Aktion 共有 العربية",
-                        || {},
-                    ));
-                }
-                menu.open_anchored(anchor, viewport);
-                let mut text = TextRenderer::new();
-                text.set_text_scale(2.0);
-                menu.layout_within(&mut text, &Theme::dark().with_text_scale(2.0));
-                assert_eq!(menu.get_rect().intersect(viewport), menu.get_rect());
-                assert!(menu.row_height > ROW_HEIGHT);
-                menu.focus_item(7);
-                assert!(menu.scroll_offset > 0.0);
-                let last = menu.item_rect(7).unwrap();
-                assert_eq!(menu.item_at([last.center().x, last.center().y]), Some(7));
-                assert!(menu.item_rect(0).is_none());
-                menu.move_hover(1);
-                assert_eq!(menu.hovered(), Some(0));
-                assert_eq!(menu.scroll_offset, 0.0);
-            }
-        }
-
-        fn width_uses_shaping_and_legacy_open_resets_bounded_geometry() {
-            let mut narrow = ContextMenu::new();
-            narrow.push(MenuItem::action("i".repeat(40), || {}));
-            let mut wide = ContextMenu::new();
-            wide.push(MenuItem::action("W".repeat(40), || {}));
-            let mut text = TextRenderer::new();
-            for menu in [&mut narrow, &mut wide] {
-                menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 1000.0, 1000.0));
-                menu.layout_within(&mut text, &Theme::dark());
-            }
-            assert!(wide.get_rect().width() > narrow.get_rect().width());
-            // However short its one label, a menu keeps a menu's width.
-            let min = f64::from(Theme::dark().tokens.metrics.menu_min_width);
-            assert!(narrow.get_rect().width() >= min - 0.5);
-            wide.open_at([900.0, 950.0]);
-            assert_eq!(
-                wide.get_rect(),
-                Rect::new(
-                    900.0,
-                    950.0,
-                    900.0 + MENU_WIDTH,
-                    950.0 + ROW_HEIGHT + 2.0 * PADDING
-                )
-            );
-            assert_eq!(wide.scroll_offset, 0.0);
-        }
-
-        fn tiny_viewport_keeps_focused_rows_reachable() {
-            let mut menu = ContextMenu::new();
-            menu.push(MenuItem::action("First", || {}));
-            menu.push(MenuItem::separator());
-            menu.push(MenuItem::action("Last", || {}));
-            let viewport = Rect::new(0.0, 0.0, 4.0, 4.0);
-            menu.open_anchored(viewport, viewport);
-            menu.layout_within(&mut TextRenderer::new(), &Theme::dark());
-            menu.focus_item(2);
-            assert_eq!(menu.get_rect(), viewport);
-            let last = menu.item_rect(2).unwrap();
-            assert_eq!(menu.item_at([last.center().x, last.center().y]), Some(2));
-        }
-
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        bounded_menu_measures_scales_and_clamps_at_all_edges();
-        width_uses_shaping_and_legacy_open_resets_bounded_geometry();
-        tiny_viewport_keeps_focused_rows_reachable();
-    }
-}
+mod bounded_tests;
 
 #[cfg(test)]
 mod nested_and_anchored_tests {

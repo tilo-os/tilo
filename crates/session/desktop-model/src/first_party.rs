@@ -11,7 +11,11 @@ include!("first_party_catalogue.rs");
 
 /// The label a desktop built-in shows for `package` when it is not the
 /// package's name in `PascalCase`.
-const BUILTIN_LABELS: &[(&str, &str)] = &[("so.tilo.file-explorer", "Files")];
+const BUILTIN_LABELS: &[(&str, &str)] = &[
+    ("so.tilo.file-explorer", "Files"),
+    ("so.tilo.code-editor", "Editor"),
+    ("so.tilo.word-processor", "Word"),
+];
 
 /// Whether `label` is `kebab` spelled in `PascalCase`: `pdf-viewer` ↔
 /// `PdfViewer`. Exact — `Pdfviewer` and `pdfViewer` do not match.
@@ -35,8 +39,9 @@ fn is_pascal_case_of(label: &str, kebab: &str) -> bool {
 }
 
 /// The first-party package a desktop built-in label names, if one exists:
-/// `Notes` → `so.tilo.notes`, `Files` → `so.tilo.file-explorer`. `None` for
-/// a label no package answers to (the shell's own `Editor`, test fixtures).
+/// `Notes` → `so.tilo.notes`, `Files` → `so.tilo.file-explorer`, `Editor` →
+/// `so.tilo.code-editor`. `None` for a label no package answers to (test
+/// fixtures).
 #[must_use]
 pub fn package_id_for_builtin_label(label: &str) -> Option<&'static str> {
     FIRST_PARTY_PACKAGES.iter().copied().find(|package| {
@@ -80,7 +85,11 @@ mod tests {
             Some("so.tilo.file-explorer")
         );
         assert_eq!(package_id_for_builtin_label("FileExplorer"), None);
-        assert_eq!(package_id_for_builtin_label("Editor"), None);
+        assert_eq!(
+            package_id_for_builtin_label("Editor"),
+            Some("so.tilo.code-editor")
+        );
+        assert_eq!(package_id_for_builtin_label("Scratch"), None);
         assert_eq!(package_id_for_builtin_label("notes"), None);
     }
 

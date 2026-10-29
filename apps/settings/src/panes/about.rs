@@ -883,7 +883,7 @@ mod tests {
     #[test]
     fn about_lists_the_problems_and_opens_one_to_its_record() {
         let dir = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(dir.path().join("settings.json"));
+        let cx = PaneCx::in_profile(dir.path().to_path_buf());
         let source = Rc::new(FixtureRecords {
             reads: std::cell::RefCell::default(),
         });
@@ -955,7 +955,7 @@ mod tests {
     #[test]
     fn about_without_records_says_none_were_recorded() {
         let dir = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(dir.path().join("settings.json"));
+        let cx = PaneCx::in_profile(dir.path().to_path_buf());
         let model = AboutModel::new(cx, info(), None);
         let text = crate::widgets::announced_text(model.compose().as_ref());
         assert!(

@@ -781,6 +781,20 @@ impl Core {
                 self.apply_mut(&ctx, &Mutation::CollMove { field, item, index })?;
                 ret_void()
             }
+            // `move(x, to: i)`: to the place `i` among the other items, as the invoker sees
+            // them now. The store records it beside the item it then comes before, so a move
+            // made elsewhere at the same time leaves it where this one meant.
+            Imp::CollMoveTo => {
+                let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
+                self.coll_field(&ctx)?;
+                let item = self.item_arg(&ctx, a.h(2)?)?;
+                let Ok(index) = usize::try_from(a.long(3)?) else {
+                    return trap("a collection has no place before its first");
+                };
+                let field = ctx.field.id.clone();
+                self.apply_mut(&ctx, &Mutation::CollMove { field, item, index })?;
+                ret_void()
+            }
             Imp::SetAdd | Imp::SetRemove | Imp::MapPut | Imp::MapRemove => {
                 self.set_map_import(imp, a)
             }

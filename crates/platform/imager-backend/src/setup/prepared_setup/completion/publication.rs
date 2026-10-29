@@ -37,11 +37,11 @@ pub fn publish(
     if let Some(receipt) = recover(package, verified, cancel)? {
         return Ok(receipt);
     }
-    if package.manifest().completed_home.as_ref() != verified.home()
-        || package.manifest().offline_home.is_some()
-        || package.manifest().offline_applications.is_some()
-        || package.manifest().completed_applications_only != (verified.schema() == 2)
-        || package.manifest().portable_flatpak.as_ref() != verified.applications()
+    if package.manifest().units.completed_home() != verified.home()
+        || package.manifest().units.offline_home().is_some()
+        || package.manifest().units.offline_applications().is_some()
+        || package.manifest().units.completed_applications_only() != (verified.schema() == 2)
+        || package.manifest().units.portable_flatpak() != verified.applications()
     {
         return Err(changed("Completed setup does not bind verified Home"));
     }
@@ -146,7 +146,7 @@ fn recover(
             || committed.pending != *verified.pending_setup_expectation()?
             || committed.home.as_ref() != verified.home()
             || committed.applications.as_ref() != verified.applications()
-            || committed.applications != package.manifest.portable_flatpak
+            || committed.applications.as_ref() != package.manifest.units.portable_flatpak()
             || !committed.setup.valid()
             || committed.setup.sealed_bytes > LIMITS.sealed_bound().ok_or_else(invalid)?
         {

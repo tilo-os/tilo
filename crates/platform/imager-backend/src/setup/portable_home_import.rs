@@ -94,10 +94,10 @@ impl PortableHomeReview {
         expectation.validate()?;
         if setup
             .manifest()
-            .completed_home
-            .as_ref()
+            .units
+            .completed_home()
             .is_some_and(|home| home != expectation)
-            || setup.manifest().portable_home.is_none()
+            || setup.manifest().units.portable_home().is_none()
             || expectation.setup_binding != setup.manifest().setup_binding
             || grants.package.file_name() != Some(std::ffi::OsStr::new(&expectation.filename))
         {
@@ -107,8 +107,8 @@ impl PortableHomeReview {
         }
         let applications = setup
             .manifest()
-            .portable_home
-            .as_ref()
+            .units
+            .portable_home()
             .is_some_and(|plan| plan.applications);
         Self::review_archive(grants, expectation, password, cancel, None, applications)
     }

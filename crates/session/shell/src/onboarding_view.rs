@@ -5830,6 +5830,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::shell::test_support::{LaidOut, lay_out_as_root};
     use automerge::transaction::Transactable as _;
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
@@ -8578,27 +8579,7 @@ mod tests {
         {
             let (mut view, _) = view();
             let theme = Theme::dark();
-            let mut text = ui::text_render::TextRenderer::new();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(420.0),
-                        height: taffy::AvailableSpace::Definite(640.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        node_map
-                            .get(&node_id)
-                            .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                                (*ptr).measure(known, available, &mut text)
-                            })
-                    },
-                )
-                .expect("narrow setup layout");
-            view.apply_layout(&taffy, node, Point::ZERO);
+            lay_out_as_root(&mut view, 420.0, 640.0, &theme);
             let panel = view.composed.as_ref().expect("composition").get_rect();
             assert!(panel.x0 >= 0.0 && panel.x1 <= 420.0, "panel={panel:?}");
             assert!(panel.y0 >= 0.0 && panel.y1 <= 640.0, "panel={panel:?}");
@@ -8622,27 +8603,7 @@ mod tests {
         {
             let (mut view, _) = view();
             let theme = Theme::dark();
-            let mut text = ui::text_render::TextRenderer::new();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(1600.0),
-                        height: taffy::AvailableSpace::Definite(900.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        node_map
-                            .get(&node_id)
-                            .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                                (*ptr).measure(known, available, &mut text)
-                            })
-                    },
-                )
-                .expect("large setup layout");
-            view.apply_layout(&taffy, node, Point::ZERO);
+            lay_out_as_root(&mut view, 1600.0, 900.0, &theme);
             let panel = view.composed.as_ref().expect("composition").get_rect();
             assert!(
                 panel.height() <= f64::from(INTRO_PANEL_HEIGHT) + 0.5,
@@ -8733,28 +8694,9 @@ mod tests {
                         Some("A deterministic error for responsive layout coverage".into());
                 }
 
-                let mut text = ui::text_render::TextRenderer::new();
-                let mut taffy: TaffyTree<()> = TaffyTree::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-                let measure_map = node_map.clone();
-                taffy
-                    .compute_layout_with_measure(
-                        node,
-                        taffy::Size {
-                            width: taffy::AvailableSpace::Definite(width),
-                            height: taffy::AvailableSpace::Definite(height),
-                        },
-                        |known, available, node_id, _, _| {
-                            measure_map
-                                .get(&node_id)
-                                .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                                    (*pointer).measure(known, available, &mut text)
-                                })
-                        },
-                    )
-                    .expect("host identity layout");
-                view.apply_layout(&taffy, node, Point::ZERO);
+                let LaidOut {
+                    nodes: node_map, ..
+                } = lay_out_as_root(&mut view, width, height, &theme);
                 let panel = view.composed.as_ref().expect("composition").get_rect();
                 assert!(
                     panel.x0 >= f64::from(VIEWPORT_GUTTER) - 0.5
@@ -8995,28 +8937,9 @@ mod tests {
                     press(&view, &mut document, key);
                     view.sync(&document, &automerge::ROOT);
                 }
-                let mut text = ui::text_render::TextRenderer::new();
-                let mut taffy: TaffyTree<()> = TaffyTree::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-                let measure_map = node_map.clone();
-                taffy
-                    .compute_layout_with_measure(
-                        node,
-                        taffy::Size {
-                            width: taffy::AvailableSpace::Definite(width),
-                            height: taffy::AvailableSpace::Definite(height),
-                        },
-                        |known, available, node_id, _, _| {
-                            measure_map
-                                .get(&node_id)
-                                .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                                    (*pointer).measure(known, available, &mut text)
-                                })
-                        },
-                    )
-                    .expect("choice layout");
-                view.apply_layout(&taffy, node, Point::ZERO);
+                let LaidOut {
+                    nodes: node_map, ..
+                } = lay_out_as_root(&mut view, width, height, &theme);
                 let panel = view.composed.as_ref().expect("composition").get_rect();
                 let scroll = node_map
                     .values()
@@ -9157,28 +9080,11 @@ mod tests {
             view.sync(&document, &automerge::ROOT);
 
             let theme = Theme::dark();
-            let mut text = ui::text_render::TextRenderer::new();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-            let measure_map = node_map.clone();
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(800.0),
-                        height: taffy::AvailableSpace::Definite(600.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        measure_map
-                            .get(&node_id)
-                            .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                                (*pointer).measure(known, available, &mut text)
-                            })
-                    },
-                )
-                .expect("host acknowledgement layout");
-            view.apply_layout(&taffy, node, Point::ZERO);
+            let LaidOut {
+                taffy,
+                node,
+                nodes: node_map,
+            } = lay_out_as_root(&mut view, 800.0, 600.0, &theme);
             let (row_node, row) = node_map
                 .iter()
                 .find_map(|(&node, &pointer)| unsafe {
@@ -9246,28 +9152,11 @@ mod tests {
             view.sync(&document, &automerge::ROOT);
 
             let theme = Theme::dark();
-            let mut text = ui::text_render::TextRenderer::new();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-            let measure_map = node_map.clone();
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(1280.0),
-                        height: taffy::AvailableSpace::Definite(800.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        measure_map
-                            .get(&node_id)
-                            .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                                (*pointer).measure(known, available, &mut text)
-                            })
-                    },
-                )
-                .expect("backup continuation layout");
-            view.apply_layout(&taffy, node, Point::ZERO);
+            let LaidOut {
+                taffy,
+                node,
+                nodes: node_map,
+            } = lay_out_as_root(&mut view, 1280.0, 800.0, &theme);
             let button = node_map
                 .values()
                 .find_map(|&pointer| unsafe {
@@ -9331,28 +9220,9 @@ mod tests {
         {
             fn initial_scroll_offset(view: &mut OnboardingView) -> f32 {
                 let theme = Theme::dark();
-                let mut text = ui::text_render::TextRenderer::new();
-                let mut taffy: TaffyTree<()> = TaffyTree::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-                let measure_map = node_map.clone();
-                taffy
-                    .compute_layout_with_measure(
-                        node,
-                        taffy::Size {
-                            width: taffy::AvailableSpace::Definite(1280.0),
-                            height: taffy::AvailableSpace::Definite(800.0),
-                        },
-                        |known, available, node_id, _, _| {
-                            measure_map
-                                .get(&node_id)
-                                .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                                    (*pointer).measure(known, available, &mut text)
-                                })
-                        },
-                    )
-                    .expect("laptop-height onboarding layout");
-                view.apply_layout(&taffy, node, Point::ZERO);
+                let LaidOut {
+                    nodes: node_map, ..
+                } = lay_out_as_root(view, 1280.0, 800.0, &theme);
                 let scroll_pointer = node_map
                     .values()
                     .copied()
@@ -9395,28 +9265,11 @@ mod tests {
             ] {
                 let (mut view, _) = view();
                 view.set_visual_state_for_snapshot(OnboardingVisualState::Backup);
-                let mut text = ui::text_render::TextRenderer::new();
-                let mut taffy: TaffyTree<()> = TaffyTree::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-                let measure_map = node_map.clone();
-                taffy
-                    .compute_layout_with_measure(
-                        node,
-                        taffy::Size {
-                            width: taffy::AvailableSpace::Definite(width),
-                            height: taffy::AvailableSpace::Definite(height),
-                        },
-                        |known, available, node_id, _, _| {
-                            measure_map
-                                .get(&node_id)
-                                .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                                    (*pointer).measure(known, available, &mut text)
-                                })
-                        },
-                    )
-                    .expect("backup review-size layout");
-                view.apply_layout(&taffy, node, Point::ZERO);
+                let LaidOut {
+                    taffy,
+                    node,
+                    nodes: node_map,
+                } = lay_out_as_root(&mut view, width, height, &theme);
                 let rect = |id: &str| {
                     node_map
                         .values()
@@ -9533,28 +9386,9 @@ mod tests {
                 let (mut view, _) = view();
                 view.set_visual_state_for_snapshot(OnboardingVisualState::BackupVerified);
                 let theme = Theme::dark();
-                let mut text = ui::text_render::TextRenderer::new();
-                let mut taffy: TaffyTree<()> = TaffyTree::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-                let measure_map = node_map.clone();
-                taffy
-                    .compute_layout_with_measure(
-                        node,
-                        taffy::Size {
-                            width: taffy::AvailableSpace::Definite(width),
-                            height: taffy::AvailableSpace::Definite(height),
-                        },
-                        |known, available, node_id, _, _| {
-                            measure_map
-                                .get(&node_id)
-                                .map_or(taffy::Size::ZERO, |&pointer| unsafe {
-                                    (*pointer).measure(known, available, &mut text)
-                                })
-                        },
-                    )
-                    .expect("verified backup review-size layout");
-                view.apply_layout(&taffy, node, Point::ZERO);
+                let LaidOut {
+                    nodes: node_map, ..
+                } = lay_out_as_root(&mut view, width, height, &theme);
                 let rect = |id: &str| {
                     node_map
                         .values()
@@ -9630,28 +9464,9 @@ mod tests {
             sync_journaled(&mut view, &doc);
 
             let theme = Theme::dark().with_text_scale(1.3);
-            let mut text = ui::text_render::TextRenderer::new();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-            let measure_map = node_map.clone();
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(1000.0),
-                        height: taffy::AvailableSpace::Definite(720.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        measure_map
-                            .get(&node_id)
-                            .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                                (*ptr).measure(known, available, &mut text)
-                            })
-                    },
-                )
-                .expect("large-text done layout");
-            view.apply_layout(&taffy, node, Point::ZERO);
+            let LaidOut {
+                nodes: node_map, ..
+            } = lay_out_as_root(&mut view, 1000.0, 720.0, &theme);
 
             // The ready hand-off owns only the height its content needs
             // (61034652be); at large text it must still fit the viewport
@@ -9696,28 +9511,9 @@ mod tests {
             assert_eq!(view.flow().screen(), Screen::Done);
 
             let theme = Theme::dark().with_text_scale(1.3);
-            let mut text = ui::text_render::TextRenderer::new();
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-            let measure_map = node_map.clone();
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(1280.0),
-                        height: taffy::AvailableSpace::Definite(720.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        measure_map
-                            .get(&node_id)
-                            .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                                (*ptr).measure(known, available, &mut text)
-                            })
-                    },
-                )
-                .expect("large-text backup layout");
-            view.apply_layout(&taffy, node, Point::ZERO);
+            let LaidOut {
+                nodes: node_map, ..
+            } = lay_out_as_root(&mut view, 1280.0, 720.0, &theme);
             let widget_rect = |id: &str| {
                 node_map
                     .values()
@@ -9758,28 +9554,9 @@ mod tests {
                 }
 
                 let theme = Theme::dark().with_text_scale(1.3);
-                let mut text = ui::text_render::TextRenderer::new();
-                let mut taffy: TaffyTree<()> = TaffyTree::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let node = view.build_layout(&mut taffy, &theme, &mut node_map);
-                let measure_map = node_map.clone();
-                taffy
-                    .compute_layout_with_measure(
-                        node,
-                        taffy::Size {
-                            width: taffy::AvailableSpace::Definite(WIDTH),
-                            height: taffy::AvailableSpace::Definite(HEIGHT),
-                        },
-                        |known, available, node_id, _, _| {
-                            measure_map
-                                .get(&node_id)
-                                .map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                                    (*ptr).measure(known, available, &mut text)
-                                })
-                        },
-                    )
-                    .expect("narrow large-text tour layout");
-                view.apply_layout(&taffy, node, Point::ZERO);
+                let LaidOut {
+                    nodes: node_map, ..
+                } = lay_out_as_root(&mut view, WIDTH, HEIGHT, &theme);
 
                 let mut action_rects = Vec::new();
                 for id in [

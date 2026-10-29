@@ -774,8 +774,10 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
         if cx.mode().is_live()
-            && let (Some(history), Some(record)) =
-                (cx.person::<crate::history::CommandHistory>(), cx.record())
+            && let (Some(history), Some(record)) = (
+                cx.person::<crate::history::CommandHistory>(),
+                cx.record_id(),
+            )
         {
             self.remember_in(
                 history,
@@ -856,8 +858,10 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
         self.wake_through(cx.waker());
         self.bind(cx.dispatcher());
         if cx.mode().is_live()
-            && let (Some(history), Some(record)) =
-                (cx.person::<crate::history::CommandHistory>(), cx.record())
+            && let (Some(history), Some(record)) = (
+                cx.person::<crate::history::CommandHistory>(),
+                cx.record_id(),
+            )
         {
             self.remember_in(
                 history,

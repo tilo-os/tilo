@@ -10,9 +10,9 @@
 use ui::icons::Icon;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 
-use super::{FitMode, PdfApp, swatch_label, tool_icon};
+use super::{FitMode, PdfApp, tool_icon};
 use crate::actions::PdfEffect;
-use crate::model::{Swatch, Tool};
+use crate::model::{HighlightColor, Tool};
 
 impl PdfApp {
     /// The window bar's slots for what the reader shows now. Open stands in
@@ -45,11 +45,11 @@ impl PdfApp {
                 .on(tool == self.tool)
             })
             .collect();
-        let colours = Swatch::ALL
+        let colours = HighlightColor::ALL
             .into_iter()
             .map(|colour| {
                 let effect = PdfEffect::SetMarkerColour { colour };
-                bar.entry(Icon::Highlighter.name(), swatch_label(colour), effect)
+                bar.entry(Icon::Highlighter.name(), colour.name(), effect)
                     .on(colour == self.swatch)
             })
             .collect();

@@ -404,7 +404,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = || {
             ui::storage::Settings::<SidePanelWidths>::for_app("so.tilo.browser")
-                .in_file(dir.path().join("settings.json"))
+                .in_profile(dir.path())
         };
         let theme = Theme::dark();
         let (narrowest, widest) = side_panel_bounds(&theme);
@@ -520,7 +520,7 @@ mod tests {
         use super::super::{BrowserOperation, LibrarySection};
         let dir = tempfile::tempdir().unwrap();
         let store = ui::storage::Settings::<SidePanelWidths>::for_app("so.tilo.browser")
-            .in_file(dir.path().join("settings.json"));
+            .in_profile(dir.path());
         let id = "n".repeat(32);
         let mut widget = window_with_panel(&id, store);
         let settle = |widget: &mut BrowserWidget| {

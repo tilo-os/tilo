@@ -312,8 +312,7 @@ fn a_shown_windows_published_surface_carries_its_zoom_and_the_broker_runs_it() {
     // The window opens, taking up the zoom its app had on this device.
     let dir = tempfile::tempdir().expect("a settings directory");
     app.accessibility.zoom.restore_from(
-        crate::storage::Settings::for_app("so.tilo.zoom-publication")
-            .in_file(dir.path().join("settings.json")),
+        crate::storage::Settings::for_app("so.tilo.zoom-publication").in_profile(dir.path()),
     );
     app.publish_action_surface();
     let published = app

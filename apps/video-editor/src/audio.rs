@@ -1567,14 +1567,12 @@ mod tests {
             );
 
             monitor.play(1.0);
-            assert!(
-                eventually(|| !tap.lock().unwrap().is_empty()),
-                "playing starts feeding the sink",
-            );
-            assert!(
-                eventually(|| tap.lock().unwrap().iter().any(|s| (*s - 0.3).abs() < 1e-6)),
-                "and what it feeds is the mixed timeline",
-            );
+            tilo_test_env::wait_until("playing starts feeding the sink", || {
+                !tap.lock().unwrap().is_empty()
+            });
+            tilo_test_env::wait_until("the mixed timeline in the sink", || {
+                tap.lock().unwrap().iter().any(|s| (*s - 0.3).abs() < 1e-6)
+            });
 
             monitor.pause();
             monitor.wait_paused();
@@ -1634,7 +1632,7 @@ mod tests {
             );
 
             monitor.play(1.0);
-            assert!(eventually(|| !tap.lock().unwrap().is_empty()));
+            tilo_test_env::wait_until("the sink to be fed", || !tap.lock().unwrap().is_empty());
             assert!(
                 tap.lock().unwrap().iter().all(|s| *s < 0.5),
                 "before the second clip, only the first is heard",
@@ -1642,9 +1640,9 @@ mod tests {
 
             tap.lock().unwrap().clear();
             monitor.seek(21.0);
-            assert!(
-                eventually(|| tap.lock().unwrap().iter().any(|s| *s > 0.5)),
+            tilo_test_env::wait_until(
                 "after seeking into the second clip, it is what plays",
+                || tap.lock().unwrap().iter().any(|s| *s > 0.5),
             );
             monitor.pause();
         }
@@ -1660,7 +1658,9 @@ mod tests {
                 Arc::new(MixMeters::new()),
             );
             monitor.play(1.0);
-            assert!(eventually(|| tap.lock().unwrap().iter().any(|s| *s > 0.3)));
+            tilo_test_env::wait_until("the first clip to be heard", || {
+                tap.lock().unwrap().iter().any(|s| *s > 0.3)
+            });
 
             // Mute the track mid-playback: the very setting that reached no
             // audio path before.
@@ -1668,22 +1668,19 @@ mod tests {
             muted.tracks[0].muted = true;
             muted.tracks[1].muted = true;
             monitor.set_project(&muted);
-            assert!(
-                eventually(|| {
-                    // Clear, then look at what arrives *after* the clear. A
-                    // single clear before looking would race a block that was
-                    // already mixed when the mute landed: one pre-mute sample
-                    // in the tap and no later silence could ever clear it,
-                    // which is a flake rather than a finding.
-                    tap.lock().unwrap().clear();
-                    tilo_test_env::wait_until("a block after the clear", || {
-                        !tap.lock().unwrap().is_empty()
-                    });
-                    let got = tap.lock().unwrap();
-                    !got.is_empty() && got.iter().all(|s| *s == 0.0)
-                }),
-                "muting is heard on the next block, without stopping playback",
-            );
+            tilo_test_env::wait_until("muting to be heard on the next block", || {
+                // Clear, then look at what arrives *after* the clear. A
+                // single clear before looking would race a block that was
+                // already mixed when the mute landed: one pre-mute sample
+                // in the tap and no later silence could ever clear it,
+                // which is a flake rather than a finding.
+                tap.lock().unwrap().clear();
+                tilo_test_env::wait_until("a block after the clear", || {
+                    !tap.lock().unwrap().is_empty()
+                });
+                let got = tap.lock().unwrap();
+                !got.is_empty() && got.iter().all(|s| *s == 0.0)
+            });
             assert!(monitor.is_playing(), "and playback is still running");
             monitor.pause();
         }
@@ -1700,7 +1697,7 @@ mod tests {
                     Arc::new(MixMeters::new()),
                 );
                 monitor.play(1.0);
-                assert!(eventually(|| !tap.lock().unwrap().is_empty()));
+                tilo_test_env::wait_until("the sink to be fed", || !tap.lock().unwrap().is_empty());
             }
             // The drop joins the thread, and the thread owned the sink: with
             // it gone, nothing holds the sink to feed it.

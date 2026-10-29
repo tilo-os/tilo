@@ -70,12 +70,14 @@ TAGGED = re.compile(r"\btags\s*\.\s*push\s*\(")
 DESTRUCTIVE = re.compile(r"\.\s*destructive\s*\(\s*\)")
 # What the word says on something that is not an action: a `ChangeKind` is how
 # a change is made, `is_destructive()` asks a built spec whether it is one, and
-# a toolbar button is painted as one. Each carries its own object, named before
+# a toolbar button (a `ToolbarAction`, or a window bar's entry its
+# `bar_entries` builds) is painted as one. Each carries its own object, named before
 # the call, and none of them builds a deletion.
 NOT_A_BUILDER = re.compile(
     r"(?:\b(?:kind|change|ChangeKind\s*::\s*\w+)\s*\.\s*destructive\s*\(\s*\)"
     r"|\bis_destructive\s*\(\s*\)"
     r"|\bToolbarAction"
+    r"|\bbar_entries\s*\.\s*entry\s*\("
     r"|\bActionKind\s*::\s*\w+\.\s*destructive\s*\(\s*\))"
 )
 # The action a `.destructive()` at the end of a chain continues is built by
@@ -551,7 +553,12 @@ def check_deletions(
         # irreversibly is tagged when it is built, and one built elsewhere
         # carries the tag where it is built.
         around = code[start : statement_bounds(code, start)[1]]
-        if IRREVERSIBLE.search(around) or SETTLED.search(around):
+        if IRREVERSIBLE.search(around):
+            continue
+        # A builder that settles the spec's confirmation once its kind and
+        # tags are in place, in the same body, lets the kind its declaration
+        # gives it decide: settling reads what the spec carries.
+        if SETTLED.search(around) or SETTLED.search(enclosing_body(code, start)):
             continue
         # A builder that puts the declaration's tags on the spec before
         # handing it back has read them: `destructive` settles from whatever

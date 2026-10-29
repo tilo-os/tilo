@@ -33,7 +33,6 @@ params = [
 kind = "tube.watch-history"
 label = "Watch history"
 version = 1
-person = true
 fields = [
   { path = "watched", type = "BTreeMap<String, u64>" },
   { path = "positions", type = "BTreeMap<String, u64>" },

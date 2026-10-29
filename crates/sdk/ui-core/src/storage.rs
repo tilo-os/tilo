@@ -29,7 +29,6 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
-use tilo_lock::MutexRecover as _;
 
 /// Whether this thread may wait on storage. The compositor's frame loop,
 /// where an in-process app runs, may not: there an app reads and lists on a
@@ -232,117 +231,55 @@ macro_rules! settings_codec {
 /// Which settings document a host gives its apps.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SettingsDocument {
-    /// The person's session document: the one the host installed
-    /// (`settings_store::install_source`), else the local `settings.json`.
+    /// The person's session settings: the source the host installed
+    /// (`settings_store::install_source`), else the local profile.
     #[default]
     Session,
-    /// A document file of the host's own: a test or capture profile.
-    File(PathBuf),
-}
-
-/// How many writes through this module each document has taken, so a
-/// reader in the same process sees a write to its document even within one
-/// file-time tick, and is not sent to read it again by another document's.
-static WRITES: std::sync::Mutex<std::collections::BTreeMap<SettingsDocument, u64>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
-
-fn writes() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<SettingsDocument, u64>> {
-    WRITES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// Count a write to `document` ([`WRITES`]).
-fn note_write(document: &SettingsDocument) {
-    let mut writes = writes();
-    let count = writes.entry(document.clone()).or_default();
-    *count = count.wrapping_add(1);
+    /// The settings of a profile of the host's own, by its root directory:
+    /// a test or capture profile.
+    Profile(PathBuf),
 }
 
 /// One version of a settings document, for readers that follow it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SettingsRevision {
-    stamp: Option<settings_store::SettingsStamp>,
-    writes: u64,
-}
+pub struct SettingsRevision(Option<u64>);
 
 impl SettingsDocument {
-    /// Where the document is, when it is a file.
-    #[must_use]
-    pub fn path(&self) -> Option<PathBuf> {
+    /// Where the document is kept.
+    fn source(&self) -> Option<std::sync::Arc<dyn settings_store::SettingsSource>> {
         match self {
-            Self::Session => settings_store::settings_path(),
-            Self::File(path) => Some(path.clone()),
+            Self::Session => settings_store::source(),
+            Self::Profile(root) => Some(settings_store::profile(root)),
         }
     }
 
     /// The configuration directory of the profile this document belongs to:
     /// the person's config root for the session document, else the
-    /// directory holding the file. Per-profile stores beside the settings
+    /// profile's own root. Per-profile stores beside the settings
     /// (accounts, their credentials and sync health) live here, so a test,
     /// capture or `--data-dir` profile never reads or writes the person's.
     #[must_use]
     pub fn config_root(&self) -> Option<PathBuf> {
         match self {
             Self::Session => settings_store::config_root(),
-            Self::File(path) => path.parent().map(Path::to_path_buf),
+            Self::Profile(root) => Some(root.clone()),
         }
     }
 
-    /// The whole document, with the changes still on their way to it
-    /// ([`flush_settings_writes`]).
+    /// The whole document.
     #[must_use]
     pub fn load(&self) -> Map<String, Value> {
-        self.read_with_pending(None, || match self {
-            Self::Session => settings_store::load(),
-            Self::File(path) => settings_store::load_at(path),
-        })
+        self.source()
+            .map(|source| source.load())
+            .unwrap_or_default()
     }
 
-    /// One section's keys, with the changes still on their way to it.
+    /// One section's keys.
     #[must_use]
     pub fn section(&self, name: &str) -> Map<String, Value> {
-        self.read_with_pending(Some(name), || match self {
-            Self::Session => settings_store::load_section(name),
-            Self::File(path) => settings_store::load_section_at(path, name),
-        })
-    }
-
-    fn read_with_pending(
-        &self,
-        name: Option<&str>,
-        mut read: impl FnMut() -> Map<String, Value>,
-    ) -> Map<String, Value> {
-        loop {
-            let retired = lock_queue().retired;
-            let mut values = read();
-            let queue = lock_queue();
-            // A writer may have replaced the file and removed its queued
-            // changes after we read the old file. Retry rather than lose
-            // those changes; never hold the queue lock during file I/O.
-            if queue.retired != retired {
-                continue;
-            }
-            for change in queue.pending.iter().filter(|c| c.document == *self) {
-                match name {
-                    Some(name) if change.name == name => values.extend(change.values.clone()),
-                    None => settings_store::merge_section(
-                        &mut values,
-                        &change.name,
-                        change.values.clone(),
-                    ),
-                    Some(_) => {}
-                }
-            }
-            return values;
-        }
-    }
-
-    /// Whether this process writes the document's file itself: a file, or
-    /// the session's when the host installed no source of its own (the
-    /// Settings app, which the launcher hands the session document).
-    fn is_file(&self) -> bool {
-        matches!(self, Self::File(_)) || settings_store::installed_source().is_none()
+        self.source()
+            .map(|source| settings_store::load_section_in(&*source, name))
+            .unwrap_or_default()
     }
 
     /// Merge `values` into section `name`, keeping every other section and
@@ -356,8 +293,7 @@ impl SettingsDocument {
     }
 
     /// [`Self::update_section`], recording who and what made the change
-    /// with every key it changes, where the document keeps a history of
-    /// its changes (the session's).
+    /// with every key it changes.
     ///
     /// # Errors
     ///
@@ -368,223 +304,27 @@ impl SettingsDocument {
         values: Map<String, Value>,
         origin: Option<&settings_store::ChangeOrigin>,
     ) -> std::io::Result<()> {
-        let file = self.is_file();
-        let written = if file && crate::rt::is_ui_thread() {
-            defer(Change {
-                document: self.clone(),
-                name: name.to_owned(),
-                values,
-            });
-            Ok(())
-        } else {
-            if file {
-                // After what a UI thread changed in this document before, in
-                // the order made. Other documents' changes keep their own
-                // order and need not wait for this write.
-                store_pending(Some(self));
-            }
-            match (self, origin) {
-                (Self::Session, Some(origin)) => {
-                    settings_store::update_section_by(name, values, origin)
-                }
-                (Self::Session, None) => settings_store::update_section(name, values),
-                (Self::File(path), _) => settings_store::update_section_at(path, name, values),
-            }
-        };
-        note_write(self);
-        written
+        let source = self
+            .source()
+            .ok_or_else(|| std::io::Error::other("no config directory available"))?;
+        match origin {
+            Some(origin) => source.update_section_by(name, values, origin),
+            None => source.update_section(name, values),
+        }
     }
 
     /// The document's current version.
     #[must_use]
     pub fn revision(&self) -> SettingsRevision {
-        SettingsRevision {
-            stamp: match self {
-                Self::Session => settings_store::stamp(),
-                Self::File(path) => settings_store::stamp_at(path),
-            },
-            writes: writes().get(self).copied().unwrap_or_default(),
-        }
+        SettingsRevision(self.source().map(|source| source.revision()))
     }
 }
 
-/// A change to a settings file a UI thread made, not yet stored.
-#[derive(Clone)]
-struct Change {
-    document: SettingsDocument,
-    name: String,
-    values: Map<String, Value>,
-}
-
-/// The settings changes UI threads made, stored in order off them.
-///
-/// Storing a change takes the document's lock, rewrites the file and syncs
-/// it: on a busy disk that took hundreds of milliseconds, and as long as
-/// another writer held the lock, and the window waited for it on every
-/// toggle and every step of a slider. A UI thread's change is queued
-/// instead and shows at once to every reader in the process (reads apply
-/// the queue over the file, retrying if a batch was retired during the
-/// read). A background job stores the queue, oldest
-/// first: every queued change to a file under one lock and one atomic
-/// replace, each merged into the file as it is then. The last change to a
-/// key wins and what other processes stored meanwhile is kept. A writer on
-/// any other thread stores the queue first, so changes land in the order
-/// they were made in that document.
-///
-/// Each document has a job of its own, scheduled on the background of the
-/// thread that queued its first change, and that job stores that document's
-/// changes alone: a document's changes never wait for, nor are stored by,
-/// the job of another (another window's, or another test's profile).
-struct Queue {
-    pending: Vec<Change>,
-    /// Batches removed after a store, so readers can detect a stale file.
-    retired: u64,
-    /// The documents a background job is to store.
-    scheduled: Vec<SettingsDocument>,
-    /// A thread is writing the oldest changes.
-    writing: bool,
-    /// The window to wake when a change could not be stored, so it shows
-    /// the document as it is.
-    wake: Option<crate::WakeHandle>,
-}
-
-static QUEUE: std::sync::Mutex<Queue> = std::sync::Mutex::new(Queue {
-    pending: Vec::new(),
-    retired: 0,
-    scheduled: Vec::new(),
-    writing: false,
-    wake: None,
-});
-static STORED: std::sync::Condvar = std::sync::Condvar::new();
-
-fn lock_queue() -> std::sync::MutexGuard<'static, Queue> {
-    QUEUE.lock_recover()
-}
-
-fn wait(queue: std::sync::MutexGuard<'static, Queue>) -> std::sync::MutexGuard<'static, Queue> {
-    STORED
-        .wait(queue)
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn defer(change: Change) {
-    let document = change.document.clone();
-    let mut queue = lock_queue();
-    queue.pending.push(change);
-    queue.wake = Some(crate::WakeHandle::new());
-    if queue.scheduled.contains(&document) {
-        return;
-    }
-    queue.scheduled.push(document.clone());
-    drop(queue);
-    // A host with no background work stores it here rather than lose it.
-    let job = document.clone();
-    if crate::background::Background::current()
-        .spawn("settings writes", move || store_queue(&job))
-        .is_err()
-    {
-        store_queue(&document);
-    }
-}
-
-/// The background job of `document`: store its queued changes until there
-/// are none.
-fn store_queue(document: &SettingsDocument) {
-    loop {
-        store_pending(Some(document));
-        let mut queue = lock_queue();
-        // A change queued after the last batch found this job scheduled.
-        if !queue
-            .pending
-            .iter()
-            .any(|change| change.document == *document)
-        {
-            queue.scheduled.retain(|scheduled| scheduled != document);
-            STORED.notify_all();
-            return;
-        }
-    }
-}
-
-/// Store the queued changes to `only` (every queued change when `None`) on
-/// this thread, oldest first, after the batch another thread may be
-/// writing.
-fn store_pending(only: Option<&SettingsDocument>) {
-    let wanted = |change: &Change| only.is_none_or(|document| change.document == *document);
-    let mut queue = lock_queue();
-    loop {
-        if queue.writing {
-            queue = wait(queue);
-            continue;
-        }
-        // While `writing` is set no other thread takes changes off the
-        // queue, and new ones are only appended, so these positions hold
-        // until the batch is stored.
-        let taken: Vec<usize> = (0..queue.pending.len())
-            .filter(|&at| wanted(&queue.pending[at]))
-            .collect();
-        if taken.is_empty() {
-            return;
-        }
-        queue.writing = true;
-        let batch: Vec<Change> = taken.iter().map(|&at| queue.pending[at].clone()).collect();
-        drop(queue);
-        debug_assert!(
-            !crate::rt::is_ui_thread(),
-            "a settings file was written on the UI thread"
-        );
-        let mut failed = false;
-        for (at, change) in batch.iter().enumerate() {
-            let document = &change.document;
-            if batch[..at].iter().any(|c| c.document == *document) {
-                continue;
-            }
-            let path = match document {
-                SettingsDocument::File(path) => Ok(path.clone()),
-                SettingsDocument::Session => settings_store::file_write_path(),
-            };
-            let stored = path.and_then(|path| {
-                settings_store::update_document_at(&path, |doc| {
-                    for c in batch.iter().filter(|c| c.document == *document) {
-                        settings_store::merge_section(doc, &c.name, c.values.clone());
-                    }
-                })
-            });
-            if let Err(error) = stored {
-                tracing::warn!(?document, %error, "settings changes not stored");
-                failed = true;
-            }
-        }
-        queue = lock_queue();
-        for &at in taken.iter().rev() {
-            queue.pending.remove(at);
-        }
-        queue.retired = queue.retired.wrapping_add(1);
-        queue.writing = false;
-        for (at, change) in batch.iter().enumerate() {
-            if !batch[..at].iter().any(|c| c.document == change.document) {
-                note_write(&change.document);
-            }
-        }
-        if failed && let Some(wake) = queue.wake.take() {
-            wake.wake();
-        }
-        STORED.notify_all();
-    }
-}
-
-/// Store every settings change a UI thread made before going on: off a UI
-/// thread here, on one by waiting for the background, which the native
-/// runner does before the process ends.
+/// Make every settings change stored before going on, which the native
+/// runner does before the process ends. No change waits for the disk when
+/// it is made.
 pub fn flush_settings_writes() {
-    if !crate::rt::is_ui_thread() {
-        store_pending(None);
-        return;
-    }
-    let mut queue = lock_queue();
-    while !queue.scheduled.is_empty() {
-        queue = wait(queue);
-    }
+    settings_store::flush_pending_writes();
 }
 
 /// An app's typed settings of one [`SettingsSchema`] type, in the settings
@@ -653,10 +393,10 @@ impl<T: SettingsSchema> Settings<T> {
         self
     }
 
-    /// The same settings in the document file at `path` instead.
+    /// The same settings in the profile at `root` instead.
     #[must_use]
-    pub fn in_file(self, path: impl Into<PathBuf>) -> Self {
-        self.in_document(SettingsDocument::File(path.into()))
+    pub fn in_profile(self, root: impl Into<PathBuf>) -> Self {
+        self.in_document(SettingsDocument::Profile(root.into()))
     }
 
     /// The same settings read with `device`'s defaults, whatever device
@@ -990,11 +730,11 @@ impl SettingsSection {
         }
     }
 
-    /// The same section in the document at `path` instead of the user's
+    /// The same section in the profile at `root` instead of the user's
     /// (tests, tools that edit another profile).
     #[must_use]
-    pub fn in_file(self, path: impl Into<PathBuf>) -> Self {
-        self.in_document(SettingsDocument::File(path.into()))
+    pub fn in_profile(self, root: impl Into<PathBuf>) -> Self {
+        self.in_document(SettingsDocument::Profile(root.into()))
     }
 
     /// The same section in `document`: the one the host gave the app
@@ -1009,12 +749,6 @@ impl SettingsSection {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.section
-    }
-
-    /// Where the document is, when it is a file.
-    #[must_use]
-    pub fn path(&self) -> Option<PathBuf> {
-        self.document.path()
     }
 
     /// The whole desktop settings document.
@@ -1061,10 +795,11 @@ pub fn parse_settings(text: &str) -> Map<String, Value> {
     settings_store::parse(text)
 }
 
-/// The document at `path`, for code that compares two profiles.
+/// The settings of the profile at `root`, for code that compares two
+/// profiles.
 #[must_use]
-pub fn settings_at(path: &Path) -> Map<String, Value> {
-    settings_store::load_at(path)
+pub fn settings_at(root: &Path) -> Map<String, Value> {
+    settings_store::SettingsSource::load(&*settings_store::profile(root))
 }
 
 /// This app's secrets in the store the current host provides.
@@ -1077,84 +812,11 @@ pub fn secrets(app_id: &str) -> crate::secrets::SecretStore {
 mod tests {
     use super::*;
 
-    /// Queue and retire an update precisely after the reader has loaded
-    /// the old file, before it can overlay the queue. No timing or disk
-    /// speed assumption is needed to reproduce the background-writer race.
-    fn read_while_the_background_retires_a_change(name: Option<&str>) {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("settings.json");
-        std::fs::write(
-            &file,
-            r#"{"playback":{"autoplay":true},"other":{"kept":1}}"#,
-        )
-        .unwrap();
-        let document = SettingsDocument::File(file.clone());
-        let work = crate::background::Pumped::new();
-        let _work = work.background().enter();
-        crate::rt::mark_ui_thread();
-        let mut reads = 0;
-        let values = document.read_with_pending(name, || {
-            let values = match name {
-                Some(name) => settings_store::load_section_at(&file, name),
-                None => settings_store::load_at(&file),
-            };
-            reads += 1;
-            if reads == 1 {
-                document
-                    .update_section(
-                        "playback",
-                        [("autoplay".into(), Value::Bool(false))]
-                            .into_iter()
-                            .collect(),
-                    )
-                    .unwrap();
-                assert_eq!(document.section("playback")["autoplay"], false);
-                std::thread::scope(|scope| {
-                    scope.spawn(|| {
-                        // Off the UI thread, this document's changes
-                        // first; then its own job, which finds none.
-                        store_pending(Some(&document));
-                        work.run_pending();
-                    });
-                });
-                assert_eq!(
-                    settings_store::load_section_at(&file, "playback")["autoplay"],
-                    false
-                );
-                assert!(lock_queue().pending.iter().all(|c| c.document != document));
-            }
-            values
-        });
-        let playback = if name.is_some() {
-            Value::Object(values)
-        } else {
-            assert_eq!(values["other"]["kept"], 1);
-            values["playback"].clone()
-        };
-        assert_eq!(
-            playback["autoplay"], false,
-            "a persisted update must not disappear from a read"
-        );
-        assert!(reads > 1, "the stale file read must be retried");
-        assert_eq!(document.section("playback")["autoplay"], false);
-        assert_eq!(document.load()["playback"]["autoplay"], false);
-    }
-
-    #[test]
-    fn a_document_read_keeps_a_change_retired_during_the_file_read() {
-        read_while_the_background_retires_a_change(None);
-    }
-
-    #[test]
-    fn a_section_read_keeps_a_change_retired_during_the_file_read() {
-        read_while_the_background_retires_a_change(Some("playback"));
-    }
-
     #[test]
     fn a_section_update_keeps_other_sections_and_keys() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("settings.json");
-        let appearance = SettingsSection::named("appearance").in_file(&file);
+        let file = dir.path().to_path_buf();
+        let appearance = SettingsSection::named("appearance").in_profile(&file);
         appearance
             .update(
                 [("theme".to_owned(), Value::from("dark"))]
@@ -1162,7 +824,7 @@ mod tests {
                     .collect(),
             )
             .unwrap();
-        let locale = SettingsSection::named("locale").in_file(&file);
+        let locale = SettingsSection::named("locale").in_profile(&file);
         locale
             .update(
                 [("measurement".to_owned(), Value::from("Metric"))]
@@ -1183,7 +845,6 @@ mod tests {
             locale.load().get("first_day_of_week"),
             Some(&Value::from(1))
         );
-        assert_eq!(locale.path(), Some(file.clone()));
         assert!(settings_at(&file).contains_key("appearance"));
     }
 
@@ -1218,11 +879,11 @@ mod tests {
     #[test]
     fn typed_settings_live_in_the_section_of_their_scope() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("settings.json");
+        let file = dir.path().to_path_buf();
         let storage = AppStorage::new(
             "so.tilo.example",
             crate::secrets::SecretStore::memory("so.tilo.example"),
-            SettingsDocument::File(file.clone()),
+            SettingsDocument::Profile(file.clone()),
         );
         let prefs = storage.settings::<Prefs>();
         assert_eq!(prefs.get(), Prefs::default());
@@ -1234,7 +895,7 @@ mod tests {
             .set(&Placement { x: 40 })
             .unwrap();
         Settings::<Prefs>::for_app("so.tilo.other")
-            .in_file(&file)
+            .in_profile(&file)
             .set(&Prefs {
                 confirm: true,
                 interval_ms: 1000,
@@ -1295,10 +956,10 @@ mod tests {
     #[test]
     fn a_setting_nobody_changed_reads_as_the_default_of_the_device_it_is_read_on() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("settings.json");
+        let file = dir.path().to_path_buf();
         let on = |device| {
             Settings::<Copies>::for_app("so.tilo.example")
-                .in_file(&file)
+                .in_profile(&file)
                 .on_device(device)
         };
         assert!(on(DeviceClass::Native).get().keep);
@@ -1327,13 +988,12 @@ mod tests {
     #[test]
     fn changing_one_field_never_stores_the_others_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("settings.json");
-        std::fs::write(&file, r#"{"app_personal": {"so.tilo.example": {}}}"#).unwrap();
-        let prefs = Settings::<Prefs>::for_app("so.tilo.example").in_file(&file);
+        let file = dir.path().to_path_buf();
+        let prefs = Settings::<Prefs>::for_app("so.tilo.example").in_profile(&file);
         prefs.update(|prefs| prefs.confirm = false).unwrap();
         let stored = || {
             SettingsSection::named("app_personal")
-                .in_file(&file)
+                .in_profile(&file)
                 .load()
                 .get("so.tilo.example")
                 .cloned()
@@ -1342,7 +1002,7 @@ mod tests {
         // Another writer sets the interval; a later change of `confirm` here
         // leaves it as that writer left it.
         Settings::<Prefs>::for_app("so.tilo.example")
-            .in_file(&file)
+            .in_profile(&file)
             .update(|prefs| prefs.interval_ms = 900)
             .unwrap();
         prefs.update(|prefs| prefs.confirm = true).unwrap();
@@ -1354,9 +1014,9 @@ mod tests {
         // another document is not a change of this one.
         let revision = prefs.revision();
         prefs.set(&prefs.get()).unwrap();
-        let elsewhere = dir.path().join("other.json");
+        let elsewhere = dir.path().join("other");
         Settings::<Prefs>::for_app("so.tilo.example")
-            .in_file(&elsewhere)
+            .in_profile(&elsewhere)
             .update(|prefs| prefs.interval_ms = 700)
             .unwrap();
         assert_eq!(prefs.revision(), revision);
@@ -1365,13 +1025,17 @@ mod tests {
     #[test]
     fn a_key_that_does_not_decode_reads_as_its_default_alone() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("settings.json");
-        std::fs::write(
-            &file,
-            r#"{"app_personal": {"so.tilo.example": {"confirm": false, "interval_ms": "soon", "retired": 1}}}"#,
-        )
-        .unwrap();
-        let prefs = Settings::<Prefs>::for_app("so.tilo.example").in_file(&file);
+        let file = dir.path().to_path_buf();
+        SettingsSection::named("app_personal")
+            .in_profile(&file)
+            .update(
+                serde_json::json!({"so.tilo.example": {"confirm": false, "interval_ms": "soon", "retired": 1}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap();
+        let prefs = Settings::<Prefs>::for_app("so.tilo.example").in_profile(&file);
         assert_eq!(
             prefs.get(),
             Prefs {
@@ -1383,7 +1047,7 @@ mod tests {
         prefs.update(|prefs| prefs.interval_ms = 2000).unwrap();
         assert_eq!(
             SettingsSection::named("app_personal")
-                .in_file(&file)
+                .in_profile(&file)
                 .load()
                 .get("so.tilo.example"),
             Some(&serde_json::json!({"confirm": false, "interval_ms": 2000, "retired": 1}))
@@ -1400,23 +1064,21 @@ mod tests {
             const SCOPE: Scope = Scope::Personal;
         }
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("settings.json");
-        let big = Settings::<Big>::for_app("so.tilo.example").in_file(&file);
+        let file = dir.path().to_path_buf();
+        let big = Settings::<Big>::for_app("so.tilo.example").in_profile(&file);
         let words = vec!["x".repeat(1024); 80];
         let error = big.set(&Big { words }).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(!file.exists());
+        assert!(settings_at(&file).is_empty());
     }
 
     #[test]
     fn a_malformed_document_reads_as_empty() {
         assert!(parse_settings("{not json").is_empty());
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("settings.json");
-        std::fs::write(&file, "[1, 2]").unwrap();
         assert!(
             SettingsSection::named("locale")
-                .in_file(&file)
+                .in_profile(dir.path())
                 .load()
                 .is_empty()
         );
@@ -1433,60 +1095,6 @@ mod tests {
         assert_eq!(
             AppFiles::for_app("so.tilo.example").paths().id(),
             "so.tilo.example"
-        );
-    }
-
-    /// A write to one settings file from off a UI thread stores the changes
-    /// a UI thread queued for that file first, and leaves another file's
-    /// queued changes to the background that stores them.
-    #[test]
-    fn an_off_thread_write_stores_only_its_own_files_queued_changes() {
-        fn values(key: &str, value: i64) -> Map<String, Value> {
-            [(key.to_owned(), Value::from(value))].into_iter().collect()
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let (mine_path, other_path) = (dir.path().join("mine.json"), dir.path().join("other.json"));
-        let mine = SettingsDocument::File(mine_path.clone());
-        let other = SettingsDocument::File(other_path.clone());
-        let work = crate::rt::background::Pumped::new();
-        let background = work.background();
-        let (queued_mine, queued_other) = (mine.clone(), other.clone());
-        std::thread::spawn(move || {
-            crate::rt::mark_ui_thread();
-            let _work = background.enter();
-            queued_mine
-                .update_section("s", values("queued", 1))
-                .unwrap();
-            queued_other
-                .update_section("s", values("queued", 2))
-                .unwrap();
-        })
-        .join()
-        .unwrap();
-
-        other.update_section("s", values("direct", 3)).unwrap();
-        let stored = settings_store::load_section_at(&other_path, "s");
-        assert_eq!(
-            stored.get("queued"),
-            Some(&Value::from(2)),
-            "its queued change first"
-        );
-        assert_eq!(stored.get("direct"), Some(&Value::from(3)));
-        assert!(
-            settings_at(&mine_path).is_empty(),
-            "another file's queued change waits for its own background"
-        );
-        assert_eq!(
-            mine.section("s").get("queued"),
-            Some(&Value::from(1)),
-            "and reads as made"
-        );
-
-        work.run_pending();
-        assert_eq!(
-            settings_store::load_section_at(&mine_path, "s").get("queued"),
-            Some(&Value::from(1)),
-            "the background stores it"
         );
     }
 }

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 /// A model's settings document of its own.
 fn test_cx() -> PaneCx {
     let profile = tempfile::tempdir().unwrap().keep();
-    PaneCx::in_file(profile.join("settings.json"))
+    PaneCx::in_profile(profile)
 }
 
 #[derive(Default)]

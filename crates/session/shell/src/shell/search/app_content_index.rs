@@ -80,6 +80,10 @@ pub fn record_slot(record_id: &str) -> String {
 pub struct IndexedEntry {
     pub slot: SlotKey,
     pub entry: IndexEntry,
+    /// What each resource its text refers to is called now, by the entry
+    /// that opens it in the same workspace: a renamed resource is found
+    /// under its new name in every text that refers to it.
+    pub referenced: Vec<String>,
 }
 
 /// What the index holds at one generation, split by whether a person may
@@ -105,6 +109,67 @@ impl Inner {
     fn unlocked(&self, app: &str) -> bool {
         self.secrets.get(app).copied() == Some(true)
     }
+
+    /// What every resource a person may find is called now, by the entry
+    /// that opens it.
+    fn titles(&self) -> Titles<'_> {
+        let mut by_resource: HashMap<(&str, &str), Vec<(&str, &str)>> = HashMap::new();
+        for (slot, entries) in &self.slots {
+            let unlocked = self.unlocked(&slot.app);
+            for entry in entries.values() {
+                let opens = entry
+                    .action
+                    .as_ref()
+                    .is_none_or(|action| action.action == "open");
+                if opens && (!entry.secret || unlocked) {
+                    by_resource
+                        .entry((slot.room.as_str(), entry.resource.as_str()))
+                        .or_default()
+                        .push((slot.app.as_str(), entry.title.as_str()));
+                }
+            }
+        }
+        Titles { by_resource }
+    }
+}
+
+/// What each resource is called now, by workspace room and resource id,
+/// with the app that published it.
+struct Titles<'a> {
+    by_resource: HashMap<(&'a str, &'a str), Vec<(&'a str, &'a str)>>,
+}
+
+impl Titles<'_> {
+    /// What the resource `reference` (a reference in rich text) names in
+    /// `room` is called now.
+    fn of(&self, room: &str, reference: &str) -> Option<&str> {
+        let (app, resource) = referent(reference)?;
+        self.by_resource
+            .get(&(room, resource.as_str()))?
+            .iter()
+            .find(|(published_by, _)| names_app(&app, &resource, published_by))
+            .map(|(_, title)| *title)
+    }
+}
+
+/// The app and resource id a reference in rich text names, when it names
+/// a resource rather than a person.
+fn referent(reference: &str) -> Option<(String, String)> {
+    match tilo_reference::Embed::of_mark(reference)? {
+        tilo_reference::Embed::Resource(at) => Some((at.app, at.reference.id)),
+        tilo_reference::Embed::Person(_) => None,
+    }
+}
+
+/// Whether a reference to `resource` of `app` names an entry `published_by`
+/// published: the same app, or the app a tilolang resource's id names
+/// (`tl:<app>:…`), whose entries its runtime publishes.
+fn names_app(app: &str, resource: &str, published_by: &str) -> bool {
+    app == published_by
+        || resource
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.strip_prefix(app))
+            .is_some_and(|rest| rest.starts_with(':'))
 }
 
 /// The session's persistent index of apps' search entries. Shared between
@@ -220,6 +285,7 @@ impl AppContentIndex {
     /// Everything the index holds now, split by what a person may find.
     pub fn contents(&self) -> Contents {
         let inner = self.inner.lock_recover();
+        let titles = inner.titles();
         let mut contents = Contents::default();
         for (slot, entries) in &inner.slots {
             let unlocked = inner.unlocked(&slot.app);
@@ -227,6 +293,12 @@ impl AppContentIndex {
                 let indexed = IndexedEntry {
                     slot: slot.clone(),
                     entry: entry.clone(),
+                    referenced: entry
+                        .references
+                        .iter()
+                        .filter_map(|reference| titles.of(&slot.room, reference))
+                        .map(str::to_owned)
+                        .collect(),
                 };
                 if entry.secret && !unlocked {
                     contents.locked.push(indexed);
@@ -306,6 +378,38 @@ impl AppContentIndex {
         titled.sort();
         titled.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
         titled
+    }
+
+    /// The entries of `room` whose text refers to the resource `resource`
+    /// of `app` (its backlinks), in any app: what refers to it, wherever
+    /// it was written.
+    pub fn backlinks(&self, room: &str, app: &str, resource: &str) -> Vec<IndexedEntry> {
+        let inner = self.inner.lock_recover();
+        let titles = inner.titles();
+        let mut out = Vec::new();
+        for (slot, entries) in inner.slots.iter().filter(|(slot, _)| slot.room == room) {
+            let unlocked = inner.unlocked(&slot.app);
+            for entry in entries.values().filter(|entry| !entry.secret || unlocked) {
+                let refers = entry.references.iter().any(|reference| {
+                    referent(reference).is_some_and(|(to_app, to)| {
+                        to == resource && (to_app == app || names_app(&to_app, &to, app))
+                    })
+                });
+                if refers {
+                    out.push(IndexedEntry {
+                        slot: slot.clone(),
+                        entry: entry.clone(),
+                        referenced: entry
+                            .references
+                            .iter()
+                            .filter_map(|reference| titles.of(room, reference))
+                            .map(str::to_owned)
+                            .collect(),
+                    });
+                }
+            }
+        }
+        out
     }
 
     /// Whether `app` last said its secrets are unlocked.
@@ -531,6 +635,7 @@ mod tests {
             boost: 0,
             fields: Vec::new(),
             secret: false,
+            references: Vec::new(),
         }
     }
 

@@ -155,9 +155,7 @@ impl ResourceApp for SettingsShell {
         // Private host profiles also own their account stores and mutation journal.
         let app = match cx.storage().settings_document() {
             ui::storage::SettingsDocument::Session => SettingsApp::new(),
-            ui::storage::SettingsDocument::File(path) => {
-                SettingsApp::with_config_root(path.parent().unwrap_or(path.as_path()))
-            }
+            ui::storage::SettingsDocument::Profile(root) => SettingsApp::with_config_root(root),
         };
         // A pane search hit, or an agent's `open`, shows the pane it names.
         cx.on_open(app.opener());
@@ -220,7 +218,7 @@ impl ResourceSurface<Settings, SettingsEffect> for SettingsApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
-        let accounts = cx.person::<accounts::person::PersonAccounts>();
+        let accounts = cx.shared_person::<accounts::person::PersonAccounts>();
         self.attach_host(PaneCx::attached(&cx), accounts);
     }
 

@@ -144,18 +144,21 @@ impl<'a> CompletedBootReview<'a> {
         setup.require_completed_export()?;
         let original = pending.authenticated_setup();
         let mut manifest = original.manifest().clone();
-        manifest.offline_home = None;
-        manifest.offline_applications = None;
-        manifest.completed_applications_only = selected.schema == 2;
-        manifest.completed_home.clone_from(&selected.home);
-        manifest.portable_flatpak.clone_from(&selected.applications);
+        manifest
+            .units
+            .seal_offline(
+                selected.home.clone(),
+                selected.applications.clone(),
+                selected.schema == 2,
+            )
+            .map_err(|_| changed("Completed setup changed prepared choices"))?;
         if setup.manifest() != &manifest {
             return Err(changed("Completed setup changed prepared choices"));
         }
         for name in [IDENTITY_FILE, ACCOUNTS_FILE, SERVICE_SESSIONS_FILE] {
             let included = name == IDENTITY_FILE
                 || name == ACCOUNTS_FILE && !manifest.account_ids.is_empty()
-                || name == SERVICE_SESSIONS_FILE && manifest.service_sessions.is_some();
+                || name == SERVICE_SESSIONS_FILE && manifest.units.service_sessions().is_some();
             if included {
                 let old =
                     Zeroizing::new(bounded_file(&original.pin, name, LIMITS.plaintext_bytes)?);
@@ -232,7 +235,8 @@ impl<'a> CompletedBootReview<'a> {
             .capsule
             .authenticated_setup()
             .manifest()
-            .completed_applications_only
+            .units
+            .completed_applications_only()
         {
             return Err(invalid());
         }

@@ -292,7 +292,7 @@ pub fn run(
         &cancel,
     )?;
     let setup = PreparedSetupReview::open(&setup_package, &password, &quarantine, &cancel)?;
-    let handoff = setup.manifest().browser.as_ref().ok_or_else(failure)?;
+    let handoff = setup.manifest().units.browser().ok_or_else(failure)?;
     if handoff.payload != expected {
         return Err(failure());
     }

@@ -135,100 +135,7 @@ impl Tool {
 // Annotation colour swatches (resolved against the OS theme at draw time)
 // ----------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Swatch {
-    #[default]
-    Yellow,
-    Green,
-    Pink,
-    Blue,
-    Purple,
-    /// An exact colour, `0xRRGGBB` — markup that came from the PDF itself
-    /// keeps its own colour rather than being snapped to a swatch.
-    Custom(u32),
-}
-
-impl Swatch {
-    pub const ALL: [Swatch; 5] = [
-        Swatch::Yellow,
-        Swatch::Green,
-        Swatch::Pink,
-        Swatch::Blue,
-        Swatch::Purple,
-    ];
-
-    pub fn key(self) -> String {
-        match self {
-            Swatch::Yellow => "yellow".into(),
-            Swatch::Green => "green".into(),
-            Swatch::Pink => "pink".into(),
-            Swatch::Blue => "blue".into(),
-            Swatch::Purple => "purple".into(),
-            Swatch::Custom(rgb) => format!("#{:06x}", rgb & 0x00ff_ffff),
-        }
-    }
-
-    pub fn parse(s: &str) -> Swatch {
-        match s {
-            "green" => Swatch::Green,
-            "pink" => Swatch::Pink,
-            "blue" => Swatch::Blue,
-            "purple" => Swatch::Purple,
-            _ => s
-                .strip_prefix('#')
-                .filter(|hex| hex.len() == 6)
-                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-                .map_or(Swatch::Yellow, Swatch::Custom),
-        }
-    }
-
-    /// The swatch for an exact colour: the named swatch with that colour, or
-    /// a custom one.
-    pub fn from_rgb(r: u8, g: u8, b: u8) -> Swatch {
-        Swatch::ALL
-            .into_iter()
-            .find(|s| s.rgb() == (r, g, b))
-            .unwrap_or_else(|| {
-                Swatch::Custom((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b))
-            })
-    }
-
-    /// The swatch's sRGB colour. Markup is the document's own content, so
-    /// the same colour is painted on screen (`render::swatch_color`) and
-    /// written into a saved PDF, where it looks the same in every viewer.
-    pub fn rgb(self) -> (u8, u8, u8) {
-        match self {
-            Swatch::Yellow => (250, 204, 21),
-            Swatch::Green => (34, 197, 94),
-            Swatch::Pink => (236, 72, 153),
-            Swatch::Blue => (59, 130, 246),
-            Swatch::Purple => (139, 92, 246),
-            Swatch::Custom(rgb) => ((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8),
-        }
-    }
-}
-
-/// A swatch is stored and carried as its key: `yellow`, … or `#rrggbb`.
-impl serde::Serialize for Swatch {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.key())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for Swatch {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        String::deserialize(deserializer).map(|key| Swatch::parse(&key))
-    }
-}
-
-impl JsonSchema for Swatch {
-    fn json_schema() -> serde_json::Value {
-        serde_json::json!({
-            "type": "string",
-            "description": "yellow, green, pink, blue, purple, or an exact colour #rrggbb",
-        })
-    }
-}
+pub use tilo_document::annotation::HighlightColor;
 
 // ----------------------------------------------------------------------
 // Geometry
@@ -423,7 +330,7 @@ pub struct Annotation {
     pub id: String,
     pub page: usize,
     pub kind: AnnoKind,
-    pub color: Swatch,
+    pub color: HighlightColor,
     pub author: String,
     /// The engine character range `[start, end)` the markup covers, for
     /// text-anchored markup.
@@ -439,7 +346,12 @@ impl Annotation {
     }
 
     /// An annotation in page-point space with no text anchor.
-    pub fn new(page: usize, kind: AnnoKind, color: Swatch, author: impl Into<String>) -> Self {
+    pub fn new(
+        page: usize,
+        kind: AnnoKind,
+        color: HighlightColor,
+        author: impl Into<String>,
+    ) -> Self {
         Self {
             id: Self::new_id(),
             page,
@@ -940,7 +852,7 @@ mod tests {
                 style: MarkupStyle::Underline,
                 quads: vec![PtRect::new(100.0, 200.0, 50.0, 12.0)],
             },
-            Swatch::Blue,
+            HighlightColor::Blue,
             "Ada",
         );
         let user = map.annotation_to_user(&a);
@@ -965,15 +877,18 @@ mod tests {
         assert!(r.contains(50.0, 100.0));
         assert!(!r.contains(10.0, 10.0));
 
-        for s in Swatch::ALL {
-            assert_eq!(Swatch::parse(&s.key()), s);
+        for s in HighlightColor::ALL {
+            assert_eq!(HighlightColor::parse(&s.key()), s);
         }
-        assert_eq!(Swatch::parse("nonsense"), Swatch::Yellow);
-        let custom = Swatch::from_rgb(12, 200, 99);
-        assert_eq!(custom, Swatch::Custom(0x0c_c8_63));
-        assert_eq!(Swatch::parse(&custom.key()), custom);
+        assert_eq!(HighlightColor::parse("nonsense"), HighlightColor::Yellow);
+        let custom = HighlightColor::from_rgb(12, 200, 99);
+        assert_eq!(custom, HighlightColor::Custom(0x0c_c8_63));
+        assert_eq!(HighlightColor::parse(&custom.key()), custom);
         assert_eq!(custom.rgb(), (12, 200, 99));
-        assert_eq!(Swatch::from_rgb(250, 204, 21), Swatch::Yellow);
+        assert_eq!(
+            HighlightColor::from_rgb(250, 204, 21),
+            HighlightColor::Yellow
+        );
     }
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]

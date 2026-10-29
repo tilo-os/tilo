@@ -17,7 +17,7 @@ fields = [
   { path = "annotations.*.id", type = "String", readonly = true },
   { path = "annotations.*.page_id", type = "String" },
   { path = "annotations.*.mark", type = "AnnoKind" },
-  { path = "annotations.*.color", type = "Swatch" },
+  { path = "annotations.*.color", type = "HighlightColor" },
   { path = "annotations.*.author", type = "String", readonly = true },
   { path = "annotations.*.chars", type = "Option<[u32; 2]>", readonly = true },
   { path = "annotations.*.created_ms", type = "i64", readonly = true },
@@ -212,7 +212,6 @@ params = [
 kind = "pdf.signature-profile"
 label = "Signature"
 version = 2
-person = true
 fields = [
   { path = "signer", type = "String" },
   { path = "strokes", type = "Vec<Stroke>" },

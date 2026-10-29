@@ -660,7 +660,7 @@ mod tests {
             raw.insert((0, 4), "=AVERAGE(A1:A3)".into());
             raw.insert((0, 5), "=IF(A4>50,\"BIG\",\"SMALL\")".into());
             let fmt: HashMap<Addr, CellFormat> = HashMap::new();
-            let values = crate::formula::recalculate(&raw);
+            let values = crate::calc::recalculate(&raw);
             // Sanity: the source really computed.
             assert_eq!(values.get(&(0, 3)), Some(&CellValue::Number(60.0)));
 
@@ -697,7 +697,7 @@ mod tests {
                     }
                 }
             }
-            let recomputed = crate::formula::recalculate(&reimported);
+            let recomputed = crate::calc::recalculate(&reimported);
             assert_eq!(recomputed.get(&(0, 3)), Some(&CellValue::Number(60.0)));
             assert_eq!(recomputed.get(&(0, 4)), Some(&CellValue::Number(20.0)));
             // IF(A4>50,…) with A4 = 60 takes the true branch.

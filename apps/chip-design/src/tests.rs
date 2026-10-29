@@ -1192,6 +1192,30 @@ fn an_agent_designs_operators_one_call_each_and_history_reads_it() {
     );
 }
 
+/// The project's commands are the window bar's: its Operator graph opens
+/// the graph.
+#[test]
+fn the_window_bars_operator_graph_opens_the_graph() {
+    let mut app = TestApp::<ChipDesignShell>::new().unwrap();
+    app.harness().present_in_window_bar();
+    app.settle();
+    let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+    for command in ["Operator graph", "All reports", "Import report"] {
+        assert!(
+            bar.actions.iter().any(|action| action.name == command),
+            "{command} is a bar action: {:?}",
+            bar.actions
+        );
+    }
+    assert!(!app.harness().targets().contains_key("chip-graph-add"));
+    app.harness().press_window_action("Operator graph").unwrap();
+    app.settle();
+    assert!(
+        app.harness().targets().contains_key("chip-graph-add"),
+        "the bar's Operator graph opened the graph"
+    );
+}
+
 /// The window bar's sidebar button flips the sidebar on every click, in a
 /// window wide enough to dock it and in a narrow one.
 #[test]

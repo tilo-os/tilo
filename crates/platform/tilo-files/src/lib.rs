@@ -80,11 +80,6 @@ use std::path::PathBuf;
 pub mod blocking;
 mod caps;
 mod disk;
-#[cfg(all(
-    feature = "watch",
-    not(all(target_arch = "wasm32", target_os = "unknown"))
-))]
-mod disk_watch;
 mod error;
 mod local;
 mod memory;
@@ -655,7 +650,7 @@ fn opfs_root(_profile: String, _prefix: VPath) -> Result<Root, FsError> {
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
 fn disk_watch(root: &std::path::Path, path: &VPath) -> Result<Watch, FsError> {
-    disk_watch::watch(root, path)
+    native::change_watch::stream(root, path, true)
 }
 
 #[cfg(not(all(

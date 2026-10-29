@@ -393,8 +393,15 @@ fn seeded_root(shape: &Shape, n: usize) -> Result<DynRecord, String> {
     Ok(root)
 }
 
-/// Commit `action` on `doc` through the executor, as a window's host does.
+/// Commit `action` on `doc` through the executor, as a window's host does: recorded at
+/// [`BENCH_TIME`] unless it says when it was made, so what the windows show of when things
+/// changed is the same in every run.
 fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
+    let mut action = action.clone();
+    if action.authorship.at.is_none() {
+        action.authorship.at = Some(BENCH_TIME.to_owned());
+    }
+    let action = &action;
     let context = ActionContext::for_resource(
         action.resources().first().copied().unwrap_or("room"),
         &action.kind,
@@ -627,6 +634,9 @@ impl Phases {
     }
 }
 
+/// The time every change the bench makes is recorded at.
+const BENCH_TIME: &str = "2026-06-29T09:00:00Z";
+
 impl Room {
     fn open(
         doc: Doc,
@@ -646,6 +656,9 @@ impl Room {
             || None,
         )
         .map_err(|e| e.to_string())?;
+        // Every change is made at one recorded time, so what a window shows of when things
+        // changed (`updated(r)`) is the same in every run, whatever the wall clock reads.
+        host.runtime().set_clock(|| BENCH_TIME.to_owned());
         host.runtime().engine().profile(profile);
         let hosted = Instant::now();
         // As a launcher does: from the modules built with Tilo, compiling no source.

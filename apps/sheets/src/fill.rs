@@ -6,7 +6,7 @@
 //!
 //!   * **formulas** copy forward with their relative references shifted
 //!     (`=A1` → `=A2` → `=A3`), preserving `$`-anchors — see
-//!     [`crate::formula::offset_refs`];
+//!     [`crate::refs::offset_refs`];
 //!   * **a single number** fills as a constant (`5` → `5`, `5`, …);
 //!   * **two or more numbers** extrapolate a linear series (`1, 2` → `3, 4,
 //!     5`; a straight line fit for longer runs);
@@ -116,7 +116,7 @@ fn block_copy(pattern: &[FillCell], count: usize, dcol: i64, drow: i64) -> Vec<F
             break; // empty pattern: nothing to copy forward
         };
         let raw = if src.is_formula() {
-            crate::formula::offset_refs(
+            crate::refs::offset_refs(
                 &src.raw,
                 steps.saturating_mul(dcol),
                 steps.saturating_mul(drow),

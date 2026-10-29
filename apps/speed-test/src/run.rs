@@ -224,7 +224,7 @@ impl Runs {
                 let finishing = runs.clone();
                 Ok(cx.spawn(
                     move |progress| run_measurement(worker, progress),
-                    move |_: &mut (), answer, cx| finishing.finish(&signal, answer, cx),
+                    move |(): &mut (), answer, cx| finishing.finish(&signal, answer, cx),
                 ))
             }
             SpeedEffect::Stop => {

@@ -119,6 +119,7 @@ members = [
     "apps/git-client",
     "apps/hex-editor",
     "apps/imager",
+    "apps/launcher",
     "apps/logs",
     "apps/mail",
     "apps/maps",
@@ -310,6 +311,7 @@ members = [
     "crates/platform/tilolang-tilo",
     "crates/platform/tilolang-host",
     "crates/platform/tilo-lock",
+    "crates/platform/tilo-settings-records",
     "crates/platform/tilo-sort",
     "crates/platform/tilo-selector",
     "crates/platform/tilo-face",
@@ -760,6 +762,11 @@ gstreamer-app = "0.24"
 gstreamer-video = "0.24"
 rustypipe = { version = "0.11", default-features = false }
 rquickjs = "0.9"
+# The spreadsheet formula engine: Excel-compatible functions, dynamic arrays
+# and cycle detection, evaluated over a workbook kept in step with the sheets.
+ironcalc_base = "0.9.1"
+# The local IANA zone name, which ironcalc_base needs for TODAY() and NOW().
+iana-time-zone = "0.1.65"
 # Sender-side discovery and transports for FCast and Google Cast. Disable the
 # mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }

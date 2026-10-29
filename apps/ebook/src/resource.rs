@@ -32,7 +32,7 @@ use uuid::Uuid;
 use crate::app::BooksApp;
 use crate::component::EPUB_MEDIA_TYPE;
 use crate::model::{
-    AnnoKind, Annotation, ColorScheme, FontEntry, HiColor, LibraryEntry, LibraryPrefs, Mark,
+    AnnoKind, Annotation, ColorScheme, FontEntry, HighlightColor, LibraryEntry, LibraryPrefs, Mark,
     Progress, Settings, annotation_key, default_fonts, default_schemes,
 };
 
@@ -243,7 +243,7 @@ impl Ebook {
         &mut self,
         cx: &mut ActionCx,
         #[param("The passage")] passage: Passage,
-        #[param("Colour")] color: HiColor,
+        #[param("Colour")] color: HighlightColor,
         #[param("The note's text")] text: String,
     ) {
         let id = cx.uuid();
@@ -344,7 +344,7 @@ impl Ebook {
         cx: &mut ActionCx,
         #[param("The book's id")] book: String,
         #[param("Chapter, counted from 0")] chapter: usize,
-        #[param("Colour")] color: HiColor,
+        #[param("Colour")] color: HighlightColor,
         #[param("Highlights the new one replaces, by their groups")] replacing: Vec<Uuid>,
         #[param("The paragraphs' pieces of the passage")] pieces: Vec<HiPiece>,
     ) -> Result<(), Refusal> {
@@ -385,7 +385,7 @@ impl Ebook {
     pub fn change_color(
         &mut self,
         #[param("The highlight: the id of one of its pieces or its group")] highlight: Uuid,
-        #[param("Colour")] color: HiColor,
+        #[param("Colour")] color: HighlightColor,
     ) -> Result<(), Refusal> {
         let group = self.highlight_group(highlight)?;
         for (_, mark) in self.annotations.iter_mut() {

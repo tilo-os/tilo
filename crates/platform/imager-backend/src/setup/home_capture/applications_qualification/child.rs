@@ -132,10 +132,10 @@ pub(super) fn run(output: &mut impl Write) -> io::Result<()> {
         &cancel,
     )?;
     setup.require_completed_export()?;
-    if !setup.manifest().completed_applications_only
-        || setup.manifest().portable_home.is_some()
-        || setup.manifest().completed_home.is_some()
-        || setup.manifest().portable_flatpak.as_ref() != Some(&expected)
+    if !setup.manifest().units.completed_applications_only()
+        || setup.manifest().units.portable_home().is_some()
+        || setup.manifest().units.completed_home().is_some()
+        || setup.manifest().units.portable_flatpak() != Some(&expected)
     {
         return Err(invalid());
     }

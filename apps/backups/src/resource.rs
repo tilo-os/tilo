@@ -1,22 +1,18 @@
 //! Backups as a resource: the retention policy is document state, each
 //! count a field edited at its path; where this device backs up from and to
 //! is a device-local setting; backing up, verifying and restoring are the
-//! surface's [`BackupsEffect`]s, and the catalog on this device is published
+//! view's [`BackupsEffect`]s, and the catalog on this device is published
 //! as live rows beside the resource.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{Fixture, ResourceApp, ViewCx};
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
 use crate::actions::BackupsEffect;
-use crate::app::BackupsApp;
 use crate::model::{Catalog, RetentionPolicy};
 
 /// What the document holds: the retention policy every device follows.
@@ -85,7 +81,7 @@ impl ResourceApp for BackupsShell {
                 Ok(())
             },
         );
-        cx.surface(BackupsApp::new())
+        crate::app::window(cx)
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
@@ -122,43 +118,6 @@ impl ResourceApp for BackupsShell {
             },
         };
         fixture.provide(demo);
-    }
-}
-
-impl ResourceSurface<Backups, BackupsEffect> for BackupsApp {
-    fn present(&mut self, state: &std::rc::Rc<Backups>) {
-        self.present_policy(state.policy);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Backups>) {
-        self.attach_framework(&cx);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        if let Some(scenario) = scenario {
-            self.stage_scenario(scenario);
-        }
-    }
-
-    fn effect(&mut self, effect: BackupsEffect, cx: &mut EffectCx<Backups, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        crate::actions::live_rows(self.resource_catalog(), self.blocked().as_ref())
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        crate::actions::live_row(self.resource_catalog(), self.blocked().as_ref(), id)
-    }
-
-    /// Every loaded recovery point, older than the published page too.
-    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        crate::search::snapshot_entries(self.resource_catalog())
     }
 }
 

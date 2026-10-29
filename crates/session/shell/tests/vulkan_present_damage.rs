@@ -12,8 +12,8 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::compositor::{self, BufferAssignment, Damage, SurfaceAttributes};
 use wayland_client::protocol::{wl_compositor, wl_registry, wl_surface};
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
 #[derive(Clone, Debug)]
 struct Commit {
@@ -204,10 +204,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Peer {
         }
     }
 }
-crate::support::wayland::test_client!(Peer: ping, configured);
-delegate_noop!(Peer: ignore wl_compositor::WlCompositor);
-delegate_noop!(Peer: ignore wl_surface::WlSurface);
-delegate_noop!(Peer: ignore xdg_toplevel::XdgToplevel);
+crate::support::wayland::test_client!(Peer: ping, configured, surface, toplevel);
 
 fn paint(
     surface: &wgpu::Surface<'_>,

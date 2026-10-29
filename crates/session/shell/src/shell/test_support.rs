@@ -451,6 +451,103 @@ pub fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnH
 /// concurrently. Every `ambient_start` boundary runs synchronously on the
 /// thread that requests the service, before any worker is spawned, so a
 /// thread-local guard still sees every start its own test makes.
+/// A widget tree laid out by [`lay_out_in_viewport`] or [`lay_out_as_root`].
+#[cfg(test)]
+pub(crate) struct LaidOut {
+    pub(crate) taffy: taffy::TaffyTree<()>,
+    /// The widget's own node.
+    pub(crate) node: taffy::NodeId,
+    /// Every widget of the tree by its node, as `build_layout` mapped them.
+    pub(crate) nodes: std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
+}
+
+/// `widget` built, solved with its measured leaves inside a `width` by
+/// `height` root, and applied, as a frame lays the shell out: every rect is
+/// in screen space.
+#[cfg(test)]
+pub(crate) fn lay_out_in_viewport<W: ui::widget::Widget + ?Sized>(
+    widget: &mut W,
+    width: f32,
+    height: f32,
+    theme: &ui::theme::Theme,
+) -> LaidOut {
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let mut nodes = std::collections::HashMap::new();
+    let node = widget.build_layout(&mut taffy, theme, &mut nodes);
+    let root = taffy
+        .new_with_children(
+            taffy::Style {
+                size: taffy::Size::from_lengths(width, height),
+                ..Default::default()
+            },
+            &[node],
+        )
+        .expect("a viewport node");
+    let mut text = ui::text_render::TextRenderer::new();
+    solve(&mut taffy, root, width, height, &nodes, &mut text);
+    widget.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
+    LaidOut { taffy, node, nodes }
+}
+
+/// As [`lay_out_in_viewport`], with the widget's own node the root, offered
+/// `width` by `height`.
+#[cfg(test)]
+pub(crate) fn lay_out_as_root<W: ui::widget::Widget + ?Sized>(
+    widget: &mut W,
+    width: f32,
+    height: f32,
+    theme: &ui::theme::Theme,
+) -> LaidOut {
+    let mut text = ui::text_render::TextRenderer::new();
+    lay_out_as_root_with_text(widget, width, height, theme, &mut text)
+}
+
+/// As [`lay_out_as_root`], measuring text with `text`, for a caller that
+/// draws with the same renderer afterwards.
+#[cfg(test)]
+pub(crate) fn lay_out_as_root_with_text<W: ui::widget::Widget + ?Sized>(
+    widget: &mut W,
+    width: f32,
+    height: f32,
+    theme: &ui::theme::Theme,
+    text: &mut ui::text_render::TextRenderer,
+) -> LaidOut {
+    let mut taffy = taffy::TaffyTree::<()>::new();
+    let mut nodes = std::collections::HashMap::new();
+    let node = widget.build_layout(&mut taffy, theme, &mut nodes);
+    solve(&mut taffy, node, width, height, &nodes, text);
+    widget.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
+    LaidOut { taffy, node, nodes }
+}
+
+#[cfg(test)]
+fn solve(
+    taffy: &mut taffy::TaffyTree<()>,
+    root: taffy::NodeId,
+    width: f32,
+    height: f32,
+    nodes: &std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
+    text: &mut ui::text_render::TextRenderer,
+) {
+    taffy
+        .compute_layout_with_measure(
+            root,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(width),
+                height: taffy::AvailableSpace::Definite(height),
+            },
+            |known, available, node, _, _| {
+                nodes.get(&node).map_or(taffy::Size::ZERO, |&widget| {
+                    // SAFETY: `build_layout` just filled `nodes` with the
+                    // widgets of the tree being solved, which the caller
+                    // holds exclusively for the whole pass.
+                    unsafe { (*widget).measure(known, available, text) }
+                })
+            },
+        )
+        .expect("the layout solves");
+}
+
 #[cfg(test)]
 mod ambient {
     use std::cell::Cell;

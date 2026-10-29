@@ -40,8 +40,9 @@ if [[ $(uname -s) == Linux ]]; then
     export CHROME="${CHROME:-/usr/lib64/chromium-browser/chromium-browser}"
 fi
 
-# A crashing test leaves no core file: it lands in the package's directory, where rcargo copies it
-# back into the worktree (hundreds of MB each); nextest's report already names the signal.
+# A crashing test leaves no core file: it lands in the package's directory, where a remote cargo
+# drop-in copies it back into the worktree (hundreds of MB each); nextest's report already names
+# the signal.
 ulimit -c 0
 
 tested=" "
@@ -49,7 +50,7 @@ explicit=0
 nextest=0
 [[ ${1:-} == cargo && ${2:-} == nextest ]] && nextest=1
 arguments=("$@")
-# What follows `--` goes to the test binaries (`rcargo test -p NAME -- FILTER`): every option this
+# What follows `--` goes to the test binaries (`cargo test -p NAME -- FILTER`): every option this
 # wrapper adds goes before it.
 tail=()
 for (( index = 0; index < ${#arguments[@]}; index++ )); do
@@ -72,7 +73,7 @@ tests() { local name; for name; do [[ $tested == *" $name "* ]] && return 0; don
 # In CI, a build of named packages resolves every member's features as the whole workspace does,
 # its tests' features included (tools/ci/workspace_unify.py), so jobs testing different packages
 # share each member's unit. That build compiles every member, so outside CI (a developer's
-# `rcargo test -p NAME` on one incremental target) an edit would rebuild every package that
+# `cargo test -p NAME` on one incremental target) an edit would rebuild every package that
 # depends on the edited one; there the named packages build alone.
 unify=()
 [[ -n ${CI:-} ]] && unify=(-p workspace-unify)

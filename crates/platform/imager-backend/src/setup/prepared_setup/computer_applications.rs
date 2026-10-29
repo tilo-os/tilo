@@ -40,8 +40,8 @@ impl SharedHomeApplicationsDeclaration {
         let apps = main.computer_applications()?.ok_or_else(invalid)?;
         let original = main.for_media()?;
         if manifest
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .ok_or_else(invalid)?
             .as_plan()
             != &original
@@ -67,7 +67,7 @@ impl SharedHomeApplicationsDeclaration {
         manifest: &Manifest,
     ) -> io::Result<Option<super::PlannedBtrfsResize>> {
         let resize = super::PlannedBtrfsResize::from_review(
-            manifest.retained_home.as_ref().ok_or_else(invalid)?,
+            manifest.units.retained_home().ok_or_else(invalid)?,
             &self.staging_plan,
         )?;
         // The installed physical companion verifies the actually shrunk shared
@@ -92,8 +92,8 @@ impl SharedHomeApplicationsDeclaration {
             || self.source_operation != main.source_plan().operation_id
             || self.applications_review_operation != apps.source_plan().operation_id
             || manifest
-                .retained_home
-                .as_ref()
+                .units
+                .retained_home()
                 .ok_or_else(invalid)?
                 .as_plan()
                 != &main.for_media()?
@@ -103,10 +103,10 @@ impl SharedHomeApplicationsDeclaration {
         apps.validate_staging_copy(self.applications.source())
     }
     pub(super) fn validate(&self, manifest: &Manifest) -> io::Result<()> {
-        let main = manifest.retained_home.as_ref().ok_or_else(invalid)?;
+        let main = manifest.units.retained_home().ok_or_else(invalid)?;
         main.validate()?;
         let main = main.as_plan();
-        let caller = manifest.retained_caller.as_ref().ok_or_else(invalid)?;
+        let caller = manifest.units.retained_caller().ok_or_else(invalid)?;
         caller.validate_binding(main, &manifest.setup_binding, &manifest.identity_public_key)?;
         let copy = &self.applications;
         copy.validate()?;
@@ -145,13 +145,13 @@ impl SharedHomeApplicationsDeclaration {
             || copy.setup_binding() != manifest.setup_binding
             || copy.identity_public_key() != manifest.identity_public_key
             || manifest.planned_btrfs_resize != resize
-            || manifest.original_copy.is_some()
-            || manifest.offline_home.is_some()
-            || manifest.offline_applications.is_some()
-            || manifest.portable_home.is_some()
-            || manifest.completed_home.is_some()
-            || manifest.completed_applications_only
-            || manifest.portable_flatpak.is_some()
+            || manifest.units.original_copy().is_some()
+            || manifest.units.offline_home().is_some()
+            || manifest.units.offline_applications().is_some()
+            || manifest.units.portable_home().is_some()
+            || manifest.units.completed_home().is_some()
+            || manifest.units.completed_applications_only()
+            || manifest.units.portable_flatpak().is_some()
             || matches!(
                 manifest.identity_kind,
                 super::IdentityKind::CurrentDevice { .. }
@@ -167,16 +167,16 @@ impl Manifest {
         &self,
     ) -> io::Result<Option<&OriginalCopyDeclaration>> {
         self.validate()?;
-        Ok(match &self.computer_applications {
+        Ok(match self.units.computer_applications() {
             Some(composite) => Some(&composite.applications),
-            None => self.original_copy.as_ref(),
+            None => self.units.original_copy(),
         })
     }
     pub fn pending_computer_applications_scope(
         &self,
     ) -> io::Result<Option<ComputerApplicationsScope>> {
         self.validate()?;
-        let Some(composite) = &self.computer_applications else {
+        let Some(composite) = self.units.computer_applications() else {
             return Ok(None);
         };
         Ok(Some(ComputerApplicationsScope {

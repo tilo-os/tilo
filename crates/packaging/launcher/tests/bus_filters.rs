@@ -222,7 +222,10 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
     let session_proxy = Proxy::start(
         &session.address,
         &dir.path().join("session-proxy"),
-        &session_filter_args(false, true),
+        &session_filter_args(false, true, None)
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
     );
     let atspi_proxy = Proxy::start(
         &atspi.address,
@@ -367,6 +370,44 @@ fn a_graphical_app_reaches_only_the_listed_accessibility_calls() {
         .is_err(),
         "the app must not read another app's accessible tree"
     );
+}
+
+#[test]
+fn a_media_app_owns_its_own_player_name_and_no_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = Bus::start(dir.path(), "session");
+    let player = launcher::dbus_proxy::media_player_name("so.tilo.music").unwrap();
+    let filter = session_filter_args(false, true, Some(&player));
+    let proxy = Proxy::start(
+        &session.address,
+        &dir.path().join("session-proxy"),
+        &filter.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
+    let request = |connection: &Connection, name: &str| {
+        connection.request_name_with_flags(name, zbus::fdo::RequestNameFlags::DoNotQueue.into())
+    };
+
+    // The app takes its player's name, as the toolkit's media session does,
+    // and the desktop's now-playing observer on the real bus finds it there.
+    let app = proxy.connect();
+    assert_eq!(
+        request(&app, &player).expect("the app may own its player name"),
+        zbus::fdo::RequestNameReply::PrimaryOwner
+    );
+    let desktop = connect(&session.address).build().unwrap();
+    let owner = zbus::blocking::fdo::DBusProxy::new(&desktop)
+        .unwrap()
+        .get_name_owner(player.as_str().try_into().unwrap())
+        .expect("the player is on the session bus");
+    assert_eq!(owner.as_str(), app.unique_name().unwrap().as_str());
+
+    // Another app's player, and a name below its own, stay refused.
+    for other in [
+        "org.mpris.MediaPlayer2.so.tilo.tube",
+        "org.mpris.MediaPlayer2.so.tilo.music.extra",
+    ] {
+        assert!(request(&app, other).is_err(), "{other} must stay refused");
+    }
 }
 
 /// The AT-SPI registry as an app's adapter meets it: `Socket.Embed` takes the

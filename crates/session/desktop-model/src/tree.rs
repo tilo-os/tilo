@@ -146,6 +146,144 @@ impl DesktopTree {
             .or_else(|| workspace.strips.first().map(|strip| strip.id))
     }
 
+    /// Whether this device lays the desktop out across several displays,
+    /// each showing a strip of its own.
+    pub fn is_partitioned(&self) -> bool {
+        self.outputs.displays.len() >= 2
+    }
+
+    /// The strip `display` shows in the active workspace. Every display
+    /// shows a strip of its own: the focused display the active strip, any
+    /// other the one it showed when focus left it, else the active strip.
+    pub fn strip_shown_on(&self, display: u32) -> Option<StripId> {
+        let workspace = self.active_workspace()?;
+        let active = self.active_strip_id();
+        if !self.is_partitioned() || self.outputs.focused_display() == Some(display) {
+            return active;
+        }
+        self.outputs
+            .shown_on(display, workspace.id)
+            .filter(|id| workspace.strips.iter().any(|strip| strip.id == *id))
+            .or(active)
+    }
+
+    /// Show `strip` of the active workspace on `display`, leaving every
+    /// other display where it is. On the focused display that makes it the
+    /// active strip. Returns whether anything changed.
+    pub fn show_strip_on(&mut self, display: u32, strip: StripId) -> bool {
+        let Some(workspace) = self.active_workspace() else {
+            return false;
+        };
+        let ws = workspace.id;
+        if !workspace.strips.iter().any(|s| s.id == strip) {
+            return false;
+        }
+        if !self.is_partitioned() || self.outputs.focused_display() == Some(display) {
+            return self.active_strip.insert(ws, strip) != Some(strip);
+        }
+        self.outputs.set_shown(display, ws, strip)
+    }
+
+    /// Keep what the displays show in step with focus, after anything
+    /// moved it: the display holding the focused group shows the active
+    /// strip, and with no group focused the focused display does. Every
+    /// other display keeps the strip it shows, and one that has never been
+    /// told shows the active strip from now on, so going to another strip
+    /// elsewhere later leaves it be. Returns whether anything changed.
+    pub fn note_shown_strip(&mut self) -> bool {
+        let Some((ws, strip, focus)) = self.shown_strip_focus() else {
+            return false;
+        };
+        let mut changed = false;
+        let displays: Vec<u32> = self.outputs.displays.iter().map(|d| d.id).collect();
+        for display in displays {
+            if self.outputs.shown_on(display, ws).is_none() {
+                changed |= self.outputs.set_shown(display, ws, strip);
+            }
+        }
+        changed | self.outputs.set_shown(focus, ws, strip)
+    }
+
+    /// Whether [`Self::note_shown_strip`] would change anything.
+    pub fn shown_strips_behind(&self) -> bool {
+        self.shown_strip_focus().is_some_and(|(ws, strip, focus)| {
+            self.outputs.shown_on(focus, ws) != Some(strip)
+                || self
+                    .outputs
+                    .displays
+                    .iter()
+                    .any(|d| self.outputs.shown_on(d.id, ws).is_none())
+        })
+    }
+
+    /// The active workspace, its active strip, and the display focus is on
+    /// in it: the one holding the focused group, else the focused display.
+    fn shown_strip_focus(&self) -> Option<(WorkspaceId, StripId, u32)> {
+        if !self.is_partitioned() {
+            return None;
+        }
+        let ws = self.active_workspace()?.id;
+        let strip = self.active_strip_id()?;
+        let display = self
+            .active_group_for(strip)
+            .and_then(|group| self.outputs.display_of(group))
+            .or_else(|| self.outputs.focused_display())?;
+        Some((ws, strip, display))
+    }
+
+    /// `strip` became the active strip: across several displays that
+    /// happens on the focused display only. Focus stays there, on the
+    /// strip's focused window if it is on that display, else the one last
+    /// focused there, else on none (so a new window opens there), instead
+    /// of following the strip's focus to another display, which would move
+    /// that display's strip too.
+    pub fn keep_focus_on_display(&mut self, strip: StripId) {
+        let Some(display) = self
+            .outputs
+            .focused_display()
+            .filter(|_| self.is_partitioned())
+        else {
+            return;
+        };
+        let target = self
+            .active_group_for(strip)
+            .filter(|group| self.outputs.display_of(*group) == Some(display))
+            .or_else(|| {
+                self.active_workspace()
+                    .and_then(|ws| ws.strips.iter().find(|s| s.id == strip))
+                    .and_then(|s| self.outputs.focus_target(s, display))
+            });
+        match target {
+            Some(group) => {
+                self.active_group.insert(strip, group);
+            }
+            None => {
+                self.active_group.remove(&strip);
+            }
+        }
+    }
+
+    /// Focus moves to `display`: the display it leaves keeps showing the
+    /// active strip, and the strip `display` shows becomes the active one.
+    /// Returns whether the active strip changed.
+    pub fn focus_display(&mut self, display: u32) -> bool {
+        let leaving = self.outputs.focused_display();
+        let ws = self.active_workspace().map(|w| w.id);
+        if let (Some(leaving), Some(ws), Some(strip)) = (leaving, ws, self.active_strip_id())
+            && leaving != display
+        {
+            self.outputs.set_shown(leaving, ws, strip);
+        }
+        let arriving = self
+            .strip_shown_on(display)
+            .filter(|_| leaving != Some(display));
+        self.outputs.set_focused(display);
+        match (ws, arriving) {
+            (Some(ws), Some(strip)) => self.active_strip.insert(ws, strip) != Some(strip),
+            _ => false,
+        }
+    }
+
     pub fn active_workspace_mut(&mut self) -> Option<&mut Workspace> {
         self.workspaces.iter_mut().find(|w| w.id == self.active)
     }

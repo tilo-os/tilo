@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::content;
 use crate::model::{
-    AnnoKind, Book, ColorScheme, FontEntry, FontKind, HiColor, LibraryEntry, Mark, Progress,
+    AnnoKind, Book, ColorScheme, FontEntry, FontKind, HighlightColor, LibraryEntry, Mark, Progress,
     ReadMode, ReadTheme, Settings, default_fonts, default_schemes,
 };
 use crate::resource::Ebook;
@@ -475,9 +475,12 @@ fn lived_in_shelf(shelf: &[Book]) -> Vec<Mark> {
         (0, 0, 0),
         excerpt(book, 0),
     )];
-    for (index, (block, end, color)) in [(1, 70, HiColor::Yellow), (3, 58, HiColor::Green)]
-        .into_iter()
-        .enumerate()
+    for (index, (block, end, color)) in [
+        (1, 70, HighlightColor::Yellow),
+        (3, 58, HighlightColor::Green),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let index = index as u128;
         marks.push(Mark {
@@ -493,7 +496,7 @@ fn lived_in_shelf(shelf: &[Book]) -> Vec<Mark> {
         });
     }
     marks.push(Mark {
-        color: HiColor::Blue,
+        color: HighlightColor::Blue,
         text: RichText::from_markdown(
             "The blue and the amber meeting in the middle — keep this image for the last pane.",
         ),
@@ -527,7 +530,7 @@ fn mark(
         end,
         excerpt,
         text: RichText::default(),
-        color: HiColor::Yellow,
+        color: HighlightColor::Yellow,
         created: STAGED_AT,
         group: id,
     }
@@ -539,7 +542,7 @@ fn composed_note(shelf: &[Book]) -> Vec<Mark> {
         return Vec::new();
     };
     vec![Mark {
-        color: HiColor::Blue,
+        color: HighlightColor::Blue,
         text: RichText::from_markdown(
             "A note, written right here on the page — no separate screen.",
         ),
@@ -601,10 +604,10 @@ fn long_annotations(shelf: &[Book]) -> Vec<Mark> {
     };
     (0..30_usize)
         .map(|index| {
-            let color = HiColor::ALL
-                .get(index % HiColor::ALL.len())
+            let color = HighlightColor::ALL
+                .get(index % HighlightColor::ALL.len())
                 .copied()
-                .unwrap_or(HiColor::Yellow);
+                .unwrap_or(HighlightColor::Yellow);
             let text = if index == 25 {
                 "Targeted annotation — revealed here after a jump from search.".into()
             } else {

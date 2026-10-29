@@ -15,7 +15,7 @@ use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
 use crate::ir::{LocalId, Stmt};
 use crate::prims;
-use crate::toolkit::{self, Accepts, Description, Type};
+use crate::toolkit::{self, Description, Type};
 use crate::types::Ty;
 
 fn host(imp: Imp, args: Vec<Ex>) -> Stmt {
@@ -700,29 +700,34 @@ impl Checker<'_> {
             match &s.kind {
                 UiKind::Call(c) => {
                     *calls = calls.saturating_add(1);
-                    let Accepts::Component(want) = &slot.accepts else {
+                    if !slot.accepts.reads_components() {
                         continue;
-                    };
+                    }
                     // A view of this package whose body is the component is one too.
                     let own_view = match &c.call.kind {
                         ExprKind::Call { callee, .. } => match &callee.kind {
-                            ExprKind::Ident(v) => self.env.view_makes.get(v) == Some(want),
+                            ExprKind::Ident(v) => self
+                                .env
+                                .view_makes
+                                .get(v)
+                                .is_some_and(|made| slot.accepts.takes(made)),
                             _ => false,
                         },
                         _ => false,
                     };
                     let fits = own_view
-                        || component_of(c)
-                            .is_some_and(|(base, name)| name == want && self.names_toolkit(base));
+                        || component_of(c).is_some_and(|(base, name)| {
+                            slot.accepts.takes(name) && self.names_toolkit(base)
+                        });
                     if !fits {
                         self.err(
                             "E063",
                             s.span,
                             format!(
-                                "{}'s `{}` holds `{}{want}` only{}",
+                                "{}'s `{}` holds {} only{}",
                                 shown(d),
                                 slot.name,
-                                toolkit::KIND_PREFIX,
+                                slot.accepts.show(),
                                 doc_of(&slot.doc)
                             ),
                         );

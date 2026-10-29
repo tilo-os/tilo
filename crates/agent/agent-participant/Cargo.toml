@@ -133,6 +133,8 @@ libc.workspace = true
 discord = { path = "../../../apps/discord" }
 
 [dev-dependencies]
+# The demo room and the helpers that write a chat as its people would.
+chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }

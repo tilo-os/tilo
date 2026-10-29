@@ -254,7 +254,7 @@ pub fn run_with_home_admission(
         super::account_admission::installed()?;
     }
     let mut candidate_service = None;
-    if let Some(sessions) = &review.manifest().service_sessions {
+    if let Some(sessions) = review.manifest().units.service_sessions() {
         let installed = super::account_admission::installed()?;
         if !installed.supports_service_session_protocol(sessions.consumer_protocol) {
             if !super::account_admission::receiving_candidate(
@@ -268,13 +268,15 @@ pub fn run_with_home_admission(
             candidate_service = Some((sessions.consumer_protocol, installed.runtime_root_hash));
         }
     }
-    if review.manifest().portable_home.is_some() || review.manifest().portable_flatpak.is_some() {
+    if review.manifest().units.portable_home().is_some()
+        || review.manifest().units.portable_flatpak().is_some()
+    {
         admission()?;
     }
     if review
         .manifest()
-        .portable_flatpak
-        .as_ref()
+        .units
+        .portable_flatpak()
         .is_some_and(|apps| apps.kind.consumer_protocol == 2)
     {
         super::applications_admission::installed()?;
@@ -323,7 +325,7 @@ pub fn run_with_home_admission(
         .transpose()?;
     let imported = review.import_accounts(accounts, &password)?;
     review.import_service_sessions(accounts, &password)?;
-    let mail = if review.manifest().mail.is_empty() {
+    let mail = if review.manifest().units.mail().is_empty() {
         Vec::new()
     } else {
         let target_home = args.get("--target-home").ok_or_else(failed)?;
@@ -333,14 +335,14 @@ pub fn run_with_home_admission(
         identity_public_key: review.manifest().identity_public_key,
         account_count: imported.len(),
         current_identity,
-        service_sessions: review.manifest().service_sessions.clone(),
+        service_sessions: review.manifest().units.service_sessions().cloned(),
         device_label: review
             .manifest()
             .install_profile
             .as_ref()
             .map(|profile| profile.device_label.clone())
             .unwrap_or_default(),
-        portable_home: review.manifest().portable_home.as_ref().map(|plan| {
+        portable_home: review.manifest().units.portable_home().map(|plan| {
             PortableHomeDeclaration {
                 schema: plan.schema,
                 setup_binding: review.manifest().setup_binding.clone(),
@@ -348,8 +350,8 @@ pub fn run_with_home_admission(
                 applications: plan.applications,
             }
         }),
-        portable_flatpak: review.manifest().portable_flatpak.clone(),
-        browser: review.manifest().browser.clone(),
+        portable_flatpak: review.manifest().units.portable_flatpak().cloned(),
+        browser: review.manifest().units.browser().cloned(),
         mail,
     };
     if let Some(current) = &current {

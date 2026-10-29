@@ -3,7 +3,7 @@
 //! Tilo's own apps take their look from `Theme`. GTK, Qt, Electron and Firefox do not: a
 //! sandboxed one asks the Settings portal for `org.freedesktop.appearance` and
 //! `org.gnome.desktop.interface`, an unsandboxed one reads the same GNOME keys from dconf.
-//! [`LegacyAppearance`] is the one projection of `settings.json` both paths publish, so a
+//! [`LegacyAppearance`] is the one projection of the settings both paths publish, so a
 //! theme change in Settings reaches every toolkit with identical values.
 
 use super::desktop_services::PortalSetting;
@@ -56,16 +56,14 @@ pub struct LegacyAppearance {
 }
 
 impl LegacyAppearance {
-    /// The appearance the configured settings file describes, including a session-wide
+    /// The appearance the person's settings describe, including a session-wide
     /// reduced-motion request from the host environment.
     pub fn configured() -> Self {
-        let text = settings_store::settings_path()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .unwrap_or_default();
+        let text = serde_json::Value::Object(settings_store::load()).to_string();
         Self::from_settings_text(&text, ui::host::environment().accessibility.reduce_motion)
     }
 
-    /// Pure projection of a `settings.json` body. A missing or malformed document yields the
+    /// Pure projection of a settings document body. A missing or malformed document yields the
     /// dark default the shell itself falls back to.
     pub fn from_settings_text(text: &str, reduce_motion_override: bool) -> Self {
         let document = settings_store::parse(text);

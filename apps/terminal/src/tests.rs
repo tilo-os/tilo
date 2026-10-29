@@ -4713,7 +4713,7 @@ fn copy_on_select_is_kept_for_the_next_terminal() {
     use crate::preferences::Preferences;
 
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("settings.json");
+    let path = dir.path().to_path_buf();
     let (mut first, _writes) = build_test_widget();
     first.use_preferences(Preferences::at(&path));
     assert!(!first.selects_to_copy_for_test(), "off until asked");

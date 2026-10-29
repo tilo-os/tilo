@@ -12,24 +12,21 @@ use shell::shell::state::{Workspace, WorkspaceId};
 use tilo_power_mgmt::InhibitRegistry;
 use tilo_power_mgmt::inhibit::INHIBIT_IDLE;
 use wayland_client::delegate_noop;
-use wayland_client::protocol::{wl_compositor, wl_surface};
+use wayland_client::protocol::wl_compositor;
 use wayland_protocols::wp::idle_inhibit::zv1::client::{
     zwp_idle_inhibit_manager_v1, zwp_idle_inhibitor_v1,
 };
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 
-use crate::support::wayland;
+use crate::support::wayland::{self, Toplevel, create_toplevel};
 
 #[derive(Default)]
 struct Client {
     globals: Vec<(u32, String, u32)>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel);
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Client: ignore zwp_idle_inhibit_manager_v1::ZwpIdleInhibitManagerV1);
 delegate_noop!(Client: ignore zwp_idle_inhibitor_v1::ZwpIdleInhibitorV1);
 
@@ -105,10 +102,11 @@ fn an_inhibitor_holds_the_screen_on_only_while_its_window_is_visible() {
     h.pump();
 
     let qh = h.queue.handle();
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm_base.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.Videos".into());
+    let Toplevel {
+        surface,
+        xdg,
+        toplevel,
+    } = create_toplevel(&compositor, &wm_base, &qh, "org.example.Videos");
     surface.commit();
     h.pump();
     assert!(h.adopted("org.example.Videos"));

@@ -900,18 +900,33 @@ async fn run_command(cli: Cli) -> Result<()> {
         } => unregister_content_peer(cache_dir, &relay_service_id).await,
         Command::RefreshPublicContent { blob_sock } => {
             // fs.service starts only on a device with its certified identity
-            // (before setup, and in a development VM's session, it does not):
-            // with no daemon there are no copies to refresh, which is no
-            // failure of the timer that asks.
-            if matches!(blob_sock.try_exists(), Ok(false)) {
-                println!(
-                    "no fs daemon serves this device ({} is absent): no public copies to refresh",
-                    blob_sock.display()
-                );
-                return Ok(());
-            }
-            let changed = tokio::task::spawn_blocking(move || {
-                runtime_fs::blobs::BlobClient::connect_session(&blob_sock)?.refresh_public()
+            // (before setup, and in a development VM's session, it does not),
+            // and while it waits for the clock or restarts nobody listens on
+            // its socket: with no daemon serving now there are no public copies
+            // to refresh, which is no failure of the timer that asks. Its next
+            // run asks again.
+            let stream = match std::os::unix::net::UnixStream::connect(&blob_sock) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    println!(
+                        "no fs daemon serves {} now ({error}): no public copies to refresh",
+                        blob_sock.display()
+                    );
+                    return Ok(());
+                }
+                stream => stream.with_context(|| format!("connect to {}", blob_sock.display()))?,
+            };
+            let changed = tokio::task::spawn_blocking(move || -> Result<u32> {
+                let mut stream = stream;
+                runtime_fs::blobs::write_handoff(
+                    &mut stream,
+                    &runtime_fs::blobs::BlobPrincipal::Session,
+                )?;
+                Ok(runtime_fs::blobs::BlobClient::from_session_stream(stream)?.refresh_public()?)
             })
             .await??;
             println!("{changed} public copies changed");
@@ -1315,6 +1330,22 @@ fn native_content_dir(_data_plane: &DataPlaneArgs, _workspace: uuid::Uuid) -> Op
 
 fn workspace_ticket_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join("workspace-ticket")
+}
+
+/// Record the workspace this cache serves. The person's own tools read the
+/// ticket: approving a home server hands it the ticket, and the session
+/// registers relay-discovered content peers against its workspace. The
+/// daemon runs as root with a private umask, so the ticket is made readable
+/// to the device-trust group, which the cache directory hands down (setgid,
+/// see tmpfiles.d/tilo.conf) and which already holds the device key.
+fn save_workspace_ticket(cache_dir: &Path, ticket: &Ticket) -> Result<()> {
+    let path = workspace_ticket_path(cache_dir);
+    let encoded = ticket.encode()?;
+    #[cfg(unix)]
+    tilo_files::native::atomic::write_with_mode(&path, encoded.as_bytes(), 0o640)?;
+    #[cfg(not(unix))]
+    tilo_files::native::atomic::write(&path, encoded.as_bytes())?;
+    Ok(())
 }
 
 /// The peers a mount of `ticket`'s workspace may take its namespace from:
@@ -2233,8 +2264,7 @@ async fn serve(
         );
     }
     if let Some(cache_dir) = &cache_dir {
-        let encoded = ticket.encode()?;
-        tilo_files::native::atomic::write(&workspace_ticket_path(cache_dir), encoded.as_bytes())?;
+        save_workspace_ticket(cache_dir, &ticket)?;
     }
     // Owner operations require the certified human root. Secondary devices
     // never substitute their device key and recipient mounts never host this
@@ -2423,10 +2453,7 @@ async fn mount(
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let ticket = Ticket::decode(&ticket)?;
     if let Some(cache_dir) = &cache_dir {
-        tilo_files::native::atomic::write(
-            &workspace_ticket_path(cache_dir),
-            ticket.encode()?.as_bytes(),
-        )?;
+        save_workspace_ticket(cache_dir, &ticket)?;
     }
     let np = namespace_path(cache_dir.as_deref());
     let replacement_transactions = cache_dir
@@ -4731,5 +4758,22 @@ mod tests {
                 .unwrap_or_else(|_| panic!("{name} never reached the stop path"));
             assert_eq!(received, name);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_workspace_ticket_is_readable_to_the_device_trust_group() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let temp = tempfile::tempdir().unwrap();
+        let ticket = Ticket {
+            node: iroh_base::EndpointAddr::new(iroh::SecretKey::from_bytes(&[0x91; 32]).public()),
+            workspace: [0x92; 32],
+        };
+        save_workspace_ticket(temp.path(), &ticket).unwrap();
+        let path = workspace_ticket_path(temp.path());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640, "group-readable, never world-readable");
+        let saved = Ticket::decode(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(saved.workspace, [0x92; 32]);
     }
 }

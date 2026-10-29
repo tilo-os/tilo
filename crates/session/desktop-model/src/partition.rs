@@ -27,7 +27,7 @@ use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{GroupId, StripId};
+use crate::ids::{GroupId, StripId, WorkspaceId};
 use crate::layout::Strip;
 use crate::serde_ids::deserialize_id_btree_map;
 use crate::workspace::Workspace;
@@ -88,6 +88,13 @@ pub struct OutputPartition {
     /// The group last focused on each monitor, per strip; not persisted.
     #[serde(skip)]
     pub last_active: BTreeMap<(String, StripId), GroupId>,
+    /// The strip each monitor shows, per workspace: every display shows a
+    /// strip of its own, so moving between strips on one leaves the others
+    /// where they are. The focused display shows the workspace's active
+    /// strip whatever this says (see `DesktopTree::strip_shown_on`); not
+    /// persisted.
+    #[serde(skip)]
+    pub shown: BTreeMap<(String, WorkspaceId), StripId>,
 }
 
 impl OutputPartition {
@@ -189,6 +196,21 @@ impl OutputPartition {
         };
         self.last_active.insert((monitor.clone(), strip), group);
         self.focused = Some(monitor);
+    }
+
+    /// The strip `display` was last showing in `workspace`, if any.
+    pub fn shown_on(&self, display: u32, workspace: WorkspaceId) -> Option<StripId> {
+        let monitor = self.monitor_of(display)?;
+        self.shown.get(&(monitor.to_owned(), workspace)).copied()
+    }
+
+    /// Remember that `display` shows `strip` in `workspace`. Returns
+    /// whether that changed anything.
+    pub fn set_shown(&mut self, display: u32, workspace: WorkspaceId, strip: StripId) -> bool {
+        let Some(monitor) = self.monitor_of(display).map(str::to_owned) else {
+            return false;
+        };
+        self.shown.insert((monitor, workspace), strip) != Some(strip)
     }
 
     fn last_active_on(&self, display: u32, strip: StripId) -> Option<GroupId> {
@@ -341,6 +363,13 @@ impl OutputPartition {
         self.origin.retain(|g, _| present.contains(g));
         self.last_active
             .retain(|(monitor, _), g| live.contains(monitor.as_str()) && present.contains(g));
+        let strips: BTreeSet<StripId> = workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .map(|s| s.id)
+            .collect();
+        self.shown
+            .retain(|(monitor, _), s| live.contains(monitor.as_str()) && strips.contains(s));
         if self.focused.as_deref().is_some_and(|f| !live.contains(f)) {
             self.focused = None;
         }
@@ -500,5 +529,41 @@ mod tests {
         .expect("saves");
         let loaded: Saved = serde_json::from_str(&json).expect("loads");
         assert_eq!(loaded.partition, p);
+    }
+
+    /// Each display shows a strip of its own: going to another strip on
+    /// the focused one leaves the other, and focus moving brings the
+    /// arriving display's strip into use.
+    #[test]
+    fn every_display_keeps_the_strip_it_shows() {
+        let mut ws = workspace(&[1, 2]).remove(0);
+        let mut below = Strip::new(StripId(2), "Below");
+        below.window_groups = vec![group(3), group(4)];
+        ws.strips.push(below);
+        let mut tree = crate::tree::DesktopTree {
+            active: ws.id,
+            workspaces: vec![ws.clone()],
+            ..Default::default()
+        };
+        tree.active_strip.insert(ws.id, StripId(1));
+        tree.outputs.reconcile(&tree.workspaces, &docked());
+        home(&mut tree.outputs, &[(1, 0), (2, 1), (3, 0), (4, 1)]);
+        tree.outputs.set_focused(0);
+        assert!(tree.shown_strips_behind());
+        assert!(tree.note_shown_strip());
+        assert!(!tree.shown_strips_behind());
+        // The panel goes to the strip below; the monitor stays.
+        tree.active_strip.insert(ws.id, StripId(2));
+        assert!(tree.note_shown_strip());
+        assert_eq!(tree.strip_shown_on(0), Some(StripId(2)));
+        assert_eq!(tree.strip_shown_on(1), Some(StripId(1)));
+        // Focus crossing to the monitor brings its strip into use.
+        assert!(tree.focus_display(1));
+        assert_eq!(tree.active_strip_id(), Some(StripId(1)));
+        assert_eq!(tree.strip_shown_on(0), Some(StripId(2)));
+        // A strip shown on a display that is not focused stays there.
+        assert!(tree.show_strip_on(0, StripId(1)));
+        assert_eq!(tree.strip_shown_on(0), Some(StripId(1)));
+        assert_eq!(tree.active_strip_id(), Some(StripId(1)));
     }
 }

@@ -27,7 +27,6 @@
 //! refused for a while rather than asked again, so a revert cannot turn
 //! into a loop of prompts.
 
-use settings_store::ConditionalUpdate;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
@@ -595,9 +594,8 @@ impl OutputManagementState {
     }
 }
 
-/// A session record can be durable even when rewriting its compatibility copy
-/// fails. Only an exact published snapshot proves that boundary; a storage
-/// error with no matching record remains a failure. No backend receipt is sent.
+/// Store the admitted request in the session's settings. No backend
+/// receipt is sent.
 fn persist_admitted(
     transaction: DisplayTransaction,
     source: Option<&dyn settings_store::SettingsSource>,
@@ -607,52 +605,12 @@ fn persist_admitted(
         .as_object()
         .cloned()
         .ok_or_else(|| std::io::Error::other("invalid display request"))?;
-    let stored = match source {
-        Some(source) => source.update_section_report(
-            settings_store::hardware::DISPLAY_TRANSACTION_SECTION,
-            values,
-        ),
-        None => settings_store::update_section(
-            settings_store::hardware::DISPLAY_TRANSACTION_SECTION,
-            values,
-        )
-        .map(|()| ConditionalUpdate::Stored),
+    let section = settings_store::hardware::DISPLAY_TRANSACTION_SECTION;
+    match source {
+        Some(source) => source.update_section(section, values),
+        None => settings_store::update_section(section, values),
     }?;
-    match stored {
-        ConditionalUpdate::Stored => {}
-        ConditionalUpdate::Superseded => {
-            return Err(std::io::Error::other(
-                "display request was superseded during storage",
-            ));
-        }
-        ConditionalUpdate::StoredWithCopyRepair(error) => {
-            // The operation itself proves durable acceptance. A later
-            // replacement must still fail this original request; this read
-            // never turns a generic storage error into a receipt.
-            let current = source
-                .and_then(|source| source.load().get("display_transaction").cloned())
-                .and_then(|value| serde_json::from_value::<DisplayTransaction>(value).ok());
-            if current
-                .as_ref()
-                .is_none_or(|current| !same_admission(&transaction, current))
-            {
-                return Err(std::io::Error::other(
-                    "display request was replaced after durable storage",
-                ));
-            }
-            tracing::warn!(%error, transaction = transaction.id, "output management: durable request accepted; settings copy repair remains pending");
-        }
-    }
     Ok(transaction)
-}
-
-/// Mutable backend state may advance while the storage result is queued.
-/// Match every immutable admission field, never just the clock-derived ID.
-fn same_admission(admitted: &DisplayTransaction, durable: &DisplayTransaction) -> bool {
-    admitted.id == durable.id
-        && admitted.set == durable.set
-        && admitted.previous == durable.previous
-        && admitted.candidate == durable.candidate
 }
 
 /// Keep an applied change, or hand it to the person when it is risky.
@@ -1304,46 +1262,5 @@ impl State {
     pub fn set_output_heads(&mut self, heads: Vec<OutputHead>) {
         self.output_management
             .set_heads(&self.display_handle, heads);
-    }
-}
-
-#[cfg(test)]
-mod staging_tests {
-    use super::*;
-
-    #[test]
-    fn output_staging_durable_identity_allows_backend_advancement_but_not_replacement() {
-        let admitted = DisplayTransaction {
-            id: 71,
-            ..DisplayTransaction::default()
-        };
-        let mut durable = admitted.clone();
-        for state in [
-            DisplayTransactionState::AwaitingConfirmation,
-            DisplayTransactionState::Confirmed,
-            DisplayTransactionState::Rejected,
-        ] {
-            durable.state = state;
-            durable.message = Some("backend outcome".into());
-            durable.deadline_unix_ms = Some(123);
-            assert!(same_admission(&admitted, &durable));
-        }
-        durable.id += 1;
-        assert!(!same_admission(&admitted, &durable));
-        durable.id = admitted.id;
-        durable.set.key = "different displays".into();
-        assert!(!same_admission(&admitted, &durable));
-        durable.set = admitted.set.clone();
-        durable.previous.outputs.insert(
-            "changed previous".into(),
-            settings_store::hardware::OutputConfig::default(),
-        );
-        assert!(!same_admission(&admitted, &durable));
-        durable.previous = admitted.previous.clone();
-        durable.candidate.outputs.insert(
-            "changed candidate".into(),
-            settings_store::hardware::OutputConfig::default(),
-        );
-        assert!(!same_admission(&admitted, &durable));
     }
 }

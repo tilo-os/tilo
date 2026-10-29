@@ -29,12 +29,11 @@ const MAX_PARENT_DEPTH: usize = 64;
 type Read = ([u8; 32], Arc<TrackerView>);
 
 /// What the shell reads of a room's tracker: its runs, as the broker and as
-/// the composer read them, and the room tasks it imported.
+/// the composer read them.
 #[derive(Debug, Default)]
 pub(crate) struct TrackerView {
     pub runs: Vec<TrackerRun>,
     pub followed: Vec<FollowedRun>,
-    pub imported: std::collections::BTreeSet<String>,
 }
 
 impl TrackerView {
@@ -42,7 +41,6 @@ impl TrackerView {
         Self {
             runs: runs_of(tracker),
             followed: followed_runs(tracker),
-            imported: tracker.imported.iter().cloned().collect(),
         }
     }
 }
@@ -147,30 +145,6 @@ impl NativeTrackerRuns {
             .get(&(room.to_owned(), issue.to_owned()))
             .filter(|(of, _)| *of == epoch)
             .map(|(_, presentation)| presentation.clone())
-    }
-
-    /// The tasks `room`'s document kept before the tracker that the tracker
-    /// has not imported yet.
-    pub(crate) fn unimported(&self, room: &str) -> Result<Vec<tasks::model::Imported>, String> {
-        let room_id = super::super::state::RoomId::parse(room).ok_or("invalid tracker room")?;
-        let owner = &self.owner.opened_owner("tracker owner unavailable")?;
-        let kept = owner.with_current(room_id, |view| {
-            Ok(view
-                .peer()
-                .admitted_room()
-                .map(super::super::room_task_import::room_tasks)
-                .unwrap_or_default())
-        })?;
-        if kept.is_empty() {
-            return Ok(kept);
-        }
-        let Some(tracker) = self.tracker(room)? else {
-            return Ok(kept);
-        };
-        Ok(kept
-            .into_iter()
-            .filter(|task| !tracker.imported.contains(&task.task))
-            .collect())
     }
 
     /// The room's tracker as committed now; `None` in a room with none yet.

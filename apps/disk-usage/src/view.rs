@@ -241,11 +241,11 @@ impl Nav {
     fn remember(&self, folder: PathBuf) {
         match &self.recents {
             Some(recents) => {
-                if let Err(error) = recents.update(|recent| recent.remember(folder)) {
+                if let Err(error) = recents.update(|recent| recent.folders.remember(folder)) {
                     tracing::warn!(%error, "could not remember the analyzed folder");
                 }
             }
-            None => self.recent.update(|recent| recent.remember(folder)),
+            None => self.recent.update(|recent| recent.folders.remember(folder)),
         }
     }
 

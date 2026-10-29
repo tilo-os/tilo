@@ -76,19 +76,15 @@ pub(crate) fn in_profile(
 ) -> PreparedComponentInputs {
     prepared
         .context
-        .provide_settings(ui_core::storage::SettingsDocument::File(profile_settings(
-            root,
-        )));
+        .provide_settings(ui_core::storage::SettingsDocument::Profile(
+            root.to_path_buf(),
+        ));
     prepared
         .context
         .provide_files(ui_core::storage::AppFiles::at(
             ui_core::storage::AppPaths::under(root.join("files"), app_id),
         ));
     prepared
-}
-
-pub(crate) fn profile_settings(root: &std::path::Path) -> std::path::PathBuf {
-    root.join("settings.json")
 }
 
 pub(crate) fn data_dir_root(directory: &std::path::Path) -> std::path::PathBuf {
@@ -102,10 +98,10 @@ pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::Con
 }
 
 impl Profile {
-    /// The profile's settings document, which the app's typed settings use
-    /// instead of the person's.
-    fn settings(&self) -> PathBuf {
-        self.root().join("settings.json")
+    /// The profile's settings, which the app's typed settings use instead of
+    /// the person's.
+    fn settings(&self) -> ui_core::storage::SettingsDocument {
+        ui_core::storage::SettingsDocument::Profile(self.root())
     }
 
     /// The directory the profile keeps everything in.
@@ -163,7 +159,7 @@ pub struct HeadlessApp<A: ResourceApp> {
 /// changed as `author`'s.
 fn serve_kept<A: ResourceApp>(
     harness: &mut FrameHarness,
-    settings: &std::path::Path,
+    settings: &ui_core::storage::SettingsDocument,
     author: &str,
 ) {
     let mut declared = super::Records::declaring();
@@ -179,7 +175,7 @@ fn serve_kept<A: ResourceApp>(
         let records = super::SettingsRecords::in_document(
             super::app::hooks::<A>().id(),
             &kept,
-            ui_core::storage::SettingsDocument::File(settings.to_path_buf()),
+            settings.clone(),
         );
         let person = author.to_owned();
         harness.serve_provider(
@@ -276,10 +272,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     /// The app as `person` (the hex of a root public key) opens it on a
-    /// fresh profile: one of that person's devices, whose person records
-    /// ([`RecordEnv::person`](super::RecordEnv::person)) are theirs.
+    /// fresh profile: one of that person's devices, whose shared records
+    /// ([`RecordEnv::shared_person`](super::RecordEnv::shared_person)) are
+    /// theirs.
     pub fn for_person(person: &str) -> Result<Self, LaunchError> {
         Self::fresh(TEST_ROOM, Role::Owner, person)
+    }
+
+    /// [`Self::for_person`], with the app open in the workspace `room`
+    /// (a room id), whose records sync on their routes.
+    pub fn for_person_in(person: &str, room: &str) -> Result<Self, LaunchError> {
+        Self::fresh(room, Role::Owner, person)
     }
 
     /// Open a fresh person profile with a service lent by its mounting host.
@@ -652,12 +655,12 @@ impl<A: ResourceApp> HeadlessApp<A> {
         ))
     }
 
-    /// The app's typed settings in this profile's settings document, which
+    /// The app's typed settings in this profile's settings, which
     /// the running app follows: a write here is what another window, the
     /// Settings app or another of the person's devices writing them does.
     pub fn settings<T: ui_core::storage::SettingsSchema>(&self) -> ui_core::storage::Settings<T> {
         ui_core::storage::Settings::for_app(super::app::hooks::<A>().id())
-            .in_file(self.profile.settings())
+            .in_document(self.profile.settings())
     }
 
     /// Change the participant's role while the app runs, as the record's

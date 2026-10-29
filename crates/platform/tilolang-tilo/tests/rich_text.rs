@@ -155,6 +155,18 @@ fn two_writers_edits_with_references_merge_in_a_room() {
     let by_title = found("Ship it");
     assert!(by_title.contains(&"Post".to_owned()), "{hits:#?}");
     assert!(by_title.contains(&"Task".to_owned()), "{hits:#?}");
+    // The post's hit carries what it refers to, in the one form: the system's index finds it by
+    // what the task is called now, and keeps it as one of the task's backlinks.
+    let post = hits.iter().find(|hit| hit.type_name == "Post").unwrap();
+    let referred: Vec<Option<String>> = post
+        .references
+        .iter()
+        .map(|reference| {
+            let reference = tilolang_runtime::rich::Reference::of_mark(reference)?;
+            tilolang_runtime::rich::resource_id(&reference).map(str::to_owned)
+        })
+        .collect();
+    assert_eq!(referred, [Some(task.clone())]);
 }
 
 #[test]

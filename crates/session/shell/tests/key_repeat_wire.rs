@@ -16,13 +16,13 @@
     reason = "test harness failures are assertions"
 )]
 
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
-use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
+use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat};
+use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
+use wayland_protocols::xdg::shell::client::xdg_wm_base;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyCode, PhysicalKey};
 
-use crate::support::wayland::foreign_id;
+use crate::support::wayland::{create_toplevel, foreign_id};
 
 const KEY_A: u32 = 30;
 const KEY_B: u32 = 48;
@@ -64,7 +64,7 @@ impl Client {
     }
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel, seat);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     fn event(
@@ -100,11 +100,6 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     }
 }
 
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
-
 type Harness = crate::support::wayland::Harness<Client>;
 
 /// A key of the machine's own keyboard as the backend hands it over.
@@ -130,10 +125,7 @@ fn focused_client() -> (Harness, shell::shell::frame::FrameBuilder) {
     let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let qh = h.queue.handle();
     let _keyboard = seat.get_keyboard(&qh, ());
-    let surface = compositor.create_surface(&qh, ());
-    let xdg = wm.get_xdg_surface(&surface, &qh, ());
-    let toplevel = xdg.get_toplevel(&qh, ());
-    toplevel.set_app_id("org.example.Editor".into());
+    create_toplevel(&compositor, &wm, &qh, "org.example.Editor");
     h.pump();
     let window = foreign_id(&h.state, "org.example.Editor");
     h.state.set_client_keyboard_focus(Some(window));

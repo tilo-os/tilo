@@ -36,45 +36,6 @@ impl A11yTreeNode {
     }
 }
 
-/// Stable, locale-independent identity for an immediate-mode toolbar control.
-pub(super) fn tool_action_id(action: ToolAction) -> String {
-    match action {
-        ToolAction::Bold => "bold".into(),
-        ToolAction::Italic => "italic".into(),
-        ToolAction::Underline => "underline".into(),
-        ToolAction::Strike => "strike".into(),
-        ToolAction::Super => "superscript".into(),
-        ToolAction::Sub => "subscript".into(),
-        ToolAction::Hyperlink => "hyperlink".into(),
-        ToolAction::SetFont(family) => format!("font-{}", super::controls::font_value(family)),
-        ToolAction::BulletList => "bulleted-list".into(),
-        ToolAction::NumberedList => "numbered-list".into(),
-        ToolAction::FontSizeDec => "font-size-decrease".into(),
-        ToolAction::FontSizeInc => "font-size-increase".into(),
-        ToolAction::InsertImage => "insert-image".into(),
-        ToolAction::InsertTable => "insert-table".into(),
-        ToolAction::TableRowAdd => "table-row-add".into(),
-        ToolAction::TableRowDel => "table-row-delete".into(),
-        ToolAction::TableColAdd => "table-column-add".into(),
-        ToolAction::TableColDel => "table-column-delete".into(),
-        ToolAction::TableDelete => "table-delete".into(),
-        ToolAction::ToggleStyles => "toggle-styles".into(),
-        ToolAction::ToggleRuler => "toggle-ruler".into(),
-        ToolAction::ToggleOutline => "toggle-outline".into(),
-        ToolAction::InsertToc => "insert-table-of-contents".into(),
-        ToolAction::TextColorPalette => "text-color".into(),
-        ToolAction::HighlightPalette => "highlight".into(),
-        ToolAction::TextColor(None) => "text-color-default".into(),
-        ToolAction::TextColor(Some(rgb)) => {
-            format!("text-color-{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
-        }
-        ToolAction::Highlight(None) => "highlight-clear".into(),
-        ToolAction::Highlight(Some(rgb)) => {
-            format!("highlight-{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
-        }
-    }
-}
-
 /// A human-readable accessible name for a toolbar [`ToolAction`]. The visible
 /// toolbar faces are terse ("B", "x²", an icon) for sighted
 /// users; a screen reader needs the spelled-out verb instead.

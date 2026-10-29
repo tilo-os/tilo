@@ -24,9 +24,15 @@ printf '[storage]\ndriver = "%s"\n' "$driver" > "$store/storage.conf"
 export CONTAINERS_STORAGE_CONF=$store/storage.conf
 b() { buildah --root "$store/root" --runroot "$store/run" "$@"; }
 mkdir -p "$out"
-# A fixed timestamp keeps the image the same when its inputs are: what a signing check
-# compares is then the build, not the time it ran.
-b build --layers=false --timestamp 0 --format oci -f "$containerfile" -t localhost/publish:build "$@" "$context"
+# The commit's time keeps the image the same when its inputs are: what a signing check
+# compares is then the build, not the time it ran. It dates every file in the image too, and
+# not 0: a web server names no ETag or Last-Modified for a file dated 0 or 1 (Caddy does not),
+# and one dated alike across releases would be told apart by its size alone.
+timestamp=${SOURCE_DATE_EPOCH:-$(git -C "$(dirname -- "${BASH_SOURCE[0]}")" log -1 --format=%ct HEAD)}
+[[ $timestamp =~ ^[0-9]+$ && $timestamp -gt 1 ]] || die "no commit time to date the image by: $timestamp"
+# buildah refuses --timestamp beside a SOURCE_DATE_EPOCH in its environment.
+unset SOURCE_DATE_EPOCH
+b build --layers=false --timestamp "$timestamp" --format oci -f "$containerfile" -t localhost/publish:build "$@" "$context"
 rm -f "$out/image.oci.tar"
 b push --compression-format gzip --force-compression localhost/publish:build "oci-archive:$out/image.oci.tar"
 archive_digest "$out/image.oci.tar" > "$out/digest"

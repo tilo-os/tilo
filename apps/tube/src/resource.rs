@@ -7,19 +7,15 @@
 //! (`Library::paths().likes.insert(&video)`), so concurrent adds and
 //! removes merge per video. Replying to a comment is the one verb.
 
-use std::rc::Rc;
-
-use ui::framework::{
-    EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceApp, ResourceSurface, RunMode,
-    SurfaceCx, ViewCx,
-};
+use ui::framework::{ResourceApp, RunMode, ViewCx};
 use ui::i18n::EmbeddedCatalog;
+#[cfg(feature = "samples")]
+use ui::tilo_resource::Invoke;
 use ui::tilo_resource::{
-    self, ActionCx, Collection, Edit, Id, Invoke, Model, Path, Refusal, SearchEntry, Set, resource,
+    self, ActionCx, Collection, Edit, Id, Model, Path, Refusal, Set, resource,
 };
 use ui::widget::Element;
 
-use crate::actions::TubeEffect;
 use crate::app::TubeApp;
 
 /// One reply to a comment, visible to everyone sharing the library.
@@ -138,6 +134,7 @@ impl Library {
 /// its empty and loading states, device sync, a playing watch
 /// page, the narrow window with its rail summoned, the sidebar widened
 /// into a list, and every screen.
+#[cfg(feature = "samples")]
 pub(crate) const SCENARIOS: &[&str] = &[
     "home",
     "empty",
@@ -155,7 +152,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "watch",
 ];
 
-/// Framework app: the Tube widget is the surface over [`Library`].
+/// Framework app: the Tube window is the view of [`Library`].
 pub struct TubeShell;
 
 /// What the binary runs instead of opening a window.
@@ -189,6 +186,7 @@ impl ResourceApp for TubeShell {
     /// A launch may name a search (`tube:search?q=cats`).
     const ARGUMENTS: usize = 1;
 
+    #[cfg(feature = "samples")]
     fn scenarios() -> &'static [&'static str] {
         SCENARIOS
     }
@@ -208,6 +206,7 @@ impl ResourceApp for TubeShell {
     }
 
     /// The sample library: the creators the sample catalogue subscribes to.
+    #[cfg(feature = "samples")]
     fn scenario(_name: Option<&str>) -> Vec<Invoke<Library>> {
         crate::sample::model()
             .subscriptions
@@ -229,14 +228,14 @@ impl ResourceApp for TubeShell {
                 Ok(())
             },
         );
-        let surface = Self::surface(cx.mode());
+        let window = Self::window(cx.mode());
         // A live window launched to search ("Search YouTube for cats" in
         // desktop search) opens on those results.
-        let surface = match crate::search_type::launch_search(cx.launch_arguments()) {
-            Some(query) if cx.mode().is_live() => surface.searching(&query),
-            _ => surface,
+        let window = match crate::search_type::launch_search(cx.launch_arguments()) {
+            Some(query) if cx.mode().is_live() => window.searching(&query),
+            _ => window,
         };
-        cx.surface(surface)
+        crate::app::window(cx, window)
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -245,89 +244,27 @@ impl ResourceApp for TubeShell {
 }
 
 impl TubeShell {
-    /// The widget the framework mounts: in a live window the online app,
+    /// The window the view lays out: in a live window the online app,
     /// which fetches the real catalogue and runs device sync; in a capture
-    /// the bundled sample catalogue, offline; for a past version the
-    /// library alone.
-    pub(crate) fn surface(mode: RunMode) -> TubeApp {
+    /// the bundled sample catalogue, offline, where the build has it; for a
+    /// past version the library alone.
+    pub(crate) fn window(mode: RunMode) -> TubeApp {
         match mode {
             RunMode::Live => TubeApp::new().online(),
-            RunMode::Capture => TubeApp::new(),
-            RunMode::Past => TubeApp::empty(),
+            #[cfg(feature = "samples")]
+            RunMode::Capture => TubeApp::sample(),
+            #[cfg(not(feature = "samples"))]
+            RunMode::Capture | RunMode::Past => TubeApp::new(),
+            #[cfg(feature = "samples")]
+            RunMode::Past => TubeApp::new(),
         }
-    }
-}
-
-impl ResourceSurface<Library, TubeEffect> for TubeApp {
-    fn present(&mut self, state: &Rc<Library>) {
-        self.present_library(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Library>) {
-        // Only a live window follows the person's own history: a capture
-        // shows the sample's, a past version none.
-        let history = cx
-            .mode()
-            .is_live()
-            .then(|| cx.person::<crate::history::WatchHistory>())
-            .flatten();
-        self.follow_preferences(cx.settings::<crate::model::Settings>());
-        // Only a live window pairs and syncs devices, with the app's secret
-        // store and the devices paired on this one.
-        #[cfg(feature = "grayjay-sync")]
-        if cx.mode().is_live() {
-            self.start_device_sync(
-                &cx.secrets(),
-                cx.storage().settings::<crate::sync::PairedDevices>(),
-            );
-        }
-        self.wake_with(cx.waker());
-        self.attach_framework(cx.dispatcher(), cx.actions(), history);
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        if let Some(scenario) = scenario {
-            self.stage_scenario(scenario);
-        }
-    }
-
-    fn effect(&mut self, effect: TubeEffect, _cx: &mut EffectCx<Library, Self>) -> EffectAnswer {
-        self.perform(effect).map(|()| Effected::done())
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        crate::rows::effect_statuses(self.model_ref(), self.device_sync_view())
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        crate::rows::live_rows(self.model_ref(), self.device_sync_view())
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        crate::rows::live_row(self.model_ref(), self.device_sync_view(), id)
-    }
-
-    /// What the platform search is looking for: the catalogue holds only
-    /// what has loaded, so the results offer to search `YouTube` for it.
-    fn search_query(&mut self, query: &ui::search::SearchQuery) {
-        self.follow_palette_query(query.text());
-    }
-
-    /// `YouTube` is still answering what the platform search asked.
-    fn search_pending(&self) -> bool {
-        self.suggestions_pending()
-    }
-
-    /// The videos, creators, playlists and watch history shown here, and a
-    /// `YouTube` search for what was typed.
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        self.search_entries_of_model()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::TubeEffect;
     use ui::framework::testing::TestApp;
     use ui::tilo_actions::OperationKind;
     use ui::tilo_resource::{Replica, items::item_resource_id};
@@ -463,10 +400,11 @@ mod tests {
     }
 
     #[test]
-    fn what_the_person_watched_is_kept_in_their_own_record_not_the_library() {
+    fn what_was_watched_is_kept_in_a_record_of_its_own_not_the_library() {
         use crate::history::WatchHistory;
         let person = "ad".repeat(32);
-        let mut app = TestApp::<TubeShell>::for_person(&person).unwrap();
+        let room = "00000000-0000-4000-8000-0000000000ad";
+        let mut app = TestApp::<TubeShell>::for_person_in(&person, room).unwrap();
         app.effect(&TubeEffect::MarkWatched {
             video: "vid_donut".into(),
         })
@@ -483,12 +421,12 @@ mod tests {
         };
         let history = app.person::<WatchHistory>().unwrap();
         assert_eq!(watched(&history), ["vid_donut", "vid_tea"]);
-        assert!(history.syncs(), "it follows the person to their devices");
+        assert!(history.syncs(), "it syncs with the workspace");
         let route = history.record().route().unwrap();
         assert_eq!(
             route.cluster_id.to_string(),
-            ui::record::person::scope_of(&ui::permissions::UserId(person)),
-            "in the person's own room"
+            room,
+            "in the workspace Tube is open in"
         );
         let library = app.peer_document().save();
         assert!(

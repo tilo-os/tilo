@@ -587,9 +587,9 @@ mod tests {
     fn a_site_drops_generics_closure_numbers_and_hashes() {
         assert_eq!(
             normalize_frame(
-                "settings_store::watch::watch_settings_at::<<shell::X as y::Z>::f::{closure#0}>::{closure#3}::h0123456789abcdef"
+                "settings_store::watch::watch_file_at::<<shell::X as y::Z>::f::{closure#0}>::{closure#3}::h0123456789abcdef"
             ),
-            "settings_store::watch::watch_settings_at::{closure}"
+            "settings_store::watch::watch_file_at::{closure}"
         );
     }
 }

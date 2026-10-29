@@ -6,14 +6,12 @@
 //! is a place the bar's Back returns from, and the views switch between the
 //! list and the board. Search is the bar's own.
 
+use ui::framework::BarCommands;
 use ui::prelude::*;
 use ui::widget::{AppModel, ModelPath, NavShell, Stack};
-use ui::window_toolbar::{ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar};
+use ui::window_toolbar::{ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar};
 
 use crate::{Filter, Nav, Place, Tracker, reference, tr};
-
-/// The bar action id of a view: `place:` and the place's key.
-const PLACE_PREFIX: &str = "place:";
 
 /// The window, with its slots in the window's bar.
 pub(crate) struct TasksWindow {
@@ -25,6 +23,8 @@ pub(crate) struct TasksWindow {
     nav: Nav,
     /// The tracker as the window reads it, for the location and the views.
     tracker: LocalState<Tracker>,
+    /// The bar's views, each carrying the place it shows.
+    places: BarCommands<Place>,
 }
 
 impl TasksWindow {
@@ -41,6 +41,7 @@ impl TasksWindow {
             bar,
             nav,
             tracker,
+            places: BarCommands::new(),
         }
     }
 
@@ -54,16 +55,17 @@ impl TasksWindow {
             label: self.location(open.as_ref(), place, &filter),
             ..ToolbarLocation::default()
         });
+        let view = |place: Place| self.places.entry("", place.title(), place).id;
         toolbar.views = Some(ToolbarViews {
             name: tr("tasks-views"),
             choices: Place::ALL
                 .into_iter()
                 .map(|place| ToolbarView {
-                    id: format!("{PLACE_PREFIX}{}", place.key()),
+                    id: view(place),
                     label: place.title(),
                 })
                 .collect(),
-            chosen: format!("{PLACE_PREFIX}{}", place.key()),
+            chosen: view(place),
         });
         toolbar
     }
@@ -112,9 +114,7 @@ impl TasksWindow {
             if self.bar.event(&event) {
                 continue;
             }
-            if let ToolbarEvent::Action { id } = event
-                && let Some(place) = id.strip_prefix(PLACE_PREFIX).and_then(Place::of)
-            {
+            if let Some(place) = self.places.pressed(&event) {
                 self.nav.place.set(place);
                 self.nav.open.set(None);
             }

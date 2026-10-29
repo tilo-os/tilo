@@ -90,7 +90,6 @@ mod shortcuts;
 mod strip_switcher;
 mod switcher_layer;
 mod tab_menu;
-mod task_import;
 mod top_bar_reveal;
 mod transient_zone;
 mod widget;
@@ -783,6 +782,9 @@ pub struct ShellOverlayHost {
     /// the indicators' resting point without showing them. The strip moving
     /// under the fingers is the feedback there.
     strip_pan_active: bool,
+    /// The display three fingers are moving between strips on: the one
+    /// focus was on when they landed. `None` on one display.
+    strip_deck_drag_display: Option<u32>,
     /// Off-thread reader for the OS state quick settings displays.
     /// See [`crate::shell::quick_settings_refresh`] for why the reads left the frame.
     qs_refresh: crate::shell::quick_settings_refresh::QsRefresh,
@@ -1093,8 +1095,6 @@ pub struct ShellOverlayHost {
         HashMap<crate::shell::agent_quick_composer::ComposerOwner, agent_actions::AgentActions>,
     /// The rooms' trackers, where the composer follows the runs it asked for.
     tracker: Option<std::sync::Arc<crate::shell::broker_services::NativeTrackerRuns>>,
-    /// The rooms' old tasks, moved into their trackers.
-    task_imports: task_import::TaskImports,
     agent_quick_composer: crate::shell::agent_quick_composer::AgentQuickComposer,
     agent_quick_composer_node: Option<NodeId>,
     /// The workspace menu and the profile card the top bar opens.

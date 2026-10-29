@@ -743,9 +743,9 @@ mod switch_tests {
     fn every_choice_value_is_found_by_its_name_and_sets_its_field() {
         let _home = tilo_test_env::TestHome::new().unwrap();
         let config = tempfile::tempdir().expect("isolated settings");
-        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
-        let records = settings_store::SessionSettings::open(paths).expect("records");
-        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
+        let paths = config.path().to_path_buf();
+        let records = settings_store::Store::open(&paths).expect("records");
+        let _settings = crate::shell::test_support::install_settings(records.clone());
 
         let provider = SettingsPagesProvider::new();
         let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
@@ -837,9 +837,9 @@ mod switch_tests {
         // The person's settings records, kept apart from every other test's.
         let _home = tilo_test_env::TestHome::new().unwrap();
         let config = tempfile::tempdir().expect("isolated settings");
-        let paths = settings_store::SessionPaths::beside(config.path().join("settings.json"));
-        let records = settings_store::SessionSettings::open(paths.clone()).expect("records");
-        let _settings = crate::shell::test_support::install_settings(std::sync::Arc::new(records));
+        let paths = config.path().to_path_buf();
+        let records = settings_store::Store::open(&paths).expect("records");
+        let _settings = crate::shell::test_support::install_settings(records.clone());
 
         let provider = SettingsPagesProvider::new();
         let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
@@ -944,20 +944,15 @@ mod switch_tests {
                 assert_eq!(listed.badge, row.badge, "{id}: listed as resolved");
             }
 
-            let before =
-                std::fs::read_to_string(paths.change_log()).map_or(0, |log| log.lines().count());
+            let before = records.change_log().len();
             activate(&row, switch);
             assert_eq!(
                 stored(switch),
                 !original,
                 "{id}: the first activation flips it"
             );
-            let log = std::fs::read_to_string(paths.change_log()).expect("change log");
-            let entries: Vec<serde_json::Value> = log
-                .lines()
-                .skip(before)
-                .map(|line| serde_json::from_str(line).expect("one JSON entry per line"))
-                .collect();
+            let entries: Vec<serde_json::Value> =
+                records.change_log().into_iter().skip(before).collect();
             assert_eq!(entries.len(), 1, "{id}: one leaf changed: {entries:?}");
             let entry = &entries[0];
             assert_eq!(

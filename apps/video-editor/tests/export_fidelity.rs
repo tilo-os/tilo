@@ -158,26 +158,22 @@ fn paused_editor_schedules_preroll_without_pointer_input() {
     )
     .unwrap();
     app.harness().key("Home");
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
+    tilo_test_env::wait_until("the paused editor to present decoded footage", || {
         let (real, pending) = app
             .with_widget::<video_editor::VideoEditorApp, _>(|editor| {
                 (editor.has_preview_frame(), editor.needs_animation_frame())
             })
             .expect("editor surface");
         if real {
-            break;
+            return true;
         }
         assert!(
             pending,
             "a paused seek must keep requesting frames until its picture arrives"
         );
-        assert!(
-            ui::time::now() < deadline,
-            "paused editor never presented decoded footage"
-        );
         app.harness().poll_frame().expect("scheduled preview frame");
-    }
+        false
+    });
 }
 
 /// Decode `path` and return its frame at `at_secs`, scaled to a fixed
@@ -751,9 +747,8 @@ fn exported_files_carry_the_real_source_footage_and_grade() {
             .to_string_lossy()
             .into_owned();
 
-        // 1. No anchor, and nothing of that name in the working directory: the
-        //    source cannot be read, so the export refuses by name.
-        video_editor::media::set_project_anchor(None);
+        // 1. Nothing of that name in the working directory: the source cannot
+        //    be read, so the export refuses by name.
         let pid = std::process::id();
         let mut lost = project_over(&clip, 0.5, &format!("ve relative lost {pid}"));
         lost.media[0].path = format!("tilo-not-here-{pid}/{file}");
@@ -780,11 +775,11 @@ fn exported_files_carry_the_real_source_footage_and_grade() {
             lost_out.display(),
         );
 
-        // 2. Anchored at the directory the project file would live in, the same
-        //    relative path finds the footage — and the file carries it.
-        video_editor::media::set_project_anchor(Some(dir));
+        // 2. Brought in from a project file in the footage's directory, the
+        //    same relative path finds the footage.
         let mut found = project_over(&clip, 0.5, &format!("ve relative found {pid}"));
         found.media[0].path = file.clone();
+        video_editor::project_file::anchor_media(&mut found, &dir);
         let out = export(&found);
         let exported = decode_frame(&out, 0.2);
         let source = decode_frame(&clip, 0.2);
@@ -804,7 +799,6 @@ fn exported_files_carry_the_real_source_footage_and_grade() {
             "and is the same picture: mean difference {diff:.2}"
         );
 
-        video_editor::media::set_project_anchor(None);
         tidy(&out);
     }
 }

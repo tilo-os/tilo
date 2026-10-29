@@ -16,7 +16,7 @@ impl MapsApp {
 
     /// Remember the search `query` in the shared history, and show it here.
     pub(super) fn commit_search(&mut self, query: &str) {
-        self.model.push_recent(query);
+        crate::workspace::remember_search(&mut self.model.recents, query);
         self.perform(Workspace::COMMIT_SEARCH.with(query));
     }
 
@@ -218,7 +218,7 @@ impl MapsApp {
         if commit {
             self.commit_search(&q);
         } else {
-            self.model.push_recent(&q);
+            crate::workspace::remember_search(&mut self.model.recents, &q);
         }
         self.model.panel = Panel::Explore;
         self.scroll = 0.0;

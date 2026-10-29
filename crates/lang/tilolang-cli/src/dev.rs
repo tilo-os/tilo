@@ -17,14 +17,15 @@
 //! restarts their windows on it. Each later change of the binary re-bakes and reinstalls the
 //! bundle and restarts the apps that use it; the session keeps running.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::Instant;
 
-use notify::{RecursiveMode, Watcher as _};
 use tilo_app_package::pack::SigningIdentity;
+use tilo_files::ChangeKind;
+use tilo_files::native::{ChangeWatch, WatchEvent, Watcher};
 use tilolang::PackageMeta;
 use tilolang_tilo::upgrade::{Upgrade, compare};
 
@@ -41,81 +42,13 @@ const RUNTIME_SOURCES: [&str; 4] = [
 
 /// The build of the tilolang runtime binary alone, thin, against the runtime library a nested
 /// session runs, for this machine's architecture: a binary of a few megabytes, as the session's
-/// own runtime bundle carries. rcargo runs it on its builder; t runs it as a check.
+/// own runtime bundle carries.
 const RUNTIME_SCRIPT: &str = "dist/dev/tilolang-runtime-build.sh";
 
-/// t's check that runs [`RUNTIME_SCRIPT`] on a node of this machine's architecture.
-const RUNTIME_CHECK: &str = if cfg!(target_arch = "aarch64") {
-    "tilolang-runtime-arm64"
-} else {
-    "tilolang-runtime"
-};
-
-/// Where the build lands in the checkout's target directory, where rcargo fetches it and
-/// `t outputs` leaves it: the binary and the runtime library it links.
-const RUNTIME_OUT: &str = "tilolang-runtime";
+/// Where the build lands in the checkout's target directory: the binary and the runtime library
+/// it links.
 const RUNTIME_BINARY: &str = "target/tilolang-runtime/tilolang-app";
 const RUNTIME_LIBRARY: &str = "target/tilolang-runtime/libruntime_dylib.so";
-
-/// The environment variable that picks the builder, as it does for `nested-session.sh`.
-const BUILDER_ENV: &str = "TILO_NESTED_BUILDER";
-
-/// Where `--build-runtime` builds the runtime: on the rcargo builder that rcargo's
-/// configuration names (`rcargo exec`), or on t (`t outputs`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Builder {
-    Rcargo,
-    T,
-}
-
-impl Builder {
-    /// The builder `name` names: `rcargo` or `t`.
-    fn parse(name: &str) -> Result<Self, String> {
-        match name {
-            "rcargo" => Ok(Self::Rcargo),
-            "t" => Ok(Self::T),
-            other => Err(format!("unknown builder {other} (rcargo or t)")),
-        }
-    }
-
-    fn program(self) -> &'static str {
-        match self {
-            Self::Rcargo => "rcargo",
-            Self::T => "t",
-        }
-    }
-
-    /// The builder asked for (`--builder`, else [`BUILDER_ENV`]), by default rcargo when it is
-    /// on PATH and t otherwise; it must be on PATH.
-    fn choose(asked: Option<&str>) -> Result<Self, String> {
-        let from_env = std::env::var(BUILDER_ENV)
-            .ok()
-            .filter(|name| !name.is_empty());
-        let builder = match asked.or(from_env.as_deref()) {
-            Some(name) => Self::parse(name)?,
-            None if on_path("rcargo") => Self::Rcargo,
-            None => Self::T,
-        };
-        if !on_path(builder.program()) {
-            return Err(format!(
-                "{} is required on PATH to build the runtime",
-                builder.program()
-            ));
-        }
-        Ok(builder)
-    }
-}
-
-/// Whether an executable `program` is on PATH.
-fn on_path(program: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            std::fs::metadata(dir.join(program))
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        })
-    })
-}
 
 /// The ELF machine of this machine's architecture, as an ELF header names it (`e_machine`).
 const fn elf_machine() -> Option<u16> {
@@ -146,7 +79,7 @@ fn check_architecture(path: &Path) -> Result<(), String> {
     match machine {
         Some(machine) if machine == expected => Ok(()),
         _ => Err(format!(
-            "{} is not built for {}: build on a builder of this architecture (RCARGO_CONFIG)",
+            "{} is not built for {}: build on a builder of this architecture",
             path.display(),
             std::env::consts::ARCH
         )),
@@ -165,8 +98,6 @@ pub struct DevOptions {
     pub runtime: Option<PathBuf>,
     /// Build the runtime from the checkout and rebuild it on every change of its sources.
     pub build_runtime: bool,
-    /// Where to build it (`--builder`); by default as [`Builder::choose`] picks.
-    pub builder: Option<String>,
     /// The key the runtime bundle is signed with (default: the session's runtime publisher).
     pub runtime_identity: Option<PathBuf>,
     /// The Tilo checkout whose nested-session build has the session's tools.
@@ -175,7 +106,7 @@ pub struct DevOptions {
 
 /// What wakes the loop: a file event, or the end of the session the tool started.
 pub(crate) enum Wake {
-    File(notify::Result<notify::Event>),
+    File(Vec<WatchEvent>),
     Ended(std::io::Result<std::process::ExitStatus>),
 }
 
@@ -200,9 +131,9 @@ const DEV_RUNTIME_PACKAGE: &str = "so.tilo.runtime.tilolang.dev";
 /// A tilolang runtime binary the apps run on, baked and installed as a runtime package.
 struct DevRuntime {
     binary: PathBuf,
-    /// The checkout the tool builds `binary` in, on every change of its sources, and where it
-    /// builds it; without one the tool follows a binary built by hand.
-    built_in: Option<(PathBuf, Builder)>,
+    /// The checkout the tool builds `binary` in, on every change of its sources; without one
+    /// the tool follows a binary built by hand.
+    built_in: Option<PathBuf>,
     /// The key its bundle is signed with: one the launcher trusts for runtime bundles.
     identity_file: PathBuf,
     version: String,
@@ -414,48 +345,48 @@ impl Dev {
 
     fn watch(
         &self,
-        watcher: &mut notify::RecommendedWatcher,
-        watching: &mut BTreeSet<PathBuf>,
+        wakes: &mpsc::Sender<Wake>,
+        watching: &mut BTreeMap<PathBuf, ChangeWatch>,
     ) -> Result<(), String> {
-        let mut dirs: Vec<(PathBuf, RecursiveMode)> = self
+        let mut dirs: Vec<(PathBuf, bool)> = self
             .watched_dirs()?
             .into_iter()
-            .map(|dir| (dir, RecursiveMode::NonRecursive))
+            .map(|dir| (dir, false))
             .collect();
         match self.runtime.as_ref() {
             Some(DevRuntime {
-                built_in: Some((repo, _)),
+                built_in: Some(repo),
                 ..
-            }) => dirs.extend(
-                RUNTIME_SOURCES
-                    .iter()
-                    .map(|dir| (repo.join(dir), RecursiveMode::Recursive)),
-            ),
+            }) => dirs.extend(RUNTIME_SOURCES.iter().map(|dir| (repo.join(dir), true))),
             Some(runtime) => dirs.extend(
                 runtime
                     .binary
                     .parent()
-                    .map(|dir| (dir.to_path_buf(), RecursiveMode::NonRecursive)),
+                    .map(|dir| (dir.to_path_buf(), false)),
             ),
             None => {}
         }
-        for (dir, mode) in dirs {
-            if watching.insert(dir.clone()) {
-                watcher
-                    .watch(&dir, mode)
-                    .map_err(|error| format!("{}: {error}", dir.display()))?;
+        for (dir, tree) in dirs {
+            if let std::collections::btree_map::Entry::Vacant(slot) = watching.entry(dir) {
+                let watcher = if tree {
+                    Watcher::tree(slot.key())
+                } else {
+                    Watcher::entries(slot.key())
+                };
+                let watch = watch_into(watcher, wakes.clone())
+                    .map_err(|error| format!("{}: {error}", slot.key().display()))?;
+                slot.insert(watch);
             }
         }
         Ok(())
     }
 
-    /// Build the runtime binary in its checkout, thin, on the rcargo builder (one `rcargo exec`
-    /// whose output is fetched) or on t (`t outputs`). A thin binary runs only on the runtime
+    /// Build the runtime binary in its checkout, thin. A thin binary runs only on the runtime
     /// library of its build graph, so the library it was built with must be the one the session
     /// runs.
     fn build_runtime(&self) -> Result<(), String> {
         let Some(DevRuntime {
-            built_in: Some((repo, builder)),
+            built_in: Some(repo),
             binary,
             ..
         }) = &self.runtime
@@ -463,19 +394,8 @@ impl Dev {
             return Ok(());
         };
         let started = Instant::now();
-        let mut command = Command::new(builder.program());
+        let mut command = Command::new(repo.join(RUNTIME_SCRIPT));
         command.current_dir(repo);
-        match builder {
-            Builder::Rcargo => {
-                // Its output passes through: the build's progress and errors.
-                command.args(["--fetch", RUNTIME_OUT, "exec", RUNTIME_SCRIPT]);
-            }
-            Builder::T => {
-                command
-                    .args(["outputs", RUNTIME_CHECK, "--human"])
-                    .stdout(std::process::Stdio::null());
-            }
-        }
         session::status(&mut command, "building the runtime")?;
         check_architecture(binary)?;
         let built = repo.join(RUNTIME_LIBRARY);
@@ -508,35 +428,35 @@ impl Dev {
     pub(crate) fn follow(
         &mut self,
         wakes: &mpsc::Receiver<Wake>,
-        watcher: &mut notify::RecommendedWatcher,
+        sender: &mpsc::Sender<Wake>,
     ) -> Result<(), String> {
-        let mut watching = BTreeSet::new();
-        self.watch(watcher, &mut watching)?;
+        let mut watching = BTreeMap::new();
+        self.watch(sender, &mut watching)?;
         loop {
-            let event = match wakes.recv() {
-                Ok(Wake::File(event)) => event,
+            let events = match wakes.recv() {
+                Ok(Wake::File(events)) => events,
                 Ok(Wake::Ended(status)) => return ended(status),
                 Err(_) => return Err("the file watcher stopped".to_owned()),
             };
-            let Ok(event) = event else { continue };
-            let mut source = is_source_edit(&event);
-            let mut runtime = self.is_runtime_change(&event);
-            let mut runtime_source = self.is_runtime_source_edit(&event);
-            if !source && !runtime && !runtime_source {
-                continue;
-            }
+            let (mut source, mut runtime, mut runtime_source) = (false, false, false);
+            let mut take = |events: &[WatchEvent]| {
+                for event in events {
+                    source |= is_source_edit(event);
+                    runtime |= self.is_runtime_change(event);
+                    runtime_source |= self.is_runtime_source_edit(event);
+                }
+            };
+            take(&events);
             // An editor's save, or a link of the runtime, is several events: take every one
-            // already queued with this one.
+            // already queued with these.
             while let Ok(wake) = wakes.try_recv() {
                 match wake {
                     Wake::Ended(status) => return ended(status),
-                    Wake::File(Ok(more)) => {
-                        source |= is_source_edit(&more);
-                        runtime |= self.is_runtime_change(&more);
-                        runtime_source |= self.is_runtime_source_edit(&more);
-                    }
-                    Wake::File(Err(_)) => {}
+                    Wake::File(more) => take(&more),
                 }
+            }
+            if !source && !runtime && !runtime_source {
+                continue;
             }
             if runtime_source {
                 match self.build_runtime() {
@@ -551,15 +471,14 @@ impl Dev {
             } else {
                 self.rebuild();
             }
-            if let Err(error) = self.watch(watcher, &mut watching) {
+            if let Err(error) = self.watch(sender, &mut watching) {
                 eprintln!("{error}");
             }
         }
     }
 
     /// A new binary of a runtime built by hand.
-    fn is_runtime_change(&self, event: &notify::Event) -> bool {
-        use notify::EventKind;
+    fn is_runtime_change(&self, event: &WatchEvent) -> bool {
         let Some(runtime) = self
             .runtime
             .as_ref()
@@ -567,44 +486,46 @@ impl Dev {
         else {
             return false;
         };
-        matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
-            && event.paths.contains(&runtime.binary)
+        matches!(event.kind, ChangeKind::Created | ChangeKind::Changed)
+            && event.path == runtime.binary
     }
 
     /// An edit of the sources of a runtime the tool builds.
-    fn is_runtime_source_edit(&self, event: &notify::Event) -> bool {
-        use notify::EventKind;
+    fn is_runtime_source_edit(&self, event: &WatchEvent) -> bool {
         let Some(repo) = self
             .runtime
             .as_ref()
             .and_then(|runtime| runtime.built_in.as_ref())
-            .map(|(repo, _)| repo)
         else {
             return false;
         };
-        matches!(
-            event.kind,
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-        ) && event.paths.iter().any(|path| {
-            RUNTIME_SOURCES
+        let path = &event.path;
+        event.kind != ChangeKind::Rescan
+            && RUNTIME_SOURCES
                 .iter()
                 .any(|dir| path.starts_with(repo.join(dir)))
-                && (path.extension().is_some_and(|extension| extension == "rs")
-                    || path.file_name().is_some_and(|name| name == "Cargo.toml"))
-        })
+            && (path.extension().is_some_and(|extension| extension == "rs")
+                || path.file_name().is_some_and(|name| name == "Cargo.toml"))
     }
 }
 
-/// Whether `event` changed a package's source.
-pub(crate) fn is_source_edit(event: &notify::Event) -> bool {
-    use notify::EventKind;
-    matches!(
-        event.kind,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-    ) && event
-        .paths
-        .iter()
-        .any(|path| path.extension().is_some_and(|extension| extension == "tl"))
+/// Whether `event` changed a package's source, or changes may have been missed.
+pub(crate) fn is_source_edit(event: &WatchEvent) -> bool {
+    event.kind == ChangeKind::Rescan
+        || event
+            .path
+            .extension()
+            .is_some_and(|extension| extension == "tl")
+}
+
+/// Start `watcher`, its changes sent to `wakes`.
+pub(crate) fn watch_into(
+    watcher: Watcher,
+    wakes: mpsc::Sender<Wake>,
+) -> std::io::Result<ChangeWatch> {
+    watcher.start(move |events| {
+        let _ = wakes.send(Wake::File(events.to_vec()));
+    })
 }
 
 /// The signed runtime package that offers the baked bundle in `bundle` as `tilolang/<version>`,
@@ -674,14 +595,14 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
     let peer = Peer::attach(&options.session, &repo)?;
     let (tilo_runtime, tilolang_runtime) = peer.runtimes_baked()?;
     let built_in = if options.build_runtime {
-        Some((repo, Builder::choose(options.builder.as_deref())?))
+        Some(repo)
     } else {
         None
     };
     let binary = options
         .runtime
         .clone()
-        .or_else(|| built_in.as_ref().map(|(repo, _)| repo.join(RUNTIME_BINARY)));
+        .or_else(|| built_in.as_ref().map(|repo| repo.join(RUNTIME_BINARY)));
     let runtime = binary.as_ref().map(|binary| DevRuntime {
         binary: std::path::absolute(binary).unwrap_or_else(|_| binary.clone()),
         built_in: built_in.clone(),
@@ -703,10 +624,6 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
     let mut dev = Dev::new(build, identity, vec![peer], bin);
     dev.runtime = runtime;
     let (sender, wakes) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = sender.send(Wake::File(event));
-    })
-    .map_err(|error| error.to_string())?;
     if dev.runtime.is_some() {
         dev.build_runtime()?;
         dev.install_runtime()?;
@@ -725,7 +642,7 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
             ""
         }
     );
-    dev.follow(&wakes, &mut watcher)
+    dev.follow(&wakes, &sender)
 }
 
 /// Mark `path` executable: a build server's outputs arrive as plain files.
@@ -759,12 +676,5 @@ mod tests {
         assert!(error.contains("is not built for"), "{error}");
         std::fs::write(&path, b"#!/bin/sh\nexit 0\n# not an ELF file at all").unwrap();
         assert!(check_architecture(&path).is_err());
-    }
-
-    #[test]
-    fn builders_are_named_rcargo_or_t() {
-        assert_eq!(Builder::parse("rcargo"), Ok(Builder::Rcargo));
-        assert_eq!(Builder::parse("t"), Ok(Builder::T));
-        assert!(Builder::parse("cargo").is_err());
     }
 }

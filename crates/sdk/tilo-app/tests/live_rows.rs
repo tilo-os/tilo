@@ -108,6 +108,8 @@ enum Raw {
     Nothing,
     /// A hand-built document action the surface publishes itself.
     DocumentAction,
+    /// The same, offered only to a lookup by id.
+    LookedUpDocumentAction,
 }
 
 /// What the jobs surface does outside the document, each offered on the
@@ -202,17 +204,22 @@ impl Widget for Jobs {
     tilo_app::provides!(dyn tilo_app::resources::PublishesResources);
 }
 
+fn rogue() -> tilo_actions::ResourceSpec {
+    tilo_actions::ResourceSpec::new("rogue", "test.rogue", "Rogue").with_action(
+        ActionSpec::immediate("bump", "Bump", ACTION_TYPE, &TallyAction::Add { by: 1 }).unwrap(),
+    )
+}
+
 impl tilo_app::resources::PublishesResources for Jobs {
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        if RAW.get() == Raw::Nothing {
-            return Vec::new();
+        if RAW.get() == Raw::DocumentAction {
+            return vec![rogue()];
         }
-        vec![
-            tilo_actions::ResourceSpec::new("rogue", "test.rogue", "Rogue").with_action(
-                ActionSpec::immediate("bump", "Bump", ACTION_TYPE, &TallyAction::Add { by: 1 })
-                    .unwrap(),
-            ),
-        ]
+        Vec::new()
+    }
+
+    fn resource(&self, _: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        (RAW.get() == Raw::LookedUpDocumentAction && id == "rogue").then(rogue)
     }
 }
 
@@ -556,4 +563,34 @@ fn a_view_publishes_the_rows_it_shows_without_a_surface() {
         [JobEffect::Stop { job: 3 }, JobEffect::Stop { job: 9 }]
     );
     assert_eq!(app.state(), 0, "rows change nothing in the document");
+}
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "offers document action `bump` outside the resource's actions")
+)]
+fn a_view_widget_cannot_publish_a_document_action_of_its_own() {
+    RAW.set(Raw::DocumentAction);
+    let mut app = TestApp::<ViewJobsApp>::new().unwrap();
+    let resources = app.harness().resources();
+    let rogue = find(&resources, "rogue").expect("the row itself is published");
+    assert!(rogue.actions.is_empty(), "its document action is dropped");
+    assert!(app.call_on("rogue", "bump", json!({})).is_err());
+    assert_eq!(app.state(), 0);
+}
+
+/// Only the root speaks for the resource: a document action any other
+/// widget offers, in a plain view or a hosted surface, never reaches the
+/// document through the door, even resolved by id.
+#[test]
+fn no_widget_below_the_root_changes_the_document_through_the_door() {
+    RAW.set(Raw::LookedUpDocumentAction);
+    let mut app = TestApp::<ViewJobsApp>::new().unwrap();
+    assert!(app.call_on("rogue", "bump", json!({})).is_err());
+    assert_eq!(app.state(), 0, "a plain view's widget");
+    let mut app = TestApp::<TallyApp>::new().unwrap();
+    assert!(app.call_on("rogue", "bump", json!({})).is_err());
+    assert_eq!(app.state(), 0, "a surface's widget");
+    RAW.set(Raw::Nothing);
 }

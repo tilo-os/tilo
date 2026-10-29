@@ -216,9 +216,9 @@ impl NotificationPolicy {
         values
     }
 
-    pub fn load_at(path: &std::path::Path) -> Self {
-        serde_json::from_value(serde_json::Value::Object(crate::load_section_at(
-            path, SECTION,
+    pub fn load_in(source: &dyn crate::SettingsSource) -> Self {
+        serde_json::from_value(serde_json::Value::Object(crate::load_section_in(
+            source, SECTION,
         )))
         .unwrap_or_default()
     }

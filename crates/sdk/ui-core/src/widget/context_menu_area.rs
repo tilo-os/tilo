@@ -23,6 +23,9 @@ use crate::theme::Theme;
 pub struct MenuEntry {
     item: MenuItem,
     run: Option<Rc<dyn Fn()>>,
+    /// An emoji bar's way to the emoji picker: set when its last cell was chosen, and where
+    /// the picked emoji goes.
+    more: Option<(Rc<std::cell::Cell<bool>>, crate::component::Event)>,
 }
 
 impl MenuEntry {
@@ -31,6 +34,7 @@ impl MenuEntry {
         Self {
             item: MenuItem::selection(label),
             run: Some(Rc::new(run)),
+            more: None,
         }
     }
 
@@ -39,6 +43,7 @@ impl MenuEntry {
         Self {
             item: MenuItem::destructive_selection(label),
             run: Some(Rc::new(run)),
+            more: None,
         }
     }
 
@@ -48,6 +53,7 @@ impl MenuEntry {
         Self {
             item: MenuItem::Caption(text.into()),
             run: None,
+            more: None,
         }
     }
 
@@ -56,6 +62,41 @@ impl MenuEntry {
         Self {
             item: MenuItem::separator(),
             run: None,
+            more: None,
+        }
+    }
+
+    /// A row of emoji to pick one from, as a menu's emoji bar: picking one fires the bar's
+    /// `pick` with it; its last cell, when the bar has `more`, opens the emoji picker over the
+    /// menu's place for any other.
+    pub fn emoji_bar(bar: super::attached::EmojiBarProps) -> Self {
+        let super::attached::EmojiBarProps { emoji, more, pick } = bar;
+        // The menu notes the cell chosen; the entry runs once the menu let go of the press.
+        let chosen: Rc<std::cell::RefCell<Option<Chosen>>> = Rc::default();
+        let note = Rc::clone(&chosen);
+        let wants_more = Rc::clone(&chosen);
+        let more = more.then(|| {
+            Rc::new(move || {
+                *wants_more.borrow_mut() = Some(Chosen::More);
+            }) as super::context_menu::MenuAction
+        });
+        let item = MenuItem::emoji_row(
+            emoji,
+            move |emoji| *note.borrow_mut() = Some(Chosen::Emoji(emoji.to_owned())),
+            more,
+        );
+        let picker = Rc::new(std::cell::Cell::new(false));
+        let opens = Rc::clone(&picker);
+        let fires = pick.clone();
+        let run = Rc::new(move || match chosen.borrow_mut().take() {
+            Some(Chosen::Emoji(emoji)) => fires.fire(Some(crate::component::Value::Text(emoji))),
+            Some(Chosen::More) => opens.set(true),
+            None => {}
+        }) as Rc<dyn Fn()>;
+        Self {
+            item,
+            run: Some(run),
+            more: Some((picker, pick)),
         }
     }
 
@@ -84,6 +125,18 @@ impl MenuEntry {
     pub fn item(&self) -> &MenuItem {
         &self.item
     }
+
+    /// What choosing the row runs, for a test that chooses it on a menu of its own.
+    #[cfg(test)]
+    pub(crate) fn run_for_tests(&self) -> Option<Rc<dyn Fn()>> {
+        self.run.clone()
+    }
+}
+
+/// What an emoji row was chosen for.
+enum Chosen {
+    Emoji(String),
+    More,
 }
 
 /// The entries a menu offers where it opens, at the pointer in window
@@ -108,6 +161,12 @@ pub struct ContextMenuArea {
     /// The entry pressed with the pointer, run when the button comes up.
     pending: Option<usize>,
     viewport: Option<Rect>,
+    /// The open menu's emoji bars' ways to the emoji picker.
+    more: Vec<(Rc<std::cell::Cell<bool>>, crate::component::Event)>,
+    /// The emoji picker an emoji bar opened, and where its pick goes.
+    picker: Option<(super::EmojiPicker, crate::component::Event)>,
+    /// The picker to open over the menu's place at the next drawing, which knows the theme.
+    picker_wanted: Option<(Rect, crate::component::Event)>,
 }
 
 impl ContextMenuArea {
@@ -134,6 +193,9 @@ impl ContextMenuArea {
             moved: None,
             pending: None,
             viewport: None,
+            more: Vec::new(),
+            picker: None,
+            picker_wanted: None,
         }
     }
 
@@ -163,10 +225,12 @@ impl ContextMenuArea {
         let offered = entries.iter().any(|entry| entry.run.is_some());
         let mut menu = ContextMenu::new();
         self.runs.clear();
+        self.more.clear();
         if offered {
             for entry in entries {
                 menu.push(entry.item);
                 self.runs.push(entry.run);
+                self.more.extend(entry.more);
             }
         }
         // A right-click inside what is selected in the content is about the
@@ -211,7 +275,12 @@ impl ContextMenuArea {
     /// Run the chosen entry, then let the content see the pointer where
     /// it is, so what the command asked of it happens now.
     fn run(&mut self, index: usize, ctx: &mut EventCtx<'_>) {
+        let place = self.menu.get_rect();
         self.choose(index);
+        // An emoji bar's last cell opens the picker where the menu was.
+        if let Some((_, pick)) = self.more.iter().find(|(wanted, _)| wanted.replace(false)) {
+            self.picker_wanted = Some((place, pick.clone()));
+        }
         if let Some(moved) = self.moved.clone() {
             self.content.handle_event(&moved, ctx);
         }
@@ -270,6 +339,20 @@ impl super::Decorator for ContextMenuArea {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
             self.moved = Some(event.clone());
+        }
+        if let Some((picker, pick)) = self.picker.as_mut() {
+            picker.handle_event(event, ctx);
+            for happened in picker.take_events() {
+                if let super::emoji_picker::PickerEvent::Picked(emoji) = happened {
+                    pick.fire(Some(crate::component::Value::Text(emoji)));
+                }
+                picker.close();
+            }
+            if !picker.is_open() {
+                self.picker = None;
+            }
+            *ctx.handled = true;
+            return;
         }
         // A row pressed with the pointer runs when the button comes up,
         // and that release is the menu's: what the command started (a
@@ -358,12 +441,34 @@ impl super::Decorator for ContextMenuArea {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.menu.is_open() || self.pending.is_some() || self.content.wants_pointer_capture()
+        self.menu.is_open()
+            || self.pending.is_some()
+            || self.picker.is_some()
+            || self.content.wants_pointer_capture()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.content.needs_redraw()
+            || self.picker_wanted.is_some()
+            || self
+                .picker
+                .as_ref()
+                .is_some_and(|(picker, _)| picker.needs_redraw())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.content.needs_animation_frame()
+            || self.picker_wanted.is_some()
+            || self
+                .picker
+                .as_ref()
+                .is_some_and(|(picker, _)| picker.needs_animation_frame())
     }
 
     fn modal_capture(&self) -> Option<Rect> {
         self.menu
             .modal_capture()
+            .or_else(|| self.picker.as_ref().map(|(picker, _)| picker.rect()))
             .or_else(|| self.content.modal_capture())
     }
 
@@ -382,9 +487,19 @@ impl super::Decorator for ContextMenuArea {
         }
         self.content
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        if self.menu.is_open() {
+        // The menu paints in the overlay pass, over everything.
+        if self.menu.is_drawn() {
             self.menu
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if let Some((anchor, pick)) = self.picker_wanted.take() {
+            let mut picker = super::EmojiPicker::framed();
+            let viewport = self.viewport.unwrap_or_else(|| self.content.get_rect());
+            picker.open_at(anchor, viewport, theme);
+            self.picker = Some((picker, pick));
+        }
+        if let Some((picker, _)) = self.picker.as_mut() {
+            picker.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -394,6 +509,9 @@ impl super::Decorator for ContextMenuArea {
         let mut children = self.content.children();
         if self.menu.is_open() {
             children.push(&self.menu);
+        }
+        if let Some((picker, _)) = &self.picker {
+            children.push(picker);
         }
         children
     }

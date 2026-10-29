@@ -111,12 +111,13 @@ fn remove_where_removes_and_counts() {
 }
 
 #[test]
-fn moves_name_a_neighbour_never_an_index() {
+fn a_move_names_a_neighbour_or_a_place() {
     ok("action m(c: C, x: C, y: C) {\n    c.items.move(x, after: y)\n}");
     ok("action m(c: C, x: C, y: C) {\n    c.items.move(x, before: y)\n}");
-    expect("E107", "action m(c: C, x: C) {\n    c.items.move(x, 2)\n}");
+    ok("action m(c: C, x: C, i: Int) {\n    c.items.move(x, to: i)\n}");
+    expect("E022", "action m(c: C, x: C) {\n    c.items.move(x, 2)\n}");
     expect(
-        "E107",
+        "E020",
         "action m(c: C, x: C, y: C) {\n    c.items.move(x, to: y)\n}",
     );
 }
@@ -160,6 +161,37 @@ fn typing_in_a_composer_is_personal() {
         "{TALK}view talk(t: Talk) {{\n    button(\"Send\", on: send(t, \"x\").then(1))\n}}"
     );
     assert!(codes(&not_an_action).iter().any(|c| c == "E020"));
+}
+
+#[test]
+fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
+    // Given as itself, view state is read when the event fires.
+    let pressed = format!(
+        "app t.x \"X\"\n{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    lens n: Int = 1\n    stack {{\n        input(bind: draft)\n        button(send(t, draft).then(set(draft, \"\")))\n        button(\"More\", on: set(n, n))\n    }}\n}}"
+    );
+    let compiled = crate::common::compile_with(&pressed, &[]).unwrap_or_else(|d| panic!("{d:#?}"));
+    validate(&compiled.wasm);
+    // Read any other way, it would be the value the view drew with, which a press outruns.
+    let drawn = format!(
+        "{TALK}view talk(t: Talk) {{\n    lens draft: Text\n    button(send(t, \"{{draft}}!\"))\n}}"
+    );
+    assert!(
+        codes(&drawn).iter().any(|c| c == "E111"),
+        "{:?}",
+        codes(&drawn)
+    );
+    let counted = format!(
+        "{TALK}view talk(t: Talk) {{\n    lens n: Int = 1\n    button(\"More\", on: set(n, n + 1))\n}}"
+    );
+    assert!(
+        codes(&counted).iter().any(|c| c == "E111"),
+        "{:?}",
+        codes(&counted)
+    );
+    // A flow or an action reads its own arguments as they are.
+    ok(
+        "action a(c: C, t: Text) {\n    c.t = t\n}\naction b(c: C) {\n    let t = c.t\n    a(c, t)\n}",
+    );
 }
 
 #[test]

@@ -35,7 +35,7 @@
 #                              prove a change touched only what it owns
 #   guest.sh update RPM_DIR    upgrade the Tilo packages in place, as a newer
 #                              release does
-#   guest.sh settings          the login user's Tilo settings.json (empty if none)
+#   guest.sh settings          the login user's Tilo settings as JSON (empty if none)
 #   guest.sh status            compositor pid, crash records, panics (key=value)
 #   guest.sh collect DIR       logs and records for the report
 #
@@ -416,8 +416,7 @@ step_files() {
 }
 
 step_settings() {
-    local file=/home/$user/.config/tilo/session/settings.json
-    [[ ! -f $file ]] || cat "$file"
+    as_user tilo settings dump 2>/dev/null || true
 }
 
 compositor_pid() {
@@ -463,7 +462,7 @@ step_collect() {
     coredumpctl --no-pager info /usr/bin/tilo-shell >"$out/coredump-tilo-shell.txt" 2>&1 || true
     cp -r "$home/.local/state/tilo/session-logs" "$out/" 2>/dev/null || true
     cp -r "$home/.cache/tilo/crashes" "$out/" 2>/dev/null || true
-    cp "$home/.config/tilo/session/settings.json" "$out/settings.json" 2>/dev/null || true
+    as_user tilo settings dump >"$out/settings.json" 2>/dev/null || true
     ps -eo pid,ppid,user,etimes,args --forest >"$out/processes.txt" 2>&1 || true
     rpm -q tilo-session tilo-session-apps sddm gnome-keyring kernel-core mesa-vulkan-drivers \
         >"$out/packages.txt" 2>&1 || true

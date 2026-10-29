@@ -1,6 +1,6 @@
 //! Current committed reads on the actual admitted channel.
 mod capture;
-use super::{Arc, CapnpChannelHandle, CrdtRoute, Duration, Ordering, Rc};
+use super::{Arc, CapnpChannelHandle, CrdtRoute, Duration, Ordering, Rc, Weak};
 pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
 use runtime_collab::committed_document::{
@@ -1151,6 +1151,8 @@ impl CapnpChannelHandle {
             handle: &self,
             generation,
         };
+        self.state
+            .follow_committed_writes(&self.route().channel_key(), &wake);
         let watch = {
             let wake = Arc::clone(&wake);
             tilo_identity_host::policy_change::Watch::new(move || wake.notify_one())
@@ -1317,5 +1319,42 @@ impl CapnpChannelHandle {
             results.get().set_frame(&bytes);
             Ok(())
         })
+    }
+}
+
+impl super::CapnpBrokerState {
+    /// Wake the held committed-read waits of every channel `route`
+    /// delivers to: a write on it changed what their reads answer (a sealed
+    /// record's read is made of the writes this broker holds), and nothing
+    /// else announces that. Each wait then checks its read again, and only
+    /// its own.
+    pub(super) fn wake_committed_reads(&self, route: &CrdtRoute) {
+        let Ok(mut waits) = self.committed_waits.lock() else {
+            return;
+        };
+        waits.retain(|channel, held| {
+            held.retain(|wake| wake.strong_count() > 0);
+            if route.delivers_to(&CrdtRoute::from_channel_key(channel)) {
+                for wake in held.iter().filter_map(Weak::upgrade) {
+                    wake.notify_one();
+                }
+            }
+            !held.is_empty()
+        });
+    }
+
+    /// Have writes on `channel_id`'s route wake `wake`, a held committed
+    /// read's, for as long as the wait holds it.
+    pub(super) fn follow_committed_writes(
+        &self,
+        channel_id: &str,
+        wake: &Arc<tokio::sync::Notify>,
+    ) {
+        if let Ok(mut waits) = self.committed_waits.lock() {
+            waits
+                .entry(channel_id.to_owned())
+                .or_default()
+                .push(Arc::downgrade(wake));
+        }
     }
 }

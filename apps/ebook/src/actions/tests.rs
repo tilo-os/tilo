@@ -22,7 +22,7 @@ fn seeded() -> Replica<Ebook> {
         .apply(Ebook::HIGHLIGHT.with(highlight_params(
             BOOK,
             0,
-            HiColor::Green,
+            HighlightColor::Green,
             Vec::new(),
             vec![HiPiece {
                 block: 3,
@@ -51,7 +51,7 @@ fn seeded() -> Replica<Ebook> {
                 end: 0,
                 excerpt: String::new(),
             },
-            color: HiColor::Yellow,
+            color: HighlightColor::Yellow,
             text: "standalone".into(),
         }))
         .unwrap();
@@ -187,13 +187,13 @@ fn reading_declarations_build_the_librarys_verbs_for_the_place() {
                 end: 0,
                 excerpt: String::new(),
             },
-            color: HiColor::Yellow,
+            color: HighlightColor::Yellow,
             text: String::new(),
         },
         selection_highlight: Some(highlight_params(
             BOOK,
             0,
-            HiColor::Pink,
+            HighlightColor::Pink,
             Vec::new(),
             vec![HiPiece {
                 block: 6,
@@ -228,7 +228,7 @@ fn reading_declarations_build_the_librarys_verbs_for_the_place() {
     );
     assert!(marks.iter().any(|mark| mark.note == "on this page"));
     assert!(marks.iter().any(|mark| mark.kind == AnnoKind::Highlight
-        && mark.color == HiColor::Pink
+        && mark.color == HighlightColor::Pink
         && (mark.block, mark.start, mark.end) == (6, 2, 9)));
 }
 

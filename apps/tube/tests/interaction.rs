@@ -238,7 +238,7 @@ fn click(app: &mut ui::framework::testing::TestApp<tube::TubeShell>, id: &str) {
 }
 
 fn route(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> Route {
-    app.with_surface::<TubeApp, _>(|tube| tube.route_for_test().clone())
+    app.with_surface::<TubeApp, _>(|tube| tube.route_for_test())
         .expect("the window shows Tube")
 }
 
@@ -261,22 +261,22 @@ fn the_rail_and_cards_navigate_and_back_returns() {
     }
     // Case `a_card_opens_its_video_and_escape_goes_back`.
     {
-        let mut framed = mount(TubeApp::new());
+        let mut framed = mount(TubeApp::sample());
         click_id(&mut framed, "video_card_vid_donut");
         assert_eq!(
             framed.route_for_test(),
-            &Route::Watch("vid_donut".into()),
+            Route::Watch("vid_donut".into()),
             "clicking a card opens its watch page"
         );
         Framed::harness_mut(&mut framed).key("Escape");
         Framed::harness_mut(&mut framed).relayout();
-        assert_eq!(framed.route_for_test(), &Route::Home, "Escape goes back");
+        assert_eq!(framed.route_for_test(), Route::Home, "Escape goes back");
     }
     // Case `a_creator_tile_opens_the_creator`.
     {
-        let mut framed = mount(TubeApp::new().with_route_shot(Route::Subscriptions));
+        let mut framed = mount(TubeApp::sample().with_route_shot(Route::Subscriptions));
         click_id(&mut framed, "creator_ch_kurz");
-        assert_eq!(framed.route_for_test(), &Route::Channel("ch_kurz".into()));
+        assert_eq!(framed.route_for_test(), Route::Channel("ch_kurz".into()));
     }
     // Case `a_browsed_page_shows_back_and_it_returns`.
     for destination in [
@@ -313,9 +313,9 @@ fn the_rail_and_cards_navigate_and_back_returns() {
     }
     // Case `the_watch_page_gear_opens_settings`.
     {
-        let mut framed = mount(TubeApp::new().with_route_shot(Route::Watch("vid_donut".into())));
+        let mut framed = mount(TubeApp::sample().with_route_shot(Route::Watch("vid_donut".into())));
         click_control(&mut framed, "Playback settings");
-        assert_eq!(framed.route_for_test(), &Route::Settings);
+        assert_eq!(framed.route_for_test(), Route::Settings);
     }
 }
 
@@ -404,7 +404,7 @@ fn pages_lay_out_without_overlap_at_every_size() {
     // Case `watch_page_parts_stack_in_reading_order`.
     for (viewport, scale) in [((1280, 800), 1.0), ((800, 600), 1.0), ((1280, 800), 2.0)] {
         let framed = mount_at(
-            TubeApp::new().with_route_shot(Route::Watch("vid_rust_async".into())),
+            TubeApp::sample().with_route_shot(Route::Watch("vid_rust_async".into())),
             viewport,
             Theme::dark().with_text_scale(scale),
         );
@@ -424,7 +424,7 @@ fn pages_lay_out_without_overlap_at_every_size() {
     for viewport in [(1280, 800), (800, 600)] {
         let width_on = |route: Route| {
             let framed = mount_at(
-                TubeApp::new().with_route_shot(route),
+                TubeApp::sample().with_route_shot(route),
                 viewport,
                 Theme::dark(),
             );
@@ -450,7 +450,7 @@ fn pages_lay_out_without_overlap_at_every_size() {
     // Case `home_cards_never_overlap`.
     for (viewport, scale) in [((1280, 800), 1.0), ((560, 800), 1.0), ((1280, 800), 2.0)] {
         let framed = mount_at(
-            TubeApp::new(),
+            TubeApp::sample(),
             viewport,
             Theme::dark().with_text_scale(scale),
         );
@@ -593,12 +593,12 @@ fn search_inputs_are_present_and_navigate() {
             ids.len() >= 3,
             "need a few sample videos to build a results list"
         );
-        let app = tube::TubeApp::new()
+        let app = tube::TubeApp::sample()
             .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
             .with_model_for_test(sample)
             .with_search_for_test(query, ids.clone());
         let mut h = Harness::new(app, VIEWPORT);
-        assert_eq!(h.app.route_for_test(), &Route::Search(query.into()));
+        assert_eq!(h.app.route_for_test(), Route::Search(query.into()));
         assert!(
             h.app.can_go_back_for_test(),
             "arriving via search leaves Home to go back to"
@@ -629,7 +629,7 @@ fn search_inputs_are_present_and_navigate() {
             .clone();
         h.click_id(&format!("video_card_{opened}"));
         assert!(
-            matches!(h.app.route_for_test(), Route::Watch(id) if *id == opened),
+            matches!(&h.app.route_for_test(), Route::Watch(id) if *id == opened),
             "clicking a result opens its watch page"
         );
 
@@ -641,7 +641,7 @@ fn search_inputs_are_present_and_navigate() {
         h.click_id("back_btn");
         assert_eq!(
             h.app.route_for_test(),
-            &Route::Search(query.into()),
+            Route::Search(query.into()),
             "Back returns to the exact same search results",
         );
         assert!(h.has_id("video_grid"), "the results list is rendered again");
@@ -709,10 +709,10 @@ fn watch_page_lays_out_player_pills_and_timeline() {
         // `ui::widget::VideoPlayer` (via `PlayerHost`) as its player surface. Assert
         // it is laid out in the real widget tree on a watch route — proof the shared
         // player reaches the screen.
-        let app = TubeApp::new().with_route_shot(Route::Watch("vid_donut".into()));
+        let app = TubeApp::sample().with_route_shot(Route::Watch("vid_donut".into()));
         let h = Harness::new(app, VIEWPORT);
         assert!(
-            matches!(h.app.route_for_test(), Route::Watch(_)),
+            matches!(&h.app.route_for_test(), Route::Watch(_)),
             "the app is on a watch page"
         );
         assert!(
@@ -724,9 +724,9 @@ fn watch_page_lays_out_player_pills_and_timeline() {
     {
         // The dual: off a watch route (Home) the player surface must not be in the
         // tree — the surface is scoped to the watch page, not always-on.
-        let app = TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1));
+        let app = TubeApp::sample().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1));
         let h = Harness::new(app, VIEWPORT);
-        assert_eq!(h.app.route_for_test(), &Route::Home);
+        assert_eq!(h.app.route_for_test(), Route::Home);
         assert!(
             !h.has_id("watch_video_surface"),
             "the video-player surface only exists on the watch page"
@@ -811,7 +811,7 @@ fn watch_page_lays_out_player_pills_and_timeline() {
         );
         let with_marks = player_draws(watch_app());
         model.settings.sponsorblock_enabled = false;
-        let without_marks = player_draws(TubeApp::new().with_model_for_test(model));
+        let without_marks = player_draws(TubeApp::sample().with_model_for_test(model));
         assert!(
             with_marks >= without_marks + segments,
             "the shared player paints each SponsorBlock segment on its timeline: {with_marks} vs {without_marks}, {segments} segments"
@@ -830,7 +830,7 @@ fn watch_page_lays_out_player_pills_and_timeline() {
 const WATCH_ID: &str = "vid_rust_async";
 
 fn watch_app() -> TubeApp {
-    TubeApp::new()
+    TubeApp::sample()
         .with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1))
         .with_route_shot(Route::Watch(WATCH_ID.into()))
 }
@@ -1098,7 +1098,7 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         let mut columns_per_width = Vec::new();
         for w in [1040.0_f32, 1360.0, 1760.0] {
             let vp = (w, 900.0);
-            let app = TubeApp::new().with_viewport(f64::from(w), 900.0);
+            let app = TubeApp::sample().with_viewport(f64::from(w), 900.0);
             let h = Harness::new(app, vp);
 
             let grid = h
@@ -1195,7 +1195,7 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         };
         assert!(found, "seeded an avatar URL on the first video's uploader");
 
-        let app = TubeApp::new()
+        let app = TubeApp::sample()
             .with_viewport(1280.0, 900.0)
             .with_model_for_test(model)
             .with_image_store(store);
@@ -1287,7 +1287,7 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         });
 
         // Before reconciliation: the cards read UC_A (empty) → initials only.
-        let app_before = TubeApp::new()
+        let app_before = TubeApp::sample()
             .with_viewport(1280.0, 900.0)
             .with_model_for_test(model.clone())
             .with_image_store(store.clone());
@@ -1301,7 +1301,7 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
             "reconcile stamps the same-name record's avatar onto the primary record",
         );
 
-        let app = TubeApp::new()
+        let app = TubeApp::sample()
             .with_viewport(1280.0, 900.0)
             .with_model_for_test(model)
             .with_image_store(store);
@@ -1342,7 +1342,7 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
             i += 1;
         }
 
-        let app = TubeApp::new()
+        let app = TubeApp::sample()
             .with_viewport(1280.0, 900.0)
             .with_model_for_test(model);
         let mut h = Harness::new(app, (1280.0, 900.0));
@@ -1374,7 +1374,7 @@ fn fetched_images_reach_the_scene() {
             v.thumbnail_url = thumb.into();
         }
         let mut framed = mount(
-            TubeApp::new()
+            TubeApp::sample()
                 .with_model_for_test(model)
                 .with_image_store(store),
         );
@@ -1399,7 +1399,7 @@ fn fetched_images_reach_the_scene() {
         }
         model.route = Route::Watch("vid_donut".into());
         let mut framed = mount(
-            TubeApp::new()
+            TubeApp::sample()
                 .with_model_for_test(model)
                 .with_image_store(store)
                 .with_route_shot(Route::Watch("vid_donut".into())),
@@ -1438,7 +1438,7 @@ fn laid_out_pages_do_not_demand_a_relayout_while_scrolling() {
         Route::Channel("ch_kurz".into()),
         Route::Playlist("pl_systems".into()),
     ] {
-        let framed = mount(TubeApp::new().with_route_shot(route.clone()));
+        let framed = mount(TubeApp::sample().with_route_shot(route.clone()));
         let mut demands = Vec::new();
         measure_demands(&*framed, "", &mut demands);
         assert!(
@@ -1553,7 +1553,7 @@ fn draw_cards(
 #[test]
 fn unfetched_media_paints_shared_placeholders() {
     for route in [Route::Home, Route::Channel("ch_kurz".into())] {
-        let mut framed = mount(TubeApp::new().with_route_shot(route));
+        let mut framed = mount(TubeApp::sample().with_route_shot(route));
         let theme = Framed::harness(&framed).theme().clone();
         let mut scene = vello::Scene::new();
         let mut text = ui::text_render::TextRenderer::new();

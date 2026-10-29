@@ -115,6 +115,9 @@ pub struct RichSpan {
     /// as its picture in a square of its own ([`inline_emoji`]); its bytes
     /// stay the text's.
     pub workspace_emoji: bool,
+    /// Its background is a chip's: a pill reaching a little past the run, as
+    /// a reference in text is painted, rather than a highlighter's band.
+    pub pill: bool,
 }
 
 impl RichSpan {
@@ -130,6 +133,7 @@ impl RichSpan {
             baseline: BaselineShift::None,
             kind: None,
             workspace_emoji: false,
+            pill: false,
         }
     }
     #[must_use]
@@ -150,6 +154,13 @@ impl RichSpan {
     #[must_use]
     pub fn background(mut self, c: Option<[u8; 3]>) -> Self {
         self.background = c;
+        self
+    }
+
+    /// Paint the background as a chip's pill ([`Self::pill`]).
+    #[must_use]
+    pub fn pill(mut self, pill: bool) -> Self {
+        self.pill = pill;
         self
     }
     #[must_use]
@@ -275,6 +286,8 @@ pub struct RichTextLayout {
     pub(crate) strikes: Vec<(usize, usize)>,
     /// Highlight bands: `(start_byte, end_byte, rgb)`. Painted behind glyphs.
     pub(crate) backgrounds: Vec<(usize, usize, [u8; 3])>,
+    /// The bands of [`Self::backgrounds`] painted as chips' pills.
+    pub(crate) pills: Vec<(usize, usize)>,
     /// Baseline-shifted runs: `(start_byte, end_byte, shift)`. Glyphs in these
     /// ranges are already shaped at the reduced size; the draw path applies the
     /// vertical offset.
@@ -478,6 +491,7 @@ type RichRuns<'a, 's> = (
         Option<crate::text_render::TextKind>,
     )>,
     Vec<(usize, usize, [u8; 3])>,
+    Vec<(usize, usize)>,
     Vec<(usize, usize, BaselineShift)>,
     Vec<inline_emoji::InlineEmoji>,
 );
@@ -613,6 +627,7 @@ impl RichTextLayout {
             underlines: Vec::new(),
             strikes: Vec::new(),
             backgrounds: Vec::new(),
+            pills: Vec::new(),
             baselines: Vec::new(),
             inline_emoji: Vec::new(),
             discretionary_hyphen_width,
@@ -818,7 +833,7 @@ impl RichTextLayout {
         let fam = style.family.to_cosmic();
         let base = style.cosmic_attrs().family(fam);
 
-        let (built, backgrounds, baselines, inline_emoji) =
+        let (built, backgrounds, pills, baselines, inline_emoji) =
             Self::build_rich_runs(spans, style, &offset_map, &base, size, line_height_mult);
 
         let planned = crate::font_catalog::matched::plan_runs(
@@ -899,6 +914,7 @@ impl RichTextLayout {
             underlines: Vec::new(),
             strikes: Vec::new(),
             backgrounds,
+            pills,
             baselines,
             inline_emoji,
             discretionary_hyphen_width,
@@ -1022,6 +1038,7 @@ impl RichTextLayout {
         line_height_mult: f32,
     ) -> RichRuns<'a, 's> {
         let mut backgrounds: Vec<(usize, usize, [u8; 3])> = Vec::new();
+        let mut pills: Vec<(usize, usize)> = Vec::new();
         let mut baselines: Vec<(usize, usize, BaselineShift)> = Vec::new();
         let mut pictures: Vec<inline_emoji::InlineEmoji> = Vec::new();
         let mut cursor: usize = 0;
@@ -1038,6 +1055,9 @@ impl RichTextLayout {
                     cursor = end;
                     if let Some(bg) = r.background {
                         backgrounds.push((start, end, bg));
+                        if r.pill {
+                            pills.push((start, end));
+                        }
                     }
                     if r.baseline.is_shifted() {
                         baselines.push((start, end, r.baseline));
@@ -1061,7 +1081,7 @@ impl RichTextLayout {
                 })
                 .collect()
         };
-        (built, backgrounds, baselines, pictures)
+        (built, backgrounds, pills, baselines, pictures)
     }
 
     /// The cosmic-text attributes of one span's run in `style`.

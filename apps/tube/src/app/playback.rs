@@ -14,7 +14,7 @@ use crate::i18n::{arg, t, t_args};
 use crate::model::Route;
 use crate::screens;
 
-use super::{PLAYBACK_SPEEDS, QUALITIES, TubeApp};
+use super::{PLAYBACK_SPEEDS, QUALITIES, Tube};
 
 /// How far the playhead moves between two writes of the watch history: a
 /// two-hour video is a few hundred small edits, not one per frame, and still
@@ -27,7 +27,7 @@ pub(super) fn pump_player(player: &mut VideoPlayer) {
     player.sync(&(), &());
 }
 
-impl TubeApp {
+impl Tube {
     /// If the current route is a watch page we haven't started playing yet, ask
     /// the worker to resolve + decode a real stream for it — exactly once per
     /// watch-open. Online-only, so the offline `--shots`/test paths never spawn
@@ -460,7 +460,10 @@ impl TubeApp {
     /// reviewable without the network.
     pub(super) fn request_captions_for(&mut self, id: &str) {
         if !self.online {
+            #[cfg(feature = "samples")]
             let tracks = crate::sample::caption_tracks(id);
+            #[cfg(not(feature = "samples"))]
+            let tracks = Vec::new();
             self.model.captions_of = id.to_string();
             self.model.caption_tracks = tracks;
             self.load_chosen_captions();
@@ -488,6 +491,7 @@ impl TubeApp {
             self.model.captions_notice = None;
             return;
         };
+        #[cfg(feature = "samples")]
         if let Some(cues) = crate::sample::caption_cues(&id, &language) {
             self.model.captions = cues;
             self.model.captions_notice = None;

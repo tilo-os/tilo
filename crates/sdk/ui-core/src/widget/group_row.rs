@@ -1211,6 +1211,14 @@ impl Lane {
     fn viewport(&self) -> Rect {
         self.area() + vello::kurbo::Vec2::new(0.0, self.shift)
     }
+
+    /// Whether the strip deck has moved the lane wholly off its display:
+    /// another strip fills it there. Such a lane is neither drawn nor
+    /// hit, so it never shows on, or takes input from, a display beside it.
+    fn off_deck(&self) -> bool {
+        let height = self.area().height();
+        height > 0.0 && self.shift.abs() >= height - 0.5
+    }
 }
 
 /// Steps per layout pixel of [`on_binary_grid`].
@@ -1786,7 +1794,9 @@ impl GroupRow {
         if self.lanes.is_empty() {
             p.y >= self.rect.y0 && p.y <= self.rect.y1
         } else {
-            self.lanes.iter().any(|lane| lane.viewport().contains(p))
+            self.lanes
+                .iter()
+                .any(|lane| !lane.off_deck() && lane.viewport().contains(p))
         }
     }
 
@@ -1855,7 +1865,7 @@ impl GroupRow {
         }
         self.lanes
             .iter()
-            .position(|lane| lane.viewport().contains(p))
+            .position(|lane| !lane.off_deck() && lane.viewport().contains(p))
             .or_else(|| {
                 self.lanes
                     .iter()
@@ -2425,13 +2435,19 @@ impl GroupRow {
         }
     }
 
-    /// Where the strip deck has this row, relative to where it rests: its
-    /// lanes move with it (their areas are given where it rests). The
-    /// deck sets this before it lays the row out.
-    pub(crate) fn set_deck_shift(&mut self, shift: f64) {
+    /// Where the strip deck has this row, relative to where it rests:
+    /// `shift` for the row, and for each display's lane its own shift by
+    /// output id in `lanes` (their areas are given where it rests). Each
+    /// display shows a strip of its own, so a lane moves with its display's
+    /// slide of the deck; a lane `lanes` does not name moves with the row.
+    /// The deck sets this before it lays the row out.
+    pub(crate) fn set_deck_shift(&mut self, shift: f64, lanes: &[(u32, f64)]) {
         self.deck_shift = shift;
         for lane in &mut self.lanes {
-            lane.shift = shift;
+            lane.shift = lanes
+                .iter()
+                .find(|(output, _)| *output == lane.spec.output)
+                .map_or(shift, |(_, shift)| *shift);
         }
     }
 
@@ -4964,9 +4980,12 @@ impl Widget for GroupRow {
         let runs: Vec<(usize, Rect)> = if self.lanes.is_empty() {
             vec![(0, self.rect)]
         } else {
+            // A lane the deck has off its display draws nothing: another
+            // strip fills that display.
             self.lanes
                 .iter()
                 .enumerate()
+                .filter(|(_, lane)| !lane.off_deck())
                 .map(|(k, lane)| (k, lane.pan.viewport))
                 .collect()
         };
@@ -7700,7 +7719,7 @@ mod tests {
     /// A point in group `idx`'s tab-bar background — right of the last tab
     /// pill, at the bar's vertical centre — where a whole-group reorder
     /// grab lands.
-    fn group_grab_point(row: &GroupRow, idx: usize) -> Point {
+    pub(super) fn group_grab_point(row: &GroupRow, idx: usize) -> Point {
         let g = &row.groups[idx];
         let bar = g.bar_rect();
         let last = g.tab_rects().last().copied().unwrap_or(bar);
@@ -7737,7 +7756,7 @@ mod tests {
         );
     }
 
-    fn press_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, p: Point) {
+    pub(super) fn press_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, p: Point) {
         dispatch_at(
             row,
             taffy,
@@ -7770,7 +7789,7 @@ mod tests {
     }
 
     /// Send `ev` to `row` laid out at `root`; whether it was claimed.
-    fn dispatch_at(
+    pub(super) fn dispatch_at(
         row: &mut GroupRow,
         taffy: &TaffyTree<()>,
         root: NodeId,
@@ -8115,7 +8134,8 @@ mod tests {
 
     #[test]
     fn one_finger_swipe_onto_another_display_rehomes_the_group() {
-        let (mut row, taffy, root) = relayout_row_owned(partitioned_row(), 1800.0);
+        let (mut row, taffy, root) =
+            relayout_row_owned(super::lane_tests::partitioned_row(), 1800.0);
         // Leftmost group: its grab sits on display 0. Group 200 can hang
         // across the seam, so a grab there never "crosses".
         let start = group_grab_point(&row, 0);
@@ -11210,138 +11230,6 @@ mod tests {
         assert_eq!(second_events.get(), 1);
     }
 
-    /// A 1000-wide display with the wheel gutter beside an 800-wide one
-    /// whose bottom edge is 200 rows higher.
-    fn two_lanes() -> Vec<StripLane> {
-        vec![
-            StripLane {
-                output: 0,
-                area: Rect::new(0.0, 0.0, 1000.0, 600.0),
-                usable: 1000.0,
-                leading: true,
-            },
-            StripLane {
-                output: 1,
-                area: Rect::new(1000.0, 0.0, 1800.0, 400.0),
-                usable: 800.0,
-                leading: false,
-            },
-        ]
-    }
-
-    /// Groups 100..=300 on the first display, 400..=600 on the second.
-    fn partitioned_row() -> GroupRow {
-        let groups: Vec<WindowGroup> = (1..=6_u64)
-            .map(|i| make_group(i.saturating_mul(100), &[i]))
-            .collect();
-        let mut row = GroupRow::new(groups);
-        let assignment: HashMap<u64, u32> = (1..=6_u64)
-            .map(|i| (i.saturating_mul(100), u32::from(i > 3)))
-            .collect();
-        row.set_lanes(&two_lanes(), &assignment);
-        // The first pass learns where the row sits; lanes are built
-        // against that on the second.
-        let (row, _, _) = relayout_row_owned(row, 1800.0);
-        let (row, _, _) = relayout_row_owned(row, 1800.0);
-        row
-    }
-
-    fn rect_of(row: &GroupRow, id: u64) -> Rect {
-        row.groups
-            .iter()
-            .find(|g| g.id == id)
-            .map(WindowGroup::get_rect)
-            .expect("group laid out")
-    }
-
-    #[test]
-    fn a_strip_across_displays_slides_on_every_display_without_a_new_layout() {
-        let row = partitioned_row();
-        let (mut row, taffy, root) = relayout_row_owned(row, 1800.0);
-        let _ = row.take_structure_dirty();
-        let rest: Vec<(u64, Rect)> = row.groups.iter().map(|g| (g.id, g.get_rect())).collect();
-        for shift in [300.0, -250.0, 0.0] {
-            row.set_deck_shift(shift);
-            row.apply_layout(&taffy, root, Point::new(0.0, shift));
-            assert!(
-                !row.take_structure_dirty(),
-                "moving the strip by {shift} needs no new layout"
-            );
-            for (id, at_rest) in &rest {
-                let r = rect_of(&row, *id);
-                assert!(
-                    (r.y0 - (at_rest.y0 + shift)).abs() < 0.5
-                        && (r.x0 - at_rest.x0).abs() < 0.5
-                        && (r.height() - at_rest.height()).abs() < 0.5,
-                    "window {id} on display {:?} moves with the strip by {shift}: {r:?} from {at_rest:?}",
-                    row.output_of_group(*id)
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_partitioned_strip_lays_each_display_out_on_its_own() {
-        let row = partitioned_row();
-        let lanes = two_lanes();
-        for id in [100, 200, 300] {
-            let r = rect_of(&row, id);
-            assert!(
-                r.x0 >= lanes[0].area.x0,
-                "{id} starts left of its display: {r:?}"
-            );
-            assert!(
-                r.y1 <= lanes[0].area.y1 + 0.5,
-                "{id} is taller than its display"
-            );
-            assert_eq!(row.output_of_group(id), Some(0));
-        }
-        let first_on_second = rect_of(&row, 400);
-        assert!(
-            (first_on_second.x0 - lanes[1].area.x0).abs() < 0.5,
-            "the second display's first window starts at its own left edge: {first_on_second:?}"
-        );
-        for id in [400, 500, 600] {
-            let r = rect_of(&row, id);
-            assert!(
-                r.x0 >= lanes[1].area.x0,
-                "{id} leaks onto the first display: {r:?}"
-            );
-            assert!(
-                r.y1 <= lanes[1].area.y1 + 0.5,
-                "{id} runs past the shorter display's bottom edge: {r:?}"
-            );
-            assert_eq!(row.output_of_group(id), Some(1));
-        }
-        // The seam between the displays is not a resize gap.
-        let seam = row.handle_at(2).expect("handle after the third group");
-        assert!(seam.get_rect().area() <= 0.0, "{:?}", seam.get_rect());
-        assert_eq!(row.group_ids_on(1), vec![400, 500, 600]);
-    }
-
-    #[test]
-    fn panning_one_display_leaves_the_other_where_it_was() {
-        let mut row = partitioned_row();
-        let before: Vec<Rect> = [100, 200, 300]
-            .iter()
-            .map(|&id| rect_of(&row, id))
-            .collect();
-        assert!(
-            row.scroll_group_into_view(600),
-            "the last window is off the second display"
-        );
-        let (row, _, _) = relayout_row_owned(row, 1800.0);
-        let after: Vec<Rect> = [100, 200, 300]
-            .iter()
-            .map(|&id| rect_of(&row, id))
-            .collect();
-        assert_eq!(before, after, "the first display must not move");
-        assert!(row.output_pan(1).expect("lane").scroll_x() > 0.0);
-        assert_eq!(row.output_pan(0).expect("lane").scroll_x(), 0.0);
-        let last = rect_of(&row, 600);
-        assert!(last.x1 <= 1800.5 && last.x0 >= 1000.0, "{last:?}");
-    }
-
     #[test]
     fn a_drag_resting_at_an_edge_pans_the_strip_under_it() {
         let (mut row, _taffy, _root) =
@@ -11406,95 +11294,19 @@ mod tests {
         assert!((row.scroll_x() - at).abs() < f64::EPSILON);
         assert!(!row.drag_reach_pending());
     }
-
-    #[test]
-    fn moving_a_whole_window_to_an_edge_pans_the_strip_and_keeps_it_under_the_pointer() {
-        let (mut row, taffy, root) =
-            make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
-        row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
-        row.set_content_w_for_test(row.content_width());
-        let grab = group_grab_point(&row, 0);
-        press_at(&mut row, &taffy, root, grab);
-        let edge = Point::new(698.0, grab.y);
-        dispatch_at(
-            &mut row,
-            &taffy,
-            root,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(edge.x, edge.y),
-            },
-        );
-        assert!(
-            row.group_drag_active(),
-            "fixture: the window is being moved"
-        );
-        assert!(
-            row.drag_reach_pending(),
-            "resting at the edge asks for frames"
-        );
-        let start_before = row.group_drag.map(|d| d.start.x).unwrap();
-        let t0 = crate::time::now();
-        row.advance_drag_reach_for_test(t0);
-        assert!(row.advance_drag_reach_for_test(t0 + Duration::from_millis(100)));
-        let panned = row.scroll_x();
-        assert!(panned > 0.0, "the strip panned under the moved window");
-        let start_after = row.group_drag.map(|d| d.start.x).unwrap();
-        assert!(
-            (start_before - start_after - panned).abs() < 1e-6,
-            "the moved window's travel grew by the pan, so it stays under the pointer"
-        );
-        assert!(row.group_reorder_target().is_some(), "the gap is re-aimed");
-    }
-
-    #[test]
-    fn a_drag_resting_on_a_background_tab_brings_it_to_the_front() {
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1, 2], &[3]]);
-        assert_eq!(row.groups[0].active_tab_id(), 1);
-        let background = row.groups[0].tab_rects()[1].center();
-        let t0 = crate::time::now();
-
-        row.set_external_content_drag_hover(Some(background));
-        assert!(!row.advance_drag_reach_for_test(t0));
-        assert!(
-            row.drag_reach_pending(),
-            "a pending spring keeps frames coming"
-        );
-        assert!(!row.advance_drag_reach_for_test(t0 + Duration::from_millis(300)));
-        assert_eq!(
-            row.groups[0].active_tab_id(),
-            1,
-            "passing over is not resting"
-        );
-        assert!(row.advance_drag_reach_for_test(t0 + Duration::from_millis(520)));
-        assert_eq!(
-            row.groups[0].active_tab_id(),
-            2,
-            "the rested-on tab is in front"
-        );
-
-        // Moving off before the delay springs nothing.
-        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1, 2], &[3]]);
-        let background = row.groups[0].tab_rects()[1].center();
-        row.set_external_content_drag_hover(Some(background));
-        row.advance_drag_reach_for_test(t0);
-        row.set_external_content_drag_hover(Some(Point::new(background.x, 400.0)));
-        row.advance_drag_reach_for_test(t0 + Duration::from_millis(600));
-        assert_eq!(row.groups[0].active_tab_id(), 1);
-
-        row.set_external_content_drag_hover(None);
-        row.last_cursor = background;
-        assert!(!row.advance_drag_reach_for_test(t0));
-        assert!(!row.advance_drag_reach_for_test(t0 + Duration::from_secs(2)));
-        assert_eq!(row.groups[0].active_tab_id(), 1);
-    }
 }
+#[cfg(test)]
+#[path = "group_row_drag_tests.rs"]
+mod drag_tests;
 #[cfg(test)]
 #[path = "group_row_edge_tests.rs"]
 mod edge_tests;
 #[cfg(test)]
 #[path = "group_row_keyboard_tests.rs"]
 mod keyboard_tests;
+#[cfg(test)]
+#[path = "group_row_lane_tests.rs"]
+mod lane_tests;
 #[cfg(test)]
 #[path = "group_row_pacing_tests.rs"]
 mod pacing_tests;

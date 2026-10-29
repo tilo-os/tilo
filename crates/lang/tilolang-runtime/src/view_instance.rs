@@ -309,7 +309,35 @@ impl ViewInstance {
         fill_event(&mut aref, value).map_err(|()| {
             RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
         })?;
+        self.read_states(&mut aref)?;
         self.run(&aref)
+    }
+
+    /// Read the view state the arguments of `aref` take (`send(c, draft)`) as it is now, at
+    /// the event: what was typed up to the press, whether or not the view ran again since.
+    fn read_states(&self, aref: &mut ActionRef) -> Result<(), RuntimeError> {
+        // `set` puts the value in a slot, boxed as slots hold it; an action takes it plain.
+        let unbox = aref.action != SET_ACTION;
+        for arg in &mut aref.args {
+            match arg {
+                Value::State { key, scalar } => {
+                    let stored = self.core.view_states.borrow().get(key).cloned();
+                    let Some(value) = stored.or_else(|| self.live.state_seen(key)) else {
+                        return Err(RuntimeError::NotFound(format!(
+                            "the view state `{}`",
+                            key.state
+                        )));
+                    };
+                    *arg = match value {
+                        Value::Opt(Some(held)) if *scalar && unbox => *held,
+                        other => other,
+                    };
+                }
+                Value::Action(inner) => self.read_states(inner)?,
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Run an action reference a control applies: a platform action, an action of a package,

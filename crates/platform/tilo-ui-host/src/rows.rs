@@ -124,7 +124,8 @@ impl RemoteRows {
         }
         for row in rows {
             arrived.push(row.key.clone());
-            self.rows.insert(row.key.clone(), row);
+            self.rows
+                .insert(row.key.clone(), crate::attach::hoist(&row));
         }
         arrived.sort();
         arrived.dedup();
@@ -169,7 +170,7 @@ impl RemoteRows {
                 }
                 RowChange::Changed { row } => {
                     let key = row.key.clone();
-                    self.rows.insert(key.clone(), row);
+                    self.rows.insert(key.clone(), crate::attach::hoist(&row));
                     ListModelChange::RowsChanged { keys: vec![key] }
                 }
                 RowChange::Reset => {

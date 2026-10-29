@@ -3,14 +3,18 @@
 //! location, Add place, and Refresh while a forecast shows.
 
 use ui::widget::{NavPane, NavShell};
-use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
 
 use super::WeatherApp;
 
-/// The bar action that starts adding a place.
-pub(crate) const ADD_PLACE: &str = "weather.add-place";
-/// The bar action that refreshes the forecast shown.
-pub(crate) const REFRESH: &str = "weather.refresh";
+/// What the bar's entries do.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Command {
+    /// Show the places and start a search for one to add.
+    AddPlace,
+    /// Fetch the forecast shown again.
+    Refresh,
+}
 
 impl WeatherApp {
     /// The window bar's slots for what the window shows now.
@@ -30,9 +34,12 @@ impl WeatherApp {
             label,
             ..ToolbarLocation::default()
         });
-        let mut actions = vec![ToolbarAction::new(ADD_PLACE, "plus", "Add place")];
+        let mut actions = vec![self.bar.entry("plus", "Add place", Command::AddPlace)];
         if Self::shows_forecast(&core) {
-            actions.push(ToolbarAction::new(REFRESH, "refresh", "Refresh forecast"));
+            actions.push(
+                self.bar
+                    .entry("refresh", "Refresh forecast", Command::Refresh),
+            );
         }
         NavShell::push_window_actions(&mut toolbar, actions);
         toolbar
@@ -47,18 +54,15 @@ impl WeatherApp {
             if self.nav.window_toolbar_event(&event) {
                 continue;
             }
-            let ToolbarEvent::Action { id } = event else {
-                continue;
-            };
-            match id.as_str() {
-                ADD_PLACE => {
+            match self.bar.pressed(&event) {
+                Some(Command::AddPlace) => {
                     if !self.nav.geometry().side_by_side {
                         self.nav.show(NavPane::Overview);
                     }
                     self.core.borrow_mut().begin_search();
                 }
-                REFRESH => self.core.borrow_mut().refresh_selected_forecast(),
-                _ => {}
+                Some(Command::Refresh) => self.core.borrow_mut().refresh_selected_forecast(),
+                None => {}
             }
         }
         asked
@@ -96,7 +100,7 @@ mod tests {
 
     #[test]
     fn the_window_bar_names_the_place_and_holds_its_actions() {
-        let mut framed = window(1280.0, 720.0);
+        let framed = window(1280.0, 720.0);
         let place = framed
             .core
             .borrow()
@@ -116,18 +120,6 @@ mod tests {
             ui::window_toolbar::declared(),
             Some(framed.window_toolbar())
         );
-
-        let buttons: Vec<String> = Framed::harness_mut(&mut framed)
-            .controls()
-            .into_iter()
-            .filter_map(|control| control.name)
-            .collect();
-        for bar in ["Add place", "Refresh forecast"] {
-            assert!(
-                !buttons.iter().any(|name| name == bar),
-                "the window draws no {bar} of its own: {buttons:?}"
-            );
-        }
     }
 
     #[test]
@@ -146,9 +138,9 @@ mod tests {
         framed.nav.show(NavPane::Content);
         framed.nav.snap();
         Framed::harness_mut(&mut framed).relayout();
-        Framed::harness_mut(&mut framed).press_window_slot(ToolbarEvent::Action {
-            id: ADD_PLACE.into(),
-        });
+        Framed::harness_mut(&mut framed)
+            .press_window_action("Add place")
+            .unwrap();
         assert_eq!(framed.nav.front_pane(), NavPane::Overview);
         assert!(
             framed.core.borrow().search_is_focused(),

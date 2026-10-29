@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn the_pane_follows_the_choices() {
         let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let area = DefaultAppsArea {
             prefs: RefCell::new(cx.follow::<DefaultApps>()),
             candidates: OnceCell::from(vec![

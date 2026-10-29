@@ -753,8 +753,7 @@ fi
 if [ -n "${TILO_DISK_SEED_RAW:-}" ]; then
   disk_args+=(--seed-raw "$TILO_DISK_SEED_RAW")
 fi
-# A build host that copies the disk somewhere else before it is booted (tools/ci/
-# builder-vm-guest.sh) takes the raw disk and skips the qcow2 conversion here (disk-image.sh
+# A build host that copies the disk somewhere else before it is booted takes the raw disk and skips the qcow2 conversion here (disk-image.sh
 # --raw): $OUTDIR/disk.raw instead of TILO_DISK.
 if [ "${TILO_DISK_RAW:-0}" = 1 ]; then
   disk_args+=(--raw)

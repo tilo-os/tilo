@@ -170,6 +170,21 @@ pub(crate) fn field_reads(
     })
 }
 
+/// A value the code holds as a predicate compares it: `None` for one it does not.
+fn lit_of_value(v: &Value) -> Option<tilolang::pred::Lit> {
+    use tilolang::pred::{Float, Lit};
+    Some(match v {
+        Value::Int(i) => Lit::Int(*i),
+        Value::Float(f) => Lit::Float(Float(*f)),
+        Value::Bool(b) => Lit::Bool(*b),
+        Value::Text(t) => Lit::Text(t.clone()),
+        Value::Ref(r) => Lit::Ref(r.target.id_string()),
+        Value::Opt(None) => Lit::Absent,
+        Value::Opt(Some(inner)) => return lit_of_value(inner),
+        _ => return None,
+    })
+}
+
 /// One read of a collection, recorded as what it saw.
 enum Read {
     Len(usize),
@@ -276,6 +291,78 @@ impl Core {
         };
         let resolved = field_reads(&written, &item);
         Ok(resolved.map_or_else(Value::none, |pred| {
+            Value::some(Value::Coll(Rc::new(coll.filtered(pred))))
+        }))
+    }
+
+    /// `coll_ordered(list, order)`: the items of the collection `list` in the order written
+    /// `order` (`{"field": id, "descending": bool}`, the field a declared one or a version,
+    /// `$created` or `$updated`), as a collection the store lists (some), when `list` is a
+    /// collection read in a view and the store can order by the field; none otherwise, and the
+    /// caller sorts the items itself.
+    pub(crate) fn coll_ordered(&self, list: i32, order: i32) -> HResult<Value> {
+        #[derive(serde::Deserialize)]
+        struct Written {
+            field: String,
+            #[serde(default)]
+            descending: bool,
+        }
+        let Value::Coll(coll) = self.val(list)? else {
+            return Ok(Value::none());
+        };
+        if coll.order.is_some() {
+            return Ok(Value::none());
+        }
+        let text = self.text(order)?;
+        let Ok(written) = serde_json::from_str::<Written>(&text) else {
+            return Ok(Value::none());
+        };
+        let kind = if crate::store::Reflected::of(&written.field).is_some() {
+            FieldKind::Register
+        } else {
+            let Some((_, item)) = self.registry.borrow().type_info(&coll.item) else {
+                return Ok(Value::none());
+            };
+            match item.field(&written.field).map(|f| f.kind) {
+                Some(kind @ (FieldKind::Register | FieldKind::Counter | FieldKind::Text)) => kind,
+                _ => return Ok(Value::none()),
+            }
+        };
+        let ordered = CollRef {
+            order: Some(crate::query::Order {
+                field: written.field,
+                kind,
+                descending: written.descending,
+            }),
+            ..(*coll).clone()
+        };
+        Ok(Value::some(Value::Coll(Rc::new(ordered))))
+    }
+
+    /// `coll_where_with(list, pred, args)`: as [`Self::coll_where`], the predicate comparing
+    /// fields with the values the tuple `args` holds (`c -> c.column == col`): each bound as
+    /// the literal it is now. None when one is a value no predicate compares.
+    pub(crate) fn coll_where_with(&self, list: i32, pred: i32, args: i32) -> HResult<Value> {
+        let Value::Coll(coll) = self.val(list)? else {
+            return Ok(Value::none());
+        };
+        let text = self.text(pred)?;
+        let Ok(written) = serde_json::from_str::<tilolang::pred::Pred<String>>(&text) else {
+            return Ok(Value::none());
+        };
+        let Value::Tuple(values) = self.val(args)? else {
+            return Ok(Value::none());
+        };
+        let Some(lits) = values.iter().map(lit_of_value).collect::<Option<Vec<_>>>() else {
+            return Ok(Value::none());
+        };
+        let Some(bound) = written.bind(&lits) else {
+            return Ok(Value::none());
+        };
+        let Some((_, item)) = self.registry.borrow().type_info(&coll.item) else {
+            return Ok(Value::none());
+        };
+        Ok(field_reads(&bound, &item).map_or_else(Value::none, |pred| {
             Value::some(Value::Coll(Rc::new(coll.filtered(pred))))
         }))
     }

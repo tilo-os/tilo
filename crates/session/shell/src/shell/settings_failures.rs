@@ -1,9 +1,9 @@
 //! What the shell does when a setting it changed could not be stored.
 //!
-//! The compositor thread's settings writes return before they reach the disk
-//! (`settings_store::defer_writes_on_this_thread`). One that cannot be stored
-//! is reverted by the settings worker, and nothing returns an error to the
-//! caller that has gone on. The loop learns of it from one atomic load per
+//! Settings writes return before they reach the disk: the settings store
+//! saves them on a thread of its own. One that cannot be stored is kept in
+//! the documents and saved again with the next change, and nothing returns
+//! an error to the caller that has gone on. The loop learns of it from one atomic load per
 //! tick, writes a line to the log naming the sections and the disk's reason,
 //! and tells the person once that a change did not stick.
 
@@ -13,7 +13,7 @@ use settings_store::DeferredFailure;
 #[must_use]
 pub fn log_line(failure: &DeferredFailure) -> String {
     format!(
-        "settings writes to {} were not stored and went back to their previous values: {}",
+        "settings changes to {} are not saved yet; they are saved again with the next change: {}",
         failure.sections.join(", "),
         failure.error
     )

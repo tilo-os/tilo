@@ -1160,7 +1160,7 @@ mod tests {
 
         let mut publisher = TestApp::<crate::resource::SettingsShell>::for_person(&key).unwrap();
         let record = publisher
-            .person::<accounts::person::PersonAccounts>()
+            .shared_person::<accounts::person::PersonAccounts>()
             .unwrap();
         let directory = tempfile::tempdir().unwrap();
         AccountRoot::at(directory.path())
@@ -1203,7 +1203,7 @@ mod tests {
                 &root_key,
             )
             .unwrap();
-        let record = app.person::<PersonAccounts>().unwrap();
+        let record = app.shared_person::<PersonAccounts>().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let root = AccountRoot::at(dir.path()).with_person(record.clone());
         root.publish_browser_identity(
@@ -1301,7 +1301,7 @@ mod tests {
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");
         let record = app
-            .person::<PersonAccounts>()
+            .shared_person::<PersonAccounts>()
             .expect("Settings keeps the person's accounts");
         assert!(record.editable(), "Settings edits the person's accounts");
         let dir = tempfile::tempdir().unwrap();
@@ -1335,7 +1335,9 @@ mod tests {
         use accounts::person::PersonAccounts;
         let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new()
             .expect("settings opens headlessly");
-        let record = app.person::<PersonAccounts>().expect("person accounts");
+        let record = app
+            .shared_person::<PersonAccounts>()
+            .expect("person accounts");
         let dir = tempfile::tempdir().unwrap();
         let root = AccountRoot::at(dir.path()).with_person(record.clone());
         let mut kept = accounts::Account::new("kept@x.example", "email");

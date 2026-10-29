@@ -9,7 +9,7 @@ use ui::framework::{BarActions, BarCommands};
 use ui::widget::{NavPane, NavShell};
 use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
 
-use super::{Action, SnippetsApp};
+use super::{Action, SnippetsWindow};
 use crate::model::Snippets;
 use crate::tr;
 
@@ -21,7 +21,7 @@ pub(super) struct Bar {
     commands: BarCommands<Action>,
 }
 
-impl SnippetsApp {
+impl SnippetsWindow {
     /// The window bar's slots for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = self.shell.window_toolbar();

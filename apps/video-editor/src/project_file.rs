@@ -1,11 +1,10 @@
-//! The editor's **project file** — what a user saves, copies, and hands to
-//! someone else.
+//! The editor's **project file**: a copy of the project a person exports,
+//! hands to someone else, and opens back in.
 //!
-//! Until this existed the editor had exactly one project: an implicit
-//! autosaved document keyed by the app's package id
-//! ([`ui::persist::open`]). Nothing was ever lost, but a user could not
-//! have two projects, could not copy one, and could not see where their
-//! work lived. This module is the file behind Save / Save As / Open.
+//! The project itself is the app's resource, kept, versioned and synced
+//! like any other; nothing has to be saved for work to be safe. The file is
+//! a projection of it: Export project file writes one, and Open project
+//! file brings one in as the project, one undoable edit.
 //!
 //! ## The payload is the CRDT document
 //!
@@ -214,24 +213,6 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
         .map_err(|e| ProjectFileError::Corrupt(e.to_string()))
 }
 
-/// Write `project` to `path`.
-///
-/// Deliberately a plain write rather than the usual write-temp-then-rename:
-/// under a strict sandbox the portal grant is for *the file the user chose*,
-/// not for creating siblings next to it, so a temp file in the same
-/// directory is a write the app has no right to make. The length in the
-/// header is what covers the risk that buys — a write cut short is detected
-/// as [`ProjectFileError::Truncated`] on the way back in, instead of loading
-/// as a convincing half-project.
-///
-/// # Errors
-///
-/// [`ProjectFileError::Io`] when the file cannot be written.
-pub fn save(path: &Path, project: &Project) -> Result<(), ProjectFileError> {
-    crate::files::save(path, &encode(project)?)
-        .map_err(|e| ProjectFileError::Io(format!("Could not save: {e}")))
-}
-
 /// Read a project from `path`.
 ///
 /// # Errors
@@ -292,105 +273,36 @@ pub fn missing_sources(project: &Project) -> Vec<(String, crate::media::Hydratio
         .collect()
 }
 
-/// The recently-opened project list.
+/// Point `project`'s media that sit beside the file it came from, in `dir`,
+/// at their place there.
 ///
-/// **Deliberately not in the CRDT.** The editor's document is the
-/// collaborative one: anything written into it replicates to whoever is
-/// sharing the project, and a list of the paths on this machine is the last
-/// thing that should. It is also not project content — it belongs to this
-/// device, and it must survive an Open, which replaces every project map in
-/// the document. So it lives beside the app's own state, in the same
-/// per-package directory the autosave document uses.
-pub mod recents {
-    use std::path::{Path, PathBuf};
-
-    /// How many projects are remembered. Long enough to reach back past a
-    /// detour, short enough that the menu stays a menu.
-    pub const MAX: usize = 8;
-
-    const FILE: &str = "recent-projects.json";
-
-    /// This app's per-package state directory.
-    ///
-    /// Mirrors `cli::standalone_state_dir` — `$XDG_DATA_HOME/<package-id>`,
-    /// falling back to `~/.local/share/<package-id>` — which is where
-    /// [`ui::persist`] already puts the autosave document. Replicated here
-    /// rather than depended on, because it is four lines and the alternative
-    /// is a new crate dependency for one path join; if that resolver moves,
-    /// this is the sibling that has to move with it.
-    fn dir() -> Option<PathBuf> {
-        let id = std::env::var("TILO_PACKAGE_ID")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "so.tilo.video-editor".to_string());
-        // Reject an id that is not a plain directory name, exactly as the
-        // store does: an id carrying a separator would escape the data home.
-        if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
-            return None;
-        }
-        let base = tilo_paths::xdg::data_home()?;
-        Some(base.join(id))
-    }
-
-    fn path() -> Option<PathBuf> {
-        dir().map(|d| d.join(FILE))
-    }
-
-    /// The remembered projects, most recent first.
-    ///
-    /// A path whose file is no longer there is dropped on the way out rather
-    /// than offered: a menu entry that cannot open anything is worse than a
-    /// shorter menu. Nothing is written back here — a temporarily unmounted
-    /// volume must not permanently forget the project on it.
-    pub fn load() -> Vec<PathBuf> {
-        let Some(p) = path() else { return Vec::new() };
-        let Some(text) = crate::files::read(&p)
-            .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-        else {
-            return Vec::new();
-        };
-        let all: Vec<PathBuf> = serde_json::from_str(&text).unwrap_or_default();
-        all.into_iter().filter(|p| p.is_file()).take(MAX).collect()
-    }
-
-    /// Put `entry` at the front, de-duplicated, capped at [`MAX`].
-    ///
-    /// Pure, so the ordering rule is testable without touching a disk.
-    pub fn promote(list: &[PathBuf], entry: &Path) -> Vec<PathBuf> {
-        let mut out = Vec::with_capacity(MAX);
-        out.push(entry.to_path_buf());
-        for p in list {
-            if p != entry && out.len() < MAX {
-                out.push(p.clone());
-            }
-        }
-        out
-    }
-
-    /// Record that `entry` was just opened or saved, and return the new list.
-    ///
-    /// Best-effort: a state directory that cannot be written costs the user a
-    /// recents entry, never their work, so a failure is silent here and the
-    /// in-memory list is still correct for this session.
-    pub fn remember(list: &[PathBuf], entry: &Path) -> Vec<PathBuf> {
-        let next = promote(list, entry);
-        if let Some(p) = path()
-            && let Ok(text) = serde_json::to_string(&next)
+/// A `.qvp` can be copied somewhere with its footage beside it, and a
+/// project built by hand (a script, the export probe) can carry a path
+/// relative to where it was written. Neither is a workspace reference: once
+/// the project is this app's resource the file's directory is gone, so a
+/// relative path that only resolves beside the file is made absolute as the
+/// file comes in. A path the workspace or this device already resolves is
+/// left alone.
+pub fn anchor_media(project: &mut Project, dir: &Path) {
+    for media in &mut project.media {
+        let relative = Path::new(&media.path);
+        if media.path.is_empty()
+            || relative.is_absolute()
+            || crate::media::resolve(&media.path).is_decodable()
         {
-            let _ = crate::files::write(&p, text.as_bytes());
+            continue;
         }
-        next
+        let beside = dir.join(relative);
+        if beside.exists() {
+            media.path = beside.to_string_lossy().into_owned();
+        }
     }
+}
 
-    /// How a recent entry is labelled in the menu: the file's stem, which is
-    /// what the user named the project.
-    pub fn label(entry: &Path) -> String {
-        entry.file_stem().map_or_else(
-            || entry.to_string_lossy().into_owned(),
-            |s| s.to_string_lossy().into_owned(),
-        )
-    }
+/// How a project file is named in notices: its stem, which is what the
+/// user named the project.
+pub fn label(path: &Path) -> String {
+    name_from_path(path).unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -501,7 +413,7 @@ mod tests {
             let path = std::env::temp_dir()
                 .join(format!("tilo-ve-proj-{}.{EXTENSION}", std::process::id()));
             let p = rich_project();
-            save(&path, &p).expect("saves");
+            std::fs::write(&path, encode(&p).expect("the project encodes")).expect("saves");
             let back = load(&path).expect("loads");
             assert_eq!(back.name, p.name);
             assert_eq!(back.clips.len(), 1);
@@ -621,8 +533,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    fn project_names_recents_and_missing_sources_are_tracked() {
+    fn project_names_and_missing_sources_are_tracked() {
         {
             assert_eq!(with_extension("Holiday"), "Holiday.qvp");
             assert_eq!(with_extension("Holiday.qvp"), "Holiday.qvp");
@@ -637,65 +548,6 @@ mod tests {
                 Some("Holiday"),
             );
             assert_eq!(name_from_path(Path::new("/")), None);
-        }
-        {
-            use super::recents::promote;
-            let a = std::path::PathBuf::from("/p/a.qvp");
-            let b = std::path::PathBuf::from("/p/b.qvp");
-            let c = std::path::PathBuf::from("/p/c.qvp");
-
-            let list = promote(&[], &a);
-            assert_eq!(list, vec![a.clone()]);
-            let list = promote(&list, &b);
-            assert_eq!(list, vec![b.clone(), a.clone()]);
-            // Re-opening one already in the list moves it up rather than adding a
-            // second copy — a duplicate entry is a menu that lies about history.
-            let list = promote(&list, &a);
-            assert_eq!(list, vec![a.clone(), b.clone()]);
-            let list = promote(&list, &c);
-            assert_eq!(list, vec![c, a, b]);
-        }
-        {
-            use super::recents::{MAX, promote};
-            let mut list = Vec::new();
-            for i in 0..MAX + 5 {
-                list = promote(&list, std::path::Path::new(&format!("/p/{i}.qvp")));
-            }
-            assert_eq!(list.len(), MAX, "the menu cannot grow without bound");
-            assert_eq!(
-                list[0],
-                std::path::PathBuf::from(&format!("/p/{}.qvp", MAX + 4))
-            );
-        }
-        {
-            // Drives the real on-disk path, not just `promote`: a recents list
-            // that is only ever held in memory is exactly the bug this replaces.
-            let tmp = std::env::temp_dir().join(format!("tilo-ve-recents-{}", std::process::id()));
-            std::fs::create_dir_all(&tmp).unwrap();
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_DATA_HOME", &tmp)
-                .set("TILO_PACKAGE_ID", "so.tilo.video-editor-test");
-
-            let present = tmp.join("Present.qvp");
-            save(&present, &Project::new("Present")).unwrap();
-            let gone = tmp.join("Gone.qvp");
-
-            let list = super::recents::remember(&[], &gone);
-            let list = super::recents::remember(&list, &present);
-            assert_eq!(list.len(), 2, "both are remembered in memory");
-
-            // A fresh process reads it back — and silently skips the entry whose
-            // file no longer exists rather than offering a menu item that fails.
-            let reloaded = super::recents::load();
-            assert_eq!(
-                reloaded,
-                vec![present.clone()],
-                "only the file that is there"
-            );
-            assert_eq!(super::recents::label(&present), "Present");
-
-            drop(env);
-            std::fs::remove_dir_all(&tmp).ok();
         }
         {
             let mut p = Project::new("moved");
@@ -733,6 +585,30 @@ mod tests {
                 "only the source whose bytes are absent is reported",
             );
             std::fs::remove_file(&here).ok();
+        }
+        // Case `media_beside_the_file_is_found_there`: a relative path that
+        // only resolves beside the file it came from is pointed there, and
+        // one found nowhere is left as the workspace reference it is.
+        {
+            let dir = std::env::temp_dir().join(format!("tilo-ve-beside-{}", std::process::id()));
+            std::fs::create_dir_all(dir.join("footage")).unwrap();
+            std::fs::write(dir.join("footage/take.mp4"), b"bytes").unwrap();
+            let mut p = Project::new("beside");
+            for path in ["footage/take.mp4", "footage/elsewhere.mp4"] {
+                p.media.push(MediaItem {
+                    id: Uuid::new_v4(),
+                    kind: MediaKind::Video,
+                    path: path.into(),
+                    ..Default::default()
+                });
+            }
+            anchor_media(&mut p, &dir);
+            assert_eq!(
+                Path::new(&p.media[0].path),
+                dir.join("footage/take.mp4").as_path()
+            );
+            assert_eq!(p.media[1].path, "footage/elsewhere.mp4");
+            std::fs::remove_dir_all(&dir).ok();
         }
     }
 }

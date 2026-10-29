@@ -2412,6 +2412,17 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.is_focused
     }
 
+    /// A finger on a row is the row's to claim (a row that swipes takes a sideways drag); the
+    /// list scrolls whatever the row leaves to the pointer.
+    fn touch_claim(&self, point: vello::kurbo::Point) -> crate::interaction::TouchClaim {
+        self.mounted
+            .iter()
+            .find(|row| row.widget.get_rect().contains(point))
+            .map_or(crate::interaction::TouchClaim::Pointer, |row| {
+                row.widget.touch_claim(point)
+            })
+    }
+
     fn wants_pointer_capture(&self) -> bool {
         self.drag_scroll.is_tracking()
             || self.reorder.is_tracking()

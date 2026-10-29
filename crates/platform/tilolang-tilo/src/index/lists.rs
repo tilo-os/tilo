@@ -38,7 +38,7 @@ pub struct Dir {
 }
 
 /// A page to write (`None`: it is gone), by list and number.
-pub type PageWrite = ((String, u32), Option<Vec<Entry>>);
+pub type PageWrite = ((String, u32), Option<PageBuf>);
 
 impl Dir {
     pub fn is_empty(&self) -> bool {
@@ -99,16 +99,6 @@ impl Dir {
     }
 }
 
-pub fn encode_page(entries: &[Entry]) -> Vec<u8> {
-    let mut w = Writer::default();
-    w.u32(u32::try_from(entries.len()).unwrap_or(u32::MAX));
-    for (key, id) in entries {
-        w.str(key);
-        w.str(id);
-    }
-    w.sealed()
-}
-
 /// # Errors
 /// The bytes are not a page the index wrote.
 pub fn decode_page(sealed: &[u8]) -> Result<Vec<Entry>, Corrupt> {
@@ -124,6 +114,175 @@ pub fn decode_page(sealed: &[u8]) -> Result<Vec<Entry>, Corrupt> {
         Ok(entries)
     } else {
         Err(Corrupt)
+    }
+}
+
+/// A page being changed, as the bytes its entries are written in and where each starts: an
+/// entry put in or taken out moves bytes, and costs the same few allocations however many
+/// entries the page holds.
+#[derive(Clone, Debug, Default)]
+pub struct PageBuf {
+    /// The entries, each its key and its id as [`Writer::str`] writes them.
+    bytes: Vec<u8>,
+    /// Where each entry starts in `bytes`.
+    starts: Vec<usize>,
+}
+
+/// The text at `at` of `bytes` as [`Writer::str`] wrote it, and where it ends.
+fn str_at(bytes: &[u8], at: usize) -> Option<(&str, usize)> {
+    let len: [u8; 4] = bytes.get(at..at.checked_add(4)?)?.try_into().ok()?;
+    let len = usize::try_from(u32::from_le_bytes(len)).ok()?;
+    let start = at.checked_add(4)?;
+    let end = start.checked_add(len)?;
+    let text = std::str::from_utf8(bytes.get(start..end)?).ok()?;
+    Some((text, end))
+}
+
+fn put_str(out: &mut Vec<u8>, text: &str) {
+    out.extend_from_slice(&u32::try_from(text.len()).unwrap_or(u32::MAX).to_le_bytes());
+    out.extend_from_slice(text.as_bytes());
+}
+
+impl PageBuf {
+    /// The page the index wrote as `sealed`.
+    ///
+    /// # Errors
+    /// The bytes are not a page the index wrote.
+    pub fn decode(sealed: &[u8]) -> Result<Self, Corrupt> {
+        let mut r = Reader::new(super::codec::open(sealed)?);
+        let n = r.u32()?;
+        let body = r.rest();
+        let mut starts = Vec::with_capacity(usize::try_from(n).unwrap_or(0));
+        let mut at = 0usize;
+        for _ in 0..n {
+            starts.push(at);
+            let (_, key_end) = str_at(body, at).ok_or(Corrupt)?;
+            let (_, id_end) = str_at(body, key_end).ok_or(Corrupt)?;
+            at = id_end;
+        }
+        if at != body.len() {
+            return Err(Corrupt);
+        }
+        Ok(Self {
+            bytes: body.to_vec(),
+            starts,
+        })
+    }
+
+    /// A page of `entries`, in order.
+    #[must_use]
+    pub fn of(entries: &[Entry]) -> Self {
+        let mut page = Self::default();
+        for (key, id) in entries {
+            page.starts.push(page.bytes.len());
+            put_str(&mut page.bytes, key);
+            put_str(&mut page.bytes, id);
+        }
+        page
+    }
+
+    /// The page as the index writes it.
+    #[must_use]
+    pub fn sealed(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.bytes.len().saturating_add(8));
+        out.extend_from_slice(
+            &u32::try_from(self.starts.len())
+                .unwrap_or(u32::MAX)
+                .to_le_bytes(),
+        );
+        out.extend_from_slice(&self.bytes);
+        super::codec::seal(out)
+    }
+
+    pub fn len(&self) -> usize {
+        self.starts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.starts.is_empty()
+    }
+
+    /// The entry at `index`, borrowed.
+    pub fn get(&self, index: usize) -> Option<(&str, &str)> {
+        let at = *self.starts.get(index)?;
+        let (key, key_end) = str_at(&self.bytes, at)?;
+        let (id, _) = str_at(&self.bytes, key_end)?;
+        Some((key, id))
+    }
+
+    /// The entry at `index`, owned.
+    pub fn entry(&self, index: usize) -> Option<Entry> {
+        self.get(index)
+            .map(|(key, id)| (key.to_owned(), id.to_owned()))
+    }
+
+    /// Where `(key, id)` is, or where it would go.
+    pub fn search(&self, key: &str, id: &str) -> Result<usize, usize> {
+        let (mut lo, mut hi) = (0usize, self.len());
+        while lo < hi {
+            let mid = lo.midpoint(hi);
+            match self.get(mid).map(|held| held.cmp(&(key, id))) {
+                Some(std::cmp::Ordering::Less) => lo = mid.saturating_add(1),
+                Some(std::cmp::Ordering::Equal) => return Ok(mid),
+                _ => hi = mid,
+            }
+        }
+        Err(lo)
+    }
+
+    /// Put `(key, id)` at `index`.
+    pub fn insert(&mut self, index: usize, (key, id): &Entry) {
+        let at = self.starts.get(index).copied().unwrap_or(self.bytes.len());
+        let mut written = Vec::with_capacity(key.len().saturating_add(id.len()).saturating_add(8));
+        put_str(&mut written, key);
+        put_str(&mut written, id);
+        let added = written.len();
+        self.bytes.splice(at..at, written);
+        for start in self.starts.iter_mut().skip(index) {
+            *start = start.saturating_add(added);
+        }
+        self.starts.insert(index.min(self.starts.len()), at);
+    }
+
+    /// Take out the entry at `index`.
+    pub fn remove(&mut self, index: usize) {
+        let Some(&at) = self.starts.get(index) else {
+            return;
+        };
+        let end = self
+            .starts
+            .get(index.saturating_add(1))
+            .copied()
+            .unwrap_or(self.bytes.len());
+        self.bytes.drain(at..end);
+        self.starts.remove(index);
+        let removed = end.saturating_sub(at);
+        for start in self.starts.iter_mut().skip(index) {
+            *start = start.saturating_sub(removed);
+        }
+    }
+
+    /// Split off the entries from `index` on, as a page of their own.
+    #[must_use]
+    pub fn split_off(&mut self, index: usize) -> Self {
+        let Some(&at) = self.starts.get(index) else {
+            return Self::default();
+        };
+        let bytes = self.bytes.split_off(at);
+        let starts = self
+            .starts
+            .split_off(index)
+            .into_iter()
+            .map(|start| start.saturating_sub(at))
+            .collect();
+        Self { bytes, starts }
+    }
+
+    /// Its entries, owned.
+    pub fn entries(&self) -> Vec<Entry> {
+        (0..self.len())
+            .filter_map(|index| self.entry(index))
+            .collect()
     }
 }
 
@@ -329,7 +488,7 @@ pub struct ListEdits {
     /// The lists whose directory changed.
     dirty: std::collections::HashSet<String>,
     /// Pages changed (`None`: dropped).
-    pages: std::collections::HashMap<(String, u32), Option<Vec<Entry>>>,
+    pages: std::collections::HashMap<(String, u32), Option<PageBuf>>,
 }
 
 impl ListEdits {
@@ -345,14 +504,32 @@ impl ListEdits {
         self.dirs.get_mut(list).ok_or_else(|| Corrupt.into())
     }
 
+    /// The page `seq` of `list` as this batch leaves it, taken out of the batch to change.
     fn page(
+        &mut self,
+        source: &impl ListSource,
+        list: &str,
+        seq: u32,
+    ) -> Result<PageBuf, super::IndexError> {
+        match self.pages.remove(&(list.to_owned(), seq)) {
+            Some(Some(page)) => Ok(page),
+            Some(None) => Err(Corrupt.into()),
+            None => {
+                let bytes = source.page_bytes(list, seq)?.ok_or(Corrupt)?;
+                Ok(PageBuf::decode(&bytes)?)
+            }
+        }
+    }
+
+    /// Every entry of the page `seq` of `list` as this batch leaves it.
+    fn page_entries(
         &self,
         source: &impl ListSource,
         list: &str,
         seq: u32,
     ) -> Result<Vec<Entry>, super::IndexError> {
         match self.pages.get(&(list.to_owned(), seq)) {
-            Some(Some(entries)) => Ok(entries.clone()),
+            Some(Some(page)) => Ok(page.entries()),
             Some(None) => Err(Corrupt.into()),
             None => read_page(source, list, seq),
         }
@@ -378,7 +555,7 @@ impl ListEdits {
         let dir = self.dir(source, list)?.clone();
         let mut out = Vec::with_capacity(dir.len());
         for page in &dir.pages {
-            out.extend(self.page(source, list, page.seq)?);
+            out.extend(self.page_entries(source, list, page.seq)?);
         }
         Ok(out)
     }
@@ -403,7 +580,8 @@ impl ListEdits {
                 count: 1,
                 first: entry.clone(),
             });
-            self.pages.insert((list.to_owned(), seq), Some(vec![entry]));
+            self.pages
+                .insert((list.to_owned(), seq), Some(PageBuf::of(&[entry])));
             self.dirs.insert(list.to_owned(), dir);
             self.dirty.insert(list.to_owned());
             return Ok(());
@@ -413,11 +591,12 @@ impl ListEdits {
             return Err(Corrupt.into());
         };
         let mut entries = self.page(source, list, page.seq)?;
-        let position = entries.partition_point(|held| *held < entry);
-        if entries.get(position) == Some(&entry) {
+        let Err(position) = entries.search(&entry.0, &entry.1) else {
+            self.pages
+                .insert((list.to_owned(), page.seq), Some(entries));
             return Ok(());
-        }
-        entries.insert(position, entry);
+        };
+        entries.insert(position, &entry);
         let mut dir = dir;
         if entries.len() > SPLIT {
             // Appended past the end of the list (a message posted, a list built in order): the
@@ -429,7 +608,7 @@ impl ListEdits {
             let rest = entries.split_off(keep);
             let seq = dir.next;
             dir.next = dir.next.saturating_add(1);
-            let Some(first) = rest.first().cloned() else {
+            let Some(first) = rest.entry(0) else {
                 return Err(Corrupt.into());
             };
             let made = PageRef {
@@ -440,9 +619,13 @@ impl ListEdits {
             self.pages.insert((list.to_owned(), seq), Some(rest));
             dir.pages.insert(at.saturating_add(1), made);
         }
-        if let (Some(slot), Some(first)) = (dir.pages.get_mut(at), entries.first()) {
+        if let Some(slot) = dir.pages.get_mut(at) {
             slot.count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
-            slot.first = first.clone();
+            if position == 0
+                && let Some(first) = entries.entry(0)
+            {
+                slot.first = first;
+            }
         }
         self.pages
             .insert((list.to_owned(), page.seq), Some(entries));
@@ -470,20 +653,26 @@ impl ListEdits {
             return Err(Corrupt.into());
         };
         let mut entries = self.page(source, list, page.seq)?;
-        let Ok(position) = entries.binary_search(entry) else {
+        let Ok(position) = entries.search(&entry.0, &entry.1) else {
+            self.pages
+                .insert((list.to_owned(), page.seq), Some(entries));
             return Ok(());
         };
         entries.remove(position);
-        if let Some(first) = entries.first().cloned() {
+        if entries.is_empty() {
+            dir.pages.remove(at);
+            self.pages.insert((list.to_owned(), page.seq), None);
+        } else {
             if let Some(slot) = dir.pages.get_mut(at) {
                 slot.count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
-                slot.first = first;
+                if position == 0
+                    && let Some(first) = entries.entry(0)
+                {
+                    slot.first = first;
+                }
             }
             self.pages
                 .insert((list.to_owned(), page.seq), Some(entries));
-        } else {
-            dir.pages.remove(at);
-            self.pages.insert((list.to_owned(), page.seq), None);
         }
         self.dirs.insert(list.to_owned(), dir);
         self.dirty.insert(list.to_owned());
@@ -516,7 +705,8 @@ impl ListEdits {
                 count: u32::try_from(rest.len()).unwrap_or(u32::MAX),
                 first,
             });
-            self.pages.insert((list.to_owned(), seq), Some(rest));
+            self.pages
+                .insert((list.to_owned(), seq), Some(PageBuf::of(&rest)));
             rest = tail;
         }
         self.dirs.insert(list.to_owned(), dir);

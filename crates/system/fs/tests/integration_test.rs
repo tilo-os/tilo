@@ -2061,25 +2061,25 @@ async fn start_signal(mount: &SignalledMount) -> fs::change_signal::ChangeSignal
     .expect("the first signal goes through")
 }
 
-/// Opening and reading a folder is reported too; those are the watcher's
-/// own, not a change.
-fn is_change(event: &notify::Event) -> bool {
-    !matches!(event.kind, notify::EventKind::Access(_))
+type WatchEvents = std::sync::mpsc::Receiver<Vec<tilo_files::native::WatchEvent>>;
+
+/// Watch the entries of `dir`, as a folder's watcher does.
+fn watch_folder(dir: &std::path::Path) -> (tilo_files::native::ChangeWatch, WatchEvents) {
+    let (events_tx, events) = std::sync::mpsc::channel();
+    let watch = tilo_files::native::Watcher::entries(dir)
+        .start(move |batch| {
+            let _ = events_tx.send(batch.to_vec());
+        })
+        .unwrap();
+    (watch, events)
 }
 
-/// The next event from `events` that reports a change, waiting no longer
-/// than a hang.
+/// The next changes `events` reports, waiting no longer than a hang.
 fn next_change(
-    events: &std::sync::mpsc::Receiver<notify::Result<notify::Event>>,
-) -> Result<notify::Result<notify::Event>, std::sync::mpsc::RecvTimeoutError> {
-    let deadline = tilo_test_env::hang_deadline();
-    loop {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        match events.recv_timeout(left) {
-            Ok(Ok(event)) if !is_change(&event) => {}
-            other => return other,
-        }
-    }
+    events: &WatchEvents,
+) -> Result<Vec<tilo_files::native::WatchEvent>, std::sync::mpsc::RecvTimeoutError> {
+    let left = tilo_test_env::hang_deadline().saturating_duration_since(std::time::Instant::now());
+    events.recv_timeout(left)
 }
 
 /// A change the kernel did not make, here a peer's edit merged into the
@@ -2088,7 +2088,6 @@ fn next_change(
 /// but the daemon can raise the signal, and an idle mount raises none.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_merged_change_reaches_inotify_on_its_directory() {
-    use notify::Watcher as _;
     use tilo_files::native::CHANGE_SIGNAL_XATTR;
 
     require_fuse!();
@@ -2124,14 +2123,7 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
 
     // The watcher lists the folder, then watches it, as Files does.
     assert!(list(&docs).unwrap().is_empty());
-    let (events_tx, events) = std::sync::mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = events_tx.send(event);
-    })
-    .unwrap();
-    watcher
-        .watch(&docs, notify::RecursiveMode::NonRecursive)
-        .unwrap();
+    let (watcher, events) = watch_folder(&docs);
 
     let mut peer = Namespace::from_bytes("peer", &mount.namespace.lock().unwrap().save()).unwrap();
     let peer_docs = peer.resolve_path_ino("/docs").unwrap();
@@ -2147,19 +2139,16 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
     let (event, events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
         .await
         .unwrap();
-    let event = event.expect("inotify reports the peer's change").unwrap();
+    let event = event.expect("inotify reports the peer's change");
     assert!(
-        event.paths.iter().any(|path| path == &docs),
+        event.iter().any(|event| event.path == docs),
         "the event names the changed folder: {event:?}"
     );
     assert_eq!(list(&docs), Ok(vec!["from-peer.md".to_string()]));
 
     // Reading the folder changes nothing, so nothing is signalled again.
     tokio::time::sleep(Duration::from_secs(1)).await;
-    let late: Vec<_> = events
-        .try_iter()
-        .filter(|event| event.as_ref().map_or(true, is_change))
-        .collect();
+    let late: Vec<_> = events.try_iter().collect();
     assert!(late.is_empty(), "an idle mount raises no signal: {late:?}");
 
     drop(watcher);
@@ -2180,7 +2169,6 @@ async fn a_merged_change_reaches_inotify_on_its_directory() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_availability_change_reaches_inotify_on_its_directory() {
     use fs::availability::{RecordAvailability, RecordKind, TransferError};
-    use notify::Watcher as _;
 
     require_fuse!();
     let mount = signalled_mount().await;
@@ -2205,14 +2193,7 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
         fs_protocol::AvailabilityProjectionV1::parse_xattr(&value[..len]).unwrap()
     };
     assert!(!availability().unavailable());
-    let (events_tx, events) = std::sync::mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = events_tx.send(event);
-    })
-    .unwrap();
-    watcher
-        .watch(&docs, notify::RecursiveMode::NonRecursive)
-        .unwrap();
+    let (watcher, events) = watch_folder(&docs);
 
     // What a read that waited its bound for a quiet peer writes.
     let mut unavailable = RecordAvailability::new(record, RecordKind::File);
@@ -2225,11 +2206,9 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
     let (event, _events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
         .await
         .unwrap();
-    let event = event
-        .expect("inotify reports the file's changed availability")
-        .unwrap();
+    let event = event.expect("inotify reports the file's changed availability");
     assert!(
-        event.paths.iter().any(|path| path == &docs),
+        event.iter().any(|event| event.path == docs),
         "the event names the file's folder: {event:?}"
     );
     assert!(
@@ -2254,7 +2233,6 @@ async fn an_availability_change_reaches_inotify_on_its_directory() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
     use fs_protocol::Residency;
-    use notify::Watcher as _;
 
     require_fuse!();
     let mount = signalled_mount().await;
@@ -2303,14 +2281,7 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
     // Files lists the folder it shows, and the mount signals listed folders.
     assert_eq!(list(&docs), Ok(vec!["film.mkv".to_string()]));
     assert_eq!(availability(&film).residency, Residency::NotResident);
-    let (events_tx, events) = std::sync::mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = events_tx.send(event);
-    })
-    .unwrap();
-    watcher
-        .watch(&docs, notify::RecursiveMode::NonRecursive)
-        .unwrap();
+    let (watcher, events) = watch_folder(&docs);
 
     // Read the whole file, as a player or a copy does.
     let read = {
@@ -2326,11 +2297,9 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
     let (event, _events) = tokio::task::spawn_blocking(move || (next_change(&events), events))
         .await
         .unwrap();
-    let event = event
-        .expect("inotify reports that the file is stored")
-        .unwrap();
+    let event = event.expect("inotify reports that the file is stored");
     assert!(
-        event.paths.iter().any(|path| path == &docs),
+        event.iter().any(|event| event.path == docs),
         "the event names the file's folder: {event:?}"
     );
     let stored = mount

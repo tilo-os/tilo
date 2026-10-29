@@ -908,12 +908,17 @@ mod tests {
             env.set("XDG_CONFIG_HOME", directory.path());
             env.set("TILO_APPS_DATA_DIR", directory.path());
             let config = directory.path().join("tilo");
-            std::fs::create_dir_all(&config).unwrap();
-            std::fs::write(
-                config.join("settings.json"),
-                r#"{"accessibility":{"on_screen_keyboard":"always"}}"#,
+            let settings = settings_store::profile(&config);
+            settings_store::SettingsSource::update_section(
+                &settings,
+                "accessibility",
+                serde_json::json!({"on_screen_keyboard": "always"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
             )
             .unwrap();
+            settings_store::SettingsSource::flush_pending(&settings);
             let payload = directory.path().join("payload");
             std::fs::create_dir_all(&payload).unwrap();
             std::fs::write(

@@ -11,6 +11,9 @@ use serde_json::Value;
 
 pub const RECENT_HISTORY_LIMIT: usize = 32;
 
+/// The videos played on this device, newest first.
+pub type RecentHistory = ui::tilo_resource::Recents<RecentMedia, RECENT_HISTORY_LIMIT>;
+
 /// What this device plays at when nothing else is chosen.
 pub const DEFAULT_VOLUME: f32 = 0.8;
 /// Normal speed.
@@ -40,8 +43,7 @@ pub struct PlayerSettings {
     #[serde(deserialize_with = "rate")]
     pub rate: f32,
     /// The videos played on this device, newest first.
-    #[serde(deserialize_with = "recent_rows")]
-    pub recent_history: Vec<RecentMedia>,
+    pub recent_history: RecentHistory,
 }
 
 impl Default for PlayerSettings {
@@ -51,7 +53,7 @@ impl Default for PlayerSettings {
             loop_enabled: false,
             volume: DEFAULT_VOLUME,
             rate: DEFAULT_RATE,
-            recent_history: Vec::new(),
+            recent_history: RecentHistory::default(),
         }
     }
 }
@@ -110,17 +112,6 @@ fn f32_of_rate(value: f64) -> f32 {
         .into_iter()
         .min_by(|a, b| (a - rate).abs().total_cmp(&(b - rate).abs()))
         .unwrap_or(DEFAULT_RATE)
-}
-
-fn recent_rows<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<RecentMedia>, D::Error> {
-    Ok(Value::deserialize(deserializer)?
-        .as_array()
-        .map_or_else(Vec::new, |rows| {
-            rows.iter()
-                .filter_map(RecentMedia::from_value)
-                .take(RECENT_HISTORY_LIMIT)
-                .collect()
-        }))
 }
 
 /// A recent video on this device. `id` is opaque and stable across restart;
@@ -285,7 +276,7 @@ mod tests {
             loop_enabled: true,
             volume: 0.35,
             rate: 1.5,
-            recent_history: vec![entry],
+            recent_history: [entry].into_iter().collect(),
         };
         let json = serde_json::to_string(&stored).unwrap();
         assert_eq!(read(&json), stored, "every key survives a restart");
@@ -295,7 +286,7 @@ mod tests {
             PlayerSettings {
                 autoplay: true,
                 loop_enabled: true,
-                recent_history: Vec::new(),
+                recent_history: RecentHistory::default(),
                 ..PlayerSettings::default()
             },
             "a wrong-typed key falls back alone"

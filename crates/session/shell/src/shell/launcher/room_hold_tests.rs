@@ -55,14 +55,13 @@ fn a_launch_into_a_room_being_joined_starts_once_the_room_is_ready_and_only_once
 
     room_hold::admit(&session, launch_into("so.tilo.notes", room), recorded).unwrap();
     room_hold::admit(&session, launch_into("so.tilo.notes", room), recorded).unwrap();
+    tilo_test_env::wait_until(
+        "its window to say it waits for the room being joined",
+        || room_hold::room_wait("so.tilo.notes") == Some(room_hold::RoomWait::Joining),
+    );
     assert!(
         session.take().is_empty(),
         "nothing starts while the room is joined"
-    );
-    assert_eq!(
-        room_hold::room_wait("so.tilo.notes"),
-        Some(room_hold::RoomWait::Joining),
-        "its window says it waits for the room being joined"
     );
 
     tree.write().joining_rooms.remove(&room);
@@ -83,8 +82,81 @@ fn a_launch_into_a_ready_room_starts_at_once() {
     let session = session_over(&WorkspaceTree::default().shared());
 
     room_hold::admit(&session, launch_into("so.tilo.notes", room), recorded).unwrap();
+    tilo_test_env::wait_until("the launch to start", || !lock(&session.events).is_empty());
     assert_eq!(session.take().len(), 1);
     assert!(room_hold::nothing_waits(&session));
+    assert_eq!(
+        room_hold::room_wait("so.tilo.notes"),
+        None,
+        "a launch into a ready room never says it waits"
+    );
+    drop(session);
+}
+
+/// A launch is asked for from the frame loop with the workspace tree held
+/// for writing: `peer_windows::examine` reopens a saved window under
+/// `tree_mut`. Asking must not look at the room's status, which reads the
+/// tree, on that thread: it would wait on the lock its own thread holds,
+/// and the compositor's watchdog would kill the hung loop. The launch is
+/// taken while the writer holds the tree, and is looked at and held, or
+/// started, once the writer lets the tree go.
+///
+/// This asks for a launch of Notes into `room` on a thread that holds
+/// `tree` for writing meanwhile, and returns once the writer has let the
+/// tree go.
+fn admit_while_writing(tree: &WorkspaceTreeHandle, session: &LaunchSession, room: RoomId) {
+    let (asked, asked_now) = std::sync::mpsc::channel();
+    let writer = {
+        let tree = tree.clone();
+        let session = session.clone();
+        std::thread::spawn(move || {
+            let writing = tree.write();
+            let admitted = room_hold::admit(&session, launch_into("so.tilo.notes", room), recorded);
+            asked.send(admitted).expect("the test waits for it");
+            // The tree is let go only once the test has seen the launch
+            // taken: the room's waiter cannot have looked at it yet.
+            drop(writing);
+        })
+    };
+    let admitted = asked_now
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("asking for a launch with the tree held for writing returns");
+    admitted.expect("the launch is taken");
+    writer.join().expect("the writer lets the tree go");
+}
+
+#[test]
+fn a_launch_into_a_ready_room_asked_for_while_the_tree_is_written_starts() {
+    let room = RoomId::new();
+    let tree = WorkspaceTree::default().shared();
+    let session = session_over(&tree);
+
+    admit_while_writing(&tree, &session, room);
+    tilo_test_env::wait_until("the launch to start", || !lock(&session.events).is_empty());
+    assert!(room_hold::nothing_waits(&session));
+    assert_eq!(session.take().len(), 1);
+    drop(session);
+}
+
+#[test]
+fn a_launch_into_a_joined_room_asked_for_while_the_tree_is_written_waits_then_starts() {
+    let room = RoomId::new();
+    let mut tree = WorkspaceTree::default();
+    tree.joining_rooms.insert(room);
+    let tree = tree.shared();
+    let session = session_over(&tree);
+
+    admit_while_writing(&tree, &session, room);
+    tilo_test_env::wait_until("the launch to wait for its room", || {
+        room_hold::room_wait("so.tilo.notes") == Some(room_hold::RoomWait::Joining)
+    });
+    assert!(session.take().is_empty(), "nothing starts while joined");
+    tree.write().joining_rooms.remove(&room);
+    tilo_test_env::wait_until("the room's launch to start", || {
+        !lock(&session.events).is_empty()
+    });
+    assert!(room_hold::nothing_waits(&session));
+    assert_eq!(session.take().len(), 1);
     drop(session);
 }
 
@@ -115,10 +187,9 @@ fn closing_the_window_of_a_held_launch_lets_it_go_so_nothing_starts_later() {
     };
     let session = session_over(&st.tree_handle());
     room_hold::admit(&session, launch_into("so.tilo.notes", room), recorded).unwrap();
-    assert_eq!(
-        room_hold::room_wait("so.tilo.notes"),
-        Some(room_hold::RoomWait::Placing),
-        "its window says it waits for the room being placed on this device's host"
+    tilo_test_env::wait_until(
+        "its window to say it waits for the room being placed on this device's host",
+        || room_hold::room_wait("so.tilo.notes") == Some(room_hold::RoomWait::Placing),
     );
 
     crate::shell::window_actions::close_tab(&mut st, tab).expect("the window closes");
@@ -152,6 +223,9 @@ fn a_launch_into_a_workspace_from_before_hosts_starts_once_it_is_placed() {
     let session = session_over(&tree);
 
     room_hold::admit(&session, launch_into("so.tilo.notes", room), recorded).unwrap();
+    tilo_test_env::wait_until("the launch to wait for its room", || {
+        room_hold::room_wait("so.tilo.notes") == Some(room_hold::RoomWait::Placing)
+    });
     assert!(
         session.take().is_empty(),
         "nothing starts while the room is placed"
@@ -183,14 +257,11 @@ fn an_opening_asked_for_before_the_enrollment_commits_goes_on_once_it_does() {
     assert!(!owner.rooms().contains(&room), "nothing is committed yet");
     let session = LaunchSession::current();
     let (opened, opened_now) = std::sync::mpsc::channel();
-    let waiting = {
-        let tree = tree.clone();
-        std::thread::spawn(move || {
-            opened
-                .send(room_hold::committed_device(&session, &tree, room))
-                .expect("the test waits for it");
-        })
-    };
+    let waiting = std::thread::spawn(move || {
+        opened
+            .send(room_hold::committed_device(&session, &tree, room))
+            .expect("the test waits for it");
+    });
     assert!(
         opened_now
             .recv_timeout(std::time::Duration::from_millis(200))

@@ -295,6 +295,10 @@ impl PickerListing {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent facts about one composer: what it was opened about, its notice, its focus and its placement"
+)]
 pub(crate) struct AgentQuickComposer {
     popover: Popover<Container>,
     owner: Option<ComposerOwner>,
@@ -746,7 +750,7 @@ impl AgentQuickComposer {
     /// Ask `text` at once, as if the person had typed it into the field
     /// and pressed Send: what they typed into a context menu that none of
     /// its entries answered. The adapter takes it with the next request.
-    pub(crate) fn ask(&mut self, text: &str) {
+    pub(crate) fn ask(&self, text: &str) {
         if !self.is_open() || text.trim().is_empty() {
             return;
         }

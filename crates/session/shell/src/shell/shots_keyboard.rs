@@ -19,6 +19,7 @@ use ui::widget::Widget;
 use vello::kurbo::Rect;
 use vello::peniko::kurbo::Point;
 
+#[cfg(feature = "in-process-apps")]
 use osk::widget::OskWidget;
 
 /// Where the on-screen keyboard is docked on display `output`: at its
@@ -72,6 +73,7 @@ fn walk_for_fields(
 /// that takes no typing at all, which raises no keyboard on a live desktop
 /// either.
 #[must_use]
+#[cfg(feature = "in-process-apps")]
 pub fn keyboard_for(content: ui::ime::InputContent) -> OskWidget {
     let (hints, purpose) = content.wayland();
     let mut keyboard = OskWidget::new()
@@ -96,7 +98,7 @@ fn to_f32(length: f64) -> f32 {
 }
 
 /// Lay `keyboard` out to fill `panel` and return where its keys landed.
-pub fn lay_out(keyboard: &mut OskWidget, panel: Rect, theme: &ui::theme::Theme) -> Rect {
+pub fn lay_out(keyboard: &mut dyn Widget, panel: Rect, theme: &ui::theme::Theme) -> Rect {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map = HashMap::<NodeId, *mut dyn Widget>::new();
     let child = keyboard.build_layout(&mut taffy, theme, &mut node_map);

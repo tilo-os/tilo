@@ -14,9 +14,8 @@
 
 use std::io::Read as _;
 
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
-use wayland_protocols::xdg::shell::client::xdg_toplevel;
+use wayland_client::protocol::{wl_keyboard, wl_seat};
+use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 
 /// The last keymap the seat sent, as text.
 #[derive(Default)]
@@ -25,7 +24,7 @@ struct Client {
     keymap: Option<String>,
 }
 
-crate::support::wayland::test_client!(Client);
+crate::support::wayland::test_client!(Client: registry, ping, configure, surface, toplevel, seat);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     fn event(
@@ -52,11 +51,6 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
         }
     }
 }
-
-delegate_noop!(Client: ignore wl_compositor::WlCompositor);
-delegate_noop!(Client: ignore wl_surface::WlSurface);
-delegate_noop!(Client: ignore wl_seat::WlSeat);
-delegate_noop!(Client: ignore xdg_toplevel::XdgToplevel);
 
 type Harness = crate::support::wayland::Harness<Client>;
 

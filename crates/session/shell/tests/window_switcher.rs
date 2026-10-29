@@ -3,7 +3,6 @@
 //! switches, a quick Alt+Tab goes straight back without showing anything,
 //! Escape stays put, and Alt+Grave walks one app's windows.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use shell::shell::build_tilo_overlay_host_with_chrome;
@@ -13,11 +12,9 @@ use shell::shell::state::{
     AppKind, FreshId as _, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
     WorkspaceTree,
 };
-use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, Role};
-use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::kurbo::Point;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -74,7 +71,7 @@ impl Harness {
         let home = tilo_test_env::TestHome::new().expect("isolated home");
         let (tree, strip) = desktop();
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
-        let (taffy, node) = lay_out(&mut host);
+        let (taffy, node) = crate::support::host::layout_host(&mut host);
         Self {
             host,
             chrome,
@@ -160,38 +157,6 @@ impl Harness {
                 node.role == Role::Dialog && node.name.as_deref() == Some("Switch windows")
             })
     }
-}
-
-fn lay_out(host: &mut ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size::from_lengths(1600.0, 900.0),
-                ..Default::default()
-            },
-            &[node],
-        )
-        .unwrap();
-    let mut text = ui::text_render::TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            root,
-            Size {
-                width: AvailableSpace::Definite(1600.0),
-                height: AvailableSpace::Definite(900.0),
-            },
-            |known, available, id, _, _| match node_map.get(&id) {
-                Some(&widget) => unsafe { (*widget).measure(known, available, &mut text) },
-                None => Size::ZERO,
-            },
-        )
-        .expect("layout computes");
-    host.apply_layout(&taffy, node, Point::ZERO);
-    (taffy, node)
 }
 
 /// Titles of the switcher's windows in order, and the selected one.

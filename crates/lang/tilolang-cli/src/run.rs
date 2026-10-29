@@ -16,9 +16,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc;
 
-use notify::{RecursiveMode, Watcher as _};
+use tilo_files::native::Watcher;
 
-use crate::dev::{Dev, Wake, ended};
+use crate::dev::{Dev, Wake, ended, watch_into};
 use crate::package::BuildOptions;
 use crate::session::{self, Peer};
 
@@ -166,13 +166,12 @@ impl Drop for Started {
 fn wait_for_file(
     path: &std::path::Path,
     wakes: &mpsc::Receiver<Wake>,
-    watcher: &mut notify::RecommendedWatcher,
+    sender: &mpsc::Sender<Wake>,
 ) -> Result<(), String> {
     let dir = path.parent().ok_or("a ready file has a directory")?;
-    watcher
-        .watch(dir, RecursiveMode::NonRecursive)
+    let _watch = watch_into(Watcher::entries(dir).presence(), sender.clone())
         .map_err(|error| format!("{}: {error}", dir.display()))?;
-    let result = loop {
+    loop {
         if path.exists() {
             break Ok(());
         }
@@ -185,9 +184,7 @@ fn wait_for_file(
             }
             Err(_) => break Err("the file watcher stopped".to_owned()),
         }
-    };
-    let _ = watcher.unwatch(dir);
-    result
+    }
 }
 
 /// Run the package as an app until the session ends.
@@ -247,15 +244,11 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         }
     };
     let (sender, wakes) = mpsc::channel();
-    let file_sender = sender.clone();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = file_sender.send(Wake::File(event));
-    })
-    .map_err(|error| error.to_string())?;
+    let ended_sender = sender.clone();
     std::thread::spawn(move || {
-        let _ = sender.send(Wake::Ended(child.wait()));
+        let _ = ended_sender.send(Wake::Ended(child.wait()));
     });
-    wait_for_file(&ready, &wakes, &mut watcher)?;
+    wait_for_file(&ready, &wakes, &sender)?;
     dev.open()?;
     for peer in &dev.peers {
         eprintln!(
@@ -268,7 +261,7 @@ pub fn run(options: &RunOptions) -> Result<(), String> {
         "==> {} is open; a saved .tl file reaches it, with its state",
         dev.opened
     );
-    dev.follow(&wakes, &mut watcher)
+    dev.follow(&wakes, &sender)
 }
 
 #[cfg(test)]

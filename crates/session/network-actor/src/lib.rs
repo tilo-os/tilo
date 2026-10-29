@@ -5273,8 +5273,9 @@ pub fn gossip_caches_drain_within() -> Duration {
 }
 
 /// An endpoint for a test of the network's own peers: on loopback, with no
-/// relay and no address directory, so its peers reach each other directly and
-/// a run never depends on public relays or DNS being up and quick. `key`
+/// relay, no address directory and no gateway port mapping, so its peers
+/// reach each other directly and a run never depends on public relays, DNS
+/// or the local network being up and quick. `key`
 /// fixes its identity; `None` makes a fresh one.
 #[cfg(any(test, feature = "test-support"))]
 #[expect(
@@ -5287,6 +5288,7 @@ pub async fn loopback_endpoint(
     let lookup = iroh::address_lookup::memory::MemoryLookup::new();
     let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .relay_mode(iroh::RelayMode::Disabled)
+        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
         .address_lookup(lookup.clone())
         .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
         .expect("a loopback address");

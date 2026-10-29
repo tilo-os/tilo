@@ -22,7 +22,8 @@ use crate::actions::{
     set_annotation_position_user_action, set_comment_resolved_action, set_comment_text_action,
 };
 use crate::model::{
-    AnnoKind, Annotation, Comment, GeomSpace, PtRect, Reply, Signature, SignatureInk, Swatch,
+    AnnoKind, Annotation, Comment, GeomSpace, HighlightColor, PtRect, Reply, Signature,
+    SignatureInk,
 };
 
 /// A replica of a record whose plan lays out `pages` source pages.
@@ -34,7 +35,7 @@ fn markup(replica: &Replica<PdfMarkup>) -> PdfMarkup {
     replica.state().expect("the record reads")
 }
 
-fn anno(page: usize, kind: AnnoKind, color: Swatch, author: &str) -> Annotation {
+fn anno(page: usize, kind: AnnoKind, color: HighlightColor, author: &str) -> Annotation {
     Annotation {
         id: Annotation::new_id(),
         page,
@@ -51,7 +52,7 @@ fn hl(page: usize) -> Annotation {
     anno(
         page,
         AnnoKind::highlight(PtRect::new(10.0, 20.0, 100.0, 14.0)),
-        Swatch::Yellow,
+        HighlightColor::Yellow,
         "Alice",
     )
 }
@@ -148,7 +149,7 @@ fn deleting_a_note_thread_removes_only_an_orphaned_note_marker() {
             &crate::actions::NoteDraft {
                 anno_id: "note",
                 comment_id: "opening",
-                color: Swatch::Yellow,
+                color: HighlightColor::Yellow,
                 body: "Opening thread",
             },
             "source-1",
@@ -185,15 +186,18 @@ fn annotations_round_trip_recolor_reposition_and_delete() {
     let list = markup(&replica).list_annotations();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].page, 2);
-    assert_eq!(list[0].color, Swatch::Yellow);
+    assert_eq!(list[0].color, HighlightColor::Yellow);
     match &list[0].kind {
         AnnoKind::Markup { quads, .. } => assert!((quads[0].w - 100.0).abs() < 1e-6),
         _ => panic!("expected highlight"),
     }
     replica
-        .apply(set_annotation_color_action(&a.id, Swatch::Green))
+        .apply(set_annotation_color_action(&a.id, HighlightColor::Green))
         .expect("recolor");
-    assert_eq!(markup(&replica).list_annotations()[0].color, Swatch::Green);
+    assert_eq!(
+        markup(&replica).list_annotations()[0].color,
+        HighlightColor::Green
+    );
     replica
         .apply(delete_annotation_action(&a.id))
         .expect("delete");
@@ -204,7 +208,7 @@ fn annotations_round_trip_recolor_reposition_and_delete() {
     let ink = anno(
         1,
         AnnoKind::ink(vec![(1.0, 2.0), (3.5, 4.25), (10.0, 0.0)]),
-        Swatch::Blue,
+        HighlightColor::Blue,
         "Bob",
     );
     replica
@@ -224,7 +228,7 @@ fn annotations_round_trip_recolor_reposition_and_delete() {
     let note = anno(
         1,
         AnnoKind::Note { x: 30.0, y: 40.0 },
-        Swatch::Blue,
+        HighlightColor::Blue,
         "Alice",
     );
     replica
@@ -915,7 +919,7 @@ fn markup_actions_apply_through_the_door_and_undo_as_their_author() {
     let a = anno(
         1,
         AnnoKind::highlight(PtRect::new(70.0, 300.0, 120.0, 12.0)),
-        Swatch::Green,
+        HighlightColor::Green,
         "You",
     );
     app.invoke(add_annotation_on(&a, "source-1"))

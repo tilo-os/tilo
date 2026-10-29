@@ -4,8 +4,8 @@
 //! filters is the content, the selected entry is the inspector, and the
 //! content header holds the journal's commands. The shell holds the
 //! window's filter field; [`JournalPane`] is what it filters and owns the
-//! facet dropdowns and the table; [`crate::app::LogsApp`]
-//! owns the journal and the shared view state. The two meet in a
+//! facet dropdowns and the table; the window's journal
+//! owns what was read and the shared view state. The two meet in a
 //! [`Bridge`]: the app publishes what the pane shows, the pane queues what
 //! the person asked for, and the app turns each request into a document
 //! action.

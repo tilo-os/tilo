@@ -35,5 +35,4 @@ pub mod resource;
 pub mod search;
 mod view;
 
-pub use app::BackupsApp;
 pub use resource::{BackupLocation, Backups, BackupsShell};

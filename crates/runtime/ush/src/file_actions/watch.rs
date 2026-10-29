@@ -21,6 +21,13 @@ pub(crate) fn spawn(
         .spawn(move || queued(&state, shared.stopping.fd(), &|| shared.stopped()))
 }
 
+/// What the thread watches the record's directory for. Writes, not reads:
+/// carrying out reads the record, which must not wake this thread again.
+/// Reading it still opens the record's lock files for writing, so of these
+/// only a write to the document itself counts ([`names_document`]).
+pub(super) const WRITES: u32 =
+    libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO | libc::IN_CREATE | libc::IN_MODIFY;
+
 /// Carry out the environment's file actions queued for this device, once
 /// when the session starts and again whenever the record's directory is
 /// written, until the broker stops. Nothing polls: the thread sleeps on
@@ -56,11 +63,8 @@ pub fn queued(state: &Mutex<BrokerState>, stopping: BorrowedFd<'_>, stopped: &dy
     let Ok(path) = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes()) else {
         return;
     };
-    // Writes, not reads: carrying out reads the record, which must not wake
-    // this thread again.
-    let mask = libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO | libc::IN_CREATE | libc::IN_MODIFY;
     // SAFETY: a valid descriptor and a NUL-terminated path.
-    if unsafe { libc::inotify_add_watch(inotify.as_raw_fd(), path.as_ptr(), mask) } < 0 {
+    if unsafe { libc::inotify_add_watch(inotify.as_raw_fd(), path.as_ptr(), WRITES) } < 0 {
         return;
     }
     let mut events = [0u8; 4096];
@@ -79,7 +83,9 @@ pub fn queued(state: &Mutex<BrokerState>, stopping: BorrowedFd<'_>, stopped: &dy
         if changed.revents == 0 {
             continue;
         }
-        // Every event so far is one reason to look: drain them all first.
+        // Drain every event first; any write to the document is one reason
+        // to look.
+        let mut written = false;
         loop {
             // SAFETY: reads into a local buffer of the length given.
             let read = unsafe {
@@ -89,10 +95,42 @@ pub fn queued(state: &Mutex<BrokerState>, stopping: BorrowedFd<'_>, stopped: &dy
                     events.len(),
                 )
             };
-            if read <= 0 {
+            let Ok(read) = usize::try_from(read) else {
+                break;
+            };
+            if read == 0 {
                 break;
             }
+            written |= names_document(events.get(..read).unwrap_or_default());
         }
-        carry_out();
+        if written {
+            carry_out();
+        }
     }
+}
+
+/// Whether a batch of inotify events on the record's directory includes a
+/// write to its document, or lost events (a full queue) that may have.
+pub(super) fn names_document(mut bytes: &[u8]) -> bool {
+    const HEADER: usize = std::mem::size_of::<libc::inotify_event>();
+    let document = app_state::DOCUMENT_FILE.as_bytes();
+    while bytes.len() >= HEADER {
+        // SAFETY: at least HEADER bytes remain; read_unaligned copes with the
+        // buffer's alignment.
+        let event: libc::inotify_event = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast()) };
+        if event.mask & libc::IN_Q_OVERFLOW != 0 {
+            return true;
+        }
+        let length = usize::try_from(event.len).unwrap_or(usize::MAX);
+        let Some(name) = bytes.get(HEADER..HEADER.saturating_add(length)) else {
+            break;
+        };
+        if name.split(|byte| *byte == 0).next() == Some(document) {
+            return true;
+        }
+        bytes = bytes
+            .get(HEADER.saturating_add(length)..)
+            .unwrap_or_default();
+    }
+    false
 }

@@ -473,12 +473,12 @@ impl RetainedSourceAuthority {
             ));
         }
         let original = manifest
-            .retained_home
-            .as_ref()
+            .units
+            .retained_home()
             .ok_or_else(|| failure("Authenticated retained Home is absent"))?;
         let declaration = manifest
-            .retained_caller
-            .as_ref()
+            .units
+            .retained_caller()
             .ok_or_else(|| failure("Legacy retained Home has no source-group witness"))?;
         declaration.validate_binding(original.as_plan(), &manifest.setup_binding, active_person)?;
         let effective = manifest

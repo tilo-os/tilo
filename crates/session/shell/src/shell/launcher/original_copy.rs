@@ -1,5 +1,9 @@
 //! First-use Copy on the normal native app admission and private helper gate.
-use super::*;
+use super::{
+    Arc, Duration, LaunchExtras, NativeAppOpenAccess, NativeAppOpening, build_launch_command_for,
+    installed_apps, native_app_open_access, native_launch_workspace, retained_home,
+    selected_execution_program, spawn_reporting,
+};
 use crate::onboarding_migration::OriginalCopyRequest;
 use crate::shell::i18n::t;
 use launcher::retained_view::installed_copy::CopyOwnerEvent;

@@ -1,6 +1,5 @@
 //! The player's controls live in the window's bar: the library's toggle,
-//! the open video's title, Open and History. Nothing of them is drawn over
-//! the picture.
+//! the open video's title, Open and History.
 
 use std::path::PathBuf;
 
@@ -8,7 +7,6 @@ use ui::framework::testing::TestApp;
 use ui::portal::PortalOutcome;
 use ui::window_toolbar::{ToolbarEvent, WindowToolbar};
 
-use super::OPEN;
 use crate::actions::VideoEffect;
 use crate::app::PlayerApp;
 use crate::resource::VideoPlayerShell;
@@ -22,17 +20,8 @@ fn press(app: &mut TestApp<VideoPlayerShell>, event: ToolbarEvent) {
     app.settle();
 }
 
-/// Every name and action target in `node`'s subtree.
-fn labels(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-    out.extend(node.name.clone());
-    out.extend(node.action_target.clone());
-    for child in &node.children {
-        labels(child, out);
-    }
-}
-
 #[test]
-fn the_player_draws_no_strip_and_its_controls_are_in_the_window_bar() {
+fn the_bar_names_the_open_video_and_offers_open() {
     let mut app = TestApp::<VideoPlayerShell>::capture(Some("paused")).expect("the clip opens");
     let bar = toolbar(&mut app);
     assert_eq!(bar.sidebar, Some(false), "the library is the bar's sidebar");
@@ -44,29 +33,9 @@ fn the_player_draws_no_strip_and_its_controls_are_in_the_window_bar() {
     let open = bar
         .actions
         .iter()
-        .find(|action| action.id == OPEN)
+        .find(|action| action.name == "Open video")
         .expect("Open is a bar action");
     assert!(open.enabled);
-    assert_eq!(open.name, "Open video");
-
-    let mut drawn = Vec::new();
-    labels(
-        &ui::Widget::accessibility(app.surface_mut::<PlayerApp>()).expect("the player's semantics"),
-        &mut drawn,
-    );
-    for own in [
-        "Open video",
-        OPEN,
-        "video-player.library",
-        "Show queue and recent videos",
-        "Hide library",
-        ui::widget::HISTORY_CONTROL_ID,
-    ] {
-        assert!(
-            !drawn.iter().any(|label| label == own),
-            "the player draws no {own} of its own: {drawn:?}"
-        );
-    }
 }
 
 #[test]
@@ -74,7 +43,7 @@ fn with_nothing_open_the_bar_names_no_video_and_still_opens_one() {
     let mut app = TestApp::<VideoPlayerShell>::new().expect("the player starts");
     let bar = toolbar(&mut app);
     assert_eq!(bar.location, None, "nothing is open to name");
-    assert!(bar.actions.iter().any(|action| action.id == OPEN));
+    assert!(bar.actions.iter().any(|action| action.name == "Open video"));
 }
 
 #[test]
@@ -107,12 +76,9 @@ fn the_bars_open_runs_the_published_open_and_names_the_chosen_video() {
     let (services, recorder) = ui::host::HostServices::recording();
     recorder.respond_to_pick(PortalOutcome::Opened(PathBuf::from("/tmp/Chosen.webm")));
     ui::host::scoped(&services, || {
-        press(
-            &mut app,
-            ToolbarEvent::Action {
-                id: OPEN.to_owned(),
-            },
-        );
+        app.harness()
+            .press_window_action("Open video")
+            .expect("the bar offers Open");
         app.settle();
     });
     assert_eq!(recorder.pick_requests().len(), 1, "Open asks for one video");

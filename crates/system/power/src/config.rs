@@ -1,8 +1,8 @@
-//! Reading the [`PowerPolicy`] from the shared `settings.json`.
+//! Reading the [`PowerPolicy`] from the person's settings.
 //!
 //! The Settings app owns the *write* side (its `PowerPrefs` serde struct);
 //! this module owns the compositor's *read* side. The contract between them
-//! is the JSON on disk — a `"power"` object — **not** a shared crate, exactly
+//! is the `"power"` section's JSON shape, **not** a shared crate, exactly
 //! like the compositor's `load_display_scale`. Keeping the reader here (next
 //! to the policy it produces) means the compositor never re-implements the
 //! parse, and a cross-consistency test pins the two sides together.
@@ -25,7 +25,6 @@
 //! [`PowerPolicy`] / Settings default so a corrupt config can never leave the
 //! machine unmanaged (or, worse, wedge it into an aggressive suspend).
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::policy::{PowerAction, PowerPolicy};
@@ -50,13 +49,6 @@ pub const MAX_BLANK_MINUTES: u32 = 30;
 /// The largest idle-lock timeout exposed by Settings.
 pub const MAX_LOCK_MINUTES: u32 = 30;
 
-/// Resolve the shared settings path (`$XDG_CONFIG_HOME/tilo/session/settings.json`,
-/// falling back to `~/.config/tilo/session/settings.json`) — the same file the
-/// Settings app and the rest of the compositor read.
-pub fn settings_path() -> Option<PathBuf> {
-    settings_store::settings_path()
-}
-
 /// Load the policy from the session's settings for the power-profiles-daemon
 /// profile the power service last observed ([`crate::PowerBridge::active_profile`])
 /// and the power source it last saw ([`crate::PowerBridge::on_battery`]),
@@ -64,11 +56,7 @@ pub fn settings_path() -> Option<PathBuf> {
 /// daemon itself: the compositor reloads this on its frame thread.
 ///
 /// The document is read the way every other reader reads it
-/// ([`settings_store::load_section`]): from the source the session installed
-/// when there is one, else from the file. A reader woken by a write to the
-/// store must see that write, and the session's source publishes a change
-/// before it has rewritten the `settings.json` copy, so reading the copy here
-/// let a write made through the store be applied from the value it replaced.
+/// ([`settings_store::load_section`]).
 ///
 /// The result is already narrowed to this machine's duty: a host never
 /// suspends on its own.
@@ -102,7 +90,7 @@ pub fn default_policy_for_purpose(purpose: Option<&str>) -> PowerPolicy {
     }
 }
 
-/// Parse a [`PowerPolicy`] from a full `settings.json` document with no
+/// Parse a [`PowerPolicy`] from a full settings document with no
 /// active power profile. Never fails; unknown/missing fields take defaults.
 pub fn policy_from_settings_json(text: &str) -> PowerPolicy {
     policy_from_settings_json_for_profile(text, None, false)

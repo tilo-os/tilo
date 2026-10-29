@@ -13,18 +13,10 @@
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 
 use super::WordProcessorWidget;
-use super::accessibility::tool_action_id;
 use super::toolbar::ToolAction;
 use crate::Template;
 use crate::file_menu::FileChoice;
 use crate::i18n::t;
-
-/// The Format menu button's id (never sent: its items are).
-pub(super) const FORMAT_MENU: &str = "format";
-/// The Insert menu button's id (never sent: its items are).
-pub(super) const INSERT_MENU: &str = "insert";
-/// The File menu button's id (never sent: its items are).
-pub(super) const FILE_MENU: &str = "file-menu";
 
 /// What a slot of the bar runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,29 +27,14 @@ pub(super) enum BarCommand {
     File(FileChoice),
 }
 
-/// One command as a bar slot: its id, icon and name, on when it is a toggle
-/// that is on.
-fn tool_slot(action: ToolAction, name: String, on: bool) -> ToolbarAction {
-    let icon = action.icon().map_or("", ui::icons::Icon::name);
-    ToolbarAction::new(tool_action_id(action), icon, name).on(on)
-}
-
-fn file_slot_id(choice: FileChoice) -> String {
-    match choice {
-        FileChoice::Open => "file-open".into(),
-        FileChoice::Save => "file-save".into(),
-        FileChoice::SaveAs => "file-save-as".into(),
-        FileChoice::Template(template) => {
-            let index = Template::all()
-                .iter()
-                .position(|t| *t == template)
-                .unwrap_or_default();
-            format!("file-template:{index}")
-        }
-    }
-}
-
 impl WordProcessorWidget {
+    /// One command as a bar slot: its icon and name, on when it is a toggle
+    /// that is on.
+    fn tool_slot(&self, action: ToolAction, name: String, on: bool) -> ToolbarAction {
+        let icon = action.icon().map_or("", ui::icons::Icon::name);
+        self.bar.entry(icon, name, BarCommand::Tool(action)).on(on)
+    }
+
     /// The Format menu's commands: the character formats as toggles, the
     /// font families with the selection's checked, the size and colours,
     /// then the list toggles.
@@ -185,27 +162,19 @@ impl WordProcessorWidget {
         title
     }
 
-    /// The window bar's slots, and the command each slot id runs.
-    pub(super) fn window_bar_commands(&self) -> (WindowToolbar, Vec<(String, BarCommand)>) {
-        let mut commands = Vec::new();
+    /// The window bar's slots.
+    pub(super) fn window_bar(&self) -> WindowToolbar {
         let format = self
             .format_tools()
             .into_iter()
-            .map(|(action, name, on)| {
-                commands.push((tool_action_id(action), BarCommand::Tool(action)));
-                tool_slot(action, name, on)
-            })
+            .map(|(action, name, on)| self.tool_slot(action, name, on))
             .collect();
         let insert = self
             .insert_tools()
             .into_iter()
-            .map(|(action, name)| {
-                commands.push((tool_action_id(action), BarCommand::Tool(action)));
-                tool_slot(action, name, false)
-            })
+            .map(|(action, name)| self.tool_slot(action, name, false))
             .collect();
-        let mut file = Vec::new();
-        for (choice, name, icon) in [
+        let file = [
             (FileChoice::Open, t("file-menu-open"), "folder-open"),
             (FileChoice::Save, t("file-menu-save"), "file"),
             (FileChoice::SaveAs, t("file-menu-save-as"), "file-text"),
@@ -217,17 +186,11 @@ impl WordProcessorWidget {
                 template.display_title(),
                 "file-plus",
             )
-        })) {
-            let id = file_slot_id(choice);
-            commands.push((id.clone(), BarCommand::File(choice)));
-            file.push(ToolbarAction::new(id, icon, name));
-        }
-        let styles = self.view.styles_panel_visible;
-        let ruler = self.view.ruler_visible;
-        for action in [ToolAction::ToggleStyles, ToolAction::ToggleRuler] {
-            commands.push((tool_action_id(action), BarCommand::Tool(action)));
-        }
-        let toolbar = WindowToolbar {
+        }))
+        .map(|(choice, name, icon)| self.bar.entry(icon, name, BarCommand::File(choice)))
+        .collect();
+        // The menu buttons' ids are never sent: their items are.
+        WindowToolbar {
             sidebar: Some(self.outline.is_open()),
             location: Some(ToolbarLocation {
                 label: self.document_title(),
@@ -241,28 +204,27 @@ impl WordProcessorWidget {
                 ..ToolbarLocation::default()
             }),
             actions: vec![
-                ToolbarAction::new(FORMAT_MENU, "type", t("toolbar-format")).with_items(format),
-                ToolbarAction::new(INSERT_MENU, "plus", t("toolbar-insert")).with_items(insert),
-                ToolbarAction::new(
-                    tool_action_id(ToolAction::ToggleStyles),
-                    "panel-right",
-                    t("a11y-styles-panel"),
-                )
-                .on(styles),
-                ToolbarAction::new(FILE_MENU, "file", t("toolbar-file"))
+                ToolbarAction::new("format", "type", t("toolbar-format")).with_items(format),
+                ToolbarAction::new("insert", "plus", t("toolbar-insert")).with_items(insert),
+                self.bar
+                    .entry(
+                        "panel-right",
+                        t("a11y-styles-panel"),
+                        BarCommand::Tool(ToolAction::ToggleStyles),
+                    )
+                    .on(self.view.styles_panel_visible),
+                ToolbarAction::new("file-menu", "file", t("toolbar-file"))
                     .with_items(file)
                     .in_menu(),
-                tool_slot(ToolAction::ToggleRuler, t("toolbar-ruler"), ruler).in_menu(),
+                self.tool_slot(
+                    ToolAction::ToggleRuler,
+                    t("toolbar-ruler"),
+                    self.view.ruler_visible,
+                )
+                .in_menu(),
             ],
             ..WindowToolbar::default()
-        };
-        (toolbar, commands)
-    }
-
-    /// The window bar's slots, as declared.
-    #[cfg(test)]
-    pub(super) fn window_bar(&self) -> WindowToolbar {
-        self.window_bar_commands().0
+        }
     }
 
     /// Run what the person did in the window's bar, then declare the bar's
@@ -271,9 +233,7 @@ impl WordProcessorWidget {
         for event in ui::window_toolbar::take_events() {
             self.window_toolbar_event(edits, &event);
         }
-        let (toolbar, commands) = self.window_bar_commands();
-        self.bar_commands = commands;
-        ui::window_toolbar::declare(Some(toolbar));
+        ui::window_toolbar::declare(Some(self.window_bar()));
     }
 
     /// Run one thing the person did in the window's bar.
@@ -282,20 +242,12 @@ impl WordProcessorWidget {
         edits: &mut ui::widget::Edits<'_>,
         event: &ToolbarEvent,
     ) {
-        let command = match event {
-            ToolbarEvent::ToggleSidebar => BarCommand::Tool(ToolAction::ToggleOutline),
-            ToolbarEvent::Action { id } => {
-                let Some(command) = self
-                    .bar_commands
-                    .iter()
-                    .find(|(slot, _)| slot == id)
-                    .map(|(_, command)| *command)
-                else {
-                    return;
-                };
-                command
-            }
-            _ => return,
+        let command = if *event == ToolbarEvent::ToggleSidebar {
+            BarCommand::Tool(ToolAction::ToggleOutline)
+        } else if let Some(command) = self.bar.pressed(event) {
+            command
+        } else {
+            return;
         };
         match command {
             BarCommand::Tool(action) => self.tool_clicked(edits, action),

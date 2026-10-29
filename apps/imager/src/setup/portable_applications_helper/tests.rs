@@ -257,9 +257,16 @@ impl Fixture {
             .unwrap();
         let mut prepared =
             Manifest::new("prepared-binding".into(), identity.public_key(), vec![]).unwrap();
-        prepared.portable_flatpak = Some(expected);
+        prepared.units.insert(
+            imager_backend::setup::prepared_setup::Unit::MediumApplications(
+                imager_backend::setup::prepared_setup::ApplicationsCarriage::Sealed {
+                    expectation: expected,
+                    alone: false,
+                },
+            ),
+        );
         if home_selected {
-            prepared.portable_home = Some(PortableHomePlan {
+            prepared.units.plan_home(PortableHomePlan {
                 schema: 1,
                 selection: PortableHomeSelection::FullHome,
                 applications: false,

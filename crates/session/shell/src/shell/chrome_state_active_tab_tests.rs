@@ -475,7 +475,7 @@ fn dropped_files_grant_the_real_app_id() {
         let grants = ws.app_grants_snapshot();
         drop(guard);
         assert!(
-            grants.contains_key("org.tilo.Editor"),
+            grants.contains_key("so.tilo.code-editor"),
             "built-in Editor must be keyed by its canonical app-id; \
              grants = {grants:?}"
         );

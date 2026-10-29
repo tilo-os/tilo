@@ -243,8 +243,6 @@ iroh-relay = { version = "1.0.3", features = ["server"] }
 cloud-source-dav = { version = "0.1.0", path = "../cloud-source-dav", features = ["fake-server"] }
 cloud-source-gdrive = { version = "0.1.0", path = "../cloud-source-gdrive", features = ["fake-server"] }
 cloud-source-dropbox = { version = "0.1.0", path = "../cloud-source-dropbox", features = ["fake-server"] }
-# What another program watching a mount sees (tests/integration_test.rs, tests/exact_share_process_fuse.rs).
-notify.workspace = true
 
 [lints]
 workspace = true

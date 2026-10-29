@@ -277,7 +277,7 @@ impl RecentTarget {
     /// profile's.
     pub fn at(path: impl Into<std::path::PathBuf>) -> Self {
         Self {
-            settings: Some(ui::storage::Settings::for_app(TERMINAL_APP_ID).in_file(path)),
+            settings: Some(ui::storage::Settings::for_app(TERMINAL_APP_ID).in_profile(path)),
         }
     }
 
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn the_recent_environment_is_a_device_local_setting() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("settings.json");
+        let file = dir.path().to_path_buf();
         let recent = RecentTarget::at(&file);
         recent.remember(&SessionTarget::Host);
         assert_eq!(
@@ -325,8 +325,7 @@ mod tests {
         );
         recent.remember(&SessionTarget::environment("work"));
         assert_eq!(recent.load(), Some(SessionTarget::environment("work")));
-        let stored: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let stored = serde_json::Value::Object(ui::storage::settings_at(&file));
         assert!(
             stored["app_device_local"][TERMINAL_APP_ID]["target"].is_string(),
             "{stored}"

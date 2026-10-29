@@ -67,6 +67,7 @@ zeroize = { workspace = true, optional = true }
 wire-frame = { path = "../../crates/system/wire-frame", optional = true }
 
 [dev-dependencies]
+tube = { path = ".", features = ["samples"] }
 # Encoding-level assertions for the video-surface test; version matches `vello`.
 vello_encoding.workspace = true
 # Encode a valid PNG for the offline image-store test fixture.
@@ -75,6 +76,9 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [features]
+# The sample catalogue and the screenshot scenarios staged over it:
+# development runs, captures and tests only, never a release.
+samples = []
 thin = ["dep:runtime-dylib"]
 # Reach YouTube through the YouTube client's engine library in the runtime
 # bundle (libtilo_youtube_engine.so, crates/runtime/engines/youtube) instead

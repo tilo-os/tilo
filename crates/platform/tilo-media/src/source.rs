@@ -51,6 +51,23 @@ impl Source {
         }
     }
 
+    /// The source for `uri`: a `file://` URI is the local file it names,
+    /// anything else a stream the engine fetches. A page has no local files:
+    /// the media element fetches every URI itself.
+    pub fn for_uri(uri: &str) -> Source {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = url::Url::parse(uri)
+            .ok()
+            .filter(|url| url.scheme() == "file")
+            .and_then(|url| url.to_file_path().ok())
+        {
+            return Self::for_path(&path);
+        }
+        Source::Remote {
+            url: uri.to_owned(),
+        }
+    }
+
     /// The absolute on-disk path these bytes resolve to, for the local and
     /// workspace variants. `None` for [`Source::Remote`] (no local path).
     pub fn abs_path(&self) -> Option<PathBuf> {

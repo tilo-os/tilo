@@ -95,38 +95,14 @@ impl MediaSource {
     }
 }
 
-/// The directory a relative media path that is **not** a workspace
-/// reference is resolved against: wherever the open project file lives.
-///
-/// A `.qvp` can be copied somewhere with its footage beside it, and a
-/// project built by hand (a script, the export probe) can carry a path
-/// relative to the shell that ran it. Neither is a workspace reference, and
-/// before this both silently resolved to a `/var/workspace/<path>` that did
-/// not exist — every layer fell back to its stand-in fill and the export
-/// encoded a gradient while reporting success.
-static PROJECT_ANCHOR: Mutex<Option<PathBuf>> = Mutex::new(None);
-
-/// Point relative media resolution at the directory holding the project
-/// file. Called on open and on save-as; `None` clears it (a project that
-/// has never been saved has no directory of its own).
-pub fn set_project_anchor(dir: Option<PathBuf>) {
-    if let Ok(mut slot) = PROJECT_ANCHOR.lock() {
-        *slot = dir;
-    }
-}
-
-/// The directory relative media is resolved against, if a project file is
-/// open.
-pub fn project_anchor() -> Option<PathBuf> {
-    PROJECT_ANCHOR.lock().ok().and_then(|s| s.clone())
-}
-
 /// Where a screenshot's sample media lives in place of the workspace mount;
 /// see [`serve_sample_media`].
+#[cfg(feature = "samples")]
 static SAMPLE_MEDIA: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// The stand-ins for the demo project's sources bundled with the crate
 /// (`sample-media/`).
+#[cfg(feature = "samples")]
 pub fn bundled_sample_media() -> PathBuf {
     Path::new(env!("OUT_DIR")).join("sample-media")
 }
@@ -135,12 +111,14 @@ pub fn bundled_sample_media() -> PathBuf {
 /// demo project serves the bundled stand-ins ([`bundled_sample_media`]), so
 /// its sources resolve to local bytes without a live workspace mount. `None`
 /// stops it.
+#[cfg(feature = "samples")]
 pub fn serve_sample_media(dir: Option<PathBuf>) {
     if let Ok(mut slot) = SAMPLE_MEDIA.lock() {
         *slot = dir;
     }
 }
 
+#[cfg(feature = "samples")]
 fn sample_media() -> Option<PathBuf> {
     SAMPLE_MEDIA.lock().ok().and_then(|s| s.clone())
 }
@@ -178,7 +156,7 @@ fn content_file(path: &str) -> Option<PathBuf> {
 ///      local file, or a path already under the mount) is used verbatim. This
 ///      is how a portal-imported file outside the workspace reaches the decoder.
 ///   1. **Sample media** — otherwise, if a capture serves sample media
-///      ([`serve_sample_media`]) and `<dir>/<path>` exists, use it, so
+///      (`serve_sample_media`) and `<dir>/<path>` exists, use it, so
 ///      headless captures read real bytes deterministically without a live
 ///      FUSE mount.
 ///   2. **FUSE mount** — `/var/workspace/<path>`, when it is really there.
@@ -224,6 +202,7 @@ pub fn resolve(path: &str) -> MediaSource {
         };
     }
     // 1. A capture's sample media.
+    #[cfg(feature = "samples")]
     if let Some(dir) = sample_media() {
         let candidate = dir.join(path);
         if candidate.exists() {
@@ -233,13 +212,11 @@ pub fn resolve(path: &str) -> MediaSource {
             };
         }
     }
-    // 2/3. The mount first, then the project's own directory, then the
-    //      working directory. Order matters: the mount is the shared
-    //      meaning, the other two are this machine's.
+    // 2/3. The mount first, then the working directory. Order matters: the
+    //      mount is the shared meaning, the other is this machine's.
     let mounted = Path::new(WORKSPACE_ROOT).join(path);
     let bases = [
         Some(PathBuf::from(WORKSPACE_ROOT)),
-        project_anchor(),
         std::env::current_dir().ok(),
     ];
     let found = bases
@@ -299,9 +276,7 @@ mod tests {
         }
         // Case `resolve_reports_projected_or_local_via_the_seam`:
         // Both cases live in one test so there's no inter-test race over the
-        // process-wide sample media. The serial group additionally keeps it
-        // off the project anchor, which is the other piece of process-wide
-        // state `resolve` reads.
+        // process-wide sample media.
         {
             serve_sample_media(None);
             // 1. A path that cannot exist on this host resolves as Projected —
@@ -325,40 +300,14 @@ mod tests {
             serve_sample_media(None);
             std::fs::remove_file(&f).ok();
         }
-        // Case `a_relative_path_resolves_beside_the_project_and_then_in_the_working_directory`:
-        // The two relative-path anchors, in one test so nothing races over the
-        // shared process-wide anchor or the working directory.
+        // Case `a_relative_path_found_nowhere_is_a_workspace_reference`:
+        // with nothing of that name in the working directory, the reference
+        // is a workspace one: projected, not fabricated.
         {
             serve_sample_media(None);
-            let root = std::env::temp_dir().join(format!("tilo-ve-anchor-{}", std::process::id()));
-            let nested = root.join("footage");
-            std::fs::create_dir_all(&nested).expect("make the fixture tree");
-            let rel = "footage/take1.mp4";
-            std::fs::write(root.join(rel), b"bytes").expect("write the fixture");
-
-            // With no anchor and nothing of that name in the working directory,
-            // the reference is a workspace one: projected, not fabricated.
-            set_project_anchor(None);
-            let away = resolve(rel);
+            let away = resolve(&format!("tilo-ve-nowhere-{}/take1.mp4", std::process::id()));
             assert_eq!(away.hydration, Hydration::Projected, "{away:?}");
             assert!(away.abs_path.starts_with(WORKSPACE_ROOT), "{away:?}");
-
-            // Anchored at the project's own directory it resolves to the real
-            // file. This is the case that used to export a flat gradient and
-            // report success.
-            set_project_anchor(Some(root.clone()));
-            let found = resolve(rel);
-            assert_eq!(found.abs_path, root.join(rel), "{found:?}");
-            assert_eq!(found.hydration, Hydration::Local);
-            assert!(found.is_decodable());
-
-            // An anchor that does not have the file falls through rather than
-            // claiming a path that is not there.
-            set_project_anchor(Some(root.join("elsewhere")));
-            assert_eq!(resolve(rel).hydration, Hydration::Projected);
-
-            set_project_anchor(None);
-            std::fs::remove_dir_all(&root).ok();
         }
         {
             for h in [Hydration::Projected, Hydration::Local] {

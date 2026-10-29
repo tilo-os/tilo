@@ -741,6 +741,9 @@ impl HangingPunctuation {
     };
 }
 
+/// The page-break rules every paged layout shares: fit, manual breaks,
+/// widow and orphan splits, headings kept with their text.
+pub use tilo_doc::paging;
 /// Minimum line counts retained on either side of a page/column break: the
 /// rule every paged layout shares.
 pub use tilo_doc::paging::Fragmentation;
@@ -1989,12 +1992,21 @@ fn draw_rich_backgrounds(
     layout: &crate::richtext::RichTextLayout,
     transform: Affine,
 ) {
+    /// How far a chip's pill reaches past its run on each side.
+    const PILL_REACH: f64 = 3.0;
     for &(s, e, [br, bg, bb]) in &layout.backgrounds {
         let band = Color::from_rgb8(br, bg, bb);
+        let pill = layout.pills.contains(&(s, e));
         for (x0, y0, x1, y1) in layout.selection_rects(s, e) {
             let rect =
                 vello::kurbo::Rect::new(f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
-            scene.fill(vello::peniko::Fill::NonZero, transform, band, None, &rect);
+            if pill {
+                let rect = rect.inflate(PILL_REACH, -1.0);
+                let shape = vello::kurbo::RoundedRect::from_rect(rect, rect.height() / 2.0);
+                scene.fill(vello::peniko::Fill::NonZero, transform, band, None, &shape);
+            } else {
+                scene.fill(vello::peniko::Fill::NonZero, transform, band, None, &rect);
+            }
         }
     }
 }

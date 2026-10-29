@@ -4,14 +4,13 @@
 //! and nothing changes here until the governor committed it. Then it shows
 //! on every device of the room.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use taffy::TaffyTree;
 use tilo_user_identity::DeviceCapabilities;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 
 use super::{Device, Person, Wakes, hosted_workspace, scratch, until};
 use crate::shell::chrome_state::{Chrome, WsTab};
@@ -20,6 +19,7 @@ use crate::shell::state::{
     Access, CapOverride, GovernanceRequest, ResourceRef, RoomId, Scope, Subject,
     WorkspaceAuthority as _,
 };
+use crate::shell::test_support::lay_out_as_root_with_text;
 
 /// The settings' members tab of `device`'s active workspace, laid out and
 /// drawn, over the device's own tree.
@@ -37,27 +37,8 @@ fn members_tab(device: &Device) -> (ShellOverlayHost, Chrome) {
 
 /// Lay `host` out on a 1600 by 900 screen and draw it, as a frame does.
 fn draw(host: &mut ShellOverlayHost) {
-    let mut taffy = TaffyTree::<()>::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = host.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
     let mut text = ui::text_render::TextRenderer::new();
-    taffy
-        .compute_layout_with_measure(
-            node,
-            Size {
-                width: AvailableSpace::Definite(1600.0),
-                height: AvailableSpace::Definite(900.0),
-            },
-            |known, available, node_id, _, _| {
-                node_map.get(&node_id).map_or(Size::ZERO, |&widget| {
-                    // SAFETY: every pointer in the map is a widget of `host`,
-                    // which outlives this layout pass.
-                    unsafe { (*widget).measure(known, available, &mut text) }
-                })
-            },
-        )
-        .expect("the settings lay out");
-    host.apply_layout(&taffy, node, Point::ZERO);
+    lay_out_as_root_with_text(host, 1600.0, 900.0, &Theme::dark(), &mut text);
     host.draw(
         &mut vello::Scene::new(),
         Affine::IDENTITY,
