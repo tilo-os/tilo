@@ -56,10 +56,8 @@ impl View<'_> {
     /// # Errors
     /// The index cannot be read or is corrupt.
     pub fn field(&self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError> {
-        // The versions of a resource are the log's: open writes have none yet.
-        if super::reflect::is_reflected(field) {
-            return self.snapshot.field(resource, field);
-        }
+        // A resource's versions are the log's, with the provisional ones of the actions this
+        // device committed and the record does not hold yet.
         if let Some(written) = self.overlay.field(resource, field) {
             return Ok(written);
         }

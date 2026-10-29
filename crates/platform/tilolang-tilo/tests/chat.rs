@@ -1,7 +1,7 @@
 //! Chat lists its conversations by their latest activity, the latest first, from the index's
 //! versions: a new conversation and a post are a conversation's change; an edit of a message
 //! inside it, and typing (each person's own draft), are not. Replicas holding the same changes
-//! list them alike.
+//! list them alike. A device's own actions count at once, before the record holds them.
 
 use automerge::AutoCommit;
 use serde_json::Value as Json;
@@ -9,7 +9,7 @@ use tilo_resource::{Edit, EditOp, Id, Segment};
 use tilolang_runtime::meta::FieldKind;
 use tilolang_runtime::store::{FieldSpec, Store as _};
 use tilolang_runtime::value::ResourceRef;
-use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
+use tilolang_runtime::{InvokeOutcome, Patch, Principal, UiNode, Value, ViewInstance};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 
 use crate::fixtures::{Replica, field_id};
@@ -207,6 +207,48 @@ fn conversations_are_listed_latest_activity_first_alike_on_every_replica() {
     ben.commit();
     ada.sync_with(&mut ben);
     let want = ["Books", "New chat", "Plans"];
+    assert_eq!(listed(&mut ada_list, &titles), want);
+    assert_eq!(listed(&mut ben_list, &titles), want);
+}
+
+#[test]
+fn a_conversation_started_offline_is_first_at_once_and_stays_first_once_synced() {
+    let titles = ["Plans", "Books", "Trip"];
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    at(&ada, "2026-10-28T09:00:00Z");
+    call(&ada, "start", vec![all.clone(), Value::text("Plans")]);
+    ada.commit();
+    at(&ada, "2026-10-28T09:10:00Z");
+    call(&ada, "start", vec![all.clone(), Value::text("Books")]);
+    ada.commit();
+    let mut ben = ada.fork("ben", &[(CHAT, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    let mut ada_list = ada.view(APP);
+    let mut ben_list = ben.view(APP);
+    assert_eq!(listed(&mut ada_list, &titles), ["Books", "Plans"]);
+
+    // Offline: the runtime takes both actions and the record holds neither yet. Their versions
+    // are provisional, the invoker's at the times the actions were invoked: the new
+    // conversation is first at once, and its post keeps it there.
+    at(&ada, "2026-10-28T09:20:00Z");
+    let trip = call(&ada, "start", vec![all, Value::text("Trip")]);
+    let want = ["Trip", "Books", "Plans"];
+    assert_eq!(listed(&mut ada_list, &titles), want);
+    at(&ada, "2026-10-28T09:30:00Z");
+    call(&ada, "send", vec![trip, Value::text("Who is in?")]);
+    assert_eq!(listed(&mut ada_list, &titles), want);
+
+    // Back online: the record's versions replace the provisional ones. They carry the same
+    // times, so nothing moves.
+    ada.commit();
+    ada.sync_with(&mut ben);
+    let patches = ada_list.poll_patches().unwrap();
+    assert!(
+        !patches.iter().any(|p| matches!(p, Patch::Move { .. })),
+        "no row moves once the record holds the actions: {patches:?}"
+    );
     assert_eq!(listed(&mut ada_list, &titles), want);
     assert_eq!(listed(&mut ben_list, &titles), want);
 }
