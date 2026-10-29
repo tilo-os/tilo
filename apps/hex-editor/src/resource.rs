@@ -7,12 +7,15 @@
 //! palette, agents and scripts; loading a file is a verb of its own, which
 //! no undo takes back.
 
+use std::rc::Rc;
+
 use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::record::RecordId;
 use ui::tilo_resource::{self, Atom, Invoke, Model, Refusal, resource};
 use ui::widget::Element;
 
+use crate::actions::HexEffect;
 use crate::buffer::{ByteBuffer, Hex};
 use crate::model::BufferEdit;
 use crate::view::HexView;
@@ -144,7 +147,7 @@ impl HexEditor {
     }
 }
 
-/// The hex editor app: one buffer per file, edited through [`HexView`].
+/// The hex editor app: one buffer per file, edited in a [`HexView`].
 pub struct HexEditorShell;
 
 /// The bundled sample a capture shows.
@@ -163,9 +166,32 @@ impl ResourceApp for HexEditorShell {
 
     fn view(cx: &mut ViewCx<HexEditor>) -> Element {
         let path = cx.launch_arguments().first().map(std::path::PathBuf::from);
-        // In a container, the surface is a widget of the view's tree that
+        let window = HexView::empty().with_path(path);
+        let editor = window.shared();
+        editor
+            .borrow_mut()
+            .attach(cx.live().clone(), cx.dispatcher());
+        let effects = Rc::clone(&editor);
+        cx.effects(move |effect: HexEffect, cx| {
+            let answer = effects.borrow_mut().answer(effect, cx);
+            // What it asked of the window (the go-to prompt) happens on its
+            // next frame.
+            cx.waker().wake();
+            answer
+        })
+        .status({
+            let editor = Rc::clone(&editor);
+            move || editor.borrow().effect_statuses()
+        });
+        // A capture shows the bundled sample the scenario opened; the
+        // scenario then stages its view state.
+        let staged = Rc::clone(&editor);
+        cx.on_stage(move |scenario| staged.borrow_mut().stage_scenario(scenario));
+        // The edits at the cursor and the selection.
+        cx.bind_declarations(move |_| editor.borrow().bound_declarations());
+        // In a container, the window is a widget of the view's tree that
         // tests and headless drives address by name.
-        Box::new(ui::widget::Stack::new().push(cx.surface(HexView::empty().with_path(path))))
+        Box::new(ui::widget::Stack::new().push(Box::new(window)))
     }
 
     fn label(state: &HexEditor) -> String {

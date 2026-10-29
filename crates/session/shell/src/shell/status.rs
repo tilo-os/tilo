@@ -396,7 +396,7 @@ fn spawn_audio_follower(wake: Sender<Read>) {
                 {
                     return;
                 }
-                wait_for_socket(crate::shell::session_audio_policy::pipewire_socket().as_deref());
+                wait_for_socket(media::audio_watch::pipewire_socket().as_deref());
             }
         });
     if let Err(error) = spawned {

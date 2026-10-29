@@ -67,6 +67,7 @@ pub mod file_actions;
 pub mod fleet;
 pub mod guard;
 pub mod guest;
+pub mod guest_exec;
 pub mod helper_runtime;
 pub mod host;
 pub mod images;
@@ -83,6 +84,7 @@ pub mod shell_start;
 pub mod store;
 pub mod supervisor;
 pub mod terminal_sessions;
+pub mod tilo_side;
 pub mod version;
 
 pub use store::Store;

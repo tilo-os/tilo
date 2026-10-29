@@ -1412,12 +1412,9 @@ impl ClocksApp {
     /// time, open the section that most likely brought the person back; a
     /// quiet first launch begins with the at-a-glance world view.
     fn follow_document(&mut self) {
-        let held = (self.document.revision(), self.document.loads());
-        if self.presented == Some(held) {
+        let Some(clocks) = self.document.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        let clocks = self.document.get();
+        };
         if !self.opened {
             self.opened = true;
             self.store.set_mode(if !clocks.timers.is_empty() {

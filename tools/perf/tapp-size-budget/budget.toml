@@ -165,6 +165,10 @@ aarch64 = 720896
 x86_64 = 2555904
 aarch64 = 2490368
 
+[apps."so.tilo.launcher"]
+x86_64 = 6000000
+aarch64 = 6000000
+
 [apps."so.tilo.logs"]
 x86_64 = 786432
 aarch64 = 786432

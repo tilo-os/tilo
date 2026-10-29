@@ -1206,12 +1206,10 @@ impl BackupsWindow {
         let Some(live) = &self.live else {
             return;
         };
-        let held = (live.revision(), live.loads());
-        if self.presented == Some(held) {
+        let Some(shown) = live.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        let policy = live.with(|backups| backups.policy);
+        };
+        let policy = shown.policy;
         self.repo.borrow_mut().present_policy(policy);
     }
 

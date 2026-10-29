@@ -42,6 +42,11 @@ action rename(t: Task, title: Text) {
     t.title = title
 }
 
+/// Takes a task off the board.
+action drop_task(b: Board, t: Task) {
+    b.tasks.remove(t)
+}
+
 /// Posts a message, when it says something.
 action post(b: Board, body: RichText) {
     if not body.is_empty() {

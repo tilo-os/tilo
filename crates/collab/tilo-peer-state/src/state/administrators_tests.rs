@@ -184,3 +184,50 @@ fn an_administrators_own_device_changes_a_role_and_an_editors_cannot() {
     );
     assert!(!is_administrator(&peer, user, now));
 }
+
+#[test]
+fn a_members_membership_command_is_signed_by_their_own_device_and_decided_by_their_grants() {
+    use crate::workspace_membership::WorkspaceMembershipCommand;
+    let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
+    let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
+    let editor_key = SigningKey::from_bytes(&[6; 32]);
+    let demote = WorkspaceMembershipCommand::Member {
+        change: tilo_action_policy::Change::SetRole {
+            person: hex::encode(user),
+            role: Role::Viewer,
+        },
+    };
+    assert!(
+        peer.clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(&editor, &demote, &editor_key, now)
+            .is_err(),
+        "an editor's grants change no role"
+    );
+    peer.governance_mut()
+        .set_member_administrator(user, &host_key, now)
+        .unwrap();
+    assert!(
+        peer.clone()
+            .workspace_mut()
+            .apply_workspace_membership_command(
+                &editor,
+                &demote,
+                &SigningKey::from_bytes(&[7; 32]),
+                now
+            )
+            .is_err(),
+        "another key does not sign for the caller's device"
+    );
+    assert!(
+        peer.workspace_mut()
+            .apply_workspace_membership_command(&editor, &demote, &editor_key, now)
+            .unwrap()
+    );
+    assert_eq!(
+        peer.permissions(editor.device_public_key, now)
+            .unwrap()
+            .role,
+        Role::Viewer
+    );
+}

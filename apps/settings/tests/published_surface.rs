@@ -140,7 +140,7 @@ fn a_model_link_opens_agent_models() {
     let settled = app
         .harness()
         .wait_until(tilo_test_env::hang_bound(), |harness| {
-            harness.refusal_shown().is_some()
+            harness.refusal_said().is_some()
                 || harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains("Privacy"))
@@ -149,7 +149,7 @@ fn a_model_link_opens_agent_models() {
         settled,
         "the link either opens Agent Models or says why not"
     );
-    if let Some(refusal) = app.harness().refusal_shown().map(str::to_owned) {
+    if let Some(refusal) = app.harness().refusal_said().map(str::to_owned) {
         assert!(
             refusal.contains("u2net-subject"),
             "a missing model is named: {refusal}"

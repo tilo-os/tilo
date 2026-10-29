@@ -4,6 +4,7 @@
 //! and the actions it publishes); the host only lays it out, hands it the
 //! region's input and draws it where it sits.
 
+use crate::host_core::HostCore as _;
 use std::cell::{Cell, RefCell};
 
 use super::{
@@ -124,6 +125,8 @@ impl EmbeddedApp {
         wake: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
     ) -> Result<Self, crate::launch::LaunchError> {
         app.set_tab_order_continues_in_host(true);
+        // The host has the one search; the tile opens none of its own.
+        app.actions.search_in_host = true;
         let woken = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         if let Some(scope) = app.wake_scope.as_mut() {
             let flag = std::sync::Arc::clone(&woken);

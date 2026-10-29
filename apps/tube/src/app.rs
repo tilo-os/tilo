@@ -299,12 +299,10 @@ impl TubeApp {
         let Some(live) = &self.live else {
             return;
         };
-        let held = (live.revision(), live.loads());
-        if self.presented == Some(held) {
+        let Some(shown) = live.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        live.with(|library| self.tube.borrow_mut().present_library(library));
+        };
+        self.tube.borrow_mut().present_library(&shown);
     }
 
     /// Do what the shell was asked to: from an effect, a staged scenario or

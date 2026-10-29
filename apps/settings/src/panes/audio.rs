@@ -50,7 +50,7 @@ use crate::panes::model::{PaneModel, Shared};
 mod level_meter;
 mod speaker_sets;
 
-use crate::prefs::AudioPrefs;
+use crate::prefs::{AudioDevicePrefs, AudioPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
@@ -566,7 +566,7 @@ impl AudioArea {
     /// Whether the area reaches the device, and the remembered output and
     /// input devices a read routes to again.
     fn route(&self) -> (bool, Option<String>, Option<String>) {
-        let prefs = self.cx.settings::<AudioPrefs>().get();
+        let prefs = self.cx.settings::<AudioDevicePrefs>().get();
         (
             self.cx.reaches_devices(),
             prefs.output_device,
@@ -1367,7 +1367,7 @@ impl AudioModel {
                     set.output_here = false;
                 }
                 self.sets.due = true;
-                self.save(|prefs| prefs.output_device = Some(name))?;
+                self.save_device(|prefs| prefs.output_device = Some(name))?;
                 Ok(t("sound-notice-out-device"))
             }
             Settle::SpeakerSet(group) => {
@@ -1387,7 +1387,7 @@ impl AudioModel {
                 for source in &mut self.devices.sources {
                     source.default = source.id == id;
                 }
-                self.save(|prefs| prefs.input_device = Some(name))?;
+                self.save_device(|prefs| prefs.input_device = Some(name))?;
                 Ok(t("sound-notice-in-device"))
             }
             Settle::Profile => {
@@ -1561,6 +1561,20 @@ impl AudioModel {
         })?;
         self.prefs.refresh();
         Ok(())
+    }
+
+    /// Change this device's audio settings.
+    fn save_device(&mut self, change: impl FnOnce(&mut AudioDevicePrefs)) -> Result<(), String> {
+        self.cx
+            .settings::<AudioDevicePrefs>()
+            .update(change)
+            .map(drop)
+            .map_err(|error| {
+                t_args(
+                    "sound-notice-pref-err",
+                    &[("error", error.to_string().into())],
+                )
+            })
     }
 
     /// Change the person's system sounds.
@@ -2739,7 +2753,7 @@ mod tests {
         assert_eq!(
             model
                 .cx
-                .settings::<AudioPrefs>()
+                .settings::<AudioDevicePrefs>()
                 .get()
                 .output_device
                 .as_deref(),

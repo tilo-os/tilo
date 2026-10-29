@@ -255,7 +255,7 @@ impl ShellOverlayHost {
                 shortcut_config: settings_store::hardware::ShortcutConfig::load(),
                 shortcut_triggers: crate::shell::automation_triggers::TriggerHost::for_session(),
                 desktop_controls: DesktopControlsSource::Persisted(
-                    settings_store::hardware::DesktopControlsConfig::load(),
+                    settings_store::desktop_controls::DesktopControlsConfig::load(),
                 ),
                 qs_root: QuickSettingsRoot::load_persisted(),
                 qs_refresh: crate::shell::quick_settings_refresh::QsRefresh::new(),
@@ -323,7 +323,7 @@ impl ShellOverlayHost {
                     None,
                 ),
                 desktop_controls: DesktopControlsSource::Explicit(
-                    settings_store::hardware::DesktopControlsConfig::default(),
+                    settings_store::desktop_controls::DesktopControlsConfig::default(),
                 ),
                 qs_root: QuickSettingsRoot::with_config(
                     settings_store::hardware::QuickSettingsConfig::default(),
@@ -569,7 +569,7 @@ impl ShellOverlayHost {
             qs_hosted_section: None,
             status_bridge: None,
             status_copied: std::cell::RefCell::default(),
-            session_audio_policy: None,
+            audio_service: None,
             room_activity: inputs.room_activity,
             history_narrator: inputs.history_narrator,
             status_narrator: inputs.status_narrator,

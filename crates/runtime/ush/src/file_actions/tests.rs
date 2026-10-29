@@ -230,6 +230,76 @@ fn an_append_to_a_file_that_is_not_there_makes_it() {
 }
 
 #[test]
+fn a_write_replaces_the_contents_and_undo_puts_the_previous_ones_back() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("src");
+    write(&root.join("a.txt"), "before\n");
+    let policy = granted(&root);
+    let store = store(home.path());
+
+    let entries = done(
+        &FileAction::Write(WriteOp::of(
+            vec![root.join("a.txt")],
+            b"hi\n".to_vec(),
+            false,
+        )),
+        &policy,
+        &store,
+    );
+    assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "hi\n");
+    undo(&entries, &store).unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("a.txt")).unwrap(),
+        "before\n",
+        "undo puts back what the write replaced"
+    );
+
+    // Bytes that are not text travel as base64 and arrive as they were.
+    let bytes = vec![0_u8, 0xff, 0xfe, b'\n'];
+    let op = WriteOp::of(vec![root.join("b.bin")], bytes.clone(), false);
+    assert!(op.base64);
+    let entries = done(&FileAction::Write(op), &policy, &store);
+    assert_eq!(fs::read(root.join("b.bin")).unwrap(), bytes);
+    undo(&entries, &store).unwrap();
+    assert!(!root.join("b.bin").exists(), "nothing was there before");
+}
+
+#[test]
+fn a_no_clobber_write_leaves_what_is_there_and_a_link_out_of_the_grant_is_refused() {
+    let home = tempfile::tempdir().unwrap();
+    let root = home.path().join("src");
+    write(&root.join("kept.txt"), "kept\n");
+    write(&home.path().join("outside.txt"), "outside\n");
+    std::os::unix::fs::symlink(home.path().join("outside.txt"), root.join("link")).unwrap();
+    let policy = granted(&root);
+    let store = store(home.path());
+
+    let error = refused(
+        &FileAction::Write(WriteOp::of(
+            vec![root.join("kept.txt")],
+            b"x".to_vec(),
+            true,
+        )),
+        &policy,
+        &store,
+    );
+    assert!(error.contains("already exists"), "{error}");
+    assert_eq!(fs::read_to_string(root.join("kept.txt")).unwrap(), "kept\n");
+
+    let error = refused(
+        &FileAction::Write(WriteOp::of(vec![root.join("link")], b"x".to_vec(), false)),
+        &policy,
+        &store,
+    );
+    assert!(error.contains("not granted"), "{error}");
+    assert_eq!(
+        fs::read_to_string(home.path().join("outside.txt")).unwrap(),
+        "outside\n",
+        "a write through a link reaches only what the grants allow"
+    );
+}
+
+#[test]
 fn touch_keeps_the_text_a_file_already_has() {
     let home = tempfile::tempdir().unwrap();
     let root = home.path().join("src");
@@ -586,7 +656,10 @@ fn the_audit_line_names_the_verb_and_the_paths_once() {
 // undone from there.
 
 /// The record's History entries for the verb `verb`.
-fn entries_for(state: &crate::broker::BrokerState, verb: &str) -> Vec<tilo_actions::ActionContext> {
+pub(crate) fn entries_for(
+    state: &crate::broker::BrokerState,
+    verb: &str,
+) -> Vec<tilo_actions::ActionContext> {
     state
         .environment
         .records
@@ -606,7 +679,10 @@ fn entries_for(state: &crate::broker::BrokerState, verb: &str) -> Vec<tilo_actio
 /// Undo the History entry `entry` the way History does: apply the
 /// compensation it recorded, as the person, through the record's door. The
 /// session's runtime then carries the revert out on this device.
-fn undo_from_history(state: &crate::broker::BrokerState, entry: &tilo_actions::ActionContext) {
+pub(crate) fn undo_from_history(
+    state: &crate::broker::BrokerState,
+    entry: &tilo_actions::ActionContext,
+) {
     let compensation = entry
         .compensation
         .as_ref()
@@ -968,7 +1044,7 @@ fn a_task_that_fails_on_the_tree_settles_failed_and_changes_nothing() {
 
 /// A broker whose environment has been granted `<dir>/allowed` for writing,
 /// through the same request the person's `perm trust-dir` sends.
-fn brokered_state(dir: &Path) -> crate::broker::BrokerState {
+pub(crate) fn brokered_state(dir: &Path) -> crate::broker::BrokerState {
     let mut state = crate::broker::tests::state(dir);
     let allowed = dir.join("allowed");
     fs::create_dir_all(&allowed).unwrap();

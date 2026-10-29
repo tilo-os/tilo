@@ -170,8 +170,13 @@ impl Host for Deadline {
     fn open_read(&self, path: &Path) -> std::io::Result<Box<dyn Read + Send>> {
         self.inner.open_read(path)
     }
-    fn open_write(&self, path: &Path, mode: WriteMode) -> std::io::Result<Box<dyn Write + Send>> {
-        self.inner.open_write(path, mode)
+    fn open_write(
+        &self,
+        path: &Path,
+        mode: WriteMode,
+        run: Option<&crate::host::Run>,
+    ) -> std::io::Result<Box<dyn Write + Send>> {
+        self.inner.open_write(path, mode, run)
     }
     fn read_link(&self, path: &Path) -> std::io::Result<PathBuf> {
         self.inner.read_link(path)

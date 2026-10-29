@@ -30,7 +30,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         app.accounts = AccountStore::sample();
         let mut state = demo_document(&app);
         app.start_sync(&mut Edits::lend(&mut state));
-        assert!(app.syncing, "a live sync is in flight");
+        assert!(app.state().syncing, "a live sync is in flight");
         assert!(app.sync_rx.is_some(), "worker result channel is armed");
         // The worker's reply wakes the app through its waking channel;
         // waiting on a slow server paints nothing.
@@ -40,7 +40,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         );
         // Detach the worker so the test doesn't depend on the network.
         app.sync_rx = None;
-        app.syncing = false;
+        app.state().syncing = false;
     }
     // Case `live_sync_with_no_accounts_answers_instantly`.
     {
@@ -51,7 +51,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         app.accounts = AccountStore::default();
         let mut state = demo_document(&app);
         app.start_sync(&mut Edits::lend(&mut state));
-        assert!(!app.syncing, "nothing to sync → no background work");
+        assert!(!app.state().syncing, "nothing to sync → no background work");
         assert!(app.status.text().unwrap_or("").contains("account"));
     }
     // Case `poll_sync_drains_a_finished_worker_into_the_model`.
@@ -94,11 +94,11 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         ))
         .unwrap();
         app.sync_rx = Some(rx);
-        app.syncing = true;
+        app.state().syncing = true;
 
         app.poll_sync(&mut Edits::lend(&mut state));
 
-        assert!(!app.syncing, "drain clears the in-flight flag");
+        assert!(!app.state().syncing, "drain clears the in-flight flag");
         assert_eq!(app.model.events.len(), before + 1, "synced event landed");
         assert!(
             app.model
@@ -148,10 +148,10 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         let mut state = demo_document(&app);
         let (tx, rx) = std::sync::mpsc::channel::<SyncWorkerResult>();
         app.sync_rx = Some(rx);
-        app.syncing = true;
+        app.state().syncing = true;
         drop(tx); // worker vanished without sending
         app.poll_sync(&mut Edits::lend(&mut state));
-        assert!(!app.syncing, "the in-flight flag is cleared");
+        assert!(!app.state().syncing, "the in-flight flag is cleared");
         assert!(app.sync_rx.is_none(), "the dead channel is dropped");
         assert_eq!(
             app.status.text(),
@@ -281,7 +281,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
         // Send the record through the real VTODO parser before reconciliation:
         // a second pull must update the href-bound task, never append one.
         let parsed_task = |done| {
-            let (_, tasks) = ics::parse(&ics::export(&Calendar {
+            let (_, tasks) = crate::ics::parse(&crate::ics::export(&Calendar {
                 events: ui::tilo_resource::Keyed::default(),
                 tasks: vec![remote_task(done)].into(),
                 projects: ui::tilo_resource::Keyed::default(),

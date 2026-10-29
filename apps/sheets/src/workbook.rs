@@ -293,6 +293,18 @@ impl Sheet {
         snapshot
     }
 
+    /// The raw input of every cell that holds any, by position.
+    pub fn inputs(&self) -> HashMap<Addr, String> {
+        let layout = self.layout();
+        self.cells
+            .cells()
+            .filter(|(_, _, cell)| !cell.raw.0.is_empty())
+            .filter_map(|(row, column, cell)| {
+                Some((layout.addr(&row, &column)?, cell.raw.0.clone()))
+            })
+            .collect()
+    }
+
     /// The cell at `addr`, if it holds anything.
     pub fn cell_at(&self, layout: &Layout, addr: Addr) -> Option<&Cell> {
         let (row, column) = layout.ids(addr)?;

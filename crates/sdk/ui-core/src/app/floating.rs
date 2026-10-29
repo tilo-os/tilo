@@ -65,6 +65,10 @@ pub(super) struct FloatingRuntime {
     pub coordinate_offsets: HashMap<String, Vec2>,
     pub suspended_ids: HashSet<String>,
     pub host_messages: Vec<FloatingSurfaceHostMessage>,
+    /// Searches the app asked for (Ctrl+K, a search button, an action's
+    /// arguments), for the session's one search to open
+    /// ([`crate::floating_surface::FloatingSurfaceClientMessage::OpenAppSearch`]).
+    pub search_requests: Vec<crate::search::SearchRequest>,
     /// Whether the app wants its windows withheld from captures.
     pub capture_protected: bool,
     /// Whether the frame currently being prepared paints a secret.
@@ -155,6 +159,7 @@ impl FloatingRuntime {
             coordinate_offsets: HashMap::new(),
             suspended_ids: HashSet::new(),
             host_messages: Vec::new(),
+            search_requests: Vec::new(),
             capture_protected: false,
             secret_on_screen: false,
             capture_protection_sent: false,
@@ -592,6 +597,15 @@ impl App {
                     instance,
                 },
             )?;
+        }
+        for request in std::mem::take(&mut self.floating.search_requests) {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::OpenAppSearch {
+                    instance,
+                    request,
+                },
+            )?;
+            *changed = true;
         }
         if let Some(opening) = crate::window_toolbar::take_search_request() {
             client.send(

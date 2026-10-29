@@ -1296,12 +1296,10 @@ impl MonitorApp {
         let Some(live) = &self.live else {
             return;
         };
-        let held = (live.revision(), live.loads());
-        if self.presented == Some(held) {
+        let Some(shown) = live.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        live.with(|monitor| self.state.borrow_mut().adopt_resource_state(monitor));
+        };
+        self.state.borrow_mut().adopt_resource_state(&shown);
     }
 
     /// Do what the state asked of the window: say its toasts, open the row

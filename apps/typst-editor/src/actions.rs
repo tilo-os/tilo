@@ -4,7 +4,7 @@
 //! an open or a save that does records what it changed through the
 //! workspace's verbs ([`crate::resource::Workspace`]). Live Problems
 //! rows and preview pages are published beneath the workspace by the
-//! surface.
+//! view.
 
 use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::{self, Effect};
@@ -141,7 +141,7 @@ fn preview_page_resource(page: usize) -> ResourceSpec {
 }
 
 /// Live Problems rows and preview-page hits — presentation cache, not
-/// document state — which the surface publishes beneath the workspace, so
+/// document state — which the view publishes beneath the workspace, so
 /// agents keep jump targets.
 pub fn live_extras(ctx: &TypstResourceCtx<'_>) -> Vec<ResourceSpec> {
     let mut extras = Vec::new();

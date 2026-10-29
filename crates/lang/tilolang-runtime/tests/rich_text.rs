@@ -79,12 +79,28 @@ mod cases {
     fn plain_text_is_paragraphs_and_the_excerpt_is_its_first_line_with_text() {
         let b = Room::on(&AmStore::new(), None);
         let post = b.say("\nHello there\nsecond line");
-        assert_eq!(b.body(&post).plain_text(), "\nHello there\nsecond line");
+        assert_eq!(b.body(&post).written_text(), "\nHello there\nsecond line");
         assert_eq!(
             b.done("excerpt_of", vec![Value::resource(&post)]),
             Value::text("Hello there")
         );
         assert_eq!(b.int("task_count", &post), 0);
+    }
+
+    #[test]
+    fn a_store_that_cannot_tell_what_its_reader_holds_reads_no_title() {
+        // The bare store does not know who reads: the excerpt names the person as written and
+        // the task only as being there, never by the title the text was written with.
+        let b = Room::on(&AmStore::new(), None);
+        let task = b.task("Fix the build");
+        let post = returned_ref(b.call(
+            "take",
+            vec![Value::resource(&b.board), Value::resource(&task)],
+        ));
+        assert_eq!(
+            b.done("excerpt_of", vec![Value::resource(&post)]),
+            Value::text("@me will look at Not shared with you.")
+        );
     }
 
     #[test]
@@ -119,7 +135,7 @@ mod cases {
             vec![Value::resource(&b.board), Value::resource(&task)],
         ));
         let body = b.body(&post);
-        assert_eq!(body.plain_text(), "@me will look at Fix the build.");
+        assert_eq!(body.written_text(), "@me will look at Fix the build.");
         let refs = body.references();
         assert_eq!(refs.len(), 2, "{refs:?}");
         assert_eq!(refs[0], Reference::Person("me".into()));
@@ -202,7 +218,7 @@ mod cases {
             ],
         ));
         let body = b.body(&post);
-        assert_eq!(body.plain_text(), "Standup at 2026-10-29T09:30:00Z");
+        assert_eq!(body.written_text(), "Standup at 2026-10-29T09:30:00Z");
         let block = &body.blocks[0];
         let time = block
             .marks
@@ -229,7 +245,7 @@ mod cases {
         let b = Room::on(&sb, Some(&a.board));
         let first_id = a.body(&post).blocks[0].id.clone();
         assert!(!first_id.is_empty());
-        assert_eq!(b.body(&post).plain_text(), "Plan for today");
+        assert_eq!(b.body(&post).written_text(), "Plan for today");
 
         // At once: one writer adds a line, the other a reference in the first one.
         a.call(
@@ -244,7 +260,7 @@ mod cases {
 
         let (ra, rb) = (a.body(&post), b.body(&post));
         assert_eq!(ra, rb, "both replicas read the same");
-        assert_eq!(ra.plain_text(), "Plan for today see Ship it\nThen lunch");
+        assert_eq!(ra.written_text(), "Plan for today see Ship it\nThen lunch");
         assert_eq!(
             ra.blocks[0].id, first_id,
             "the paragraph was edited in place"
@@ -273,7 +289,7 @@ mod cases {
         edit(&b, "Big Hello");
         sa.sync_with(&mut sb).unwrap();
         assert_eq!(a.body(&post), b.body(&post));
-        assert_eq!(a.body(&post).plain_text(), "Big Hello world");
+        assert_eq!(a.body(&post).written_text(), "Big Hello world");
     }
 
     #[test]

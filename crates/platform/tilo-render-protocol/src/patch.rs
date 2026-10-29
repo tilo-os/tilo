@@ -497,6 +497,13 @@ pub enum ToApp {
         key: String,
         text: String,
     },
+    /// The bound rich-text control `key` now holds `rich`: its paragraphs, marks and
+    /// references (the runtime brings the field to it by splices and marks).
+    EditRich {
+        lane: Lane,
+        key: String,
+        rich: rich::RichText,
+    },
     /// The suggestion in the invocation card `key` was allowed or declined.
     Resolve {
         lane: Lane,
@@ -718,5 +725,26 @@ mod tests {
         .collect();
         let bytes = encode_batch(&batch).expect("encodes");
         assert_eq!(decode_batch::<ToUi>(&bytes).expect("decodes"), batch);
+    }
+
+    #[test]
+    fn a_rich_inputs_edit_round_trips_empty_or_not() {
+        let plain = rich::RichText {
+            blocks: vec![rich::Block {
+                kind: "paragraph".into(),
+                text: "hi".into(),
+                ..rich::Block::default()
+            }],
+            embeds: Vec::new(),
+        };
+        for rich in [rich::RichText::default(), plain] {
+            let edit = vec![ToApp::EditRich {
+                lane: Lane::Root,
+                key: "draft".into(),
+                rich,
+            }];
+            let bytes = encode_batch(&edit).expect("encodes");
+            assert_eq!(decode_batch::<ToApp>(&bytes).expect("decodes"), edit);
+        }
     }
 }

@@ -3856,9 +3856,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
-        if self.app.open_requested_palette() {
-            request_primary_redraw();
-        }
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
             self.app.layout.layout_dirty = true;
@@ -4287,7 +4284,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             if scheduled_due {
                 askers.push(format!(
                     "deadline:{}",
-                    animation_schedule::waking_leaves(self.app.root_widget.as_ref()).join("+")
+                    animation_schedule::waking_leaves(
+                        self.app.root_widget.as_ref(),
+                        crate::time::now()
+                    )
+                    .join("+")
                 ));
             }
             if retry_due || auxiliary_retry_due {

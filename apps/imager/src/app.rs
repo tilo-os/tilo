@@ -3084,15 +3084,11 @@ impl ImagerApp {
     fn target_row(&self, target: &TargetDrive) -> LiveRow {
         let identity = target.stable_id.as_deref().unwrap_or(&target.name);
         let device = target.dev_path();
-        let mut write = ImagerEffect::Write {
+        let write = ImagerEffect::Write {
             device: device.clone(),
             confirmation: target.name.clone(),
         }
         .bound();
-        write.type_mut().contract.risk = tilo_actions::RiskLevel::Destructive;
-        write.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
-            phrase: target.name.clone(),
-        };
         let write = match self.writer_refusal() {
             Err((code, reason)) => write.unavailable(code, reason),
             Ok(()) => write,

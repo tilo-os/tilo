@@ -39,6 +39,8 @@ pub enum UiEvent {
     Press(String),
     /// The input `key` now holds `text`.
     Edit(String, String),
+    /// The rich-text input `key` now holds `rich`.
+    EditRich(String, tilo_render_protocol::patch::rich::RichText),
     /// The checkbox `key` is now `checked`.
     Toggle(String, bool),
     /// The suggestion in the invocation card `key` was allowed or declined.
@@ -70,6 +72,7 @@ pub struct Reconciler {
     sink: EventSink,
     texts: HashMap<String, LocalState<String>>,
     flags: HashMap<String, LocalState<bool>>,
+    riches: HashMap<String, LocalState<tilo_render_protocol::patch::rich::RichText>>,
     /// The handle on the split that collapses to navigate, the last one built.
     navigation: Option<Navigation>,
     /// What the components it builds report, shared with every reconciler of the same view.
@@ -100,7 +103,8 @@ pub fn display(value: &Value) -> String {
         Value::Bool(flag) => flag.to_string(),
         Value::Principal(who) => who.id.clone(),
         Value::Opt(Some(inner)) => display(inner),
-        Value::Rich(rich) => rich.plain_text(),
+        // As the person reading reads it: each reference as its chip reads for them.
+        Value::Rich(rich) => ui::widget::rich_doc::plain_text(rich),
         _ => String::new(),
     }
 }
@@ -384,6 +388,7 @@ impl Reconciler {
             sink,
             texts: HashMap::new(),
             flags: HashMap::new(),
+            riches: HashMap::new(),
             navigation: None,
             adapter: Adapter::default(),
             rows: None,
@@ -398,6 +403,7 @@ impl Reconciler {
             sink: Rc::clone(&other.sink),
             texts: HashMap::new(),
             flags: HashMap::new(),
+            riches: HashMap::new(),
             navigation: None,
             adapter: other.adapter.clone(),
             rows: other.rows.clone(),
@@ -442,6 +448,28 @@ impl Reconciler {
             .entry(key.to_owned())
             .or_insert_with(|| LocalState::new(false))
             .clone()
+    }
+
+    /// The rich text the rich input `key` shows, kept in step with what it is bound to.
+    pub fn rich_state(
+        &mut self,
+        key: &str,
+    ) -> LocalState<tilo_render_protocol::patch::rich::RichText> {
+        self.riches
+            .entry(key.to_owned())
+            .or_insert_with(|| {
+                LocalState::new(tilo_render_protocol::patch::rich::RichText::default())
+            })
+            .clone()
+    }
+
+    /// Show `rich` in the rich input `key`.
+    pub fn set_rich(&self, key: &str, rich: &tilo_render_protocol::patch::rich::RichText) {
+        if let Some(state) = self.riches.get(key)
+            && state.with(|shown| shown != rich)
+        {
+            state.set(rich.clone());
+        }
     }
 
     /// The handle on the split of the view that collapses to one pane at a time, when it has one.
@@ -1574,5 +1602,43 @@ mod tests {
         assert_eq!(display(&Value::Int(-2)), "-2");
         assert_eq!(display(&Value::some(Value::Int(3))), "3");
         assert_eq!(display(&Value::Unit), "");
+    }
+
+    #[test]
+    fn rich_text_reads_as_its_reader_reads_each_reference() {
+        use tilo_render_protocol::patch::rich::{Attr, Block, Embed, InlineView, Mark, RichText};
+        const TASK: &str =
+            r#"{"app":"so.tilo.lang.board","id":"tl:so.tilo.lang.board:d/f:t1","kind":""}"#;
+        // Written while the task was called "Acquisition plan"; the window is told how the
+        // reference reads for the person it shows the text to.
+        let read_as = |view: InlineView| {
+            Value::Rich(RichText {
+                blocks: vec![Block {
+                    kind: "paragraph".into(),
+                    text: "Notes in Acquisition plan".into(),
+                    marks: vec![Mark {
+                        start: 9,
+                        end: 25,
+                        name: "mention".into(),
+                        value: Attr::Text(TASK.into()),
+                    }],
+                    attrs: BTreeMap::new(),
+                }],
+                embeds: vec![Embed {
+                    reference: TASK.into(),
+                    view,
+                }],
+            })
+        };
+        let holder = read_as(InlineView::Resource {
+            title: "Merger timeline".into(),
+            icon: None,
+            detail: None,
+        });
+        assert_eq!(display(&holder), "Notes in Merger timeline");
+        assert_eq!(
+            display(&read_as(InlineView::Unreadable)),
+            "Notes in Not shared with you"
+        );
     }
 }

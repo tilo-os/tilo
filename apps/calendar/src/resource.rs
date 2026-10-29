@@ -15,14 +15,9 @@
 //! confirmed ([`Calendar::remote`]) in its outboxes, which the device
 //! holding the account carries out (`crate::outbox`).
 
-use std::rc::Rc;
-
 use chrono::NaiveDateTime;
 use tilo_document::{RichText, RichTextAction};
-use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, EffectStatus, Fixture, LaunchInput, LiveRow, ResourceApp,
-    ResourceSurface, SurfaceCx, ViewCx,
-};
+use ui::framework::{Dispatcher, Fixture, LaunchInput, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{
     self, ActionCx, Demand, Doc, Effect, Id, Invoke, JsonSchema, ModelError, Refusal, ScopeDecl,
@@ -1209,7 +1204,7 @@ impl ResourceApp for CalendarShell {
     fn view(cx: &mut ViewCx<Calendar>) -> Element {
         // A search hit or an agent's `open` shows the item it names.
         let app = CalendarApp::new();
-        let opens = app.opens();
+        let store = app.shared();
         let live = cx.live().clone();
         cx.on_open_item(move |item| {
             let resource = live.get().item_resource(item).ok_or_else(|| {
@@ -1217,7 +1212,7 @@ impl ResourceApp for CalendarShell {
                     "`{item}` is no event, task or project of this calendar"
                 ))
             })?;
-            opens.borrow_mut().push(resource);
+            store.borrow_mut().ask(crate::app::Ask::OpenItem(resource));
             Ok(())
         });
         // The shell keeps the sidebar (the lists, the calendars and the
@@ -1233,7 +1228,7 @@ impl ResourceApp for CalendarShell {
         Box::new(
             shell
                 .sidebar(crate::app::sidebar(&places, &month))
-                .content(cx.surface(app)),
+                .content(crate::app::window(cx, app)),
         )
     }
 
@@ -1289,87 +1284,6 @@ impl ResourceApp for CalendarShell {
             return Vec::new();
         }
         sample_invocations(&crate::model::seed_demo(shot_now().date()))
-    }
-}
-
-impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
-    fn present(&mut self, state: &Rc<Calendar>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Calendar>) {
-        if let Some(now) = cx.fixture::<ShotNow>() {
-            self.pin_now(now.0);
-        }
-        let accounts = if let Some(sample) = cx.fixture::<SampleAccounts>() {
-            Some(sample.0.clone())
-        } else if cx.mode().is_live() {
-            Some(self.bind_profile(cx.storage().config_root()))
-        } else {
-            None
-        };
-        self.follow_display(cx.settings::<crate::display::CalendarDisplay>());
-        if cx.mode().is_live() {
-            crate::outbox::drain(&cx, self.device_accounts());
-        }
-        self.attach_framework(
-            cx.dispatcher(),
-            accounts,
-            cx.fixture::<SampleAccounts>().is_some(),
-        );
-        if cx.mode().is_live() {
-            self.notify_with(ui::host::current().notifications, cx.waker());
-        }
-        if cx.mode().is_live()
-            && let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>()
-        {
-            self.follow_person_accounts(accounts);
-        }
-        if cx.mode().is_live() {
-            self.follow_contacts(cx.shared_person::<tilo_contact_directory::ContactDirectory>());
-        }
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn effect(
-        &mut self,
-        effect: CalendarEffect,
-        cx: &mut EffectCx<Calendar, Self>,
-    ) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.effect_statuses()
-    }
-
-    /// The calendars of the accounts on this device, which can be opened,
-    /// shown and hidden, and each event's attendees, whose invitation Mail
-    /// prepares.
-    fn live_rows(&self) -> Vec<LiveRow> {
-        let mut rows = self.collection_rows();
-        rows.extend(self.attendee_rows());
-        rows.extend(self.contact_rows());
-        rows
-    }
-
-    fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.contact_row(id)
-    }
-
-    const ROW_DECLARATIONS: bool = true;
-
-    /// A Contacts choice adds its person to the event through `invite`.
-    fn row_declarations(&self, row: &str) -> Vec<tilo_resource::ActionDecl<Calendar>> {
-        self.contact_declarations(row)
-    }
-
-    /// The people of the address book the Contacts picker offers.
-    fn search_entries(&self) -> Vec<SearchEntry> {
-        self.contact_search_entries()
     }
 }
 

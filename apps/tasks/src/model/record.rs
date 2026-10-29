@@ -3,7 +3,9 @@
 use tilo_rich_text::RichText;
 use ui::tilo_actions::ActorKind;
 use ui::tilo_reference::{ProgramStep, ResourceAt};
-use ui::tilo_resource::{self, ActionCx, Collection, Counter, Id, Model, Refusal, Set, resource};
+use ui::tilo_resource::{
+    self, ActionCx, Collection, Counter, Id, Model, NonBlank, Refusal, Set, resource,
+};
 
 use crate::model::issue::{
     AgentRequest, Imported, Issue, Link, MAX_MESSAGE_CHARS, MAX_READ_RESOURCE_CHARS, Message,
@@ -224,15 +226,11 @@ fn by_agent(cx: &ActionCx) -> bool {
     matches!(cx.actor_kind(), Some(ActorKind::Agent))
 }
 
-fn message_text(text: &str) -> Result<String, Refusal> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Err(Refusal::new("Write a message first"));
-    }
+fn message_text(text: NonBlank) -> Result<String, Refusal> {
     if text.chars().count() > MAX_MESSAGE_CHARS {
         return Err(Refusal::new("This message is too long"));
     }
-    Ok(text.to_owned())
+    Ok(text.into_string())
 }
 
 /// The run of `issue` going on, invoked by its own agent. The door that
@@ -315,13 +313,12 @@ impl Tracker {
     /// Create an issue.
     ///
     /// # Errors
-    /// Refuses a blank title, a parent that no longer exists, or an invalid
-    /// assignee.
+    /// Refuses a parent that no longer exists, or an invalid assignee.
     #[action(writes = issues)]
     pub fn create(
         &mut self,
         cx: &mut ActionCx,
-        #[param("What the issue is about, in a line")] title: String,
+        #[param("What the issue is about, in a line")] title: NonBlank,
         #[param("The issue it is a sub-issue of")] parent: Option<Id>,
         #[param("Its description, in markdown")] body: Option<String>,
         #[param("Where it starts; Backlog without")] status: Option<Status>,
@@ -332,7 +329,7 @@ impl Tracker {
         let number = self.next_number();
         let issue = Issue {
             number,
-            title: title.trim().to_owned(),
+            title: title.into_string(),
             body: RichText::from_markdown(body.unwrap_or_default()),
             status: status.unwrap_or_default(),
             assignee: assignee.map(ui::tilo_resource::Atom),
@@ -351,12 +348,12 @@ impl Tracker {
     /// yet; tasks join it by working towards it.
     ///
     /// # Errors
-    /// Refuses a blank name, a name too long, or an id already taken.
+    /// Refuses a name too long, or an id already taken.
     #[action(writes = areas)]
     pub fn create_area(
         &mut self,
         cx: &mut ActionCx,
-        #[param("Its name")] name: String,
+        #[param("Its name")] name: NonBlank,
         #[param("Whether it is a project with an end or an area that goes on")] kind: Option<Kind>,
     ) -> Result<(), Refusal> {
         let id = cx.id();
@@ -365,7 +362,7 @@ impl Tracker {
         }
         let area = TrackerArea {
             id: id.clone(),
-            name: name.trim().to_owned(),
+            name: name.into_string(),
             kind: kind.unwrap_or_default(),
             ..TrackerArea::default()
         };
@@ -377,18 +374,14 @@ impl Tracker {
     /// Rename the project or area `area`.
     ///
     /// # Errors
-    /// Refuses a project that no longer exists, or a blank name.
+    /// Refuses a project that no longer exists, or a name too long.
     #[action(item = areas, writes = areas)]
-    pub fn rename_area(&mut self, area: &Id, name: String) -> Result<(), Refusal> {
+    pub fn rename_area(&mut self, area: &Id, name: NonBlank) -> Result<(), Refusal> {
         let target = self.area_mut(area)?;
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            return Err(Refusal::new("A project has a name"));
-        }
-        if trimmed.chars().count() > crate::model::tracker_area::MAX_NAME_CHARS {
+        if name.chars().count() > crate::model::tracker_area::MAX_NAME_CHARS {
             return Err(Refusal::new("A project's name fits on a line"));
         }
-        trimmed.clone_into(&mut target.name);
+        target.name = name.into_string();
         Ok(())
     }
 
@@ -412,25 +405,21 @@ impl Tracker {
     /// is the sharing it was given, never a list of people.
     ///
     /// # Errors
-    /// Refuses a project that no longer exists, or someone named by nothing.
+    /// Refuses a project that no longer exists.
     #[action(item = areas, writes = areas)]
     pub fn involve(
         &mut self,
         cx: &mut ActionCx,
         area: &Id,
-        #[param("The person's name, as the workspace reads it")] name: String,
+        #[param("The person's name, as the workspace reads it")] name: NonBlank,
         #[param("What they do here, in their own words")] role: Option<String>,
     ) -> Result<(), Refusal> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(Refusal::new("Name the person involved"));
-        }
         let id = cx.id();
         let target = self.area_mut(area)?;
         target.people.push(
             id,
             Person {
-                name: name.to_owned(),
+                name: name.into_string(),
                 role: role.unwrap_or_default().trim().to_owned(),
             },
         );
@@ -567,14 +556,10 @@ impl Tracker {
     /// Label an issue.
     ///
     /// # Errors
-    /// Refuses a blank label, or an issue at its 32 labels.
+    /// Refuses an issue at its 32 labels.
     #[action(item = issues, writes = issues)]
-    pub fn add_label(&mut self, issue: &Id, label: String) -> Result<(), Refusal> {
-        let label = label.trim();
-        if label.is_empty() {
-            return Err(Refusal::new("A label has a name"));
-        }
-        self.issue_mut(issue)?.labels.insert(label.to_owned());
+    pub fn add_label(&mut self, issue: &Id, label: NonBlank) -> Result<(), Refusal> {
+        self.issue_mut(issue)?.labels.insert(label.into_string());
         Ok(())
     }
 
@@ -608,10 +593,15 @@ impl Tracker {
     /// Comment on an issue.
     ///
     /// # Errors
-    /// Refuses an empty message.
+    /// Refuses a message too long.
     #[action(item = issues, field = "comments", writes = issues)]
-    pub fn comment(&mut self, cx: &mut ActionCx, issue: &Id, text: String) -> Result<(), Refusal> {
-        let text = message_text(&text)?;
+    pub fn comment(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        text: NonBlank,
+    ) -> Result<(), Refusal> {
+        let text = message_text(text)?;
         let author = author(cx)?;
         let agent = by_agent(cx);
         let at_ms = cx.now_ms();
@@ -798,19 +788,14 @@ impl Tracker {
     /// `reason` says which limit it reached.
     ///
     /// # Errors
-    /// Refuses anyone but the run's own agent, an ended or paused run, or a
-    /// reason that names nothing.
+    /// Refuses anyone but the run's own agent, or an ended or paused run.
     #[action(item = issues, audience = "agents", writes = issues)]
     pub fn pause_run_for_budget(
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        #[param("Why it stopped: the limit it reached")] reason: String,
+        #[param("Why it stopped: the limit it reached")] reason: NonBlank,
     ) -> Result<(), Refusal> {
-        let reason = reason.trim();
-        if reason.is_empty() {
-            return Err(Refusal::new("Name the limit the run reached"));
-        }
         let now = cx.now_ms();
         let target = self.issue_mut(issue)?;
         let epoch = own_run(cx, target)?.epoch;
@@ -828,7 +813,7 @@ impl Tracker {
             now,
         )
         .ok_or_else(|| Refusal::new("This step is not one a pause can hold"))?
-        .because(reason);
+        .because(reason.as_str());
         let run = target
             .run
             .as_mut()
@@ -1026,15 +1011,15 @@ impl Tracker {
     /// it stays with the issue and every collaborator reads it there.
     ///
     /// # Errors
-    /// Refuses an empty message.
+    /// Refuses a message too long.
     #[action(item = issues, field = "comments", writes = issues)]
     pub fn send_message(
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        text: String,
+        text: NonBlank,
     ) -> Result<(), Refusal> {
-        let text = message_text(&text)?;
+        let text = message_text(text)?;
         let author = author(cx)?;
         let agent = by_agent(cx);
         let at_ms = cx.now_ms();
@@ -1071,14 +1056,14 @@ impl Tracker {
         cx: &mut ActionCx,
         issue: &Id,
         phase: RunPhase,
-        #[param("What it did or found, in markdown")] text: Option<String>,
+        #[param("What it did or found, in markdown")] text: Option<NonBlank>,
     ) -> Result<(), Refusal> {
         if !phase.reportable() {
             return Err(Refusal::new(
                 "A run reports accepted, planning or executing",
             ));
         }
-        let text = text.map(|text| message_text(&text)).transpose()?;
+        let text = text.map(message_text).transpose()?;
         let at_ms = cx.now_ms();
         let author = author(cx)?;
         let target = self.issue_mut(issue)?;
@@ -1244,9 +1229,9 @@ impl Tracker {
         cx: &mut ActionCx,
         issue: &Id,
         outcome: RunOutcome,
-        #[param("What it did, in markdown")] summary: Option<String>,
+        #[param("What it did, in markdown")] summary: Option<NonBlank>,
     ) -> Result<(), Refusal> {
-        let summary = summary.map(|text| message_text(&text)).transpose()?;
+        let summary = summary.map(message_text).transpose()?;
         let at_ms = cx.now_ms();
         let author = author(cx)?;
         let target = self.issue_mut(issue)?;
@@ -1291,22 +1276,17 @@ impl Tracker {
     /// one, and the record keeps the last on each.
     ///
     /// # Errors
-    /// Refuses anyone but the run's own agent, an ended run, or a device
-    /// named by nothing.
+    /// Refuses anyone but the run's own agent, or an ended run.
     #[action(item = issues, audience = "agents", writes = issues)]
     pub fn run_on_device(
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        #[param("The device it runs on")] device: String,
+        #[param("The device it runs on")] device: NonBlank,
     ) -> Result<(), Refusal> {
-        let device = device.trim();
-        if device.is_empty() {
-            return Err(Refusal::new("Name the device it runs on"));
-        }
         let target = self.issue_mut(issue)?;
         let run = own_run(cx, target)?;
-        run.device = Some(device.to_owned());
+        run.device = Some(device.into_string());
         Ok(())
     }
 
@@ -1403,7 +1383,9 @@ impl Tracker {
         {
             return Err(Refusal::new("A read names one resource it may reach"));
         }
-        let label = message_text(&resource.reference.label)?;
+        let label = NonBlank::parse(&resource.reference.label)
+            .ok_or_else(|| Refusal::new("A read says what it read"))
+            .and_then(message_text)?;
         let reference = serde_json::to_string(&resource)
             .map_err(|_| Refusal::new("A read names one resource it may reach"))?;
         let at_ms = cx.now_ms();

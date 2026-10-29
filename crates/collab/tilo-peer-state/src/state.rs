@@ -51,6 +51,7 @@ mod agent_runs;
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
+mod room_delta;
 mod workspace_effects;
 mod workspace_membership;
 mod workspace_shortcuts;
@@ -781,7 +782,8 @@ impl StatePeer {
 
     /// Whether `device` is a known, unrevoked device of the owner's, at no
     /// particular time: for evidence a device of theirs signed earlier.
-    fn signed_by_owner(&self, device: &[u8; 32]) -> bool {
+    #[must_use]
+    pub fn signed_by_owner(&self, device: &[u8; 32]) -> bool {
         self.core
             .certificates
             .get(device)
@@ -930,13 +932,6 @@ impl StatePeer {
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
     pub fn admitted_room(&self) -> Option<&AutoCommit> {
         self.core.room_doc.as_deref()
-    }
-
-    /// The heads of the committed room document, `None` without one. Equal
-    /// heads at two moments mean nothing was committed to the room between
-    /// them.
-    pub fn room_heads(&self) -> Option<Vec<automerge::ChangeHash>> {
-        Some(self.core.room_doc.as_deref()?.committed_heads())
     }
 
     /// Start the room's document over from a base ([`room::base`]), as its

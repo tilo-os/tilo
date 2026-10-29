@@ -834,29 +834,6 @@ pub fn pause_named(bus_name: &str) -> bool {
     })
 }
 
-/// Pause every player that is playing right now — the private output it was
-/// playing to has gone. Only `Playing` players are touched, and nothing
-/// records them for a later resume: plugging the output back in must never
-/// start sound on its own. Returns whether the pause was dispatched.
-pub fn pause_playing_players() -> bool {
-    spawn_on_session(async {
-        let Some(playing) = with_players(PlayerTable::playing).await else {
-            return;
-        };
-        let Some(connection) = session_bus().await else {
-            return;
-        };
-        for bus_name in playing {
-            let Some(proxy) = player_proxy(&connection, &bus_name, PLAYER_IFACE).await else {
-                continue;
-            };
-            if let Err(error) = proxy.call_method("Pause", &()).await {
-                tracing::debug!(target: "tilo::mpris", %error, "player did not pause on unplug");
-            }
-        }
-    })
-}
-
 /// Pause one exact player only while it still owns the URI that this handoff
 /// opened. This prevents compensation for a failed acknowledgement from
 /// pausing unrelated playback that started immediately afterwards. Returns

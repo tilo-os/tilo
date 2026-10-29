@@ -131,8 +131,8 @@ impl SlotType for Vec<MenuPart> {
 
 /// A context menu of the view it stands in: a right-click, the Menu key or a long press opens
 /// it. Its commands come first, as the view placed them; the system adds what the item offers
-/// that the view did not place, a typing field to filter them, and asks before a destructive
-/// one.
+/// that the view did not place and a typing field to filter them. A destructive command runs
+/// at once and is undone afterwards, never confirmed first.
 #[derive(Component, Default)]
 #[component(name = "ContextMenu", role = "Menu", attaches)]
 pub struct ContextMenuProps {
@@ -280,8 +280,8 @@ pub fn item_menu(placed: Vec<MenuPart>, offered: Vec<MenuPart>) -> Vec<MenuPart>
 }
 
 /// A menu's parts as the entries of the context menu that shows them. A destructive command
-/// asks first (Shift skips the question for what Undo takes back); a separator at either end or
-/// beside another is dropped.
+/// runs at once and is undone afterwards (the platform's rule), never confirmed first; a
+/// separator at either end or beside another is dropped.
 #[must_use]
 pub fn menu_entries(parts: Vec<MenuPart>) -> Vec<MenuEntry> {
     let mut entries: Vec<MenuEntry> = Vec::with_capacity(parts.len());

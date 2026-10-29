@@ -969,7 +969,8 @@ mod tests {
                 "an absent preference means the touchpad was on"
             );
             assert_eq!(
-                settings_store::SettingsSource::load(paths)["input"]
+                settings_store::SettingsSource::load(paths)
+                    [settings_store::hardware::INPUT_DEVICE_SECTION]
                     [settings_store::hardware::TOUCHPAD_ENABLED_KEY],
                 false
             );

@@ -90,6 +90,18 @@ pub(super) fn layout_write(room: &str, body: &[u8]) -> Option<LayoutWrite> {
     }
 }
 
+/// Whether `changes`, a member's batch to the room document `before`,
+/// leave its shared layout as it stood at the batch's own dependencies.
+pub(super) fn leaves_layout(before: &automerge::AutoCommit, changes: &[Vec<u8>]) -> bool {
+    let Ok((at, after)) = tilo_peer_state::room::membership::position(before, changes) else {
+        return false;
+    };
+    let layout = |doc: &automerge::AutoCommit| {
+        serde_json::to_value(tilo_desktop_model::shared_record::read(doc, None)).ok()
+    };
+    layout(&at).is_some_and(|held| Some(held) == layout(&after))
+}
+
 /// Remove every window and window group from `doc`, a shared desktop
 /// record, and every strip a person made; the strips the room itself has
 /// (its operator's, which name no author) stay. Returns whether it changed
@@ -344,12 +356,37 @@ impl Rooms {
             return Ok(());
         };
         if self.is_public(room) {
+            // A member's change to the room's people, their roles and the
+            // room's grants is no layout: it passes, and the room's
+            // admission decides it as it decides it everywhere.
+            if write == LayoutWrite::Topology && self.only_membership(room, body).await {
+                return Ok(());
+            }
             return Err(LAYOUT_REFUSAL.into());
         }
         match write {
             LayoutWrite::Topology => Ok(()),
             LayoutWrite::Desktop => self.decide_desktop_write(room, author, body).await,
         }
+    }
+
+    /// Whether `body`, a member's change to `room`'s document, leaves the
+    /// room's shared layout as it was where its writer made it: a change to
+    /// its membership alone.
+    async fn only_membership(&self, room: &str, body: &[u8]) -> bool {
+        let Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, .. }) =
+            postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body)
+        else {
+            return false;
+        };
+        let Ok(state) = self.room(room).await else {
+            return false;
+        };
+        let governed = state.lock().await;
+        governed
+            .peer()
+            .admitted_room()
+            .is_some_and(|before| leaves_layout(before, &changes))
     }
 
     /// Whether the governor of `room` takes in the retained write `message` when it replays what the relay retains: never a shared

@@ -377,6 +377,17 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .is_ok_and(|access| access == super::launcher::NativeAppOpenAccess::Delegate)
     }
 
+    /// A room this device holds, joins or has placed on its host: its
+    /// membership actions are published once its replica is projected
+    /// ([`super::state::WorkspaceTree::project_native_room`]), which a
+    /// commit installing the room may precede.
+    fn membership_pending(&self, room: &str) -> bool {
+        super::state::RoomId::parse(room).is_some_and(|room| {
+            let tree = self.tree.read();
+            tree.holds_room(room) || tree.documents_unavailable(room).is_some()
+        })
+    }
+
     /// A held room whose admitted governor is this device: its checkpoints
     /// are this device's custody, sealed records or not.
     fn keeps_checkpoints(&self, room: &str) -> bool {
@@ -401,8 +412,9 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         })
     }
 
-    /// A room whose channels its node takes part in: this owner forwards an opening app's
-    /// authorship to that host ([`host_membership::commit_membership_at_host`]).
+    /// A room whose channels its node takes part in: this owner forwards an
+    /// opening app's authorship to that host
+    /// ([`host_membership::grant_app_authorship_at_host`]).
     fn grants_authorship_at_host(&self, room: &str) -> bool {
         super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().seals_records(room))
     }
@@ -412,6 +424,11 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
             .health()
     }
 
+    /// A membership change this device writes itself, signed with its own
+    /// key: the room's admission decides it against the caller's grants,
+    /// and its host admits it as it admits every member's change. Only an
+    /// app's authorship, the owner's to give, is the host's to commit in a
+    /// room a host governs.
     fn execute(
         &self,
         request: tilo_owner_commit::OwnerCommitRequest,
@@ -426,17 +443,32 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
                 .ok_or("invalid native membership room")?;
             if let Some(network) = network.as_ref() {
                 network.check_native_custody(&owner, room)?;
-                // Membership is the room's governance: its host decides it.
-                return self::host_membership::commit_membership_at_host(
-                    network, &owner, room, &request,
-                )
-                .await;
+                if let tilo_owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                    caller,
+                    command:
+                        tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                            app,
+                        },
+                    ..
+                } = &request.operation
+                    && let Some(receipt) = self::host_membership::grant_app_authorship_at_host(
+                        network, &owner, room, &request, caller, app,
+                    )
+                    .await
+                {
+                    return receipt;
+                }
             }
-            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
-                .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
+            let key = match network.as_ref() {
+                Some(network) => network.native_signing_key_of(&owner, room)?,
+                None => {
+                    tilo_identity_host::broker::trusted_current_device(&request.room)
+                        .map_err(|error| format!("this device's key is unavailable: {error}"))?
+                        .0
+                }
+            };
             let receipt = owner.commit_workspace_membership_command(
                 request,
-                &governor,
                 &key,
                 std::time::SystemTime::now(),
             )?;

@@ -2367,6 +2367,9 @@ fn pump_floating_surface_service(
                 }
                 | ui::floating_surface::FloatingSurfaceClientMessage::OpenSearch {
                     ..
+                }
+                | ui::floating_surface::FloatingSurfaceClientMessage::OpenAppSearch {
+                    ..
                 }) => {
                     // The app id is the launcher's: an app only ever reaches
                     // the bar of a tab that shows it.
@@ -12110,7 +12113,7 @@ pub fn run() {
             }
             if settings_change.desktop_controls() {
                 frame_builder.host_mut().set_desktop_controls_config(
-                    settings_store::hardware::DesktopControlsConfig::load(),
+                    settings_store::desktop_controls::DesktopControlsConfig::load(),
                 );
             }
             frame_builder.follow_settings_sections(

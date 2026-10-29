@@ -3,9 +3,10 @@
 //! framework mounts it.
 
 use super::*;
-use crate::model::{BlockKind, ContentBlock};
+use crate::FeedsApp;
+use crate::model::{BlockKind, ContentBlock, ReadFont, ReadSettings, ReadTheme};
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionSpec, OperationKind, Resource as Published};
+use ui::tilo_actions::{ActionSpec, OperationKind, ResourceSpec as Published};
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Edit, Replica, Resource};
 

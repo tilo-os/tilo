@@ -1049,7 +1049,7 @@ impl Shell {
         if target == "/dev/stderr" {
             return Ok(self.output(2).unwrap_or_else(Output::null));
         }
-        match self.host.open_write(&path, mode) {
+        match self.host.open_write(&path, mode, self.run.as_deref()) {
             Ok(writer) => Ok(Output::new(writer)),
             Err(e) => {
                 self.error(format!("{target}: {}", crate::commands::describe(&e)));

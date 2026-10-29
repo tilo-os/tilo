@@ -18,13 +18,12 @@ collab-types = { path = "../../collab/collab-types" }
 # Images are tapp packages, named by their content address.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 automerge.workspace = true
+base64.workspace = true
 fnv.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 workspace-hack = { version = "0.1" }
-
-[dev-dependencies]
-serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -17,7 +17,8 @@ use crate::theme_document::{Preset, ThemeDensity, ThemeDocument};
 /// from [`DISTRIBUTION_DEFAULTS_KEY`].
 pub const DISTRIBUTION_LAYER_ID: &str = "distribution";
 
-/// JSON key of the distribution-defaults object inside `appearance`.
+/// JSON key of the distribution-defaults object inside the device's
+/// appearance section ([`settings_store::appearance::DEVICE_SECTION`]).
 pub const DISTRIBUTION_DEFAULTS_KEY: &str = "distribution_defaults";
 
 /// Pin id for the palette (hue, chroma, ladder, ink, status).
@@ -347,7 +348,10 @@ impl ThemeLayerStack {
     ) -> Self {
         let document = serde_json::from_str::<serde_json::Value>(text).ok();
         let appearance = document.as_ref().and_then(|value| value.get("appearance"));
-        let distribution_defaults = appearance.and_then(|section| {
+        let device = document
+            .as_ref()
+            .and_then(|value| value.get(settings_store::appearance::DEVICE_SECTION));
+        let distribution_defaults = device.and_then(|section| {
             section
                 .get(DISTRIBUTION_DEFAULTS_KEY)
                 .or_else(|| section.get(DISTRIBUTION_LAYER_ID))
@@ -712,7 +716,7 @@ mod tests {
         assert!(palette.document.palette.dark);
 
         let from_json = Theme::resolved_from_settings(
-            r#"{"appearance":{"mode":"dark","distribution":{"schema_version":2,"theme":"light","policy":{"pins":["palette"]}}}}"#,
+            r#"{"appearance":{"mode":"dark"},"appearance_device":{"distribution":{"schema_version":2,"theme":"light","policy":{"pins":["palette"]}}}}"#,
         );
         assert_eq!(from_json.name, Theme::light().name);
     }
@@ -1054,8 +1058,9 @@ mod tests {
 
     #[test]
     fn configured_startup_reads_distribution_defaults() {
-        let settings =
-            settings_store::parse(r#"{"appearance":{"distribution_defaults":{"theme":"light"}}}"#);
+        let settings = settings_store::parse(
+            r#"{"appearance_device":{"distribution_defaults":{"theme":"light"}}}"#,
+        );
         assert_eq!(Theme::configured_from(&settings).name, Theme::light().name);
     }
 }

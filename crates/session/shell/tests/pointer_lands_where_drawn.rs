@@ -23,8 +23,11 @@
 
 use shell::compositor::state::State;
 use vello::kurbo::{Point, Rect};
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_pointer, wl_seat, wl_surface};
-use wayland_client::{Connection, Dispatch, QueueHandle, WEnum, delegate_noop};
+use wayland_client::protocol::{
+    wl_buffer, wl_compositor, wl_pointer, wl_region, wl_seat, wl_subcompositor, wl_subsurface,
+    wl_surface,
+};
+use wayland_client::{Connection, Dispatch, Proxy as _, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
@@ -49,6 +52,8 @@ const TARGET_PIXEL: [u8; 4] = [0, 0, 255, 255];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Wire {
+    /// The pointer entered the surface with this protocol id.
+    Enter(u32),
     At(f64, f64),
     Press,
 }
@@ -59,6 +64,9 @@ struct Client {
     /// The last size the compositor configured the window to, logical.
     configured: Option<(i32, i32)>,
     wire: Vec<Wire>,
+    /// The protocol id of the surface the pointer is on, as the client was
+    /// told by its last enter and leave.
+    entered: Option<u32>,
 }
 
 wayland::test_client!(Client: registry, ping, configure, surface, shm, buffer, seat);
@@ -87,6 +95,14 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        match &event {
+            wl_pointer::Event::Enter { surface, .. } => {
+                state.entered = Some(surface.id().protocol_id());
+                state.wire.push(Wire::Enter(surface.id().protocol_id()));
+            }
+            wl_pointer::Event::Leave { .. } => state.entered = None,
+            _ => {}
+        }
         match event {
             wl_pointer::Event::Enter {
                 surface_x,
@@ -107,6 +123,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for Client {
     }
 }
 
+delegate_noop!(Client: ignore wl_region::WlRegion);
+delegate_noop!(Client: ignore wl_subcompositor::WlSubcompositor);
+delegate_noop!(Client: ignore wl_subsurface::WlSubsurface);
 delegate_noop!(Client: ignore wp_viewporter::WpViewporter);
 delegate_noop!(Client: ignore wp_viewport::WpViewport);
 
@@ -181,8 +200,8 @@ type Harness = wayland::Framed<Client>;
 /// A window whose frame and shadow the client draws, mapped and on screen.
 struct Window {
     id: u64,
+    surface: wl_surface::WlSurface,
     // Held so the client's objects outlive the test's clicks.
-    _surface: wl_surface::WlSurface,
     _toplevel: xdg_toplevel::XdgToplevel,
     _pointer: wl_pointer::WlPointer,
     _viewport: Option<wp_viewport::WpViewport>,
@@ -278,7 +297,7 @@ impl Harness {
         );
         Window {
             id,
-            _surface: surface,
+            surface,
             _toplevel: toplevel,
             _pointer: pointer,
             _viewport: viewport,
@@ -366,7 +385,7 @@ impl Harness {
             .rev()
             .find_map(|event| match event {
                 Wire::At(x, y) => Some((*x, *y)),
-                Wire::Press => None,
+                Wire::Enter(_) | Wire::Press => None,
             })
             .unwrap_or_else(|| panic!("the window was told where the pointer is: {wire:?}"))
     }
@@ -425,4 +444,183 @@ fn a_click_reaches_the_point_drawn_under_it_at_double_scale_through_a_viewport()
 #[test]
 fn a_click_reaches_the_point_drawn_under_it_at_double_scale_with_a_buffer_scale() {
     a_click_reaches_the_point_drawn_under_it(2.0, Density::BufferScale(2));
+}
+
+/// The page a browser draws into a subsurface over its window.
+struct Page {
+    id: u64,
+    protocol_id: u32,
+    _surface: wl_surface::WlSurface,
+    _subsurface: wl_subsurface::WlSubsurface,
+    _buffer: wl_buffer::WlBuffer,
+}
+
+impl Harness {
+    /// Cover `window`'s whole window geometry with a subsurface the way
+    /// Firefox (and so `LibreWolf`) draws everything it shows: the toplevel is
+    /// GTK's, the page, tab strip and toolbar are drawn into a subsurface.
+    /// `passes_input` gives that subsurface an empty input region, as
+    /// Firefox does so that GTK, which only handles input on its own
+    /// toplevel, receives every press.
+    fn cover_with_page(&mut self, window: &Window, passes_input: bool) -> Page {
+        let qh = self.queue.handle();
+        let compositor = self.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+        let subcompositor = self.bind::<wl_subcompositor::WlSubcompositor>("wl_subcompositor", 1);
+        let (width, height) = match self.client.configured {
+            Some((w, h)) if w > 0 && h > 0 => (w, h),
+            _ => (640, 400),
+        };
+        let surface = compositor.create_surface(&qh, ());
+        let subsurface = subcompositor.get_subsurface(&surface, &window.surface, &qh, ());
+        subsurface.set_position(SHADOW_LEFT, SHADOW_TOP);
+        let rgba = PAGE_PIXEL.repeat(usize::try_from(width * height).unwrap());
+        let buffer = self.shm_buffer(width, height, &rgba);
+        if passes_input {
+            let region = compositor.create_region(&qh, ());
+            surface.set_input_region(Some(&region));
+            region.destroy();
+        }
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, width, height);
+        surface.commit();
+        // A synchronized subsurface's state applies with its parent's commit.
+        window.surface.commit();
+        let protocol_id = surface.id().protocol_id();
+        let id = (window.id & !0xFFFF_FFFF) | u64::from(protocol_id);
+        let display = self.wl.display.handle();
+        let deadline = std::time::Instant::now()
+            .checked_add(tilo_test_env::hang_bound())
+            .expect("the hang bound fits in an Instant");
+        let store = shell::shell::foreign::store();
+        while !(store.is_mapped(id) && store.frame_size(id).is_some()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the page subsurface was never captured"
+            );
+            self.pump();
+            self.wl.state.pump_foreign_capture_barriers(&display);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let _ = self.fb.paint_settled();
+        self.pump();
+        Page {
+            id,
+            protocol_id,
+            _surface: surface,
+            _subsurface: subsurface,
+            _buffer: buffer,
+        }
+    }
+
+    /// The protocol id of the surface the pointer is on.
+    fn entered(&self) -> Option<u32> {
+        self.client.entered
+    }
+}
+
+/// A browser drawing everything into a subsurface that passes input to its
+/// toplevel takes a press anywhere in its window — the tab strip in its top
+/// rows and the page below — on the toplevel, at the surface-local point
+/// drawn under the pointer. Pressing the window bar Tilo draws above it
+/// stays with Tilo.
+#[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the harness (a frame builder) is what the test drives, up to its last assertion"
+)]
+fn a_press_anywhere_in_a_browser_reaches_the_surface_that_takes_input() {
+    let mut h = Harness::at_display_scale(1.0);
+    let window = h.open_framed_browser(Density::BufferScale(1));
+    let page = h.cover_with_page(&window, true);
+    let tile = h.tile(window.id);
+    let root_protocol_id = window.surface.id().protocol_id();
+    // Its top rows (where the tab strip and URL bar are), its middle and
+    // near its bottom-right corner, window-local.
+    for (wx, wy) in [(40.0, 3.0), (300.0, 20.0), (200.0, 150.0), (500.0, 300.0)] {
+        let at = Point::new(tile.x0 + wx, tile.y0 + wy);
+        let (x, y) = h.click(at);
+        assert_eq!(
+            h.entered(),
+            Some(root_protocol_id),
+            "a press at window-local ({wx}, {wy}) went to the toplevel GTK \
+             handles input on, not the page subsurface with an empty input \
+             region: {:?}",
+            h.client.wire
+        );
+        // Where the painter drew that point of the toplevel; the existing
+        // tests above pin this inverse against the drawn pixels.
+        let want = shell::shell::foreign::store().surface_point(window.id, tile, (at.x, at.y));
+        assert!(
+            (x - want.0).abs() <= 1.0 && (y - want.1).abs() <= 1.0,
+            "a press at window-local ({wx}, {wy}) reached the toplevel at \
+             ({x}, {y}), want {want:?}"
+        );
+        h.input(&WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+    }
+
+    // Tilo's own window bar sits above the tile: its presses are Tilo's.
+    h.client.wire.clear();
+    let bar = Point::new(tile.x0 + 40.0, tile.y0 - 4.0);
+    h.input(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(bar.x, bar.y),
+    });
+    let modifiers = Modifiers::default();
+    let to_client = shell::compositor::client_input::route_input(
+        &mut h.wl.state,
+        &mut h.fb,
+        &WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        &modifiers,
+    );
+    h.wl.pump();
+    assert!(
+        !to_client && !h.client.wire.contains(&Wire::Press),
+        "a press on Tilo's window bar above the tile stayed with Tilo: {:?}",
+        h.client.wire
+    );
+    let store = shell::shell::foreign::store();
+    store.forget(page.id);
+    store.forget(window.id);
+}
+
+/// A subsurface that keeps the default input region (the whole surface)
+/// still takes the presses on it, at its own surface-local point.
+#[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the harness (a frame builder) is what the test drives, up to its last assertion"
+)]
+fn a_subsurface_with_the_default_input_region_takes_its_presses() {
+    let mut h = Harness::at_display_scale(1.0);
+    let window = h.open_framed_browser(Density::BufferScale(1));
+    let page = h.cover_with_page(&window, false);
+    let tile = h.tile(window.id);
+    let at = Point::new(tile.x0 + 120.0, tile.y0 + 4.0);
+    let on_root = shell::shell::foreign::store().surface_point(window.id, tile, (at.x, at.y));
+    let want = (
+        on_root.0 - f64::from(SHADOW_LEFT),
+        on_root.1 - f64::from(SHADOW_TOP),
+    );
+    let (x, y) = h.click(at);
+    assert_eq!(
+        h.entered(),
+        Some(page.protocol_id),
+        "the press went to the subsurface drawn there: {:?}",
+        h.client.wire
+    );
+    assert!(
+        (x - want.0).abs() <= 1.0 && (y - want.1).abs() <= 1.0 && want.1 >= 0.0,
+        "the subsurface got the press at ({x}, {y}), want {want:?}"
+    );
+    let store = shell::shell::foreign::store();
+    store.forget(page.id);
+    store.forget(window.id);
 }

@@ -104,7 +104,6 @@ glyph-join 2 crates/session/shell/src/shell/overlay_host/paint_top.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/qs_device_rows.rs
 glyph-join 1 crates/session/shell/src/shell/overlay_host/shortcuts.rs
 glyph-join 1 crates/session/shell/src/shell/portal_dialog.rs
-glyph-join 1 crates/session/shell/src/shell/render/strip_layers.rs
 glyph-join 4 crates/session/shell/src/shell/room_activity.rs
 glyph-join 1 crates/session/shell/src/shell/search/providers/actions.rs
 glyph-join 1 crates/session/shell/src/shell/speaker_settings.rs

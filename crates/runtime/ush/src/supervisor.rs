@@ -328,6 +328,7 @@ impl Session {
             resolver: None,
             editor: None,
             terminal: None,
+            control: None,
         })
     }
 
@@ -361,6 +362,9 @@ impl Session {
     /// Returns an error if the store cannot be prepared, or if building or
     /// running a guest fails (see `Session::run_once`).
     pub fn run(&mut self) -> anyhow::Result<i32> {
+        if self.opts.shell.is_ush() && self.opts.command.is_empty() {
+            return self.run_tilo_side(None);
+        }
         self.store.ensure()?;
         let code;
         loop {
@@ -389,7 +393,11 @@ impl Session {
 
     /// What the session's broker holds: the environment, its audit log, and
     /// who and where the session is.
-    fn broker_state(&self, resolved: &Resolved, egress: Arc<tilo_egress::Egress>) -> BrokerState {
+    pub(crate) fn broker_state(
+        &self,
+        resolved: &Resolved,
+        egress: Option<Arc<tilo_egress::Egress>>,
+    ) -> BrokerState {
         BrokerState {
             session_id: self.session_id.clone(),
             environment: EnvironmentHandle {
@@ -404,7 +412,7 @@ impl Session {
             images: resolved.images.clone(),
             builder: Arc::clone(&self.builder),
             landlock: "installed by the guest at startup".into(),
-            egress: Some(egress),
+            egress,
             person: crate::host::signed_in_person(),
             device: crate::host::this_device(),
         }
@@ -419,7 +427,7 @@ impl Session {
         let broker_socket = session_dir.join("broker.sock");
         let broker = Broker::start(
             broker_socket.clone(),
-            self.broker_state(resolved, Arc::clone(&egress)),
+            self.broker_state(resolved, Some(Arc::clone(&egress))),
         )?;
 
         let mut plan = self.plan(resolved, broker_socket, seccomp_blob)?;
@@ -527,7 +535,7 @@ fn describe_policy(policy: &tilo_egress::EgressPolicy) -> String {
     clippy::literal_string_with_formatting_args,
     reason = "the `${VAR}` below is shell syntax in the .bashrc content, not a Rust format placeholder"
 )]
-fn seed_guest_home(home: &Path) -> std::io::Result<()> {
+pub(crate) fn seed_guest_home(home: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(home)?;
     let bashrc = home.join(".bashrc");
     if bashrc.exists() {

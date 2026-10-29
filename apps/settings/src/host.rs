@@ -69,24 +69,31 @@ fn held<T: Section>(
 fn sections(cx: &ui::framework::SurfaceCx<Settings>) -> HashMap<TypeId, Box<dyn Any>> {
     let mut sections = HashMap::new();
     held::<crate::prefs::AppearancePrefs>(cx, &mut sections);
+    held::<crate::prefs::AppearanceDevicePrefs>(cx, &mut sections);
     held::<crate::accessibility_settings::AccessibilitySettings>(cx, &mut sections);
+    held::<crate::accessibility_settings::AccessibilityDevicePrefs>(cx, &mut sections);
     held::<crate::prefs::InputPrefs>(cx, &mut sections);
+    held::<crate::prefs::InputDevicePrefs>(cx, &mut sections);
     held::<ui::text_assistance::TextAssistancePrefs>(cx, &mut sections);
     held::<crate::prefs::PowerPrefs>(cx, &mut sections);
     held::<crate::prefs::DeskWidgetsPrefs>(cx, &mut sections);
     held::<crate::prefs::UpdatePrefs>(cx, &mut sections);
     held::<crate::prefs::NotificationPrefs>(cx, &mut sections);
     held::<crate::prefs::AudioPrefs>(cx, &mut sections);
+    held::<crate::prefs::AudioDevicePrefs>(cx, &mut sections);
     held::<crate::prefs::DisplayPrefs>(cx, &mut sections);
+    held::<crate::prefs::NightLightPrefs>(cx, &mut sections);
     held::<tilo_locale::Locale>(cx, &mut sections);
     held::<crate::continuity::ContinuityPrivacy>(cx, &mut sections);
     held::<crate::shortcut_settings::ShortcutPrefs>(cx, &mut sections);
     held::<crate::prefs::DesktopControls>(cx, &mut sections);
+    held::<crate::prefs::DesktopControlsDevice>(cx, &mut sections);
     held::<crate::prefs::DefaultApps>(cx, &mut sections);
     held::<crate::prefs::ClockPrefs>(cx, &mut sections);
     held::<crate::prefs::SharedDisplayPrefs>(cx, &mut sections);
     held::<crate::prefs::AutomaticDisplayPrefs>(cx, &mut sections);
     held::<crate::prefs::AgentProviders>(cx, &mut sections);
+    held::<crate::prefs::HostedAgentProviders>(cx, &mut sections);
     held::<crate::prefs::OskSourceSettings>(cx, &mut sections);
     held::<crate::prefs::DeviceVpnPrefs>(cx, &mut sections);
     sections
@@ -763,6 +770,7 @@ pub mod testing {
     pub const NOTIFICATIONS: &str = "settings.notifications";
     pub const POWER: &str = "settings.power";
     pub const INPUT: &str = "settings.input";
+    pub const INPUT_DEVICE: &str = "settings.input-device";
     pub const TEXT_ASSISTANCE: &str = "settings.text-assistance";
     pub const CONTINUITY: &str = "settings.continuity";
 

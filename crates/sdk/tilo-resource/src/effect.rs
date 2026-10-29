@@ -80,7 +80,10 @@
 //! two by type), `destructive` (asks for confirmation),
 //! `risk = "path"` (a `fn(&Self) -> RiskLevel` classifying one invocation:
 //! one it finds destructive asks for confirmation, so formatting the system
-//! disk can, and another disk need not), `privileged` (hands out or shows a
+//! disk can, and another disk need not), `phrase = "path"` (a
+//! `fn(&Self) -> String` naming what one bound invocation of a `destructive`
+//! `row` effect loses, such as the drive it erases: its caller types it to
+//! confirm, [`Effect::bound`] asks for it), `privileged` (hands out or shows a
 //! credential, such as copying a one-time
 //! code: asks for confirmation too), `sensitive` (discloses a copy of private
 //! data, such as exporting an address book: asks for confirmation too), `idempotent` (safe to repeat after an
@@ -154,6 +157,12 @@ pub trait Effect: Sized + 'static {
     /// This effect's id among the declarations.
     fn id(&self) -> &'static str;
 
+    /// What its caller types to confirm this invocation, when its effect
+    /// declares `phrase`: the name of what it erases.
+    fn confirmation_phrase(&self) -> Option<String> {
+        None
+    }
+
     /// The kind the vocabulary's effects are published under, which a typed
     /// reference to one names: the operation they travel as, the vocabulary's
     /// name, and the app that offers it.
@@ -203,11 +212,12 @@ pub trait Effect: Sized + 'static {
     fn bound(&self) -> ActionSpec {
         let id = self.id();
         let arguments = self.arguments();
-        kept_type((std::any::TypeId::of::<Self>(), id, None), || {
+        let spec = kept_type((std::any::TypeId::of::<Self>(), id, None), || {
             bound_type(Self::OPERATION, id, Self::declaration(id))
         })
         .bind(Target::new(arguments.clone()))
-        .with_bound(arguments.into_iter().collect())
+        .with_bound(arguments.into_iter().collect());
+        asking_phrase(spec, self.confirmation_phrase())
     }
 
     /// This effect bound to the item it acts on, as [`bound`](Self::bound),
@@ -232,7 +242,10 @@ pub trait Effect: Sized + 'static {
     fn bound_asking_params(&self, params: Vec<ActionParam>) -> ActionSpec {
         let id = self.id();
         match Self::declaration(id) {
-            Some(decl) => asking_spec(Self::OPERATION, &decl, params, self.arguments()),
+            Some(decl) => asking_phrase(
+                asking_spec(Self::OPERATION, &decl, params, self.arguments()),
+                self.confirmation_phrase(),
+            ),
             None => self.bound(),
         }
     }
@@ -266,6 +279,16 @@ pub trait Effect: Sized + 'static {
         let Payload { effect, args } = decode_payload(payload)?;
         Self::decode(&effect, &args)
     }
+}
+
+/// `spec`, asking its caller to type `phrase` when there is one. Not
+/// generic, so every vocabulary shares it.
+#[inline(never)]
+fn asking_phrase(mut spec: ActionSpec, phrase: Option<String>) -> ActionSpec {
+    if let Some(phrase) = phrase {
+        spec.type_mut().contract.confirmation = ConfirmationPolicy::Phrase { phrase };
+    }
+    spec
 }
 
 /// How the effect's specs carry an invocation: its id and its arguments.

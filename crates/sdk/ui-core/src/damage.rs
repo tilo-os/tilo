@@ -25,7 +25,7 @@ fn contains(outer: FineDamageRect, inner: FineDamageRect) -> bool {
         && bottom(outer) >= bottom(inner)
 }
 
-fn damage_union(a: FineDamageRect, b: FineDamageRect) -> FineDamageRect {
+pub(crate) fn damage_union(a: FineDamageRect, b: FineDamageRect) -> FineDamageRect {
     let x = a.x.min(b.x);
     let y = a.y.min(b.y);
     FineDamageRect {

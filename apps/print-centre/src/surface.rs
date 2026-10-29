@@ -2334,12 +2334,10 @@ impl PrintCentreWindow {
         let Some(live) = &self.live else {
             return;
         };
-        let held = (live.revision(), live.loads());
-        if self.presented == Some(held) {
+        let Some(shown) = live.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        let defaults = live.with(Clone::clone);
+        };
+        let defaults = (*shown).clone();
         self.centre.borrow_mut().present_defaults(&defaults);
     }
 

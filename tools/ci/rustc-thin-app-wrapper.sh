@@ -49,6 +49,13 @@ case ":${TILO_THIN_BIN_CRATES:-}:" in
         # lld links x86_64 Linux by default; elsewhere the wrapper asks for
         # lld or mold, whichever is installed (the OS image's builder has only
         # mold), and links as before with neither.
+        # A developer session's build (TILO_THIN_OPTIMIZE=speed, the thin-dev
+        # profile) is never published: the executable keeps the profile's
+        # optimisation and parallel codegen, and links without the size passes.
+        if [ "${TILO_THIN_OPTIMIZE:-size}" = speed ]; then
+            exec "${compiler_command[@]}" "$@" -C prefer-dynamic \
+                -C link-arg=-Wl,-z,pack-relative-relocs ${link_map[@]+"${link_map[@]}"}
+        fi
         folding=()
         target=""
         previous=""

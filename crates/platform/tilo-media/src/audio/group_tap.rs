@@ -1,4 +1,5 @@
-//! Where a speaker group's sound comes from on the playing device.
+//! Where a speaker group's sound comes from on the playing device, and the
+//! raw playback a speaker identifies itself with.
 //!
 //! Playing to a group must take the sound off this device's own speakers:
 //! otherwise the local output plays it early and unsynchronized while the
@@ -14,9 +15,29 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-const SINK_NODE_NAME: &str = media::audio::SPEAKER_GROUP_SINK;
+const SINK_NODE_NAME: &str = super::SPEAKER_GROUP_SINK;
 const SINK_WAIT: Duration = Duration::from_millis(1500);
 const SINK_POLL: Duration = Duration::from_millis(50);
+
+/// Why a tap could not be had.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TapError {
+    /// The sink could not be made or the graph could not be changed; the
+    /// message says how.
+    Graph(String),
+    /// The chosen application stream has stopped.
+    AppStopped,
+    /// Another group session already owns this device's audio.
+    OtherSession,
+    /// The tap registry is unusable.
+    Unavailable,
+}
+
+impl From<String> for TapError {
+    fn from(message: String) -> Self {
+        Self::Graph(message)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TapSelection {
@@ -43,7 +64,7 @@ impl GroupTap {
         self.serial
     }
 
-    fn open(selection: TapSelection) -> Result<Self, String> {
+    fn open(selection: TapSelection) -> Result<Self, TapError> {
         let mut child = Command::new("pw-cli")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
@@ -65,20 +86,22 @@ impl GroupTap {
         {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("create the speaker group sink: {error}"));
+            return Err(format!("create the speaker group sink: {error}").into());
         }
         let deadline = Instant::now()
             .checked_add(SINK_WAIT)
             .unwrap_or_else(Instant::now);
         let sink = loop {
-            let graph = media::audio::enumerate();
+            let graph = super::enumerate();
             if let Some(sink) = graph.sinks.iter().find(|sink| sink.name == SINK_NODE_NAME) {
                 break (sink.id, sink.serial, graph);
             }
             if Instant::now() >= deadline {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("the speaker group sink did not appear".into());
+                return Err(TapError::Graph(
+                    "the speaker group sink did not appear".into(),
+                ));
             }
             std::thread::sleep(SINK_POLL);
         };
@@ -92,7 +115,7 @@ impl GroupTap {
             moved_streams: Vec::new(),
             previous_default: None,
         };
-        let control = media::audio::real_control();
+        let control = super::real_control();
         match selection {
             TapSelection::System => {
                 tap.previous_default = graph
@@ -115,7 +138,7 @@ impl GroupTap {
                     .playback_streams
                     .iter()
                     .find(|stream| stream.serial == stream_serial)
-                    .ok_or_else(|| crate::shell::i18n::t("speaker-error-app-stopped"))?;
+                    .ok_or(TapError::AppStopped)?;
                 control.route_stream(stream.id, serial)?;
                 tap.moved_streams.push(stream.id);
             }
@@ -126,12 +149,12 @@ impl GroupTap {
 
 impl Drop for GroupTap {
     fn drop(&mut self) {
-        let control = media::audio::real_control();
+        let control = super::real_control();
         // The output from before comes back only while the group's sink is
         // still the one in use: an output the person chose meanwhile (in
         // Sound, on leaving the speaker set) stays theirs.
         if let Some(previous) = self.previous_default
-            && media::audio::enumerate()
+            && super::enumerate()
                 .default_sink()
                 .is_none_or(|sink| sink.serial == self.serial)
         {
@@ -163,20 +186,56 @@ fn taps() -> &'static Mutex<Vec<Weak<GroupTap>>> {
 ///
 /// A message when the sink cannot be created, the selection's stream is gone,
 /// or another group session already owns this device's audio.
-pub fn acquire(selection: TapSelection) -> Result<Arc<GroupTap>, String> {
-    let mut taps = taps()
-        .lock()
-        .map_err(|_| crate::shell::i18n::t("speaker-error-audio-unavailable"))?;
+pub fn acquire(selection: TapSelection) -> Result<Arc<GroupTap>, TapError> {
+    let mut taps = taps().lock().map_err(|_| TapError::Unavailable)?;
     taps.retain(|tap| tap.strong_count() > 0);
     if let Some(live) = taps.iter().find_map(Weak::upgrade) {
         return if live.selection == selection {
             Ok(live)
         } else {
-            Err(crate::shell::i18n::t("speaker-error-other-session"))
+            Err(TapError::OtherSession)
         };
     }
     let tap = Arc::new(GroupTap::open(selection)?);
     taps.push(Arc::downgrade(&tap));
     drop(taps);
     Ok(tap)
+}
+
+/// Play mono 48 kHz signed 16-bit `samples` on the sink named `sink_name`,
+/// returning once they have played. Nothing is reported: a speaker that
+/// cannot identify itself is simply not heard.
+pub fn play_mono(sink_name: &str, samples: &[i16]) {
+    let child = Command::new("pw-play")
+        .args([
+            "--target",
+            sink_name,
+            "--media-type",
+            "Audio",
+            "--media-category",
+            "Playback",
+            "--rate",
+            "48000",
+            "--channels",
+            "1",
+            "--format",
+            "s16",
+            "--raw",
+            "-",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let bytes = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect::<Vec<_>>();
+        let _ = stdin.write_all(&bytes);
+    }
+    let _ = child.wait();
 }

@@ -424,10 +424,15 @@ pub(crate) fn suggestion(candidate: &MentionCandidate) -> Suggestion {
     suggestion_with_value(candidate, candidate.id.clone())
 }
 
-/// The row a candidate shows as when accepting it writes prose: the value
-/// is the mention the text resolves (`@name`), not the participant id.
-pub(crate) fn mention_suggestion(candidate: &MentionCandidate) -> Suggestion {
-    suggestion_with_value(candidate, candidate.label())
+/// A participant as a completion offers them: their avatar and name; a pick
+/// writes `@name` and, in rich text, a mention of their participant id.
+pub(crate) fn candidate(candidate: &MentionCandidate) -> crate::widget::completion::Candidate {
+    let row = suggestion_with_value(candidate, candidate.label());
+    let mut out =
+        crate::widget::completion::Candidate::reference(&candidate.name, row.value, &candidate.id);
+    out.person = row.person;
+    out.label = row.detail;
+    out
 }
 
 fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggestion {

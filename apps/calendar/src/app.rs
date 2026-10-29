@@ -23,15 +23,6 @@ use automerge::transaction::Transactable;
 use std::collections::{HashMap, HashSet};
 use ui::widget::TaffyTreeExt;
 
-/// How many attendees the calendar publishes as rows of their own.
-const ATTENDEE_ROWS: usize = 256;
-
-/// The files the calendar imports and exports.
-fn ics_filter() -> ui::portal::FileFilter {
-    ui::portal::FileFilter::new("iCalendar files")
-        .mimetype("text/calendar")
-        .glob("*.ics")
-}
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -61,7 +52,6 @@ use crate::agenda::{AgendaAction, AgendaSource, AgendaView};
 use crate::caldav::{self, SyncOutcome};
 use crate::date;
 use crate::event_popovers::{EventPopovers, PopoverEdit, PopoverKind as FormPopover};
-use crate::ics;
 use crate::input_context::InputContext;
 use crate::model::{Calendar, Event, Id, ListSel, Palette, Priority, Task, View};
 use crate::tasks::{TasksAction, TasksSource, TasksView};
@@ -82,6 +72,8 @@ mod sheets;
 mod shell;
 pub(crate) use shell::sidebar;
 mod status;
+mod store;
+pub(crate) use store::{Ask, window};
 
 use editor::{Choices, FormRects};
 
@@ -328,12 +320,6 @@ pub struct CalendarApp {
         ui::framework::PersonRecord<accounts::person::PersonAccounts>,
         Option<u64>,
     )>,
-    /// The person's address book, read in a live window to offer its
-    /// people as attendees.
-    contact_directory:
-        Option<ui::framework::PersonRecord<tilo_contact_directory::ContactDirectory>>,
-    /// The event the Contacts picker was last opened for.
-    contact_event: Option<Id>,
     /// Set by the Guests field's Contacts button, taken on the next frame.
     contacts_requested: std::rc::Rc<std::cell::Cell<bool>>,
 
@@ -404,18 +390,15 @@ pub struct CalendarApp {
     /// events that uploaded and the ones the server confirmed removed, so both
     /// outboxes can be cleared.
     sync_rx: Option<std::sync::mpsc::Receiver<SyncWorkerResult>>,
-    /// True while a background sync is running, which keeps the event loop
-    /// ticking (`needs_animation_frame`) so the worker's result lands promptly
-    /// without waiting for the next unrelated input.
-    syncing: bool,
-    /// A sync effect asked for a pull, started on the next sync with the
-    /// document.
-    sync_requested: bool,
-    /// The caller of the sync effect, answered when its pull lands.
-    sync_reply: Option<ui::framework::EffectReply>,
-    /// What a search hit or an agent's `open` asked to show, shown on the
-    /// next sync.
-    opens: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    /// What the window shares with the view's effect handler and what it
+    /// publishes: the sync running, the Contacts picker, and what effects
+    /// asked the window to show.
+    store: store::Shared,
+    /// The calendar as the document holds it, shown as it changes; `None`
+    /// for a window outside the framework.
+    live: Option<ui::framework::Live<Calendar>>,
+    /// The `(revision, loads)` of the calendar last shown.
+    presented: Option<(u64, u64)>,
     /// Where reminders are scheduled, in a live window.
     notifier: Option<std::sync::Arc<dyn ui::notify::Notifier>>,
     /// What clicked reminders asked to open, taken on the next sync.
@@ -477,6 +460,7 @@ impl CalendarApp {
         let today = ui::clock::today();
         let accounts = AccountStore::default();
         let contacts_requested = std::rc::Rc::default();
+        let store = store::Store::new(today, accounts.clone());
         Self {
             model: Calendar::default(),
             today,
@@ -494,7 +478,7 @@ impl CalendarApp {
             detail_open: false,
             accounts: accounts.clone(),
             config_root: None,
-            device_accounts: std::rc::Rc::new(std::cell::RefCell::new(accounts.clone())),
+            device_accounts: store.device_accounts(),
             configured: accounts,
             display: crate::display::CalendarDisplay::default(),
             display_setting: None,
@@ -537,8 +521,6 @@ impl CalendarApp {
             layout_theme: Theme::dark(),
             sample_accounts: false,
             person_accounts: None,
-            contact_directory: None,
-            contact_event: None,
             contacts_requested,
             rect: Rect::ZERO,
             content_rect: Rect::ZERO,
@@ -563,10 +545,9 @@ impl CalendarApp {
             agenda: AgendaView::new(),
             tasks: TasksView::new(),
             sync_rx: None,
-            syncing: false,
-            sync_requested: false,
-            sync_reply: None,
-            opens: std::rc::Rc::default(),
+            store: std::rc::Rc::new(std::cell::RefCell::new(store)),
+            live: None,
+            presented: None,
             notifier: None,
             activations: std::sync::Arc::default(),
             reminders: None,
@@ -723,8 +704,9 @@ impl CalendarApp {
 
     /// Deterministic transport-state presentation for visual regression shots.
     pub fn shots_set_sync_state(&mut self, state: &str) {
-        self.syncing = state == "syncing";
-        if self.syncing {
+        let syncing = state == "syncing";
+        self.state().syncing = syncing;
+        if syncing {
             self.status
                 .show_progress(crate::resource::t("calendar-sync-running"));
             self.dirty = true;
@@ -770,7 +752,7 @@ impl CalendarApp {
         reason = "sync orchestration keeps worker admission and failure contracts together"
     )]
     fn start_sync(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        if self.syncing {
+        if self.syncing() {
             return;
         }
         let inputs: Vec<_> = self
@@ -926,7 +908,7 @@ impl CalendarApp {
             let _ = tx.send((result, outcome));
         }));
         self.sync_rx = Some(rx);
-        self.syncing = true;
+        self.state().syncing = true;
         self.status
             .show_progress(crate::resource::t("calendar-sync-running-short"));
         self.dirty = true;
@@ -942,14 +924,15 @@ impl CalendarApp {
         match rx.try_recv() {
             Ok((result, outcome)) => {
                 self.sync_rx = None;
-                self.syncing = false;
+                self.state().syncing = false;
                 let failure = match &outcome {
                     SyncOutcome::Failed(reason) => Some(reason.clone()),
                     SyncOutcome::Offline => Some("calendar service is offline".to_string()),
                     SyncOutcome::Synced { .. } => None,
                 };
                 self.apply_sync_result(result, &outcome, doc);
-                if let Some(reply) = self.sync_reply.take() {
+                let reply = self.state().sync_reply.take();
+                if let Some(reply) = reply {
                     reply.finish(
                         failure.map_or_else(|| Ok(tilo_actions::ActionOutput::default()), Err),
                     );
@@ -959,13 +942,14 @@ impl CalendarApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 // Worker panicked or dropped the sender without a reply.
                 self.sync_rx = None;
-                self.syncing = false;
+                self.state().syncing = false;
                 self.show_status_with(
                     crate::resource::t("calendar-sync-failed"),
                     ToastKind::Error,
                     &[status::StatusAction::SyncAgain],
                 );
-                if let Some(reply) = self.sync_reply.take() {
+                let reply = self.state().sync_reply.take();
+                if let Some(reply) = reply {
                     reply.finish(Err(
                         "calendar synchronization stopped without a result".into()
                     ));
@@ -1467,47 +1451,6 @@ impl CalendarApp {
     #[cfg(test)]
     fn last_dispatched(&self) -> Option<ui::tilo_resource::Invoke<Calendar>> {
         self.last_dispatched.borrow().clone()
-    }
-
-    /// The calendar collections as live rows of the calendar.
-    pub(crate) fn collection_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.calendar_collections()
-            .iter()
-            .map(crate::actions::calendar_collection_row)
-            .collect()
-    }
-
-    /// Each event's attendees as rows offering to prepare their invitation
-    /// in Mail, as many as [`ATTENDEE_ROWS`].
-    pub(crate) fn attendee_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.model
-            .events
-            .iter()
-            .flat_map(|event| {
-                event.attendees.iter().map(move |attendee| {
-                    ui::framework::LiveRow::new(
-                        crate::actions::attendee_resource_id(event.id, attendee.id),
-                        "calendar.attendee",
-                        attendee.email.clone(),
-                    )
-                    .effect(&crate::resource::CalendarEffect::PrepareInMail {
-                        event_id: event.id.to_string(),
-                        attendee_id: attendee.id.to_string(),
-                    })
-                })
-            })
-            .take(ATTENDEE_ROWS)
-            .collect()
-    }
-
-    fn calendar_for_resource(
-        &self,
-        id: Option<&str>,
-    ) -> Option<crate::actions::CalendarCollectionResource> {
-        let id = id.unwrap_or("local");
-        self.calendar_collections()
-            .into_iter()
-            .find(|calendar| calendar.id == id)
     }
 
     /// Invoke one of the calendar's effects through the door, as the palette
@@ -2239,6 +2182,7 @@ impl CalendarApp {
         setting: ui::framework::Setting<crate::display::CalendarDisplay>,
     ) {
         self.display = setting.get();
+        self.state().display = Some(setting.clone());
         self.display_setting = Some(setting);
         self.show_accounts();
     }
@@ -2247,6 +2191,13 @@ impl CalendarApp {
     fn show_accounts(&mut self) {
         self.device_accounts.replace(self.configured.clone());
         self.accounts = self.display.applied_to(&self.configured);
+        let calendars = self.calendar_collections();
+        let has_accounts = !self.accounts.is_empty() || self.sample_accounts;
+        {
+            let mut state = self.state();
+            state.calendars = calendars;
+            state.has_accounts = has_accounts;
+        }
         self.dirty = true;
     }
 
@@ -2356,21 +2307,6 @@ impl CalendarApp {
         }
         self.change_display(|display| {
             display.visible.insert(id.to_owned(), visible);
-        })
-    }
-
-    /// Draw a calendar in palette slot `color`.
-    fn set_calendar_color(&mut self, id: &str, color: Palette) -> Result<(), String> {
-        if !self
-            .configured
-            .all_calendars()
-            .any(|(_, calendar)| calendar.id == id)
-        {
-            return Err("That calendar is no longer configured".into());
-        }
-        let slot = u8::try_from(color.index()).unwrap_or_default();
-        self.change_display(|display| {
-            display.colors.insert(id.to_owned(), slot);
         })
     }
 
@@ -2657,86 +2593,6 @@ impl CalendarApp {
 
     /// Every event and task as an iCalendar file, and the name to suggest
     /// for it.
-    fn ics_export(&mut self) -> Result<(String, String), String> {
-        self.dirty = true;
-        if self.model.events.is_empty() && self.model.tasks.is_empty() {
-            self.status.show(
-                crate::resource::t("calendar-export-empty"),
-                ToastKind::Warning,
-            );
-            return Err("There are no events or tasks to export".into());
-        }
-        Ok((
-            ics::export(&self.model),
-            ics::suggested_filename(self.anchor),
-        ))
-    }
-
-    /// Save every event and task to an iCalendar file the person chooses.
-    fn export_ics(
-        &mut self,
-        cx: &mut ui::framework::EffectCx<Calendar, Self>,
-    ) -> ui::framework::EffectAnswer {
-        let (ics, name) = self.ics_export()?;
-        let request =
-            ui::portal::PickRequest::save("Export calendar", "Export", &name).filter(ics_filter());
-        Ok(
-            cx.save_file(request, ics.into_bytes(), |app: &mut Self, saved, _| {
-                app.status.show(
-                    if saved {
-                        crate::resource::t_args(
-                            "calendar-exported",
-                            &[
-                                (
-                                    "events",
-                                    ui::i18n::ArgValue::from(
-                                        i64::try_from(app.model.events.len()).unwrap_or_default(),
-                                    ),
-                                ),
-                                (
-                                    "tasks",
-                                    ui::i18n::ArgValue::from(
-                                        i64::try_from(app.model.tasks.len()).unwrap_or_default(),
-                                    ),
-                                ),
-                            ],
-                        )
-                    } else {
-                        crate::resource::t("calendar-export-cancelled")
-                    },
-                    ToastKind::Info,
-                );
-                app.dirty = true;
-                Ok(ui::framework::Effected::done())
-            }),
-        )
-    }
-
-    /// Import the events and tasks of an iCalendar file the person chooses
-    /// through the real [`ics::parse`] path, as one action. Items already in
-    /// the calendar are not added twice.
-    fn import_ics(cx: &mut ui::framework::EffectCx<Calendar, Self>) -> ui::framework::Effected {
-        let request = ui::portal::PickRequest::open("Import a calendar", "Import")
-            .filter(ics_filter())
-            .all_files();
-        cx.choose_file(request, |app: &mut Self, chosen, cx| {
-            let Some(file) = chosen else {
-                return Ok(ui::framework::Effected::done());
-            };
-            let payload = String::from_utf8(file.bytes)
-                .map_err(|_| format!("{} is not an iCalendar file", file.name))?;
-            let (import, unknown_zones) = crate::resource::import_reporting(&payload)
-                .ok_or_else(|| format!("{} holds no events or tasks", file.name))?;
-            cx.submit(import);
-            app.status.show(
-                crate::resource::imported_status(&file.name, &unknown_zones),
-                ToastKind::Info,
-            );
-            app.dirty = true;
-            Ok(ui::framework::Effected::done())
-        })
-    }
-
     fn cycle_event<F: Fn(&mut Event)>(&mut self, doc: &mut ui::widget::Edits<'_>, f: F) {
         if let Some(Sel::Event(id)) = self.selection
             && let Some(e) = self.model.event_mut(id)
@@ -3215,7 +3071,7 @@ impl CalendarApp {
                     "Sync calendars".into()
                 },
                 Role::Button,
-                AccessState::new().focusable(true).disabled(self.syncing),
+                AccessState::new().focusable(true).disabled(self.syncing()),
             ),
             Action::Export => (
                 "calendar.export".into(),
@@ -4015,6 +3871,7 @@ impl Widget for CalendarApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
+        self.follow_document();
         self.publish_status();
         self.adopt_person_accounts();
         if !self.seeded {
@@ -4039,19 +3896,18 @@ impl Widget for CalendarApp {
             self.model_heads.clone_from(&heads);
         }
         self.roll_today();
-        let mut opens = std::mem::take(&mut *self.opens.borrow_mut());
-        opens.extend(std::mem::take(
+        let opens = std::mem::take(
             &mut *self
                 .activations
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
-        ));
+        );
+        self.state()
+            .asks
+            .extend(opens.into_iter().map(store::Ask::OpenItem));
         self.schedule_reminders();
-        for item in opens {
-            if let Err(error) = self.open_item(&item) {
-                tracing::debug!(%error, "calendar: an item to open is gone");
-            }
-        }
+        self.answer_asks();
+        self.state().anchor = self.anchor;
         self.ensure_bound(state);
         // Seed the form's title/location/time widgets from the current event
         // whenever the selection changes.
@@ -4072,11 +3928,18 @@ impl Widget for CalendarApp {
         self.apply_window_toolbar(edits);
         self.take_status_actions();
         self.take_shell_events(edits);
-        if std::mem::take(&mut self.sync_requested) {
+        let sync_requested = std::mem::take(&mut self.state().sync_requested);
+        if sync_requested {
             self.start_sync(edits);
-            if !self.syncing
-                && let Some(reply) = self.sync_reply.take()
-            {
+            let reply = {
+                let mut state = self.state();
+                if state.syncing {
+                    None
+                } else {
+                    state.sync_reply.take()
+                }
+            };
+            if let Some(reply) = reply {
                 reply.finish(Ok(tilo_actions::ActionOutput::default()));
             }
         }
@@ -4344,6 +4207,10 @@ impl Widget for CalendarApp {
         self.dirty = true;
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -4401,7 +4268,7 @@ impl Widget for CalendarApp {
             .with_bounds(self.rect)
             .with_children(controls);
         root.children.extend(self.task_list_access_nodes());
-        if self.syncing {
+        if self.syncing() {
             root.children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name("Synchronizing calendars")
@@ -4757,179 +4624,65 @@ impl CalendarApp {
         self.dirty = true;
     }
 
-    /// Answer one of the calendar's effects, invoked by a control, the
-    /// palette, an agent or a script.
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: crate::resource::CalendarEffect,
-        cx: &mut ui::framework::EffectCx<Calendar, Self>,
-    ) -> ui::framework::EffectAnswer {
-        use crate::resource::CalendarEffect;
-        use ui::framework::Effected;
-        match effect {
-            CalendarEffect::Open { item } => {
-                self.open_item(&item)?;
-                Ok(Effected::done())
-            }
-            CalendarEffect::ShowAllCalendars => {
-                self.show_all_calendars();
-                Ok(Effected::done())
-            }
-            CalendarEffect::ShowView { view } => {
-                self.show_view(match view.as_str() {
-                    "month" => View::Month,
-                    "week" => View::Week,
-                    "day" => View::Day,
-                    "agenda" => View::Agenda,
-                    "tasks" => View::Tasks,
-                    other => return Err(format!("there is no `{other}` view")),
-                });
-                Ok(Effected::done())
-            }
-            CalendarEffect::ShowMonth => {
-                self.show_view(View::Month);
-                Ok(Effected::done())
-            }
-            CalendarEffect::ShowWeek => {
-                self.show_view(View::Week);
-                Ok(Effected::done())
-            }
-            CalendarEffect::ShowDay => {
-                self.show_view(View::Day);
-                Ok(Effected::done())
-            }
-            CalendarEffect::ShowTasks => {
-                self.view = View::Tasks;
-                self.list_sel = Some(ListSel::Inbox);
-                self.detail_open = false;
-                self.selection = None;
-                self.blur_editor();
-                self.put_drawer_away();
-                self.dirty = true;
-                Ok(Effected::done())
-            }
-            CalendarEffect::ShowAgenda => {
-                self.show_view(View::Agenda);
-                Ok(Effected::done())
-            }
-            CalendarEffect::Sync => {
-                if self.syncing || self.sync_requested {
-                    return Err("calendar synchronization is already running".into());
-                }
-                self.sync_requested = true;
-                self.sync_reply = Some(cx.reply());
-                self.dirty = true;
-                Ok(Effected::Pending)
-            }
-            CalendarEffect::ExportIcs => self.export_ics(cx),
-            CalendarEffect::ExportIcsContent { event } => {
-                crate::content_export::ics(&cx.live().get(), event).map(Effected::value)
-            }
-            CalendarEffect::ImportIcs => Ok(Self::import_ics(cx)),
-            CalendarEffect::ContactAttendees { event_id } => {
-                self.open_contact_attendees(&event_id)?;
-                Ok(Effected::done())
-            }
-            CalendarEffect::PrepareInMail {
-                event_id,
-                attendee_id,
-            } => self
-                .prepare_in_mail(&event_id, &attendee_id)
-                .map(Effected::value),
-            CalendarEffect::SetColor { id, color } => {
-                let color = crate::model::Palette::from_name(&color)
-                    .ok_or_else(|| format!("no colour is called {color}"))?;
-                self.set_calendar_color(&id, color)?;
-                Ok(Effected::done())
-            }
-            CalendarEffect::SetVisibility { id, visible } => {
-                self.set_calendar_visibility(&id, visible)?;
-                self.status
-                    .show(Self::visibility_status(visible), ToastKind::Info);
-                self.dirty = true;
-                Ok(Effected::done())
-            }
-        }
-    }
-
-    /// The effects that cannot run right now, and why.
-    pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
-        use crate::resource::CalendarEffect;
-        use ui::framework::EffectStatus;
-        let mut statuses = Vec::new();
-        if self.syncing || self.sync_requested {
-            statuses.push(EffectStatus::unavailable(
-                CalendarEffect::SYNC,
-                "already_running",
-                "Calendar synchronization is already running",
-            ));
-        } else if self.accounts.is_empty() && !self.sample_accounts {
-            statuses.push(EffectStatus::unavailable(
-                CalendarEffect::SYNC,
-                "no_accounts",
-                "Add a calendar account before synchronizing",
-            ));
-        }
-        if self.model.events.is_empty() && self.model.tasks.is_empty() {
-            statuses.push(EffectStatus::unavailable(
-                CalendarEffect::EXPORT_ICS,
-                "calendar_empty",
-                "There are no events or tasks to export",
-            ));
-        }
-        statuses
-    }
-
-    /// The arguments of Mail's invitation draft for one attendee of an
-    /// event: a reviewable draft, never a claim that anything was sent.
-    fn prepare_in_mail(
-        &mut self,
-        event_id: &str,
-        attendee_id: &str,
-    ) -> Result<serde_json::Value, String> {
-        let event_id = event_id
-            .parse::<Id>()
-            .map_err(|_| "invalid event id".to_string())?;
-        let attendee_id = attendee_id
-            .parse::<Id>()
-            .map_err(|_| "invalid attendee id".to_string())?;
-        let event = self
-            .model
-            .event(event_id)
-            .ok_or_else(|| "event no longer exists".to_string())?;
-        let attendee = event
-            .attendees
-            .iter()
-            .find(|attendee| attendee.id == attendee_id)
-            .ok_or_else(|| "attendee no longer exists".to_string())?;
-        let subject = format!("Invitation: {}", event.display_title());
-        let body = format!(
-            "You’re invited to {} on {} at {} ({}).\n\nReview the attached calendar invitation for details.",
-            event.display_title(),
-            ui::format::day_heading(event.start.date(), true),
-            ui::clock::time_of_day(&event.start),
-            event.timezone
-        );
-        let calendar_ics = crate::ics::invitation_request(event);
-        self.status.show(
-            crate::resource::t("calendar-invite-prepared"),
-            ToastKind::Info,
-        );
+    /// Show the inbox of tasks.
+    fn show_tasks(&mut self) {
+        self.view = View::Tasks;
+        self.list_sel = Some(ListSel::Inbox);
+        self.detail_open = false;
+        self.selection = None;
+        self.blur_editor();
+        self.put_drawer_away();
         self.dirty = true;
-        Ok(serde_json::json!({
-            "delivery": "not_sent",
-            "target": {
-                "resource": "mail.mailbox",
-                "action": "prepare-calendar-invitation"
-            },
-            "arguments": {
-                "to": attendee.email,
-                "subject": subject,
-                "body": body,
-                "calendar_ics": calendar_ics
-            },
-            "next": "Invoke the target through the action broker; Mail may refuse with account_offline or invite permission denied."
-        }))
+    }
+
+    /// Do what the view's effects asked of the window since it last looked.
+    fn answer_asks(&mut self) {
+        let asks = std::mem::take(&mut self.state().asks);
+        for ask in asks {
+            match ask {
+                store::Ask::Open(opened) => self.show_opened(opened),
+                store::Ask::OpenItem(item) => {
+                    if let Err(error) = self.open_item(&item) {
+                        tracing::debug!(%error, "calendar: an item to open is gone");
+                    }
+                }
+                store::Ask::ShowAllCalendars => self.show_all_calendars(),
+                store::Ask::ShowView(view) => self.show_view(view),
+                store::Ask::ShowTasks => self.show_tasks(),
+                store::Ask::SearchContacts => self.search_contacts(),
+                store::Ask::Stage(scenario) => self.stage_scenario(scenario.as_deref()),
+                store::Ask::Say(text, kind) => {
+                    self.status.show(text, kind);
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+
+    /// The store the window shares with the view, for the view to reach.
+    pub(crate) fn shared(&self) -> store::Shared {
+        std::rc::Rc::clone(&self.store)
+    }
+
+    /// What the window shares with the view's effect handler.
+    pub(crate) fn state(&self) -> std::cell::RefMut<'_, store::Store> {
+        self.store.borrow_mut()
+    }
+
+    /// Whether a sync with the accounts' servers runs.
+    fn syncing(&self) -> bool {
+        self.store.borrow().syncing
+    }
+
+    /// Show the calendar the document holds now, when it changed since.
+    fn follow_document(&mut self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let Some(state) = live.changed_since(&mut self.presented) else {
+            return;
+        };
+        self.adopt_resource_state(&state);
     }
 }
 

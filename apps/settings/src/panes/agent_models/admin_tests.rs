@@ -138,7 +138,7 @@ fn mounted_without_administration_edits_only_honestly_labelled_offline_metadata(
             .unwrap()
             .model()
             .borrow();
-        assert_eq!(model.providers.settings().get().config.profiles.len(), 1);
+        assert_eq!(model.providers.config().profiles.len(), 1);
         assert!(
             model
                 .notice
@@ -183,10 +183,10 @@ fn assert_private(app: &mut TestApp<SettingsShell>) {
             .model()
             .borrow();
         assert!(
-            model.providers.settings().get().config.profiles.is_empty(),
+            model.providers.config().profiles.is_empty(),
             "backend metadata must not be duplicated into the local settings channel"
         );
-        let shared = serde_json::to_string(&model.providers.settings().get()).unwrap();
+        let shared = serde_json::to_string(&model.providers.config()).unwrap();
         assert!(!shared.contains("private-key-draft"));
         assert!(
             !crate::widgets::announced_text(model.compose().as_ref())

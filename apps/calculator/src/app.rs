@@ -235,12 +235,9 @@ impl CalculatorApp {
         let Some(document) = &self.document else {
             return;
         };
-        let held = (document.revision(), document.loads());
-        if self.followed == Some(held) {
+        let Some(rows) = document.changed_since(&mut self.followed) else {
             return;
-        }
-        self.followed = Some(held);
-        let rows = document.get();
+        };
         self.adopt_resource_state(&rows);
     }
 

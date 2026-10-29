@@ -44,6 +44,12 @@ impl Snapshot {
             _ => Map::new(),
         }
     }
+
+    /// Sections `names` read as one ([`crate::merged_sections`]).
+    #[must_use]
+    pub fn sections(&self, names: &[&str]) -> Map<String, Value> {
+        crate::merged_sections(&self.document, names)
+    }
 }
 
 /// The session's settings document, refreshed on change. Cloning shares it.

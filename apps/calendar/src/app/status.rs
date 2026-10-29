@@ -168,8 +168,9 @@ impl CalendarApp {
             }
             match action {
                 StatusAction::SyncAgain => {
-                    if !self.syncing {
-                        self.sync_requested = true;
+                    let mut state = self.state();
+                    if !state.syncing {
+                        state.sync_requested = true;
                     }
                 }
                 // To where calendar accounts are kept, through the desktop's
@@ -234,7 +235,8 @@ impl CalendarApp {
     /// Keep the window bar's notice saying the status while it lasts:
     /// "Syncing calendars…" for as long as the sync runs.
     pub(super) fn publish_status(&mut self) {
-        self.status.keep_while(self.syncing);
+        let syncing = self.syncing();
+        self.status.keep_while(syncing);
         self.status.expire();
         let actions = self.status_actions().to_vec();
         self.status.publish(|notice| {
@@ -336,7 +338,7 @@ mod tests {
             Some(at(9) + ui::widget::toast::NOTICE_LIFETIME),
             "the app wakes to look again"
         );
-        app.syncing = false;
+        app.state().syncing = false;
         with_monotonic_time(at(10), || {
             assert_eq!(draw(&mut app), None, "the sync is over");
         });

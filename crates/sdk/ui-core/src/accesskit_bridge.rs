@@ -60,6 +60,8 @@ use accesskit::{
 use taffy::NodeId as TaffyNodeId;
 
 use crate::a11y::{AccessNode, AccessibleTextSelection, Action, Role};
+use crate::a11y_child_route::{ChildRoute, Routes, child_route};
+use crate::a11y_tree::{ExportedChildren, HostedIn, HostedWidget, exported_children, hosted_in};
 use crate::text_break::{grapheme_indices, graphemes};
 use crate::widget::Widget;
 
@@ -67,9 +69,6 @@ use crate::widget::Widget;
 mod floating_surface;
 #[cfg(feature = "native")]
 pub(crate) use floating_surface::{publish_host_part, surface_action_target, surface_tree_update};
-
-type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
-type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 
 /// Reserved so no widget can collide with it: widget ids are offset by +1
 /// from their taffy node id, and structural fallback ids are large offsets
@@ -344,24 +343,6 @@ fn child_route_node_id(owner: AkNodeId, path: &[usize]) -> AkNodeId {
     })
 }
 
-/// The address of `w` on its way down from the nearest widget with a layout
-/// node: that node's id, and the child indices from it to `w`.
-type ChildRoute = (AkNodeId, Vec<usize>);
-
-/// The route of the child at `index` below a widget whose own route, or
-/// node `own`, is given.
-fn child_route(
-    own: Option<AkNodeId>,
-    route: Option<&ChildRoute>,
-    index: usize,
-) -> Option<ChildRoute> {
-    match (own, route) {
-        (Some(owner), _) => Some((owner, vec![index])),
-        (None, Some((owner, path))) => Some((*owner, [path.as_slice(), &[index]].concat())),
-        (None, None) => None,
-    }
-}
-
 /// The AccessKit id of the widget laid out at `taffy_id`, or `None` when that
 /// taffy node holds no live widget.
 ///
@@ -484,7 +465,7 @@ fn search_synthetic_routed<const BOUND: bool>(
     w: &dyn Widget,
     ptr_to_taffy: &WidgetNodeMap,
     wanted: AkNodeId,
-    route: Option<(TaffyNodeId, Vec<usize>)>,
+    route: Option<ChildRoute>,
 ) -> Option<A11yTarget> {
     let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
         return None;
@@ -492,11 +473,7 @@ fn search_synthetic_routed<const BOUND: bool>(
     let taffy = ptr_to_taffy.get(w);
     let route = if taffy.is_some() { None } else { route };
     for (index, child) in w.children().into_iter().enumerate() {
-        let child_route = match (taffy, &route) {
-            (Some(owner), _) if w.lays_out_child(index) => Some((owner, vec![index])),
-            (None, Some((owner, path))) => Some((*owner, [path.as_slice(), &[index]].concat())),
-            (Some(_), _) | (None, None) => None,
-        };
+        let child_route = child_route(w, taffy, route.as_ref(), index);
         if let Some(hit) =
             search_synthetic_routed::<BOUND>(child, ptr_to_taffy, wanted, child_route)
         {
@@ -791,7 +768,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
         nodes: Vec::new(),
         active_descendant: None,
         owned_active_descendant: None,
-        routes: HashMap::new(),
+        routes: Routes::default(),
     };
 
     // The synthetic window root gathers the top-level accessible nodes.
@@ -924,7 +901,7 @@ struct TreeWalk<'m> {
     owned_active_descendant: Option<AkNodeId>,
     /// The route of each retained widget with no layout node of its own,
     /// set by its parent before it is visited ([`child_route_node_id`]).
-    routes: HashMap<*const (), ChildRoute>,
+    routes: Routes,
 }
 
 /// Where a synthetic node sits under its parent: the parent's id, the widget
@@ -955,25 +932,14 @@ impl TreeWalk<'_> {
         }
         let taffy_id = self.ptr_to_taffy.get(w);
         // A retained widget the window's layout gave no node is reached
-        // through the nearest widget that has one; every child is routed
-        // from here before any is visited, hosted ones included.
-        let route = if taffy_id.is_some() {
-            None
-        } else {
-            self.routes.remove(&std::ptr::from_ref(w).cast::<()>())
-        };
-        let own = taffy_id.map(|id| widget_node_id(Some(id), 0));
-        for (index, child) in w.children().into_iter().enumerate() {
-            let own = own.filter(|_| w.lays_out_child(index));
-            if let Some(child_route) = child_route(own, route.as_ref(), index) {
-                self.routes
-                    .insert(std::ptr::from_ref(child).cast::<()>(), child_route);
-            }
-        }
+        // through the nearest widget that has one.
+        let route = self.routes.enter(w, taffy_id);
 
         if let Some(access_node) = access {
             let id = match (&route, taffy_id) {
-                (Some((owner, path)), None) => child_route_node_id(*owner, path),
+                (Some((owner, path)), None) => {
+                    child_route_node_id(widget_node_id(Some(*owner), 0), path)
+                }
                 _ => widget_node_id(taffy_id, self.walk_counter),
             };
             self.walk_counter = self.walk_counter.saturating_add(1);
@@ -982,30 +948,22 @@ impl TreeWalk<'_> {
             apply_semantics(&mut ak, &access_node, w, self.scale);
 
             let mut my_children: Vec<AkNodeId> = Vec::new();
-            let mut hosted = HostedByIndex::new();
+            let ExportedChildren {
+                direct,
+                mut hosted,
+                represented,
+            } = exported_children(w);
+            for (child_index, child) in direct {
+                self.child_description = w.accessibility_child_description(child_index);
+                self.visit::<BOUND>(child, &mut my_children);
+            }
             // A child the widget represents in its own synthetic tree is not
             // exported again; if it holds keyboard focus, the representation
             // does, so the reader lands on the one copy that exists.
-            let mut represents_focus = false;
-            for (child_index, child) in w.children().into_iter().enumerate() {
-                if w.accessibility_represents_child(child_index) {
-                    represents_focus |=
-                        self.focused.is_some() && self.ptr_to_taffy.get(child) == self.focused;
-                    continue;
-                }
-                if let Some(mut child_path) = w.accessibility_child_path(child_index)
-                    && !child_path.is_empty()
-                {
-                    let parent_index = child_path.remove(0);
-                    hosted
-                        .entry(parent_index)
-                        .or_default()
-                        .push((child_path, child));
-                } else {
-                    self.child_description = w.accessibility_child_description(child_index);
-                    self.visit::<BOUND>(child, &mut my_children);
-                }
-            }
+            let represents_focus = self.focused.is_some()
+                && represented
+                    .into_iter()
+                    .any(|child| self.ptr_to_taffy.get(child) == self.focused);
             // Synthetic children with no backing widget — a table's rows/cells, a
             // timeline's clips. Only the widget that actually holds keyboard focus
             // may nominate an active descendant.
@@ -1096,34 +1054,27 @@ impl TreeWalk<'_> {
         }
 
         let mut my_children: Vec<AkNodeId> = Vec::new();
-        let direct = hosted
-            .iter()
-            .filter(|(path, _)| path.is_empty())
-            .map(|(_, child)| *child)
-            .collect::<Vec<_>>();
-        if direct.is_empty() {
-            let mut nested = HostedByIndex::new();
-            for (mut path, child) in hosted {
-                let child_index = path.remove(0);
-                nested.entry(child_index).or_default().push((path, child));
+        match hosted_in(hosted) {
+            HostedIn::Nested(mut nested) => {
+                for (i, child) in access.children.iter().enumerate() {
+                    let child_path = [ordinal_path, &[i]].concat();
+                    self.visit_synthetic::<BOUND>(
+                        child,
+                        SyntheticSlot {
+                            parent_id: id,
+                            owner,
+                            ordinal_path: &child_path,
+                            in_focused_widget,
+                        },
+                        nested.remove(&i).unwrap_or_default(),
+                        &mut my_children,
+                    );
+                }
             }
-            for (i, child) in access.children.iter().enumerate() {
-                let child_path = [ordinal_path, &[i]].concat();
-                self.visit_synthetic::<BOUND>(
-                    child,
-                    SyntheticSlot {
-                        parent_id: id,
-                        owner,
-                        ordinal_path: &child_path,
-                        in_focused_widget,
-                    },
-                    nested.remove(&i).unwrap_or_default(),
-                    &mut my_children,
-                );
-            }
-        } else {
-            for child in direct {
-                self.visit::<BOUND>(child, &mut my_children);
+            HostedIn::Direct(direct) => {
+                for child in direct {
+                    self.visit::<BOUND>(child, &mut my_children);
+                }
             }
         }
         let run_id = synthetic_text_run_node_id(id);
@@ -2799,6 +2750,11 @@ mod tests {
                 "the represented child is not exported again"
             );
             assert_eq!(update.focus, label_id(&update, "palette"));
+            let read: Vec<_> = crate::screen_reader::flatten_reading_order(&host)
+                .into_iter()
+                .filter_map(|node| node.name)
+                .collect();
+            assert_eq!(read, ["palette"], "nor read twice by the built-in reader");
         }
 
         {

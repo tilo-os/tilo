@@ -873,6 +873,12 @@ requirement = { cores = 1, memory = "1GiB" }
 run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_create_app_receipt.py"
 
 [[check]]
+name = "policy/tests/unit/current-source-metadata"
+requires = ["arch=any"]
+requirement = { cores = 1, memory = "1GiB" }
+run = "python3 tools/policy/run_unit_tests.py --pruned tools/tests/test_current_source_metadata.py"
+
+[[check]]
 name = "policy/tests/unit/dev-app-versions"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "1GiB" }

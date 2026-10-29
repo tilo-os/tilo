@@ -1,7 +1,9 @@
 //! The libraries only Settings uses, as an engine library beside the shared
 //! runtime (`libtilo_settings_engine.so`).
 //!
-//! Settings administers the model providers (`provider-settings-ui`), mounts
+//! Settings edits the settings sections as resource models
+//! (`settings-sections`, whose derived models are about 1.5 MB of code),
+//! administers the model providers (`provider-settings-ui`), mounts
 //! NTFS drives through the root service (`tilo-ntfs-mount`'s protocol),
 //! offers the bundled wallpapers (`tilo-wallpapers`, whose catalogue is TOML),
 //! edits the accessibility settings (`tilo-accessibility-settings`) and
@@ -32,6 +34,8 @@ pub use ntfs_mount;
 pub use pc_keyboard_geometry;
 #[cfg(feature = "thin")]
 pub use provider_settings_ui;
+#[cfg(feature = "thin")]
+pub use settings_sections;
 #[cfg(feature = "thin")]
 pub use tilo_accessibility_settings;
 #[cfg(feature = "thin")]

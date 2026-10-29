@@ -1110,18 +1110,6 @@ impl App {
         )
     }
 
-    /// Tab normally belongs to the host's focus order. A focused editor-like
-    /// widget may explicitly claim it first (for indentation or completion),
-    /// without broadening that exception to arbitrary widgets or escaping an
-    /// active focus trap.
-    #[cfg(feature = "native")]
-    fn focused_widget_wants_tab_input(&self) -> bool {
-        self.focused_node.is_some_and(|node| {
-            self.inspect_node(node, |widget| widget.wants_tab_input())
-                .unwrap_or(false)
-        })
-    }
-
     /// Shared native Tab admission, preserving text-input and modal capture.
     #[cfg(feature = "native")]
     fn handle_tab_navigation(
@@ -1156,21 +1144,8 @@ impl App {
         if self.accessibility.focus_trap_active {
             return self.focusable_order.clone();
         }
-        let scopes: Vec<taffy::NodeId> = self
-            .layout
-            .node_map
-            .keys()
-            .copied()
-            .filter(|&node| {
-                self.inspect_node(node, |widget| widget.scopes_keyboard_focus())
-                    .unwrap_or(false)
-            })
-            .collect();
-        crate::focus_navigation::within_keyboard_scope(
-            self.focusable_order.clone(),
-            &scopes,
-            &self.layout.taffy,
-        )
+        self.tree()
+            .within_keyboard_scope(self.focusable_order.clone())
     }
 
     fn focus_tab(&mut self, shift: bool) -> bool {

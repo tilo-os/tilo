@@ -552,6 +552,10 @@ impl<'a> Validator<'a> {
                     self.key(key)?;
                     self.string(text)?;
                 }
+                ToApp::EditRich { key, rich, .. } => {
+                    self.key(key)?;
+                    self.value(&Value::Rich(rich.clone()), 0)?;
+                }
                 ToApp::Open { resource } => {
                     self.key(&resource.id)?;
                     self.key(&resource.ty)?;

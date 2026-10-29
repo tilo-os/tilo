@@ -404,7 +404,7 @@ mod tests {
         let mut person = Replica::<Tracker>::new().as_author("ada");
         person
             .apply(Tracker::CREATE.with(tracker::Create {
-                title: "Tidy the docs".into(),
+                title: "Tidy the docs".parse().expect("not blank"),
                 parent: None,
                 body: Some("Keep the headings".into()),
                 status: None,
@@ -428,7 +428,7 @@ mod tests {
         person
             .apply(Tracker::SEND_MESSAGE.with(tracker::SendMessage {
                 issue,
-                text: "Use short lines".into(),
+                text: "Use short lines".parse().expect("not blank"),
             }))
             .unwrap();
         let runs = runs_of(&person.state().unwrap());
@@ -460,7 +460,7 @@ mod tests {
         let mut person = Replica::<Tracker>::new().as_author("ada");
         person
             .apply(Tracker::CREATE.with(tracker::Create {
-                title: "Ship the release".into(),
+                title: "Ship the release".parse().expect("not blank"),
                 parent: None,
                 body: None,
                 status: None,
@@ -486,7 +486,7 @@ mod tests {
             .unwrap();
         person
             .apply(Tracker::CREATE.with(tracker::Create {
-                title: "Write the notes".into(),
+                title: "Write the notes".parse().expect("not blank"),
                 parent: Some(task),
                 body: None,
                 status: None,

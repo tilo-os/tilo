@@ -411,6 +411,58 @@ fn long_flag(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Say what a file command did, on `out`: as one line of JSON with
+/// `--json`, else in words. `entry` names it in the environment's History
+/// when it was the record's action. Answers the command's status.
+pub fn answer_done(
+    out: &mut dyn std::io::Write,
+    json: bool,
+    verb: &str,
+    entry: Option<&str>,
+    operations: usize,
+) -> i32 {
+    if json {
+        let line = serde_json::json!({"action": verb, "entry": entry, "operations": operations});
+        let _ = writeln!(out, "{line}");
+        return 0;
+    }
+    let word = if operations == 1 {
+        "operation"
+    } else {
+        "operations"
+    };
+    let _ = if entry.is_some() {
+        writeln!(
+            out,
+            "done ({operations} {word}); undo it from the environment's History"
+        )
+    } else {
+        writeln!(
+            out,
+            "done ({operations} {word}); `history` lists what it kept aside"
+        )
+    };
+    0
+}
+
+/// Say why the file command `name` was refused: as JSON on `out` with
+/// `--json`, else in words on `err`. Answers the command's status.
+pub fn answer_refused(
+    out: &mut dyn std::io::Write,
+    err: &mut dyn std::io::Write,
+    json: bool,
+    name: &str,
+    reason: &str,
+) -> i32 {
+    if json {
+        let line = serde_json::json!({"action": name, "error": reason});
+        let _ = writeln!(out, "{line}");
+    } else {
+        let _ = writeln!(err, "{name}: {reason}");
+    }
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

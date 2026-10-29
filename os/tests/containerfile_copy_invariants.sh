@@ -267,6 +267,8 @@ containerfile="$repo/os/Containerfile"
 # The network-answers helper, search's one door to the network for exchange
 # rates, is installed by its net-answers component at
 # /usr/libexec/tilo-net-answers: one payload row.
+# The session audio helper the compositor starts is installed by its
+# audio-service component at /usr/libexec/tilo-audio: one payload row.
 # tilo-runtime-resident.service, which keeps the shared app runtime's
 # libraries in memory, is a deliberate addition, and so are its user units
 # (tilo-runtime-resident.service and .path), which keep the runtimes a person
@@ -336,7 +338,7 @@ containerfile="$repo/os/Containerfile"
 # initramfs as the boot's sign-in screen, rides the rollback files with the
 # dracut modules beside it, and the greeter's initramfs build (the boot-greeter
 # component) with the component files.
-expected_contract=fdd552cc7966e788dc40b643dcd16adee5119e6d7f35364cfafbf2ec4e1a2b03
+expected_contract=1dd4fdf8ee70176c13b5478587fdf47ef2411db3835619e6fa04c1322baf04e2
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

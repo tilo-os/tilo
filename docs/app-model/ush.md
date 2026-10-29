@@ -269,36 +269,60 @@ starts the shell.
 
 ## The session's shell
 
-A new Terminal session runs ush's own shell, `ush-sh` on the guest's `PATH`
-(`tilo-ush sh`; [`ush-shell`](../../crates/runtime/ush-shell/src/lib.rs),
-with this device as its host in
-[`ush::shell_host`](../../crates/runtime/ush/src/shell_host.rs)). It is a
-shell interpreter in Rust: POSIX sh, and the bash features people use
-(arrays, `[[ ]]`, `local`, `$'…'`, `${x//a/b}`, brace expansion, `mapfile`).
-A feature it does not have (background jobs with `&`, process substitution,
+A new Terminal session runs ush's own shell on the Tilo side: the
+interpreter ([`ush-shell`](../../crates/runtime/ush-shell/src/lib.rs)) runs in
+the process that serves the session's terminal, outside every guest, with
+[`ush_tilo::TiloHost`](../../crates/runtime/ush-tilo/src/lib.rs) as its host
+and this device's parts in
+[`ush::tilo_side`](../../crates/runtime/ush/src/tilo_side.rs). It is a shell
+interpreter in Rust: POSIX sh, and the bash features people use (arrays,
+`[[ ]]`, `local`, `$'…'`, `${x//a/b}`, brace expansion, `mapfile`). A
+feature it does not have (background jobs with `&`, process substitution,
 `coproc`, `time`, `trap … ERR`, extended globs) is refused by name and stops
 the script, so nothing that relied on it goes on without it. See
 [`ush-portable.md`](ush-portable.md) for where it is going.
 
-Each command resolves to a function, one of the shell's built-ins, one of
-Tilo's own commands, or a program:
+The host reaches nothing but the environment:
 
-- **Tilo's own commands** run in the shell's process. `ls cat head tail wc
-  stat find grep diff tree sort uniq cut tr seq printf echo test pwd cd` and
-  the like read through the guest's file system, which holds exactly what
-  the record granted. The file commands (`cp mv rm mkdir rmdir ln truncate
-  touch append`) are the environment's actions, sent to the broker the way
-  the guest's own `cp` sends them. A pipe between two of these is a pipe in
-  memory.
-- **Anything else** runs in the guest, as it did under bash. Where the shell
-  runs without a guest under it, such a command says it needs a WebAssembly
-  tool (tier 2) or a Linux place (tier 3), which are still to come.
+- **Reads** (`ls cat head tail wc stat find grep diff tree sort uniq cut tr
+  seq printf echo test pwd cd` and the like, and a `<` redirect) are asked
+  of the record's grants first, with the check every grant is asked with
+  (`tilo_environment::files::permits`, which is `decide_capability`). A
+  path no grant covers is refused before anything is read, and so is one a
+  symbolic link or `..` leads out of a grant. The session starts in the
+  first directory the record grants.
+- **Writes** are the environment's actions, all of them. The file commands
+  (`cp mv rm mkdir rmdir ln truncate touch append`) and a redirect alike:
+  `> file` is the record's `write`, `>> file` its `append`. Each is checked
+  against the grants by the verb, recorded in History attributed to the
+  person, and undone from there; the writes of one command line are grouped
+  as its run. They go through the session's broker, the same door a guest's
+  `cp` uses.
+- **Anything else** is a program, and runs in the session's Linux guest
+  (tier 3), exactly that command, on the shell's own streams: the terminal
+  itself where the command's stream is the terminal (and the terminal's
+  foreground with it, so Ctrl-C and Ctrl-Z reach the program), else a pipe
+  the shell feeds or drains (`cargo build 2>&1 | grep error`). The guest is
+  built from the record when the first program needs it and kept until the
+  session ends (or something in it asks for `restart`); a session that only
+  ran Tilo's own commands never starts one. Its first process is
+  `tilo-ush exec-serve`, which takes one command at a time over a socket
+  ([`ush::guest_exec`](../../crates/runtime/ush/src/guest_exec.rs)). `bash
+  script.sh` is such a program. What a program writes in the guest still
+  lands on disk directly, through the guest's binds of the granted
+  directories; folding those writes into the environment's actions is the
+  mount's work, still to come.
 
-The shell marks its runs itself, with the marks below, so the run records
-are the same whichever shell a session runs. It reads `~/.ushrc` when it
-starts interactively; it does not read bash's files. Lines are read as the
-terminal's line discipline hands them over: there is no line editor or
-history recall in it yet.
+The shell's variables are the guest's (`PATH`, `HOME`, `USER`, …), since
+every program it runs runs there. It marks its runs itself, with the marks
+below, so the run records are the same whichever shell a session runs. It
+reads the environment home's `~/.ushrc` when it starts interactively; it
+does not read bash's files. Lines are read as the terminal's line
+discipline hands them over. `ush -c SCRIPT` runs a script the same way.
+
+`ush-sh` on a guest's `PATH` (`tilo-ush sh`, with the guest as its host in
+[`ush::shell_host`](../../crates/runtime/ush/src/shell_host.rs)) is the same
+interpreter inside a guest: what a program there gets as `$SHELL`.
 
 **A full Linux session** is still there: Terminal's target picker has
 "Shell: Linux (bash)" for the current environment, and `linux` or
@@ -496,7 +520,9 @@ These are the guest's own verbs, under the names the person already types, and
 each is one of the environment record's published actions
 ([`tilo_environment::files`](../../crates/runtime/environment/src/files.rs)):
 `copy`, `move`, `remove`, `make-dir`, `remove-dir`, `link`, `truncate`, `touch`
-and `append`. A command line parses into one of them, with its paths made
+and `append`. A shell's redirect is one too: `> file` is `write` (the file's
+whole contents; contents that are not text travel as base64, and `set -C`
+makes it `no_clobber`), `>> file` is `append`. A command line parses into one of them, with its paths made
 absolute against the directory it was typed in, and the supervisor invokes it
 on the record through the record's action door, as the person whose session it
 is. It is one History entry of the environment's, attributed like any other,

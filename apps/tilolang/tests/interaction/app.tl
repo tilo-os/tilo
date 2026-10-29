@@ -3,6 +3,8 @@ app so.tilo.lang.interaction "Interaction" (icon: .message_circle, category: .ne
 /// A message: what it says and the reactions on it. Who wrote it and when come from the log.
 type Message {
     body: Text (body)
+    /// What a message typed in the composer says, its references kept as references.
+    said: RichText
     pinned: Bool = false
     thumbs: Int merge counter
     /// The emoji reacted with last.
@@ -22,6 +24,11 @@ default view channel for Channel
 /// Posts a message.
 action post(c: Channel, body: Text) -> Message (icon: .send) {
     c.messages.insert(Message(body: body))
+}
+
+/// Sends what was typed in the composer.
+action say(c: Channel, said: RichText) -> Message (icon: .send) {
+    c.messages.insert(Message(said: said))
 }
 
 /// Reacts with an emoji.
@@ -47,17 +54,25 @@ destructive action retract(m: Message) (icon: .trash) {
 
 /// The channel: its messages above a composer.
 view channel(c: Channel) {
-    lens draft: Text
+    lens draft: RichText = RichText("")
     std.transcript(c, c.messages, row: message) {
         composer: {
-            input(bind: draft, placeholder: "Message {c.name}")
+            row {
+                rich_input(bind: draft, placeholder: "Message {c.name}", fill)
+                button(say(c, draft).then(set(draft, RichText(""))), icon_only: true)
+            }
         }
     }
 }
 
 /// One message, with what can be done to it on hover, swipe and right-click.
 view message(m: Message) {
-    text(m.body)
+    if m.body != "" {
+        text(m.body)
+    }
+    if not m.said.is_empty() {
+        rich_text(m.said)
+    }
     if m.pinned {
         text("Pinned", role: .caption)
     }

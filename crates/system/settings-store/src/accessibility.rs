@@ -9,6 +9,10 @@ use std::ops::RangeInclusive;
 
 pub const SECTION: &str = "accessibility";
 
+/// This device's accessibility choices: whether the person's comforts reach
+/// its login screens ([`crate::sign_in_comforts::APPLY_TO_SIGN_IN`]).
+pub const DEVICE_SECTION: &str = "accessibility_device";
+
 /// Whether the screen reader is on: what Settings, the screen reader chord
 /// (Ctrl+Super+Enter) and every app's narrator read and write.
 pub const SCREEN_READER: crate::Key<bool> = crate::Key::new(SECTION, "screen_reader", || false);

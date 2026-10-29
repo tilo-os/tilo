@@ -29,10 +29,14 @@ fn policy(remote: bool, dark: bool) -> Policy<'static> {
     }
 }
 
+/// An element as [`elements`] reads it: its name, its attributes, and the
+/// text of its style sheet when it is one.
+type Element = (String, Vec<(String, String)>, String);
+
 /// A prepared document as the engine reads it: every element, with its
 /// attributes (lower-case names and values), and the text of its style
 /// sheets. Text the document shows is left out.
-fn elements(document: &str) -> Vec<(String, Vec<(String, String)>, String)> {
+fn elements(document: &str) -> Vec<Element> {
     use html5ever::tendril::TendrilSink as _;
     use markup5ever_rcdom::{NodeData, RcDom};
     let dom =

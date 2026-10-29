@@ -28,6 +28,7 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
+use crate::host_core::HostCore as _;
 use std::cell::Cell;
 
 #[cfg(feature = "native")]
@@ -36,7 +37,7 @@ mod native_input_isolation;
 
 #[cfg(feature = "native")]
 #[path = "animation_schedule.rs"]
-mod animation_schedule;
+pub mod animation_schedule;
 
 mod action_directory_snapshot;
 mod bound_record_sync;
@@ -1032,80 +1033,6 @@ impl App {
             crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
         );
         std::mem::take(&mut self.component_close_reports)
-    }
-
-    fn inspect_node<R>(
-        &self,
-        node: NodeId,
-        callback: impl FnOnce(&dyn Widget) -> R,
-    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        // SAFETY: App owns this stable tree and no target reference escapes.
-        unsafe {
-            crate::bound_dispatch::inspect_bound_node(
-                &self.bindings,
-                &self.layout.node_map,
-                node,
-                callback,
-            )
-        }
-    }
-    fn mutate_node<R>(
-        &mut self,
-        node: NodeId,
-        callback: impl FnOnce(&mut dyn Widget) -> R,
-    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        self.mark_semantic_tree_stale();
-        // SAFETY: exclusive App access prevents overlapping target references/rebuild.
-        unsafe {
-            crate::bound_dispatch::mutate_bound_node(
-                &self.bindings,
-                &self.layout.node_map,
-                node,
-                callback,
-            )
-        }
-    }
-    fn dispatch_semantic_node<R>(
-        &mut self,
-        node: NodeId,
-        action: &crate::a11y::Action,
-        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
-    ) -> Result<R, String> {
-        self.mark_semantic_tree_stale();
-        let author = self.collaboration.local_author.clone();
-        // SAFETY: the runner exclusively owns the unchanged admitted tree.
-        unsafe {
-            crate::bound_dispatch::invoke_bound_semantic_node(
-                &self.bindings,
-                &self.layout.node_map,
-                node,
-                action,
-                &mut self.state,
-                crate::bound_dispatch::SemanticCaller {
-                    authority: &self.permission_ctx,
-                    author: &author,
-                },
-                callback,
-            )
-        }
-    }
-    fn dispatch_node<R>(
-        &mut self,
-        node: NodeId,
-        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
-    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
-        self.mark_semantic_tree_stale();
-        // SAFETY: exclusive App owns both maps and this stable tree.
-        unsafe {
-            crate::bound_dispatch::invoke_bound_node(
-                &self.bindings,
-                &self.layout.node_map,
-                node,
-                &mut self.state.doc,
-                &self.state.root,
-                callback,
-            )
-        }
     }
 
     /// Where a [`Widget::take_focus_reset`] puts focus: the control the new
@@ -2299,45 +2226,6 @@ impl App {
             let _ = self.inspect_node(node, |widget| pick.offer(widget, point));
         }
         pick.icon()
-    }
-
-    /// Whether a laid-out widget claims raw per-finger touch at `point`
-    /// (logical coords); see [`Widget::claims_raw_touch`].
-    #[cfg(feature = "native")]
-    fn claims_raw_touch_at(&self, point: Point) -> bool {
-        self.layout.node_map.keys().any(|&node| {
-            self.inspect_node(node, |widget| {
-                widget.get_rect().contains(point) && widget.claims_raw_touch(point)
-            })
-            .unwrap_or(false)
-        })
-    }
-
-    /// What a contact beginning at `point` (logical coords) means: raw for a
-    /// widget that reads fingers itself, else what the widget under it
-    /// claims ([`crate::widget::Widget::touch_claim`]), else ordinary pointer
-    /// emulation.
-    #[cfg(feature = "native")]
-    fn touch_claim_at(&self, point: Point) -> crate::interaction::TouchClaim {
-        use crate::interaction::TouchClaim;
-        if self.claims_raw_touch_at(point) {
-            return TouchClaim::Raw;
-        }
-        self.layout
-            .node_map
-            .keys()
-            .find_map(|&node| {
-                self.inspect_node(node, |widget| {
-                    if widget.get_rect().contains(point) {
-                        widget.touch_claim(point)
-                    } else {
-                        TouchClaim::Pointer
-                    }
-                })
-                .ok()
-                .filter(|claim| *claim != TouchClaim::Pointer)
-            })
-            .unwrap_or(TouchClaim::Pointer)
     }
 
     /// Mirrors [`Self::resolve_cursor`]: smallest-area widget under `point`

@@ -44,14 +44,22 @@ class GatewayFeaturesTests(unittest.TestCase):
             ci.mkdir(parents=True)
             for name in ("t-nextest.sh", "package_features.py"):
                 shutil.copy(ROOT / "tools/ci" / name, ci / name)
+            # A nextest run executes as given (its profile sets up the test
+            # environment); other commands run under tools/test-env.sh.
             (root / "tools/test-env.sh").write_text(
                 "#!/bin/sh\npython3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' \"$@\"\n")
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "cargo").write_text(
+                "#!/bin/sh\npython3 -c 'import json,sys; print(json.dumps([\"cargo\", *sys.argv[1:]]))' \"$@\"\n")
+            (bin_dir / "cargo").chmod(0o755)
+            env = {**CI_ENV, "PATH": f"{bin_dir}:{CI_ENV['PATH']}"}
             for package in ("tilo-model-gateway", "chat"):
                 with self.subTest(package=package):
                     result = subprocess.run(
                         ["bash", str(ci / "t-nextest.sh"), "cargo", "nextest", "run",
                          "--locked", "-p", package, "-E", "all()"],
-                        capture_output=True, text=True, check=True, env=CI_ENV)
+                        capture_output=True, text=True, check=True, env=env)
                     argv = json.loads(result.stdout)
                     self.assertEqual(argv[:5], ["cargo", "nextest", "run", "--locked", "-p"])
                     self.assertEqual(argv[5], package)
@@ -63,7 +71,7 @@ class GatewayFeaturesTests(unittest.TestCase):
                        "--package", "tilo-model-gateway", "-E", "all()"]
             result = subprocess.run(
                 ["bash", str(ci / "t-nextest.sh"), *command],
-                capture_output=True, text=True, check=True, env=CI_ENV)
+                capture_output=True, text=True, check=True, env=env)
             self.assertEqual(json.loads(result.stdout)[:len(command) + 2],
                              command + ["-p", "workspace-unify"])
             anchor = tomllib.loads((ROOT / "crates/dev/workspace-unify/Cargo.toml").read_text())
@@ -75,7 +83,7 @@ class GatewayFeaturesTests(unittest.TestCase):
             command = ["cargo", "check", "--locked", "-p", "tilo-model-gateway"]
             result = subprocess.run(
                 ["bash", str(ci / "t-nextest.sh"), *command],
-                capture_output=True, text=True, check=True, env=CI_ENV)
+                capture_output=True, text=True, check=True, env=env)
             self.assertEqual(json.loads(result.stdout), command)
 
 

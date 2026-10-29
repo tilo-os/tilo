@@ -2009,6 +2009,95 @@ async fn a_window_a_member_opens_becomes_the_rooms_next_generation() {
     relay.shutdown().await;
 }
 
+/// A device of the owner's that is not this host removes a member itself,
+/// in its own replica, and publishes the change: the host takes it in as
+/// the room's next generation, and every invitation still waiting for the
+/// person goes with them. Such a change leaves the room's layout as it was,
+/// so a listed room's door lets it through; a member's windows do not.
+#[tokio::test]
+async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitations() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    let (writer, salt) = admitted_member(&rooms, &room, &key, &cert, 3).await;
+    let writer_key = SigningKey::from_bytes(&[3; 32]);
+    let (guest_key, guest) = guest_device();
+    door_join(&rooms, &cert, &room, (&guest_key, &guest), 4).await;
+    rooms
+        .pre_admit(
+            &cert,
+            PreAdmitRequest {
+                request_id: [5; 32],
+                grant: signed_pre_admission(&room, b"again"),
+                recipient_user_public_key: Some(guest.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let waiting = |pending: Vec<PendingInvitation>| {
+        pending
+            .iter()
+            .any(|pending| pending.recipient_user_public_key == Some(guest.user_public_key))
+    };
+    assert!(waiting(rooms.pending(&room, &cert).await.unwrap()));
+
+    let body = {
+        let state = rooms.room(&room).await.unwrap();
+        let governed = state.lock().await;
+        let mut written = governed.peer().clone();
+        let heads = written.room_heads().unwrap();
+        written
+            .governance_mut()
+            .remove_member(guest.user_public_key, &writer_key, SystemTime::now())
+            .unwrap();
+        let changes = written.room_changes_since(&heads);
+        assert!(
+            layout_scope::leaves_layout(governed.peer().admitted_room().unwrap(), &changes),
+            "a removal is no layout"
+        );
+        postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
+            room: room.clone(),
+            changes,
+        })
+        .unwrap()
+    };
+    rooms
+        .absorb(&room, writer.device_public_key, &body)
+        .await
+        .unwrap();
+    let members = rooms.summary(&room).await.unwrap().members;
+    assert!(
+        members
+            .iter()
+            .all(|member| member.user_public_key != guest.user_public_key || member.removed),
+        "{members:?}"
+    );
+    assert!(
+        !waiting(rooms.pending(&room, &cert).await.unwrap()),
+        "the removed person's invitation went with them"
+    );
+
+    let windows = terminals_opened(&rooms, &room, &writer, salt).await;
+    let Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, .. }) =
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&windows)
+    else {
+        panic!("windows are a room change");
+    };
+    {
+        let state = rooms.room(&room).await.unwrap();
+        let governed = state.lock().await;
+        assert!(!layout_scope::leaves_layout(
+            governed.peer().admitted_room().unwrap(),
+            &changes
+        ));
+    }
+    drop(rooms);
+    relay.shutdown().await;
+}
+
 /// A device of the governor's person, certified as a member and admitted to
 /// `room`, and the id namespace it mints in.
 async fn admitted_member(

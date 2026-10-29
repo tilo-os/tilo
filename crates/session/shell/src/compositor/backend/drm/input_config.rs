@@ -16,6 +16,7 @@ use std::time::Duration;
 use settings_store::hardware::{InputDeviceKind, TouchpadClickMethod, TouchpadScrollMethod};
 
 pub use settings_store::hardware::INPUT_SECTION as SECTION;
+use settings_store::hardware::{INPUT_DEVICE_SECTION, INPUT_SECTIONS};
 
 /// Fully validated per-user XKB keymap request. The strings are ready for
 /// libxkbcommon's rules API: one comma-separated variant slot per layout,
@@ -258,12 +259,15 @@ impl InputSettings {
 
     /// Read the live settings file. Any failure yields the defaults — a corrupt config must never leave the session without a working touchpad.
     pub fn load() -> Self {
-        Self::from_section(&settings_store::load_section(SECTION))
+        Self::from_section(&settings_store::load_sections(INPUT_SECTIONS))
     }
 
     /// Read `source` with the same fallbacks as [`Self::load`].
     pub fn load_in(source: &dyn settings_store::SettingsSource) -> Self {
-        Self::from_section(&settings_store::load_section_in(source, SECTION))
+        Self::from_section(&settings_store::merged_sections(
+            &source.load(),
+            INPUT_SECTIONS,
+        ))
     }
 
     /// libinput's pointer-acceleration speed for this setting: the slider's `0.0 … 1.0` mapped onto libinput's `-1.0 … 1.0`, so the midpoint lands exactly on the untouched default of `0.0`.
@@ -344,26 +348,46 @@ impl SettingsChange {
 
     /// The model providers, whose models apps offer for an agent's run.
     pub fn agent_providers(&self) -> bool {
-        self.touches(&[agent_provider_config::SETTINGS_SECTION])
+        self.touches(&[
+            agent_provider_config::SETTINGS_SECTION,
+            agent_provider_config::HOSTED_SECTION,
+        ])
     }
 
     /// The backend's input devices: pointer and keyboard preferences
-    /// (`input`), accessibility filters and cursor size (`accessibility`),
-    /// and the shortcut chords tablet buttons press (`shortcuts`).
+    /// (`input`), this device's touchpads, tablets and keyboards
+    /// (`input_device`), accessibility filters and cursor size
+    /// (`accessibility`), and the shortcut chords tablet buttons press
+    /// (`shortcuts`).
     pub fn input_devices(&self) -> bool {
-        self.touches(&[SECTION, tilo_accessibility_settings::SECTION, "shortcuts"])
+        self.touches(&[
+            SECTION,
+            INPUT_DEVICE_SECTION,
+            tilo_accessibility_settings::SECTION,
+            "shortcuts",
+        ])
     }
 
     /// The seat and Xwayland keymaps and the input-method owner: keyboard
-    /// sources (`input`) and the on-screen keyboard (`accessibility`).
+    /// sources (`input`), this device's keyboards (`input_device`) and the
+    /// on-screen keyboard (`accessibility`).
     pub fn keyboard(&self) -> bool {
-        self.touches(&[SECTION, tilo_accessibility_settings::SECTION])
+        self.touches(&[
+            SECTION,
+            INPUT_DEVICE_SECTION,
+            tilo_accessibility_settings::SECTION,
+        ])
     }
 
-    /// The display arrangement, scale, modes and the pending display
-    /// transaction. The only change that reconciles outputs.
+    /// The display arrangement, scale, modes, the night light and the
+    /// pending display transaction. The only change that reconciles outputs.
     pub fn displays(&self) -> bool {
-        self.touches(&["display", "display_transaction", "display_profiles"])
+        self.touches(&[
+            settings_store::hardware::DISPLAY_SECTION,
+            settings_store::hardware::DISPLAY_PERSON_SECTION,
+            "display_transaction",
+            "display_profiles",
+        ])
     }
 
     /// A request to show each output's identity badge.
@@ -383,7 +407,10 @@ impl SettingsChange {
 
     /// Which desktop controls the chrome offers.
     pub fn desktop_controls(&self) -> bool {
-        self.touches(&["desktop_controls"])
+        self.touches(&[
+            settings_store::desktop_controls::DESKTOP_CONTROLS_SECTION,
+            settings_store::desktop_controls::DESKTOP_CONTROLS_DEVICE_SECTION,
+        ])
     }
 
     /// The person's record of the desktop's control hints: what they learned

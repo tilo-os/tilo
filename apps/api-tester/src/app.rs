@@ -15,7 +15,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::rc::Rc;
 
 use ui::LocalState;
@@ -30,24 +29,24 @@ use winit::event::WindowEvent;
 use crate::actions::ApiTesterEffect;
 use crate::commands::{Cmd, FormMode, FormTarget, RowEdit, Sink, Table};
 use crate::dialog::{self, Fields};
-use crate::http::{self, Outgoing};
+use crate::http;
 use crate::kv::{KvChange, KvQueue};
 use crate::model::{
-    Auth, BodyMode, Collection, Environment, HistoryEntry, HttpMethod, Id, KeyValue, Request,
-    RequestTab, ResponseData, ResponseView,
+    Auth, BodyMode, Collection, Environment, HistoryEntry, Id, KeyValue, Request, RequestTab,
+    ResponseData, ResponseView,
 };
+use crate::palette::short_path;
 use crate::record::{Credentials, Variable};
 use crate::request::{self, BlankRows};
 use crate::resource::{Workspace, workspace as verbs};
-use ui::framework::{Actions, Dispatcher, EffectAnswer, EffectCx, Effected, Submit, SurfaceCx};
-use ui::secrets::SecretStore;
-const CREDENTIAL: &str = "request-credential";
-const SECRET_VARIABLE: &str = "variable-value";
-use crate::palette::short_path;
 use crate::response;
 use crate::sidebar::{self, SidebarView, parse_history, parse_request};
-use crate::vars;
+use ui::framework::{Actions, Dispatcher, Live, Submit, ViewCx};
 use ui::widget::{Slot, SlotHandle};
+
+mod store;
+pub(crate) use store::window;
+use store::{SECRET_VARIABLE, Shared, Store};
 
 /// What the picker reads when no environment is chosen.
 const NO_ENV: &str = "No environment";
@@ -224,18 +223,14 @@ pub struct ApiTesterApp {
     history: Vec<HistoryEntry>,
     /// The record as last presented.
     workspace: Rc<Workspace>,
-    response: Option<ResponseData>,
-    /// A request is in flight.
-    sending: bool,
-    /// Set when the person cancels the request in flight: the send watches it
-    /// and stops, rather than holding the app's only primary action forever.
-    send_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// A copy whose outcome the clipboard reports after it returned: a copy
-    /// that fails later is said, not confirmed.
-    copy: ui::CopyWatch,
-    /// What the last copy did, shown once in the response pane.
-    notice: Option<String>,
-    error: Option<String>,
+    /// What the window shares with the view's effect handler: the response,
+    /// the request in flight and the secrets on this device.
+    store: Shared,
+    /// The workspace as the document holds it, shown as it changes; `None`
+    /// for a window outside the framework.
+    live: Option<Live<Workspace>>,
+    /// The `(revision, loads)` of the workspace last shown.
+    presented: Option<(u64, u64)>,
 
     // --- View state (local, per-peer) ---
     active_tab: RequestTab,
@@ -265,10 +260,10 @@ pub struct ApiTesterApp {
     /// submitted as one undo step each through the host, the same path the
     /// palette and agents take.
     dispatcher: Option<Dispatcher<Workspace>>,
-    secrets: Option<SecretStore>,
-    credentials: HashMap<Id, String>,
-    read_only: bool,
-    adopted: bool,
+    /// Whether this participant may only view, as the view follows it.
+    read_only: Option<LocalState<bool>>,
+    /// The permission the window was last drawn under.
+    shown_read_only: bool,
     /// Mounted on a record another participant created: its content is
     /// theirs to seed, so an empty document is left untouched.
     dirty: bool,
@@ -359,12 +354,9 @@ impl ApiTesterApp {
             request: model.request,
             history: model.history,
             workspace: Rc::default(),
-            response,
-            sending: false,
-            send_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            copy: ui::CopyWatch::default(),
-            notice: None,
-            error: None,
+            store: Rc::new(RefCell::new(Store::new(sink.clone(), response))),
+            live: None,
+            presented: None,
             active_tab: RequestTab::Params,
             response_view: ResponseView::Pretty,
             selected,
@@ -391,10 +383,8 @@ impl ApiTesterApp {
             env_state,
             sink,
             dispatcher: None,
-            secrets: None,
-            credentials: HashMap::new(),
-            read_only: false,
-            adopted: false,
+            read_only: None,
+            shown_read_only: false,
             dirty: true,
         };
         app.refresh_env_vars();
@@ -521,19 +511,23 @@ impl ApiTesterApp {
         let known = match scenario {
             "default" => true,
             "empty" => {
-                self.response = None;
-                self.sending = false;
-                self.error = None;
+                let mut state = self.state();
+                state.response = None;
+                state.sending = false;
+                state.error = None;
+                drop(state);
                 self.stale.response = true;
                 true
             }
             "error" => {
-                self.response = None;
-                self.sending = false;
-                self.error = Some(
+                let mut state = self.state();
+                state.response = None;
+                state.sending = false;
+                state.error = Some(
                     "Could not reach api.example.com. Check the URL or your network connection."
                         .into(),
                 );
+                drop(state);
                 self.stale.response = true;
                 true
             }
@@ -688,7 +682,7 @@ impl ApiTesterApp {
             self.slots.url_bar.set(request::url_bar(&self.sink));
             self.slots
                 .request_actions
-                .set(request::request_actions(&self.sink, self.sending));
+                .set(request::request_actions(&self.sink, self.sending()));
         }
         if std::mem::take(&mut self.stale.environments) {
             self.slots.environments.set(Self::environment_picker(
@@ -730,35 +724,42 @@ impl ApiTesterApp {
         {
             slot.set(request::auth_inner(&self.request.auth, &self.sink));
         }
-        if self.copy.failed() {
-            self.notice = None;
-            self.error = Some("Could not copy to the clipboard.".to_owned());
-            self.stale.response = true;
-        }
+        let copy_failed = {
+            let mut state = self.state();
+            let failed = state.copy.failed();
+            if failed {
+                state.notice = None;
+                state.error = Some("Could not copy to the clipboard.".to_owned());
+            }
+            failed
+        };
+        self.stale.response |= copy_failed;
         if std::mem::take(&mut self.stale.response) {
             self.rebuild_response();
         }
         if std::mem::take(&mut self.stale.response_body)
-            && let (Some(slot), Some(data)) = (&self.slots.response_body, &self.response)
+            && let (Some(slot), Some(data)) =
+                (&self.slots.response_body, &self.store.borrow().response)
         {
             slot.set(response::body(data, self.response_view));
         }
     }
 
     fn rebuild_response(&mut self) {
-        if self.sending {
+        let store = self.store.borrow();
+        if store.sending {
             self.slots.response.set(response::sending(&self.sink));
             self.slots.response_body = None;
             self.stale.response_body = false;
             return;
         }
-        match (&self.response, &self.error) {
+        match (&store.response, &store.error) {
             (Some(data), _) => {
                 let built = response::response(
                     data,
                     self.response_view,
                     &self.sink,
-                    self.notice.as_deref(),
+                    store.notice.as_deref(),
                 );
                 self.slots.response.set(built.element);
                 self.slots.response_body = Some(built.body);
@@ -781,34 +782,9 @@ impl ApiTesterApp {
 
     /// The active environment's variable map (for `{{var}}` substitution).
     fn env_vars(&self) -> HashMap<String, String> {
-        match self
-            .active_env
-            .as_ref()
-            .and_then(|id| self.environments.iter().find(|e| &e.id == id))
-        {
-            Some(env) => {
-                let variables: Vec<_> = env
-                    .variables
-                    .iter()
-                    .map(|variable| {
-                        let mut variable = variable.clone();
-                        if variable.secret {
-                            variable.value = self
-                                .secret(SECRET_VARIABLE, &variable.id)
-                                .unwrap_or_default();
-                        }
-                        variable
-                    })
-                    .collect();
-                vars::var_map(&variables)
-            }
-            None => HashMap::new(),
-        }
-    }
-
-    /// Resolve the request being composed against the active environment.
-    fn outgoing(&self) -> Outgoing {
-        http::build_outgoing(&self.request, &self.env_vars())
+        self.store
+            .borrow()
+            .env_vars(&self.environments, self.active_env.as_ref())
     }
 
     // -----------------------------------------------------------------------
@@ -949,7 +925,7 @@ impl ApiTesterApp {
                 request
             };
             self.selected = None;
-            self.error = None;
+            self.state().error = None;
             self.active_tab = RequestTab::Params;
             self.submit(Workspace::OPEN_SENT.with(entry.id));
             self.stale.request = true;
@@ -1264,31 +1240,6 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
-    fn open_request_menu_action(&mut self, action: &str) -> Result<(), String> {
-        let mode = match action {
-            "Save request…" => FormMode::SaveRequest,
-            "Rename request…" => FormMode::RenameRequest,
-            "Delete request…" => {
-                self.delete_request(FormTarget::default());
-                return Ok(());
-            }
-            _ => return Err(format!("unknown request action `{action}`")),
-        };
-        self.open_form(mode, FormTarget::default());
-        Ok(())
-    }
-
-    fn open_environment_menu_action(&mut self, action: &str) -> Result<(), String> {
-        let mode = match action {
-            "Rename environment…" => FormMode::RenameEnvironment,
-            "Add variable…" => FormMode::NewVariable,
-            "Delete variable…" => FormMode::DeleteVariable,
-            _ => return Err(format!("unknown environment action `{action}`")),
-        };
-        self.open_form(mode, FormTarget::default());
-        Ok(())
-    }
-
     fn submit_form(&mut self) {
         let Some(form) = self.form.take() else {
             return;
@@ -1409,8 +1360,16 @@ impl ApiTesterApp {
             // The window names the new variable, so a secret's value is kept
             // under its id before the variable is added.
             let id = crate::model::fresh_id();
-            if secret && let Err(error) = self.keep_secret(SECRET_VARIABLE, id.as_str(), &value) {
-                self.error = Some(format!("Couldn't keep the value on this device: {error}"));
+            let kept = secret
+                .then(|| {
+                    self.store
+                        .borrow()
+                        .keep_secret(SECRET_VARIABLE, id.as_str(), &value)
+                })
+                .transpose();
+            if let Err(error) = kept {
+                self.state().error =
+                    Some(format!("Couldn't keep the value on this device: {error}"));
                 self.stale.response = true;
                 return;
             }
@@ -1433,8 +1392,13 @@ impl ApiTesterApp {
             return;
         };
         if secret {
-            if let Err(error) = self.keep_secret(SECRET_VARIABLE, &variable.id, &value) {
-                self.error = Some(format!("Couldn't keep the value on this device: {error}"));
+            let kept = self
+                .store
+                .borrow()
+                .keep_secret(SECRET_VARIABLE, &variable.id, &value);
+            if let Err(error) = kept {
+                self.state().error =
+                    Some(format!("Couldn't keep the value on this device: {error}"));
                 self.stale.response = true;
             }
             return;
@@ -1517,6 +1481,8 @@ impl ui::widget::Decorator for ApiTesterApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
+        self.follow_store();
         self.refresh_views();
         self.nav.sync(state, path);
     }
@@ -1590,7 +1556,7 @@ impl ui::widget::Decorator for ApiTesterApp {
 
     fn needs_redraw(&self) -> bool {
         self.dirty
-            || self.sending
+            || self.sending()
             || self.pose.is_some()
             || self.menu_pending
             || self.nav.needs_redraw()
@@ -1638,7 +1604,8 @@ impl ui::widget::Decorator for ApiTesterApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.sending
+        self.sending()
+            || self.store_changed()
             || self.sink.reset_area.get()
             || !self.sink.borrow().is_empty()
             || self.nav.needs_idle_sync()
@@ -1646,6 +1613,7 @@ impl ui::widget::Decorator for ApiTesterApp {
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         self.nav.settle(edits, path);
+        self.follow_store();
         self.drain_commands();
         self.refresh_views();
     }
@@ -1658,58 +1626,6 @@ impl ui::widget::Decorator for ApiTesterApp {
 mod tests;
 
 impl ApiTesterApp {
-    fn secret(&self, purpose: &'static str, item: &str) -> Option<String> {
-        let secret = self
-            .secrets
-            .as_ref()?
-            .item(purpose, item)
-            .get_blocking()
-            .ok()??;
-        String::from_utf8(secret.expose().to_vec()).ok()
-    }
-}
-
-impl ApiTesterApp {
-    fn keep_secret(&self, purpose: &'static str, item: &str, value: &str) -> Result<(), String> {
-        let secrets = self
-            .secrets
-            .as_ref()
-            .ok_or_else(|| "this window keeps no secrets".to_string())?;
-        secrets
-            .item(purpose, item)
-            .put_blocking(value.as_bytes())
-            .map_err(|error| error.to_string())
-    }
-}
-
-impl ApiTesterApp {
-    fn credential(&mut self, id: &Id, reference: &str) -> Result<String, String> {
-        if !reference.is_empty() {
-            let store = self
-                .secrets
-                .as_ref()
-                .ok_or("this window keeps no secrets")?;
-            let auth = crate::credentials::resolve(
-                &Auth::SecretRef {
-                    id: reference.into(),
-                    scheme: String::new(),
-                },
-                store,
-            )
-            .map_err(str::to_owned)?;
-            return Ok(auth.secret().unwrap_or_default().to_owned());
-        }
-        // Compatibility with credentials created before immutable references.
-        if let Some(known) = self.credentials.get(id) {
-            return Ok(known.clone());
-        }
-        let found = self.secret(CREDENTIAL, id.as_str()).unwrap_or_default();
-        self.credentials.insert(id.clone(), found.clone());
-        Ok(found)
-    }
-}
-
-impl ApiTesterApp {
     /// Submit a field edit or a verb of the shared record: the host checks
     /// the participant may, applies it as one undo step and presents the
     /// changed workspace.
@@ -1718,324 +1634,81 @@ impl ApiTesterApp {
             dispatcher.submit(submit);
         }
     }
-}
 
-impl ApiTesterApp {
-    fn import_legacy(&self, snapshot: String, cx: &mut EffectCx<Workspace, Self>) -> EffectAnswer {
-        use base64::Engine;
-        use ui::tilo_resource::Model;
-        if *self.workspace != Workspace::blank() {
-            return Err("Import requires a new, empty workspace".into());
-        }
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(snapshot)
-            .map_err(|_| "Invalid base64 snapshot")?;
-        let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
-        let before = self.workspace.clone();
-        let imported = ui::rt::app().spawn_pinned(move || async move {
-            crate::migration::snapshot(&bytes, &secrets).await
-        });
-        Ok(cx.spawn(
-            move |_| async move {
-                imported
-                    .await
-                    .map_err(|_| "Import task failed".to_string())?
-            },
-            move |app: &mut Self, imported, cx| {
-                let imported = imported?;
-                if app.workspace != before {
-                    return Err("Workspace changed during import; use a new workspace".into());
-                }
-                cx.submit(Workspace::IMPORT_WORKSPACE.with(imported.to_json()));
-                Ok(Effected::done())
-            },
-        ))
+    /// What the window shares with the view's effect handler.
+    pub(crate) fn state(&self) -> std::cell::RefMut<'_, Store> {
+        self.store.borrow_mut()
     }
 
-    /// Seal `secret` as the open request's credential, keeping only its
-    /// reference in the document.
-    fn set_credential(&self, secret: String, cx: &mut EffectCx<Workspace, Self>) -> EffectAnswer {
-        let id = self.request.id.clone();
-        let before = self.workspace.request.auth.clone();
-        let auth = self.request.auth.with_secret(&secret);
-        let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
-        // Build storage futures on their owning runtime thread: browser
-        // storage handles must never move between threads.
-        let stored = ui::rt::app().spawn_pinned(move || async move {
-            crate::credentials::seal_async(&auth, &secrets)
-                .await
-                .map_err(str::to_owned)
-        });
-        Ok(cx.spawn(
-            move |_| async move {
-                stored
-                    .await
-                    .map_err(|_| "credential storage task failed".to_string())?
-            },
-            move |app: &mut Self, sealed, cx| {
-                let Auth::SecretRef { id: reference, .. } = sealed? else {
-                    return Err("choose an authentication scheme first".into());
-                };
-                if app.request.id != id || app.workspace.request.auth != before {
-                    return Err("request changed while saving authentication; try again".into());
-                }
-                cx.submit(Workspace::paths().request.auth.reference.replace(reference));
-                app.request.auth = app.request.auth.with_secret(&secret);
-                app.dirty = true;
-                Ok(Effected::done())
-            },
-        ))
-    }
-
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: ApiTesterEffect,
-        cx: &mut EffectCx<Workspace, Self>,
-    ) -> EffectAnswer {
-        match effect {
-            ApiTesterEffect::ImportLegacy { snapshot } => self.import_legacy(snapshot, cx),
-            ApiTesterEffect::PickEnvironment { choice } => {
-                self.sink.borrow_mut().push(Cmd::PickEnvironment(choice));
-                self.dirty = true;
-                Ok(Effected::done())
-            }
-            ApiTesterEffect::Send => {
-                let reference = self.workspace.request.auth.reference.clone();
-                let credential = self.credential(&self.request.id.clone(), &reference)?;
-                self.request.auth = self.request.auth.with_secret(&credential);
-                let method = self.request.method;
-                let out = self.outgoing();
-                self.start_send(method, out, cx)
-            }
-            ApiTesterEffect::SendSaved { request } => {
-                let request = Id::from_raw(request);
-                let Some((collection, saved)) = self.workspace.saved(&request) else {
-                    return Err("saved request no longer exists".to_string());
-                };
-                let mut outgoing = saved.shown(&request);
-                let reference = saved.auth.reference.clone();
-                cx.submit(Workspace::OPEN_REQUEST.with(verbs::OpenRequest {
-                    collection: collection.clone(),
-                    request,
-                }));
-                let credential = self.credential(&outgoing.id, &reference)?;
-                outgoing.auth = outgoing.auth.with_secret(&credential);
-                let out = http::build_outgoing(&outgoing, &self.env_vars());
-                self.start_send(outgoing.method, out, cx)
-            }
-            ApiTesterEffect::CancelSend => {
-                self.cancel_send();
-                Ok(Effected::done())
-            }
-            ApiTesterEffect::CopyResponse { part } => {
-                let copied = match part.as_str() {
-                    "body" => self.copy_body(),
-                    "headers" => self.copy_headers(),
-                    "request" => self.copy_request(),
-                    other => Err(format!("there is nothing called {other} to copy")),
-                };
-                copied.map(|()| Effected::done())
-            }
-            ApiTesterEffect::SetCredential { secret } => self.set_credential(secret, cx),
-            ApiTesterEffect::SetSecretValue { variable, value } => {
-                let secret = self
-                    .environments
-                    .iter()
-                    .flat_map(|environment| &environment.variables)
-                    .find(|row| row.id == variable)
-                    .map(|row| row.secret);
-                match secret {
-                    Some(true) => {
-                        self.keep_secret(SECRET_VARIABLE, &variable, &value)?;
-                        self.dirty = true;
-                        Ok(Effected::done())
-                    }
-                    Some(false) => {
-                        Err("this variable's value is shared; set it as a document edit".into())
-                    }
-                    None => Err("no such variable".into()),
-                }
-            }
-            ApiTesterEffect::RequestMenu { action } => {
-                self.open_request_menu_action(&action)?;
-                Ok(Effected::done())
-            }
-            ApiTesterEffect::EnvironmentMenu { action } => {
-                self.open_environment_menu_action(&action)?;
-                Ok(Effected::done())
-            }
-        }
+    /// A request is in flight.
+    fn sending(&self) -> bool {
+        self.store.borrow().sending
     }
 }
 
 impl ApiTesterApp {
-    /// Stop the request in flight. The send wakes on the flag within a
-    /// moment and reports that it was cancelled, so nothing is left looking
-    /// like it is still on its way.
-    fn cancel_send(&mut self) {
-        if !self.sending {
-            return;
-        }
-        self.send_cancel
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.sending = false;
-        self.error = Some(http::CANCELLED.to_owned());
-        self.dirty = true;
-        self.stale.response = true;
-        self.retrigger_send_slot();
-    }
-
-    /// Copy the response body exactly as the pane shows it — the text a bug
-    /// report or a colleague needs.
-    fn copy_body(&mut self) -> Result<(), String> {
-        let Some(response) = &self.response else {
-            return self.no_response_to_copy();
-        };
-        let body = response.body.clone();
-        self.copy_to_clipboard(&body, "api-copied-body")
-    }
-
-    /// Copy every response header, one `Name: value` per line, so a token in
-    /// one of them can be taken without retyping it.
-    fn copy_headers(&mut self) -> Result<(), String> {
-        let Some(response) = &self.response else {
-            return self.no_response_to_copy();
-        };
-        let text = response
-            .headers
-            .iter()
-            .map(|header| format!("{}: {}", header.key, header.value))
-            .collect::<Vec<_>>()
-            .join(
-                "
-",
-            );
-        self.copy_to_clipboard(&text, "api-copied-headers")
-    }
-
-    fn no_response_to_copy(&mut self) -> Result<(), String> {
-        let reason = "There is no response to copy yet.";
-        self.error = Some(reason.to_owned());
-        self.dirty = true;
-        self.stale.response = true;
-        Err(reason.to_owned())
-    }
-
-    /// Copy the request as it was authored (**with its `{{variables}}`, and
-    /// never a credential, which stays on this device**), the shape a bug
-    /// report needs.
-    fn copy_request(&mut self) -> Result<(), String> {
-        let request = &self.request;
-        let mut text = format!("{} {}", request.method.as_str(), request.url);
-        for row in request.headers.iter().filter(|row| row.enabled) {
-            let _ = write!(text, "\n{}: {}", row.key, row.value);
-        }
-        text.push('\n');
-        if !request.body_text.trim().is_empty() {
-            text.push('\n');
-            text.push_str(&request.body_text);
-            text.push('\n');
-        }
-        self.copy_to_clipboard(&text, "api-copied-request")
-    }
-
-    /// Put `text` on the clipboard and say so, or say it did not take.
-    fn copy_to_clipboard(&mut self, text: &str, done: &str) -> Result<(), String> {
-        let copied = self.copy.watch(ui::try_clipboard_copy(text));
-        if copied {
-            self.error = None;
-            self.notice = Some(ui::i18n::I18nManager::format(done, &[]));
-        }
-        self.dirty = true;
-        self.stale.response = true;
-        if copied {
-            Ok(())
-        } else {
-            Err("Could not copy to the clipboard.".to_owned())
-        }
-    }
-
-    /// Show what the cancel did, the moment it is pressed: the response pane
-    /// and the bar's Send/Cancel control.
-    fn retrigger_send_slot(&mut self) {
-        self.stale.response = true;
+    /// Take part in the view `cx` builds: edit through its dispatcher, keep
+    /// secrets in its storage, and follow the document it holds.
+    pub(crate) fn attach(&mut self, cx: &ViewCx<Workspace>) {
+        let dispatcher = cx.dispatcher();
+        *self.sink.dispatcher.borrow_mut() = Some(dispatcher.clone());
+        *self.sink.actions.borrow_mut() = Some(cx.actions());
+        self.dispatcher = Some(dispatcher);
+        self.state().keep_secrets_in(cx.storage().secrets());
+        self.live = Some(cx.live().clone());
+        self.read_only = Some(cx.read_only_state());
+        // The text controls edit at their paths through the dispatcher now.
         self.stale.url_bar = true;
+        self.stale.request = true;
     }
 
-    fn start_send(
-        &mut self,
-        method: HttpMethod,
-        out: Outgoing,
-        cx: &mut EffectCx<Workspace, Self>,
-    ) -> EffectAnswer {
-        if self.sending {
-            return Err("another API request is already running".into());
-        }
-        // With no address there is nothing to send to; a browser would
-        // quietly fetch the page itself. Say what is missing where the
-        // answer would show.
-        if out
-            .url
-            .split(['?', '#'])
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .is_empty()
+    /// Show the workspace when the document changed since it was last shown,
+    /// and draw again when the participant's permission to edit changed.
+    fn follow_document(&mut self) {
+        if let Some(read_only) = self.read_only.as_ref().map(LocalState::get)
+            && read_only != self.shown_read_only
         {
-            let missing = String::from("Enter a URL to send the request to.");
-            self.response = None;
-            self.error = Some(missing.clone());
-            self.stale.response = true;
+            self.shown_read_only = read_only;
             self.dirty = true;
-            return Err(missing);
         }
-        self.sending = true;
-        self.error = None;
-        self.notice = None;
-        self.dirty = true;
-        // A fresh flag for this send: an earlier cancel must not stop it.
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.send_cancel = std::sync::Arc::clone(&cancel);
-        let url = out.url.clone();
-        Ok(cx.spawn(
-            move |_| async move { http::send(&out, &cancel).await },
-            move |app: &mut Self, sent, cx| {
-                app.sending = false;
-                app.dirty = true;
-                match sent {
-                    Ok(response) => {
-                        cx.submit(Workspace::RECORD_SENT.with(verbs::RecordSent {
-                            method: method.as_str().to_owned(),
-                            url,
-                            status: response.status,
-                            duration_ms: response.duration_ms,
-                        }));
-                        let answer = Effected::value(http::answer(&response));
-                        app.response = Some(response);
-                        app.response_view = ResponseView::Pretty;
-                        app.stale.response = true;
-                        app.stale.response_body = true;
-                        Ok(answer)
-                    }
-                    Err(error) => {
-                        app.error = Some(error.clone());
-                        app.stale.response = true;
-                        Err(error)
-                    }
-                }
-            },
-        ))
+        let Some(shown) = self
+            .live
+            .as_ref()
+            .and_then(|live| live.changed_since(&mut self.presented))
+        else {
+            return;
+        };
+        self.present_workspace(&shown);
     }
-}
 
-impl ApiTesterApp {
-    pub(crate) fn set_read_only(&mut self, read_only: bool) {
-        self.read_only = read_only;
-        self.dirty = true;
+    /// Bring the window in step with what the effects changed and staged.
+    fn follow_store(&mut self) {
+        let (shown, staged) = {
+            let mut state = self.state();
+            (std::mem::take(&mut state.shown), state.staged.take())
+        };
+        if let Some(scenario) = staged {
+            self.stage_scenario(scenario.0.as_deref());
+        }
+        self.stale.response |= shown.response || shown.arrived;
+        self.stale.url_bar |= shown.url_bar;
+        if shown.arrived {
+            self.response_view = ResponseView::Pretty;
+            self.stale.response_body = true;
+        }
+        if shown.response || shown.arrived || shown.url_bar || shown.redraw {
+            self.dirty = true;
+        }
     }
-}
 
-impl ApiTesterApp {
+    /// Whether the effects changed or staged something the window has not
+    /// shown yet.
+    fn store_changed(&self) -> bool {
+        let store = self.store.borrow();
+        let shown = &store.shown;
+        store.staged.is_some() || shown.response || shown.arrived || shown.url_bar || shown.redraw
+    }
+
     pub(crate) fn present_workspace(&mut self, state: &Rc<Workspace>) {
         self.workspace = Rc::clone(state);
         let collections = state.collections_shown();
@@ -2046,9 +1719,12 @@ impl ApiTesterApp {
             || self.active_env != state.active_environment
             || self.history != history;
         let mut request = state.request_shown();
-        match self.credential(&request.id, &state.request.auth.reference) {
+        let credential = self
+            .state()
+            .credential(&request.id, &state.request.auth.reference);
+        match credential {
             Ok(secret) => request.auth = request.auth.with_secret(&secret),
-            Err(error) => self.error = Some(error),
+            Err(error) => self.state().error = Some(error),
         }
         let replaced = self.request.id != request.id;
         let body_changed = self.request.body_mode != request.body_mode;
@@ -2093,22 +1769,10 @@ impl ApiTesterApp {
         self.stale.body_inner |= body_changed;
         self.stale.auth_inner |= auth_changed;
         self.stale.header = true;
-        self.adopted = true;
     }
-    pub(crate) fn attach_surface(&mut self, cx: &SurfaceCx<Workspace>) {
-        let dispatcher = cx.dispatcher();
-        self.read_only = dispatcher.read_only();
-        *self.sink.dispatcher.borrow_mut() = Some(dispatcher.clone());
-        *self.sink.actions.borrow_mut() = Some(cx.actions());
-        self.dispatcher = Some(dispatcher);
-        self.secrets = Some(cx.secrets());
-        self.credentials.clear();
-        // The text controls edit at their paths through the dispatcher now.
-        self.stale.url_bar = true;
-        self.stale.request = true;
-    }
+
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        self.response = (scenario != Some("empty")).then(http::sample_response);
+        self.state().response = (scenario != Some("empty")).then(http::sample_response);
         if let Some(name) = scenario {
             let mapped = if name == "rail-open" { "drawer" } else { name };
             self.stage(mapped);
