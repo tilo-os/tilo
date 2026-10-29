@@ -1,7 +1,9 @@
-//! `ext_image_copy_capture_v1` with `ext_output_image_capture_source_v1`:
-//! a session per captured output that announces the buffers it takes, then
-//! one frame at a time, the first at once and each later one once the
-//! output changed.
+//! `ext_image_copy_capture_v1` with output and window sources
+//! (`ext_output_image_capture_source_manager_v1`,
+//! `ext_foreign_toplevel_image_capture_source_manager_v1`): a session per
+//! captured output or window that announces the buffers it takes, then one
+//! frame at a time, the first at once and each later one once what it
+//! shows changed.
 //!
 //! Cursor sessions (the pointer as its own image) are not offered: their
 //! capture sessions stop at once, and clients draw the pointer into frames
@@ -12,6 +14,9 @@ use std::time::Duration;
 
 use smithay::output::Output;
 use smithay::reexports::wayland_protocols::ext::image_capture_source::v1::server::{
+    ext_foreign_toplevel_image_capture_source_manager_v1::{
+        self, ExtForeignToplevelImageCaptureSourceManagerV1,
+    },
     ext_image_capture_source_v1::{self, ExtImageCaptureSourceV1},
     ext_output_image_capture_source_manager_v1::{self, ExtOutputImageCaptureSourceManagerV1},
 };
@@ -27,16 +32,17 @@ use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource as _, WEnum,
 };
 use smithay::utils::{Buffer, Physical, Rectangle, Size, Transform};
+use smithay::wayland::foreign_toplevel_list::ForeignToplevelHandle;
 
 use super::{
-    DmabufTargets, Failure, Frame as Copy, Reply, SHM_FORMATS, Watcher, buffer_size,
-    region_on_output,
+    DmabufTargets, Failure, Frame as Copy, Reply, SHM_FORMATS, Target, Watcher, region_on_output,
 };
 use crate::state::{ClientState, State};
 
 pub(super) fn create_globals(display: &DisplayHandle) {
     display.create_global::<State, ExtImageCopyCaptureManagerV1, ()>(1, ());
     display.create_global::<State, ExtOutputImageCaptureSourceManagerV1, ()>(1, ());
+    display.create_global::<State, ExtForeignToplevelImageCaptureSourceManagerV1, ()>(1, ());
 }
 
 fn trusted(client: &Client) -> bool {
@@ -45,15 +51,23 @@ fn trusted(client: &Client) -> bool {
         .is_some_and(ClientState::trusted)
 }
 
-/// What a capture source shows: an output, by name; `None` when the client
-/// named an output that is not ours.
+/// What a capture source shows; `None` when the client named an output or
+/// window that is not ours.
 pub struct SourceData {
-    output: Option<String>,
+    source: Option<Source>,
+}
+
+#[derive(Clone, Debug)]
+enum Source {
+    /// An output, by name.
+    Output(String),
+    /// A window, by its foreign-toplevel identifier.
+    Window(String),
 }
 
 /// A session's source and what it last told its client.
 pub struct SessionData {
-    output: Option<String>,
+    source: Option<Source>,
     cursor: bool,
     state: Mutex<SessionState>,
 }
@@ -159,17 +173,24 @@ fn announce(
     session.done();
 }
 
-/// The buffer size frames of `output` take, when it is shown.
-fn frame_size(
-    state: &State,
-    output: &str,
-) -> Option<(Rectangle<i32, Physical>, Size<i32, Physical>)> {
-    let (output, shown) = state.shown_size(output)?;
-    let region = region_on_output(None, 1.0, shown)?;
-    Some((region, buffer_size(region.size, output.current_transform())))
+/// What frames of `source` copy now, and the size of their buffers; `None`
+/// when it is gone.
+fn frame_target(state: &State, source: &Source) -> Option<(Target, Size<i32, Physical>)> {
+    let target = match source {
+        Source::Output(name) => {
+            let (_, shown) = state.shown_size(name)?;
+            Target::Output {
+                name: name.clone(),
+                region: region_on_output(None, 1.0, shown)?,
+            }
+        }
+        Source::Window(identifier) => Target::Window(identifier.clone()),
+    };
+    let size = state.frame_size(&target)?;
+    Some((target, size))
 }
 
-/// Stop sessions whose output is gone and tell the others when the size of
+/// Stop sessions whose output or window is gone and tell the others when the size of
 /// their frames changed.
 pub(super) fn refresh_sessions(state: &mut State) {
     state.capture.sessions.retain(Session::alive);
@@ -184,9 +205,9 @@ pub(super) fn refresh_sessions(state: &mut State) {
             continue;
         }
         let size = data
-            .output
-            .as_deref()
-            .and_then(|output| frame_size(state, output))
+            .source
+            .as_ref()
+            .and_then(|source| frame_target(state, source))
             .map(|(_, size)| size);
         match size {
             None => {
@@ -230,12 +251,52 @@ impl Dispatch<ExtOutputImageCaptureSourceManagerV1, ()> for State {
         data_init: &mut DataInit<'_, Self>,
     ) {
         if let ext_output_image_capture_source_manager_v1::Request::CreateSource {
-            source,
+            source: source_object,
             output,
         } = request
         {
-            let output = Output::from_resource(&output).map(|output| output.name());
-            data_init.init(source, SourceData { output });
+            let source = Output::from_resource(&output).map(|output| Source::Output(output.name()));
+            data_init.init(source_object, SourceData { source });
+        }
+    }
+}
+
+impl GlobalDispatch<ExtForeignToplevelImageCaptureSourceManagerV1, ()> for State {
+    fn bind(
+        _state: &mut Self,
+        _display: &DisplayHandle,
+        _client: &Client,
+        resource: New<ExtForeignToplevelImageCaptureSourceManagerV1>,
+        _data: &(),
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        data_init.init(resource, ());
+    }
+
+    fn can_view(client: Client, _data: &()) -> bool {
+        trusted(&client)
+    }
+}
+
+impl Dispatch<ExtForeignToplevelImageCaptureSourceManagerV1, ()> for State {
+    fn request(
+        _state: &mut Self,
+        _client: &Client,
+        _manager: &ExtForeignToplevelImageCaptureSourceManagerV1,
+        request: ext_foreign_toplevel_image_capture_source_manager_v1::Request,
+        _data: &(),
+        _display: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        if let ext_foreign_toplevel_image_capture_source_manager_v1::Request::CreateSource {
+            source,
+            toplevel_handle,
+        } = request
+        {
+            let window = ForeignToplevelHandle::from_resource(&toplevel_handle)
+                .filter(|handle| !handle.is_closed())
+                .map(|handle| Source::Window(handle.identifier()));
+            data_init.init(source, SourceData { source: window });
         }
     }
 }
@@ -296,13 +357,13 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for State {
                         return;
                     }
                 };
-                let output = source
+                let captured = source
                     .data::<SourceData>()
-                    .and_then(|data| data.output.clone());
+                    .and_then(|data| data.source.clone());
                 let session = data_init.init(
                     session,
                     SessionData {
-                        output,
+                        source: captured,
                         cursor,
                         state: Mutex::new(SessionState::default()),
                     },
@@ -348,7 +409,7 @@ impl Dispatch<ExtImageCopyCaptureCursorSessionV1, Mutex<bool>> for State {
             let session = data_init.init(
                 session,
                 SessionData {
-                    output: None,
+                    source: None,
                     cursor: false,
                     state: Mutex::new(SessionState {
                         stopped: true,
@@ -486,17 +547,16 @@ fn capture(
     };
     let stopped = session.state.lock().map_or(true, |state| state.stopped);
     let target = session
-        .output
-        .as_deref()
-        .and_then(|output| Some((output, frame_size(state, output)?)));
-    let (false, Some((output, (region, _)))) = (stopped, target) else {
+        .source
+        .as_ref()
+        .and_then(|source| frame_target(state, source));
+    let (false, Some((target, _))) = (stopped, target) else {
         reply.failed(Failure::Stopped);
         return;
     };
     state.capture.queue(Copy {
         reply: Reply::ImageCopy(reply),
-        output: output.to_owned(),
-        region,
+        target,
         buffer,
         cursor: session.cursor,
         wait_for_damage: true,

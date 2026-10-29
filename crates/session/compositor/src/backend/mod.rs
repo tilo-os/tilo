@@ -88,16 +88,17 @@ pub trait Backend {
         Ok(())
     }
 
-    /// Draw a capture frame's part of its output into the client's buffer
-    /// (see [`crate::capture::copy`]). Backends that cannot draw again
-    /// outside their frames refuse.
+    /// Draw what a capture frame copies (part of an output, a window) into
+    /// the client's buffer with the backend's renderer (see
+    /// [`crate::capture::copy`]). Backends that cannot draw outside their
+    /// frames refuse.
     fn capture(
         &mut self,
         _state: &mut State,
-        frame: &crate::capture::Frame,
+        _frame: &crate::capture::Frame,
     ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
         Err(crate::capture::CaptureError::Backend(BackendError(
-            format!("{}: this backend does not capture", frame.output()),
+            "this backend does not capture".into(),
         )))
     }
 

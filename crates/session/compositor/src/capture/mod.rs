@@ -1,18 +1,20 @@
 //! Screen capture for trusted tools: screenshots, recorders and the
-//! desktop portal's screen sharing.
+//! desktop portal's screen and window sharing.
 //!
 //! Two protocols ask for frames: `zwlr_screencopy_manager_v1` (grim,
 //! wf-recorder, older portal backends) and `ext_image_copy_capture_v1` with
-//! output sources (newer portal backends). Both become a [`Frame`]: a part of
-//! one output to draw into a client's buffer, with or without the pointer,
-//! now or once that part changed. Screen contents are private, so only
-//! clients the session trusts see either global (as with output management).
+//! output and window sources (newer portal backends, which pick windows
+//! from `ext_foreign_toplevel_list_v1`). Both become a [`Frame`]: a part of
+//! one output (with or without the pointer) or one window, to draw into a
+//! client's buffer now or once it changed. Screen contents and window titles
+//! are private, so only clients the session trusts see these globals (as
+//! with output management).
 //!
 //! A frame is served after the next [`Compositor::render`](crate::Compositor::render):
-//! the backend draws the output's scene again into the client's buffer (a
-//! dma-buf is drawn into directly; shared memory through an offscreen image
-//! read back), see [`copy`]. A locked session's outputs show only the lock
-//! surface, so captures do too.
+//! the backend draws the scene again into the client's buffer (a dma-buf is
+//! drawn into directly; shared memory through an offscreen image read
+//! back), see [`copy`]. A locked session's outputs show only the lock
+//! surface, so output captures do too, and window captures wait.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -21,10 +23,12 @@
 
 mod image_copy;
 mod screencopy;
+mod toplevels;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Format, Fourcc};
 use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::element::AsRenderElements as _;
 use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::element::utils::{Relocate, RelocateRenderElement};
 use smithay::backend::renderer::{Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer};
@@ -32,10 +36,12 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::{ClientId, ObjectId};
 use smithay::reexports::wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm};
-use smithay::utils::{Buffer, Logical, Monotonic, Physical, Point, Rectangle, Size, Transform};
+use smithay::utils::{
+    Buffer, Logical, Monotonic, Physical, Point, Rectangle, Scale, Size, Transform,
+};
 
 use crate::backend::BackendError;
-use crate::render::{BACKGROUND, output_elements};
+use crate::render::{BACKGROUND, OutputRenderElement, output_elements};
 use crate::state::State;
 
 /// The shared-memory formats frames are written in: what every capture
@@ -89,31 +95,49 @@ pub(crate) enum Failure {
 /// Whose earlier copies a frame's damage is counted from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Watcher {
-    /// A screencopy client watching one output.
-    Client(ClientId, String),
+    /// A screencopy client watching one output (or region of it).
+    Client(ClientId, Target),
     /// An image-copy session.
     Session(ObjectId),
 }
 
-/// One requested copy of a part of an output.
-pub struct Frame {
-    reply: Reply,
-    output: String,
-    /// The captured part of the output, in its physical pixels as shown
-    /// (after its transform).
-    region: Rectangle<i32, Physical>,
-    buffer: WlBuffer,
-    cursor: bool,
-    /// Copy only once the region changed since the watcher's last copy.
-    wait_for_damage: bool,
-    watcher: Watcher,
+/// What a frame copies.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Target {
+    /// A part of an output, by name: the region in its physical pixels as
+    /// shown (after its transform).
+    Output {
+        name: String,
+        region: Rectangle<i32, Physical>,
+    },
+    /// A window, by its foreign-toplevel identifier.
+    Window(String),
 }
 
-impl Frame {
-    /// The name of the output the frame copies.
-    pub fn output(&self) -> &str {
-        &self.output
-    }
+/// A target as it is now.
+struct View {
+    scene: Scene,
+    scale: f64,
+    transform: Transform,
+    /// The size of the buffer it is copied into.
+    size: Size<i32, Physical>,
+}
+
+enum Scene {
+    Output(Output, Rectangle<i32, Physical>),
+    /// A window and the top left of its geometry in its own coordinates.
+    Window(smithay::desktop::Window, Point<i32, Logical>),
+}
+
+/// One requested copy of a part of an output or of a window.
+pub struct Frame {
+    reply: Reply,
+    target: Target,
+    buffer: WlBuffer,
+    cursor: bool,
+    /// Copy only once the target changed since the watcher's last copy.
+    wait_for_damage: bool,
+    watcher: Watcher,
 }
 
 /// The outcome of [`copy`].
@@ -166,12 +190,23 @@ pub(crate) struct DmabufTargets {
     pub(crate) formats: Vec<Format>,
 }
 
+/// The dma-buf targets of `formats` capture offers: those of a format
+/// frames are drawn in; `None` when there are none.
+fn dmabuf_targets(device: u64, formats: impl IntoIterator<Item = Format>) -> Option<DmabufTargets> {
+    let formats: Vec<Format> = formats
+        .into_iter()
+        .filter(|format| DMABUF_CODES.contains(&format.code))
+        .collect();
+    (!formats.is_empty()).then_some(DmabufTargets { device, formats })
+}
+
 /// Capture's state: the globals, frames waiting and what each watcher saw.
 pub(crate) struct Capture {
     pending: Vec<Frame>,
     watches: Vec<Watch>,
     dmabuf: Option<DmabufTargets>,
     sessions: Vec<image_copy::Session>,
+    toplevels: toplevels::Toplevels,
 }
 
 impl Capture {
@@ -183,6 +218,7 @@ impl Capture {
             watches: Vec::new(),
             dmabuf: None,
             sessions: Vec::new(),
+            toplevels: toplevels::Toplevels::new(display),
         }
     }
 
@@ -193,11 +229,7 @@ impl Capture {
         device: u64,
         formats: impl IntoIterator<Item = Format>,
     ) {
-        let formats: Vec<Format> = formats
-            .into_iter()
-            .filter(|format| DMABUF_CODES.contains(&format.code))
-            .collect();
-        self.dmabuf = (!formats.is_empty()).then_some(DmabufTargets { device, formats });
+        self.dmabuf = dmabuf_targets(device, formats);
     }
 
     fn queue(&mut self, frame: Frame) {
@@ -292,6 +324,45 @@ impl State {
         let size = output.current_transform().transform_size(mode.size);
         Some((output.clone(), size))
     }
+
+    /// The size of the buffers frames of `target` take; `None` when it is
+    /// gone.
+    fn frame_size(&self, target: &Target) -> Option<Size<i32, Physical>> {
+        self.view(target).map(|view| view.size)
+    }
+
+    /// What `target` shows now; `None` when it is gone.
+    fn view(&self, target: &Target) -> Option<View> {
+        match target {
+            Target::Output { name, region } => {
+                let (output, _) = self.shown_size(name)?;
+                let transform = output.current_transform();
+                Some(View {
+                    scale: output.current_scale().fractional_scale(),
+                    transform,
+                    size: buffer_size(region.size, transform),
+                    scene: Scene::Output(output, *region),
+                })
+            }
+            Target::Window(identifier) => {
+                let window = self.capture.toplevels.window(identifier)?.clone();
+                // Drawn at the scale of the output it is on.
+                let scale = self
+                    .space
+                    .outputs_for_element(&window)
+                    .first()
+                    .map_or(1.0, |output| output.current_scale().fractional_scale());
+                let geometry = window.geometry();
+                let size = geometry.size.to_physical_precise_round(scale);
+                (size.w > 0 && size.h > 0).then_some(View {
+                    scale,
+                    transform: Transform::Normal,
+                    size,
+                    scene: Scene::Window(window, geometry.loc),
+                })
+            }
+        }
+    }
 }
 
 impl dyn crate::Backend {
@@ -305,24 +376,19 @@ impl dyn crate::Backend {
             if !frame.reply.alive() {
                 continue;
             }
-            if state.shown_size(&frame.output).is_none() {
+            let Some(view) = state.view(&frame.target) else {
                 frame.reply.failed(Failure::Stopped);
                 continue;
-            }
+            };
             match self.capture(state, &frame) {
                 Ok(Copied::Waiting) => state.capture.queue(frame),
-                Ok(Copied::Done(damage)) => {
-                    let transform = state
-                        .shown_size(&frame.output)
-                        .map_or(Transform::Normal, |(output, _)| output.current_transform());
-                    frame.reply.ready(&damage, transform);
-                }
+                Ok(Copied::Done(damage)) => frame.reply.ready(&damage, view.transform),
                 Err(CaptureError::Buffer(why)) => {
-                    tracing::debug!(why, output = frame.output, "capture buffer refused");
+                    tracing::debug!(why, target = ?frame.target, "capture buffer refused");
                     frame.reply.failed(Failure::Constraints);
                 }
                 Err(CaptureError::Backend(error)) => {
-                    tracing::warn!(%error, output = frame.output, "capture failed");
+                    tracing::warn!(%error, target = ?frame.target, "capture failed");
                     frame.reply.failed(Failure::Unknown);
                 }
             }
@@ -493,29 +559,54 @@ fn write_pixels(rgba: &[u8], layout: ShmLayout, pool: &mut [u8]) -> Option<()> {
     Some(())
 }
 
-/// Draw `frame`'s region of `output` into its buffer with `renderer`,
-/// through an offscreen image of type `T` for shared memory. Waits (draws
-/// nothing) when the frame waits for damage and nothing changed.
+/// Draw what `frame` copies (a region of an output or a window) into its
+/// buffer with `renderer`, through an offscreen image of type `T` for
+/// shared memory. Waits (draws nothing) when the frame waits for damage and
+/// nothing changed.
 pub fn copy<R, T>(
     renderer: &mut R,
     state: &mut State,
-    output: &Output,
     frame: &Frame,
 ) -> Result<Copied, CaptureError>
 where
     R: Renderer + ImportAll + ImportMem + Offscreen<T> + Bind<Dmabuf> + ExportMem,
     R::TextureId: Clone + Send + 'static,
 {
-    let transform = output.current_transform();
-    let scale = output.current_scale().fractional_scale();
-    let size = buffer_size(frame.region.size, transform);
-    let mut elements = if frame.cursor {
-        state.cursor_elements(renderer, output)
-    } else {
-        Vec::new()
+    let View {
+        scene,
+        scale,
+        transform,
+        size,
+    } = state
+        .view(&frame.target)
+        .ok_or_else(|| BackendError("the captured output or window is gone".into()))?;
+    let (elements, offset, region, clear) = match scene {
+        Scene::Output(output, region) => {
+            let mut elements = if frame.cursor {
+                state.cursor_elements(renderer, &output)
+            } else {
+                Vec::new()
+            };
+            elements.extend(output_elements(renderer, state, &output));
+            let offset = Point::<i32, Physical>::from((-region.loc.x, -region.loc.y));
+            (elements, offset, region.size, BACKGROUND)
+        }
+        // A locked session shows no windows: their frames wait for the
+        // unlock.
+        Scene::Window(..) if state.locked() => return Ok(Copied::Waiting),
+        Scene::Window(window, origin) => {
+            let elements = window.render_elements::<OutputRenderElement<R>>(
+                renderer,
+                Point::<i32, Logical>::from((-origin.x, -origin.y))
+                    .to_physical_precise_round(scale),
+                Scale::from(scale),
+                1.0,
+            );
+            // Around and behind a window is nothing: clear, for formats with
+            // alpha.
+            (elements, Point::default(), size, [0.0; 4])
+        }
     };
-    elements.extend(output_elements(renderer, state, output));
-    let offset = Point::<i32, Physical>::from((-frame.region.loc.x, -frame.region.loc.y));
     let elements: Vec<_> = elements
         .into_iter()
         .map(|element| RelocateRenderElement::from_element(element, offset, Relocate::Relative))
@@ -526,7 +617,7 @@ where
     if damage.is_empty() && frame.wait_for_damage {
         return Ok(Copied::Waiting);
     }
-    let damage = damage_in_buffer(&damage, frame.region.size, transform);
+    let damage = damage_in_buffer(&damage, region, transform);
     if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&frame.buffer) {
         let dmabuf_size = dmabuf.size();
         check_dmabuf(
@@ -540,10 +631,18 @@ where
         let mut target = renderer
             .bind(&mut dmabuf)
             .map_err(|error| crate::backend::failed("bind capture dma-buf", error))?;
-        draw(renderer, &mut target, size, scale, transform, &elements)?;
+        draw(
+            renderer,
+            &mut target,
+            size,
+            scale,
+            transform,
+            &elements,
+            clear,
+        )?;
         return Ok(Copied::Done(damage));
     }
-    let rgba = render_to_memory::<R, T, _>(renderer, size, scale, transform, &elements)?;
+    let rgba = render_to_memory::<R, T, _>(renderer, size, scale, transform, &elements, clear)?;
     smithay::wayland::shm::with_buffer_contents_mut(&frame.buffer, |pointer, len, data| {
         let layout = ShmLayout::from(data);
         check_shm(layout, len, size)?;
@@ -558,7 +657,7 @@ where
     Ok(Copied::Done(damage))
 }
 
-/// Draw `elements` over the background into a bound target of `size`.
+/// Draw `elements` over `clear` into a bound target of `size`.
 fn draw<R, E>(
     renderer: &mut R,
     target: &mut R::Framebuffer<'_>,
@@ -566,6 +665,7 @@ fn draw<R, E>(
     scale: f64,
     transform: Transform,
     elements: &[E],
+    clear: [f32; 4],
 ) -> Result<(), CaptureError>
 where
     R: Renderer,
@@ -573,7 +673,7 @@ where
 {
     let mut tracker = OutputDamageTracker::new(size, scale, transform);
     let drawn = tracker
-        .render_output(renderer, target, 0, elements, BACKGROUND)
+        .render_output(renderer, target, 0, elements, clear)
         .map_err(|error| crate::backend::failed("render capture", error))?;
     // The client reads the buffer as soon as it is told: the GPU has to be
     // done with it.
@@ -592,6 +692,7 @@ fn render_to_memory<R, T, E>(
     scale: f64,
     transform: Transform,
     elements: &[E],
+    clear: [f32; 4],
 ) -> Result<Vec<u8>, CaptureError>
 where
     R: Renderer + Offscreen<T> + ExportMem,
@@ -604,7 +705,15 @@ where
     let mut target = renderer
         .bind(&mut image)
         .map_err(|error| crate::backend::failed("bind capture image", error))?;
-    draw(renderer, &mut target, size, scale, transform, elements)?;
+    draw(
+        renderer,
+        &mut target,
+        size,
+        scale,
+        transform,
+        elements,
+        clear,
+    )?;
     // ABGR8888 is R, G, B, A in memory.
     let mapping = renderer
         .copy_framebuffer(&target, Rectangle::from_size(buffer_size), Fourcc::Abgr8888)
@@ -736,14 +845,8 @@ mod tests {
 
     #[test]
     fn only_drawable_formats_are_offered_as_dmabuf_targets() {
-        let mut capture = Capture {
-            pending: Vec::new(),
-            watches: Vec::new(),
-            dmabuf: None,
-            sessions: Vec::new(),
-        };
         let linear = smithay::backend::allocator::Modifier::Linear;
-        capture.set_dmabuf_targets(
+        let targets = dmabuf_targets(
             7,
             [
                 Format {
@@ -756,10 +859,9 @@ mod tests {
                 },
             ],
         );
-        let targets = capture.dmabuf.clone().expect("a drawable format");
+        let targets = targets.expect("a drawable format");
         assert_eq!(targets.device, 7);
         assert_eq!(targets.formats.len(), 1);
-        capture.set_dmabuf_targets(7, []);
-        assert!(capture.dmabuf.is_none());
+        assert!(dmabuf_targets(7, []).is_none());
     }
 }

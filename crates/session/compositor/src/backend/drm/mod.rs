@@ -367,17 +367,20 @@ impl Backend for DrmBackend {
         frame: &crate::capture::Frame,
     ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
         let mut inner = self.inner.borrow_mut();
-        let Inner {
-            gpus,
-            renderers,
-            primary,
-            ..
-        } = &mut *inner;
-        let primary = primary.ok_or_else(|| BackendError("no GPU".into()))?;
-        let mut renderer = renderers
+        if !inner.active {
+            // Another session has the GPU.
+            return Err(BackendError("the session is not active".into()).into());
+        }
+        let primary = inner.primary.ok_or_else(|| BackendError("no GPU".into()))?;
+        let mut renderer = inner
+            .renderers
             .single_renderer(&primary)
             .map_err(|error| failed("renderer", error))?;
-        capture_on(&mut renderer, gpus, state, frame)
+        crate::capture::copy::<_, smithay::backend::renderer::gles::GlesTexture>(
+            &mut renderer,
+            state,
+            frame,
+        )
     }
 
     fn configure(
@@ -678,26 +681,6 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
             state.frame_drawn(&lit.output, None).shown(Shown::Host);
         }
     }
-}
-
-/// Draw a capture frame of an output of one of `gpus` with the primary
-/// GPU's `renderer`.
-fn capture_on(
-    renderer: &mut Renderer<'_>,
-    gpus: &HashMap<u64, Gpu>,
-    state: &mut State,
-    frame: &crate::capture::Frame,
-) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
-    let output = gpus
-        .values()
-        .flat_map(|gpu| gpu.outputs.values())
-        .map(|lit| &lit.output)
-        .find(|output| output.name() == frame.output())
-        .cloned()
-        .ok_or_else(|| BackendError(format!("no lit output named {}", frame.output())))?;
-    crate::capture::copy::<_, smithay::backend::renderer::gles::GlesTexture>(
-        renderer, state, &output, frame,
-    )
 }
 
 fn vblank(
