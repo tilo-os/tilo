@@ -20,6 +20,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_compositor::{Compositor, DisplayConfig, Error, OutputConfig, WindowPolicy};
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::ChromeIntent;
@@ -30,6 +31,8 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::Command;
 use tilo_surface_host::{DesktopHost, Placement, WidgetHost, desktop_with};
 use ui::application::ComponentRunnerInputs;
+use ui::headless::FrameHarness;
+use ui::host_operation::ResourceOperationStart;
 
 pub use tilo_quick_settings::host::PanelHost;
 
@@ -210,7 +213,7 @@ impl Session {
             .and_then(|component| ui::App::from_component(component, presentation()))
         {
             Ok(app) => {
-                compositor.add_host(Box::new(Banners::new(app, banners.clone(), options.scale)))
+                compositor.add_host(Box::new(Banners::new(app, banners.clone(), options.scale)));
             }
             Err(error) => tracing::warn!(%error, "notification banners not mounted"),
         }
@@ -294,17 +297,56 @@ impl Session {
         &self.banners
     }
 
-    /// The names the chrome above the windows gives what it shows, as
-    /// assistive technology reads them.
+    /// `read` of the desk's hosted tree, then of the chrome's.
+    fn each_layer<R>(&self, mut read: impl FnMut(&mut FrameHarness) -> R) -> [R; 2] {
+        let desk = self.desktop.with_widgets(|host| read(host.host_mut()));
+        let chrome = read(self.chrome.borrow_mut().host_mut());
+        [desk, chrome]
+    }
+
+    /// Everything the desktop publishes now: the desk's resource (its
+    /// windows among its children) and the chrome's, with their actions.
     #[must_use]
-    pub fn chrome_names(&self) -> Vec<String> {
-        self.chrome
-            .borrow_mut()
-            .host_mut()
-            .a11y_nodes()
-            .into_iter()
-            .filter_map(|(_, node)| node.label().map(str::to_owned))
-            .collect()
+    pub fn resources(&self) -> Vec<ResourceSpec> {
+        self.each_layer(|host| host.resources()).concat()
+    }
+
+    /// Invoke the published action `action` of resource `resource`, as
+    /// any caller of the action protocol does, and carry out what it asked
+    /// of the session.
+    ///
+    /// # Errors
+    /// The door's refusal: no such resource or action, or bad arguments.
+    pub fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ResourceOperationStart, DoorError> {
+        let address = ActionAddress::new(resource, action);
+        let [desk, chrome] = self.each_layer(|host| {
+            tilo_actions::door::resolve(&host.resources(), &address)
+                .is_some()
+                .then(|| host.invoke_published(resource, action, arguments))
+        });
+        let started = desk
+            .or(chrome)
+            .unwrap_or_else(|| Err(DoorError::Unknown(address.clone())))?;
+        self.shared.follow_asks();
+        Ok(started)
+    }
+
+    /// The labels of the desktop's accessibility trees, the desk's and the
+    /// chrome's, as assistive technology reads them.
+    #[must_use]
+    pub fn accessible_labels(&self) -> Vec<String> {
+        self.each_layer(|host| {
+            host.a11y_nodes()
+                .into_iter()
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .concat()
     }
 
     /// Whether quick settings is open.

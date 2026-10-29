@@ -17,9 +17,11 @@ tilo-desktop = { path = "../desktop" }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface" }
 tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-actions = { path = "../../collab/actions" }
 tilo-quick-settings = { path = "../quick-settings" }
 tilo-notification-banners = { path = "../notification-banners" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+serde_json.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 

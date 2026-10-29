@@ -21192,7 +21192,9 @@ name = "tilo-session"
 version = "0.1.0"
 dependencies = [
  "rustix 1.1.4",
+ "serde_json",
  "tilo-action-policy",
+ "tilo-actions",
  "tilo-compositor",
  "tilo-desktop",
  "tilo-desktop-model",
