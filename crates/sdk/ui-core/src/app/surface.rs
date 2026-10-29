@@ -131,8 +131,16 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         let _entry = self.enter_wake_scope();
-        self.track_pointer_buttons(&event);
-        self.track_acting_place(&event, window.scale_factor());
+        self.input.pointer.track_buttons(&event);
+        if self
+            .input
+            .pointer
+            .track_place(&event, window.scale_factor())
+        {
+            // The person acts again: what stood at their last control is
+            // done with.
+            self.dismiss_control_notice();
+        }
         // A tooltip goes when the person acts, or when the pointer or the
         // keyboard leaves the window, whatever then takes the event: History's
         // controls and the close dialog take some before the widgets do.
@@ -2579,7 +2587,7 @@ mod tests {
         );
         app.close_action_palette();
 
-        app.input.pressed_at = None;
+        app.input.pointer.pressed_at = None;
         let _ = app.surface_frame(&region, &mut Scene::new());
         app.open_action_palette();
         assert_ne!(

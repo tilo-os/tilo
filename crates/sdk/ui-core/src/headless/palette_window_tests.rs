@@ -112,7 +112,7 @@ fn a_confirmation_a_press_asked_for_stands_over_the_window_pressed_in() {
         winit::keyboard::NamedKey::Shift,
     ));
     assert_eq!(
-        harness.pressed_at, None,
+        harness.pointer.pressed_at, None,
         "after a key the press no longer decides; the focused window does"
     );
 }

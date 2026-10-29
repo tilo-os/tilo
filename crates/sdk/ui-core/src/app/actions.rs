@@ -3117,7 +3117,7 @@ impl App {
         crate::action_palette::invoking_window(
             &self.layout.taffy,
             self.layout.root_node,
-            self.input.pressed_at,
+            self.input.pointer.pressed_at,
             self.focused_node,
             |node| {
                 self.inspect_node(node, crate::action_palette::tile_rect)
@@ -3451,7 +3451,7 @@ impl App {
         crate::control_notice::acting_control(
             &self.layout.taffy,
             self.layout.root_node,
-            self.input.pressed_at,
+            self.input.pointer.pressed_at,
             self.focused_node,
             |node| {
                 self.inspect_node(node, |widget| {

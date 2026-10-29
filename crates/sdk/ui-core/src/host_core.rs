@@ -411,3 +411,117 @@ pub(crate) trait HostCore {
         }
     }
 }
+
+/// Where the person acts with the pointer, followed through each input event
+/// a host receives.
+#[derive(Default)]
+pub(crate) struct PointerPlace {
+    /// The pointer buttons held down, one bit each. Motion with a button
+    /// held is a drag, which may move what a widget declares (a selection, a
+    /// split) without marking each move handled, so it is never inert.
+    pub(crate) buttons: u32,
+    /// Where the pointer is, in logical pixels of the host's surface.
+    pub(crate) at: Option<vello::kurbo::Point>,
+    /// Where the person last pressed, while a press (not a key) is the last
+    /// thing they did: what they pressed is in the window there, which is the
+    /// window that asked for whatever the press opens.
+    pub(crate) pressed_at: Option<vello::kurbo::Point>,
+}
+
+impl PointerPlace {
+    /// Follow which pointer buttons are down.
+    pub(crate) fn track_buttons(&mut self, event: &winit::event::WindowEvent) {
+        use winit::event::{ElementState, MouseButton, WindowEvent};
+        if let WindowEvent::MouseInput { state, button, .. } = event {
+            let bit = match button {
+                MouseButton::Left => 1,
+                MouseButton::Right => 1 << 1,
+                MouseButton::Middle => 1 << 2,
+                MouseButton::Back => 1 << 3,
+                MouseButton::Forward => 1 << 4,
+                MouseButton::Other(n) => 1 << (5 + u32::from(*n) % 27),
+            };
+            match state {
+                ElementState::Pressed => self.buttons |= bit,
+                ElementState::Released => self.buttons &= !bit,
+            }
+        }
+    }
+
+    /// Follow where the person acts: the pointer's place, and where the last
+    /// press landed until a key is pressed. `scale` turns the event's
+    /// physical pixels into the surface's logical ones. Whether the person
+    /// acted anew: a press, a touch or a key.
+    pub(crate) fn track_place(&mut self, event: &winit::event::WindowEvent, scale: f64) -> bool {
+        use winit::event::{ElementState, TouchPhase, WindowEvent};
+        let logical = |x: f64, y: f64| vello::kurbo::Point::new(x / scale, y / scale);
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.at = Some(logical(position.x, position.y));
+                false
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.at = None;
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } => {
+                self.pressed_at = self.at;
+                true
+            }
+            WindowEvent::Touch(touch) if touch.phase == TouchPhase::Started => {
+                let at = logical(touch.location.x, touch.location.y);
+                self.at = Some(at);
+                self.pressed_at = Some(at);
+                true
+            }
+            WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
+                self.pressed_at = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `event` is pointer motion with no button held: hover.
+    pub(crate) fn is_bare_motion(&self, event: &winit::event::WindowEvent) -> bool {
+        use winit::event::WindowEvent;
+        match event {
+            WindowEvent::CursorMoved { .. } => self.buttons == 0,
+            WindowEvent::CursorEntered { .. } | WindowEvent::CursorLeft { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Input that activates nothing by itself: hover, a key's release, a
+    /// modifier key's press, a modifier change and a wheel. Unless something
+    /// consumed it, it keeps the published tree when nothing the tree depends
+    /// on moved. A key's release followed every keystroke and dropped the
+    /// tree its press had just republished; a wheel at the end of a list,
+    /// which no scroller takes, dropped it at every notch.
+    pub(crate) fn is_inert(&self, event: &winit::event::WindowEvent) -> bool {
+        use winit::event::{ElementState, WindowEvent};
+        use winit::keyboard::{Key, NamedKey};
+        match event {
+            WindowEvent::KeyboardInput { event, .. } => {
+                event.state == ElementState::Released
+                    || matches!(
+                        event.logical_key,
+                        Key::Named(
+                            NamedKey::Shift
+                                | NamedKey::Control
+                                | NamedKey::Alt
+                                | NamedKey::AltGraph
+                                | NamedKey::Super
+                                | NamedKey::Meta
+                                | NamedKey::Hyper
+                        )
+                    )
+            }
+            WindowEvent::ModifiersChanged(_) | WindowEvent::MouseWheel { .. } => true,
+            _ => self.is_bare_motion(event),
+        }
+    }
+}
