@@ -71,18 +71,17 @@ class BuilderCandidates(unittest.TestCase):
             script.write_text(wrapper.read_text())
             (root / 'tools/ci/package_features.py').write_text(
                 (ROOT / 'tools/ci/package_features.py').read_text())
-            # Stand in only for the downstream environment/command. The real
-            # wrapper must pass the browser through to the test invocation.
-            (root / 'tools/test-env.sh').write_text('printf "%s\\n" "${CHROME-unset}"\n')
             bin_dir = root / 'bin'
             bin_dir.mkdir()
             uname = bin_dir / 'uname'
             uname.write_text('#!/bin/sh\nprintf "%s\\n" "$PLATFORM"\n')
             uname.chmod(0o755)
-            # The wrapper builds a helper binary for this package before testing it; building is
-            # not what is checked here, and the check runs where nothing builds.
+            # Stand in only for the downstream command. The real wrapper must pass the browser
+            # through to the test invocation. It builds a helper binary for this package before
+            # testing it; building is not what is checked here, and the check runs where nothing
+            # builds.
             cargo = bin_dir / 'cargo'
-            cargo.write_text('#!/bin/sh\nexit 0\n')
+            cargo.write_text('#!/bin/sh\n[ "$1" = nextest ] && printf "%s\\n" "${CHROME-unset}"\nexit 0\n')
             cargo.chmod(0o755)
             for platform, override in ((platform, override)
                                        for platform in ('Linux', 'Darwin', 'FreeBSD')

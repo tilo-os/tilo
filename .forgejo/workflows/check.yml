@@ -398,16 +398,16 @@ jobs:
       # integration tests. Examples are type-checked by Clippy and built by
       # nightly; linking them here tested nothing.
       #
-      # tools/test-env.sh is the suite's whole runtime environment (LANG=C.UTF-8,
-      # TZ=UTC, a fresh HOME/XDG tree, lavapipe, NTFS fixtures, headless audio),
-      # shared with nightly and with runs outside CI. The NTFS images are
-      # generated only for shards that test their consumer. This shard provides
-      # llvmpipe and an audio endpoint, so a test that finds either missing
-      # fails instead of skipping.
+      # nextest's ci profile sets up the suite's runtime environment where the
+      # tests run (.config/nextest.toml: lavapipe, headless audio, the NTFS
+      # fixtures for a run with their consumer), and every test binary runs in
+      # a fresh HOME/XDG tree with LANG=C.UTF-8 and TZ=UTC
+      # (tools/cargo-runner.sh), as with nightly and runs outside CI. This shard
+      # provides llvmpipe and an audio endpoint, so a test that finds either
+      # missing fails instead of skipping.
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:
-          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.test_packages, '-p tilo-ntfs-helper') && '1' || '0' }}
           # The builder image carries the encoders and muxers the footage
           # tests need, so their absence here is a failure, not a skip.
           TILO_REQUIRE_MEDIA: "1"
@@ -453,7 +453,7 @@ jobs:
           fi
           bash tools/ci/measure.sh "visual goldens shard ${{ matrix.shard }}" -- \
             bash scripts/ci-run.sh "cargo nextest visual goldens (shard ${{ matrix.shard }})" -- \
-            bash tools/test-env.sh cargo nextest run --locked --profile ci --tests \
+            cargo nextest run --locked --profile ci --tests \
             ${{ matrix.test_packages }} --no-tests=pass -E "$GOLDEN_FILTER"
 
       - name: Report visual goldens of shard ${{ matrix.shard }}
@@ -509,8 +509,6 @@ jobs:
         if: matrix.scoped_tests != ''
         env:
           SCOPED_TESTS: ${{ matrix.scoped_tests }}
-          # As above: only the NTFS helper's own tests read the native images.
-          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.scoped_tests, '"tilo-ntfs-helper"') && '1' || '0' }}
           TILO_REQUIRE_MEDIA: "1"
           TILO_REQUIRE_AUDIO: "1"
           TILO_REQUIRE_GPU: "1"
