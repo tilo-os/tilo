@@ -128,11 +128,23 @@ imports! {
     Outside = "outside" ([H, H] -> [H]);
     ModelCall = "model_call" ([H, H] -> [H]);
     QueueBlock = "queue_block" ([H, H, H] -> []);
-    Print = "print" ([H] -> []);
+    Print = "print" ([H, H] -> []);
     Find = "find" ([H, H] -> [H]);
     ReadText = "read_text" ([H] -> [H]);
     OfType = "of_type" ([H, H] -> [H]);
     Keep = "keep" ([H, H] -> []);
+    Grep = "grep" ([H, H, H] -> [H]);
+    Describe = "describe" ([H] -> [H]);
+    DescribeRef = "describe_ref" ([H] -> [H]);
+    ReadWith = "read_with" ([H, H, H] -> [H]);
+    PrintRows = "print_rows" ([H, H, H] -> []);
+    CountBy = "count_by" ([H, H] -> [H]);
+    GroupBy = "group_by" ([H, H] -> [H]);
+    Take = "take" ([H, I64] -> [H]);
+    Single = "single" ([H] -> [H]);
+    Me = "me" ([] -> [H]);
+    ForeignRef = "foreign_ref" ([H, H, H] -> [H]);
+    MatchGroup = "match_group" ([H, I64] -> [H]);
 
     UiNode = "ui_node" ([H, H] -> [H]);
     UiPropH = "ui_prop_h" ([H, H, H] -> []);
@@ -166,6 +178,7 @@ imports! {
     RichEmpty = "rich_empty" ([H] -> [I32]);
     RichTime = "rich_time" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
+    UiActions = "ui_actions" ([H, H, H] -> []);
 
     SpaceI = "space_i" ([H] -> [I64]);
     SpaceF = "space_f" ([H] -> [F64]);

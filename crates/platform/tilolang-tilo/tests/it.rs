@@ -10,6 +10,7 @@
     reason = "test assertions"
 )]
 
+mod agent_queries;
 mod bundle;
 mod chat;
 mod collab;

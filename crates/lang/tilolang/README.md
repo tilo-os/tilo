@@ -55,6 +55,13 @@ opens through the type's default view (`default view counter for Counter`).
 directories (for `apps/tl/today`, the other directories of `apps/tl`); `--path <dir>` adds a
 package directory, or a directory of packages, to look in.
 
+A package may also `use` a native app: `use so.tilo.chat as chat` reads what Chat publishes, the
+resources, records and enums of its committed `surface.toml`, as types (`chat.Workspace`,
+`chat.Channel`, `chat.ChannelKind`) and its verbs as actions, and checks field reads and action
+signatures against them. The language's tool (`tilolang check`) finds native apps among the
+`--path` directories (`--path apps/chat`, or `--path apps`). Reading native records at runtime and
+invoking native actions come later; for now this is compile-time only.
+
 ## Syntax reference
 
 The full grammar is [grammar.md](grammar.md). In short:
@@ -273,6 +280,37 @@ and look across the workspace. `items.matching("is:done due:-7d")` asks the same
 written as people type it in search, and `filters(T)` gives a type's filters as places and
 chips show them (`host.Filter`).
 
+**Programs** (agents.md, "Querying" and "Reading and describing"). An agent's program (the
+door's `tilo` tool, `tilolang repl`) has words for reading what the workspace holds, across
+apps:
+
+```
+grep(/\bChen\b/, in: notes + chat).count_by(.doc)      // counts first, then a row per note
+grep(/^- \[ \] (.*launch.*)/i, in: notes, not: .quote, changed: -14d)
+    .each(t -> todo.add(todo.todos, t.group(1)))
+find("standup chen")                                   // the palette's words, every app
+find(Note, pinned: true).sort_by(.title).take(3)       // a type and its filters
+find("groceries").single()                             // one, or an error listing them
+read(n3, matching: /lemon/, around: 1)                 // size first, anchors, paged
+describe(notes)   describe(Note)   describe(notes.pin)   describe(Note.title)   describe(n3)
+print(xs, fields: [.title, .due])
+```
+
+- `/.../flags` is a regular expression, a `Text` (`i`, `m`, `s`, `x` written inline). A `/`
+  after a value still divides.
+- `grep` gives `host.Match`es: `.doc` (the resource whose text holds it), `.anchor` (`¶4`,
+  `¶2.1`, or a field's name), `.text`, `.line`, `.groups` and `.group(n)`, `.kind` (`paragraph`,
+  `heading`, `quote`, `list`, `code`, `field`), `.written_by` and `.changed`. It searches the
+  apps `in:` names (all it may read without one) or the resources it names, and says first
+  how many matched in how many resources and what it could not cover. A plain text is read as
+  markdown writes it: `> ` a quote, `# ` a heading, `- ` a list item.
+- `count_by(key)` and `group(key)` give rows with `.key` and `.count` or `.items`, the largest
+  first; `take(n)`, `each(f)` and `single()` chain on any list.
+- `me` is the person the task acts for.
+- An app the program's host does not hold is read through that app's host: its resources are
+  `host.Resource`s, which print, count, group, `read` and `describe`, and `.of(T)` narrows to a
+  type the host holds.
+
 **Native vocabulary.** Some smaller pieces of syntax:
 
 - An enum case takes an icon: `all (icon: .file_text)`.
@@ -323,6 +361,8 @@ tilolang build [dir] [--out DIR]          writes a signed Tilo app per package: 
 tilolang fmt [dir] [--check]              rewrites every file in canonical form
 tilolang ids [dir] [--rename old new]     prints or edits the ids lock
 tilolang run [dir] [--peers N] [--headless]  runs the package as an app in a nested Tilo session
+tilolang describe [dir] [--search DIR]    prints what an app publishes as tilolang: a native app
+                                          (its surface.toml) and a tilolang package alike
 ```
 
 `dir` defaults to the current directory. Errors print as `path:line:col: E0xx message`;
