@@ -668,7 +668,7 @@ fn step_schema(kind: &str, value: serde_json::Value) -> serde_json::Value {
 }
 
 /// The operations a field of `field`'s type takes, by its stored shape and
-/// type.
+/// type: a text stored whole (`#[model(atom)]`) is only ever set.
 fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
     let ty = field.ty;
     match field.shape {
@@ -693,7 +693,7 @@ fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
         ],
         _ if ty.starts_with("Outbox") => vec!["settle", "forget"],
         crate::Shape::Map(_) => vec!["set", "remove-key"],
-        _ if ty == "String" => vec!["set", "splice", "replace"],
+        _ if ty == "String" && !field.atom => vec!["set", "splice", "replace"],
         _ => vec!["set"],
     }
 }

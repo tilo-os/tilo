@@ -877,6 +877,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             label_fields.push((label_part, descs.len()));
         }
         let quiet_remove = options.quiet_remove;
+        let atom = options.atom;
         let trust = options.trust(&krate)?;
         if is_label {
             if label.is_some() {
@@ -983,6 +984,7 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
             shape: <#ty as #krate::Model>::SHAPE,
             unit: #unit,
             readonly: #readonly,
+            atom: #atom,
             label: #is_label,
             label_part: #label_part,
             quiet_remove: #quiet_remove,

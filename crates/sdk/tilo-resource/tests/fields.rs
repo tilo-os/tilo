@@ -149,6 +149,21 @@ fn an_atom_is_written_whole_and_the_last_writer_wins() {
 }
 
 #[test]
+fn an_atom_is_listed_as_set_whole_and_a_text_by_character() {
+    let published = Replica::<Board>::new().published().unwrap();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .unwrap();
+    let schema = spec.params()[0].schema.as_deref().unwrap().clone();
+    let (layer, _) = described(&schema, "layer");
+    assert!(layer.starts_with("- `layer`: set \u{2014}"), "{layer}");
+    let (title, _) = described(&schema, "title");
+    assert!(title.contains("`title`: set, splice, replace"), "{title}");
+}
+
+#[test]
 fn a_skipped_field_reads_as_the_containing_types_default() {
     let replica = Replica::<Board>::new();
     assert!(replica.state().unwrap().admin);
