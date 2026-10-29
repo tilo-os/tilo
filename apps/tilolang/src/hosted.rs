@@ -8,7 +8,6 @@
 //! the UI host's half (`tilo_ui_host::AppWindow`) and sends back what the person did. Its own
 //! launch identity stays for its surface and accessibility.
 
-use std::collections::HashMap;
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,9 +32,19 @@ pub fn is_hosted() -> bool {
 #[must_use]
 pub fn window_instance() -> Option<u64> {
     ui::window_door::requested_instance().or_else(|| {
-        std::env::var("TILO_CONTINUITY_INSTANCE")
-            .ok()
-            .and_then(|value| value.parse().ok())
+        // Unset: the process was not launched for a window of its own.
+        let value = std::env::var("TILO_CONTINUITY_INSTANCE").ok()?;
+        match value.parse() {
+            Ok(instance) => Some(instance),
+            Err(error) => {
+                tracing::error!(
+                    value,
+                    %error,
+                    "the session named the window's instance as something that is not one"
+                );
+                None
+            }
+        }
     })
 }
 
@@ -82,6 +91,13 @@ impl Watch {
                     }
                 }
             })
+            .inspect_err(|error| {
+                tracing::error!(
+                    %error,
+                    "no thread watches the window's patch connection: it shows what arrives \
+                     only when something else wakes it"
+                );
+            })
             .ok()?;
         Some(Self {
             woke: signalled,
@@ -115,6 +131,8 @@ pub struct HostedWindow {
     activation: std::cell::Cell<bool>,
     /// Shown until the patch connection arrives: the platform's loading state.
     waiting: ui::widget::Element,
+    /// What the window last told the instance it calls people (`ToApp::Names`).
+    told: Option<(String, Vec<(String, String)>)>,
 }
 
 impl HostedWindow {
@@ -131,6 +149,7 @@ impl HostedWindow {
             drawn: false,
             activation: std::cell::Cell::new(false),
             waiting: Box::new(ui::widget::Spinner::new()),
+            told: None,
         };
         window.connect();
         window
@@ -147,14 +166,48 @@ impl HostedWindow {
         let Some(patch) = ui::window_door::take_patch(instance, ui::wake::WakeHandle::new()) else {
             return false;
         };
-        let connected = Channel::from_socket(patch).and_then(|channel| {
-            let watched = channel.as_fd().try_clone_to_owned()?;
-            let transport = ChannelTransport::new(channel)?;
-            Ok((transport, watched))
-        });
+        match Channel::from_socket(patch) {
+            Ok(channel) => {
+                tilo_startup_metrics::mark("tilolang-patch-connected");
+                self.take_channel(channel)
+            }
+            Err(error) => {
+                tracing::error!(%error, "a hosted tilolang window's patch connection is unusable");
+                false
+            }
+        }
+    }
+
+    /// The window over the patch connection `channel`, whose other end its instance's host
+    /// holds: what the session hands it on the window door.
+    #[must_use]
+    pub fn over(channel: Channel) -> Self {
+        let mut window = Self {
+            instance: None,
+            connected: None,
+            tree_drawn: false,
+            drawn: false,
+            activation: std::cell::Cell::new(false),
+            waiting: Box::new(ui::widget::Spinner::new()),
+            told: None,
+        };
+        window.take_channel(channel);
+        window
+    }
+
+    /// The window's half of the UI host, once its patch connection arrived.
+    #[must_use]
+    pub fn view(&self) -> Option<&AppWindow> {
+        self.connected.as_ref().map(|connected| &connected.view)
+    }
+
+    fn take_channel(&mut self, channel: Channel) -> bool {
+        let connected = channel
+            .as_fd()
+            .try_clone_to_owned()
+            .and_then(|watched| Ok((ChannelTransport::new(channel)?, watched)));
         match connected {
             Ok((transport, watched)) => {
-                tilo_startup_metrics::mark("tilolang-patch-connected");
                 let watch = Watch::start(watched, ui::wake::WakeHandle::new());
                 self.connected = Some(Connected {
                     view: AppWindow::new(Box::new(transport), Vec::new()),
@@ -182,14 +235,14 @@ impl HostedWindow {
         received
     }
 
-    fn content(&self) -> &dyn Widget {
+    fn content(&self) -> &(dyn Widget + 'static) {
         match &self.connected {
             Some(connected) => &connected.view,
             None => self.waiting.as_ref(),
         }
     }
 
-    fn content_mut(&mut self) -> &mut dyn Widget {
+    fn content_mut(&mut self) -> &mut (dyn Widget + 'static) {
         match &mut self.connected {
             Some(connected) => &mut connected.view,
             None => self.waiting.as_mut(),
@@ -203,19 +256,23 @@ impl ui::component_lifecycle::WindowActivation for HostedWindow {
     }
 }
 
-impl Widget for HostedWindow {
+/// The window stands for what it shows (the UI host's window, or the loading state before it)
+/// in the layout and in every walk of the widgets: it adds no node of its own.
+impl ui::widget::Decorator for HostedWindow {
+    type Inner = dyn Widget;
+
     ui::provides!(dyn ui::component_lifecycle::WindowActivation);
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.content()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content_mut()
+    }
 
     fn name(&self) -> &'static str {
         "TilolangHostedWindow"
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![self.content()]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
-        vec![self.content_mut()]
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -250,28 +307,6 @@ impl Widget for HostedWindow {
         }
     }
 
-    fn build_layout(
-        &mut self,
-        tree: &mut ui::taffy::TaffyTree<()>,
-        theme: &ui::Theme,
-        nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui::taffy::NodeId {
-        self.content_mut().build_layout(tree, theme, nodes)
-    }
-
-    fn apply_layout(
-        &mut self,
-        tree: &ui::taffy::TaffyTree<()>,
-        node: ui::taffy::NodeId,
-        origin: ui::kurbo::Point,
-    ) {
-        self.content_mut().apply_layout(tree, node, origin);
-    }
-
-    fn get_rect(&self) -> ui::kurbo::Rect {
-        self.content().get_rect()
-    }
-
     fn draw(
         &mut self,
         scene: &mut ui::vello::Scene,
@@ -293,24 +328,33 @@ impl Widget for HostedWindow {
             tilo_startup_metrics::mark("tilolang-first-draw-before-tree");
         }
         self.drawn = true;
+        // The instance runs in the host, which knows people only by id: it names them as the
+        // window does, told whenever that changes.
+        if let Some(connected) = &mut self.connected {
+            let said = crate::names::said(presence);
+            if self.told.as_ref() != Some(&said) {
+                let (me, others) = said.clone();
+                connected
+                    .view
+                    .tell(tilo_render_protocol::patch::ToApp::Names { me, others });
+                connected.view.flush();
+                self.told = Some(said);
+            }
+        }
         self.content_mut()
             .draw(scene, transform, text, theme, presence);
     }
 
-    fn collect_damage(&self, regions: &mut Vec<ui::kurbo::Rect>) {
-        self.content().collect_damage(regions);
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         match &mut self.connected {
-            Some(connected) => connected.view.take_structure_dirty(),
+            Some(connected) => Widget::take_structure_dirty(&mut connected.view),
             None => self.waiting.take_structure_dirty(),
         }
     }
 
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
         match &mut self.connected {
-            Some(connected) => connected.view.take_structure_change(),
+            Some(connected) => Widget::take_structure_change(&mut connected.view),
             None => self.waiting.take_structure_change(),
         }
     }

@@ -7,18 +7,20 @@ Card.column = 4oqrwuyr
 Card.notes = 6hfpfyn7
 Card.title = acqkumvl
 Column = 7jmgbfub
+Column.cards = k24oebin
 Column.title = 3vw7cjrp
 board = t5kjcxjq
 card_page = zzww2gmr
 card_tile = ufycrk6s
-cards_of = ekyp2psl
 delete_card = jx22rl4l
 move_before = xsmkgxl2
 move_to = yp6qgach
 new_card = dw7khkq2
 new_column = 2lxgfocl
+place_cards = pf6eoju5
 rename_column = yjwm6mjf
 scenario "a release board" = w2awzeqx
 
 # retired
+cards_of = ekyp2psl
 place_of = hn5uavwa

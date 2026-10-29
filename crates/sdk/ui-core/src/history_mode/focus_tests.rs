@@ -140,7 +140,7 @@ fn saved_and_captured_history_deny_only_live_composition_nodes() {
         .unwrap();
     let allows = |root: &FocusHistoryRoot, node| {
         let restrictions = super::embedded::FocusRestrictions::collect(root, &tree);
-        assert!(restrictions.has_surfaces());
+        assert!(super::embedded::has_surfaces(root));
         let allowed = restrictions.allows(node);
         assert_eq!(allowed, super::embedded::allows_focus(root, node, &tree));
         allowed

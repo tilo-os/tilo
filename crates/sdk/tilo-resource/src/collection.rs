@@ -84,6 +84,10 @@ impl Model for Id {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "string"})
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Text
+    }
     crate::model::leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1517,6 +1521,9 @@ pub(crate) fn nested_items(
 impl<T: Model> Model for Collection<T> {
     fn value_schema() -> serde_json::Value {
         entries_schema(T::value_schema())
+    }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Collection(Box::new(T::field_type(types)))
     }
     const SHAPE: crate::Shape = crate::Shape::Collection(&T::SHAPE);
     const CHECKS: bool = T::CHECKS;

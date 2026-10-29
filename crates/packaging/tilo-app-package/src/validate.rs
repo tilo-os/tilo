@@ -64,6 +64,10 @@ pub enum ManifestError {
     )]
     BadIcon(String),
     #[error(
+        "package.previously names {0:?}, which is not an earlier id of the app: it is empty, its own id or given twice"
+    )]
+    BadPreviously(String),
+    #[error(
         "entrypoint.runtime {0:?} must also be listed in package.optional-runtimes, so the \
          runtime installs with the app like every other one it names"
     )]
@@ -211,6 +215,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
 
     validate_store_listing(m)?;
     validate_icon(m)?;
+    validate_previously(m)?;
 
     validate_continuity(m)?;
 
@@ -257,6 +262,17 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         .signature_bytes()
         .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
     validate_target(m)
+}
+
+/// The ids an app was published under before are other ids, each named once.
+fn validate_previously(m: &Manifest) -> Result<(), ManifestError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for old in &m.package.previously {
+        if old.trim().is_empty() || *old == m.package.id || !seen.insert(old.as_str()) {
+            return Err(ManifestError::BadPreviously(old.clone()));
+        }
+    }
+    Ok(())
 }
 
 /// Publishers cannot grant themselves filesystem access.
@@ -1686,6 +1702,7 @@ mode = "off"
                 splash_segments: Vec::new(),
                 splash_budget_ms: 400,
                 runtime: None,
+                origins: Vec::new(),
             });
             m.continuity.required.clear();
             assert_eq!(

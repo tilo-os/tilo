@@ -17,6 +17,7 @@
 //! there are no closures at run time. Every error found is reported, not only the first
 //! ([`crate::diag`]).
 
+mod agentq;
 mod boundary;
 mod call;
 mod component;
@@ -62,6 +63,16 @@ pub(crate) enum Ctx {
     Block,
 }
 
+/// Who `invoker` names outside an action.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Invoker {
+    /// No one: only an action has an invoker.
+    #[default]
+    None,
+    /// The person looking, where an action is presented: who would invoke it.
+    Viewer,
+}
+
 impl Ctx {
     const fn word(self) -> &'static str {
         match self {
@@ -91,8 +102,14 @@ struct FnState {
     states: HashMap<String, StateRef>,
     /// Set while checking a scenario, where `root T` names a root resource.
     scenario: bool,
+    /// The role of the action being checked (`primary`, `destructive`, `migration`): a
+    /// migration reads `(previously)` fields.
+    role: Option<String>,
     /// Set while checking an agent's program: a flow that may `print`, `find` and `read`.
     program: bool,
+    /// Who `invoker` is outside an action: while checking an action's requirements where it
+    /// is presented, the person looking, who would invoke it.
+    invoker: Invoker,
     /// Where the UI being lowered stands.
     ui: UiPlace,
     /// For a view made of a loop body, the declared view it was written in (for anchors).
@@ -114,6 +131,12 @@ struct FnState {
     prefix: String,
     /// The templates being expanded, outermost first.
     expanding: Vec<String>,
+    /// The resource the view being lowered shows: its first parameter, when that is one. What
+    /// the system's parts of its controls are about (a rich input's `@` drawer).
+    subject: Option<(LocalId, Ty)>,
+    /// The locals holding a scalar an event carries (`at` of `on drop(moved: T, at: Int)`),
+    /// boxed until the event puts the value there.
+    event_scalars: std::collections::HashSet<LocalId>,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.
@@ -434,6 +457,7 @@ impl Checker<'_> {
             self.emit(Stmt::If(cond, Vec::new(), vec![refuse]));
         }
         self.st.scenario = c.scenario;
+        self.st.role.clone_from(&c.present.role);
         let valued = !matches!(c.result, Ty::Unit | Ty::Error);
         let stmts = match body.stmts.split_last() {
             // A body that ends in an expression returns its value.
@@ -479,6 +503,11 @@ impl Checker<'_> {
 
     fn run_view(&mut self, c: &Callable, v: &ast::ViewDecl) -> ir::Func {
         self.begin(Ctx::View, &c.params, Ty::View, &c.id);
+        self.st.subject = c
+            .params
+            .first()
+            .and_then(|p| self.lookup(&p.name))
+            .filter(|(_, ty)| matches!(ty, Ty::Record(_)));
         let rest = self.view_state(&c.name, &v.body);
         let env = self.env;
         let row_of = env
@@ -936,6 +965,35 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
+        if f.role.as_deref() == Some("previously") && self.st.role.as_deref() != Some("migration") {
+            self.err("E115", field.span, format!("`{}` is what `{}` held previously: nothing writes it any more, and only a `migration action` reads it; write where the type keeps it now", f.name, key.name));
+            let _ = self.expr(value, None);
+            return;
+        }
+        if let Some(kind) = info.origin.as_deref().and_then(crate::origin::kind)
+            && let Some(of) = kind.field(&field.name)
+            && !of.people
+            && !self.st.scenario
+        {
+            self.err(
+                "E113",
+                field.span,
+                format!(
+                    "`{}` comes from the service (`{}`): only it writes it, so a refresh never undoes what someone did; people change {}",
+                    field.name,
+                    kind.name,
+                    {
+                        let theirs: Vec<&str> =
+                            kind.fields.iter().filter(|f| f.people).map(|f| f.name).collect();
+                        if theirs.is_empty() { "none of its fields".to_owned() } else { theirs.join(", ") }
+                    }
+                ),
+            );
+        }
+        if self.st.program {
+            self.program_edit(base, &key, &f, op, value, span);
+            return;
+        }
         if self.st.ctx != Ctx::Action {
             let who = self.st.ctx.word();
             self.err("E040", span, format!("{who} cannot change `{}.{}`; only an action mutates fields. Write an action and apply it", key.name, f.name));

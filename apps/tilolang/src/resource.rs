@@ -67,7 +67,12 @@ impl Published {
     /// and each package's actions that take no record.
     fn resources(&self) -> Vec<ui::tilo_actions::ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
-        out.extend(self.publications.trees().values().cloned());
+        out.extend(
+            self.publications
+                .trees()
+                .values()
+                .map(|tree| (**tree).clone()),
+        );
         for package in self.host.packages() {
             let resource = publish_package(&package.meta, &self.planner);
             if !resource.actions.is_empty() {

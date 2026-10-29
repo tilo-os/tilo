@@ -304,10 +304,17 @@ may read ([§14](#14-permissions)). The separate FUSE recipient mount
     from its local content store, small files at once and large ones as
     placeholders that hydrate from the same store. `kind=none` in
     `/etc/tilo/store-volume.conf` opts a machine out.
-  - On every boot the service hands root-owned rooms to the local person (the
-    installer's account, else greetd's session user, else the only regular
-    account) and writes `--data-plane=auto --store=… --native-owner=UID:GID` to
-    `/run/tilo-store/fs.env`; without that file `fs.service` serves FUSE.
+  - On every boot the service hands root-owned rooms to the local person and
+    writes `--data-plane=auto --store=… --native-owner=UID:GID` to
+    `/run/tilo-store/fs.env` (`--data-plane=fuse --native-owner=…` when there
+    is no store); without that file `fs.service` serves FUSE. The local person
+    comes from the device's identity, never from the greeter's configuration
+    or how many accounts there are: `owner=` in
+    `/etc/tilo/store-volume.conf` (the installer's account), else the account
+    whose Tilo identity registry holds the identity the device is bound to
+    (`/var/lib/tilo/user-identity`), else the person signed in at the login
+    screen. Without one, or with two accounts holding the identity, the unit
+    fails, says to set `owner=`, and FUSE serves the files as root's.
   - The store is mounted with `context=…:fusefs_t:s0`, the label files under
     `/var/workspace` had on the FUSE mount, so every domain keeps exactly the
     access it had until `tilo_fs_t`'s enforcing policy defines a store type.

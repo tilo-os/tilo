@@ -202,7 +202,11 @@ pub fn may_command(
 ) -> Result<(), Refusal> {
     match command {
         DesktopCommand::RenameWorkspace { .. } => govern(standing, Governed::Name),
-        DesktopCommand::CreateStrip { .. } => govern(standing, Governed::Desks),
+        // How the workspace lays out its windows is everyone's: as much
+        // the room's arrangement as its desks.
+        DesktopCommand::CreateStrip { .. } | DesktopCommand::SetArrangement { .. } => {
+            govern(standing, Governed::Desks)
+        }
         DesktopCommand::RenameStrip { strip, .. }
         | DesktopCommand::RemoveStrip { strip }
         | DesktopCommand::MoveStrip { strip, .. } => may_manage_strip(standing, authors, *strip),
@@ -215,15 +219,15 @@ pub fn may_command(
         | DesktopCommand::SplitTab { location, .. } => {
             may_rearrange_window(standing, authors, location.tab)
         }
-        DesktopCommand::ReorderGroup { group, .. } | DesktopCommand::MoveGroup { group, .. } => {
-            workspace
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .filter(|candidate| candidate.id == *group)
-                .flat_map(|candidate| &candidate.tabs)
-                .try_for_each(|tab| may_rearrange_window(standing, authors, tab.id))
-        }
+        DesktopCommand::ReorderGroup { group, .. }
+        | DesktopCommand::MoveGroup { group, .. }
+        | DesktopCommand::PlaceGroup { group, .. } => workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .filter(|candidate| candidate.id == *group)
+            .flat_map(|candidate| &candidate.tabs)
+            .try_for_each(|tab| may_rearrange_window(standing, authors, tab.id)),
         DesktopCommand::SaveShortcut { .. }
         | DesktopCommand::DeleteShortcut { .. }
         | DesktopCommand::ClaimNamespace { .. }

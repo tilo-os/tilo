@@ -88,6 +88,7 @@ which people, agents and automations can find, read and pin.
 | Components and custom widgets | components.md |
 | Workspace, windows, views | workspace-model.md |
 | Layout | layout.md |
+| Forms, dialogs and diagrams | forms-and-diagrams.md |
 | The first new experience | first-experience.md |
 | Language changes found by writing the apps | language-changes.md |
 | Chat, the flagship app | chat.md |

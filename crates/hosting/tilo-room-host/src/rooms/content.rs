@@ -32,6 +32,7 @@ const MAX_CONTENT_BYTES: usize = 64 * 1024 * 1024;
 /// member's device alone: the member stops counting on this host for it.
 /// `None` for any other presence.
 pub(crate) fn lacks_answer(host: &[u8; 32], body: &[u8]) -> Option<Vec<u8>> {
+    // optional-decode: presence carries other formats; only a content want is answered
     let Ok(NeighbourMsg::RecordContentWant {
         requester,
         app_id,
@@ -169,6 +170,7 @@ impl Rooms {
     /// it keeps none, as frames for the member's device alone. Empty for
     /// any other presence.
     pub fn content_answer(&self, room: &str, body: &[u8]) -> Vec<Vec<u8>> {
+        // optional-decode: presence carries other formats; only a content want is answered
         let Ok(NeighbourMsg::RecordContentWant {
             requester,
             app_id,

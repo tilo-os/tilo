@@ -13,9 +13,9 @@ use tilolang_tilo::record::DynValue;
 
 use crate::fixtures::{Replica, field_id};
 
-const TODO: &str = include_str!("../../../../apps/tl/todo/app.tl");
-const TODO_IDS: &str = include_str!("../../../../apps/tl/todo/app.ids");
-const APP: &str = "so.tilo.lang.todo";
+const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
+const APP: &str = "so.tilo.lang.tasks";
 
 /// Ada's replica holding a list with one item, Grace's fork of it, the package, and the item's
 /// resource id.
@@ -27,13 +27,13 @@ fn room() -> (Replica, Replica, Meta, String) {
     let add = plan(
         &ada,
         &meta,
-        ("TodoList", &root.doc),
+        ("Tasks", &root.doc),
         "add",
         json!({"title": "Take the bins out"}),
         None,
     );
     ada.apply(&add);
-    let items = field_id(&meta, "TodoList", "items");
+    let items = field_id(&meta, "Tasks", "items");
     let record = ada.host.store().record(&root.doc).unwrap();
     let Some(DynValue::Collection(list)) = record.get(&items) else {
         panic!("no items");
@@ -74,7 +74,7 @@ fn plan(
 }
 
 fn done(replica: &Replica, meta: &Meta, item: &str) -> Value {
-    let ty = meta.types.iter().find(|t| t.name == "Todo").unwrap();
+    let ty = meta.types.iter().find(|t| t.name == "Task").unwrap();
     let at = ResourceRef::parse_id(item, ty.id.clone()).unwrap();
     replica.host.runtime().read(&at, "done").unwrap()
 }
@@ -82,8 +82,8 @@ fn done(replica: &Replica, meta: &Meta, item: &str) -> Value {
 #[test]
 fn two_replicas_checking_one_item_at_once_both_leave_it_checked() {
     let (mut ada, mut grace, meta, item) = room();
-    let by_ada = plan(&ada, &meta, ("Todo", &item), "check", json!({}), None);
-    let by_grace = plan(&grace, &meta, ("Todo", &item), "check", json!({}), None);
+    let by_ada = plan(&ada, &meta, ("Task", &item), "check", json!({}), None);
+    let by_grace = plan(&grace, &meta, ("Task", &item), "check", json!({}), None);
     assert_eq!(
         by_ada.args.get("done"),
         Some(&json!(true)),
@@ -125,7 +125,7 @@ fn an_agent_passing_done_explicitly_wins() {
     let unchecked = plan(
         &ada,
         &meta,
-        ("Todo", &item),
+        ("Task", &item),
         "check",
         json!({"done": false}),
         Some(&agent),
@@ -141,7 +141,7 @@ fn an_agent_passing_done_explicitly_wins() {
     let checked = plan(
         &ada,
         &meta,
-        ("Todo", &item),
+        ("Task", &item),
         "check",
         json!({"done": true}),
         Some(&agent),
@@ -150,7 +150,7 @@ fn an_agent_passing_done_explicitly_wins() {
     let again = plan(
         &ada,
         &meta,
-        ("Todo", &item),
+        ("Task", &item),
         "check",
         json!({"done": true}),
         Some(&agent),
@@ -166,9 +166,9 @@ fn an_agent_passing_done_explicitly_wins() {
 #[test]
 fn the_recorded_invocation_and_history_carry_the_argument() {
     let (mut ada, _, meta, item) = room();
-    let check = plan(&ada, &meta, ("Todo", &item), "check", json!({}), None);
+    let check = plan(&ada, &meta, ("Task", &item), "check", json!({}), None);
     ada.apply(&check);
-    let uncheck = plan(&ada, &meta, ("Todo", &item), "check", json!({}), None);
+    let uncheck = plan(&ada, &meta, ("Task", &item), "check", json!({}), None);
     assert_eq!(
         uncheck.args.get("done"),
         Some(&json!(false)),
@@ -201,7 +201,7 @@ fn the_published_action_offers_done_as_optional_and_describes_its_default() {
     let done = check.params.iter().find(|p| p.name == "done").unwrap();
     assert_eq!(
         done.default.as_ref().map(|d| d.text.as_str()),
-        Some("not item.done")
+        Some("not t.done")
     );
     let planner: std::sync::Arc<dyn tilolang_tilo::publish::Planner> =
         std::sync::Arc::new(ada.host.handle());
@@ -214,7 +214,7 @@ fn the_published_action_offers_done_as_optional_and_describes_its_default() {
         .expect("published");
     assert!(!param.required, "an invocation may leave it out");
     assert!(
-        param.description.contains("not item.done"),
+        param.description.contains("not t.done"),
         "{}",
         param.description
     );

@@ -19,6 +19,7 @@ mod ask_agent;
 mod axis_navigation;
 mod banners;
 mod bar_popovers;
+mod canvas;
 mod control_hints;
 mod cursor_chat;
 mod feedback_pick;
@@ -997,6 +998,9 @@ pub struct ShellOverlayHost {
     /// Controls a development session's test control asked to activate in
     /// the focused window, by their test ids, not yet sent to its app.
     test_activations: Vec<String>,
+    /// This device's side of the canvas: the lens, the caret, a selection
+    /// and the answers on their way to a window ([`canvas`]).
+    canvas: canvas::CanvasLayer,
     /// A click that picked what a feedback report is about, waiting for the
     /// app under it to name the control there.
     feedback_point: crate::shell::feedback_entry::FeedbackPoint,
@@ -1004,6 +1008,12 @@ pub struct ShellOverlayHost {
     feedback_picker: crate::shell::feedback_pick::NativePicker,
     /// The slots Tilo apps declared for their windows' bars.
     window_toolbars: window_toolbars::WindowToolbars,
+    /// What the person did with apps' slots in their windows' bars, for the apps, each with
+    /// the input serial minted when it was done ([`crate::compositor::input_order`]).
+    placed_toolbar_events: Vec<(u64, ui::window_toolbar::ToolbarEvent, u32)>,
+    /// The input serial minted when the desktop last dispatched input of its own (a click, a
+    /// key, a touch): what a bar reports later was done with it.
+    chrome_input_clock: u32,
     /// Windows shared live into a conversation: the menus offering it, the
     /// sharing app's connections and the views windows embed.
     live_shares: live_shares::NativeLiveShares,

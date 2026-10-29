@@ -49,7 +49,7 @@ pub use image::{
     materialized_tree, tool_runtime,
 };
 pub use layout::Layout;
-pub use registry::{InstalledPackage, Pinning, Registry, RegistryError};
+pub use registry::{InstalledPackage, Pinning, Registry, RegistryError, TakenOver};
 #[cfg(feature = "store")]
 pub use store::{
     Admission, DEFAULT_MAX_STORE_BYTES, DiskUsage, InstallSelection, Installed, Orphans,

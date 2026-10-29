@@ -977,31 +977,7 @@ pub enum Target {
         /// Where the guest runs: this device unless it names a relay.
         #[serde(default, skip_serializing_if = "Location::is_this_device")]
         location: Location,
-        /// Which shell the session runs: ush's own unless it names bash.
-        #[serde(default, skip_serializing_if = "Shell::is_ush")]
-        shell: Shell,
     },
-}
-
-/// Which shell an environment session runs
-/// (`docs/app-model/ush-portable.md`).
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(rename_all = "kebab-case")]
-pub enum Shell {
-    /// ush's own shell: Tilo's commands in-process, everything else in the
-    /// guest. What a new session runs.
-    #[default]
-    Ush,
-    /// bash in the guest: a full Linux session.
-    Linux,
-}
-
-impl Shell {
-    pub const fn is_ush(&self) -> bool {
-        matches!(self, Self::Ush)
-    }
 }
 
 /// Where an environment's guest runs.
@@ -1037,17 +1013,11 @@ impl Location {
 }
 
 impl Target {
-    /// The default environment, on this device, in ush's own shell.
+    /// The default environment, on this device.
     pub fn default_environment() -> Self {
-        Self::default_environment_in(Shell::Ush)
-    }
-
-    /// The default environment, on this device, in `shell`.
-    pub fn default_environment_in(shell: Shell) -> Self {
         Self::Environment {
             record: None,
             location: Location::ThisDevice,
-            shell,
         }
     }
 }
@@ -1432,15 +1402,11 @@ mod tests {
     fn targets_and_record_keys_are_what_an_app_can_say() {
         let json = serde_json::to_string(&Target::default_environment()).unwrap();
         assert_eq!(json, r#"{"kind":"environment"}"#);
+        // Targets stored before the Linux shell choice went away still read
+        // back: they mean the environment, in ush's shell like any other.
         let linux: Target =
             serde_json::from_str(r#"{"kind":"environment","shell":"linux"}"#).unwrap();
-        assert!(matches!(
-            linux,
-            Target::Environment {
-                shell: Shell::Linux,
-                ..
-            }
-        ));
+        assert_eq!(linux, Target::default_environment());
         let named: Target =
             serde_json::from_str(r#"{"kind":"environment","record":"work"}"#).unwrap();
         assert_eq!(
@@ -1448,7 +1414,6 @@ mod tests {
             Target::Environment {
                 record: Some("work".into()),
                 location: Location::ThisDevice,
-                shell: Shell::Ush,
             }
         );
         let relay = "ab".repeat(32);

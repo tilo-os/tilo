@@ -3167,8 +3167,30 @@ impl FrameHarness {
         }
         if result.is_ok() {
             self.activate_requested_app();
+            self.apply_focus_request();
         }
         result
+    }
+
+    /// The control a widget asked to take the keyboard in the tree this frame
+    /// laid out ([`Widget::take_focus_request`]) takes it, as a press focuses
+    /// it, as the live App does. A dialog or command holding the keyboard
+    /// keeps it.
+    fn apply_focus_request(&mut self) {
+        if self.pending_app_activation.is_some() || self.check_app_activation().is_err() {
+            return;
+        }
+        let Some(id) = self.root.take_focus_request() else {
+            return;
+        };
+        let target = self.focus_order().into_iter().find(|&node| {
+            self.inspect_node(node, |widget| widget.test_id() == Some(id.as_str()))
+                .unwrap_or(false)
+        });
+        if target.is_some() && target != self.focused {
+            self.set_focused(target);
+            self.relayout();
+        }
     }
 
     /// A window the person brought forward on the desktop this frame laid
@@ -4342,26 +4364,13 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        if crate::focus_navigation::walks_layout_map(
-            self.root.as_ref(),
-            self.history.is_some(),
-            &restrictions,
-        ) {
-            let root = self
-                .history
-                .as_ref()
-                .and_then(|history| history.review_layout_node())
-                .unwrap_or(self.child_node);
-            self.history_app_focus_order(root, &restrictions).0
-        } else {
-            crate::focus_navigation::order(
-                self.child_node,
-                self.root.as_ref(),
-                &self.taffy,
-                &self.node_map,
-            )
-            .0
-        }
+        // The laid out tree, as the live App walks it.
+        let root = self
+            .history
+            .as_ref()
+            .and_then(|history| history.review_layout_node())
+            .unwrap_or(self.child_node);
+        self.history_app_focus_order(root, &restrictions).0
     }
 
     /// Where Tab and directional focus travel: [`Self::focus_order`], kept
@@ -4473,25 +4482,12 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        let (mut order, trapped) = if crate::focus_navigation::walks_layout_map(
-            self.root.as_ref(),
-            self.history.is_some(),
-            &restrictions,
-        ) {
-            let root = self
-                .history
-                .as_ref()
-                .and_then(|history| history.review_layout_node())
-                .unwrap_or(self.child_node);
-            self.history_app_focus_order(root, &restrictions)
-        } else {
-            crate::focus_navigation::order(
-                self.child_node,
-                self.root.as_ref(),
-                &self.taffy,
-                &self.node_map,
-            )
-        };
+        let root = self
+            .history
+            .as_ref()
+            .and_then(|history| history.review_layout_node())
+            .unwrap_or(self.child_node);
+        let (mut order, trapped) = self.history_app_focus_order(root, &restrictions);
         if !self.focus_trap_active && trapped {
             // Capture a stable semantic/owner identity, never carry a stale Taffy id
             // through the portable host's complete layout rebuilds.

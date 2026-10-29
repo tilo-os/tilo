@@ -343,60 +343,6 @@ fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
     run_handoff();
 }
 
-/// A guest's shell starts as the Host's does: it is the session's login
-/// shell, so it reads the environment home's `~/.bash_profile`; Tab completes
-/// a unique path prefix on its pty; and it marks each run with the
-/// session's key.
-#[test]
-fn a_guest_shell_is_a_login_shell_that_marks_runs_and_tab_completes() {
-    let _guest = GUEST_ENV.lock().expect("guest env lock");
-    tilo_test_env::require_capability!(
-        NamespaceEntry,
-        namespace_entry(),
-        "the guest's network namespace"
-    );
-    assert_eq!(
-        guest_unavailable(),
-        None,
-        "the native guest must be observable"
-    );
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (_env, store, socket, _granted) = serve_fixture(dir.path());
-    let home = store.environment_home(DEFAULT_RECORD);
-    std::fs::create_dir_all(home.join("fixture-unique-directory")).unwrap();
-    std::fs::write(
-        home.join(".bash_profile"),
-        "export FROM_PROFILE=login\n[ -f ~/.bashrc ] && . ~/.bashrc\n",
-    )
-    .unwrap();
-
-    let key = "k3y0fth1ss3ss10n";
-    let (_stream, master) = open_marked_session(&socket, Some(key), tilo_environment::Shell::Linux);
-    let fd = master.as_raw_fd();
-    let prompt = read_until(fd, "Fixture", tilo_test_env::hang_bound());
-    assert!(prompt.contains("Fixture"), "no prompt appeared:\n{prompt}");
-
-    let line = "echo \"[$FROM_PROFILE]\" fixture-uni\t\r";
-    // SAFETY: `fd` is a live pty master.
-    let written = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
-    assert!(written > 0, "could not write to the pty");
-    let expected = "[login] fixture-unique-directory/";
-    let seen = read_until(fd, expected, tilo_test_env::hang_bound());
-    assert!(
-        seen.contains(expected),
-        "the profile was not read or Tab did not complete:\n{seen}"
-    );
-    let mark = format!("\x1b]133;D;0;k={key};t=1\x07");
-    let seen = format!(
-        "{seen}{}",
-        read_until(fd, &mark, tilo_test_env::hang_bound())
-    );
-    assert!(
-        seen.contains(&mark),
-        "the guest's shell marks the run it finished:\n{seen:?}"
-    );
-}
-
 /// A new session's shell is ush's own, on the Tilo side: `ls | wc -l` runs
 /// as two of Tilo's own commands over the granted files, and the run is
 /// marked with its line, directory and status.
@@ -419,7 +365,7 @@ fn a_new_session_runs_ushs_own_shell_and_marks_its_runs() {
         std::fs::write(granted.join(name), name).unwrap();
     }
     let key = "k3y0fth1ss3ss10n";
-    let (_stream, master) = open_marked_session(&socket, Some(key), tilo_environment::Shell::Ush);
+    let (_stream, master) = open_marked_session(&socket, Some(key));
     let fd = master.as_raw_fd();
     let prompt = format!("\x1b]133;A;k={key}\x07");
     let seen = read_until(fd, &prompt, tilo_test_env::hang_bound());
@@ -476,7 +422,7 @@ fn a_tilo_side_session_starts_its_guest_for_the_first_program_only() {
     let (_env, store, socket, granted) = serve_fixture(dir.path());
     std::fs::write(granted.join("notes.md"), "one\ntwo\n").unwrap();
     let key = "k3y0fth1ss3ss10n";
-    let (_stream, master) = open_marked_session(&socket, Some(key), tilo_environment::Shell::Ush);
+    let (_stream, master) = open_marked_session(&socket, Some(key));
     let fd = master.as_raw_fd();
     let prompt = format!("\x1b]133;A;k={key}\x07");
     let seen = read_until(fd, &prompt, tilo_test_env::hang_bound());
@@ -647,26 +593,27 @@ fn fixture_environment(store: &Store, granted: &Path) {
         .unwrap();
 }
 
-/// Ask for the default environment and receive its pty master.
-/// The default environment as a full Linux session: bash in the guest,
-/// which is what these tests type at.
+/// Ask for the default environment running `bash` and receive its pty
+/// master: bash as an ordinary program in the session's guest, which is
+/// what these tests type at.
 fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
-    open_marked_session(socket, None, tilo_environment::Shell::Linux)
+    open_session(socket, None, vec!["bash".into()])
 }
 
-/// The default environment in `shell`, marking its runs with `runs`.
-fn open_marked_session(
-    socket: &Path,
-    runs: Option<&str>,
-    shell: tilo_environment::Shell,
-) -> (UnixStream, OwnedFd) {
+/// The default environment in ush's shell, marking its runs with `runs`.
+fn open_marked_session(socket: &Path, runs: Option<&str>) -> (UnixStream, OwnedFd) {
+    open_session(socket, runs, Vec::new())
+}
+
+/// The default environment running `command` (ush's shell when empty).
+fn open_session(socket: &Path, runs: Option<&str>, command: Vec<String>) -> (UnixStream, OwnedFd) {
     let stream = UnixStream::connect(socket).expect("connect");
     let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
-        target: Target::default_environment_in(shell),
+        target: Target::default_environment(),
         cols: 100,
         rows: 30,
         term: Some("xterm-256color".into()),
-        command: Vec::new(),
+        command,
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
         runs: runs.map(str::to_owned),
@@ -951,11 +898,11 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
 
 /// `pkg install` end to end in a real guest: the broker asks the tool
 /// builder, which resolves and builds `tree` against a real env-runtime in
-/// its build sandbox; the record gains the tool; after `restart` the command
-/// is on the guest's PATH. Needs a materialised env-runtime tree
+/// its build sandbox; the record gains the tool; the next session's guest has
+/// its command on the PATH. Needs a materialised env-runtime tree
 /// (`TILO_ENV_RUNTIME_TREE`) and the network for the package download.
 #[test]
-fn pkg_install_builds_a_tool_that_is_on_path_after_restart() {
+fn pkg_install_builds_a_tool_that_is_on_path_in_the_next_session() {
     let Some(runtime_tree) = std::env::var_os("TILO_ENV_RUNTIME_TREE").map(PathBuf::from) else {
         eprintln!("pkg_install: TILO_ENV_RUNTIME_TREE names no env-runtime tree; not exercised");
         return;
@@ -1014,7 +961,7 @@ fn pkg_install_builds_a_tool_that_is_on_path_after_restart() {
     while !socket.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
-    let (_stream, master) = open_default_session(&socket);
+    let (stream, master) = open_default_session(&socket);
     let fd = master.as_raw_fd();
     let type_line = |line: &str| {
         // SAFETY: `fd` is a live pty master.
@@ -1040,13 +987,22 @@ fn pkg_install_builds_a_tool_that_is_on_path_after_restart() {
     );
     assert_tool_recorded(&store, &images);
 
-    type_line("restart\r");
-    let restarted = read_until(fd, "Fixture", tilo_test_env::hang_bound());
+    // The next session's guest has the tool.
+    drop(stream);
+    drop(master);
+    let (_stream, master) = open_default_session(&socket);
+    let fd = master.as_raw_fd();
+    let type_line = |line: &str| {
+        // SAFETY: `fd` is a live pty master.
+        let n = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
+        assert!(n > 0, "could not write to the pty");
+    };
+    let reopened = read_until(fd, "Fixture", tilo_test_env::hang_bound());
     type_line("tree --version; printf 'DO%s\\n' NE\r");
     let after = read_until(fd, "DONE", tilo_test_env::hang_bound());
     assert!(
         after.contains("tree v"),
-        "after `restart` the tool's command is on the PATH:\n{restarted}\n{after}"
+        "in the next session the tool's command is on the PATH:\n{reopened}\n{after}"
     );
 }
 

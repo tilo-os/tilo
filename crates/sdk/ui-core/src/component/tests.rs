@@ -125,7 +125,9 @@ fn sample(ty: &Type) -> Value {
         Type::RichText => Value::Rich(tilo_ui_graph::rich::RichText::default()),
         Type::Choice { cases, .. } => Value::Choice(cases.first().cloned().unwrap_or_default()),
         Type::Option(_) => Value::None,
-        Type::List(_) => Value::List(Vec::new()),
+        Type::List(_) | Type::Set(_) => Value::List(Vec::new()),
+        Type::Map { .. } => Value::Map(Vec::new()),
+        Type::Action => Value::Action(tilo_ui_graph::component::Offered::default()),
     }
 }
 

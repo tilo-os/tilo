@@ -80,20 +80,6 @@ impl App {
         Ok(revision)
     }
 
-    /// The descriptor a directory row carries. Directory pages have never
-    /// carried a resource view: the broker proves a view's mount and range
-    /// bindings against the actions on the same page, which a bounded page
-    /// cannot promise, so views reach the shell through the published
-    /// surface instead.
-    fn exported_directory_action(
-        descriptor: &tilo_actions::ActionDescriptor,
-    ) -> runtime_collab::ExportedAction {
-        runtime_collab::ExportedAction {
-            view: None,
-            ..runtime_collab::ExportedAction::from(descriptor)
-        }
-    }
-
     fn directory_resource_row(
         &self,
         resource: &tilo_actions::ResourceSpec,
@@ -160,7 +146,7 @@ impl App {
             .iter()
             .find(|action| action.id == action_id)?;
         let descriptor = Self::directory_descriptor(resource, action);
-        let exported = Self::exported_directory_action(&descriptor);
+        let exported = ::collaboration::action_directory::exported_directory_action(&descriptor);
         Some(runtime_collab::ActionDirectoryRow {
             parent_resource: resource.id.as_str().to_owned(),
             resource: resource.id.as_str().to_owned(),
@@ -219,31 +205,20 @@ impl App {
         revision: String,
     ) -> runtime_collab::ActionDirectoryPage {
         let name = query.resource_name.as_str();
-        let max_results = usize::try_from(query.max_results)
-            .unwrap_or(ACTION_DIRECTORY_MAX_RESULTS)
-            .clamp(1, ACTION_DIRECTORY_MAX_RESULTS);
-        let max_bytes = usize::try_from(query.max_bytes)
-            .unwrap_or(ACTION_DIRECTORY_MAX_BYTES)
-            .clamp(1, ACTION_DIRECTORY_MAX_BYTES);
         let parent = query.parent_resource.as_str();
-        let named = |kind: &str, label: &str| kind == name || label.eq_ignore_ascii_case(name);
         let found: Vec<_> = if let Some(snapshot) = &self.actions.action_directory_snapshot {
-            let rows = if parent.is_empty() {
-                Some(&snapshot.roots)
-            } else {
-                snapshot.nodes.get(parent).map(|node| &node.rows)
-            };
-            rows.into_iter()
-                .flatten()
-                .filter(|row| {
-                    row.action.is_none() && named(&row.resource_kind, &row.resource_label)
-                })
-                .cloned()
-                .collect()
+            ::collaboration::action_directory::named_rows(snapshot, parent, name)
+                .unwrap_or_default()
         } else if parent.is_empty() {
             self.publication_resources()
                 .iter()
-                .filter(|resource| named(&resource.kind, &resource.label))
+                .filter(|resource| {
+                    ::collaboration::action_directory::is_named(
+                        &resource.kind,
+                        &resource.label,
+                        name,
+                    )
+                })
                 .filter_map(|resource| self.directory_resource_row(resource, "", true))
                 .collect()
         } else {
@@ -267,35 +242,13 @@ impl App {
             };
             children
                 .iter()
-                .filter(|child| named(&child.kind, &child.label))
+                .filter(|child| {
+                    ::collaboration::action_directory::is_named(&child.kind, &child.label, name)
+                })
                 .filter_map(|child| self.directory_resource_row(child, parent, true))
                 .collect()
         };
-        let mut rows = Vec::new();
-        let mut bytes = DIRECTORY_PAGE_WIRE_BYTES.saturating_add(revision.len());
-        for mut row in found.into_iter().take(max_results) {
-            row.has_children &= query.max_depth > 0;
-            bytes = bytes.saturating_add(runtime_collab::action_directory_row_wire_bytes(&row));
-            if bytes > max_bytes {
-                return runtime_collab::ActionDirectoryPage {
-                    revision,
-                    rows: Vec::new(),
-                    next_cursor: Vec::new(),
-                    exhausted: false,
-                    stale_cursor: false,
-                    budget_exhausted: true,
-                };
-            }
-            rows.push(row);
-        }
-        runtime_collab::ActionDirectoryPage {
-            revision,
-            rows,
-            next_cursor: Vec::new(),
-            exhausted: true,
-            stale_cursor: false,
-            budget_exhausted: false,
-        }
+        ::collaboration::action_directory::named_page(query, revision, found)
     }
 
     fn action_directory_page(
@@ -303,25 +256,11 @@ impl App {
         query: runtime_collab::ActionDirectoryQuery,
     ) -> runtime_collab::ActionDirectoryPage {
         let Ok(revision) = self.try_action_directory_revision() else {
-            return runtime_collab::ActionDirectoryPage {
-                revision: String::new(),
-                rows: Vec::new(),
-                next_cursor: Vec::new(),
-                exhausted: false,
-                stale_cursor: !query.revision.is_empty(),
-                budget_exhausted: true,
-            };
+            return ::collaboration::action_directory::unavailable_page(&query);
         };
         let requested_revision = query.revision.clone();
         if !requested_revision.is_empty() && requested_revision != revision {
-            return runtime_collab::ActionDirectoryPage {
-                revision,
-                rows: Vec::new(),
-                next_cursor: Vec::new(),
-                exhausted: false,
-                stale_cursor: true,
-                budget_exhausted: false,
-            };
+            return ::collaboration::action_directory::stale_page(revision);
         }
         if !query.resource_name.is_empty() {
             return self.action_directory_named(&query, revision);
@@ -342,14 +281,7 @@ impl App {
             match String::from_utf8(query.cursor) {
                 Ok(cursor) => Some(cursor),
                 Err(_) => {
-                    return runtime_collab::ActionDirectoryPage {
-                        revision,
-                        rows: Vec::new(),
-                        next_cursor: Vec::new(),
-                        exhausted: false,
-                        stale_cursor: true,
-                        budget_exhausted: false,
-                    };
+                    return ::collaboration::action_directory::stale_page(revision);
                 }
             }
         };
@@ -357,14 +289,7 @@ impl App {
             .as_deref()
             .and_then(|key| self.actions.action_directory_cursors.remove(key));
         if cursor_key.is_some() && previous.is_none() {
-            return runtime_collab::ActionDirectoryPage {
-                revision,
-                rows: Vec::new(),
-                next_cursor: Vec::new(),
-                exhausted: false,
-                stale_cursor: true,
-                budget_exhausted: false,
-            };
+            return ::collaboration::action_directory::stale_page(revision);
         }
         let mut state = previous.unwrap_or_else(|| ActionDirectoryCursor {
             revision: revision.clone(),
@@ -380,14 +305,7 @@ impl App {
             || state.needle != query.needle
             || state.parent_resource != query.parent_resource
         {
-            return runtime_collab::ActionDirectoryPage {
-                revision,
-                rows: Vec::new(),
-                next_cursor: Vec::new(),
-                exhausted: false,
-                stale_cursor: true,
-                budget_exhausted: false,
-            };
+            return ::collaboration::action_directory::stale_page(revision);
         }
 
         let mut rows = Vec::new();
@@ -676,14 +594,7 @@ impl App {
             if provider_cursor.as_ref().is_some_and(|cursor| {
                 !providers[provider_index].action_directory_cursor_is_current(cursor)
             }) {
-                return runtime_collab::ActionDirectoryPage {
-                    revision,
-                    rows: Vec::new(),
-                    next_cursor: Vec::new(),
-                    exhausted: false,
-                    stale_cursor: true,
-                    budget_exhausted: false,
-                };
+                return ::collaboration::action_directory::stale_page(revision);
             }
             // Request one row at a time.  The provider's opaque cursor is
             // after its returned page, so asking for a larger page and then
@@ -958,14 +869,7 @@ impl App {
         if self.published_action_history_ready() {
             self.action_directory_page(query)
         } else {
-            runtime_collab::ActionDirectoryPage {
-                revision: String::new(),
-                rows: Vec::new(),
-                next_cursor: Vec::new(),
-                exhausted: false,
-                stale_cursor: !query.revision.is_empty(),
-                budget_exhausted: true,
-            }
+            ::collaboration::action_directory::unavailable_page(&query)
         }
     }
 

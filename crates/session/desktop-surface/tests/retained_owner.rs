@@ -101,6 +101,7 @@ impl TileSource for Source {
             icon: IconDescriptor::Glyph("R"),
             record_kind: ui::record::RecordKind::new("retained-owner"),
             room_record: false,
+            member_record: false,
             opens_before_record: false,
             required: vec![],
             optional: vec![],

@@ -257,25 +257,53 @@ impl RoomRecords {
                 .load_retained()
                 .map_err(|error| error.to_string())?
         };
-        Ok(encoded
+        // Retained entries are whole frames: a length prefix, then the
+        // envelope. One that does not decode is counted and reported, not
+        // read as absent.
+        let mut unreadable = 0_usize;
+        let bodies = encoded
             .iter()
-            // Retained entries are whole frames: a length prefix, then the
-            // envelope.
-            .filter_map(|raw| match crate::frame::decode(raw.get(4..)?).ok()? {
-                Envelope::Delta {
-                    author_device_public_key,
-                    delta,
-                    ..
-                } => match CoeditPayload::decode(&delta)? {
-                    CoeditPayload::Checkpoint { body, .. }
-                    | CoeditPayload::RetainedDelta { body, .. } => Some(RetainedBody {
-                        author: author_device_public_key,
-                        body,
-                    }),
-                },
-                _ => None,
+            .filter_map(|raw| {
+                let envelope = raw
+                    .get(4..)
+                    .ok_or_else(|| "shorter than its length prefix".to_owned())
+                    .and_then(|frame| {
+                        crate::frame::decode(frame).map_err(|error| error.to_string())
+                    });
+                let Ok(envelope) = envelope else {
+                    unreadable = unreadable.saturating_add(1);
+                    return None;
+                };
+                match envelope {
+                    Envelope::Delta {
+                        author_device_public_key,
+                        delta,
+                        ..
+                    } => match CoeditPayload::decode(&delta) {
+                        Some(
+                            CoeditPayload::Checkpoint { body, .. }
+                            | CoeditPayload::RetainedDelta { body, .. },
+                        ) => Some(RetainedBody {
+                            author: author_device_public_key,
+                            body,
+                        }),
+                        None => {
+                            unreadable = unreadable.saturating_add(1);
+                            None
+                        }
+                    },
+                    _ => None,
+                }
             })
-            .collect())
+            .collect();
+        if unreadable > 0 {
+            tracing::warn!(
+                workspace_id,
+                unreadable,
+                "retained frames of the room do not decode; they are left out"
+            );
+        }
+        Ok(bodies)
     }
 
     /// Wait until every host commit queued for `workspace_id` so far is

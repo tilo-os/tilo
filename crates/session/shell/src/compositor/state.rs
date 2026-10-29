@@ -1050,6 +1050,9 @@ pub struct State {
     pub seat: Seat<Self>,
     /// Monotonic counter for input serials — reusing old `Serial`s would make wayland clients ignore the motion/button.
     pub serial_counter: u32,
+    /// Which input each app's process was sent, so what the person does in its window's bar
+    /// keeps its place among it.
+    pub input_order: crate::compositor::input_order::InputOrder,
     /// Recently issued seat serials and their issue time. The activation
     /// protocol carries a serial but no timestamp for the underlying input;
     /// retaining this short bounded history lets us reject fabricated and
@@ -2192,6 +2195,7 @@ impl State {
             surface_tracker: SurfaceTracker::new(),
             seat,
             serial_counter: 0,
+            input_order: crate::compositor::input_order::InputOrder::default(),
             activation_serials: VecDeque::new(),
             clients_given_input: std::collections::HashSet::new(),
             start_time: std::time::Instant::now(),
@@ -4545,6 +4549,23 @@ impl State {
             |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
         );
         true
+    }
+
+    /// The keys that type `ch` on the keymap the seat sends its clients, in
+    /// the active input source ([`super::keymap_typing::stroke_for`]); only
+    /// keys a synthesised key event can name are used. `None` when no key
+    /// types it, or the seat has no keyboard.
+    pub(crate) fn seat_stroke(&mut self, ch: char) -> Option<super::keymap_typing::Stroke> {
+        let keyboard = self.seat.get_keyboard()?;
+        keyboard.with_xkb_state(self, |context| {
+            let xkb = context.xkb().lock().ok()?;
+            let layout = xkb.active_layout().0;
+            // SAFETY: the keymap is only read while the lock is held, and
+            // the scratch state `stroke_for` makes from it is dropped before
+            // it returns, so no reference outlives the seat's `Xkb`.
+            let keymap = unsafe { xkb.keymap() };
+            super::keymap_typing::stroke_for(keymap, layout, ch, super::keymap_typing::deliverable)
+        })
     }
 
     /// Reverse-lookup a keysym to a keycode in the seat keyboard's active

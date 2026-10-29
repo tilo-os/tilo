@@ -6,6 +6,7 @@ use std::process::ExitCode;
 
 use tilolang_cli::dev::{self, DevOptions};
 use tilolang_cli::package::{self, BuildOptions};
+use tilolang_cli::repl::{self, ReplOptions};
 use tilolang_cli::run::{self, RunOptions};
 
 const USAGE: &str = "\
@@ -28,8 +29,26 @@ usage:
       --runtime BIN runs the apps on a tilolang runtime binary of your own build, and a new
       build of it restarts them on it; --build-runtime builds it from the checkout and again
       on every change of its sources with cargo. See docs/tilolang-dev.md.
+  tilolang describe [DIR] [--search DIR]...
+      print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
+      a native app (its committed surface.toml) and a tilolang package alike
+  tilolang repl [--session SESSION | --door SOCKET | --real] [--color always|never]
+      tilolang typed against a running session through its agent door: the nested session
+      started last by default (SESSION: its --ready file, runtime directory or control socket,
+      where the REPL is admitted as the person's agent, its answers theirs), another session's
+      door, or the person's own session (--real), where the person admits it. Each entry is a
+      program for the door's `tilo` tool, run as the REPL's task: lets are kept, refs (n3) name
+      what answers showed, a bulk change previews until `confirm`, `undo` takes a step back.
+  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--dump WxH]
+      lay out every view of each app headlessly, staged from each of its scenarios, at window
+      sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
+      report overflow, clipped text, overlapping siblings, hit targets below the minimum and
+      pages that scroll sideways, each at its view's node in the source. Exits 1 on a finding
+      the allow-list (one finding id per line) does not name; --json prints the report as JSON;
+      --dump prints each layout at that window size as the check reads it (boxes, clips and
+      semantics of every widget) to stderr.
   tilolang check|fmt|ids ...
-      the compiler's commands (tilolangc --help)";
+      the compiler's commands (tilolangc --help); `use` also finds native apps in --path";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -38,11 +57,17 @@ fn main() -> ExitCode {
         Some("build") => build(rest),
         Some("run") => run_command(rest),
         Some("dev") => dev_command(rest),
+        Some("describe") => describe_command(rest),
+        Some("repl") => repl_command(rest),
+        Some("layout-check") => return layout_check_command(rest),
         Some("-h" | "--help") | None => {
             println!("{USAGE}");
             return ExitCode::SUCCESS;
         }
-        Some(_) => return tilolang::cli::main(&args),
+        // A package may `use` a native app: its published types are found among --path too.
+        Some(_) => {
+            return tilolang::cli::main_with(&args, tilolang_tilo::catalogue::native_apps);
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -100,6 +125,79 @@ fn build(args: &[String]) -> Result<(), String> {
     for app in package::build(&options, &identity)? {
         println!("{} ({}): {}", app.app, app.title, app.tapp.display());
     }
+    Ok(())
+}
+
+fn layout_check_command(args: &[String]) -> ExitCode {
+    let mut options = tilolang_cli::layout_check::Options::default();
+    let mut json = false;
+    let mut iter = args.iter();
+    let parsed: Result<(), String> = (|| {
+        while let Some(arg) = iter.next() {
+            match arg.as_str() {
+                "--search" | "--path" => options.search.push(value(&mut iter, arg)?.into()),
+                "--allow" => options.allow = Some(value(&mut iter, arg)?.into()),
+                "--json" => json = true,
+                "--dump" => {
+                    let size = value(&mut iter, arg)?;
+                    options.dump = size
+                        .split_once('x')
+                        .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                        .map(Some)
+                        .ok_or_else(|| format!("--dump {size}: a window size such as 390x844"))?;
+                }
+                flag if flag.starts_with('-') => {
+                    return Err(format!("unknown option {flag}\n{USAGE}"));
+                }
+                dir => options.dirs.push(dir.into()),
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = parsed {
+        eprintln!("tilolang: {error}");
+        return ExitCode::from(2);
+    }
+    if options.dirs.is_empty() {
+        options.dirs.push(PathBuf::from("."));
+    }
+    let report = match tilolang_cli::layout_check::check(&options) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("tilolang layout-check: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    if json {
+        match serde_json::to_string_pretty(&report) {
+            Ok(text) => println!("{text}"),
+            Err(error) => {
+                eprintln!("tilolang layout-check: {error}");
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        print!("{}", tilolang_cli::layout_check::render(&report));
+    }
+    if report.new_findings().next().is_some() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn describe_command(args: &[String]) -> Result<(), String> {
+    let mut dir = PathBuf::from(".");
+    let mut search = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--search" | "--path" => search.push(value(&mut iter, arg)?.into()),
+            flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n{USAGE}")),
+            other => dir = other.into(),
+        }
+    }
+    print!("{}", tilolang_cli::describe::describe(&dir, &search)?);
     Ok(())
 }
 
@@ -174,4 +272,26 @@ fn dev_command(args: &[String]) -> Result<(), String> {
         runtime_identity,
         repo,
     })
+}
+
+fn repl_command(args: &[String]) -> Result<(), String> {
+    let mut options = ReplOptions::default();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--session" => options.session = Some(PathBuf::from(value(&mut iter, arg)?)),
+            "--door" => options.door = Some(PathBuf::from(value(&mut iter, arg)?)),
+            "--real" => options.real = true,
+            "--color" => {
+                options.color = match value(&mut iter, arg)?.as_str() {
+                    "always" => Some(true),
+                    "never" => Some(false),
+                    "auto" => None,
+                    other => return Err(format!("--color is always, never or auto, not {other}")),
+                }
+            }
+            other => return Err(format!("unknown option {other}\n{USAGE}")),
+        }
+    }
+    repl::repl(&options)
 }

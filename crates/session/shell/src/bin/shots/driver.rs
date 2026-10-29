@@ -2200,7 +2200,9 @@ impl ShellDriver {
             "agent-composer"
             | "agent-composer-typed"
             | "agent-composer-answer"
-            | "agent-composer-working" => {
+            | "agent-composer-working"
+            | "agent-composer-steps"
+            | "agent-composer-answer-view" => {
                 #[cfg(debug_assertions)]
                 self.host_mut()
                     .seed_agent_composer_for_shots(name)

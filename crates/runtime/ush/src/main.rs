@@ -112,8 +112,7 @@ const USAGE: &str = "\
 tilo-ush — an application runtime that hosts a shell.
 
 On the host:
-  ush [-c COMMAND] [-v] [--environment RECORD] [--shell ush|linux]
-                                                  open a shell in an environment
+  ush [-c COMMAND] [-v] [--environment RECORD]  open ush's shell in an environment
   tilo-ush serve [--socket PATH]                  hand guests to apps that ask
 
 Inside a guest:
@@ -154,7 +153,7 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
         match arg.as_str() {
             "-c" => {
                 // Matching `sh -c`: everything after it is one script, run by
-                // the guest's shell, not split into an argv here.
+                // ush's shell, not split into an argv here.
                 script = Some(value()?);
                 i = i.saturating_add(2);
             }
@@ -164,14 +163,6 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
             }
             "--environment" => {
                 opts.environment = Some(value()?);
-                i = i.saturating_add(2);
-            }
-            "--shell" => {
-                opts.shell = match value()?.as_str() {
-                    "ush" => tilo_environment::Shell::Ush,
-                    "linux" | "bash" => tilo_environment::Shell::Linux,
-                    other => anyhow::bail!("--shell is `ush` or `linux`, not `{other}`"),
-                };
                 i = i.saturating_add(2);
             }
             "--host-root" => {
@@ -221,18 +212,7 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
         let mut session = Session::new(store, opts, images, builder);
         if let Some(script) = script {
             // ush's own shell runs the script here, on the Tilo side.
-            if session.opts.shell.is_ush() {
-                return session.run_tilo_side(Some(&script));
-            }
-            let resolved = session.resolve()?;
-            let trees: Vec<PathBuf> = resolved.images.into_iter().map(|(_, p)| p).collect();
-            session.opts.command = vec![
-                ush::supervisor::guest_shell(&trees)
-                    .to_string_lossy()
-                    .into_owned(),
-                "-c".into(),
-                script,
-            ];
+            return session.run_tilo_side(Some(&script));
         }
         session.run()
     };

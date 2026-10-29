@@ -18,7 +18,10 @@
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use std::sync::Arc;
+
 use crate::io::Stdio;
+use crate::jobs::Job;
 
 /// What kind of thing a path names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +114,17 @@ pub enum Program {
     NeedsTier,
 }
 
+/// A question to the person's command history ([`Host::history`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HistoryQuery {
+    /// How many of the newest matching command lines to pass over.
+    pub skip: usize,
+    /// How many to answer at most.
+    pub limit: usize,
+    /// Only command lines that contain this; every line when empty.
+    pub matching: String,
+}
+
 /// Everything the interpreter reaches outside itself.
 pub trait Host: Send + Sync {
     fn metadata(&self, path: &Path) -> io::Result<Metadata>;
@@ -162,6 +176,27 @@ pub trait Host: Send + Sync {
     ) -> Program {
         let _ = stop;
         self.program(argv, env, cwd, io)
+    }
+
+    /// [`Self::program`] as part of `job`: the shell's job control stops
+    /// it (Ctrl+Z), continues it, brings it to the foreground and ends it
+    /// through what the host attaches to the job ([`Job::attach`]). A host
+    /// that cannot signal its programs can only end them.
+    fn program_in_job(
+        &self,
+        argv: &[String],
+        env: &[(String, String)],
+        cwd: &Path,
+        io: &Stdio,
+        job: &Arc<Job>,
+    ) -> Program {
+        self.program_until(argv, env, cwd, io, &|| job.killed())
+    }
+
+    /// Whether the person pressed Ctrl+Z since the last call: the job in
+    /// the foreground stops.
+    fn take_suspend(&self) -> bool {
+        false
     }
 
     /// Whether the person asked to stop what is running (Ctrl-C). Long loops
@@ -216,5 +251,42 @@ pub trait Host: Send + Sync {
     /// The machine's name for prompts.
     fn hostname(&self) -> String {
         String::from("localhost")
+    }
+
+    /// Put the terminal on the shell's standard input into taking keys one
+    /// at a time, unechoed, for the line editor (`on`), or give it back to
+    /// its line discipline. Answers whether there is a terminal to edit on:
+    /// without one, the shell reads lines as they come.
+    fn edit_mode(&self, on: bool) -> bool {
+        let _ = on;
+        false
+    }
+
+    /// The terminal's width in columns, for the line editor.
+    fn columns(&self) -> usize {
+        80
+    }
+
+    /// The person's command history, newest first, when this host holds it
+    /// (`terminal.history`). `None` when it does not: in a guest the record
+    /// is Terminal's, and the editor asks Terminal on the session's
+    /// terminal instead.
+    fn history(&self, query: &HistoryQuery) -> Option<Vec<String>> {
+        let _ = query;
+        None
+    }
+
+    /// The app showing the session, editing the line at the prompt as a
+    /// field ([`crate::field`]): Terminal's native editing and dictation.
+    /// `None` when there is none.
+    fn field(&self) -> Option<Arc<dyn crate::field::Field>> {
+        None
+    }
+
+    /// The programs this host can run, by name, looked for along `path`
+    /// (the shell's `PATH`): the environment's tools, for Tab completion.
+    fn programs(&self, path: &str) -> Vec<String> {
+        let _ = path;
+        Vec::new()
     }
 }

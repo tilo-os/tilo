@@ -149,6 +149,10 @@ pub struct StripDeck {
     /// The pointer, as the deck last saw it: input goes to the strips
     /// shown on the display under it.
     cursor: Option<Point>,
+    /// The workspace shows its canvas: every strip's windows stand on one
+    /// surface, each where the canvas places it, so every row is laid over
+    /// the whole deck at once and none slides.
+    canvas: bool,
 }
 
 impl StripDeck {
@@ -170,7 +174,29 @@ impl StripDeck {
             edge_reach: None,
             requested: None,
             cursor: None,
+            canvas: false,
         }
+    }
+
+    /// Show every strip's windows on one canvas (`true`), or one strip at a
+    /// time.
+    pub fn set_canvas(&mut self, canvas: bool) {
+        if self.canvas != canvas {
+            self.canvas = canvas;
+            crate::widget::note_layout_moved();
+        }
+    }
+
+    /// Whether the deck shows the workspace's canvas.
+    #[must_use]
+    pub fn shows_canvas(&self) -> bool {
+        self.canvas
+    }
+
+    /// The deck's rect as last laid out.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        self.rect
     }
 
     pub fn len(&self) -> usize {
@@ -486,12 +512,18 @@ impl StripDeck {
     /// Whether the strip at `index` is on screen on any display at the last
     /// layout.
     pub fn on_screen(&self, index: usize) -> bool {
+        if self.canvas {
+            return index < self.rows.len();
+        }
         self.slides.iter().any(|slide| slide.on_screen(index))
     }
 
     /// How far down (up, when negative) the strip at `index` is moved from
     /// where it rests on `display`, at the last layout.
     pub fn shift_of(&self, display: Option<u32>, index: usize) -> f64 {
+        if self.canvas {
+            return 0.0;
+        }
         let slide = self.slide(display);
         #[allow(clippy::cast_precision_loss, reason = "as in `new`")]
         let at = index as f64;
@@ -683,6 +715,14 @@ impl Widget for StripDeck {
         let top_left = Point::new(self.rect.x0, self.rect.y0);
         let base = self.slides[0].laid;
         let base_height = heights.first().copied().unwrap_or(1.0);
+        if self.canvas {
+            // Every row over the whole deck: the canvas places the windows.
+            for (row, &child) in self.rows.iter_mut().zip(&self.nodes) {
+                row.set_deck_shift(0.0, &[]);
+                row.apply_layout(taffy, child, top_left);
+            }
+            return;
+        }
         for (i, (row, &child)) in self.rows.iter_mut().zip(&self.nodes).enumerate() {
             #[allow(clippy::cast_precision_loss, reason = "as in `new`")]
             let at = i as f64;
@@ -715,7 +755,7 @@ impl Widget for StripDeck {
         self.drawn = Some(self.laid());
         // Between two strips, each is cut at the deck's edge, so the one
         // leaving never draws over the top bar or past the display.
-        let between = self.slides.iter().any(Slide::between);
+        let between = !self.canvas && self.slides.iter().any(Slide::between);
         if between {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -774,8 +814,10 @@ impl Widget for StripDeck {
             .cursor
             .and_then(|p| self.display_at(p))
             .map(|display| self.slide_index(Some(display)));
+        let canvas = self.canvas;
         let shown: Vec<bool> = (0..self.rows.len())
             .map(|i| match under {
+                _ if canvas => true,
                 Some(slide) => self.slides.get(slide).is_some_and(|s| s.on_screen(i)),
                 None => self.on_screen(i),
             })

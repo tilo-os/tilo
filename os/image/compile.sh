@@ -229,7 +229,6 @@ else
   echo 'compiling without a compiler cache' >&2
 fi
 
-python3 crates/runtime/ush/native/build.py --out "$out/ush-editor/bash-editor.so"
 python3 crates/system/ntfs-mount/native/build.py --out "$out/ntfs-mount/fuse-handoff.so"
 
 case "$TILO_RUST_LTO" in \

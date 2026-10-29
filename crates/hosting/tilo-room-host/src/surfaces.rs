@@ -67,7 +67,10 @@ pub fn decide_receipt_from_registry(registry: &str) {
             Some(None) => return None,
             None => {}
         }
-        let blob: [u8; 32] = hex::decode(hash).ok()?.try_into().ok()?;
+        let Ok(Ok(blob)) = hex::decode(hash).map(<[u8; 32]>::try_from) else {
+            tracing::warn!(%hash, "a record names a surface blob by a hash that is not one");
+            return None;
+        };
         let runtime = runtime.as_ref()?;
         known.insert(hash.to_owned(), None);
         drop(known);

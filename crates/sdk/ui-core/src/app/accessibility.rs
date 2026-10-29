@@ -423,19 +423,17 @@ impl App {
             self.hand_focus_to(node);
             return;
         }
+        // Focus travels the laid out tree: a widget can lay its children out
+        // under nodes of its own (a shell's columns), and a component or
+        // History lays out nodes no widget lists as a child, so a walk of the
+        // widgets beside the layout pairs controls with the wrong nodes.
         if self.close_admission.dialog.is_none() {
             let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
                 self.root_widget.as_ref(),
                 &self.layout.taffy,
             );
-            if crate::focus_navigation::walks_layout_map(
-                self.root_widget.as_ref(),
-                self.history.is_some(),
-                &restrictions,
-            ) {
-                self.update_history_focus_order(&restrictions);
-                return;
-            }
+            self.update_history_focus_order(&restrictions);
+            return;
         }
         self.focusable_order.clear();
         let Some(root) = self.layout.root_node else {
@@ -849,6 +847,26 @@ impl App {
             self.focused_node = Some(node);
             self.layout.layout_dirty = true;
             self.needs_sync = true;
+        }
+    }
+
+    /// Give the keyboard to the control a widget asked for
+    /// ([`Widget::take_focus_request`]), in the tree just built: as a press
+    /// focuses it, so no other control keeps drawing or typing as focused.
+    /// A dialog holding the keyboard keeps it.
+    pub(super) fn apply_focus_request(&mut self) {
+        let Some(id) = self.root_widget.take_focus_request() else {
+            return;
+        };
+        if self.accessibility.focus_trap_active {
+            return;
+        }
+        let target = self.focusable_order.iter().copied().find(|&node| {
+            self.inspect_node(node, |widget| widget.test_id() == Some(id.as_str()))
+                .unwrap_or(false)
+        });
+        if target.is_some() {
+            self.set_focused_node(target);
         }
     }
 
@@ -1520,6 +1538,7 @@ impl App {
     /// technology activates a hand-hit-tested control: the press a person
     /// makes on it, through the window's own input path. Whether the window
     /// shows such a control.
+    #[cfg(feature = "native")]
     pub(super) fn activate_test_id(&mut self, test_id: &str) -> bool {
         fn find(widget: &dyn Widget, test_id: &str) -> Option<KurboRect> {
             if widget.test_id() == Some(test_id) {

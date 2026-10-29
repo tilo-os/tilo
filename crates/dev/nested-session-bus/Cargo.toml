@@ -1,0 +1,18 @@
+[package]
+name = "nested-session-bus"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The build environment's dbus-daemon, carried inside a cargo-built executable, for nested sessions on hosts that have no dbus-daemon (dist/dev/nested-session-build.sh)."
+
+[[bin]]
+name = "nested-session-bus"
+path = "src/main.rs"
+
+[dependencies]
+libc.workspace = true
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

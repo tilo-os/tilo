@@ -1,205 +1,365 @@
 app so.tilo.lang.chat "Chat" (icon: .message_circle, category: .network)
 
-/// One piece of a message: plain text, or the source of a block that renders inline.
+/// The workspace's channels in the sidebar's order: channels outside any category, and the
+/// categories, each with its own.
+type Channels = Collection<Category | TextChannel>
+
+root channels: Channels
+
+/// A named group of channels in the sidebar.
+type Category {
+    name: Text (title)
+    /// TODO: `Collection<Channel>` with `type Channel = TextChannel | VoiceChannel |
+    /// ForumChannel` once voice and forum channels land.
+    channels: Collection<TextChannel>
+}
+
+/// Messages in one stream; any message can start a thread.
+type TextChannel {
+    name: Text (title)
+    topic: Text
+    messages: Collection<Message>
+    /// The threads its messages started, each the one a message's `thread` names.
+    /// TODO(language): an owned `Option<Thread>` on the message; a reference needs a home.
+    threads: Collection<Thread>
+}
+
+/// A message. Who wrote it, when, and its edits come from the log.
+type Message {
+    body: RichText (body)
+    /// The message this one answers inline, quoted above it.
+    reply_to: Option<Message>
+    /// The side conversation branched off this message.
+    thread: Option<Thread>
+    /// What a message said before messages were rich text, kept as it was written.
+    parts: Collection<Part>
+    /// Whether it is pinned to its channel, which search finds.
+    pinned: Bool = false
+    /// Who reacted, by emoji.
+    reactions: Map<Set<Principal>>
+
+    search {
+        filter pinned (icon: .pin)
+    }
+}
+
+/// A side conversation branched off one message.
+type Thread {
+    name: Text (title)
+    messages: Collection<Message>
+    archived: Bool = false
+}
+
+/// A piece of a message from before messages were rich text: its text, or a block's source.
 type Part {
     /// `text` or `block`.
     kind: Text merge register
     body: Text
-    /// For a block that applies an action: what became of it, recorded by the host when the
-    /// message was posted. The embed draws it; rendering never runs the action.
-    invocation: Option<host.Invocation>
 }
 
-/// A message is a list of parts and the principal that wrote it: a person, or an agent task.
-/// The host records the author, so it cannot be claimed. It is also the code author of the
-/// message's blocks.
-type Message {
-    author: Principal
-    parts: Collection<Part>
+default view sidebar for channels
+
+default view channel for TextChannel
+
+default view thread for Thread
+
+/// Adds a text channel to the sidebar.
+primary action new_channel(all: Channels, name: Text = "new-channel") -> TextChannel (icon: .plus, label: "New channel") {
+    all.insert(TextChannel(name: name))
 }
 
-/// A conversation: its messages, in the order they were posted.
-type Conversation {
-    title: Text (title)
-    messages: Collection<Message>
+/// Adds a category to the sidebar.
+action new_category(all: Channels, name: Text = "New category") -> Category (icon: .folder_plus, label: "New category") {
+    all.insert(Category(name: name))
 }
 
-/// The workspace's conversations.
-type Conversations = Collection<Conversation>
-
-root conversations: Conversations
-
-default view chats for conversations
-
-default view thread for Conversation
-
-row view conversation_row for Conversation
-
-/// Starts a conversation with a title.
-action start(all: Conversations, title: Text) -> Conversation {
-    all.insert(Conversation(title: title))
+/// Adds a text channel to a category.
+action add_channel(c: Category, name: Text = "new-channel") -> TextChannel (icon: .plus, label: "New channel") {
+    c.channels.insert(TextChannel(name: name))
 }
 
-/// Starts a conversation.
-primary action new_chat(all: Conversations) -> Conversation (icon: .plus) {
-    all.insert(Conversation(title: "New chat"))
-}
-
-/// Posts a message as the invoker: a text part when `text` is not empty, then a block part
-/// holding `block` as source when it is not empty. People and agents post the same way. A
-/// block that applies an action is run once, by the host right after the post commits, as the
-/// invoker; the outcome is recorded in the part.
-action post(c: Conversation, text: Text, block: Text) -> Message {
-    let m = c.messages.insert(Message(author: invoker))
-    if text != "" {
-        m.parts.insert(Part(kind: "text", body: text))
+/// Posts a message in a channel or a thread as the invoker, answering another when `reply_to`
+/// names one.
+action send(to: TextChannel | Thread, body: RichText, reply_to: Option<Message> = .none) -> Message (icon: .send, label: "Send") {
+    let m = Message(body: body, reply_to: reply_to)
+    match to {
+        c: TextChannel => c.messages.insert(m),
+        t: Thread => t.messages.insert(m),
     }
-    if block != "" {
-        let p = m.parts.insert(Part(kind: "block", body: block))
-        run_block(p, block)
-    }
-    m
 }
 
-/// Posts what someone typed, as them.
-action send(c: Conversation, text: Text) (icon: .send, label: "Send") {
-    if text != "" { post(c, text, "") }
+/// Changes what a message says. Only its author may.
+action edit(m: Message, body: RichText = m.body) (icon: .pencil, label: "Edit") {
+    require created(m)?.who == .some(invoker) "Only its author can edit a message"
+    require not body.is_empty() "Type a message first"
+    m.body = body
 }
 
-/// The chat's window: its conversations, the latest active first, each opening in a window of
-/// its own. A post is a change of its conversation; an edit of a message, or a draft, is not.
-view chats(all: Conversations) {
-    std.list(all, all.sort_by(c -> updated(c), desc), empty: "No conversations yet")
+/// Pins a message to its channel, or unpins it.
+action pin(m: Message, pinned: Bool = not m.pinned) (label: if pinned { "Pin" } else { "Unpin" }, icon: .pin, on: m.pinned) {
+    m.pinned = pinned
 }
 
-/// What a message says in a line: its text, or that it holds a block.
-fn said(m: Message) -> Text {
-    if let p = m.parts.first() {
-        if p.kind == "text" { p.body } else { "Sent a block" }
-    } else { "" }
+/// Adds your reaction with an emoji to a message, or takes it back when you had reacted with it.
+action react(m: Message, emoji: Text) (icon: .smile_plus, label: "React") {
+    let mine = if let who = m.reactions.get(emoji) { who.any(p -> p == invoker) } else { false }
+    if mine { m.reactions.remove(emoji, invoker) } else { m.reactions.add(emoji, invoker) }
 }
 
-/// One conversation in a list: its title, and the last message with who wrote it and when.
-/// Its avatar is whoever wrote last; before anyone has, the group's.
-view conversation_row(c: Conversation) {
-    let last = c.messages.last()
-    let line = if let m = last { said(m) } else { "No messages yet" }
-    let at = if let m = last { created(m)?.at } else { .none }
-    row(c.title, secondary: line, meta: at, avatar: last?.author, icon: .users)
+/// Starts a thread from a message of a channel, named after what the message says.
+action start_thread(c: TextChannel, m: Message, name: Text = m.body.excerpt) -> Thread (icon: .message_square, label: "Start thread") {
+    let t = c.threads.insert(Thread(name: name))
+    m.thread = t
+    t
 }
 
-/// A conversation's window: its messages, the latest at the foot, above the composer. What is
-/// typed there is the person's own until they send it.
-view thread(c: Conversation) {
-    lens draft: Text
-    std.transcript(c, c.messages, row: message) {
-        composer: {
-            row {
-                input(bind: draft, placeholder: "Message", fill)
-                button(send(c, draft).then(set(draft, "")), icon_only: true) as send
+/// The sidebar: channels outside any category first, then each category with its channels.
+/// Choosing one shows it beside the sidebar.
+/// TODO(language): a resource's own key for a navigation item; the category and name stand in.
+view sidebar(all: Channels) {
+    lens shown: Text = ""
+    ui.NavShell(content_kind: .page, sidebar_title: "Channels") {
+        sidebar: {
+            ui.NavList(selected: shown) {
+                for item in all {
+                    match item {
+                        c: Category => {
+                            ui.NavSection(c.name, collapsible: true) {
+                                for ch in c.channels {
+                                    ui.NavItem("{c.name}/{ch.name}", ch.name, icon: .hash) {
+                                        on select: set(shown, "{c.name}/{ch.name}").then(open(ch))
+                                    }
+                                }
+                            }
+                        }
+                        ch: TextChannel => {
+                            ui.NavItem("/{ch.name}", ch.name, icon: .hash) {
+                                on select: set(shown, "/{ch.name}").then(open(ch))
+                            }
+                        }
+                    }
+                }
             }
         }
-    }
-}
-
-/// What one message says: its parts, in order. The transcript shows who wrote it and when.
-view message(m: Message) {
-    stack(gap: .related) {
-        for p in m.parts {
-            if p.kind == "block" {
-                embed(p.body, author: m.author, invocation: p.invocation)
+        actions: {
+            std.header(actions(all))
+        }
+        content: {
+            if all.is_empty() {
+                ui.EmptyState("No channels yet", icon: .hash, action: "New channel") {
+                    on act: new_channel(all)
+                }
             } else {
-                text(p.body)
+                ui.EmptyState("No channel open", icon: .hash)
             }
         }
     }
 }
 
-/// A workspace's conversations with the people in it, enough to scroll, the first one under way.
-scenario "a busy workspace" -> Conversation {
+/// A text channel: its messages, and a composer that can answer one of them.
+view channel(c: TextChannel) {
+    lens draft: RichText = RichText("")
+    lens replying: Option<Message> = .none
+    lens editing: Option<Message> = .none
+    lens revised: RichText = RichText("")
+    std.transcript(c, c.messages) { m ->
+        channel_message(c, m, replying, editing, revised)
+        composer: {
+            composer(c, draft, replying, "Message #{c.name}")
+        }
+    }
+}
+
+/// A message of a channel, with what can be done to it on hover.
+view channel_message(c: TextChannel, m: Message, replying: State<Option<Message>>, editing: State<Option<Message>>, revised: State<RichText>) {
+    message(m, editing, revised)
+    ui.HoverToolbar {
+        ui.Button("Reply", icon: .reply, icon_only: true) {
+            on press: set(replying, m)
+        }
+        if m.thread == .none {
+            button(start_thread(c, m), icon_only: true)
+        }
+        edit_button(m, editing, revised)
+        pin_button(m)
+        ui.EmojiPicker {
+            on pick(e): react(m, e)
+        }
+    }
+}
+
+/// A thread: its messages and a composer, the same way.
+view thread(t: Thread) {
+    lens draft: RichText = RichText("")
+    lens replying: Option<Message> = .none
+    lens editing: Option<Message> = .none
+    lens revised: RichText = RichText("")
+    std.transcript(t, t.messages) { m ->
+        thread_message(m, replying, editing, revised)
+        composer: {
+            composer(t, draft, replying, "Message {t.name}")
+        }
+    }
+}
+
+/// A message of a thread, with what can be done to it on hover.
+view thread_message(m: Message, replying: State<Option<Message>>, editing: State<Option<Message>>, revised: State<RichText>) {
+    message(m, editing, revised)
+    ui.HoverToolbar {
+        ui.Button("Reply", icon: .reply, icon_only: true) {
+            on press: set(replying, m)
+        }
+        edit_button(m, editing, revised)
+        pin_button(m)
+        ui.EmojiPicker {
+            on pick(e): react(m, e)
+        }
+    }
+}
+
+/// The foot of a conversation: the message being answered, over the input and its send button.
+view composer(to: TextChannel | Thread, draft: State<RichText>, replying: State<Option<Message>>, placeholder: Text) {
+    if let r = replying {
+        std.reply_banner(r, cancel: set(replying, .none))
+    }
+    row {
+        ui.RichInput(value: draft, placeholder: placeholder, fill) {
+            on submit: send(to, draft, replying).then(set(draft, RichText(""))).then(set(replying, .none))
+        }
+        ui.Button("Send", icon: .send, icon_only: true) {
+            on press: send(to, draft, replying).then(set(draft, RichText(""))).then(set(replying, .none))
+        }
+    }
+}
+
+/// Edit, for whoever may edit the message (its author): puts the editor in its place.
+view edit_button(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
+    if actions(m).any(a -> a.label == "Edit") {
+        ui.Button("Edit", icon: .pencil, icon_only: true) {
+            on press: set(revised, m.body).then(set(editing, m))
+        }
+    }
+}
+
+/// Pin, or Unpin on a pinned message.
+/// TODO(runtime): `button(pin(m), icon_only: true)`; in a hover toolbar its label stays as it was
+/// first presented when the message is pinned.
+view pin_button(m: Message) {
+    ui.Button(if m.pinned { "Unpin" } else { "Pin" }, icon: .pin, icon_only: true) {
+        on press: pin(m)
+    }
+}
+
+/// What one message says: the message it answers, its text (or, while it is being edited, the
+/// editor in its place), and the thread it started.
+view message(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
+    if let r = m.reply_to {
+        std.quote(r)
+    }
+    if m.pinned {
+        ui.Text("Pinned", role: .caption, secondary: true)
+    }
+    if let e = editing {
+        if e == m {
+            revision(m, editing, revised)
+        } else {
+            said(m)
+        }
+    } else {
+        said(m)
+    }
+    if not m.reactions.keys().is_empty() {
+        ui.Reactions(reactions: m.reactions) {
+            on toggle(e): react(m, e)
+        }
+    }
+    if let t = m.thread {
+        std.thread_chip(t, count: t.messages.len())
+    }
+}
+
+/// What a message says.
+/// TODO(language): "edited" once a view can read when the body last changed (a field's own
+/// versions); the message's last version is any change of it, a pin or a reaction too.
+view said(m: Message) {
+    if not m.body.is_empty() {
+        rich_text(m.body)
+    }
+    for p in m.parts {
+        text(p.body)
+    }
+}
+
+/// A message being edited in place: its text in an editor, saved or left as it was.
+view revision(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
+    ui.RichInput(value: revised, placeholder: "Edit message") {
+        on submit: edit(m, revised).then(set(editing, .none))
+    }
+    row {
+        ui.Button("Cancel") {
+            on press: set(editing, .none)
+        }
+        ui.Button("Save", role: .primary) {
+            on press: edit(m, revised).then(set(editing, .none))
+        }
+    }
+}
+
+/// A team's chat two mornings in: categories of channels, a busy channel with replies and a
+/// thread, its last messages the next day.
+scenario "a team's channels" -> TextChannel {
     let mia = person("Mia")
     let leo = person("Leo")
     let ada = person("Ada")
-    let plans = conversations.insert(Conversation(title: "Weekend plans"))
+    let general = new_channel(channels, "general")
+    general.topic = "Anything, really"
+    new_channel(channels, "random")
+    let team = new_category(channels, "Team")
+    let design = add_channel(team, "design")
+    design.topic = "Reviews and critique"
+    add_channel(team, "release")
+    add_channel(team, "planning")
+    let social = new_category(channels, "Social")
+    add_channel(social, "weekend")
+    add_channel(social, "books")
     as mia at 2026-06-29T07:02Z {
-        post(plans, "Is everyone still up for the walk on Saturday?", "")
+        send(design, RichText("The new onboarding build is on the test machines."))
     }
     as mia at 2026-06-29T07:03Z {
-        post(plans, "The long loop, round the reservoir and back over the hill.", "")
+        let launch = send(design, RichText("First launch is down to a second and a half on the old ThinkPad."))
+        as leo at 2026-06-29T07:05Z {
+            react(launch, "🎉")
+        }
+        as ada at 2026-06-29T07:06Z {
+            react(launch, "🎉")
+            react(launch, "🚀")
+            pin(launch)
+        }
+        as invoker at 2026-06-29T07:07Z {
+            react(launch, "👍")
+        }
     }
     as leo at 2026-06-29T07:20Z {
-        post(plans, "I can bring sandwiches. The forecast says sun until three.", "")
-    }
-    as invoker at 2026-06-29T07:24Z {
-        post(plans, "Count me in.", "")
-    }
-    as ada at 2026-06-30T07:51Z {
-        post(plans, "Let's meet at the station at ten.", "")
-    }
-    as ada at 2026-06-30T07:52Z {
-        post(plans, "Platform four, by the coffee stand.", "")
-    }
-    // Each conversation is started when its first message is posted, so the list's order,
-    // the latest activity first, is that of their last messages.
-    as leo at 2026-06-30T06:40Z {
-        let release = conversations.insert(Conversation(title: "Release checklist"))
-        post(release, "Docs still need the new screenshots.", "")
-        as ada at 2026-06-30T07:15Z {
-            post(release, "I'll take the screenshots after lunch.", "")
+        let ask = send(design, RichText("Can we move the account step to the end?"))
+        as ada at 2026-06-29T07:31Z {
+            let t = start_thread(design, ask, "Account step")
+            send(t, RichText("Sign-in first keeps sync simple, but people bounce there."))
+            as leo at 2026-06-29T07:40Z {
+                send(t, RichText("Then let them in first and ask once they save something."))
+            }
+        }
+        as invoker at 2026-06-29T07:44Z {
+            send(design, RichText("Agreed. I'll update the flow this afternoon."), ask)
         }
     }
-    as invoker at 2026-06-29T15:10Z {
-        let flat = conversations.insert(Conversation(title: "Flat hunting"))
-        post(flat, "The one on Elm Street has a balcony.", "")
-        as mia at 2026-06-29T16:45Z {
-            post(flat, "Viewing is Saturday at eleven, bring the deposit papers.", "")
-        }
+    as ada at 2026-06-30T08:10Z {
+        send(design, RichText("Shots of the new sidebar are in the review folder."))
     }
-    as ada at 2026-06-28T19:30Z {
-        let books = conversations.insert(Conversation(title: "Book club: Piranesi"))
-        post(books, "Halfway through. The statues are wonderful.", "")
+    as mia at 2026-06-30T08:12Z {
+        send(design, RichText("The spacing above the categories looks right now."))
     }
-    as leo at 2026-06-27T10:05Z {
-        let design = conversations.insert(Conversation(title: "Design review"))
-        post(design, "The sidebar collapses too early at large text.", "")
-        as invoker at 2026-06-27T10:12Z {
-            post(design, "Agreed, I'll look at the thresholds.", "")
-        }
+    as leo at 2026-06-29T08:30Z {
+        send(general, RichText("Coffee machine on the third floor is fixed."))
     }
-    as mia at 2026-06-26T18:00Z {
-        let birthday = conversations.insert(Conversation(title: "Sam's birthday"))
-        post(birthday, "Concert tickets or a kitchen knife?", "")
-    }
-    as leo at 2026-06-25T08:30Z {
-        let garden = conversations.insert(Conversation(title: "Garden allotment"))
-        post(garden, "The tomatoes need water by Thursday.", "")
-    }
-    as ada at 2026-06-24T06:15Z {
-        let running = conversations.insert(Conversation(title: "Running group"))
-        post(running, "Long run on Sunday, fifteen kilometres.", "")
-    }
-    as leo at 2026-06-22T13:40Z {
-        let importer = conversations.insert(Conversation(title: "Importer bugs"))
-        post(importer, "The importer drops tables with merged cells.", "")
-    }
-    as mia at 2026-06-20T17:55Z {
-        let recipes = conversations.insert(Conversation(title: "Recipes"))
-        post(recipes, "The lentil soup needs more lemon than you think.", "")
-    }
-    as invoker at 2026-06-18T09:00Z {
-        let interviews = conversations.insert(Conversation(title: "Interview loop"))
-        post(interviews, "Ask about the last project they were proud of.", "")
-        as ada at 2026-06-18T09:20Z {
-            post(interviews, "I'll take the system design round.", "")
-        }
-    }
-    conversations.insert(Conversation(title: "Holiday in August"))
-    plans
-}
-
-/// One conversation with a sum worked out inline.
-scenario "a sum worked out inline" {
-    let c = conversations.insert(Conversation(title: "Quick sums"))
-    post(c, "What is a week of standups, at fifteen minutes each?", "")
-    post(c, "Here it is in minutes:", "5 * 15")
+    design
 }

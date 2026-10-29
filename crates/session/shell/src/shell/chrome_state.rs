@@ -4230,6 +4230,8 @@ impl ChromeState {
 
 pub type Chrome = Rc<RefCell<ChromeState>>;
 
+#[path = "chrome_state_canvas.rs"]
+mod canvas;
 #[path = "chrome_state_window_requests.rs"]
 mod window_requests;
 pub use window_requests::{WindowOutcome, WindowRequest};

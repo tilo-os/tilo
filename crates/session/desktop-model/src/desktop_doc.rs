@@ -14,8 +14,10 @@
 //! presets_v1: {key → json},
 //! effect_receipts_v1: {invocation → json},
 //! automations_v1: {shortcut id → json},
+//! arrangement_v1?: "canvas", canvas_v1?: {group id → json place},
 //! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, app_title?, tile_json } ] } ] } ] } ] }`.
-//! Geometry and maximization are presentation state and never written.
+//! Strip widths and maximization are presentation state and never written;
+//! canvas places are the workspace's arrangement and are.
 
 use std::collections::HashSet;
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
@@ -28,6 +30,7 @@ use collab_types::caps::CapOverride;
 use tilo_action_policy::{Grant, GrantId, Preset, Role, RoomPolicy, Subject};
 
 use crate::app::AppKind;
+use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::projection::{
@@ -50,6 +53,8 @@ const TASKS_KEY: &str = "tasks_v1";
 const STRIPS_KEY: &str = "strips";
 const GROUPS_KEY: &str = "window_groups";
 const TABS_KEY: &str = "tabs";
+const ARRANGEMENT_KEY: &str = "arrangement_v1";
+const CANVAS_KEY: &str = "canvas_v1";
 
 /// The map key a named grant set is stored under: a digest of its
 /// case-folded name, so two spellings of one name share a slot.
@@ -385,6 +390,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
         ROOM_SCHEDULE_CLAIMS_KEY,
         ws.schedule_claims.iter().map(|claim| (claim.key(), claim)),
     );
+    write_arrangement(doc, entry, &ws.arrangement);
     if let Some(strips) = child_object(doc, entry, STRIPS_KEY, ObjType::List) {
         sync_list(
             doc,
@@ -393,6 +399,44 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
             |strip| strip.id.raw(),
             write_strip,
         );
+    }
+}
+
+/// The workspace's arrangement: its kind only when it is not the strips
+/// every workspace starts with, and its canvas places once it has any.
+fn write_arrangement(doc: &mut AutoCommit, entry: &ObjId, arrangement: &Arrangement) {
+    match arrangement.kind {
+        ArrangementKind::Strips => delete_if_present(doc, entry, ARRANGEMENT_KEY),
+        ArrangementKind::Canvas => {
+            let _ =
+                doc.put_str_if_changed(entry, ARRANGEMENT_KEY, ArrangementKind::Canvas.as_str());
+        }
+    }
+    if !arrangement.places.is_empty() || obj(doc, entry, CANVAS_KEY).is_some() {
+        sync_blob_map(
+            doc,
+            entry,
+            CANVAS_KEY,
+            arrangement
+                .places
+                .iter()
+                .map(|(group, place)| (group.to_string(), place)),
+        );
+    }
+}
+
+fn read_arrangement(doc: &AutoCommit, entry: &ObjId) -> Arrangement {
+    Arrangement {
+        kind: doc
+            .str_at(entry, ARRANGEMENT_KEY)
+            .map_or(ArrangementKind::Strips, |kind| {
+                ArrangementKind::parse(&kind)
+            }),
+        places: read_keyed_blob_map::<CanvasPlace>(doc, entry, CANVAS_KEY)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(group, place)| Some((group.parse().ok()?, place)))
+            .collect(),
     }
 }
 
@@ -598,6 +642,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
         ws.effect_receipts = read_effect_receipts(doc, entry);
         ws.shortcuts = read_shortcuts(doc, entry);
         ws.schedule_claims = read_schedule_claims(doc, entry);
+        ws.arrangement = read_arrangement(doc, entry);
         rebuilt.push(ws);
     }
     desktop.workspaces = rebuilt;

@@ -4,14 +4,25 @@
 //! (`TILO_TILOLANG_HOST_STORAGE`) and nothing else. It waits on the door, its instances' windows
 //! and its own wake, and runs a frame of every instance when one of them has something for it.
 //! It ends when the session closes its door and its last window is gone.
+//!
+//! Every wait ends on something its owner then takes out: the door's message is received, the
+//! wake is drained ([`Wake::consume`]), the task's lines are served, a running window's input is
+//! read by its instance's frame, and an opening window is waited on only for closing. An idle
+//! host's wait does not end.
+//!
+//! Whatever ends it, the host says why on its door last ([`send_exiting`]), and on its log.
 
-use std::io::{Read as _, Write as _};
-use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd};
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
+use std::os::fd::AsFd as _;
+use std::sync::{Arc, OnceLock};
 
-use runtime_portal::tilolang_host::{STORAGE_ENV, receive_instance, send_ended, take_door};
+use runtime_portal::tilolang_host::{
+    Descriptor, Handed, STORAGE_ENV, receive, send_ended, send_exiting, take_door,
+};
 use tilolang_host::TilolangHost;
+use tilolang_host::wait::{Wake, wait};
+
+/// The door, for the panic hook to say why the host ends.
+static DOOR: OnceLock<Arc<Descriptor>> = OnceLock::new();
 
 fn main() -> std::process::ExitCode {
     tracing_subscriber::fmt()
@@ -22,37 +33,78 @@ fn main() -> std::process::ExitCode {
         .with_writer(std::io::stderr)
         .init();
     let Some(door) = take_door() else {
-        eprintln!("tilolang-host: no door: the session starts the tilolang host");
+        // No door to say it on: the session's log of the host's stderr is all there is.
+        eprintln!("tilolang-host: exiting: no door: the session starts the tilolang host");
         return std::process::ExitCode::from(2);
+    };
+    let door = Arc::new(door);
+    let _ = DOOR.set(Arc::clone(&door));
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        if let Some(door) = DOOR.get() {
+            let _ = send_exiting(door, &format!("the host panicked: {info}"));
+        }
+    }));
+    let (exit, door) = run(door);
+    if exit.failed {
+        tracing::error!(reason = exit.reason, "tilolang host exiting");
+    } else {
+        tracing::info!(reason = exit.reason, "tilolang host exiting");
+    }
+    if let Some(door) = door
+        && let Err(error) = send_exiting(&door, &exit.reason)
+    {
+        tracing::warn!(%error, "the session was not told why the host exits");
+    }
+    if exit.failed {
+        std::process::ExitCode::FAILURE
+    } else {
+        std::process::ExitCode::SUCCESS
+    }
+}
+
+/// Why the host ends.
+struct Exit {
+    reason: String,
+    failed: bool,
+}
+
+impl Exit {
+    fn failed(reason: String) -> Self {
+        Self {
+            reason,
+            failed: true,
+        }
+    }
+}
+
+/// Run the host until it ends: why, and its door while it is still open.
+fn run(door: Arc<Descriptor>) -> (Exit, Option<Arc<Descriptor>>) {
+    let wake = match Wake::new() {
+        Ok(wake) => wake,
+        Err(error) => return (Exit::failed(format!("no wake: {error}")), Some(door)),
     };
     let storage = std::env::var_os(STORAGE_ENV)
         .filter(|dir| !dir.is_empty())
         .map(std::path::PathBuf::from);
-    let (wake_read, wake_write) = match UnixStream::pair() {
-        Ok(pair) => pair,
-        Err(error) => {
-            eprintln!("tilolang-host: no wake: {error}");
-            return std::process::ExitCode::from(2);
-        }
-    };
-    if let Err(error) = wake_read
-        .set_nonblocking(true)
-        .and_then(|()| wake_write.set_nonblocking(true))
-    {
-        eprintln!("tilolang-host: no wake: {error}");
-        return std::process::ExitCode::from(2);
-    }
-    let wake_write = Arc::new(wake_write);
-    let wake: tilolang_tilo::background::Waker = Arc::new(move || {
-        // A full pipe already wakes the host.
-        let _ = (&*wake_write).write(&[1]);
-    });
-    let mut host = TilolangHost::new(storage, wake);
+    let mut host = TilolangHost::new(storage, wake.waker());
     let mut door = Some(door);
+    // Why the door closed, when the session did not close it.
+    let mut door_failed: Option<String> = None;
     loop {
         // What a frame changed may ask for another (a view that read what it changed), until
         // nothing changes: every change is a message taken in or a step made, so it settles.
-        while host.turn() {}
+        let frames_began = std::time::Instant::now();
+        let mut frames = 1_u32;
+        while host.turn() {
+            frames = frames.saturating_add(1);
+        }
+        tracing::debug!(
+            frames,
+            frames_us = frames_began.elapsed().as_micros(),
+            "the host's frames settled"
+        );
         // The session stops the host once its last instance ended.
         for instance in host.take_ended() {
             if let Some(open) = door.as_ref()
@@ -62,72 +114,59 @@ fn main() -> std::process::ExitCode {
             }
         }
         if door.is_none() && host.is_empty() {
-            return std::process::ExitCode::SUCCESS;
+            let exit = match door_failed {
+                Some(reason) => Exit::failed(reason),
+                None => Exit {
+                    reason: "the session closed its door and no instance runs".to_owned(),
+                    failed: false,
+                },
+            };
+            return (exit, None);
         }
-        let ready = wait(
-            door.as_ref().map(|door| door.as_fd()),
-            wake_read.as_fd(),
-            &host,
-        );
-        if ready.wake {
-            let mut drained = [0_u8; 256];
-            while matches!((&wake_read).read(&mut drained), Ok(n) if n > 0) {}
+        let ready = match wait(door.as_ref().map(|door| door.as_fd()), wake.fd(), &host, -1) {
+            Ok(ready) => ready,
+            Err(error) => return (Exit::failed(format!("its wait failed: {error}")), door),
+        };
+        tracing::debug!(?ready, "the host's wait ended");
+        if ready.wake
+            && let Err(error) = wake.consume()
+        {
+            return (Exit::failed(format!("its wake failed: {error}")), door);
+        }
+        if ready.task {
+            host.serve_task();
         }
         if ready.door
             && let Some(open) = door.as_ref()
         {
-            match receive_instance(open) {
-                Ok(Some((request, fds))) => {
+            match receive(open) {
+                Ok(Some(Handed::Instance(request, fds))) => {
                     let (app, instance) = (request.app.clone(), request.instance);
                     if let Err(error) = host.admit(request, fds) {
                         tracing::error!(app, %error, "an instance did not start");
-                        let _ = send_ended(open, instance);
+                        if let Err(error) = send_ended(open, instance) {
+                            tracing::warn!(%error, instance, "the session was not told an instance ended");
+                        }
+                    }
+                }
+                Ok(Some(Handed::Task(request, fds))) => {
+                    if let Err(error) = host.begin_task(&request, fds) {
+                        tracing::error!(task = request.task, %error, "a task did not start");
                     }
                 }
                 Ok(None) => door = None,
-                Err(error) => tracing::warn!(%error, "the door carried something unreadable"),
+                // The packet was taken: the door carries the next one.
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                    tracing::error!(%error, "the door carried something unreadable");
+                }
+                // The door itself failed: it carries nothing more, and stays ready, so it is
+                // closed here; the host ends once its instances have.
+                Err(error) => {
+                    tracing::error!(%error, "the door failed");
+                    door_failed = Some(format!("its door failed: {error}"));
+                    door = None;
+                }
             }
         }
-    }
-}
-
-struct Ready {
-    door: bool,
-    wake: bool,
-}
-
-/// Wait until the door, the wake or a window has something.
-fn wait(door: Option<BorrowedFd<'_>>, wake: BorrowedFd<'_>, host: &TilolangHost) -> Ready {
-    let mut fds = vec![libc::pollfd {
-        fd: wake.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    }];
-    if let Some(door) = door {
-        fds.push(libc::pollfd {
-            fd: door.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        });
-    }
-    for window in host.windows() {
-        fds.push(libc::pollfd {
-            fd: window.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        });
-    }
-    let count = libc::nfds_t::try_from(fds.len()).unwrap_or(libc::nfds_t::MAX);
-    // SAFETY: `fds` is a live array of initialized pollfds naming open descriptors.
-    let polled = unsafe { libc::poll(fds.as_mut_ptr(), count, -1) };
-    if polled < 0 {
-        return Ready {
-            door: false,
-            wake: false,
-        };
-    }
-    Ready {
-        wake: fds.first().is_some_and(|fd| fd.revents != 0),
-        door: door.is_some() && fds.get(1).is_some_and(|fd| fd.revents != 0),
     }
 }

@@ -202,6 +202,7 @@ mod tests {
             optional: vec![],
             opens: &[],
             room_record: false,
+            member_record: false,
             opens_before_record: false,
             create: |_, _, _| Err(crate::launch::LaunchError::MissingComponentHost),
         }))

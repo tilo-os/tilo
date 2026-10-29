@@ -25,7 +25,12 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
 5. **Positions are recorded by neighbour.** A move names a neighbour (`after:`, `before:`) or a
    place (`to: i`), which is resolved to its neighbour when the action runs (convergence.md,
    "Actions"); the language has no storage-shaped restriction on positions.
-6. **Roots are named values of any type.** `type Notes = Collection<Note>`, `root notes: Notes`;
+6. **An item is its id.** Items are stored flat by id, with the collection they are in as a
+   field of their own (convergence.md, "Items"). A reference is the id, never the path down
+   to the item, so storage no longer shows in the language: a card moves between columns with
+   `move` on the column it goes to and stays the same card, instead of an app keeping a
+   `column` field beside one collection of every card.
+7. **Roots are named values of any type.** `type Notes = Collection<Note>`, `root notes: Notes`;
    `type Channels = Collection<Category | Channel>`, `root channels: Channels`. No wrapper type
    named after the app. Other code reaches a root by the app's alias and the root's name
    (`notes.notes`) wherever authority allows, so a dashboard needs no `attach` action or optional

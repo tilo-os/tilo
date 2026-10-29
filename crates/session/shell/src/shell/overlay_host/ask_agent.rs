@@ -141,6 +141,10 @@ impl ShellOverlayHost {
     /// and holds a live task subscription. Says so when none does.
     pub(crate) fn open_ask_agent(&mut self, mut seed: SelectionSeed) -> bool {
         use crate::shell::state::WorkspaceAuthority as _;
+        // On a canvas a question's answer is a window where it was asked.
+        if self.canvas_shown() && seed.ask.is_some() {
+            return self.ask_about_on_canvas(&seed);
+        }
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -325,7 +329,9 @@ impl ShellOverlayHost {
         };
         // The palette's question about what is focused: the chord's way to
         // the focused selection, already asked. The last one asked wins.
-        if let Some(query) = chrome.borrow_mut().take_agent_asks_in_place().pop() {
+        // Taken first: the chrome is borrowed only for the taking, not while it is bumped.
+        let asked_in_place = chrome.borrow_mut().take_agent_asks_in_place().pop();
+        if let Some(query) = asked_in_place {
             self.selection_requests.press_asking(query);
             self.bump_chrome();
         }
@@ -353,7 +359,14 @@ impl ShellOverlayHost {
             if !live && actions.start_once(Instant::now()) {
                 starts.push((ask.room, owner.agent.clone()));
             }
-            if actions.open_and_ask(source, &owner, (&ask.title, &ask.body), ask.show, ask.quick) {
+            if actions.open_and_ask(
+                source,
+                &owner,
+                (&ask.title, &ask.body),
+                None,
+                ask.show,
+                ask.quick,
+            ) {
                 asked = true;
             } else {
                 tracing::warn!(agent = %owner.agent, "work could not be handed to the agent");
@@ -368,7 +381,7 @@ impl ShellOverlayHost {
     /// Start `agent` in the workspace of `room`, for work asked of it while
     /// it was not running. Only someone who may administer the workspace
     /// starts its agents; for anyone else the work waits for it.
-    fn start_agent_for(&self, room: &crate::shell::state::RoomId, agent: &str) {
+    pub(super) fn start_agent_for(&self, room: &crate::shell::state::RoomId, agent: &str) {
         let Some(workspace) = self.chrome.as_ref().and_then(|chrome| {
             chrome
                 .borrow()
@@ -444,7 +457,7 @@ impl ShellOverlayHost {
 /// Whether `agent` takes asks in `room`: admitted (certified under its own
 /// key) and holding a live task subscription. The one test both the chord
 /// and the start it waits for use.
-fn askable(broker: &AppActionBroker, room: &str, agent: &str) -> bool {
+pub(super) fn askable(broker: &AppActionBroker, room: &str, agent: &str) -> bool {
     broker.agent_is_live_task_capable(room, agent)
         && broker
             .certified_agent_identity(room, &format!("agent:{agent}"))

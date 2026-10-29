@@ -32,6 +32,8 @@ pub struct TypeInfo {
     /// `type Notes = Collection<Note>`: a resource that is its one field, [`HOLDER_FIELD`].
     /// Code uses it as that container.
     pub holder: bool,
+    /// The kind of an outside service's resource it holds (`crate::origin`).
+    pub origin: Option<String>,
 }
 
 /// The name of the one field of a type that names a container (`type Notes =
@@ -267,6 +269,9 @@ pub struct Import {
     pub roots: Vec<String>,
     /// Its named roots (`root notes: Notes`) and their type ids: `alias.notes` reaches one.
     pub named_roots: Vec<(String, String)>,
+    /// The ids the package was published under before (`previously:`): `use` and a full path
+    /// under one of them name it.
+    pub previously: Vec<String>,
 }
 
 /// Everything the checker knows about the module and the packages it imports.
@@ -300,6 +305,9 @@ pub struct Env {
     /// The toolkit component each of the module's views makes, by the view's name: a view whose
     /// body is one `ui.X(...)` is an `X` wherever one goes (views are components).
     pub view_makes: HashMap<String, String>,
+    /// The apps a program may read beyond those it holds, each by the name programs call it and
+    /// its id: what `grep(re, in: chat)` and `describe(chat)` name.
+    pub sources: Vec<(String, String)>,
 }
 
 impl Env {
@@ -358,6 +366,7 @@ impl Env {
             app: crate::stdlib::NS.to_string(),
             roots: Vec::new(),
             named_roots: Vec::new(),
+            previously: Vec::new(),
         });
         self.templates
             .extend(crate::stdlib::views().iter().map(|decl| Template {
@@ -378,6 +387,11 @@ impl Env {
             .iter()
             .find(|i| i.alias == path)
             .or_else(|| self.imports.iter().find(|i| i.app == path))
+            .or_else(|| {
+                self.imports
+                    .iter()
+                    .find(|i| i.previously.iter().any(|old| old == path))
+            })
     }
 
     /// Resolves the app part of a reference literal and its type name.
@@ -417,6 +431,7 @@ impl Env {
             app: crate::toolkit::UI_APP.to_string(),
             roots: Vec::new(),
             named_roots: Vec::new(),
+            previously: Vec::new(),
         });
         self.toolkit = Some(crate::toolkit::catalogue());
     }
@@ -445,6 +460,7 @@ impl Env {
                 .iter()
                 .map(|r| (r.name.clone(), r.ty.clone()))
                 .collect(),
+            previously: meta.previously.clone(),
         });
         let app = meta.app.clone();
         let field_info = |f: &crate::meta::FieldMeta| FieldInfo {
@@ -503,6 +519,7 @@ impl Env {
                 fields,
                 search: t.search.clone(),
                 holder: t.holder,
+                origin: t.origin.clone(),
             });
         }
         let params = |ps: &[crate::meta::ParamMeta]| -> Vec<ParamInfo> {
@@ -720,7 +737,7 @@ impl Resolver<'_> {
     fn imports(&mut self, module: &ast::Module, available: &[PackageMeta]) {
         for item in &module.items {
             let Item::Use(u) = item else { continue };
-            let Some(meta) = available.iter().find(|m| m.app == u.app) else {
+            let Some(meta) = find_package(available, &u.app) else {
                 let known: Vec<&str> = available.iter().map(|m| m.app.as_str()).collect();
                 let known = if known.is_empty() {
                     "none were provided".to_string()
@@ -858,6 +875,7 @@ impl Resolver<'_> {
                 }],
                 search: crate::meta::SearchMeta::default(),
                 holder: true,
+                origin: None,
             });
         }
         let aliases: Vec<(String, TypeExpr)> = self
@@ -898,8 +916,10 @@ impl Resolver<'_> {
                 fields,
                 search: crate::meta::SearchMeta::default(),
                 holder: false,
+                origin: t.origin.as_ref().map(|o| o.name.clone()),
             });
         }
+        self.check_origins(&decls);
         // Every type's fields are known: each one's search reads its own, and the enums.
         for t in decls {
             let Some(at) = self
@@ -917,6 +937,84 @@ impl Resolver<'_> {
                 self.diags,
             );
             self.env.types[at].search = search;
+        }
+    }
+
+    /// Each type with an origin names a kind the platform has, and declares the kind's fields
+    /// it shows with the kind's types (`crate::origin`).
+    fn check_origins(&mut self, decls: &[&ast::TypeDecl]) {
+        for t in decls {
+            let Some(origin) = &t.origin else {
+                continue;
+            };
+            let Some(kind) = crate::origin::kind(&origin.name) else {
+                self.err(
+                    "E112",
+                    origin.span,
+                    format!(
+                        "no outside service has the kind `{}`; the kinds are: {}",
+                        origin.name,
+                        crate::origin::kind_names()
+                    ),
+                );
+                continue;
+            };
+            let Some(info) = self
+                .env
+                .types
+                .iter()
+                .find(|x| x.key.app == self.env.app && x.key.name == t.name.name)
+                .cloned()
+            else {
+                continue;
+            };
+            for f in &t.fields {
+                let Some(want) = kind.field(&f.name.name) else {
+                    continue;
+                };
+                let Some(have) = info.fields.iter().find(|x| x.name == f.name.name) else {
+                    continue;
+                };
+                if !self.origin_type_fits(&have.ty, want.ty) {
+                    let shown = have.ty.meta_text(&self.env.app);
+                    self.err(
+                        "E112",
+                        f.name.span,
+                        format!(
+                            "`{}` of `{}` is the service's `{}`, a {}; it is declared {shown}",
+                            f.name.name, kind.name, want.name, want.ty
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether a declared field type is the origin kind's `want` (`Text`, `Set<Text>`,
+    /// `Collection<mail.thread>`, ...).
+    fn origin_type_fits(&self, have: &Ty, want: &str) -> bool {
+        if let Some(inner) = want
+            .strip_prefix("Collection<")
+            .and_then(|r| r.strip_suffix('>'))
+        {
+            return match have {
+                Ty::Collection(item) => match item.as_ref() {
+                    Ty::Record(key) => self
+                        .env
+                        .type_info(key)
+                        .is_some_and(|t| t.origin.as_deref() == Some(inner)),
+                    _ => false,
+                },
+                _ => false,
+            };
+        }
+        match want {
+            "Text" => *have == Ty::Text,
+            "Bool" => *have == Ty::Bool,
+            "Int" => *have == Ty::Int,
+            "Time" => *have == Ty::Time,
+            "Set<Text>" => *have == Ty::Set(Box::new(Ty::Text)),
+            _ => false,
         }
     }
 
@@ -1078,8 +1176,12 @@ impl Resolver<'_> {
         before: &[FieldInfo],
     ) -> Option<String> {
         let m = f.marker.as_ref()?;
+        // What the type held before: kept in its records, read only by its migrations.
+        if m.name == "previously" {
+            return Some(m.name.clone());
+        }
         if !matches!(m.name.as_str(), "title" | "body") {
-            self.err("E092", m.span, format!("`({})` is not a field marker; a Text field can be marked `(title)`, what names the resource, or `(body)`, its main text", m.name));
+            self.err("E092", m.span, format!("`({})` is not a field marker; a Text field can be marked `(title)`, what names the resource, or `(body)`, its main text, and any field `(previously)`, what the type held before, which only its migrations read", m.name));
             return None;
         }
         let fits = info.ty == Ty::Text || (m.name == "body" && info.ty == Ty::RichText);
@@ -1347,9 +1449,16 @@ impl Resolver<'_> {
                     );
                     return Ty::Error;
                 }
+                // A field's map may hold a set per key (`Map<Set<Principal>>`, who reacted with
+                // each emoji): stored element by element, so it is a field's container too.
+                let set_per_key = field_position
+                    && name.name == "Map"
+                    && args.first().is_some_and(|a| {
+                        matches!(&a.kind, TypeExprKind::Generic(inner, _) if inner.name == "Set")
+                    });
                 let inner = args
                     .first()
-                    .map_or(Ty::Error, |a| self.resolve_type(a, false));
+                    .map_or(Ty::Error, |a| self.resolve_type(a, set_per_key));
                 let boxed = Box::new(inner);
                 let ty = match name.name.as_str() {
                     "List" => Ty::List(boxed),
@@ -1359,7 +1468,7 @@ impl Resolver<'_> {
                     _ => Ty::Collection(boxed),
                 };
                 if ty.is_container() && !field_position {
-                    self.err("E023", te.span, format!("`{}` can only be the type of a field; use `List<T>` for values you pass around", name.name));
+                    self.err("E023", te.span, format!("`{}` can only be the type of a field or of a view's parameter; use `List<T>` for values you pass around", name.name));
                     return Ty::Error;
                 }
                 ty
@@ -1523,7 +1632,9 @@ impl Resolver<'_> {
         Ty::Record(key)
     }
 
-    fn params(&mut self, params: &[ast::Param]) -> Vec<ParamInfo> {
+    /// The parameters of a callable. A view's may be a collection, a set or a map, as a field
+    /// is: a view is handed it live (views are components, and these are their props).
+    fn params(&mut self, params: &[ast::Param], view: bool) -> Vec<ParamInfo> {
         let mut out: Vec<ParamInfo> = Vec::new();
         for p in params {
             if out.iter().any(|x| x.name == p.name.name) {
@@ -1534,7 +1645,7 @@ impl Resolver<'_> {
                 );
                 continue;
             }
-            let ty = self.resolve_type(&p.ty, false);
+            let ty = self.resolve_type(&p.ty, view);
             out.push(ParamInfo {
                 name: p.name.name.clone(),
                 ty,
@@ -1609,7 +1720,7 @@ impl Resolver<'_> {
                 );
             }
             let ast_params = params;
-            let params = self.params(params);
+            let params = self.params(params, kind == CKind::View);
             if kind == CKind::Action {
                 let at = self.env.callables.len();
                 defaults.extend(
@@ -1626,10 +1737,11 @@ impl Resolver<'_> {
                     }
                 }
             }
-            if matches!(kind, CKind::Action | CKind::Flow)
-                && params.iter().any(|p| mentions_principal(&p.ty))
-            {
-                self.err("E048", name.span, format!("{} `{}` takes a Principal parameter; actions and flows are what callers invoke, and a caller could pass anyone. Read `invoker` inside the action instead", kind.word(), name.name));
+            // An action may take a person to act on (`share(n, with: Principal)`, `assign(t,
+            // to: Principal)`): its form asks for one of the workspace's members. Who acts is
+            // always `invoker`. A flow runs on its own and takes none.
+            if kind == CKind::Flow && params.iter().any(|p| mentions_principal(&p.ty)) {
+                self.err("E048", name.span, format!("{} `{}` takes a Principal parameter; a flow runs on its own, and a caller could pass anyone. Read `invoker` inside the actions it runs instead", kind.word(), name.name));
             }
             let result = match (kind, result) {
                 (CKind::View, _) => Ty::View,
@@ -2360,4 +2472,15 @@ fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
             | ast::UiKind::On { .. } => {}
         }
     }
+}
+
+/// The package `use <app>` imports among `available`: the one whose id it is, else the one
+/// published under it before (`previously:`). An id a package still has as its own is that
+/// package's, whoever else names it as an earlier one.
+pub fn find_package<'a>(available: &'a [PackageMeta], app: &str) -> Option<&'a PackageMeta> {
+    available.iter().find(|m| m.app == app).or_else(|| {
+        available
+            .iter()
+            .find(|m| m.previously.iter().any(|old| old == app))
+    })
 }

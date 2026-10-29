@@ -876,6 +876,9 @@ impl LauncherServices for NativeLauncher {
     fn applications(&self) -> Vec<LaunchableApplication> {
         launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
     }
+    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
+        super::launcher::installed_earlier_ids()
+    }
     fn applications_for(&self, app_id: &str) -> Vec<LaunchableApplication> {
         launchable_applications_for(
             app_id,
@@ -1995,6 +1998,7 @@ pub fn native_services(
                 super::settings_records::broker_door(),
                 super::activity_provider::broker_door(),
                 super::crash_records::broker_door(),
+                super::task_programs::broker_door(),
             ])
             .collect(),
         legacy_workspace: membership.map(|tree| {

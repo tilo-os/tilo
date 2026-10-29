@@ -142,6 +142,47 @@ impl SurfacePublication {
             },
         )
     }
+
+    /// Where the actions of the published resource `resource` sit in the descriptors this
+    /// state was built from.
+    #[must_use]
+    pub fn indices(&self, resource: &str) -> Option<&[usize]> {
+        self.resources
+            .get(resource)
+            .map(|held| held.indices.as_slice())
+    }
+
+    /// The delta for resources whose own fields (a label) changed in `descriptors`, which are
+    /// the descriptors this state was built from with only those fields patched; the state is
+    /// then that delta applied. Costs what the `changed` resources hold, whatever the surface.
+    /// `None`, changing nothing, when one of them is not published.
+    pub fn relabel(
+        &mut self,
+        descriptors: &[ActionDescriptor],
+        changed: &[&str],
+    ) -> Option<SurfaceDelta> {
+        let mut resources = Vec::with_capacity(changed.len());
+        for name in changed {
+            let held = self.resources.get(*name)?;
+            let descriptor = descriptors.get(*held.indices.first()?)?;
+            resources.push(SurfaceResource {
+                resource: (*name).to_owned(),
+                fields: ExportedAction::from(descriptor).resource_fields(),
+                template: held.resource.template,
+            });
+        }
+        let mut delta = SurfaceDelta::default();
+        for resource in resources {
+            let Some(held) = self.resources.get_mut(&resource.resource) else {
+                continue;
+            };
+            if held.resource != resource {
+                held.resource = resource.clone();
+                delta.resources.push(resource);
+            }
+        }
+        Some(delta)
+    }
 }
 
 fn hash16(bytes: &[u8]) -> ShapeId {

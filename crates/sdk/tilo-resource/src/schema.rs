@@ -38,39 +38,51 @@ pub trait JsonSchema {
 
     /// The schema of this type's JSON form.
     fn json_schema() -> Value;
+
+    /// This type in the language-neutral vocabulary a surface publishes
+    /// ([`FieldType`](crate::FieldType)), declaring the records and enums it
+    /// names in `types`: what a verb's parameter of it is published as. The
+    /// default describes no type: any value.
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Any
+    }
 }
 
 macro_rules! primitive {
-    ($($ty:ty => $schema:expr),* $(,)?) => {
+    ($($ty:ty => $schema:expr, $field:ident),* $(,)?) => {
         $(impl JsonSchema for $ty {
             fn json_schema() -> Value {
                 $schema
+            }
+            fn field_type(_: &mut crate::TypeSet) -> crate::FieldType {
+                crate::FieldType::$field
             }
         })*
     };
 }
 
 primitive! {
-    bool => json!({"type": "boolean"}),
-    String => json!({"type": "string"}),
-    str => json!({"type": "string"}),
-    char => json!({"type": "string", "minLength": 1, "maxLength": 1}),
-    f32 => json!({"type": "number"}),
-    f64 => json!({"type": "number"}),
-    i8 => json!({"type": "integer", "minimum": i8::MIN, "maximum": i8::MAX}),
-    i16 => json!({"type": "integer", "minimum": i16::MIN, "maximum": i16::MAX}),
-    i32 => json!({"type": "integer", "minimum": i32::MIN, "maximum": i32::MAX}),
-    i64 => json!({"type": "integer"}),
-    isize => json!({"type": "integer"}),
-    u8 => json!({"type": "integer", "minimum": 0, "maximum": u8::MAX}),
-    u16 => json!({"type": "integer", "minimum": 0, "maximum": u16::MAX}),
-    u32 => json!({"type": "integer", "minimum": 0, "maximum": u32::MAX}),
-    u64 => json!({"type": "integer", "minimum": 0}),
-    usize => json!({"type": "integer", "minimum": 0}),
-    serde_json::Value => json!({}),
-    crate::Id => json!({"type": "string"}),
-    crate::Counter => json!({"type": "integer"}),
-    uuid::Uuid => json!({"type": "string", "format": "uuid"}),
+    bool => json!({"type": "boolean"}), Bool,
+    String => json!({"type": "string"}), Text,
+    str => json!({"type": "string"}), Text,
+    char => json!({"type": "string", "minLength": 1, "maxLength": 1}), Text,
+    f32 => json!({"type": "number"}), Float,
+    f64 => json!({"type": "number"}), Float,
+    i8 => json!({"type": "integer", "minimum": i8::MIN, "maximum": i8::MAX}), Int,
+    i16 => json!({"type": "integer", "minimum": i16::MIN, "maximum": i16::MAX}), Int,
+    i32 => json!({"type": "integer", "minimum": i32::MIN, "maximum": i32::MAX}), Int,
+    i64 => json!({"type": "integer"}), Int,
+    isize => json!({"type": "integer"}), Int,
+    u8 => json!({"type": "integer", "minimum": 0, "maximum": u8::MAX}), Int,
+    u16 => json!({"type": "integer", "minimum": 0, "maximum": u16::MAX}), Int,
+    u32 => json!({"type": "integer", "minimum": 0, "maximum": u32::MAX}), Int,
+    u64 => json!({"type": "integer", "minimum": 0}), Int,
+    usize => json!({"type": "integer", "minimum": 0}), Int,
+    serde_json::Value => json!({}), Any,
+    crate::Id => json!({"type": "string"}), Text,
+    crate::Counter => json!({"type": "integer"}), Int,
+    uuid::Uuid => json!({"type": "string", "format": "uuid"}), Text,
 }
 
 impl<T: JsonSchema> JsonSchema for Option<T> {
@@ -78,6 +90,10 @@ impl<T: JsonSchema> JsonSchema for Option<T> {
 
     fn json_schema() -> Value {
         nullable(T::json_schema())
+    }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Option(Box::new(T::field_type(types)))
     }
 }
 
@@ -87,6 +103,10 @@ impl<T: JsonSchema + ?Sized> JsonSchema for Box<T> {
     fn json_schema() -> Value {
         T::json_schema()
     }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        T::field_type(types)
+    }
 }
 
 impl<T: JsonSchema + ?Sized> JsonSchema for std::sync::Arc<T> {
@@ -94,6 +114,10 @@ impl<T: JsonSchema + ?Sized> JsonSchema for std::sync::Arc<T> {
 
     fn json_schema() -> Value {
         T::json_schema()
+    }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        T::field_type(types)
     }
 }
 
@@ -103,17 +127,29 @@ impl<T: JsonSchema + ?Sized> JsonSchema for &T {
     fn json_schema() -> Value {
         T::json_schema()
     }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        T::field_type(types)
+    }
 }
 
 impl<T: JsonSchema> JsonSchema for [T] {
     fn json_schema() -> Value {
         array(T::json_schema())
     }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::List(Box::new(T::field_type(types)))
+    }
 }
 
 impl<T: JsonSchema> JsonSchema for Vec<T> {
     fn json_schema() -> Value {
         array(T::json_schema())
+    }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::List(Box::new(T::field_type(types)))
     }
 }
 
@@ -125,6 +161,10 @@ impl<T: JsonSchema, const N: usize> JsonSchema for [T; N] {
             object.insert("maxItems".into(), N.into());
         }
         schema
+    }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::List(Box::new(T::field_type(types)))
     }
 }
 
@@ -151,11 +191,19 @@ impl<T: JsonSchema, S> JsonSchema for HashSet<T, S> {
     fn json_schema() -> Value {
         array(T::json_schema())
     }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Set(Box::new(T::field_type(types)))
+    }
 }
 
 impl<T: JsonSchema> JsonSchema for BTreeSet<T> {
     fn json_schema() -> Value {
         array(T::json_schema())
+    }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Set(Box::new(T::field_type(types)))
     }
 }
 
@@ -165,11 +213,19 @@ impl<K, V: JsonSchema, S> JsonSchema for HashMap<K, V, S> {
     fn json_schema() -> Value {
         json!({"type": "object"})
     }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Map(Box::new(V::field_type(types)))
+    }
 }
 
 impl<K, V: JsonSchema> JsonSchema for BTreeMap<K, V> {
     fn json_schema() -> Value {
         json!({"type": "object"})
+    }
+
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Map(Box::new(V::field_type(types)))
     }
 }
 

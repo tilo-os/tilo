@@ -105,12 +105,15 @@ impl Checker<'_> {
             "person" => return self.builtin_person(args, span),
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
+            "delivery" => return self.builtin_delivery(args, span),
+            "members" => return self.builtin_members(args, span),
             "created" | "updated" | "history" => {
                 return self.builtin_versions(name, args, span);
             }
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
+            "dated" => return self.builtin_dated(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             _ => {}
@@ -274,11 +277,24 @@ impl Checker<'_> {
                 ),
             }
         }
+        // An action a view applies may leave out its last parameters: running it opens its
+        // form, which asks the person for them (forms-and-diagrams.md §1).
+        let asked = |at: usize| {
+            at_press
+                && slots
+                    .get(at..)
+                    .is_some_and(|rest| rest.iter().all(Option::is_none))
+                && params.get(at..).is_some_and(|rest| {
+                    rest.iter()
+                        .all(|p| p.default.is_some() || p.ty.asked_by_form())
+                })
+        };
         let missing: Vec<&str> = params
             .iter()
             .zip(&slots)
-            .filter(|(p, s)| s.is_none() && p.default.is_none())
-            .map(|(p, _)| p.name.as_str())
+            .enumerate()
+            .filter(|(at, (p, s))| s.is_none() && p.default.is_none() && !asked(*at))
+            .map(|(_, (p, _))| p.name.as_str())
             .collect();
         if !missing.is_empty() {
             self.err(
@@ -287,11 +303,21 @@ impl Checker<'_> {
                 format!("`{name}` is missing {}; it is {sig}", missing.join(", ")),
             );
         }
+        let given = slots
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |at| at + 1);
+        let asked_from: Vec<bool> = (0..params.len()).map(asked).collect();
         slots
             .into_iter()
             .zip(params)
-            .map(|(s, p)| match s {
-                None if p.default.is_none() => Some(Ex::error()),
+            .enumerate()
+            .map(|(at, (s, p))| match s {
+                None if p.default.is_none()
+                    && !(at >= given && asked_from.get(at).copied().unwrap_or(false)) =>
+                {
+                    Some(Ex::error())
+                }
                 other => other,
             })
             .collect()
@@ -310,6 +336,14 @@ impl Checker<'_> {
             && (state.ty == *want || want.is_error())
         {
             return Self::state_at(&state);
+        }
+        // A scalar an event carries goes to the action boxed, as its place until it fires.
+        if let ExprKind::Ident(name) = &e.kind
+            && let Some((local, ty)) = self.lookup(name)
+            && self.st.event_scalars.contains(&local)
+            && (ty == Ty::Option(Box::new(want.clone())) || want.is_error())
+        {
+            return Ex::local(local, ty);
         }
         let mut names = std::collections::BTreeSet::new();
         super::boundary::names_in(e, &mut names);
@@ -584,6 +618,18 @@ impl Checker<'_> {
                 );
             }
             given.push(&f.name);
+            if f.role.as_deref() == Some("previously") {
+                self.err(
+                    "E115",
+                    a.value.span,
+                    format!(
+                        "`{}` is what `{}` held previously: nothing writes it any more; give the value where the type keeps it now",
+                        f.name, key.name
+                    ),
+                );
+                let _ = self.expr(&a.value, None);
+                continue;
+            }
             if f.ty.is_container() {
                 self.err(
                     "E033",
@@ -718,6 +764,20 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
+        if !crate::origin::is_capability(name) {
+            let known: Vec<&str> = crate::origin::CAPABILITIES
+                .iter()
+                .map(|(n, _)| *n)
+                .collect();
+            self.err(
+                "E022",
+                cap.value.span,
+                format!(
+                    "no capability `{name}` takes outside effects; the capabilities are: {}",
+                    known.join(", ")
+                ),
+            );
+        }
         let p = self.expr(&payload.value, None);
         self.st.facts.outside = true;
         Ex::host(
@@ -942,6 +1002,7 @@ impl Checker<'_> {
         // `a.items.insert(x)` needs the record and the field, not the field's value.
         if let ExprKind::Field { base, name: fname } = &recv.kind
             && !self.names_import(base)
+            && !self.names_platform(base)
         {
             let b = self.expr(base, None);
             if let Some((key, f)) = self.container_field(&b, fname) {
@@ -956,6 +1017,12 @@ impl Checker<'_> {
             return self.container_method(r, &key, &f, name, args, span);
         }
         self.value_method(r, name, args, span)
+    }
+
+    /// Whether `e` is `space` or `workspace`, read only through their fields (`space.width`,
+    /// `workspace.members`), and not a variable of that name.
+    fn names_platform(&self, e: &ast::Expr) -> bool {
+        matches!(&e.kind, ExprKind::Ident(n) if (n == "space" || n == "workspace") && self.lookup(n).is_none())
     }
 
     fn container_field(&self, b: &Ex, fname: &ast::Ident) -> Option<(TypeKey, FieldInfo)> {
@@ -996,7 +1063,7 @@ impl Checker<'_> {
                 "insert" | "remove" | "move" | "remove_where"
             ) | (Ty::Set(_), "add" | "remove")
                 | (Ty::Map(_), "put" | "remove")
-        );
+        ) || (m == "add" && matches!(&f.ty, Ty::Map(v) if matches!(**v, Ty::Set(_))));
         if !valid
             && !matches!(
                 m,
@@ -1012,6 +1079,11 @@ impl Checker<'_> {
                     | "first"
                     | "last"
                     | "matching"
+                    | "count_by"
+                    | "group"
+                    | "take"
+                    | "each"
+                    | "single"
             )
         {
             let t = self.show(&f.ty);
@@ -1020,12 +1092,43 @@ impl Checker<'_> {
                     "insert, remove, remove_where, move, len, matching and the list methods"
                 }
                 Ty::Set(_) => "add, remove, len and the list methods",
+                Ty::Map(v) if matches!(**v, Ty::Set(_)) => {
+                    "add(key, element), remove(key, element), remove(key), get (an Option of the set) and keys"
+                }
                 _ => "put, remove, get (an Option of the value) and keys",
             };
+            let methods = [
+                "insert",
+                "remove",
+                "remove_where",
+                "move",
+                "add",
+                "put",
+                "get",
+                "keys",
+                "len",
+                "is_empty",
+                "map",
+                "filter",
+                "any",
+                "all",
+                "find",
+                "count",
+                "sort_by",
+                "first",
+                "last",
+                "matching",
+                "count_by",
+                "group",
+                "take",
+                "each",
+                "single",
+            ];
+            let hint = crate::diag::suggestion(m, methods);
             self.err(
                 "E027",
                 name.span,
-                format!("`{}` is a {t} field; its methods are: {ops}", f.name),
+                format!("`{}` is a {t} field{hint}; its methods are: {ops}", f.name),
             );
             return Ex::error();
         }
@@ -1058,8 +1161,20 @@ impl Checker<'_> {
                 let Some(a) = args.first() else {
                     return Ex::error();
                 };
-                let v = self.expr_as(&a.value, t);
-                Ex::host(Imp::CollInsert, vec![b, fid, v], (**t).clone())
+                // Into a collection of a union, an item of one of its types is inserted as
+                // that type: `channels.insert(Category(...))` gives the Category.
+                let v = self.expr(&a.value, Some(t));
+                let case = (matches!(**t, Ty::Union(_))
+                    && !v.ty.is_error()
+                    && !v.ty.same(t)
+                    && v.ty.fits(t))
+                .then(|| v.ty.clone());
+                let v = self.coerce(v, t, a.value.span);
+                Ex::host(
+                    Imp::CollInsert,
+                    vec![b, fid, v],
+                    case.unwrap_or_else(|| (**t).clone()),
+                )
             }
             (Ty::Collection(t), "remove") => {
                 if !self.arity(name, args, 1, span) {
@@ -1087,6 +1202,37 @@ impl Checker<'_> {
                     Imp::SetRemove
                 };
                 Ex::host(imp, vec![b, fid, v], Ty::Unit)
+            }
+            // A map of sets: an element added to or taken from one key's set, each element
+            // stored on its own so concurrent additions all stay.
+            (Ty::Map(t), "add" | "remove")
+                if matches!(**t, Ty::Set(_)) && (m == "add" || args.len() == 2) =>
+            {
+                if !self.arity(name, args, 2, span) {
+                    return Ex::error();
+                }
+                let (Some(k), Some(e), Ty::Set(element)) = (args.first(), args.get(1), &**t) else {
+                    return Ex::error();
+                };
+                let k = self.expr_as(&k.value, &Ty::Text);
+                let e = Self::handle_of(self.expr_as(&e.value, element));
+                let imp = if m == "add" {
+                    Imp::MapSetAdd
+                } else {
+                    Imp::MapSetRemove
+                };
+                Ex::host(imp, vec![b, fid, k, e], Ty::Unit)
+            }
+            (Ty::Map(t), "put") if matches!(**t, Ty::Set(_)) => {
+                self.err(
+                    "E027",
+                    name.span,
+                    format!(
+                        "`{}` is a map of sets: add and remove its elements (`.add(key, element)`), so changes made at once all stay",
+                        f.name
+                    ),
+                );
+                Ex::error()
             }
             (Ty::Map(t), "put") => {
                 if !self.arity(name, args, 2, span) {
@@ -1116,7 +1262,18 @@ impl Checker<'_> {
     /// `items.move(item, after: other)` or `before: other`: a place named by a neighbour, never
     /// counted (convergence.md, "Actions"), so concurrent moves land where each person meant.
     fn move_item(&mut self, b: Ex, fid: Ex, t: &Ty, args: &[ast::Arg], span: Span) -> Ex {
-        let usage = "write `.move(item, after: other)`, `.move(item, before: other)` or `.move(item, to: index)`";
+        let usage = "write `.move(item, after: other)`, `.move(item, before: other)`, `.move(item, to: index)` or `.move(item, to: index, among: run)`";
+        // `to: i, among: run`: the place `i` among the items of `run` (a lane of a board, the
+        // items of one section) other than the one moved.
+        if let [item, place, among] = args
+            && place.name.as_ref().is_some_and(|n| n.name == "to")
+            && among.name.as_ref().is_some_and(|n| n.name == "among")
+        {
+            let item = self.expr_as(&item.value, t);
+            let index = self.expr_as(&place.value, &Ty::Int);
+            let run = self.expr_as(&among.value, &Ty::List(Box::new(t.clone())));
+            return Ex::host(Imp::CollMoveAmong, vec![b, fid, item, index, run], Ty::Unit);
+        }
         let (Some(item), Some(place), 2) = (args.first(), args.get(1), args.len()) else {
             self.err(
                 "E022",
@@ -1230,7 +1387,12 @@ impl Checker<'_> {
             return Ex::error();
         };
         let key = self.expr_as(&k.value, &Ty::Text);
-        let ty = Ty::Option(Box::new(value.clone()));
+        // A key's set reads as the list of its elements, a value to pass around.
+        let value = match value {
+            Ty::Set(element) => Ty::List(element.clone()),
+            other => other.clone(),
+        };
+        let ty = Ty::Option(Box::new(value));
         Ex::host(Imp::MapGetH, vec![b, fid, key], ty)
     }
 
@@ -1257,6 +1419,12 @@ impl Checker<'_> {
             }
             (Ty::Principal, "name") if args.is_empty() => {
                 Ex::host(Imp::PrincipalName, vec![r], Ty::Text)
+            }
+            (Ty::Principal, "kind") if args.is_empty() => {
+                Ex::host(Imp::PrincipalKind, vec![r], Ty::Choice("principal_kind"))
+            }
+            (Ty::Principal, "role") if args.is_empty() => {
+                Ex::host(Imp::PrincipalRole, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
             (Ty::Int, "to_float") if args.is_empty() => {
                 Ex::new(Ek::Conv(Conv::IntToFloat, Box::new(r)), Ty::Float)
@@ -1309,6 +1477,17 @@ impl Checker<'_> {
                 let elem = (**t).clone();
                 self.sort_by(r, &elem, name, args, span)
             }
+            (
+                Ty::List(t) | Ty::Set(t) | Ty::Collection(t),
+                "count_by" | "group" | "take" | "each" | "single",
+            ) => {
+                let elem = (**t).clone();
+                self.list_chain(r, &elem, name, args, span)
+                    .unwrap_or_else(Ex::error)
+            }
+            (Ty::Record(k), "group") if k.app == crate::host::HOST_APP && k.name == "Match" => {
+                self.match_group(r, args, span)
+            }
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
@@ -1322,15 +1501,19 @@ impl Checker<'_> {
                         "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
                     }
                     Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
-                        "len, is_empty, first, last, map, filter, any, all, find, count"
+                        "len, is_empty, first, last, map, filter, any, all, find, count, sort_by, count_by, group, take, each, single"
                     }
                     _ => "none",
                 };
+                let words = known.split([',', ' ', '(', ')']).filter(|w| {
+                    !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                });
+                let hint = crate::diag::suggestion(m, words);
                 self.err(
                     "E027",
                     name.span,
                     format!(
-                        "{t} has no method `{m}` taking {} argument(s); its methods: {known}",
+                        "{t} has no method `{m}` taking {} argument(s){hint}; its methods: {known}",
                         args.len()
                     ),
                 );
@@ -1346,7 +1529,7 @@ impl Checker<'_> {
 
     /// `map`, `filter`, `any`, `all`, `find` and `count` with a lambda, inlined as a loop: a
     /// lambda is only ever a direct argument of these, so there are no closures at run time.
-    fn higher_order(
+    pub(super) fn higher_order(
         &mut self,
         list: Ex,
         elem: &Ty,

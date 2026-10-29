@@ -781,7 +781,7 @@ impl UndoLog {
                 }
                 back.iter()
                     .filter_map(|hash| {
-                        let hash: ChangeHash = hash.parse().ok()?;
+                        let hash = steps::recorded_hash(hash)?;
                         index.full(doc, index.position(&hash)?)
                     })
                     .collect()
@@ -822,7 +822,7 @@ impl UndoLog {
                     .borrow_mut()
                     .brought_back(doc, change)
                     .iter()
-                    .filter_map(|hash| hash.parse().ok())
+                    .filter_map(|hash| steps::recorded_hash(hash))
                     .collect();
                 if !brought_back.is_empty() {
                     let action = self.redo_compensation(doc, change, &brought_back, registry)?;
@@ -894,16 +894,14 @@ impl UndoLog {
         };
         let mut replica = doc.fork();
         tilo_actions::executor::verified_compensation(&mut replica, *original, registry).ok()??;
-        let restoration = registry
-            .decode(&self.recorded_action(doc, original)?)
-            .ok()?;
+        let restoration = decode_recorded(registry, &self.recorded_action(doc, original)?)?;
         // Its inverse there, as the redo's writer.
         let mut at = doc.fork_at(&deps).ok()?;
         let inverse = tilo_actions::executor::inverse_as(&mut at, restoration.as_ref(), actor)?;
         if inverse != recorded {
             return None;
         }
-        registry.decode(&recorded).ok()
+        decode_recorded(registry, &recorded)
     }
 
     /// Commit an undo or redo of `step` by `by`, as its own step, from
@@ -1032,10 +1030,10 @@ impl UndoLog {
         let [original] = originals.as_slice() else {
             return None;
         };
-        let hash: ChangeHash = original.parse().ok()?;
+        let hash = steps::recorded_hash(original)?;
         let mut replica = doc.fork();
         tilo_actions::executor::verified_compensation(&mut replica, hash, registry).ok()??;
-        let action = registry.decode(&self.recorded_action(doc, &hash)?).ok()?;
+        let action = decode_recorded(registry, &self.recorded_action(doc, &hash)?)?;
         Some((action, originals))
     }
 
@@ -1288,6 +1286,21 @@ impl UndoLog {
         OwnedActionReceipt {
             after,
             changed: committed,
+        }
+    }
+}
+
+/// The action `encoded` records, as `registry` decodes it. One this build
+/// cannot decode is logged: the step then has no verified inverse.
+fn decode_recorded(
+    registry: &tilo_actions::ActionRegistry,
+    encoded: &tilo_actions::EncodedAction,
+) -> Option<steps::Inverse> {
+    match registry.decode(encoded) {
+        Ok(action) => Some(action),
+        Err(error) => {
+            tracing::warn!(action = %encoded.type_id, %error, "history: a recorded action does not decode");
+            None
         }
     }
 }

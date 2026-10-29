@@ -22,6 +22,11 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use tilo_actions::{ActionDescriptor, OperationKind};
 
+#[path = "mcp_tilo.rs"]
+mod tilo;
+pub(super) use tilo::{Programs, TaskLink};
+pub use tilo::{TaskHosts, TaskProgram};
+
 /// Resource rows one directory level reads at most, across its pages.
 const LEVEL_PAGES: usize = 4;
 /// Rows asked per page.
@@ -109,6 +114,13 @@ fn tools() -> Vec<Value> {
             read,
         ),
         (
+            "tilo",
+            "Run a tilolang program as this task: `notes.notes.filter(.pinned)`. Lets persist; answers' refs (n3) can be reused. A bulk or destructive program previews: resend with confirm: true. `undo`, `undo task`, `history task`.",
+            json!({"program":string,"confirm":{"type":"boolean"}}),
+            json!(["program"]),
+            json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":false}),
+        ),
+        (
             "tilo_status",
             "How a pending invocation went (cancel: true stops it).",
             json!({"invocation_id":string,"cancel":{"type":"boolean"}}),
@@ -186,6 +198,18 @@ struct AgentStatusArgs {
 }
 
 /// What an agent tool answers: the text and whether it reports a failure.
+/// How running one action by its path went.
+enum Done {
+    /// The app was not running and was started: what is in it now.
+    Launched(Reply),
+    /// The action ran: the host's answer, and the action at its resolved path.
+    Invoked {
+        value: Value,
+        path: String,
+        descriptor: Box<ActionDescriptor>,
+    },
+}
+
 pub(super) struct Reply {
     text: String,
     failed: bool,
@@ -1814,6 +1838,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Ok(args) => self.agent_status(&args).await,
                 Err(error) => Err(error),
             },
+            "tilo" => match parse(args) {
+                Ok(args) => Box::pin(self.agent_tilo(args)).await,
+                Err(error) => Err(error),
+            },
             _ => Err("Unknown tool".to_owned()),
         };
         text_result(result)
@@ -2134,6 +2162,30 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         invocation: Option<String>,
         wait_ms: Option<u64>,
     ) -> Result<Reply, String> {
+        match Box::pin(self.do_one_value(path, arguments, invocation, wait_ms)).await? {
+            Done::Launched(reply) => Ok(reply),
+            Done::Invoked {
+                value,
+                path,
+                descriptor,
+            } => {
+                let mut reply = outcome(&value);
+                if reply.failed && reply.text.contains("invalid_arguments") {
+                    let _ = write!(reply.text, "\n{}", action_page(&path, &descriptor));
+                }
+                Ok(reply)
+            }
+        }
+    }
+
+    /// Run the one action `path` names, answering what the host answered as it is.
+    async fn do_one_value(
+        &self,
+        path: &str,
+        arguments: serde_json::Map<String, Value>,
+        invocation: Option<String>,
+        wait_ms: Option<u64>,
+    ) -> Result<Done, String> {
         let parsed = parse_path(path)?;
         let action = parsed.action.clone().ok_or_else(|| {
             format!("name the action: {path}#<action>; tilo_ls {path} lists them")
@@ -2147,7 +2199,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 }
                 return self
                     .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
-                    .await;
+                    .await
+                    .map(Done::Launched);
             }
             AppRef::Running { app_id, provider } => (app_id, provider),
         };
@@ -2189,11 +2242,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             wait_ms,
         }))
         .await?;
-        let mut reply = outcome(&value);
-        if reply.failed && reply.text.contains("invalid_arguments") {
-            let _ = write!(reply.text, "\n{}", action_page(&resolved.path, &descriptor));
-        }
-        Ok(reply)
+        Ok(Done::Invoked {
+            value,
+            path: resolved.path,
+            descriptor: Box::new(descriptor),
+        })
     }
 
     /// The action `action` on the resolved target, by its id, asked of the

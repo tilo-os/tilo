@@ -257,6 +257,8 @@ pub struct Entrypoint {
     /// executes the runtime's binary and points it at the payload with
     /// `TILO_APP_MODULE`.
     pub runtime: Option<String>,
+    /// `[entrypoint].origins`: the outside services the system runs a connector for.
+    pub origins: Vec<String>,
 }
 
 impl From<crate::manifest::Entrypoint> for Entrypoint {
@@ -267,6 +269,7 @@ impl From<crate::manifest::Entrypoint> for Entrypoint {
             gui_bin: entrypoint.gui_bin.as_deref().map(path_string),
             cli_bin: entrypoint.cli_bin.as_deref().map(path_string),
             runtime: entrypoint.runtime,
+            origins: entrypoint.origins,
         }
     }
 }

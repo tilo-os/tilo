@@ -1,27 +1,24 @@
 //! `AmStore`: the reference [`Store`], one Automerge document per resource. Tests and the
 //! command line use it; the platform's store is `tilolang_tilo::store`.
 //!
-//! Document layout. The root holds `$type`, `$app`, `$outbox` and every field, keyed by its
-//! field id:
+//! Document layout. The root holds `$type`, `$app`, `$outbox`, every field but a collection,
+//! keyed by its field id, and the document's items flat under `$items`, each a map holding
+//! `$type`, its placement `$at` and its fields ([`crate::place`]):
 //!
 //! | kind | representation |
 //! |---|---|
 //! | register | a scalar; composite runtime values are JSON bytes |
 //! | counter | an Automerge counter |
 //! | text | a text object, changed by diff and splice |
-//! | collection | a map `item id -> record object` plus the `$order` list of item ids |
+//! | collection | nothing of its own: the items placed in it, by order key |
 //! | set | a map `key -> true` |
 //! | map | a map `key -> register` |
-//!
-//! A collection move rewrites only `$order`. Concurrent moves can leave an id in `$order` twice
-//! and a concurrent remove can leave one behind; readers keep the first occurrence and drop ids
-//! with no record, so every replica reads the same order.
 //!
 //! The store is a cheap handle: clones share the documents, so a runtime and a test can both
 //! hold one, and [`AmStore::sync_with`] syncs two replicas.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
 use automerge::sync::{self, SyncDoc};
@@ -35,16 +32,16 @@ use tilo_automerge::ApplyIncoming;
 use crate::flow::Journal;
 use crate::ids::{DocId, FieldId, RunId, TypeId};
 use crate::meta::FieldKind;
+use crate::place::{self, AT_KEY, ITEMS_KEY, Place, Placement, Resolved};
 use crate::store::{
     Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, ListingChange, Mutation,
-    NewRecord, OutboxEntry, Scalar, Splice, Store, StoreError, SubId, Txn,
+    NewRecord, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store, StoreError, SubId, Txn,
 };
 use crate::textdiff;
 use crate::value::ResourceRef;
 
 const TYPE_KEY: &str = "$type";
 const APP_KEY: &str = "$app";
-const ORDER_KEY: &str = "$order";
 const OUTBOX_KEY: &str = "$outbox";
 /// The most rounds one sync of one document may take before it is reported as stuck.
 const MAX_SYNC_ROUNDS: usize = 10_000;
@@ -79,6 +76,8 @@ struct Inner {
     subs: Vec<Subscription>,
     next_sub: u64,
     journals: BTreeMap<RunId, String>,
+    /// Each document's items resolved into their collections, as the document is now.
+    resolved: RefCell<HashMap<DocId, Rc<Resolved>>>,
 }
 
 /// The Automerge-backed reference store.
@@ -106,6 +105,7 @@ impl AmStore {
                 subs: Vec::new(),
                 next_sub: 1,
                 journals: BTreeMap::new(),
+                resolved: RefCell::new(HashMap::new()),
             })),
         }
     }
@@ -137,7 +137,9 @@ impl AmStore {
             let b = theirs.docs.entry(id.clone()).or_default();
             let (before_a, before_b) = (a.get_heads(), b.get_heads());
             sync_pair(a, b)?;
-            if a.get_heads() != before_a {
+            mine.forget(&id);
+            theirs.forget(&id);
+            if mine.docs.get_mut(&id).map(AutoCommit::get_heads).as_ref() != Some(&before_a) {
                 mine.notify(&ChangeSummary::whole(id.clone()));
             }
             if theirs.docs.get_mut(&id).map(AutoCommit::get_heads).as_ref() != Some(&before_b) {
@@ -192,6 +194,46 @@ impl Inner {
         self.counter = self.counter.wrapping_add(1);
         format!("{prefix}{}-{}", self.instance, self.counter)
     }
+
+    /// The document `doc` changed: its items are resolved again when next read.
+    fn forget(&self, doc: &str) {
+        self.resolved.borrow_mut().remove(doc);
+    }
+
+    /// The items of `doc` resolved into their collections.
+    fn resolved(&self, doc: &str) -> Result<Rc<Resolved>, StoreError> {
+        if let Some(held) = self.resolved.borrow().get(doc) {
+            return Ok(Rc::clone(held));
+        }
+        let resolved = Rc::new(resolve_doc(self.doc(doc)?));
+        self.resolved
+            .borrow_mut()
+            .insert(doc.to_owned(), Rc::clone(&resolved));
+        Ok(resolved)
+    }
+
+    /// The map holding the fields of `at`: the document's root, or the item's map while the
+    /// item is in a collection.
+    fn locate(&self, at: &ResourceRef) -> Result<ObjId, StoreError> {
+        let doc = self.doc(&at.doc)?;
+        let Some(item) = &at.item else {
+            return Ok(ROOT);
+        };
+        if !self.resolved(&at.doc)?.places.contains_key(item) {
+            return Err(not_found(format!("item `{item}`")));
+        }
+        item_obj(doc, item).ok_or_else(|| not_found(format!("item `{item}`")))
+    }
+
+    /// The items of the collection `field` of `at`, with their order keys.
+    fn members(&self, at: &ResourceRef, field: &str) -> Result<Vec<(String, String)>, StoreError> {
+        Ok(self
+            .resolved(&at.doc)?
+            .children
+            .get(&(at.item.clone(), field.to_owned()))
+            .cloned()
+            .unwrap_or_default())
+    }
 }
 
 // ----- reading ---------------------------------------------------------------------------
@@ -207,13 +249,25 @@ fn require_child(doc: &AutoCommit, parent: &ObjId, key: &str) -> Result<ObjId, S
     child_obj(doc, parent, key)?.ok_or_else(|| not_found(format!("field or item `{key}`")))
 }
 
-fn locate(doc: &AutoCommit, at: &ResourceRef) -> Result<ObjId, StoreError> {
-    let mut obj = ROOT;
-    for step in &at.path {
-        let coll = require_child(doc, &obj, &step.field)?;
-        obj = require_child(doc, &coll, &step.item)?;
+/// The map of the item `id`, wherever it is placed.
+fn item_obj(doc: &AutoCommit, id: &str) -> Option<ObjId> {
+    let items = child_obj(doc, &ROOT, ITEMS_KEY).ok()??;
+    child_obj(doc, &items, id).ok()?
+}
+
+/// Every item of `doc` resolved into the collection it is in.
+fn resolve_doc(doc: &AutoCommit) -> Resolved {
+    let mut held = BTreeMap::new();
+    if let Ok(Some(items)) = child_obj(doc, &ROOT, ITEMS_KEY) {
+        for id in doc.keys(&items) {
+            if let Ok(Some(obj)) = child_obj(doc, &items, &id)
+                && let Some(at) = place::held_at(doc, &obj)
+            {
+                held.insert(id, at);
+            }
+        }
     }
-    Ok(obj)
+    place::resolve(&held, &|_, _, _| true)
 }
 
 fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
@@ -263,39 +317,6 @@ fn scalar_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Result<Option<Scalar>,
     }
 }
 
-/// The raw `$order` list: the id at each index, `None` where the entry is not a string.
-fn raw_order(doc: &AutoCommit, order: &ObjId) -> Vec<Option<String>> {
-    (0..doc.length(order))
-        .map(|i| match doc.get(order, i) {
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::Str(id) => Some(id.to_string()),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect()
-}
-
-/// The visible order of a collection: first occurrence of each id that still has a record.
-/// Each entry is the id with its index in the raw `$order` list.
-fn visible_order(
-    doc: &AutoCommit,
-    coll: &ObjId,
-    order: &ObjId,
-) -> Result<Vec<(usize, String)>, StoreError> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for (raw, id) in raw_order(doc, order).into_iter().enumerate() {
-        let Some(id) = id else { continue };
-        if seen.contains(&id) || child_obj(doc, coll, &id)?.is_none() {
-            continue;
-        }
-        seen.insert(id.clone());
-        out.push((raw, id));
-    }
-    Ok(out)
-}
-
 fn read_field(doc: &AutoCommit, obj: &ObjId, field: &FieldSpec) -> Result<FieldValue, StoreError> {
     let key = field.id.as_str();
     match field.kind {
@@ -322,16 +343,9 @@ fn read_field(doc: &AutoCommit, obj: &ObjId, field: &FieldSpec) -> Result<FieldV
             Some(rich) => crate::rich::read_under(doc, &rich),
             None => crate::rich::RichValue::default(),
         })),
-        FieldKind::Collection => {
-            let Some(coll) = child_obj(doc, obj, key)? else {
-                return Ok(FieldValue::Items(Vec::new()));
-            };
-            let order = require_child(doc, &coll, ORDER_KEY)?;
-            let ids = visible_order(doc, &coll, &order)?;
-            Ok(FieldValue::Items(
-                ids.into_iter().map(|(_, id)| id).collect(),
-            ))
-        }
+        FieldKind::Collection => Err(StoreError::Invalid(format!(
+            "collection `{key}` is read from its items' placements"
+        ))),
         FieldKind::Set => match child_obj(doc, obj, key)? {
             Some(set) => Ok(FieldValue::Keys(doc.keys(&set).collect())),
             None => Ok(FieldValue::Keys(Vec::new())),
@@ -357,7 +371,8 @@ fn init_fields(doc: &mut AutoCommit, obj: &ObjId, fields: &[FieldSpec]) -> Resul
     for f in fields {
         let key = f.id.as_str();
         match f.kind {
-            FieldKind::Register => {}
+            // A collection is its items' placements; nothing of it is stored with its holder.
+            FieldKind::Register | FieldKind::Collection => {}
             FieldKind::Counter => doc
                 .put(obj, key, ScalarValue::counter(0))
                 .map_err(backend)?,
@@ -366,11 +381,6 @@ fn init_fields(doc: &mut AutoCommit, obj: &ObjId, fields: &[FieldSpec]) -> Resul
             }
             FieldKind::RichText => {
                 crate::rich::ensure_field(doc, obj, key).map_err(backend)?;
-            }
-            FieldKind::Collection => {
-                let coll = doc.put_object(obj, key, ObjType::Map).map_err(backend)?;
-                doc.put_object(&coll, ORDER_KEY, ObjType::List)
-                    .map_err(backend)?;
             }
             FieldKind::Set | FieldKind::Map => {
                 doc.put_object(obj, key, ObjType::Map).map_err(backend)?;
@@ -409,76 +419,11 @@ fn set_text(doc: &mut AutoCommit, obj: &ObjId, key: &str, new: &str) -> Result<(
     Ok(())
 }
 
-struct CollTarget {
-    coll: ObjId,
-    order: ObjId,
-}
-
-fn coll_target(doc: &AutoCommit, obj: &ObjId, field: &str) -> Result<CollTarget, StoreError> {
-    let coll = require_child(doc, obj, field)?;
-    let order = require_child(doc, &coll, ORDER_KEY)?;
-    Ok(CollTarget { coll, order })
-}
-
-/// Raw indexes at which `id` appears in the order list, highest first.
-fn raw_positions(doc: &AutoCommit, order: &ObjId, id: &str) -> Vec<usize> {
-    let mut at: Vec<usize> = raw_order(doc, order)
-        .iter()
-        .enumerate()
-        .filter(|(_, x)| x.as_deref() == Some(id))
-        .map(|(raw, _)| raw)
-        .collect();
-    at.reverse();
-    at
-}
-
-fn coll_move(
-    doc: &mut AutoCommit,
-    t: &CollTarget,
-    item: &str,
-    index: usize,
-) -> Result<(), StoreError> {
-    if child_obj(doc, &t.coll, item)?.is_none() {
-        return Err(not_found(format!("collection item `{item}`")));
-    }
-    for raw in raw_positions(doc, &t.order, item) {
-        doc.delete(&t.order, raw).map_err(backend)?;
-    }
-    let visible = visible_order(doc, &t.coll, &t.order)?;
-    let target = visible
-        .get(index)
-        .map_or_else(|| doc.length(&t.order), |(raw, _)| *raw);
-    doc.insert(&t.order, target, item).map_err(backend)
-}
-
-fn coll_remove(doc: &mut AutoCommit, t: &CollTarget, item: &str) -> Result<(), StoreError> {
-    if child_obj(doc, &t.coll, item)?.is_none() {
-        return Err(not_found(format!("collection item `{item}`")));
-    }
-    doc.delete(&t.coll, item).map_err(backend)?;
-    for raw in raw_positions(doc, &t.order, item) {
-        doc.delete(&t.order, raw).map_err(backend)?;
-    }
-    Ok(())
-}
-
 fn delete_key(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Result<(), StoreError> {
     if doc.get(parent, key).map_err(backend)?.is_some() {
         doc.delete(parent, key).map_err(backend)?;
     }
     Ok(())
-}
-
-/// The collection a mutation changes, and the item it moves or removes (none for an insert,
-/// whose item is new).
-fn coll_item_of(m: &Mutation) -> Option<(&FieldId, Option<&str>)> {
-    match m {
-        Mutation::CollInsert { field, .. } => Some((field, None)),
-        Mutation::CollRemove { field, item } | Mutation::CollMove { field, item, .. } => {
-            Some((field, Some(item.as_str())))
-        }
-        _ => None,
-    }
 }
 
 fn field_of(m: &Mutation) -> Option<&FieldId> {
@@ -498,34 +443,153 @@ fn field_of(m: &Mutation) -> Option<&FieldId> {
     }
 }
 
+/// The collection a place names, as a field key of the document `doc`.
+fn collection_key(doc: &str, place: &Place) -> FieldKey {
+    FieldKey {
+        resource: match &place.parent {
+            Some(parent) => format!("{doc}/{parent}"),
+            None => doc.to_owned(),
+        },
+        field: place.field.clone(),
+    }
+}
+
+/// Where an item is, as a collection's listing has it: the collection and the index.
+type Listed = (FieldKey, usize);
+
 impl Inner {
-    /// Where `item` is in the collection `field` of `at`, as its listing has it.
-    fn index_of(&self, at: &ResourceRef, field: &str, item: &str) -> Option<usize> {
-        let doc = self.docs.get(&at.doc)?;
-        let obj = locate(doc, at).ok()?;
-        let t = coll_target(doc, &obj, field).ok()?;
-        visible_order(doc, &t.coll, &t.order)
-            .ok()?
+    /// Where the item `item` of `doc` is listed now.
+    fn listed(&self, doc: &str, item: &str) -> Option<Listed> {
+        let resolved = self.resolved(doc).ok()?;
+        let place = resolved.places.get(item)?;
+        let index = resolved
+            .children
+            .get(&(place.parent.clone(), place.field.clone()))?
             .iter()
-            .position(|(_, id)| id == item)
+            .position(|(_, id)| id == item)?;
+        Some((collection_key(doc, place), index))
+    }
+
+    /// Write the placement of the item `item` of `at`'s document.
+    fn place(&mut self, doc_id: &str, item: &str, placement: &Placement) -> Result<(), StoreError> {
+        let doc = self
+            .docs
+            .get_mut(doc_id)
+            .ok_or_else(|| not_found(format!("document {doc_id}")))?;
+        let obj = item_obj(doc, item).ok_or_else(|| not_found(format!("item `{item}`")))?;
+        doc.put(&obj, AT_KEY, placement.encode()).map_err(backend)?;
+        self.forget(doc_id);
+        Ok(())
+    }
+
+    /// The item `item` (to be) placed at `index` of the collection `field` of `at`, from where
+    /// it is now (`was`).
+    fn placed_at(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        (item, index): (&str, Option<usize>),
+        was: Option<Place>,
+    ) -> Result<Placement, StoreError> {
+        let others: Vec<(String, String)> = self
+            .members(at, field)?
+            .into_iter()
+            .filter(|(_, id)| id != item)
+            .collect();
+        let key = place::key_at(&others, index.unwrap_or(others.len()));
+        Ok(Placement::At {
+            place: Place {
+                parent: at.item.clone(),
+                field: field.to_owned(),
+                key,
+            },
+            was,
+        })
+    }
+
+    /// A new item of the type `item` at `index` (the end for `None`) of the collection `field`
+    /// of `at`, stored by its fresh id.
+    fn insert_item(
+        &mut self,
+        at: &ResourceRef,
+        field: &str,
+        (item, index): (&NewRecord, Option<usize>),
+    ) -> Result<Applied, StoreError> {
+        let id = self.fresh("i");
+        let placement = self.placed_at(at, field, (&id, index), None)?;
+        let doc = self
+            .docs
+            .get_mut(&at.doc)
+            .ok_or_else(|| not_found(format!("document {}", at.doc)))?;
+        let items = match child_obj(doc, &ROOT, ITEMS_KEY)? {
+            Some(items) => items,
+            None => doc
+                .put_object(&ROOT, ITEMS_KEY, ObjType::Map)
+                .map_err(backend)?,
+        };
+        let rec = doc
+            .put_object(&items, id.as_str(), ObjType::Map)
+            .map_err(backend)?;
+        doc.put(&rec, TYPE_KEY, item.ty.as_str()).map_err(backend)?;
+        init_fields(doc, &rec, &item.fields)?;
+        doc.put(&rec, AT_KEY, placement.encode()).map_err(backend)?;
+        self.forget(&at.doc);
+        Ok(Applied::Item(id))
+    }
+
+    /// The item `item`, from wherever it is in `at`'s document, to `index` of the collection
+    /// `field` of `at`.
+    fn move_item(
+        &mut self,
+        at: &ResourceRef,
+        field: &str,
+        (item, index): (&str, usize),
+    ) -> Result<Applied, StoreError> {
+        let resolved = self.resolved(&at.doc)?;
+        let was = resolved
+            .places
+            .get(item)
+            .cloned()
+            .ok_or_else(|| not_found(format!("item `{item}`")))?;
+        if at
+            .item
+            .as_deref()
+            .is_some_and(|holder| resolved.within(holder, item))
+        {
+            return Err(StoreError::Invalid(
+                "an item cannot go inside itself".into(),
+            ));
+        }
+        let placement = self.placed_at(at, field, (item, Some(index)), Some(was))?;
+        self.place(&at.doc.clone(), item, &placement)?;
+        Ok(Applied::Done)
     }
 
     fn apply_mutation(&mut self, at: &ResourceRef, m: &Mutation) -> Result<Applied, StoreError> {
-        let new_item = match m {
-            Mutation::CollInsert { .. } => Some(self.fresh("i")),
-            _ => None,
-        };
         let outbox_id = match m {
             Mutation::OutboxPush { key, .. } => {
                 Some(key.clone().unwrap_or_else(|| self.fresh("o")))
             }
             _ => None,
         };
+        let obj = self.locate(at)?;
+        match m {
+            Mutation::CollInsert { field, item, index } => {
+                return self.insert_item(at, field, (item, *index));
+            }
+            Mutation::CollRemove { item, .. } => {
+                self.place(&at.doc.clone(), item, &Placement::Removed)?;
+                return Ok(Applied::Done);
+            }
+            Mutation::CollMove { field, item, index } => {
+                return self.move_item(at, field, (item, *index));
+            }
+            _ => {}
+        }
         let doc = self
             .docs
             .get_mut(&at.doc)
             .ok_or_else(|| not_found(format!("document {}", at.doc)))?;
-        let obj = locate(doc, at)?;
         match m {
             Mutation::SetRegister { field, value } => {
                 doc.put(&obj, field.as_str(), to_am(value)?)
@@ -539,25 +603,6 @@ impl Inner {
             Mutation::SetRich { field, value } => {
                 let rich = crate::rich::ensure_field(doc, &obj, field).map_err(backend)?;
                 crate::rich::store_under(doc, &rich, value).map_err(backend)?;
-            }
-            Mutation::CollInsert { field, item, index } => {
-                let id = new_item.unwrap_or_default();
-                let t = coll_target(doc, &obj, field)?;
-                let rec = doc
-                    .put_object(&t.coll, id.as_str(), ObjType::Map)
-                    .map_err(backend)?;
-                doc.put(&rec, TYPE_KEY, item.ty.as_str()).map_err(backend)?;
-                init_fields(doc, &rec, &item.fields)?;
-                let len = doc.length(&t.order);
-                let pos = index.map_or(len, |i| i.min(len));
-                doc.insert(&t.order, pos, id.as_str()).map_err(backend)?;
-                return Ok(Applied::Item(id));
-            }
-            Mutation::CollRemove { field, item } => {
-                coll_remove(doc, &coll_target(doc, &obj, field)?, item)?;
-            }
-            Mutation::CollMove { field, item, index } => {
-                coll_move(doc, &coll_target(doc, &obj, field)?, item, *index)?;
             }
             Mutation::SetAdd { field, key } => {
                 let set = require_child(doc, &obj, field)?;
@@ -589,6 +634,9 @@ impl Inner {
                     .map_err(backend)?;
                 doc.put(&entry, "settled", false).map_err(backend)?;
             }
+            Mutation::CollInsert { .. }
+            | Mutation::CollRemove { .. }
+            | Mutation::CollMove { .. } => {}
         }
         Ok(Applied::Done)
     }
@@ -623,6 +671,8 @@ impl Store for AmStore {
             .map_err(backend)?;
         doc.put_object(&ROOT, OUTBOX_KEY, ObjType::Map)
             .map_err(backend)?;
+        doc.put_object(&ROOT, ITEMS_KEY, ObjType::Map)
+            .map_err(backend)?;
         init_fields(&mut doc, &ROOT, &record.fields)?;
         commit_with_note(
             &mut doc,
@@ -638,14 +688,36 @@ impl Store for AmStore {
             },
         )?;
         inner.docs.insert(id.clone(), doc);
+        inner.forget(&id);
         Ok(ResourceRef::root(id, record.ty.clone()))
     }
 
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError> {
         let inner = self.inner.borrow();
+        let obj = inner.locate(at)?;
         let doc = inner.doc(&at.doc)?;
-        let obj = locate(doc, at)?;
         str_at(doc, &obj, TYPE_KEY).ok_or_else(|| not_found(format!("type of {}", at.id_string())))
+    }
+
+    fn container(&self, at: &ResourceRef) -> Result<Option<(ResourceRef, FieldId)>, StoreError> {
+        let inner = self.inner.borrow();
+        let Some(item) = &at.item else {
+            inner.doc(&at.doc)?;
+            return Ok(None);
+        };
+        let place = inner
+            .resolved(&at.doc)?
+            .places
+            .get(item)
+            .cloned()
+            .ok_or_else(|| not_found(format!("item `{item}`")))?;
+        let holder = match &place.parent {
+            Some(parent) => at.item(parent, String::new()),
+            None => ResourceRef::root(at.doc.clone(), String::new()),
+        };
+        let obj = inner.locate(&holder)?;
+        let ty = str_at(inner.doc(&at.doc)?, &obj, TYPE_KEY).unwrap_or_default();
+        Ok(Some((ResourceRef { ty, ..holder }, place.field)))
     }
 
     fn begin(&mut self) -> Result<Txn, StoreError> {
@@ -670,35 +742,49 @@ impl Store for AmStore {
         if let (Some(set), Some(field)) = (fields, field_of(m)) {
             set.insert(FieldKey::new(at, field.clone()));
         }
-        let Some((field, moved)) = coll_item_of(m) else {
-            return inner.apply_mutation(at, m);
+        let moved = match m {
+            Mutation::CollRemove { item, .. } | Mutation::CollMove { item, .. } => {
+                Some(item.as_str())
+            }
+            Mutation::CollInsert { .. } => None,
+            _ => return inner.apply_mutation(at, m),
         };
-        // A collection's steps: where its item was, and where it is now.
-        let was = moved.and_then(|item| inner.index_of(at, field, item));
+        // A collection's steps: where its item was, and where it is now, in whichever
+        // collections those are.
+        let was = moved.and_then(|item| inner.listed(&at.doc, item));
         let applied = inner.apply_mutation(at, m)?;
         let item = match &applied {
-            Applied::Item(id) => Some(id.as_str()),
-            Applied::Done => moved,
+            Applied::Item(id) => Some(id.clone()),
+            Applied::Done => moved.map(str::to_owned),
         };
-        let now = item.and_then(|item| inner.index_of(at, field, item));
-        let mut steps = Vec::new();
-        if let (Some(at), Some(item)) = (was, item) {
-            steps.push(Splice::Remove {
-                at,
-                item: item.into(),
-            });
+        let now = item.as_deref().and_then(|item| inner.listed(&at.doc, item));
+        let mut steps: Vec<(FieldKey, Splice)> = Vec::new();
+        if let (Some((key, at)), Some(item)) = (was, &item) {
+            steps.push((
+                key,
+                Splice::Remove {
+                    at,
+                    item: item.clone(),
+                },
+            ));
         }
-        if let (Some(at), Some(item)) = (now, item) {
-            steps.push(Splice::Insert {
-                at,
-                item: item.into(),
-            });
+        if let (Some((key, at)), Some(item)) = (now, &item) {
+            steps.push((
+                key,
+                Splice::Insert {
+                    at,
+                    item: item.clone(),
+                },
+            ));
         }
         if let Some(t) = inner.txns.get_mut(&txn.0) {
-            t.listings
-                .entry(FieldKey::new(at, field.clone()))
-                .or_default()
-                .extend(steps);
+            for (key, step) in steps {
+                t.touched
+                    .entry(at.doc.clone())
+                    .or_default()
+                    .insert(key.clone());
+                t.listings.entry(key).or_default().push(step);
+            }
         }
         Ok(applied)
     }
@@ -741,14 +827,23 @@ impl Store for AmStore {
             if let Some(doc) = inner.docs.get_mut(id) {
                 doc.rollback();
             }
+            inner.forget(id);
         }
     }
 
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {
         let inner = self.inner.borrow();
-        let doc = inner.doc(&at.doc)?;
-        let obj = locate(doc, at)?;
-        read_field(doc, &obj, field)
+        let obj = inner.locate(at)?;
+        if field.kind == FieldKind::Collection {
+            return Ok(FieldValue::Items(
+                inner
+                    .members(at, &field.id)?
+                    .into_iter()
+                    .map(|(_, id)| id)
+                    .collect(),
+            ));
+        }
+        read_field(inner.doc(&at.doc)?, &obj, field)
     }
 
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError> {
@@ -760,6 +855,26 @@ impl Store for AmStore {
             .iter()
             .filter_map(|c| c.message().and_then(|m| serde_json::from_str(m).ok()))
             .collect())
+    }
+
+    /// Only the last `window` changes are read: their notes, newest first.
+    fn recent_authors(
+        &self,
+        at: &ResourceRef,
+        limit: usize,
+        window: usize,
+    ) -> Result<Vec<String>, StoreError> {
+        let inner = self.inner.borrow();
+        let am = inner.doc(&at.doc)?;
+        let notes: Vec<ChangeNote> = am
+            .committed_document()
+            .get_changes(&[])
+            .iter()
+            .rev()
+            .take(window)
+            .filter_map(|c| c.message().and_then(|m| serde_json::from_str(m).ok()))
+            .collect();
+        Ok(crate::store::recent_authors_in(notes.iter(), at, limit))
     }
 
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId {
@@ -786,7 +901,7 @@ impl Store for AmStore {
                 continue;
             };
             for id in doc.keys(&outbox) {
-                if let Some(entry) = read_outbox_entry(doc, &outbox, doc_id, &id) {
+                if let Some((entry, None)) = read_outbox_entry(doc, &outbox, doc_id, &id) {
                     out.push(entry);
                 }
             }
@@ -794,7 +909,35 @@ impl Store for AmStore {
         out
     }
 
-    fn outbox_settle(&mut self, entry: &OutboxEntry, note: &ChangeNote) -> Result<(), StoreError> {
+    fn outbox_mark(
+        &mut self,
+        entry: &OutboxEntry,
+        state: &OutboxState,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError> {
+        let mut inner = self.inner.borrow_mut();
+        let doc = inner
+            .docs
+            .get_mut(&entry.doc)
+            .ok_or_else(|| not_found(format!("document {}", entry.doc)))?;
+        let outbox = require_child(doc, &ROOT, OUTBOX_KEY)?;
+        let obj = require_child(doc, &outbox, &entry.id)?;
+        let (word, detail) = match state {
+            OutboxState::Queued => ("queued", ""),
+            OutboxState::Sending { by } => ("sending", by.as_str()),
+            OutboxState::Waiting { reason } => ("waiting", reason.as_str()),
+        };
+        doc.put(&obj, "state", word).map_err(backend)?;
+        doc.put(&obj, "detail", detail).map_err(backend)?;
+        commit_with_note(doc, note)
+    }
+
+    fn outbox_settle(
+        &mut self,
+        entry: &OutboxEntry,
+        outcome: &Settled,
+        note: &ChangeNote,
+    ) -> Result<(), StoreError> {
         let mut inner = self.inner.borrow_mut();
         let doc = inner
             .docs
@@ -803,7 +946,38 @@ impl Store for AmStore {
         let outbox = require_child(doc, &ROOT, OUTBOX_KEY)?;
         let obj = require_child(doc, &outbox, &entry.id)?;
         doc.put(&obj, "settled", true).map_err(backend)?;
+        doc.put(&obj, "outcome", outcome.word()).map_err(backend)?;
+        doc.put(&obj, "reason", outcome.reason()).map_err(backend)?;
         commit_with_note(doc, note)
+    }
+
+    fn outbox_states(&self) -> Vec<(String, crate::store::DeliveryState)> {
+        let inner = self.inner.borrow();
+        let mut out = Vec::new();
+        for (doc_id, doc) in &inner.docs {
+            let Ok(Some(outbox)) = child_obj(doc, &ROOT, OUTBOX_KEY) else {
+                continue;
+            };
+            let mut keys: Vec<String> = doc.keys(&outbox).collect();
+            keys.sort();
+            // The one not settled when there is one, else the last.
+            let entries: Vec<_> = keys
+                .iter()
+                .filter_map(|id| read_outbox_entry(doc, &outbox, doc_id, id))
+                .collect();
+            let last = entries
+                .iter()
+                .find(|(_, settled)| settled.is_none())
+                .or_else(|| entries.last());
+            if let Some((entry, settled)) = last {
+                let settled = settled.as_ref().map(|(w, r)| (w.as_str(), r.as_str()));
+                out.push((
+                    doc_id.clone(),
+                    crate::store::DeliveryState::of(&entry.state, settled),
+                ));
+            }
+        }
+        out
     }
 
     fn save_journal(&mut self, run: &RunId, journal: &Journal) -> Result<(), StoreError> {
@@ -822,28 +996,42 @@ impl Store for AmStore {
     }
 }
 
+/// The entry `id`, and how it was settled (its outcome and reason) once it was.
 fn read_outbox_entry(
     doc: &AutoCommit,
     outbox: &ObjId,
     doc_id: &str,
     id: &str,
-) -> Option<OutboxEntry> {
+) -> Option<(OutboxEntry, Option<(String, String)>)> {
     let obj = child_obj(doc, outbox, id).ok()??;
     let settled = matches!(
         doc.get(&obj, "settled"),
         Ok(Some((Value::Scalar(v), _))) if matches!(v.as_ref(), ScalarValue::Boolean(true))
     );
-    if settled {
-        return None;
-    }
+    let settled = settled.then(|| {
+        (
+            str_at(doc, &obj, "outcome").unwrap_or_else(|| "done".to_owned()),
+            str_at(doc, &obj, "reason").unwrap_or_default(),
+        )
+    });
     let capability = str_at(doc, &obj, "capability")?;
     let Scalar::Json(payload) = scalar_at(doc, &obj, "payload").ok()?? else {
         return None;
     };
-    Some(OutboxEntry {
-        doc: doc_id.to_owned(),
-        id: id.to_owned(),
-        capability,
-        payload,
-    })
+    let detail = str_at(doc, &obj, "detail").unwrap_or_default();
+    let state = match str_at(doc, &obj, "state").as_deref() {
+        Some("sending") => OutboxState::Sending { by: detail },
+        Some("waiting") => OutboxState::Waiting { reason: detail },
+        _ => OutboxState::Queued,
+    };
+    Some((
+        OutboxEntry {
+            doc: doc_id.to_owned(),
+            id: id.to_owned(),
+            capability,
+            payload,
+            state,
+        },
+        settled,
+    ))
 }

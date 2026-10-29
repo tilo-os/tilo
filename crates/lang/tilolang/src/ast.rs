@@ -27,6 +27,14 @@ pub struct AppHeader {
     pub icon: Option<String>,
     /// `(category: .office)`: the launcher category the app is listed under.
     pub category: Option<String>,
+    /// `(previously: so.tilo.old)`: the ids the app was published under before. Its records,
+    /// grants and windows under them are the app's (the platform checks that the same publisher
+    /// signed both).
+    pub previously: Vec<String>,
+    /// `(records: .own)`: each member of a workspace keeps the app's records in their own
+    /// record there, which only that person's devices read; `false` (`.shared`, the default)
+    /// keeps them in the workspace's record of the app, which every member reads.
+    pub own_records: bool,
     pub span: Span,
 }
 
@@ -65,6 +73,9 @@ pub struct TypeDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
     pub name: Ident,
+    /// `(origin: mail.message)`: the outside service whose resources the type holds
+    /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
+    pub origin: Option<Ident>,
     pub fields: Vec<FieldDecl>,
     /// `search { ... }`: what search, a list's filters and agents offer of the type.
     pub search: Option<SearchBlock>,
@@ -186,7 +197,8 @@ pub struct FieldDecl {
     pub name: Ident,
     pub ty: TypeExpr,
     pub merge: Option<MergeSpec>,
-    /// `(title)` or `(body)`: what the field is to the platform.
+    /// `(title)` or `(body)`: what the field is to the platform; `(previously)`: what the type
+    /// held before, which only its migrations read.
     pub marker: Option<Ident>,
     pub default: Option<Expr>,
     pub span: Span,
@@ -237,6 +249,10 @@ pub enum ActionRole {
     Primary,
     /// Drawn as destructive; undone rather than confirmed.
     Destructive,
+    /// `migration action`: never offered; the platform runs it once on each resource of its
+    /// subject's type that a version before it wrote, as an ordinary action, to bring what that
+    /// version stored to where this one keeps it. Only a migration reads `(previously)` fields.
+    Migration,
 }
 
 impl ActionRole {
@@ -244,6 +260,7 @@ impl ActionRole {
         match self {
             Self::Primary => "primary",
             Self::Destructive => "destructive",
+            Self::Migration => "migration",
         }
     }
 }
@@ -670,10 +687,12 @@ pub enum UiKind {
     },
     /// `on activate: open(c)`: what the event `activate` of a `ui.*` component does. An event
     /// that carries a value names it, `on select(x: Note): open(x)`, and passes it on as an
-    /// argument of the action.
+    /// argument of the action; one that also says where it lands names that second,
+    /// `on drop(moved: Task, at: Int): place(moved, at)`.
     On {
         event: Ident,
         param: Option<EventParam>,
+        at: Option<EventParam>,
         action: Expr,
     },
 }

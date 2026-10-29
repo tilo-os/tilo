@@ -1,11 +1,12 @@
 //! [`Board`] as a described component: lanes of cards, a card moved by dragging it (a press
 //! and a drag with a pointer, a hold and a drag on a touchscreen).
 //!
-//! The board changes nothing itself. A drop is an event of what the card lands at: the card it
-//! goes before ([`BoardCardProps::drop`]) or, at the end of a lane, the lane
-//! ([`BoardLaneProps::drop`]). Each carries the dropped card, so the owner names the place by
-//! its neighbour (`move(card, before: other)`) and the drop is one action on its model; the
-//! board then shows the card where the model puts it.
+//! The board changes nothing itself. A drop is an event of where the card lands: the lane
+//! ([`BoardLaneProps::drop`]), carrying the card and its place among the lane's other cards,
+//! which the owner moves it to (`move(card, to: at, among: lane)`); or, when the card it lands
+//! before takes drops itself ([`BoardCardProps::drop`]), that card, carrying the dropped one, so
+//! the owner can name the place by its neighbour (`move(card, before: other)`). Either way the
+//! drop is one action on its model; the board then shows the card where the model puts it.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -55,8 +56,9 @@ pub struct BoardLaneProps {
     /// The lane's action was pressed.
     #[component(event)]
     pub act: Event,
-    /// A card was dropped below the lane's last card: carries the card.
-    #[component(event(value = ResourceId))]
+    /// A card was dropped into the lane: carries the card and its place among the lane's other
+    /// cards, from 0. A card that takes drops itself reports those that land just before it.
+    #[component(event(value = ResourceId, at = i64))]
     pub drop: Event,
 }
 
@@ -216,11 +218,11 @@ impl Described for Board {
         let BoardProps { name, lanes } = props;
         let mut board = Self::new().with_id(key.to_owned());
         board.name = name;
-        // What each card stands for and what lands before it, and what lands at each lane's
-        // end, by key.
+        // What each card stands for and what lands before it, and each lane's drop and its
+        // cards in order, by key.
         let mut items: HashMap<String, ResourceId> = HashMap::new();
         let mut before: HashMap<String, Event> = HashMap::new();
-        let mut at_end: HashMap<String, Event> = HashMap::new();
+        let mut lane_drops: HashMap<String, (Event, Vec<String>)> = HashMap::new();
         for lane in lanes {
             let BoardLaneProps {
                 key: lane_key,
@@ -250,15 +252,19 @@ impl Described for Board {
                 None => heading,
             };
             let mut widgets = Vec::with_capacity(cards.len());
+            let mut order = Vec::with_capacity(cards.len());
             for props in cards {
                 let (card_key, widget, item, drop) = card(props);
                 if let Some(item) = item {
                     items.insert(card_key.clone(), item);
                 }
-                before.insert(card_key.clone(), drop);
+                if !matches!(drop, Event::None) {
+                    before.insert(card_key.clone(), drop);
+                }
+                order.push(card_key.clone());
                 widgets.push((card_key, widget));
             }
-            at_end.insert(lane_key.clone(), drop);
+            lane_drops.insert(lane_key.clone(), (drop, order));
             board = board.lane(lane_key, heading.into_element(), widgets);
         }
         board.on_drop(
@@ -270,13 +276,22 @@ impl Described for Board {
                 let Some(moved) = items.get(&card) else {
                     return;
                 };
-                let target = match &next {
-                    Some(next) => before.get(next),
-                    None => at_end.get(&lane),
-                };
-                if let Some(target) = target {
-                    target.fire(Some(Value::Resource(moved.0.clone())));
+                let moved = Value::Resource(moved.0.clone());
+                if let Some(target) = next.as_ref().and_then(|next| before.get(next)) {
+                    target.fire(Some(moved));
+                    return;
                 }
+                let Some((drop, order)) = lane_drops.get(&lane) else {
+                    return;
+                };
+                // Its place among the lane's other cards: before `next`, or after them all.
+                let others = order.iter().filter(|key| **key != card);
+                let at = match &next {
+                    Some(next) => others.take_while(|key| *key != next).count(),
+                    None => others.count(),
+                };
+                let at = i64::try_from(at).unwrap_or(i64::MAX);
+                drop.fire(Some(Value::List(vec![moved, Value::Int(at)])));
             },
         )
     }
@@ -358,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn a_card_dropped_below_a_lanes_last_card_is_reported_by_the_lane() {
+    fn a_card_dropped_below_a_lanes_last_card_is_reported_by_the_lane_with_its_place() {
         let queue = Intents::default();
         let mut host = harness(&queue);
         let root = host.root::<Board>();
@@ -370,8 +385,58 @@ mod tests {
             [Fired {
                 key: "done".into(),
                 event: "drop".into(),
-                value: Some(Value::Resource("res-b".into())),
+                value: Some(Value::List(vec![
+                    Value::Resource("res-b".into()),
+                    Value::Int(1)
+                ])),
             }]
+        );
+    }
+
+    #[test]
+    fn where_cards_take_no_drops_the_lane_reports_the_place_among_its_other_cards() {
+        let queue = Intents::default();
+        let mut props = props(&queue);
+        for lane in &mut props.lanes {
+            for card in &mut lane.cards {
+                card.drop = Event::None;
+            }
+        }
+        let mut host = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            Board::from_props("board", props),
+            (900, 600),
+            Theme::dark(),
+        );
+        let root = host.root::<Board>();
+        let [a, b] = [root.card_rects(0)[0], root.card_rects(0)[1]];
+        let c = root.card_rects(1)[0];
+        // Within its lane: b above a is the first place.
+        host.drag_at((b.center().x, b.center().y), (a.center().x, a.y0 + 5.0));
+        // Into the other lane, above its only card.
+        let root = host.root::<Board>();
+        let a = root.card_rects(0)[0];
+        host.drag_at((a.center().x, a.center().y), (c.center().x, c.y0 + 5.0));
+        let carried = |card: &str, at: i64| {
+            Some(Value::List(vec![
+                Value::Resource(format!("res-{card}")),
+                Value::Int(at),
+            ]))
+        };
+        assert_eq!(
+            queue.take(),
+            [
+                Fired {
+                    key: "todo".into(),
+                    event: "drop".into(),
+                    value: carried("b", 0),
+                },
+                Fired {
+                    key: "done".into(),
+                    event: "drop".into(),
+                    value: carried("a", 0),
+                },
+            ]
         );
     }
 }

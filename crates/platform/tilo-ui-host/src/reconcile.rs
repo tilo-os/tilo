@@ -56,7 +56,49 @@ pub enum UiEvent {
 }
 
 /// Where controls report what the person did.
-pub type EventSink = Rc<RefCell<Vec<UiEvent>>>;
+pub type EventSink = Rc<Reports>;
+
+/// What the person did, in the order they did it: what the window's own controls report here,
+/// and what the described components report through the view's adapter, which is taken in
+/// before each report of the controls' so that neither overtakes the other.
+#[derive(Default)]
+pub struct Reports {
+    events: RefCell<Vec<UiEvent>>,
+    adapter: RefCell<Option<Adapter>>,
+}
+
+impl Reports {
+    /// Report `event`, after what the components reported before it.
+    pub fn push(&self, event: UiEvent) {
+        self.take_in();
+        self.events.borrow_mut().push(event);
+    }
+
+    /// Everything reported since the last call, oldest first.
+    pub fn take(&self) -> Vec<UiEvent> {
+        self.take_in();
+        std::mem::take(&mut *self.events.borrow_mut())
+    }
+
+    /// Whether nothing was reported.
+    pub fn is_empty(&self) -> bool {
+        self.take_in();
+        self.events.borrow().is_empty()
+    }
+
+    /// The components of the view `adapter` builds report here too.
+    fn follow(&self, adapter: &Adapter) {
+        *self.adapter.borrow_mut() = Some(adapter.clone());
+    }
+
+    fn take_in(&self) {
+        let reported = match self.adapter.borrow().as_ref() {
+            Some(adapter) => adapter.take_events(),
+            None => return,
+        };
+        self.events.borrow_mut().extend(reported);
+    }
+}
 
 /// A case of an enum, as a control shows it.
 #[derive(Clone, Debug, PartialEq)]
@@ -384,13 +426,15 @@ fn with_host<R>(element: &mut Element, run: impl FnOnce(&mut dyn SlotHost) -> R)
 impl Reconciler {
     #[must_use]
     pub fn new(sink: EventSink) -> Self {
+        let adapter = Adapter::default();
+        sink.follow(&adapter);
         Self {
             sink,
             texts: HashMap::new(),
             flags: HashMap::new(),
             riches: HashMap::new(),
             navigation: None,
-            adapter: Adapter::default(),
+            adapter,
             rows: None,
         }
     }
@@ -847,8 +891,7 @@ impl Reconciler {
         let label = crate::date::shown(node, "label").unwrap_or_default();
         let control = Checkbox::from_state(&state)
             .on_change(move |checked| {
-                sink.borrow_mut()
-                    .push(UiEvent::Toggle(key.clone(), checked));
+                sink.push(UiEvent::Toggle(key.clone(), checked));
             })
             .with_id(&node.key)
             .with_enabled(prop(node, "enabled").is_none() || flag(node, "enabled"));
@@ -859,6 +902,11 @@ impl Reconciler {
     /// somebody's message rather than as part of the app.
     fn embed(&mut self, node: &UiNode) -> Element {
         let inner = self.stack(node, Rhythm::Related);
+        if !frames(node) {
+            // A view made of objects (an agent's answer of cards) stands as they do: a card
+            // never stands in another, so the boundary draws nothing of its own.
+            return Box::new(Container::new().with_no_padding().with_child(inner));
+        }
         // A view boundary: the card takes the width its column offers, up to the readable measure,
         // and the embedded view lays itself out in what it was given.
         Box::new(
@@ -914,8 +962,7 @@ impl Reconciler {
                     Button::new(&format!("{}~{suffix}", node.key), &label)
                         .role(role)
                         .on_view(move || {
-                            sink.borrow_mut()
-                                .push(UiEvent::Resolve(key.clone(), approve));
+                            sink.push(UiEvent::Resolve(key.clone(), approve));
                         }),
                 ))
             };
@@ -1039,8 +1086,7 @@ impl Reconciler {
         let key = node.key.clone();
         let label = crate::date::shown(node, "label").unwrap_or_default();
         let control = Toggle::from_state(&state).on_change(move |checked| {
-            sink.borrow_mut()
-                .push(UiEvent::Toggle(key.clone(), checked));
+            sink.push(UiEvent::Toggle(key.clone(), checked));
         });
         Box::new(FormSection::untitled().field(Field::new(label, control)))
     }
@@ -1059,7 +1105,8 @@ impl Reconciler {
         let sink = Rc::clone(&self.sink);
         let key = node.key.clone();
         let names: Vec<String> = cases.iter().map(|case| case.name.clone()).collect();
-        if cases.len() <= 4 {
+        // A few cases are segments; more, or people and resources (`menu`), a menu.
+        if cases.len() <= 4 && !flag(node, "menu") {
             let segments = cases
                 .iter()
                 .map(|case| Segment::new(case.label.clone()))
@@ -1067,11 +1114,7 @@ impl Reconciler {
             Box::new(
                 ToggleGroup::new(segments, at.unwrap_or(usize::MAX)).on_change(move |index| {
                     if let Some(case) = names.get(index) {
-                        sink.borrow_mut().push(UiEvent::Fire(
-                            key.clone(),
-                            format!("pick.{case}"),
-                            None,
-                        ));
+                        sink.push(UiEvent::Fire(key.clone(), format!("pick.{case}"), None));
                     }
                 }),
             )
@@ -1082,20 +1125,19 @@ impl Reconciler {
                     .unwrap_or_default(),
             );
             let chosen = labels.clone();
+            let placeholder = crate::date::shown(node, "placeholder").unwrap_or_default();
             Box::new(
-                Dropdown::from_state(labels, &state).on_change(move |label| {
-                    if let Some(case) = chosen
-                        .iter()
-                        .position(|shown| shown == label)
-                        .and_then(|index| names.get(index))
-                    {
-                        sink.borrow_mut().push(UiEvent::Fire(
-                            key.clone(),
-                            format!("pick.{case}"),
-                            None,
-                        ));
-                    }
-                }),
+                Dropdown::from_state(labels, &state)
+                    .with_placeholder(&placeholder)
+                    .on_change(move |label| {
+                        if let Some(case) = chosen
+                            .iter()
+                            .position(|shown| shown == label)
+                            .and_then(|index| names.get(index))
+                        {
+                            sink.push(UiEvent::Fire(key.clone(), format!("pick.{case}"), None));
+                        }
+                    }),
             )
         }
     }
@@ -1176,7 +1218,7 @@ impl Reconciler {
                     .is_some_and(|content| self.reconcile_children(content, old_node, new_node));
                 (!kept).then(|| self.build(new_node))
             }
-            "embed" if same_shell(old_node, new_node) => {
+            "embed" if same_shell(old_node, new_node) && frames(old_node) == frames(new_node) => {
                 let Some(card) = widget
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<Container>())
@@ -1359,6 +1401,15 @@ fn in_avatar_column(row: &UiNode, avatars: bool) -> UiNode {
 /// native Notes edits a note in.
 fn is_body(node: &UiNode) -> bool {
     node.kind == crate::adapter::kind("TextInput") && token(node, "field_role") == Some("body")
+}
+
+/// Whether the embedded view `node` is framed as one object: unless it is made of objects
+/// itself, its cards standing at its top or in its top layout.
+fn frames(node: &UiNode) -> bool {
+    !node
+        .children
+        .iter()
+        .any(|child| child.kind == "ui.Card" || holds_cards(child))
 }
 
 /// Whether `node` holds cards, directly or through the fragments a `match` or `if` leaves.

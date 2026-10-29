@@ -166,7 +166,7 @@ impl WorkspaceTree {
         if let Some(hosting) = &self.window_hosting {
             published.strips = hosting.published(&workspace.strips, &self.package_launches);
         }
-        let layout = serde_json::to_vec(&(&published.strips, personal))
+        let layout = serde_json::to_vec(&(&published.strips, &published.arrangement, personal))
             .map_or_else(|_| blake3::hash(&[]), |bytes| blake3::hash(&bytes));
         let doc = self.layout_docs.entry(room).or_default();
         let looked_at = Captured {

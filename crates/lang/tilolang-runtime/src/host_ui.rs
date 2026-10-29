@@ -51,6 +51,59 @@ impl Core {
         ret_void()
     }
 
+    /// `ui.MenuButton(actions: actions(r))`: the prop `name` of `node` holds each action of the
+    /// list `list` (`host.Action`s) as its control shows it, and the node's event
+    /// `<name>.<index>` runs it, as an event the view gave it would.
+    fn offer_actions(&self, node: i32, name: i32, list: i32) -> HResult<Option<Wasm>> {
+        let (at, name) = (self.node_index(node)?, self.text(name)?);
+        let Value::List(actions) = self.val_whole(list)? else {
+            return trap("offered actions are a list");
+        };
+        let mut offered = Vec::with_capacity(actions.len());
+        let mut events = Vec::with_capacity(actions.len());
+        for (index, action) in actions.into_iter().enumerate() {
+            // `host.Action`: label, icon, role, primary, destructive, on, params, run.
+            let Value::Tuple(fields) = action else {
+                return trap("an offered action is a host.Action");
+            };
+            let text = |at: usize| match fields.get(at) {
+                Some(Value::Text(text)) => Some(text.clone()),
+                Some(Value::Opt(Some(held))) => held.as_text().map(str::to_owned),
+                _ => None,
+            };
+            let flag = |at: usize| match fields.get(at) {
+                Some(Value::Bool(flag)) => Some(*flag),
+                Some(Value::Int(n)) => Some(*n != 0),
+                Some(Value::Opt(Some(held))) => match **held {
+                    Value::Bool(flag) => Some(flag),
+                    Value::Int(n) => Some(n != 0),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some(run @ Value::Action(_)) = fields.get(7).cloned() else {
+                return trap("an offered action runs an action reference");
+            };
+            let event = offered_event(&name, index);
+            offered.push(Value::Offered(Rc::new(tilolang::toolkit::Offered {
+                label: text(0).unwrap_or_default(),
+                icon: text(1),
+                primary: flag(3).unwrap_or(false),
+                destructive: flag(4).unwrap_or(false),
+                on: flag(5),
+                event: event.clone(),
+            })));
+            events.push((event, run));
+        }
+        self.with_view(|vs| {
+            let n = vs.nodes.get_mut(at).ok_or("unknown ui node")?;
+            n.props.insert(name, Value::List(offered));
+            n.events.extend(events);
+            Ok(())
+        })?;
+        ret_void()
+    }
+
     /// The slot a `window` or `lens` declaration of the running view names.
     fn state_key(&self, layer: i32, id: i32) -> HResult<StateKey> {
         let layer = StateLayer::from_code(layer)
@@ -170,6 +223,7 @@ impl Core {
         let target = match self.val(a.h(0)?)? {
             Value::Ref(target) => Value::Ref(target),
             Value::Event => Value::Event,
+            Value::EventPart(part) => Value::EventPart(part),
             other => {
                 return trap(format!(
                     "expected a resource reference, got {}",
@@ -288,6 +342,7 @@ impl Core {
                 })?;
                 ret_void()
             }
+            Imp::UiActions => self.offer_actions(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::UiAnchor => {
                 let node = self.node_index(a.h(0)?)?;
                 let anchor = self.text(a.h(1)?)?;
@@ -316,4 +371,10 @@ impl Core {
 )]
 fn float_to_class(v: f64) -> i64 {
     v as i64
+}
+
+/// The event an action offered in the prop `prop` fires: `actions.2` for the third. The UI
+/// host's validator takes the same form (`tilo_render_protocol::patch::validate::offered_event`).
+fn offered_event(prop: &str, index: usize) -> String {
+    format!("{prop}.{index}")
 }

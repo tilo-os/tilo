@@ -1,6 +1,7 @@
 //! Search and publication follow the room by what changed: one retyped item is reindexed and
 //! republished alone, and what they hold always equals indexing and publishing everything anew.
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use automerge::AutoCommit;
@@ -44,7 +45,6 @@ fn retype(
 ) {
     let edit = Edit::new(
         vec![
-            Segment::Field(field_id(meta, "TodoList", "items")),
             Segment::Item(Id::from_raw(item)),
             Segment::Field(field_id(meta, "Item", "text")),
         ],
@@ -356,6 +356,76 @@ fn the_label_follows_whatever_names_the_record() {
     check(&ada, &published, "titling the list");
 }
 
+/// The published id and label of every resource in `resource`.
+fn labels(resource: &ResourceSpec, out: &mut Vec<(String, String)>) {
+    out.push((resource.id.as_str().to_owned(), resource.label.clone()));
+    for child in &resource.children {
+        labels(child, out);
+    }
+}
+
+/// An item retyped moves its label, and the record's when it names it, and nothing else: a
+/// reader holding an earlier revision learns those labels alone, until an item is added.
+#[test]
+fn a_retyped_item_moves_only_labels_and_a_reader_learns_them_alone() {
+    let (mut ada, meta, root) = room();
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    let start = published.revision();
+    assert_eq!(published.labels_since(start), Some(Vec::new()));
+    let now = |published: &Publications| {
+        let mut out = Vec::new();
+        labels(&published.trees()[&root], &mut out);
+        out
+    };
+    let before = now(&published);
+    // What moved from `before` to the tree now: what a reader holding `before` must learn.
+    let moved = |published: &Publications, before: &[(String, String)]| {
+        let mut out: Vec<(String, String)> = now(published)
+            .into_iter()
+            .filter(|label| !before.contains(label))
+            .collect();
+        out.sort();
+        out
+    };
+    let learned = |published: &Publications, since: u64| {
+        let mut out = published.labels_since(since).expect("only labels moved");
+        out.sort();
+        out
+    };
+
+    let ids = item_ids(&ada, &meta, &root);
+    retype(&mut ada, &meta, &root, &ids[0], "almond milk");
+    published.update(&ada.host, &planner);
+    let first = moved(&published, &before);
+    assert_eq!(first.len(), 2, "the item and the list it names: {first:?}");
+    assert_eq!(learned(&published, start), first);
+
+    let middle = published.revision();
+    let after_first = now(&published);
+    retype(&mut ada, &meta, &root, &ids[2], "rye bread");
+    published.update(&ada.host, &planner);
+    assert_eq!(
+        learned(&published, middle),
+        moved(&published, &after_first),
+        "since the first retyping, only the second"
+    );
+    assert_eq!(learned(&published, start), moved(&published, &before));
+
+    add(&mut ada, &meta, &root, "jam");
+    published.update(&ada.host, &planner);
+    assert_eq!(
+        published.labels_since(start),
+        None,
+        "an item added is more than labels"
+    );
+    assert_eq!(
+        published.labels_since(published.revision()),
+        Some(Vec::new())
+    );
+}
+
 #[test]
 fn planning_an_action_changes_nothing_anyone_follows() {
     let (ada, meta, root) = room();
@@ -556,7 +626,7 @@ fn a_change_within_an_item_republishes_only_the_resources_it_reached() {
         Some(DynValue::Collection(items)) => items.iter().next().unwrap().0.as_str().to_owned(),
         other => panic!("{other:?}"),
     };
-    let thread = format!("{root}/{threads}:{thread_id}");
+    let thread = format!("{root}/{thread_id}");
     for text in ["one", "two", "three"] {
         invoke(
             &mut ada,
@@ -597,22 +667,33 @@ fn a_change_within_an_item_republishes_only_the_resources_it_reached() {
         out
     };
     assert_eq!(before.len(), 3, "the three notes: {:?}", before.keys());
-    let note = |id: &str| resource_id(THREADS_APP, &format!("{thread}/{notes}:{id}"));
+    let note = |id: &str| resource_id(THREADS_APP, &format!("{root}/{id}"));
     // Typing the draft: the conversation names itself by it once its title is empty.
     let thread_path = |field: &str| {
         vec![
-            Segment::Field(threads.clone()),
             Segment::Item(Id::from_raw(&thread_id)),
             Segment::Field(field_id(&meta, "Thread", field)),
         ]
     };
     edit_text(&mut ada, &root, thread_path("draft"), "hel");
-    assert_eq!(published.update(&ada.host, &planner), vec![root.clone()]);
+    // Whether the draft names the conversation depends on where its field sorts among the
+    // conversation's texts: the record is reported exactly when its tree changed, and is the
+    // very same tree when it did not.
+    let was = Rc::clone(&published.trees()[&root]);
+    let touched = published.update(&ada.host, &planner);
+    let now = &published.trees()[&root];
+    if shape(now) == shape(&was) {
+        assert!(touched.is_empty(), "{touched:?} reported, nothing changed");
+        assert!(Rc::ptr_eq(now, &was), "an unchanged tree is the very one");
+    } else {
+        assert_eq!(touched, vec![root.clone()]);
+    }
     check_kept(&ada, &published, &before, "typing the draft", &anew);
 
-    let mut note_path = thread_path("notes");
-    note_path.push(Segment::Item(Id::from_raw(&note_ids[1])));
-    note_path.push(Segment::Field(field_id(&meta, "Note", "text")));
+    let note_path = vec![
+        Segment::Item(Id::from_raw(&note_ids[1])),
+        Segment::Field(field_id(&meta, "Note", "text")),
+    ];
     edit_text(&mut ada, &root, note_path, "zwei");
     published.update(&ada.host, &planner);
     check_kept(&ada, &published, &before, "retyping a note", &anew);
@@ -694,21 +775,20 @@ fn plan_move_first(
 
 /// Remove `item` from the list, as an edit of `replica`'s.
 fn remove(replica: &mut Replica, meta: &tilolang_runtime::Meta, root: &str, item: &str) {
-    let remove = Edit::new(
-        vec![Segment::Field(field_id(meta, "TodoList", "items"))],
-        EditOp::RemoveItem {
-            id: Id::from_raw(item),
-        },
-    );
+    let _ = meta;
     replica.apply(&DynAction {
         app: APP.to_owned(),
         kind: "tl.so.tilo.todo.TodoList".to_owned(),
         action_id: "$edit".to_owned(),
         args: Json::Null,
         authorship: Authorship::default(),
-        edits: vec![DynEdit::Edit {
+        edits: vec![DynEdit::Place {
             id: root.to_owned(),
-            edit: remove,
+            item: item.to_owned(),
+            at: tilolang_runtime::place::Placement::Removed.encode(),
+            nested: Vec::new(),
+            ty: String::new(),
+            holders: vec![root.to_owned()],
         }],
     });
 }
@@ -836,7 +916,7 @@ fn the_store_keeps_a_filtered_listing_by_the_items_a_change_touched() {
     let list = ResourceRef::root(&root, type_id("TodoList"));
     let item_ty = type_id("Item");
     let spec = FieldSpec {
-        id: items.clone(),
+        id: items,
         kind: FieldKind::Collection,
     };
     let open = not_done(done);
@@ -852,7 +932,7 @@ fn the_store_keeps_a_filtered_listing_by_the_items_a_change_touched() {
         item_ids(replica, &meta, &root)
             .into_iter()
             .filter(|id| {
-                let item = list.item(&items, id, item_ty.clone());
+                let item = list.item(id, item_ty.clone());
                 replica.host.runtime().read(&item, "done").ok() != Some(Value::Bool(true))
             })
             .collect()
@@ -874,11 +954,7 @@ fn the_store_keeps_a_filtered_listing_by_the_items_a_change_touched() {
             &tilolang_runtime::Principal::new("ada"),
             (
                 finish.id.as_str(),
-                vec![Value::resource(&list.item(
-                    &items,
-                    &ids[1],
-                    item_ty.clone(),
-                ))],
+                vec![Value::resource(&list.item(&ids[1], item_ty.clone()))],
             ),
         )
         .unwrap();

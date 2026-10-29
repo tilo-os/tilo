@@ -597,6 +597,9 @@ impl<T: crate::JsonSchema, S> crate::JsonSchema for Items<T, S> {
     fn json_schema() -> serde_json::Value {
         crate::schema::array(T::json_schema())
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Collection(Box::new(T::field_type(types)))
+    }
 }
 
 impl<T: Identified, S> Items<T, S> {
@@ -1484,6 +1487,9 @@ impl<T: Model + Identified, S> crate::collection::ItemList for Items<T, S> {
 impl<T: Model + Identified, S: ItemStorage> Model for Items<T, S> {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "array", "items": T::value_schema()})
+    }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Collection(Box::new(T::field_type(types)))
     }
     const SHAPE: crate::Shape = if S::ARRANGED {
         crate::Shape::Collection(&T::SHAPE)

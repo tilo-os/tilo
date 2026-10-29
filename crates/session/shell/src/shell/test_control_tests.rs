@@ -1214,81 +1214,28 @@ fn line_breaks_and_tabs_in_typed_text_press_enter_and_tab() {
     assert_eq!(actions.len(), pressed.len() * 2, "every press is released");
 }
 
-// Asserts the exact action sequence, not just a count — a missing Shift bracket is invisible to chrome (reads `text`) and only shows up on the delivered key stream.
+// Which key and which Shift or AltGr type a character is the seat keymap's
+// to say (`compositor::keymap_typing`), so the plan names characters only: a
+// US position planned here would type `z` for `y` on a German keymap.
 #[test]
-fn typing_a_capital_holds_shift_around_it() {
-    let state = StaticState::new(&[]);
-    let (resp, actions) = dispatch_command(
-        &Command::Type {
-            text: "Hi".to_string(),
-        },
-        &state,
-    );
-    assert!(matches!(resp, Response::Ok { .. }));
-    assert_eq!(
-        actions,
-        vec![
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Named(NamedKeyTag::Shift),
-                pressed: true,
-            },
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Char('H'),
-                pressed: true,
-            },
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Char('H'),
-                pressed: false,
-            },
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Named(NamedKeyTag::Shift),
-                pressed: false,
-            },
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Char('i'),
-                pressed: true,
-            },
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Char('i'),
-                pressed: false,
-            },
-        ],
-        "a capital is typed with Shift held across it, and a lowercase \
-             letter is not — a bare keycode would reach the client as its \
-             lowercase letter either way",
-    );
-}
-
-#[test]
-fn typing_a_shifted_punctuation_mark_holds_shift_around_it() {
+fn typing_plans_characters_not_keyboard_positions() {
     let state = StaticState::new(&[]);
     let (_, actions) = dispatch_command(
         &Command::Type {
-            text: ":".to_string(),
+            text: "H:@€".to_string(),
         },
         &state,
     );
-    assert_eq!(
-        actions,
-        vec![
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Named(NamedKeyTag::Shift),
-                pressed: true,
-            },
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Char(':'),
-                pressed: true,
-            },
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Char(':'),
-                pressed: false,
-            },
-            PlannedAction::KeyboardKey {
-                key: KeyTag::Named(NamedKeyTag::Shift),
-                pressed: false,
-            },
-        ],
-    );
+    let expected: Vec<PlannedAction> = "H:@€"
+        .chars()
+        .flat_map(|c| {
+            [true, false].map(|pressed| PlannedAction::KeyboardKey {
+                key: KeyTag::Char(c),
+                pressed,
+            })
+        })
+        .collect();
+    assert_eq!(actions, expected);
 }
 
 #[test]

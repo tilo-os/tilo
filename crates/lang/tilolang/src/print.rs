@@ -29,6 +29,14 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item]) -> String {
         if let Some(category) = &app.category {
             options.push(format!("category: .{category}"));
         }
+        match app.previously.as_slice() {
+            [] => {}
+            [one] => options.push(format!("previously: {one}")),
+            many => options.push(format!("previously: [{}]", many.join(", "))),
+        }
+        if app.own_records {
+            options.push("records: .own".to_owned());
+        }
         let options = if options.is_empty() {
             String::new()
         } else {
@@ -413,7 +421,15 @@ impl Printer {
             }
             Item::Type(t) => {
                 self.docs(&t.doc);
-                self.line(&format!("type {} {{", t.name.name));
+                match &t.origin {
+                    Some(origin) => {
+                        self.line(&format!(
+                            "type {} (origin: {}) {{",
+                            t.name.name, origin.name
+                        ));
+                    }
+                    None => self.line(&format!("type {} {{", t.name.name)),
+                }
                 self.level += 1;
                 for f in &t.fields {
                     self.field(f);
@@ -730,15 +746,18 @@ impl Printer {
             UiKind::On {
                 event,
                 param,
+                at,
                 action,
             } => {
                 let a = self.ex(action);
-                let carried = match param {
-                    Some(crate::ast::EventParam { name, ty: Some(ty) }) => {
-                        format!("({}: {})", name.name, print_type(ty))
-                    }
-                    Some(crate::ast::EventParam { name, ty: None }) => format!("({})", name.name),
-                    None => String::new(),
+                let named = |p: &crate::ast::EventParam| match &p.ty {
+                    Some(ty) => format!("{}: {}", p.name.name, print_type(ty)),
+                    None => p.name.name.clone(),
+                };
+                let carried = match (param, at) {
+                    (Some(p), Some(at)) => format!("({}, {})", named(p), named(at)),
+                    (Some(p), None) => format!("({})", named(p)),
+                    _ => String::new(),
                 };
                 self.line(&format!("on {}{carried}: {a}", event.name));
             }

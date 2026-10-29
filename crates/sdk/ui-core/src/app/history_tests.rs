@@ -1285,6 +1285,7 @@ impl RoutedPrimary {
             optional: vec![],
             opens: &[],
             room_record: false,
+            member_record: false,
             opens_before_record: false,
             create: primary_routed_factory,
         };
