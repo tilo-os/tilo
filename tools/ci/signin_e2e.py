@@ -1501,30 +1501,13 @@ cryptsetup close e2e-target
             self.item("12", "failed", "no screenshot of the boot sign-in or of the greeter to compare",
                       boot=boot_shot.is_file(), greeter=greeter_shot.is_file())
 
-        label = "comforts"
-        self.boot(label)
+        # Item 11 with the reader off: while it is on, a tap explores the key under the finger
+        # and only a double tap presses (ui::screen_reader_touch), so taps type nothing.
+        label = "touch"
+        self.boot(label, TILO_VM_INPUT="touch")
         kind, path, text, _ = self.wait_screen(label, {"disk-prompt", "boot-signin"}, 600)
         if kind != "boot-signin":
-            self.recover_boot(label, kind)
-            raise Failed(f"no boot sign-in screen to sign in at ({kind})")
-        self.cycle.type(self.account)
-        self.cycle.keys("ret")
-        try:
-            self.connect(300)
-        except Failed:
-            path, text = self.cycle.screen()
-            self.cycle.keep_screen("comforts-no-shell", path, text)
-            raise
-        self.write_comforts()
-        self.power_off(label)
-
-        label = "speech-touch"
-        wav = self.out / "boot-sign-in-speech.wav"
-        wav.unlink(missing_ok=True)
-        self.boot(label, TILO_VM_INPUT="touch", TILO_VM_AUDIO_WAV=str(wav))
-        kind, path, text, _ = self.wait_screen(label, {"disk-prompt", "boot-signin"}, 600)
-        if kind != "boot-signin":
-            self.cycle.keep_screen("speech-touch-no-boot-sign-in", path, text)
+            self.cycle.keep_screen("touch-no-boot-sign-in", path, text)
             self.item("11", "failed", f"no boot sign-in screen ({kind}) to tap the secret into")
             self.cycle.stop()
             self.cycle.keep_serial(label)
@@ -1540,30 +1523,42 @@ cryptsetup close e2e-target
         for character in self.account + "\n":
             self.cycle.vm("tap", *map(str, keys[character]))
             time.sleep(0.15)
-        connected = True
         try:
             self.connect(300)
             session = self.wait_session(240)
         except Failed:
-            connected, session = False, None
+            path, text = self.cycle.screen()
+            self.cycle.keep_screen("touch-after-taps", path, text)
+            self.item("11", "failed", "tapping the secret on the on-screen keyboard did not reach a "
+                      "session")
+            self.cycle.stop()
+            self.cycle.keep_serial(label)
+            raise
         if session:
             self.item("11", "passed", "the secret tapped on the boot sign-in's on-screen keyboard, "
                       "with no keyboard attached, opened the volume and the session",
                       user_session=session)
         else:
-            path, text = self.cycle.screen()
-            self.cycle.keep_screen("speech-touch-after-taps", path, text)
-            self.item("11", "failed", "tapping the secret on the on-screen keyboard did not reach a "
-                      "session", connected=connected)
-        if connected:
-            self.power_off(label)
-        else:
-            self.cycle.stop()
-            self.cycle.keep_serial(label)
+            self.item("11", "failed", "the volume opened from the taps but no session started")
+        self.write_comforts()
+        self.power_off(label)
+
+        # Item 10: the comforts token turns the reader on before the volume opens; the boot
+        # sign-in speaks what has focus. Nothing is entered: the VM stops at the screen.
+        label = "speech"
+        wav = self.out / "boot-sign-in-speech.wav"
+        wav.unlink(missing_ok=True)
+        self.boot(label, TILO_VM_INPUT="touch", TILO_VM_AUDIO_WAV=str(wav))
+        kind, path, text, _ = self.wait_screen(label, {"disk-prompt", "boot-signin"}, 600)
+        self.cycle.keep_screen("boot-sign-in-speech", path, text)
+        if kind == "boot-signin":
+            time.sleep(15)
+        self.cycle.stop()
+        self.cycle.keep_serial(label)
         samples = wav.read_bytes()[44:] if wav.is_file() else b""
         loud = sum(1 for i in range(0, len(samples) - 1, 2)
                    if abs(int.from_bytes(samples[i:i + 2], "little", signed=True)) > 500)
-        evidence = {"wav": wav.name, "bytes": len(samples), "loud_samples": loud}
+        evidence = {"wav": wav.name, "bytes": len(samples), "loud_samples": loud, "screen": kind}
         if loud > 4410:
             self.item("10", "passed", f"the boot sign-in spoke with the screen reader the comforts "
                       f"token turned on ({loud} loud samples)", **evidence)
