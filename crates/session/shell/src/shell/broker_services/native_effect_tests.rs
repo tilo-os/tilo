@@ -236,17 +236,24 @@ fn an_app_opened_before_its_room_is_projected_opens_once_the_membership_surface_
     let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
     // Held, not projected yet: as a room is between the commit that installs
     // it in the owner and its projection onto the tree.
-    let fixture = fixture_with(|tree| {
+    let NativeFixture {
+        governor,
+        home,
+        owner,
+        broker,
+        certificate,
+        ..
+    } = fixture_with(|tree| {
         let mut tree = tree.write();
         tree.sealed_rooms.remove(&room);
         tree.committed_record_rooms.remove(&room);
     });
-    let actions = fixture.broker.app_action_broker().unwrap();
+    let actions = broker.app_action_broker().unwrap();
     let opening = crate::shell::launcher::NativeAppOpening::default();
     opening.attach(actions.downgrade());
     let (opened, open) = std::sync::mpsc::channel();
     let launch = std::thread::spawn({
-        let (owner, certificate) = (fixture.owner.clone(), fixture.certificate.clone());
+        let (owner, certificate) = (owner.clone(), certificate.clone());
         move || {
             let _ = opened.send(crate::shell::launcher::admit_native_app(
                 &owner,
@@ -272,7 +279,7 @@ fn an_app_opened_before_its_room_is_projected_opens_once_the_membership_surface_
         "the opening waits for the room's membership actions"
     );
     {
-        let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+        let tree = native_workspace_owner::test_tree_of(&owner);
         let mut tree = tree.write();
         tree.committed_record_rooms.insert(room);
     }
@@ -286,13 +293,12 @@ fn an_app_opened_before_its_room_is_projected_opens_once_the_membership_surface_
         access.err()
     );
     launch.join().unwrap();
-    fixture
-        .owner
+    owner
         .with_current(room, |view| {
             let now = std::time::SystemTime::now();
             let member = view
                 .peer()
-                .permissions(fixture.certificate.device_public_key, now)?;
+                .permissions(certificate.device_public_key, now)?;
             assert!(
                 member
                     .policy
@@ -302,13 +308,6 @@ fn an_app_opened_before_its_room_is_projected_opens_once_the_membership_surface_
         })
         .unwrap();
     drop(actions);
-    let NativeFixture {
-        governor,
-        home,
-        owner,
-        broker,
-        ..
-    } = fixture;
     drop(broker);
     crate::shell::persist::wait_for_saves();
     drop((owner, governor, home));
