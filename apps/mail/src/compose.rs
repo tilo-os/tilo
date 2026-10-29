@@ -66,12 +66,12 @@ use crate::resource::{Mail, draft_body_dispatcher, draft_body_object, mailbox};
 /// until there is one.
 type BodyEditor = RichTextSurface<RichTextField>;
 
-fn body_editor(dispatcher: Option<&Dispatcher<Mail>>) -> BodyEditor {
+fn body_editor(dispatcher: Option<&Dispatcher<Mail>>, draft: Option<&str>) -> BodyEditor {
+    let owned = draft.map(str::to_owned);
+    let locate = move |doc: &ui::tilo_resource::Doc| draft_body_object(doc, owned.as_deref());
     let field = match dispatcher {
-        Some(dispatcher) => {
-            RichTextField::new(draft_body_dispatcher(dispatcher), draft_body_object)
-        }
-        None => RichTextField::view_only(draft_body_object),
+        Some(dispatcher) => RichTextField::new(draft_body_dispatcher(dispatcher, draft), locate),
+        None => RichTextField::view_only(locate),
     };
     RichTextSurface::field(field).with_editor(
         // A message is prose: its lines and list items sit at the text's
@@ -508,6 +508,9 @@ enum Edge {
 )]
 pub struct ComposeWindow {
     pub open: bool,
+    /// The draft this message is written in, by id: the composer's own
+    /// draft when `None`.
+    draft: Option<String>,
     /// The message this one answers, so the reply names it on the wire.
     replying_to: Option<crate::model::MessageId>,
     /// The address of the account the message goes from, when it is not
@@ -608,6 +611,7 @@ impl ComposeWindow {
         Self {
             open: false,
             replying_to: None,
+            draft: None,
             sending_from: None,
             has_account: false,
             touched: false,
@@ -628,7 +632,7 @@ impl ComposeWindow {
             sender: None,
             format,
             format_bar: FormatBar::new(),
-            editor: body_editor(None),
+            editor: body_editor(None, None),
             body_layout: BodyLayout::default(),
             seed: None,
             dispatcher: None,
@@ -999,6 +1003,7 @@ impl ComposeWindow {
     /// the caller right after).
     pub fn open_blank(&mut self) {
         self.open = true;
+        self.draft = None;
         self.has_keys = true;
         self.sending_from = None;
         self.book = None;
@@ -1055,9 +1060,23 @@ impl ComposeWindow {
         self.heading = "Forward";
     }
 
-    /// Reopen an existing draft for editing (from the Drafts folder).
+    /// Reopen the composer's own draft for editing (from the Drafts folder).
     pub fn open_with_draft(&mut self, draft: &Draft) {
+        self.open_draft(None, draft);
+    }
+
+    /// The draft this message is written in, by id: the composer's own
+    /// draft when `None`.
+    pub fn draft_id(&self) -> Option<&str> {
+        self.draft.as_deref()
+    }
+
+    /// Reopen the draft `id` (the composer's own when `None`) for editing:
+    /// every change is that draft's.
+    pub fn open_draft(&mut self, id: Option<&str>, draft: &Draft) {
         self.open_blank();
+        self.draft = id.map(str::to_owned);
+        self.editor = body_editor(self.dispatcher.as_ref(), self.draft.as_deref());
         self.sender.clone_from(&draft.sender);
         self.to.set_text(&draft.to);
         self.cc.set_text(&draft.cc);
@@ -1330,7 +1349,7 @@ impl ComposeWindow {
         self.start_pending_body(doc);
         let (body, html_body) = match self.format {
             ComposeFormat::Html => {
-                let root = draft_body_object(doc);
+                let root = draft_body_object(doc, self.draft.as_deref());
                 let html = root.as_ref().and_then(|root| {
                     tilo_doc_codecs::export_html::render_html_fragment_under(
                         doc,
@@ -1338,7 +1357,7 @@ impl ComposeWindow {
                         &tilo_content::NoContent,
                     )
                 });
-                (Self::read_plain(doc), Some(html.unwrap_or_default()))
+                (self.read_plain(doc), Some(html.unwrap_or_default()))
             }
             ComposeFormat::Text => (self.plain_body.value().to_string(), None),
         };
@@ -1380,7 +1399,7 @@ impl ComposeWindow {
     /// Start the body afresh from `seed` when the window next reaches the
     /// document; until then the body reads as the seed's text.
     fn start_body(&mut self, seed: DraftBodySeed) {
-        self.editor = body_editor(self.dispatcher.as_ref());
+        self.editor = body_editor(self.dispatcher.as_ref(), self.draft.as_deref());
         self.body_layout = BodyLayout::default();
         self.body_plain.clone_from(&seed.text);
         self.seed = Some(seed);
@@ -1392,7 +1411,7 @@ impl ComposeWindow {
     pub(crate) fn attach_framework(&mut self, dispatcher: Dispatcher<Mail>) {
         self.editor
             .source_mut()
-            .attach(draft_body_dispatcher(&dispatcher));
+            .attach(draft_body_dispatcher(&dispatcher, self.draft.as_deref()));
         self.dispatcher = Some(dispatcher);
     }
 
@@ -1407,14 +1426,15 @@ impl ComposeWindow {
         let start = Mail::START_DRAFT_BODY.with(mailbox::StartDraftBody {
             text: seed.text,
             html: seed.html,
+            draft: self.draft.clone(),
         });
         if let Err(error) = dispatcher.submit_now(doc, start) {
             tracing::warn!(%error, "draft body could not be started");
         }
     }
 
-    fn read_plain(doc: &automerge::AutoCommit) -> String {
-        draft_body_object(doc)
+    fn read_plain(&self, doc: &automerge::AutoCommit) -> String {
+        draft_body_object(doc, self.draft.as_deref())
             .and_then(|root| tilo_rich_text::blocks_under(doc, &root).ok())
             .map(|blocks| plain_of(&blocks))
             .unwrap_or_default()
@@ -1427,7 +1447,7 @@ impl ComposeWindow {
             return;
         }
         ui::Widget::sync(&mut self.editor, doc, path);
-        self.body_plain = Self::read_plain(doc);
+        self.body_plain = self.read_plain(doc);
         if ui::Widget::needs_redraw(&self.editor) {
             self.dirty = true;
         }
@@ -1571,7 +1591,7 @@ impl ComposeWindow {
                 taffy: &self.body_layout.taffy,
             },
         );
-        self.body_plain = Self::read_plain(ctx.state.doc());
+        self.body_plain = self.read_plain(ctx.state.doc());
         self.dirty = true;
     }
 
@@ -2825,12 +2845,12 @@ mod tests {
             w.start_body(DraftBodySeed::text("Hello world"));
             w.sync(&doc, &automerge::ROOT);
             assert!(
-                draft_body_object(&doc).is_none(),
+                draft_body_object(&doc, None).is_none(),
                 "projection leaves a pending draft body unwritten"
             );
             w.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
             assert!(
-                draft_body_object(&doc).is_some(),
+                draft_body_object(&doc, None).is_some(),
                 "settlement authors the pending draft body"
             );
             w.sync(&doc, &automerge::ROOT);

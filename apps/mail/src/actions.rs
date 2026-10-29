@@ -44,8 +44,12 @@ pub enum MailTarget {
     /// A loaded message: opening it is the read boundary, so it records the
     /// message read through the same `SetRead` action as every control.
     Message(String),
-    /// The saved draft, back in the composer.
+    /// The composer's own draft, back in the composer.
     Draft,
+    /// Another draft, by id, in a composer of its own.
+    DraftId(String),
+    /// An attachment of a message, in the app that opens its type.
+    Attachment { message: String, index: usize },
 }
 
 /// What Mail does that changes no document: what the window shows, the
@@ -105,9 +109,11 @@ pub enum MailEffect {
     Inspect { message: String },
     /// Read message
     ///
-    /// Answers with what a loaded message says: who sent it to whom, its
-    /// subject, when, its text and its attachments' names. Changes nothing,
-    /// and marks it read for no one.
+    /// Answers with what a message says, from the mail this device keeps
+    /// and the mail the mailbox holds, with or without a window showing
+    /// it: who sent it to whom, its subject, when, its text, its links and
+    /// its attachments, each with the item that hands over its content.
+    /// Changes nothing, and marks it read for no one.
     #[effect(row, kind = "read", returns, idempotent)]
     ReadMessage { message: String },
     /// Reply
@@ -140,15 +146,54 @@ pub enum MailEffect {
     AlwaysLoadRemoteContent { message: String },
     /// Search messages
     ///
-    /// Finds the messages held in the mailbox whose sender, recipients,
-    /// subject or text hold every word, newest first. Changes nothing.
+    /// Finds messages, newest first, in the mail this device keeps of its
+    /// servers and the mail the mailbox holds: those whose sender,
+    /// recipients, subject or text hold every word of the query, narrowed
+    /// by sender, subject, dates and attachments. Changes nothing.
     #[effect(kind = "read", returns, idempotent, audience = "agents")]
     SearchMessages {
-        #[param("The words to find, ignoring case")]
-        query: String,
+        #[param("The words to find anywhere in a message, ignoring case")]
+        query: Option<String>,
         #[param("The folder to search; every folder when omitted")]
         folder: Option<crate::model::Folder>,
+        #[param("Words the sender's name or address holds")]
+        from: Option<String>,
+        #[param("Words the subject holds")]
+        subject: Option<String>,
+        #[param(
+            "Sent on or after this day or time, RFC 3339 (2026-10-29 or 2026-10-29T08:00:00Z)"
+        )]
+        since: Option<String>,
+        #[param("Sent before this day or time, RFC 3339")]
+        until: Option<String>,
+        #[param("Only messages with attachments (true) or without (false)")]
+        has_attachment: Option<bool>,
     },
+    /// Draft reply
+    ///
+    /// Starts a new draft answering a message, fetched or held, the
+    /// original quoted below the reply, with private notes that are never
+    /// sent. Every call makes a draft of its own beside the others;
+    /// nothing is written over and nothing is sent. Answers the draft.
+    #[effect(kind = "undoable", returns, audience = "agents")]
+    DraftReply {
+        #[param("The id of the message it answers")]
+        message: String,
+        #[param("The reply, as plain text")]
+        body: String,
+        #[param("Copy everyone else the message went to")]
+        all: Option<bool>,
+        #[param("Private notes on the draft (a review, what to check), never sent")]
+        notes: Option<String>,
+    },
+    /// Get content
+    ///
+    /// Keeps the attachment in the workspace's content and answers its
+    /// content address (`tilo.content:<hash>`), name and media type, for
+    /// another app's action to take (the PDF viewer's import). Nothing is
+    /// written to a folder and nothing is sent.
+    #[effect(row, content, kind = "read", returns, idempotent)]
+    Content { message: String, index: usize },
     /// Export content
     ///
     /// Keeps held mail as a file in the room's content and answers its
@@ -389,6 +434,9 @@ pub struct IngestBaseline {
     pub account: Option<String>,
     #[serde(default)]
     pub locator: Option<String>,
+    /// How people tell it apart: subject, sender and date.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 impl IngestBaseline {
@@ -401,6 +449,7 @@ impl IngestBaseline {
             folder: Some(message.folder.as_key().to_string()),
             account: None,
             locator: None,
+            label: Some(message_label_of(message)),
         }
     }
 
@@ -428,8 +477,27 @@ impl IngestBaseline {
             folder: None,
             account: None,
             locator: None,
+            label: None,
         }
     }
+}
+
+/// A message as people tell it apart: its subject, who sent it and when.
+pub fn message_label_of(message: &crate::model::Message) -> String {
+    let subject = message.subject.trim();
+    let subject = if subject.is_empty() {
+        "(no subject)"
+    } else {
+        subject
+    };
+    let date = mail_parser::DateTime::from_timestamp(message.timestamp_min.saturating_mul(60));
+    format!(
+        "{subject}, {}, {:04}-{:02}-{:02}",
+        message.from.display(),
+        date.year,
+        date.month,
+        date.day
+    )
 }
 
 /// One change a mail server still has to be told about, as
@@ -566,6 +634,8 @@ impl DraftBodySeed {
 pub struct MessageRow {
     pub id: String,
     pub subject: String,
+    /// Subject, sender and date.
+    pub label: String,
     pub starred: bool,
     pub attachments: Vec<AttachmentRow>,
 }
@@ -584,6 +654,7 @@ pub(crate) fn message_row(message: &crate::model::Message) -> MessageRow {
     MessageRow {
         id: message.id.to_string(),
         subject: message.subject.clone(),
+        label: message_label_of(message),
         starred: message.starred,
         attachments: message
             .attachments
@@ -598,12 +669,11 @@ pub(crate) fn message_row(message: &crate::model::Message) -> MessageRow {
 }
 
 fn message_label(m: &MessageRow) -> String {
-    let s = m.subject.trim();
-    let base = if s.is_empty() { "(no subject)" } else { s };
+    let base = &m.label;
     if m.starred {
         format!("{base} (starred)")
     } else {
-        base.to_string()
+        base.clone()
     }
 }
 
@@ -628,6 +698,27 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
         index,
     }
     .bound();
+    let content = MailEffect::Content {
+        message: message_id.to_owned(),
+        index,
+    }
+    .bound();
+    let open = bound(
+        &MailEffect::Open {
+            target: MailTarget::Attachment {
+                message: message_id.to_owned(),
+                index,
+            },
+        },
+        "Open attachment",
+    );
+    let not_downloaded = |spec: ActionSpec| {
+        if attachment.downloadable {
+            spec
+        } else {
+            spec.unavailable("not_downloaded", "Attachment content is not downloaded yet")
+        }
+    };
     ResourceSpec::new(
         format!("mail.attachment:{message_id}:{index}"),
         "mail.attachment",
@@ -637,11 +728,9 @@ fn attachment_resource(message_id: &str, index: usize, attachment: &AttachmentRo
             ui::format::size(attachment.size)
         ),
     )
-    .with_action(if attachment.downloadable {
-        save
-    } else {
-        save.unavailable("not_downloaded", "Attachment content is not downloaded yet")
-    })
+    .with_action(not_downloaded(content))
+    .with_action(not_downloaded(open))
+    .with_action(not_downloaded(save))
 }
 
 /// Open, preview, reply, reply all and forward, bound to the message

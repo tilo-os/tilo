@@ -56,8 +56,12 @@ pub struct Mail {
     pub messages: Collection<MessageState>,
     /// The folders the reader made, under their ids.
     pub folders: Collection<LocalFolder>,
-    /// The message being written.
+    /// The draft Mail's composer has always written: the draft `draft` of
+    /// [`Mail::drafts_listed`], kept where earlier versions wrote it.
     pub draft: DraftState,
+    /// Every other draft, under its id: an agent's replies, another
+    /// message being written beside the first. Each opens on its own.
+    pub drafts: Collection<DraftState>,
     /// Messages sent and waiting for a device that holds their account.
     pub outbox: Outbox<Outgoing>,
     /// What servers still have to be told: flags, moves and deletes the
@@ -90,6 +94,10 @@ pub struct MessageState {
     /// Deleted for good: a delayed fetch never brings it back.
     #[model(readonly)]
     pub purged: bool,
+    /// How people tell it apart, as its source reported it: subject,
+    /// sender and date. Empty for a message recorded before it was kept.
+    #[model(readonly)]
+    pub label: String,
 }
 
 impl MessageState {
@@ -169,11 +177,15 @@ pub struct DraftState {
     /// device and after every restart.
     #[model(readonly)]
     pub shown_as: Option<String>,
-    /// What `draft-message` or `draft-reply` wrote, as a fingerprint
-    /// (`DraftState::fingerprint`): while the draft still matches it,
-    /// nobody took it up and those verbs may write over it.
+    /// What `draft-message` or `draft-reply` wrote, as a fingerprint, as
+    /// earlier versions kept it.
     #[model(readonly)]
     pub drafted: Option<String>,
+    /// The message it answers, by id.
+    pub in_reply_to: Option<String>,
+    /// Private notes on the draft: a review, what to check before sending.
+    /// They are never sent and never leave the mailbox.
+    pub notes: String,
 }
 
 impl DraftState {
@@ -188,6 +200,7 @@ impl DraftState {
                 .html_body
                 .as_deref()
                 .is_none_or(|html| within(html, MAX_DRAFT_BODY_CHARS))
+            || !within(&self.notes, MAX_DRAFT_BODY_CHARS)
         {
             return Err(Refusal::new("the draft is too long"));
         }
@@ -218,7 +231,7 @@ impl DraftState {
             html_body: self.html_body.clone(),
             calendar_ics: self.calendar_ics.clone(),
             attachments: self.attachments.clone(),
-            in_reply_to: None,
+            in_reply_to: self.in_reply_to.as_deref().and_then(|id| id.parse().ok()),
             wire: crate::model::WireIds::default(),
         }
     }
@@ -240,41 +253,9 @@ impl DraftState {
             rich_body: self.rich_body.clone(),
             shown_as: self.shown_as.clone(),
             drafted: None,
+            in_reply_to: self.in_reply_to.clone(),
+            notes: self.notes.clone(),
         }
-    }
-
-    /// A fingerprint of this draft as written, its body started from the
-    /// file `body_digest` names: every field a person changes, and the
-    /// import its body was started from.
-    pub(crate) fn fingerprint(&self, body_digest: &str) -> String {
-        let written = serde_json::json!([
-            self.sender,
-            self.to,
-            self.cc,
-            self.bcc,
-            self.subject,
-            self.body,
-            self.html_body,
-            self.calendar_ics,
-            self.attachments,
-            body_digest,
-        ]);
-        tilo_content::hash_bytes(written.to_string().as_bytes())
-    }
-
-    /// Whether `draft-message` or `draft-reply` wrote this draft and nobody
-    /// changed it since: no field, and its body not started again.
-    pub(crate) fn untouched_since_drafted(&self) -> bool {
-        let (Some(drafted), Some(digest)) = (
-            &self.drafted,
-            self.rich_body
-                .as_ref()
-                .and_then(RichText::state)
-                .and_then(tilo_document::RichTextState::file_digest),
-        ) else {
-            return false;
-        };
-        *drafted == self.fingerprint(digest)
     }
 
     /// Whether `sent` is this draft: it goes to the same recipients under
@@ -418,30 +399,76 @@ impl Mail {
         }
     }
 
-    /// Start the body of the draft afresh: a blank message, a reply's quote,
+    /// Start the body of a draft afresh: a blank message, a reply's quote,
     /// a reopened draft.
     #[action]
     pub fn start_draft_body(
         &mut self,
         #[param("Its text, a paragraph per line; a line starting with > is quoted")] text: String,
         #[param("Its HTML, when it starts formatted")] html: Option<String>,
-    ) {
+        #[param("The draft, by id; the composer's own draft when omitted")] draft: Option<String>,
+    ) -> Result<(), Refusal> {
         let mut body = RichText::default();
         body.perform(RichTextAction::ReplaceFormatted {
             format: tilo_document::action::ImportFormat::Html,
             bytes: started_body(&text, html),
         });
-        self.draft.rich_body = Some(body);
-        self.draft.drafted = None;
+        let draft = self.draft_mut(draft.as_deref())?;
+        draft.rich_body = Some(body);
+        draft.drafted = None;
+        Ok(())
     }
 
     /// Save draft
     ///
-    /// Saves the message being written as the draft: who it goes to, what
-    /// it says and carries, keeping the body being written.
+    /// Saves a message being written as its draft: who it goes to, what it
+    /// says and carries, keeping the body being written and its notes.
     #[action]
-    pub fn save_draft(&mut self, #[param("The message as written")] message: DraftData) {
-        self.draft = self.draft.saved(&message.to_draft());
+    pub fn save_draft(
+        &mut self,
+        #[param("The message as written")] message: DraftData,
+        #[param("The draft, by id; the composer's own draft when omitted")] draft: Option<String>,
+    ) -> Result<(), Refusal> {
+        let draft = self.draft_mut(draft.as_deref())?;
+        *draft = draft.saved(&message.to_draft());
+        Ok(())
+    }
+
+    /// New draft
+    ///
+    /// Starts a draft of its own beside every other: who it goes to, what
+    /// it says, the message it answers and private notes, which are never
+    /// sent. Nothing is sent. Answers the draft.
+    #[action(answers, local)]
+    pub fn create_draft(
+        &mut self,
+        #[param("The new draft's id")] id: String,
+        #[param("The message as written")] message: DraftData,
+        #[param("Id of the message it answers")] in_reply_to: Option<String>,
+        #[param("Private notes, never sent")] notes: Option<String>,
+    ) -> Result<(), Refusal> {
+        let id = id.trim();
+        if id.parse::<uuid::Uuid>().is_err() {
+            return Err(Refusal::new("a draft's id is a UUID"));
+        }
+        let key = Id::from_raw(id);
+        if self.drafts.contains(&key) {
+            return Err(Refusal::new("there is a draft with this id already"));
+        }
+        let mut body = RichText::default();
+        body.perform(RichTextAction::ReplaceFormatted {
+            format: tilo_document::action::ImportFormat::Html,
+            bytes: started_body(&message.body, message.html_body.clone()),
+        });
+        let mut draft = DraftState::default().saved(&message.to_draft());
+        draft.rich_body = Some(body);
+        draft.in_reply_to = in_reply_to
+            .map(|answered| bounded_text(&answered, MAX_MESSAGE_ID_CHARS, false))
+            .filter(|answered| !answered.is_empty());
+        draft.notes = bounded_text(notes.as_deref().unwrap_or(""), MAX_DRAFT_BODY_CHARS, true);
+        draft.valid()?;
+        self.drafts.push(key, draft);
+        Ok(())
     }
 
     /// The draft shows as the Drafts message `message`.
@@ -449,18 +476,19 @@ impl Mail {
     pub fn show_draft(
         &mut self,
         #[param("The Drafts message's id")] message: String,
+        #[param("The draft, by id; the composer's own draft when omitted")] draft: Option<String>,
     ) -> Result<(), Refusal> {
         if message.parse::<uuid::Uuid>().is_err() {
             return Err(Refusal::new("a draft shows as a message, by its id"));
         }
-        self.draft.shown_as = Some(message);
+        self.draft_mut(draft.as_deref())?.shown_as = Some(message);
         Ok(())
     }
 
     /// Attach to draft
     ///
     /// Attaches a file another step handed over (a file from Files, a
-    /// picture) to the message being written, under the name given. Save
+    /// picture) to a message being written, under the name given. Save
     /// the draft's text first: saving the draft again keeps only the
     /// attachments it names. At most 16 attachments of 32 MiB each.
     #[action(label = "Attach to draft", prepare = prepare_attachment)]
@@ -475,6 +503,7 @@ impl Mail {
         name: String,
         #[param("Filled in from the content where it is attached; leave it out")] size: Option<u64>,
         #[param("Filled in from the name where it is attached; leave it out")] mime: Option<String>,
+        #[param("The draft, by id; the composer's own draft when omitted")] draft: Option<String>,
     ) -> Result<(), Refusal> {
         let attachment = DraftAttachment {
             content_id: content,
@@ -485,7 +514,8 @@ impl Mail {
         if !crate::attachment_store::is_valid(&attachment) {
             return Err(Refusal::new("the attachment is not one a draft can carry"));
         }
-        let mut attachments = self.draft.attachments.clone();
+        let draft = self.draft_mut(draft.as_deref())?;
+        let mut attachments = draft.attachments.clone();
         attachments.push(attachment);
         if crate::attachment_store::bounded(&attachments) != attachments {
             return Err(Refusal::new(
@@ -493,14 +523,17 @@ impl Mail {
                  a message can",
             ));
         }
-        self.draft.attachments = attachments;
+        draft.attachments = attachments;
         Ok(())
     }
 
     /// Discard draft
     #[action(destructive)]
-    pub fn discard_draft(&mut self) {
-        self.draft = DraftState::default();
+    pub fn discard_draft(
+        &mut self,
+        #[param("The draft, by id; the composer's own draft when omitted")] draft: Option<String>,
+    ) -> Result<(), Refusal> {
+        self.forget_draft(draft.as_deref())
     }
 
     /// Send message
@@ -515,6 +548,9 @@ impl Mail {
         #[param("The address it is sent from: one of the mailbox's accounts")] account: String,
         #[param("The message")] message: DraftData,
         #[param("Id of the message it answers")] in_reply_to: Option<String>,
+        #[param("The draft it was written as, by id; it leaves Drafts once sent")] draft: Option<
+            String,
+        >,
     ) -> Result<(), Refusal> {
         let id = cx.id();
         let outgoing = Outgoing {
@@ -528,13 +564,15 @@ impl Mail {
                 "a message needs a sending account and a recipient",
             ));
         }
-        // The message being written is done with once it is sent: its draft
-        // empties, so it leaves Drafts and the next message starts afresh.
-        // Another message sent meanwhile leaves the draft alone.
-        if self.draft.is_written_as(&outgoing.draft) {
-            self.draft = DraftState::default();
-        } else {
-            self.draft.drafted = None;
+        // The draft it was written as is done with once it is sent: it
+        // leaves Drafts, and the composer's next message starts afresh.
+        // Another message sent meanwhile leaves every draft alone.
+        match draft.as_deref().filter(|named| !is_composer_draft(named)) {
+            Some(named) => self.forget_draft(Some(named))?,
+            None if self.draft.is_written_as(&outgoing.draft) => {
+                self.draft = DraftState::default();
+            }
+            None => self.draft.drafted = None,
         }
         outbox.push(id, outgoing);
         Ok(())
@@ -557,35 +595,33 @@ impl Mail {
 
     /// Draft message
     ///
-    /// Writes the draft a person reviews and sends: who it goes to, its
-    /// subject and text. Nothing is sent. A draft drafted here before and
-    /// changed by nobody since is written over; one a person is writing is
-    /// left alone.
+    /// Writes a new draft for a person to review and send: who it goes to,
+    /// its subject and text, and private notes that are never sent. Every
+    /// call makes a draft of its own; nothing is written over and nothing
+    /// is sent. Answers the draft.
     #[action(answers, local, audience = "agents")]
     pub fn draft_message(
         &mut self,
+        cx: &mut ActionCx,
         #[param("Recipients, comma-separated")] to: String,
         #[param("The subject")] subject: String,
         #[param("The message, as plain text")] body: String,
         #[param("Copy recipients, comma-separated")] cc: Option<String>,
+        #[param("Private notes on the draft, never sent")] notes: Option<String>,
     ) -> Result<(), Refusal> {
-        self.draft_held(&to, cc.as_deref().unwrap_or(""), &subject, &body)
-    }
-
-    /// Draft reply
-    ///
-    /// Writes a reply to a message held in the mailbox as the draft, the
-    /// original quoted below it, for a person to review and send. Nothing
-    /// is sent. A draft drafted here before and changed by nobody since is
-    /// written over; one a person is writing is left alone.
-    #[action(answers, local, audience = "agents")]
-    pub fn draft_reply(
-        &mut self,
-        #[param("The id of the held message it answers")] message: String,
-        #[param("The reply, as plain text")] body: String,
-        #[param("Copy everyone else the message went to")] all: Option<bool>,
-    ) -> Result<(), Refusal> {
-        self.draft_reply_held(&message, &body, all.unwrap_or(false))
+        let id = crate::held::draft_id(cx.id().as_str());
+        self.draft_new(
+            &id,
+            &crate::held::Drafted {
+                to,
+                cc: cc.unwrap_or_default(),
+                subject,
+                body,
+                in_reply_to: None,
+                sender: None,
+                notes: notes.unwrap_or_default(),
+            },
+        )
     }
 
     /// Cancel sending
@@ -680,6 +716,112 @@ fn escape_html(line: &str) -> String {
     out
 }
 
+/// The id the composer's own draft ([`Mail::draft`]) goes by among the
+/// drafts.
+pub const COMPOSER_DRAFT: &str = "draft";
+
+/// Whether `id` names the composer's own draft: `draft`, or a published
+/// path or item ending in it.
+pub(crate) fn is_composer_draft(id: &str) -> bool {
+    draft_named(id) == COMPOSER_DRAFT
+}
+
+/// The draft id an item names: a bare id, `draft:<id>`, `mail.draft:<id>`
+/// or a published path ending in one.
+pub(crate) fn draft_named(item: &str) -> &str {
+    let last = item.trim().rsplit('/').next().unwrap_or(item);
+    last.strip_prefix("mail.draft:")
+        .or_else(|| last.strip_prefix("draft:"))
+        .unwrap_or(last)
+}
+
+/// The paths of the draft `id`: the composer's own when it is `None` or
+/// [`COMPOSER_DRAFT`].
+pub(crate) fn draft_paths(id: Option<&str>) -> <DraftState as Model>::Paths<Mail> {
+    match id.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
+        Some(id) => Mail::paths().drafts.item(&Id::from_raw(id)),
+        None => Mail::paths().draft,
+    }
+}
+
+impl Mail {
+    /// The draft `id` names, to change: the composer's own when `None`.
+    fn draft_mut(&mut self, id: Option<&str>) -> Result<&mut DraftState, Refusal> {
+        match id.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
+            None => Ok(&mut self.draft),
+            Some(id) => self
+                .drafts
+                .get_mut(&Id::from_raw(id))
+                .ok_or_else(|| Refusal::new("there is no such draft")),
+        }
+    }
+
+    /// The draft `id` names: the composer's own when `None`.
+    pub fn draft_at(&self, id: Option<&str>) -> Option<&DraftState> {
+        match id.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
+            None => Some(&self.draft),
+            Some(id) => self.drafts.get(&Id::from_raw(id)),
+        }
+    }
+
+    /// Throw the draft `id` away: the composer's own empties, any other
+    /// leaves the drafts.
+    fn forget_draft(&mut self, id: Option<&str>) -> Result<(), Refusal> {
+        match id.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
+            None => {
+                self.draft = DraftState::default();
+                Ok(())
+            }
+            Some(id) => self
+                .drafts
+                .remove(&Id::from_raw(id))
+                .map(drop)
+                .ok_or_else(|| Refusal::new("there is no such draft")),
+        }
+    }
+
+    /// Every draft with something in it, by id: the composer's own first
+    /// (as [`COMPOSER_DRAFT`]), then the others in the order they came.
+    pub fn drafts_listed(&self) -> Vec<(String, &DraftState)> {
+        let mut drafts = Vec::new();
+        if self.has_draft() {
+            drafts.push((COMPOSER_DRAFT.to_owned(), &self.draft));
+        }
+        drafts.extend(
+            self.drafts
+                .iter()
+                .map(|(id, draft)| (id.as_str().to_owned(), draft)),
+        );
+        drafts
+    }
+
+    /// Start the draft `id` as `drafted` says, its body started from the
+    /// text.
+    pub(crate) fn draft_new(
+        &mut self,
+        id: &str,
+        drafted: &crate::held::Drafted,
+    ) -> Result<(), Refusal> {
+        let to = bounded_text(&drafted.to, MAX_DRAFT_ADDRESS_CHARS, false);
+        if crate::transport::parse_addr_list(&to).is_empty() {
+            return Err(Refusal::new("a draft goes to at least one address"));
+        }
+        self.create_draft(
+            id.to_owned(),
+            DraftData {
+                sender: drafted.sender.clone(),
+                to,
+                cc: bounded_text(&drafted.cc, MAX_DRAFT_ADDRESS_CHARS, false),
+                subject: bounded_text(&drafted.subject, MAX_DRAFT_SUBJECT_CHARS, false),
+                body: bounded_text(&drafted.body, MAX_DRAFT_BODY_CHARS, true),
+                ..DraftData::default()
+            },
+            drafted.in_reply_to.clone(),
+            Some(drafted.notes.clone()),
+        )
+    }
+}
+
 impl Mail {
     /// The ids of `messages` the mailbox holds and has not deleted for
     /// good, at most [`MAX_MESSAGES_PER_ACTION`] of them; refused when none
@@ -743,12 +885,20 @@ impl Mail {
                     removed: false,
                 }),
                 purged: false,
+                label: baseline.label.clone().unwrap_or_default(),
             };
             self.messages.push(key, state);
             return;
         };
         if message.purged {
             return;
+        }
+        if let Some(label) = baseline
+            .label
+            .as_ref()
+            .filter(|label| **label != message.label)
+        {
+            message.label.clone_from(label);
         }
         let Some((account, locator)) = server else {
             return;
@@ -958,15 +1108,10 @@ impl Mail {
                 .with_effect(&MailEffect::Open {
                     target: MailTarget::Folder(folder.as_key().to_owned()),
                 });
-            if folder == Folder::Drafts && self.has_draft() {
-                place = place.with_child(
-                    Derived::new("Current draft")
-                        .of_kind("draft")
-                        .identified("draft")
-                        .with_effect(&MailEffect::Open {
-                            target: MailTarget::Draft,
-                        }),
-                );
+            if folder == Folder::Drafts {
+                for (id, draft) in self.drafts_listed() {
+                    place = place.with_child(Self::draft_place(&id, draft));
+                }
             }
             for (id, message) in self
                 .messages
@@ -974,7 +1119,12 @@ impl Mail {
                 .filter(|(_, message)| !message.purged && message.folder == folder)
                 .take(remaining)
             {
-                place = place.with_child(Self::message_place(id.as_str(), message));
+                let label = if message.label.is_empty() {
+                    id.as_str()
+                } else {
+                    message.label.as_str()
+                };
+                place = place.with_child(Self::message_place(id.as_str(), label, message));
                 remaining = remaining.saturating_sub(1);
             }
             places.push(place);
@@ -991,9 +1141,9 @@ impl Mail {
 
     /// The message `id` as a place: opening, previewing and answering it,
     /// marking it read, archiving or deleting it.
-    pub(crate) fn message_place(id: &str, message: &MessageState) -> Derived<Self> {
+    pub(crate) fn message_place(id: &str, label: &str, message: &MessageState) -> Derived<Self> {
         let ids = vec![id.to_owned()];
-        let mut place = Derived::new(id)
+        let mut place = Derived::new(label)
             .of_kind("message")
             .identified(message_place_id(id))
             .with_effect(&MailEffect::Open {
@@ -1042,6 +1192,53 @@ impl Mail {
     }
 }
 
+impl Mail {
+    /// The draft `id` as a place beneath Drafts, labelled by its subject
+    /// and who it goes to: opening it shows it in a composer of its own.
+    fn draft_place(id: &str, draft: &DraftState) -> Derived<Self> {
+        Derived::new(draft_label(draft))
+            .of_kind("draft")
+            .identified(draft_place_id(id))
+            .with_effect(&MailEffect::Open {
+                target: if is_composer_draft(id) {
+                    MailTarget::Draft
+                } else {
+                    MailTarget::DraftId(id.to_owned())
+                },
+            })
+    }
+}
+
+/// A draft as people tell it apart: its subject and who it goes to.
+pub(crate) fn draft_label(draft: &DraftState) -> String {
+    let subject = draft.subject.trim();
+    let subject = if subject.is_empty() {
+        "(no subject)"
+    } else {
+        subject
+    };
+    let to = crate::transport::parse_addr_list(&draft.to)
+        .iter()
+        .map(crate::model::Addr::display)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if to.is_empty() {
+        format!("Draft: {subject}")
+    } else {
+        format!("Draft: {subject}, to {to}")
+    }
+}
+
+/// The id of the draft `id`'s place beneath Drafts. The composer's own
+/// keeps the id it always had.
+pub(crate) fn draft_place_id(id: &str) -> String {
+    if is_composer_draft(id) {
+        COMPOSER_DRAFT.to_owned()
+    } else {
+        format!("draft:{id}")
+    }
+}
+
 /// The id of the folder `key`'s place among the mailbox's.
 pub(crate) fn folder_place_id(key: &str) -> String {
     format!("folder:{key}")
@@ -1066,22 +1263,34 @@ pub(crate) fn read_mail(doc: &tilo_resource::Doc) -> Option<Mail> {
     <Mail as tilo_resource::Resource>::read(doc).ok()
 }
 
-/// Where the body of the draft is in the mailbox.
-pub(crate) fn draft_body() -> tilo_resource::Path<Mail, Option<RichText>> {
-    Mail::paths().draft.rich_body
+/// Where the body of the draft `draft` (the composer's own when `None`) is
+/// in the mailbox.
+pub(crate) fn draft_body(draft: Option<&str>) -> tilo_resource::Path<Mail, Option<RichText>> {
+    draft_paths(draft).rich_body
 }
 
-/// The object the draft's body is written in, once it was started.
-pub(crate) fn draft_body_object(doc: &tilo_resource::Doc) -> Option<ui::automerge::ObjId> {
-    draft_body().object(doc)
+/// The object the body of the draft `draft` is written in, once it was
+/// started.
+pub(crate) fn draft_body_object(
+    doc: &tilo_resource::Doc,
+    draft: Option<&str>,
+) -> Option<ui::automerge::ObjId> {
+    draft_body(draft).object(doc)
 }
 
-/// The dispatcher the composer edits the draft body through: each edit is
-/// the mailbox's field edit of the body.
-pub(crate) fn draft_body_dispatcher(dispatcher: &Dispatcher<Mail>) -> Dispatcher<RichText> {
-    let body = draft_body().some();
+/// The dispatcher the composer edits the body of the draft `draft` through:
+/// each edit is the mailbox's field edit of that body.
+pub(crate) fn draft_body_dispatcher(
+    dispatcher: &Dispatcher<Mail>,
+    draft: Option<&str>,
+) -> Dispatcher<RichText> {
+    let body = draft_body(draft).some();
+    let child = match draft.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
+        Some(id) => format!("draft-body:{id}"),
+        None => "draft-body".to_owned(),
+    };
     dispatcher.child::<RichText>(
-        &tilo_resource::child_resource_id::<Mail>("draft-body"),
+        &tilo_resource::child_resource_id::<Mail>(&child),
         move |op| tilo_resource::Stamped {
             operation: MailAction::FieldEdit(body.edit(tilo_resource::EditOp::Rich {
                 rich: serde_json::to_value(&op).unwrap_or_default(),
@@ -1147,7 +1356,7 @@ impl TestMail {
     }
 
     pub(crate) fn draft_body(doc: &tilo_resource::Doc) -> Option<ui::automerge::ObjId> {
-        draft_body_object(doc)
+        draft_body_object(doc, None)
     }
 
     pub(crate) fn store_draft(doc: &mut tilo_resource::Doc, draft: &Draft) {
@@ -1155,12 +1364,16 @@ impl TestMail {
             doc,
             Mail::SAVE_DRAFT.with(mailbox::SaveDraft {
                 message: DraftData::from_draft(draft),
+                draft: None,
             }),
         );
     }
 
     pub(crate) fn clear_draft(doc: &mut tilo_resource::Doc) {
-        Self::change(doc, Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft {}));
+        Self::change(
+            doc,
+            Mail::DISCARD_DRAFT.with(mailbox::DiscardDraft { draft: None }),
+        );
     }
 
     /// Apply what `dispatcher` asked the person to confirm, as the door
@@ -1788,6 +2001,7 @@ mod tests {
                 folder: Some("inbox".into()),
                 account: Some(crate::sample::sample_account_store().active_config().email),
                 locator: Some("launch@example.test".into()),
+                label: None,
             };
             app.invoke(Mail::INGEST.with(mailbox::Ingest {
                 messages: vec![fetched],
@@ -2053,7 +2267,7 @@ mod tests {
             app.call(
                 "field-edit",
                 serde_json::json!({
-                    "edit": crate::resource::draft_body()
+                    "edit": crate::resource::draft_body(None)
                         .some()
                         .perform(&RichTextAction::ReplaceBody {
                             markdown: "from an agent".into(),
