@@ -46,7 +46,10 @@ pub(super) enum Route {
 impl Route {
     /// Every transition this route's attempts may take.
     fn transitions(self) -> &'static [(Phase, Phase)] {
-        use Phase::*;
+        use Phase::{
+            Cancelled, Exported, Launching, Prepared, ReceiverPending, RecoveryPrepared,
+            RecoveryVerifying, ScratchReady, Sealing, Verified, Verifying,
+        };
         match self {
             Self::Medium => &[
                 (Prepared, Launching),
