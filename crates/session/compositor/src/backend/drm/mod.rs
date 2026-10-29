@@ -550,7 +550,7 @@ impl Backend for DrmBackend {
 
 /// Draw every output that is not waiting for a vertical blank and whose
 /// next frame is due.
-fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
+fn render_ready(inner: &Rc<RefCell<Inner>>, state: &State) {
     let mut inner = inner.borrow_mut();
     if !inner.active {
         return;
@@ -577,7 +577,7 @@ fn render_gpu(
     renderers: &mut Renderers,
     primary: DrmNode,
     config: &DisplayConfig,
-    state: &mut State,
+    state: &State,
     now: Instant,
 ) {
     let Gpu {
@@ -1104,7 +1104,7 @@ fn open_gpu(
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
                 vblank(&vblank_inner, &data.state, dev_id, crtc, metadata.as_ref());
-                render_ready(&vblank_inner, &mut data.state);
+                render_ready(&vblank_inner, &data.state);
             }
             DrmEvent::Error(error) => tracing::warn!(?error, "DRM device error"),
         })

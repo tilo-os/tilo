@@ -112,6 +112,9 @@ pub(crate) enum Target {
     },
     /// A window, by its foreign-toplevel identifier.
     Window(String),
+    /// The pointer's image, while it is over the target it belongs to (a
+    /// cursor session's), at that target's scale.
+    Cursor(Box<Target>),
 }
 
 /// A target as it is now.
@@ -127,6 +130,9 @@ enum Scene {
     Output(Output, Rectangle<i32, Physical>),
     /// A window and the top left of its geometry in its own coordinates.
     Window(smithay::desktop::Window, Point<i32, Logical>),
+    /// The pointer's image, its hotspot at this point of the buffer; `None`
+    /// while it is hidden.
+    Cursor(Option<Point<i32, Physical>>),
 }
 
 /// One requested copy of a part of an output or of a window.
@@ -206,6 +212,7 @@ pub(crate) struct Capture {
     watches: Vec<Watch>,
     dmabuf: Option<DmabufTargets>,
     sessions: Vec<image_copy::Session>,
+    cursor_sessions: Vec<smithay::reexports::wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_cursor_session_v1::ExtImageCopyCaptureCursorSessionV1>,
     toplevels: toplevels::Toplevels,
 }
 
@@ -218,6 +225,7 @@ impl Capture {
             watches: Vec::new(),
             dmabuf: None,
             sessions: Vec::new(),
+            cursor_sessions: Vec::new(),
             toplevels: toplevels::Toplevels::new(display),
         }
     }
@@ -361,7 +369,42 @@ impl State {
                     scene: Scene::Window(window, geometry.loc),
                 })
             }
+            Target::Cursor(of) => {
+                let scale = self.view(of)?.scale;
+                // A hidden pointer is one clear pixel, not the end of the
+                // session.
+                let (size, hotspot) = match self.cursor_shape(scale) {
+                    Some((size, hotspot)) if size.w > 0 && size.h > 0 => (size, Some(hotspot)),
+                    _ => (Size::from((1, 1)), None),
+                };
+                Some(View {
+                    scale,
+                    transform: Transform::Normal,
+                    size,
+                    scene: Scene::Cursor(hotspot),
+                })
+            }
         }
+    }
+
+    /// Where the pointer is over `target`, in the physical pixels of its
+    /// frames; `None` when it is elsewhere.
+    pub(crate) fn pointer_on(&self, target: &Target) -> Option<Point<i32, Physical>> {
+        let view = self.view(target)?;
+        let at: Point<i32, Physical> = match &view.scene {
+            Scene::Output(output, region) => {
+                let geometry = self.space.output_geometry(output)?;
+                let shown: Point<i32, Physical> =
+                    (self.pointer - geometry.loc.to_f64()).to_physical_precise_round(view.scale);
+                shown - region.loc
+            }
+            Scene::Window(window, _) => {
+                let geometry = self.space.element_geometry(window)?;
+                (self.pointer - geometry.loc.to_f64()).to_physical_precise_round(view.scale)
+            }
+            Scene::Cursor(_) => return None,
+        };
+        Rectangle::from_size(view.size).contains(at).then_some(at)
     }
 }
 
@@ -595,15 +638,28 @@ where
         // unlock.
         Scene::Window(..) if state.locked() => return Ok(Copied::Waiting),
         Scene::Window(window, origin) => {
-            let elements = window.render_elements::<OutputRenderElement<R>>(
-                renderer,
-                Point::<i32, Logical>::from((-origin.x, -origin.y))
-                    .to_physical_precise_round(scale),
-                Scale::from(scale),
-                1.0,
+            let mut elements = match state.pointer_on(&frame.target) {
+                Some(at) if frame.cursor => state.cursor_elements_at(renderer, at, scale),
+                _ => Vec::new(),
+            };
+            elements.extend(
+                window.render_elements::<OutputRenderElement<R>>(
+                    renderer,
+                    Point::<i32, Logical>::from((-origin.x, -origin.y))
+                        .to_physical_precise_round(scale),
+                    Scale::from(scale),
+                    1.0,
+                ),
             );
             // Around and behind a window is nothing: clear, for formats with
             // alpha.
+            (elements, Point::default(), size, [0.0; 4])
+        }
+        Scene::Cursor(hotspot) => {
+            let elements = match hotspot {
+                Some(hotspot) => state.cursor_elements_at(renderer, hotspot, scale),
+                None => Vec::new(),
+            };
             (elements, Point::default(), size, [0.0; 4])
         }
     };

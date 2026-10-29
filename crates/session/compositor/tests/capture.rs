@@ -2,7 +2,9 @@
 //! whole output and a region of it into shared memory through
 //! `wlr-screencopy`, waits for damage when it asks to, and copies through
 //! `ext-image-copy-capture`, and picks a window from the toplevel list and
-//! copies only it; ordinary clients see none of these globals.
+//! copies only it, with the pointer when asked; a cursor session carries
+//! the pointer as its own image and says where it is; ordinary clients see
+//! none of these globals.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -20,11 +22,13 @@ use std::time::Duration;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::utils::Transform;
-use tilo_compositor::{Compositor, HostLayer, OutputConfig, StackPolicy, SurfaceHost};
+use tilo_compositor::{
+    Compositor, HostLayer, InputEvent, OutputConfig, StackPolicy, SurfaceHost,
+};
 use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output::WlOutput, wl_registry,
-    wl_registry::WlRegistry, wl_shm, wl_shm::WlShm, wl_shm_pool::WlShmPool,
-    wl_surface::WlSurface,
+    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output::WlOutput, wl_pointer::WlPointer,
+    wl_registry, wl_registry::WlRegistry, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
+    wl_shm_pool::WlShmPool, wl_surface::WlSurface,
 };
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
@@ -43,6 +47,7 @@ use wayland_protocols::ext::image_capture_source::v1::client::{
     ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
 };
 use wayland_protocols::ext::image_copy_capture::v1::client::{
+    ext_image_copy_capture_cursor_session_v1::{self, ExtImageCopyCaptureCursorSessionV1},
     ext_image_copy_capture_frame_v1::{self, ExtImageCopyCaptureFrameV1},
     ext_image_copy_capture_manager_v1::{ExtImageCopyCaptureManagerV1, Options},
     ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
@@ -87,6 +92,10 @@ struct Seen {
     session_formats: Vec<u32>,
     session_done: bool,
     transform: Option<u32>,
+    seat: Option<WlSeat>,
+    /// Cursor session events, in order: `enter`, `leave`, `position x y`,
+    /// `hotspot x y`.
+    cursor: Vec<String>,
 }
 
 struct Tool {
@@ -127,6 +136,10 @@ impl Tool {
     /// A shared-memory buffer of `width` x `height` XRGB8888 pixels and
     /// the memory behind it.
     fn buffer(&self, width: i32, height: i32) -> (WlBuffer, OwnedFd) {
+        self.buffer_of(width, height, wl_shm::Format::Xrgb8888)
+    }
+
+    fn buffer_of(&self, width: i32, height: i32, format: wl_shm::Format) -> (WlBuffer, OwnedFd) {
         let qh = self.queue.handle();
         let fd =
             rustix::fs::memfd_create("tilo-capture-test", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
@@ -137,15 +150,7 @@ impl Tool {
             &qh,
             (),
         );
-        let buffer = pool.create_buffer(
-            0,
-            width,
-            height,
-            width * 4,
-            wl_shm::Format::Xrgb8888,
-            &qh,
-            (),
-        );
+        let buffer = pool.create_buffer(0, width, height, width * 4, format, &qh, ());
         pool.destroy();
         (buffer, fd)
     }
@@ -509,6 +514,146 @@ fn a_trusted_tool_picks_a_window_from_the_list_and_copies_only_it() {
     assert!(near(pixel(&memory, 20, 19, 9), GREEN));
 }
 
+#[test]
+fn a_cursor_session_carries_the_pointer_image_and_where_it_is() {
+    let mut compositor = compositor();
+    let mut tool = trusted_tool(&mut compositor);
+    pump(&mut compositor, &mut tool, |seen| seen.seat.is_some());
+    let qh = tool.queue.handle();
+    let pointer = tool.seen.seat.as_ref().unwrap().get_pointer(&qh, ());
+    let source = tool.seen.sources.clone().unwrap().create_source(
+        tool.seen.output.as_ref().unwrap(),
+        &qh,
+        (),
+    );
+    compositor
+        .input(InputEvent::PointerMotion { x: 30.0, y: 20.0 })
+        .unwrap();
+    let cursor = tool
+        .seen
+        .image_copy
+        .clone()
+        .unwrap()
+        .create_pointer_cursor_session(&source, &pointer, &qh, ());
+    let session = cursor.get_capture_session(&qh, ());
+    pump(&mut compositor, &mut tool, |seen| {
+        seen.session_done && seen.cursor.len() >= 3
+    });
+    assert_eq!(tool.seen.cursor[0], "enter");
+    assert_eq!(tool.seen.cursor[1], "position 30 20");
+    let hotspot: Vec<i32> = tool.seen.cursor[2]
+        .strip_prefix("hotspot ")
+        .expect("a hotspot")
+        .split(' ')
+        .map(|n| n.parse().unwrap())
+        .collect();
+    let (width, height) = tool.seen.session_size.expect("the image's size");
+    assert!(
+        width > 1 && height > 1,
+        "the pointer's image, not the output"
+    );
+    let (width, height) = (
+        i32::try_from(width).unwrap(),
+        i32::try_from(height).unwrap(),
+    );
+
+    let (buffer, memory) = tool.buffer_of(width, height, wl_shm::Format::Argb8888);
+    let frame = session.create_frame(&qh, ());
+    frame.attach_buffer(&buffer);
+    frame.damage_buffer(0, 0, width, height);
+    frame.capture();
+    pump(&mut compositor, &mut tool, |seen| seen.ready || seen.failed);
+    assert!(tool.seen.ready, "the image was copied");
+    let mut image = vec![0_u8; usize::try_from(width * height * 4).unwrap()];
+    rustix::io::pread(&memory, &mut image, 0).unwrap();
+    assert!(
+        image.chunks_exact(4).any(|pixel| pixel[3] == 255),
+        "the image shows the pointer"
+    );
+    assert!(
+        image.chunks_exact(4).any(|pixel| pixel[3] == 0),
+        "around the pointer is clear"
+    );
+    let at = usize::try_from((hotspot[1] * width + hotspot[0]) * 4).unwrap();
+    assert!(image[at + 3] > 0, "the hotspot lies on the pointer");
+
+    // Moving says where; the image is not copied again.
+    tool.seen.cursor.clear();
+    compositor
+        .input(InputEvent::PointerMotion { x: 40.0, y: 10.0 })
+        .unwrap();
+    pump(&mut compositor, &mut tool, |seen| !seen.cursor.is_empty());
+    assert_eq!(tool.seen.cursor, vec!["position 40 10".to_owned()]);
+}
+
+#[test]
+fn a_window_capture_shows_the_pointer_over_it_when_asked() {
+    let mut compositor = compositor();
+    let mut tool = trusted_tool(&mut compositor);
+    let _window = open_window(&mut compositor, &mut tool, 40, 30, GREEN);
+    pump(&mut compositor, &mut tool, |seen| {
+        !seen.toplevels.is_empty()
+    });
+    let (_, geometry) = compositor.windows()[0];
+    let qh = tool.queue.handle();
+    let handle = tool.seen.toplevels[0].0.clone();
+    let source = tool
+        .seen
+        .window_sources
+        .clone()
+        .unwrap()
+        .create_source(&handle, &qh, ());
+    let session = tool.seen.image_copy.clone().unwrap().create_session(
+        &source,
+        Options::PaintCursors,
+        &qh,
+        (),
+    );
+    pump(&mut compositor, &mut tool, |seen| seen.session_done);
+    let copy = |compositor: &mut Compositor, tool: &mut Tool| {
+        tool.seen.ready = false;
+        let (buffer, memory) = tool.buffer(40, 30);
+        let frame = session.create_frame(&tool.queue.handle(), ());
+        frame.attach_buffer(&buffer);
+        frame.damage_buffer(0, 0, 40, 30);
+        frame.capture();
+        pump(compositor, tool, |seen| seen.ready || seen.failed);
+        assert!(tool.seen.ready);
+        frame.destroy();
+        let mut image = vec![0_u8; 40 * 30 * 4];
+        rustix::io::pread(&memory, &mut image, 0).unwrap();
+        image
+    };
+    let green = |image: &[u8]| {
+        image
+            .chunks_exact(4)
+            .filter(|pixel| near([pixel[0], pixel[1], pixel[2]], GREEN))
+            .count()
+    };
+
+    // The pointer away from the window: all of it is the window.
+    compositor
+        .input(InputEvent::PointerMotion { x: 1.0, y: 47.0 })
+        .unwrap();
+    let away = copy(&mut compositor, &mut tool);
+    assert_eq!(green(&away), 40 * 30);
+
+    // Over it, the pointer covers part of it.
+    compositor
+        .input(InputEvent::PointerMotion {
+            x: f64::from(geometry.0 + 10),
+            y: f64::from(geometry.1 + 10),
+        })
+        .unwrap();
+    let over = copy(&mut compositor, &mut tool);
+    assert!(
+        green(&over) < 40 * 30,
+        "the pointer is drawn over the window"
+    );
+    let at = (10 * 40 + 10) * 4;
+    assert!(!near([over[at], over[at + 1], over[at + 2]], GREEN));
+}
+
 impl Dispatch<WlRegistry, ()> for Seen {
     fn event(
         seen: &mut Self,
@@ -543,6 +688,7 @@ impl Dispatch<WlRegistry, ()> for Seen {
                 }
                 "wl_compositor" => seen.compositor = Some(registry.bind(name, 4, qh, ())),
                 "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
+                "wl_seat" => seen.seat = Some(registry.bind(name, 1, qh, ())),
                 _ => {}
             }
         }
@@ -714,6 +860,31 @@ impl Dispatch<XdgSurface, ()> for Seen {
     }
 }
 
+impl Dispatch<ExtImageCopyCaptureCursorSessionV1, ()> for Seen {
+    fn event(
+        seen: &mut Self,
+        _: &ExtImageCopyCaptureCursorSessionV1,
+        event: ext_image_copy_capture_cursor_session_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        seen.cursor.push(match event {
+            ext_image_copy_capture_cursor_session_v1::Event::Enter => "enter".to_owned(),
+            ext_image_copy_capture_cursor_session_v1::Event::Leave => "leave".to_owned(),
+            ext_image_copy_capture_cursor_session_v1::Event::Position { x, y } => {
+                format!("position {x} {y}")
+            }
+            ext_image_copy_capture_cursor_session_v1::Event::Hotspot { x, y } => {
+                format!("hotspot {x} {y}")
+            }
+            _ => return,
+        });
+    }
+}
+
+delegate_noop!(Seen: ignore WlSeat);
+delegate_noop!(Seen: ignore WlPointer);
 delegate_noop!(Seen: ignore WlShm);
 delegate_noop!(Seen: ignore WlCompositor);
 delegate_noop!(Seen: ignore WlSurface);
