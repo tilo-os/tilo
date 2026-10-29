@@ -232,3 +232,32 @@ fn a_refused_action_stops_the_program_unless_it_tries() {
         "{answer:#}"
     );
 }
+
+#[test]
+fn a_flag_argument_is_sent_as_a_flag() {
+    let task = seeded();
+    let answer = task.run(
+        "notes.pin(notes.notes.filter(n -> n.title == \"Q3 plan\").single(), false)",
+        true,
+    );
+    assert_eq!(answer["state"], "done", "{answer:#}");
+    let pin = task.door.invoked.borrow().last().cloned().unwrap();
+    assert_eq!(pin["arguments"]["pinned"], json!(false), "{pin:#}");
+}
+
+#[test]
+fn a_resource_argument_is_the_catalogues_reference() {
+    let task = seeded();
+    let answer = task.run(
+        "for t in todo.tasks.items.take(1) {\n    todo.remove(todo.tasks, t)\n}",
+        true,
+    );
+    assert_eq!(answer["state"], "done", "{answer:#}");
+    let remove = task.door.invoked.borrow().last().cloned().unwrap();
+    assert_eq!(
+        remove["arguments"]["t"]["kind"],
+        json!("tl.so.tilo.lang.todo.Task"),
+        "{remove:#}"
+    );
+    assert_eq!(task.said("todo.tasks.items.len()"), "1");
+}

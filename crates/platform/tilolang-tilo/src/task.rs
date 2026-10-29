@@ -343,7 +343,23 @@ fn call_of(meta: &Meta, invocation: &Invocation) -> Result<Json, String> {
             };
             let mut arguments = serde_json::Map::new();
             for (name, value) in args.iter().skip(usize::from(subject.is_some())) {
-                arguments.insert(name.clone(), argument_json(value)?);
+                let param = declared.params.iter().find(|param| param.name == *name);
+                let json = match (value, param) {
+                    // A flag travels as the integer the guest boxed it as.
+                    (Value::Int(n), Some(param)) if param.ty == "Bool" => json!(*n != 0),
+                    // A resource of the app's own type, as the catalogue refers to it.
+                    (Value::Ref(r), Some(param)) => match meta.type_named(&param.ty) {
+                        Some(ty) => json!({
+                            "app": app,
+                            "kind": meta.kind_of(&ty.name),
+                            "id": r.target.id_string(),
+                            "label": "",
+                        }),
+                        None => argument_json(value)?,
+                    },
+                    _ => argument_json(value)?,
+                };
+                arguments.insert(name.clone(), json);
             }
             Ok(json!({
                 "app": app,
