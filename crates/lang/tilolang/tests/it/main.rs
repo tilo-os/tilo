@@ -21,4 +21,5 @@ mod principal;
 mod roundtrip;
 mod search;
 mod semantics;
+mod unions;
 mod wasm;

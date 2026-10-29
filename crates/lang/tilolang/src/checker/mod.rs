@@ -22,6 +22,7 @@ mod call;
 mod component;
 mod enums;
 mod expr;
+mod holder;
 mod native;
 mod optional;
 mod outcomes;
@@ -33,6 +34,7 @@ mod template;
 #[cfg(test)]
 mod tests;
 mod ui;
+mod union;
 
 pub use program::{RESOURCE_TYPE_NAME, check_program, resource_key};
 pub use template::is_template;
@@ -191,6 +193,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             Item::View(v) => c.run_view(&callable, v),
             Item::Use(_)
             | Item::Type(_)
+            | Item::Alias(_)
             | Item::Enum(_)
             | Item::Root(_)
             | Item::DefaultView(_)
@@ -521,6 +524,7 @@ impl Checker<'_> {
             StmtKind::Assign { place, op, value } => self.assign(place, *op, value, s.span),
             StmtKind::For { var, iter, body } => {
                 let list = self.expr(iter, None);
+                let list = self.unhold(list, iter.span);
                 let Some(elem) = self.element_of(&list.ty, iter.span) else {
                     return;
                 };

@@ -462,6 +462,34 @@ impl Checker<'_> {
         }
         let (tmp, ty, set) = self.scrutinee(scrutinee);
         let patterns: Vec<&Pattern> = arms.iter().map(|a| &a.pattern).collect();
+        if Self::is_union_match(&ty, &patterns) {
+            let Some(plan) = self.plan_union(&ty, &patterns, span) else {
+                return Ex::error();
+            };
+            let mut want: Option<Ty> = exp.filter(|t| !t.is_error()).cloned();
+            let bodies = self.union_arms(tmp, &ty, &plan, |c, i| {
+                let v = c.expr(&arms[i].body, want.as_ref());
+                match &want {
+                    Some(w) => c.coerce(v, w, arms[i].body.span),
+                    None => {
+                        if !v.ty.is_error() {
+                            want = Some(v.ty.clone());
+                        }
+                        v
+                    }
+                }
+            });
+            let want = want.unwrap_or(Ty::Error);
+            let bodies: Vec<Ex> = bodies
+                .into_iter()
+                .map(|(stmts, v)| {
+                    let t = v.ty.clone();
+                    Ex::new(Ek::Seq(stmts, Box::new(v)), t)
+                })
+                .collect();
+            let value = Self::union_value(tmp, &ty, &plan, bodies, &want);
+            return Ex::new(Ek::Seq(vec![set], Box::new(value)), want);
+        }
         let Some((shape, plan)) = self.plan_match(&ty, &patterns, span) else {
             return Ex::error();
         };
@@ -524,6 +552,16 @@ impl Checker<'_> {
         let (tmp, ty, set) = self.scrutinee(scrutinee);
         self.emit(set);
         let patterns: Vec<&Pattern> = arms.iter().map(|a| &a.pattern).collect();
+        if Self::is_union_match(&ty, &patterns) {
+            let Some(plan) = self.plan_union(&ty, &patterns, span) else {
+                return;
+            };
+            let bodies = self.union_arms(tmp, &ty, &plan, |c, i| c.expr_stmt(&arms[i].body));
+            let bodies = bodies.into_iter().map(|(s, ())| s).collect();
+            let chain = Self::union_chain(tmp, &ty, &plan, bodies);
+            self.st_extend(chain);
+            return;
+        }
         let Some((shape, plan)) = self.plan_match(&ty, &patterns, span) else {
             return;
         };
@@ -565,6 +603,16 @@ impl Checker<'_> {
         let (tmp, ty, set) = self.scrutinee(scrutinee);
         self.emit(set);
         let patterns: Vec<&Pattern> = arms.iter().map(|a| &a.pattern).collect();
+        if Self::is_union_match(&ty, &patterns) {
+            let Some(plan) = self.plan_union(&ty, &patterns, span) else {
+                return;
+            };
+            let bodies = self.union_arms(tmp, &ty, &plan, |c, i| c.ui_stmts(&arms[i].body, parent));
+            let bodies = bodies.into_iter().map(|(s, ())| s).collect();
+            let chain = Self::union_chain(tmp, &ty, &plan, bodies);
+            self.st_extend(chain);
+            return;
+        }
         let Some((shape, plan)) = self.plan_match(&ty, &patterns, span) else {
             return;
         };

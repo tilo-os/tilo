@@ -155,23 +155,20 @@ fn control_flow_and_scalars_validate() {
 
 #[test]
 fn enums_matches_and_block_values_validate() {
-    let src = "enum Shape {\n    dot\n    line(len: Int)\n    disc(r: Float, label: Text, on: Bool)\n}\n\
-        type P {\n    s: Shape\n    o: Option<Shape>\n}\n\
-        fn size(s: Shape) -> Float {\n    match s {\n        .dot => 0.0,\n        .line(n) => n.to_float(),\n        .disc(r, _, on) => {\n            if on {\n                return r\n            }\n            r * 2.0\n        }\n    }\n}\n\
+    let src = "enum Shape {\n    dot\n    line\n    disc\n}\n\
+        type Dot {\n    on: Bool\n}\ntype Disc {\n    r: Float\n    label: Text\n}\ntype Mark = Dot | Disc\n\
+        type P {\n    s: Shape\n    o: Option<Shape>\n    marks: Collection<Mark>\n    pick: Option<Mark>\n}\n\
+        fn size(m: Mark) -> Float {\n    match m {\n        d: Dot => if d.on { 1.0 } else { 0.0 },\n        c: Disc => {\n            if c.label == \"\" {\n                return c.r\n            }\n            c.r * 2.0\n        }\n    }\n}\n\
         fn same(a: Shape, b: Shape) -> Bool {\n    a == b\n}\n\
-        action swap(p: P) {\n    p.o = .some(p.s)\n    p.s = .disc(r: 1.5, label: \"x\", on: true)\n    match p.o {\n        .some(_) => {\n            p.s = .dot\n        }\n        .none => {}\n    }\n}\n\
-        view v(p: P) {\n    window shown: Shape = .dot\n    lens n: Int\n    match p.s {\n        .dot => text(\"dot\"),\n        .line(len) => text(\"{len}\"),\n        .disc(r, label, on) => stack(gap: if on { .tight } else { .group }) {\n            text(label)\n        }\n    }\n    button(\"Line\", on: set(shown, .line(len: n)))\n    input(bind: n)\n}";
+        action swap(p: P) {\n    p.o = .some(p.s)\n    p.s = .disc\n    let m = p.marks.insert(Disc(r: 1.5, label: \"x\"))\n    p.pick = m\n    match p.o {\n        .some(_) => {\n            p.s = .dot\n        }\n        .none => {}\n    }\n}\n\
+        view v(p: P) {\n    window shown: Shape = .dot\n    lens n: Int\n    match p.s {\n        .dot => text(\"dot\"),\n        .line => text(\"{n}\"),\n        .disc => stack(gap: .tight) {\n            text(\"disc\")\n        }\n    }\n    for m in p.marks {\n        match m {\n            d: Dot => text(\"dot\"),\n            c: Disc => text(c.label),\n        }\n    }\n    button(\"Line\", on: set(shown, .line))\n    input(bind: n)\n}";
     let c = crate::common::compile_body(src);
     assert_shape(&c);
     let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();
     for want in [
         "enum_new",
-        "enum_set_f",
-        "enum_set_h",
-        "enum_set_i",
         "enum_is",
-        "enum_get_i",
-        "enum_get_f",
+        "ref_is",
         "value_eq",
         "state_get",
         "act_set",

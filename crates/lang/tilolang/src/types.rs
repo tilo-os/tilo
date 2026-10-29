@@ -95,6 +95,8 @@ pub enum Ty {
     Result(Box<Ty>, Box<Ty>),
     /// A declared `enum`: a host handle holding the variant and its payload.
     Enum(TypeKey),
+    /// `A | B`: a reference to a resource of any of these types, in order, at least two.
+    Union(Vec<TypeKey>),
     Tuple(Vec<Ty>),
     Action,
     View,
@@ -226,6 +228,32 @@ impl Ty {
                 let inner: Vec<String> = ts.iter().map(|t| t.display(own_app)).collect();
                 format!("({})", inner.join(", "))
             }
+            Self::Union(keys) => keys
+                .iter()
+                .map(|k| Self::Record(k.clone()).display(own_app))
+                .collect::<Vec<_>>()
+                .join(" | "),
+        }
+    }
+
+    /// Whether a value of `self` may stand where `want` is expected without a conversion: the
+    /// same type, or a resource of one of a union's types, or a union within a wider one.
+    #[must_use]
+    pub fn fits(&self, want: &Self) -> bool {
+        match (self, want) {
+            (Self::Record(k), Self::Union(keys)) => keys.contains(k),
+            (Self::Union(a), Self::Union(b)) => a.iter().all(|k| b.contains(k)),
+            _ => self.same(want),
+        }
+    }
+
+    /// The resource types a value of this type may be: one for a record, each case of a union.
+    #[must_use]
+    pub fn records(&self) -> Vec<TypeKey> {
+        match self {
+            Self::Record(k) => vec![k.clone()],
+            Self::Union(keys) => keys.clone(),
+            _ => Vec::new(),
         }
     }
 
@@ -367,7 +395,26 @@ impl MetaTy<'_> {
         out
     }
 
+    /// A type, or several joined by `|`: a union of resource types.
     fn ty(&mut self) -> Option<Ty> {
+        let first = self.one()?;
+        if !self.eat('|') {
+            return Some(first);
+        }
+        let mut keys = first.records();
+        loop {
+            let Ty::Record(k) = self.one()? else {
+                return None;
+            };
+            keys.push(k);
+            if !self.eat('|') {
+                break;
+            }
+        }
+        (keys.len() > 1).then_some(Ty::Union(keys))
+    }
+
+    fn one(&mut self) -> Option<Ty> {
         if self.eat('(') {
             let mut items = Vec::new();
             loop {

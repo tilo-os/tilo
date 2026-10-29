@@ -323,3 +323,11 @@ search.md, "What a type declares" and "Types, references and paths".
 - **`if let`, `?.`, `??` and key paths add no context rules.** A match stays exhaustive in a
   view as anywhere; absent renders nothing through `if let` and `Option<View>` parameters,
   which are type rules. `a?.b.c` is not a chain: write `a?.b?.c`.
+- **Unions are of resource types.** `A | B` is a reference to a resource of either type, as
+  a field of one resource type is; a `Collection<A | B>` owns items of each type, each read as
+  the type it is stored as (`$type`). An enum's cases are plain names (E110); a case that holds
+  data is a type of its own. `Option` and `Result` stay built in.
+- **A name for a container is a resource.** `type Notes = Collection<Note>` is a resource
+  type with one field, `items`, which code never names: the resource is used as the container
+  where one goes. Any other `type X = T` is another name for `T`. A root is named
+  (`root notes: Notes`) and reached as `notes`, or `alias.notes` from another package.

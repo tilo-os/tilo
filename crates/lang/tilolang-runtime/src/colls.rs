@@ -183,6 +183,15 @@ impl Core {
     pub(crate) fn item_ref(&self, coll: &CollRef, id: &str) -> Value {
         self.items_built
             .set(self.items_built.get().saturating_add(1));
+        if coll.item.is_empty() {
+            // A collection of a union's types: the item's own type.
+            let target = coll.target.item(&coll.field, id, String::new());
+            let ty = self.stored_type(&target);
+            return Value::Ref(crate::value::RefValue {
+                target: Rc::new(coll.target.item(&coll.field, id, ty)),
+                author: coll.author.clone(),
+            });
+        }
         coll.item_ref(id)
     }
 

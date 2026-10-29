@@ -386,6 +386,11 @@ impl Checker<'_> {
                     let Some(a) = given[i] else { continue };
                     let want = self.type_in(te, &types);
                     let v = self.expr(&a.value, (!want.is_error()).then_some(&want));
+                    let v = if matches!(&te.kind, TypeExprKind::Generic(..)) {
+                        self.unhold(v, a.value.span)
+                    } else {
+                        v
+                    };
                     if !Self::unify(te, &v.ty, &params, &mut types) {
                         let (w, f) = (self.show(&want), self.show(&v.ty));
                         self.err(

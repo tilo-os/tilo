@@ -4,9 +4,9 @@
 //! Syntax errors are recovered at statement and item boundaries, so one run reports several.
 
 use crate::ast::{
-    ActionDecl, ActionOpt, ActionRole, AppHeader, Arg, AssignOp, BinOp, Block, DefaultViewDecl,
-    EnumDecl, Expr, ExprKind, FieldDecl, FlowDecl, FnDecl, Ident, Item, LetBind, MatchArm,
-    MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl,
+    ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
+    DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FlowDecl, FnDecl, Ident, Item, LetBind,
+    MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl,
     SearchBlock, SearchEntry, SearchEntryKind, StateDecl, StateLayer, Stmt, StmtKind, StrPart,
     TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl, VariantDecl,
     ViewDecl,
@@ -622,9 +622,18 @@ impl<'a> Parser<'a> {
         if self.at_root_decl() {
             self.bump();
             let node = self.node();
+            // `root notes: Notes` names it; `root Notebook` does not.
+            let name = if matches!(self.peek_at(1), Tok::Colon) {
+                let name = self.ident("the root's name")?;
+                self.bump();
+                Some(name)
+            } else {
+                None
+            };
             let ty = self.type_expr()?;
             return Ok(Item::Root(RootDecl {
                 node,
+                name,
                 ty,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }));
@@ -700,6 +709,9 @@ impl<'a> Parser<'a> {
         };
         match kw {
             "use" => self.use_decl(start).map(Item::Use),
+            "type" if matches!(self.peek_at(2), Tok::Assign) => {
+                self.alias_decl(doc, start).map(Item::Alias)
+            }
             "type" => self.type_decl(doc, start).map(Item::Type),
             "enum" => self.enum_decl(doc, start).map(Item::Enum),
             "action" => self.action(doc, role, start).map(Item::Action),
@@ -788,6 +800,22 @@ impl<'a> Parser<'a> {
             node,
             app,
             alias,
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
+    /// `type Name = T`.
+    fn alias_decl(&mut self, doc: Vec<String>, start: Span) -> PResult<AliasDecl> {
+        self.expect_kw("type")?;
+        let node = self.node();
+        let name = self.ident("a type name")?;
+        self.expect(&Tok::Assign)?;
+        let ty = self.type_expr()?;
+        Ok(AliasDecl {
+            node,
+            doc,
+            name,
+            ty,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
     }
@@ -984,7 +1012,25 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// A type, or several joined by `|`: a union.
     fn type_expr(&mut self) -> PResult<TypeExpr> {
+        let start = self.span();
+        let first = self.one_type()?;
+        if !self.is(&Tok::Pipe) {
+            return Ok(first);
+        }
+        let mut cases = vec![first];
+        while self.eat(&Tok::Pipe) {
+            self.skip_nl();
+            cases.push(self.one_type()?);
+        }
+        Ok(TypeExpr {
+            kind: TypeExprKind::Union(cases),
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
+    fn one_type(&mut self) -> PResult<TypeExpr> {
         let start = self.span();
         if self.eat(&Tok::LParen) {
             if self.is(&Tok::RParen) {
@@ -1803,8 +1849,20 @@ impl<'a> Parser<'a> {
     /// `.name` or `.name(a, b)` before the `=>` of a match arm.
     fn pattern(&mut self) -> PResult<Pattern> {
         let start = self.span();
+        // `t: TextChannel`: a case of a union, by its type.
+        if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::Colon) {
+            let variant = self.ident("a name for the value")?;
+            self.bump();
+            let ty = self.type_expr()?;
+            return Ok(Pattern {
+                variant,
+                binds: Vec::new(),
+                ty: Some(ty),
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            });
+        }
         if !self.eat(&Tok::Dot) {
-            return self.unexpected("a pattern such as `.some(x)` or `.none`");
+            return self.unexpected("a pattern such as `.some(x)`, `.none` or `t: TextChannel`");
         }
         let variant = self.ident("a variant name")?;
         let mut binds = Vec::new();
@@ -1820,6 +1878,7 @@ impl<'a> Parser<'a> {
         Ok(Pattern {
             variant,
             binds,
+            ty: None,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
     }
