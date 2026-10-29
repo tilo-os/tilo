@@ -9,15 +9,17 @@
 
 use std::process::ExitCode;
 
+// The library exports only its unmangled entry points (the engine is no
+// crate's dependency), so this binary links it by name, not as a crate.
+#[link(name = "tilo_settings_engine", kind = "dylib")]
+unsafe extern "C-unwind" {
+    safe fn tilo_settings_engine_check() -> bool;
+}
+
 fn main() -> ExitCode {
-    match tilo_settings_engine::self_check() {
-        Ok(report) => {
-            println!("tilo-settings-engine: {report}");
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("tilo-settings-engine: {error}");
-            ExitCode::FAILURE
-        }
+    if tilo_settings_engine_check() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
     }
 }

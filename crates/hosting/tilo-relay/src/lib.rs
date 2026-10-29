@@ -211,8 +211,7 @@ pub use transport::{ALPN, Envelope};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use tilo_relay_protocol::{
-    personal_continuity_workspace_id, personal_continuity_workspace_id_matches, room_workspace_id,
-    room_workspace_id_matches,
+    personal_continuity_workspace_id, room_workspace_id, room_workspace_id_matches,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -21,8 +21,8 @@ use ui::framework::{EffectAnswer, Effected, FileHistory, LiveRow, Publishes, Res
 use ui::i18n::EmbeddedCatalog;
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{
-    self, AbsolutePath, ActionCx, ActionDecl, Atom, Collection, Id, Invoke, Model, Outbox, Refusal,
-    Settled, Undoing, resource,
+    self, AbsolutePath, ActionCx, ActionDecl, Atom, Collection, Id, Invoke, Model, NonBlank,
+    Outbox, Refusal, Settled, Undoing, resource,
 };
 use ui::widget::Element;
 
@@ -177,12 +177,11 @@ fn independent_destination<'a>(
         .map_err(Refusal::new)
 }
 
-fn file_name(name: &str) -> Result<String, Refusal> {
-    let name = name.trim();
-    if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+fn file_name(name: NonBlank) -> Result<String, Refusal> {
+    if name.contains('/') || matches!(name.as_str(), "." | "..") {
         return Err(Refusal::new("a name, without a slash"));
     }
-    Ok(name.to_owned())
+    Ok(name.into_string())
 }
 
 /// Queue `op` for `device` to carry out, forgetting the oldest settled
@@ -292,21 +291,17 @@ impl FileExplorer {
     pub fn add_bookmark(
         &mut self,
         #[param("Folder path on this device, or a stored place such as xdg:documents")]
-        place: String,
+        place: NonBlank,
         #[param("Position among the Favorites, from 0; the end when none")] at: Option<usize>,
     ) -> Result<(), Refusal> {
-        let place = place.trim();
-        if place.is_empty() {
-            return Err(Refusal::new("a folder is named"));
-        }
-        let id = bookmark_id(place);
+        let id = bookmark_id(&place);
         if self.places.get(&id).is_none() {
             let len = self.places.len();
             self.places.insert(
                 at.unwrap_or(len).min(len),
                 id,
                 Bookmark {
-                    place: Atom(place.to_owned()),
+                    place: Atom(place.into_string()),
                 },
             );
         }
@@ -334,11 +329,11 @@ impl FileExplorer {
         ops: &mut Outbox<FileTask, Vec<Change>>,
         #[param("The device whose files change")] device: String,
         #[param("Absolute path of the folder to create it in")] parent: AbsolutePath,
-        #[param("Name of the new folder")] name: String,
+        #[param("Name of the new folder")] name: NonBlank,
     ) -> Result<(), Refusal> {
         let op = FileOp::NewFolder {
             parent: parent.to_string_lossy(),
-            name: file_name(&name)?,
+            name: file_name(name)?,
         };
         queue(cx, ops, device, op)
     }
@@ -352,11 +347,11 @@ impl FileExplorer {
         #[param("The device whose files change")] device: String,
         #[param("Absolute path of the folder holding the entry")] folder: String,
         #[param("The entry: its name in the folder, or its absolute path")] entry: String,
-        #[param("The new name")] name: String,
+        #[param("The new name")] name: NonBlank,
     ) -> Result<(), Refusal> {
         let op = FileOp::Rename {
             path: entry_path(&folder, &entry)?,
-            name: file_name(&name)?,
+            name: file_name(name)?,
         };
         queue(cx, ops, device, op)
     }
@@ -546,7 +541,7 @@ impl FileExplorer {
             "The file's name with its extension; a text format, not a PDF or document",
             example = "Summary.md"
         )]
-        name: String,
+        name: NonBlank,
         #[param("What it says, written as given")] text: String,
         #[param("Put an existing file of that name in Trash and write over it; default no")]
         replace: Option<bool>,
@@ -557,7 +552,7 @@ impl FileExplorer {
                 ui::format::memory(MAX_WRITE_BYTES as u64)
             )));
         }
-        let name = file_name(&name)?;
+        let name = file_name(name)?;
         crate::documents::writable(&name).map_err(Refusal::new)?;
         let op = FileOp::Write {
             folder: folder.to_string_lossy(),
@@ -589,11 +584,7 @@ impl FileExplorer {
         #[param("`zip` (default) or `tar.zst`", example = "zip")] format: Option<String>,
     ) -> Result<(), Refusal> {
         let paths = entry_paths(&from.to_string_lossy(), &entries)?;
-        let name = match name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        {
+        let name = match name.as_deref().and_then(NonBlank::parse) {
             Some(name) => file_name(name)?,
             None => match paths.as_slice() {
                 [only] => std::path::Path::new(only).file_name().map_or_else(
@@ -763,20 +754,21 @@ impl FileExplorer {
     }
 
     /// The verb that queues `op` for `device`; none for a native transfer,
-    /// which only its receipt records.
+    /// which only its receipt records, or for an op naming an entry by
+    /// blank text, which no verb takes (the window never makes one).
     pub(crate) fn queueing(device: &str, op: FileOp) -> Option<Invoke<Self>> {
         let device = device.to_owned();
         Some(match op {
             FileOp::NewFolder { parent, name } => Self::NEW_FOLDER.with(file_explorer::NewFolder {
                 device,
                 parent: AbsolutePath::new(parent).ok()?,
-                name,
+                name: NonBlank::parse(&name)?,
             }),
             FileOp::Rename { path, name } => Self::RENAME.with(file_explorer::Rename {
                 device,
                 folder: String::new(),
                 entry: path,
-                name,
+                name: NonBlank::parse(&name)?,
             }),
             FileOp::Trash { paths } => Self::TRASH.with(file_explorer::Trash {
                 device,
@@ -834,7 +826,7 @@ impl FileExplorer {
             } => Self::WRITE_FILE.with(file_explorer::WriteFile {
                 device,
                 folder: AbsolutePath::new(folder).ok()?,
-                name,
+                name: NonBlank::parse(&name)?,
                 text,
                 replace: Some(replace),
             }),
@@ -1516,9 +1508,11 @@ impl FilesState {
                         "Remove this folder from Favorites",
                     )
             } else {
-                FileExplorer::ADD_BOOKMARK
-                    .bind(file_explorer::AddBookmark::paths().place, place)
-                    .declaration("add-current-bookmark", "Add this folder to Favorites")
+                NonBlank::parse(&place).and_then(|place| {
+                    FileExplorer::ADD_BOOKMARK
+                        .bind(file_explorer::AddBookmark::paths().place, place)
+                        .declaration("add-current-bookmark", "Add this folder to Favorites")
+                })
             });
         }
         declarations.extend(self.selection_declarations());

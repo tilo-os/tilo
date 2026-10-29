@@ -147,8 +147,8 @@ fn certified_network() -> (ShellNetwork, tokio::sync::mpsc::Receiver<NetCmd>) {
     };
     let (mut network, commands) =
         super::native_read_network_for_test(WorkspaceTree::default().shared(), identity);
-    network.personal_continuity_user = Some(user);
-    network.personal_continuity_device = Some(owner);
+    network.local_person = Some(user);
+    network.local_device = Some(owner);
     network.require_peer_identity = true;
     network.continuity_policy_override = None;
     (network, commands)

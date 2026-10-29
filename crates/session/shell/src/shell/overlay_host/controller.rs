@@ -10,7 +10,7 @@ use crate::compositor::controller_nav::{NavDirection, NavIntent};
 use crate::shell::chrome_state::SearchScope;
 use crate::shell::search::ResourceKind;
 
-use super::{ShellOverlayHost, ShortcutGuideFocus};
+use super::ShellOverlayHost;
 
 /// The key a controller intent stands for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,14 +130,12 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let open = {
+        {
             let mut st = chrome.borrow_mut();
             st.overlays.shortcut_help = !st.overlays.shortcut_help;
             st.bump();
-            st.overlays.shortcut_help
-        };
+        }
         self.shortcut_rebind = None;
         self.shortcut_rebind_message = None;
-        self.shortcut_guide_focus = open.then_some(ShortcutGuideFocus::Done);
     }
 }

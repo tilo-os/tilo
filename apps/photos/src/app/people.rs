@@ -428,19 +428,28 @@ impl Photos {
             }
             PeopleIntent::SaveName => {
                 if let Some(PeopleSelection::Approved(from)) = self.people_selection.clone() {
-                    let to = self.people_name_input.value().trim().to_owned();
-                    if to.is_empty() {
-                        self.notice = Some(tr("photos-people-name-first"));
-                    } else {
-                        self.commit(PhotoLibrary::RENAME_PERSON.with((from, to.clone())));
-                        self.people_selection = Some(PeopleSelection::Approved(to));
-                        self.say_when_kept(tr("photos-people-renamed"));
+                    match (
+                        ui::tilo_resource::NonBlank::parse(&from),
+                        ui::tilo_resource::NonBlank::parse(self.people_name_input.value()),
+                    ) {
+                        (Some(from), Some(to)) => {
+                            let kept = to.to_string();
+                            self.commit(PhotoLibrary::RENAME_PERSON.with((from, to)));
+                            self.people_selection = Some(PeopleSelection::Approved(kept));
+                            self.say_when_kept(tr("photos-people-renamed"));
+                        }
+                        _ => self.notice = Some(tr("photos-people-name-first")),
                     }
                 }
             }
             PeopleIntent::BeginMerge => self.people_merge_mode = true,
             PeopleIntent::MergeApprovedInto(to) => {
-                if let Some(PeopleSelection::Approved(from)) = self.people_selection.clone() {
+                if let Some(PeopleSelection::Approved(from)) = self.people_selection.clone()
+                    && let (Some(from), Some(to)) = (
+                        ui::tilo_resource::NonBlank::parse(&from),
+                        ui::tilo_resource::NonBlank::parse(&to),
+                    )
+                {
                     self.commit(PhotoLibrary::RENAME_PERSON.with((from, to)));
                     self.people_selection = None;
                     self.people_merge_mode = false;

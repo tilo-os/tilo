@@ -3432,32 +3432,11 @@ impl crate::host_core::ControlHost for App {
         true
     }
 
-    /// Ask the person before `address` goes ahead: as the door asked
-    /// ([`crate::host_core::ControlHost::open_ordinary_confirmation`]), or, `confirming`, as the app
-    /// asked for a pick of theirs ([`crate::bound_dispatch::Origin::PersonConfirming`]).
-    fn ask_person(
-        &mut self,
-        target: crate::bound_dispatch::local_target::LocalResourceTarget,
-        address: tilo_actions::ActionAddress,
-        arguments: crate::bound_dispatch::ControlContinuationArguments,
-        confirming: bool,
-    ) -> bool {
-        let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
-            self.root_widget.as_ref(),
-            &self.state.doc,
-            target,
-            &self.control_domain,
-            address,
-            arguments,
-        );
-        let request = match request {
-            Ok(request) if confirming => request.confirming(),
-            Ok(request) => request.asking_first(),
-            Err(error) => {
-                self.refuse_visibly(&error);
-                return false;
-            }
-        };
+    fn control_domain(&self) -> &crate::control_custody::ControlDomain {
+        &self.control_domain
+    }
+
+    fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool {
         if self.actions.action_palette.is_none() {
             // Native semantic focus is authoritative even before the next
             // retained render propagates the widget's focused flag.

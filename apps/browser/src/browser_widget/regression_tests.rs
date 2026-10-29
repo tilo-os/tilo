@@ -787,7 +787,7 @@ fn a_history_row_forgets_only_its_own_page() {
         record
             .invoke(&crate::history::BrowsingHistory::VISIT.with(
                 crate::history::browsing_history::Visit {
-                    url: url.into(),
+                    url: url.parse().unwrap(),
                     title: title.into(),
                     at: 10,
                 },

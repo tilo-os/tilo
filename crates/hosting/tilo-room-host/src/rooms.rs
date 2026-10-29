@@ -44,8 +44,6 @@ mod member_records;
 pub use member_records::PreparedRecord;
 mod hosts;
 mod layout_scope;
-mod owner_commands;
-pub use owner_commands::{AppAction, OwnerCommand, app_action_lifetime};
 mod pages;
 mod peer_parts;
 mod private;
@@ -779,15 +777,7 @@ impl GovernedRoom {
     }
 }
 
-/// `name` trimmed, when it names a workspace: 1–80 characters, none a
-/// control character.
-fn valid_name(name: &str) -> Result<&str, String> {
-    let name = name.trim();
-    if !(1..=80).contains(&name.chars().count()) || name.chars().any(char::is_control) {
-        return Err("workspace name must contain 1–80 characters".into());
-    }
-    Ok(name)
-}
+use tilo_peer_state::workspace_membership::valid_room_name as valid_name;
 
 /// Keep exact admission evidence in the governor's copy of the room. A
 /// member of a room whose channels are sealed writes its records sealed,

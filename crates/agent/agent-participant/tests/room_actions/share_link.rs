@@ -48,7 +48,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
         &mut doc,
         &writer,
         chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
-            name: "general".into(),
+            name: "general".parse().unwrap(),
             category: None,
             kind: None,
             topic: None,

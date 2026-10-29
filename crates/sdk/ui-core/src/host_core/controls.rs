@@ -68,6 +68,13 @@ pub(crate) trait ControlHost: HostCore {
     /// Enter the outer document's door at `request.address`.
     fn invoke_outer_control(&mut self, request: &ResourceInvocation<'_>) -> Started;
 
+    /// The control intents this host's tree registered, by owner.
+    fn control_domain(&self) -> &crate::control_custody::ControlDomain;
+
+    /// Put `request` to the person in the window's palette. Whether the
+    /// question went up or the action went ahead.
+    fn ask_in_palette(&mut self, request: crate::bound_dispatch::OrdinaryConfirmation) -> bool;
+
     /// Ask the person before `address` goes ahead: as the door asked, or,
     /// `confirming`, as the app asked for a pick of theirs
     /// ([`Origin::PersonConfirming`]). Whether a question went up or the
@@ -78,7 +85,25 @@ pub(crate) trait ControlHost: HostCore {
         address: ActionAddress,
         arguments: ControlContinuationArguments,
         confirming: bool,
-    ) -> bool;
+    ) -> bool {
+        let tree = self.tree();
+        let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
+            tree.root,
+            &tree.state.doc,
+            target,
+            self.control_domain(),
+            address,
+            arguments,
+        );
+        match request {
+            Ok(request) if confirming => self.ask_in_palette(request.confirming()),
+            Ok(request) => self.ask_in_palette(request.asking_first()),
+            Err(error) => {
+                self.refuse_visibly(&error);
+                false
+            }
+        }
+    }
 
     /// Say that an invocation the person made did not run, and why, at the
     /// control they used.

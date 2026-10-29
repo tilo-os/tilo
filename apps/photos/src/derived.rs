@@ -143,6 +143,10 @@ fn people_root(people: &LabelCounts) -> Derived<PhotoLibrary> {
         .with_effect(&PhotosEffect::EnablePeopleRecognition)
         .with_effect(&PhotosEffect::AnalyzePeopleLibrary);
     for (person, count) in people {
+        // A stored label is never blank; one that were is offered no verbs.
+        let Some(named) = ui::tilo_resource::NonBlank::parse(person) else {
+            continue;
+        };
         root = root.with_child(
             Derived::new(person.clone())
                 .of_kind("person")
@@ -152,15 +156,15 @@ fn people_root(people: &LabelCounts) -> Derived<PhotoLibrary> {
                 })
                 .with(PhotoLibrary::SET_PERSON_MEMBERSHIP.bind(
                     photo_library::SetPersonMembership::paths().person,
-                    person.clone(),
+                    named.clone(),
                 ))
                 .with(
                     PhotoLibrary::RENAME_PERSON
-                        .bind(photo_library::RenamePerson::paths().person, person.clone()),
+                        .bind(photo_library::RenamePerson::paths().person, named.clone()),
                 )
                 .with(
                     PhotoLibrary::REMOVE_PERSON
-                        .bind(photo_library::RemovePerson::paths().person, person.clone()),
+                        .bind(photo_library::RemovePerson::paths().person, named),
                 )
                 .with_child(counted(*count)),
         );

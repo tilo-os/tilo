@@ -491,7 +491,7 @@ pub(crate) fn provider_stream_scenario(scenario: &str) -> Vec<Invoke<ChatPart>> 
             ChatPart::STREAM_OUTPUT.with(chat_part::StreamOutput {
                 channel: Id::from_raw("c_crit"),
                 reply: "shot_agent_stream".into(),
-                name: Some(crate::i18n::t("chat-model-author")),
+                name: ui::tilo_resource::NonBlank::parse(&crate::i18n::t("chat-model-author")),
                 event: serde_json::to_value(AgentStreamEvent {
                     run: "shot_run".into(),
                     sequence: index as u64 + 1,
@@ -563,23 +563,24 @@ pub(crate) const DEMO_SUMMONS: &str = "m_agent_request";
 #[cfg(feature = "samples")]
 pub(crate) fn agent_work_steps() -> Vec<(&'static str, Invoke<Chat>)> {
     let me = crate::model::ME;
-    vec![
-        (
-            DEMO_AGENT,
-            Chat::INTRODUCE.with(chat::Introduce {
-                name: "Tide".into(),
-                initials: "TI".into(),
-                color: 6,
-            }),
-        ),
-        (
+    let mut steps = vec![(
+        DEMO_AGENT,
+        Chat::INTRODUCE.with(chat::Introduce {
+            name: "Tide".into(),
+            initials: "TI".into(),
+            color: 6,
+        }),
+    )];
+    if let Some(name) = ui::tilo_resource::NonBlank::parse("Tide") {
+        steps.push((
             me,
             Chat::NAME_AGENT.with(chat::NameAgent {
                 participant: DEMO_AGENT.into(),
-                name: "Tide".into(),
+                name,
             }),
-        ),
-    ]
+        ));
+    }
+    steps
 }
 
 /// In the demo conversation: the reader summoning the agent, under the id

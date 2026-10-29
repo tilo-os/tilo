@@ -140,7 +140,7 @@ mod tests {
         let mut history = Replica::<BrowsingHistory>::new();
         history
             .apply(BrowsingHistory::VISIT.with(browsing_history::Visit {
-                url: "https://old.test/".into(),
+                url: "https://old.test/".parse().unwrap(),
                 title: "Current title".into(),
                 at: 456,
             }))
@@ -153,7 +153,7 @@ mod tests {
         assert_eq!(row.title, "Current title");
         history
             .apply(BrowsingHistory::VISIT.with(browsing_history::Visit {
-                url: row.url.clone(),
+                url: row.url.parse().unwrap(),
                 title: "New title".into(),
                 at: 789,
             }))

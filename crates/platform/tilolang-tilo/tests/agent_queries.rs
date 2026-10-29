@@ -7,6 +7,8 @@
 //! read of the other apps is answered by the other host's `read-for-program`, and the program
 //! runs again with the answers.
 
+use std::fmt::Write as _;
+
 use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
 use tilolang_runtime::Principal;
@@ -195,7 +197,7 @@ fn grep_reads_several_apps_and_each_match_says_where_it_is() {
 fn grep_knows_block_kinds_groups_times_and_writers() {
     let other = holder();
     let mut todo = worker();
-    let body = r#"> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist"#;
+    let body = r"> Tide was its name in the old plan\nWe still call the app Tide\n- [ ] record the launch video for Tide\n- [x] launch checklist";
     let wrote = run(
         &mut todo,
         &other,
@@ -299,7 +301,7 @@ fn find_takes_the_palettes_words_or_a_type_and_its_filters() {
     let taken = printed(&run(
         &mut notes,
         &other,
-        r#"find(Note, pinned: false).take(2).len()"#,
+        r"find(Note, pinned: false).take(2).len()",
     ));
     assert_eq!(taken, "2");
 }
@@ -337,7 +339,7 @@ fn read_states_the_size_first_and_shows_what_matches_with_anchors() {
     let first = printed(&run(
         &mut todo,
         &other,
-        r#"read(journal.entries.items.single())"#,
+        r"read(journal.entries.items.single())",
     ));
     let mut lines = first.lines();
     let head = lines.next().unwrap();
@@ -492,7 +494,7 @@ fn a_session_of_the_agents_doc_examples() {
     let mut transcript = String::new();
     for entry in entries {
         let answer = run(&mut todo, &other, entry);
-        transcript.push_str(&format!("tl> {}\n", entry.replace('\n', "\n... ")));
+        let _ = writeln!(transcript, "tl> {}", entry.replace('\n', "\n... "));
         for line in answer["output"].as_array().into_iter().flatten() {
             transcript.push_str(line.as_str().unwrap_or_default());
             transcript.push('\n');
@@ -501,17 +503,20 @@ fn a_session_of_the_agents_doc_examples() {
             Some("done") => {}
             Some("rejected") => {
                 for line in answer["detail"].as_array().into_iter().flatten() {
-                    transcript.push_str(&format!("error: {}\n", line.as_str().unwrap_or_default()));
+                    let _ = writeln!(transcript, "error: {}", line.as_str().unwrap_or_default());
                 }
             }
-            _ => transcript.push_str(&format!(
-                "error: {}\n",
-                answer["detail"].as_str().unwrap_or("the program failed")
-            )),
+            _ => {
+                let _ = writeln!(
+                    transcript,
+                    "error: {}",
+                    answer["detail"].as_str().unwrap_or("the program failed")
+                );
+            }
         }
         let changed = answer["changed"].as_u64().unwrap_or(0);
         if changed > 0 {
-            transcript.push_str(&format!("({changed} changed)\n"));
+            let _ = writeln!(transcript, "({changed} changed)");
         }
     }
     println!("{transcript}");

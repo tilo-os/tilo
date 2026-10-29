@@ -132,7 +132,9 @@ pub fn opened(anchor: &str) -> Option<crate::actions::TubeEffect> {
         "tube.video" | "tube.history" => Some(TubeEffect::OpenVideo { video: id }),
         "tube.channel" => Some(TubeEffect::OpenCreator { creator: id }),
         "tube.playlist" => Some(TubeEffect::OpenPlaylist { playlist: id }),
-        "tube.search" => Some(TubeEffect::Search { query: id }),
+        "tube.search" => Some(TubeEffect::Search {
+            query: ui::tilo_resource::NonBlank::parse(&id)?,
+        }),
         _ => None,
     }
 }
@@ -209,7 +211,7 @@ mod tests {
         assert_eq!(
             opened(&hit.action_id),
             Some(crate::actions::TubeEffect::Search {
-                query: "lo-fi mix".into()
+                query: ui::tilo_resource::NonBlank::parse("lo-fi mix").unwrap()
             })
         );
         assert!(query_entry("  ").is_none());

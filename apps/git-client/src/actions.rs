@@ -132,7 +132,7 @@ pub enum GitClientEffect {
     /// Create branch
     CreateBranch {
         #[param("Branch name")]
-        name: String,
+        name: ui::tilo_resource::NonBlank,
     },
     /// Create linked worktree
     ///

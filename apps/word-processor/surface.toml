@@ -133,7 +133,7 @@ params = [
   { name = "block", required = true, schema = { type = "string" } },
   { name = "start", required = true, schema = { type = "integer", minimum = 0 } },
   { name = "end", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "text", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
 ]
 
 [[resources.verbs]]
@@ -142,7 +142,7 @@ kind = "undoable"
 writes = ["record", "comments.*"]
 params = [
   { name = "comment", required = true, schema = { type = "string" } },
-  { name = "text", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
   { name = "body", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
 ]
 

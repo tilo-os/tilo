@@ -196,7 +196,7 @@ impl ResourceApp for TlApp {
         // Types whose origin is a mail server are kept in step with the servers of the
         // workspace's mail accounts, in a live window.
         if cx.mode() == ui::framework::RunMode::Live
-            && tilolang_tilo::origin::uses_origin(&meta, "imap")
+            && tilolang_tilo::origin::uses_origin(meta, "imap")
         {
             let wake = ui::wake::WakeHandle::new();
             let origin = crate::mail::live_origin(
