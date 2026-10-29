@@ -354,7 +354,7 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
     pub fn of_record<P: Resource>(
         &self,
         record: &impl OtherRecord<P>,
-        item: impl FnOnce(&mut ViewCx<P>) -> Item,
+        item: impl FnOnce(&ViewCx<P>) -> Item,
     ) -> Option<Item> {
         record_item(self.cx, record, item)
     }
@@ -430,7 +430,7 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
 pub fn record_item<R: Resource, T: 'static, P: Resource>(
     cx: &ViewCx<R, T>,
     record: &impl OtherRecord<P>,
-    item: impl FnOnce(&mut ViewCx<P>) -> Item,
+    item: impl FnOnce(&ViewCx<P>) -> Item,
 ) -> Option<Item> {
     let shape = std::cell::Cell::new(ItemShape::Row);
     let element = cx.record(record, |cx| {

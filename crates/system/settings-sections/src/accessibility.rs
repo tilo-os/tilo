@@ -58,6 +58,17 @@ impl AccessibilitySettings {
         self.step_magnifier(step);
         Ok(())
     }
+
+    /// Turn the screen reader on or off. The field is changed only here:
+    /// the palette and agents find it by the words people use for it.
+    #[action(
+        id = "set-screen-reader",
+        keywords = "narrator, voiceover, accessibility, read aloud"
+    )]
+    pub fn set_screen_reader(&mut self, on: bool) -> Result<(), tilo_resource::Refusal> {
+        self.screen_reader = on;
+        Ok(())
+    }
 }
 
 /// This device's accessibility choices.

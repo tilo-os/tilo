@@ -129,7 +129,9 @@ fn content(app: &Rc<SettingsApp>, key: &PaneKey, cx: Option<&ViewCx<Settings>>) 
             app.scroll_offset(key.category),
         )
     } else {
-        let bound = cx.map_or_else(Vec::new, |cx| crate::setting::bound_rows(cx, &key.found));
+        let bound = cx.map_or_else(Vec::new, |cx| {
+            crate::setting::bound_rows(cx, &key.found, &key.reads)
+        });
         (
             Box::new(crate::setting::Found::new(
                 app.host().clone(),

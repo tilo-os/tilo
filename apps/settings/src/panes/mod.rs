@@ -64,6 +64,7 @@ pub(crate) fn view(
 ) -> Option<ui::widget::Element> {
     match category {
         crate::categories::Category::Appearance => appearance::view(cx, app),
+        crate::categories::Category::Accessibility => accessibility::view(cx, app),
         _ => None,
     }
 }

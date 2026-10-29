@@ -604,7 +604,7 @@ pub(crate) mod values;
 
 /// "Hide the top bar": this device's desktop control, as the page and the
 /// settings search show it.
-pub(crate) fn hide_top_bar(cx: &mut ViewCx<DesktopControlsDevice>) -> Item {
+pub(crate) fn hide_top_bar(cx: &ViewCx<DesktopControlsDevice>) -> Item {
     cx.setting(t("settings-appearance-hide-top-bar"))
         .described(t("settings-appearance-hide-top-bar-desc"))
         .id("appearance.hide_top_bar")

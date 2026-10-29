@@ -57,6 +57,12 @@ pub enum Shown {
         fn(&crate::settings_app::SettingsApp, &Follows) -> Read,
         fn(&PaneCx, bool) -> Item,
     ),
+    /// [`Shown::Switch`] whose switch is view code over its section
+    /// ([`setting_bound_switch!`]): it follows the section itself.
+    BoundSwitch(
+        fn(&crate::settings_app::SettingsApp, &Follows) -> Read,
+        fn(&ui::framework::ViewCx<crate::resource::Settings>) -> Option<Item>,
+    ),
 }
 
 /// What search reads of a setting it shows by name or as a switch of the
@@ -138,6 +144,43 @@ macro_rules! setting_switch {
 }
 pub use crate::setting_switch;
 
+/// The [`SettingEntry`] of the setting `$id`, which search shows as the
+/// switch `$row(cx)` builds as view code over the section `$section` while
+/// `$read(app, follows)` says it can be switched ([`Shown::BoundSwitch`]).
+#[macro_export]
+macro_rules! setting_bound_switch {
+    ($id:literal => $read:path, $section:ty => $row:path) => {
+        $crate::setting::SettingEntry {
+            id: $id,
+            shown: $crate::setting::Shown::BoundSwitch($read, |cx| {
+                let section = cx.settings::<$section>();
+                provider_settings_ui::bound::record_item(cx, &section, $row)
+            }),
+        }
+    };
+}
+pub use crate::setting_bound_switch;
+
+/// A chooser of every value the field at `field` offers, by its label:
+/// `row` bound to it.
+pub fn choose<R, V>(
+    row: provider_settings_ui::bound::Setting<'_, R>,
+    field: ui::tilo_resource::Path<R, V>,
+) -> Item
+where
+    R: ui::tilo_resource::Resource<State = R>,
+    V: settings_store::Labelled
+        + ui::tilo_resource::Model
+        + ui::tilo_resource::Settable
+        + Send
+        + Sync
+        + 'static,
+{
+    row.among(field, V::CHOICES.iter().copied(), |choice: &V| {
+        settings_store::Labelled::label(*choice).to_owned()
+    })
+}
+
 /// What each of `settings` is set to, where search shows it by name or as
 /// a switch of the device.
 #[must_use]
@@ -151,7 +194,7 @@ pub fn reads(
         .map(
             |setting| match entry(setting.id).map(|entry| &entry.shown) {
                 Some(Shown::Value(value)) => Read::Value(value(app, follows)),
-                Some(Shown::Switch(read, _)) => read(app, follows),
+                Some(Shown::Switch(read, _) | Shown::BoundSwitch(read, _)) => read(app, follows),
                 Some(Shown::Row(_) | Shown::Bound(_)) | None => Read::Value(None),
             },
         )
@@ -285,17 +328,21 @@ pub fn matching(query: &str) -> Vec<&'static Setting> {
 }
 
 /// The rows of `settings` whose pages are view code, built in `cx`, by
-/// their place: what [`Found`] shows for them.
+/// their place, `reads` saying which switches can be switched: what
+/// [`Found`] shows for them.
 #[must_use]
 pub fn bound_rows(
     cx: &ui::framework::ViewCx<crate::resource::Settings>,
     settings: &[&'static Setting],
+    reads: &[Read],
 ) -> Vec<Option<Item>> {
     settings
         .iter()
+        .enumerate()
         .map(
-            |setting| match entry(setting.id).map(|entry| &entry.shown) {
-                Some(Shown::Bound(row)) => row(cx),
+            |(at, setting)| match (entry(setting.id).map(|entry| &entry.shown), reads.get(at)) {
+                (Some(Shown::Bound(row)), _) => row(cx),
+                (Some(Shown::BoundSwitch(_, row)), Some(Read::Switch(_))) => row(cx),
                 _ => None,
             },
         )

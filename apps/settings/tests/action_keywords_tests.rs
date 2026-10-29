@@ -19,12 +19,11 @@ fn people_find_settings_actions_by_the_words_they_use() {
             .iter()
             .map(|effect| effect.spec(<settings::panes::display::DisplayEffect>::OPERATION)),
     );
+    // The screen reader is turned on by the `accessibility` section's verb.
     actions.extend(
-        <settings::panes::accessibility::AccessibilityEffect>::declarations()
+        <settings::accessibility_settings::AccessibilitySettings>::declarations()
             .iter()
-            .map(|effect| {
-                effect.spec(<settings::panes::accessibility::AccessibilityEffect>::OPERATION)
-            }),
+            .map(declaration_spec),
     );
     actions.extend(
         <settings::panes::appearance::AppearanceEffect>::declarations()

@@ -99,7 +99,6 @@ pub(crate) const AREAS: &[(u16, crate::area::MakeArea)] = &[
 /// Every area's vocabulary, in the order the union declares them.
 pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (20, appearance::AppearanceEffect::FAMILY),
-    (30, accessibility::AccessibilityEffect::FAMILY),
     (40, personal_apps::DefaultAppsEffect::FAMILY),
     (60, keyboard_shortcuts::ShortcutEffect::FAMILY),
     (70, mouse_keyboard::InputEffect::FAMILY),
@@ -475,15 +474,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
         },
     },
     crate::area::PaneEntry {
-        categories: &[Category::Accessibility],
-        build: |app, _| {
-            Box::new(accessibility::AccessibilityPane::new(
-                app.host().clone(),
-                accessibility::software(app),
-            ))
-        },
-    },
-    crate::area::PaneEntry {
         categories: &[Category::Notifications],
         build: |app, _| {
             notifications::area(app).map_or_else(
@@ -596,20 +586,20 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
 /// built by the function its pane builds it with, or what it is set to.
 const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_row!("appearance.hide_top_bar", crate::prefs::DesktopControlsDevice => appearance::hide_top_bar),
-    crate::setting::setting_entry!("appearance.text_size", crate::prefs::AppearancePrefs => accessibility::text_size),
-    crate::setting::setting_entry!("appearance.high_contrast", crate::prefs::AppearancePrefs => accessibility::high_contrast),
-    crate::setting::setting_entry!("appearance.reduce_motion", crate::prefs::AppearancePrefs => accessibility::reduce_motion),
-    crate::setting::setting_entry!("a11y.on_screen_keyboard", crate::accessibility_settings::AccessibilitySettings => accessibility::on_screen_keyboard),
-    crate::setting::setting_entry!("a11y.large_cursor", crate::accessibility_settings::AccessibilitySettings => accessibility::large_cursor),
-    crate::setting::setting_entry!("a11y.cursor_size", crate::accessibility_settings::AccessibilitySettings => accessibility::cursor_size),
-    crate::setting::setting_entry!("a11y.magnifier", crate::accessibility_settings::AccessibilitySettings => accessibility::magnifier_zoom),
-    crate::setting::setting_entry!("a11y.colour_filter", crate::accessibility_settings::AccessibilitySettings => accessibility::colour_filter),
-    crate::setting::setting_entry!("a11y.sticky_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::sticky_keys),
-    crate::setting::setting_entry!("a11y.slow_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::slow_keys),
-    crate::setting::setting_entry!("a11y.bounce_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::bounce_keys),
-    crate::setting::setting_entry!("a11y.mouse_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::mouse_keys),
-    crate::setting::setting_entry!("a11y.visual_alerts", crate::accessibility_settings::AccessibilitySettings => accessibility::visual_alerts),
-    crate::setting::setting_entry!("a11y.switch_control", crate::accessibility_settings::AccessibilitySettings => accessibility::switch_control),
+    crate::setting::setting_row!("appearance.text_size", crate::prefs::AppearancePrefs => accessibility::text_size),
+    crate::setting::setting_row!("appearance.high_contrast", crate::prefs::AppearancePrefs => accessibility::high_contrast),
+    crate::setting::setting_row!("appearance.reduce_motion", crate::prefs::AppearancePrefs => accessibility::reduce_motion),
+    crate::setting::setting_row!("a11y.on_screen_keyboard", crate::accessibility_settings::AccessibilitySettings => accessibility::on_screen_keyboard),
+    crate::setting::setting_row!("a11y.large_cursor", crate::accessibility_settings::AccessibilitySettings => accessibility::large_cursor),
+    crate::setting::setting_row!("a11y.cursor_size", crate::accessibility_settings::AccessibilitySettings => accessibility::cursor_size),
+    crate::setting::setting_row!("a11y.magnifier", crate::accessibility_settings::AccessibilitySettings => accessibility::magnifier_zoom),
+    crate::setting::setting_row!("a11y.colour_filter", crate::accessibility_settings::AccessibilitySettings => accessibility::colour_filter),
+    crate::setting::setting_row!("a11y.sticky_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::sticky_keys),
+    crate::setting::setting_row!("a11y.slow_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::slow_keys),
+    crate::setting::setting_row!("a11y.bounce_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::bounce_keys),
+    crate::setting::setting_row!("a11y.mouse_keys", crate::accessibility_settings::AccessibilitySettings => accessibility::mouse_keys),
+    crate::setting::setting_row!("a11y.visual_alerts", crate::accessibility_settings::AccessibilitySettings => accessibility::visual_alerts),
+    crate::setting::setting_row!("a11y.switch_control", crate::accessibility_settings::AccessibilitySettings => accessibility::switch_control),
     crate::setting::setting_entry!("notifications.dnd", crate::prefs::NotificationPrefs => notifications::dnd),
     crate::setting::setting_entry!("notifications.banners", crate::prefs::NotificationPrefs => notifications::banners),
     crate::setting::setting_entry!("notifications.previews", crate::prefs::NotificationPrefs => notifications::previews),
@@ -681,7 +671,7 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_value!("appearance.schedule" => known appearance::values::schedule),
     crate::setting::setting_value!("appearance.wallpaper" => appearance::values::wallpaper),
     crate::setting::setting_value!("appearance.ui_scale" => known appearance::values::ui_scale),
-    crate::setting::setting_switch!("a11y.screen_reader" => accessibility::values::screen_reader, accessibility::values::screen_reader_switch),
+    crate::setting::setting_bound_switch!("a11y.screen_reader" => accessibility::values::screen_reader, crate::accessibility_settings::AccessibilitySettings => accessibility::values::screen_reader_switch),
     crate::setting::setting_value!("a11y.dictation_language" => known accessibility::values::dictation_language),
     crate::setting::setting_entry!("region.currency", tilo_locale::Locale => region::currency),
     crate::setting::setting_entry!("region.date", tilo_locale::Locale => region::date_format),
