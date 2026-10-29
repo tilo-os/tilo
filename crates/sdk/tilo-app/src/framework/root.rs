@@ -1802,7 +1802,7 @@ impl RootModel for ResourceRoot {
         if let Err(error) = self.typed.sync(doc) {
             tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
-        if let Some(started) = self.typed.start_effect(op)? {
+        if let Some(started) = self.typed.start_effect(op, doc.doc())? {
             return Ok(Some(started));
         }
         if let Some(started) =
