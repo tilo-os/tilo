@@ -17,7 +17,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use super::BlockEditor;
 use crate::component::{Component, Described, Event, PropType, Type, Value};
 use crate::theme::Theme;
-use crate::widget::marks::{Mark, MentionColors};
+use crate::widget::marks::{Mark, MentionColors, MentionPaint};
 
 /// The event a component fires when a reference in its text is activated, carrying the
 /// reference (the `mention` mark's value): what its host opens when the view gives the event
@@ -60,6 +60,8 @@ pub(super) struct References {
     views: Rc<HashMap<String, InlineView>>,
     /// The theme the chips were last painted for.
     painted_for: Option<u64>,
+    /// How the owner paints people's mentions (their colours).
+    owner_paint: Option<MentionPaint>,
     /// Where each reference was painted in the last draw.
     hits: Vec<(Rect, String)>,
     /// What activating a reference does.
@@ -104,12 +106,18 @@ impl BlockEditor {
             .map(|(_, reference)| reference.as_str())
     }
 
-    /// Paint the references as chips in `theme`'s colours, when the editor was told how they
-    /// read and the theme changed since.
+    /// Paint people's mentions as the owner says (`paint`, their colours), and references to
+    /// anything else as chips.
+    pub(super) fn set_owner_mention_paint(&mut self, paint: Option<MentionPaint>) {
+        self.references.owner_paint = paint;
+        self.references.painted_for = None;
+        self.dirty = true;
+    }
+
+    /// Paint the references in `theme`'s colours when the theme, how they read or the owner's
+    /// paint changed since: a resource as a chip, one the reader cannot read as a quiet chip,
+    /// a person in the owner's colours for them.
     pub(super) fn paint_references(&mut self, theme: &Theme) {
-        if self.references.views.is_empty() {
-            return;
-        }
         let fingerprint = theme_fingerprint(theme);
         if self.references.painted_for == Some(fingerprint) {
             return;
@@ -118,38 +126,31 @@ impl BlockEditor {
         let colors = &theme.tokens.colors;
         let ground = colors.surfaces.base;
         let accent = colors.intent.accent_ink;
+        let contrast = crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
         let band = crate::tokens::colors::mix8(accent, ground, 0.86);
-        let quiet = colors.text_dim;
         let resource = MentionColors {
-            ink: colors.ink_on(
-                band,
-                accent,
-                crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
-            ),
+            ink: colors.ink_on(band, accent, contrast),
             band: Some(band),
         };
         let unreadable = MentionColors {
-            ink: colors.ink_on(
-                colors.surfaces.raised,
-                quiet,
-                crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
-            ),
+            ink: colors.ink_on(colors.surfaces.raised, colors.text_dim, contrast),
             band: Some(colors.surfaces.raised),
         };
         let person = MentionColors {
-            ink: colors.ink_on(
-                ground,
-                accent,
-                crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
-            ),
+            ink: colors.ink_on(ground, accent, contrast),
             band: None,
         };
         let views = Rc::clone(&self.references.views);
-        self.set_mention_paint(Some(Rc::new(move |reference: &str| {
+        let owner = self.references.owner_paint.clone();
+        let of_person =
+            move |reference: &str| owner.as_ref().map_or(person, |paint| paint(reference));
+        self.apply_mention_paint(Some(Rc::new(move |reference: &str| {
             match views.get(reference) {
                 Some(InlineView::Unreadable) => unreadable,
                 Some(InlineView::Resource { .. } | InlineView::Elsewhere) => resource,
-                Some(InlineView::Person { .. }) | None => person,
+                Some(InlineView::Person { .. }) => of_person(reference),
+                None if tilo_reference::embed::names_resource(reference) => resource,
+                None => of_person(reference),
             }
         })));
     }
@@ -427,5 +428,33 @@ mod tests {
             editor.blocks()[0].text(),
             "Ask @ada about Not shared with you, not secret."
         );
+    }
+
+    #[test]
+    fn any_editor_paints_a_resource_as_a_chip_and_people_as_its_owner_does() {
+        let mut editor = BlockEditor::new();
+        let owner = MentionColors {
+            ink: vello::peniko::Color::from_rgb8(200, 30, 30),
+            band: None,
+        };
+        editor.set_mention_paint(Some(Rc::new(move |_: &str| owner)));
+        editor.present_blocks(&crate::widget::rich_doc::blocks_of(&text(Vec::new())));
+        let mut renderer = TextRenderer::new();
+        laid_out(&mut editor, &mut renderer);
+        let paint = editor.mention_paint().cloned().expect("painted");
+        assert_eq!(
+            paint("u-ada"),
+            owner,
+            "a person in the owner's colours for them"
+        );
+        let chip = paint(TASK);
+        assert!(chip.band.is_some(), "a resource, in any form, is a chip");
+        assert_eq!(
+            paint("tilo://open#/me/so.tilo.chat/-/chat.channel:general"),
+            chip
+        );
+        assert_eq!(paint("tl:so.tilo.lang.board:d/f:t1"), chip);
+        let hits = editor.reference_hits();
+        assert_eq!(hits.len(), 3, "every reference can be pointed at: {hits:?}");
     }
 }

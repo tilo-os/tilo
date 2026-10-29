@@ -1535,6 +1535,11 @@ impl BlockEditor {
 
     /// Paint mentions in the colours `paint` gives each participant.
     pub fn set_mention_paint(&mut self, paint: Option<crate::widget::marks::MentionPaint>) {
+        self.set_owner_mention_paint(paint);
+    }
+
+    /// Paint every line's mentions with `paint`, as composed with the references' chips.
+    fn apply_mention_paint(&mut self, paint: Option<crate::widget::marks::MentionPaint>) {
         for block in &mut self.blocks {
             block.line.set_mention_paint(paint.clone());
         }
