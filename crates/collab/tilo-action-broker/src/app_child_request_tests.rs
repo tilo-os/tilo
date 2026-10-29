@@ -17,6 +17,7 @@ fn published(
     tags: &[&str],
 ) -> PublishedAction {
     PublishedAction {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: resource.into(),
         action: action.into(),

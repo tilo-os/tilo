@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_actions::{
-    ActionFailure, ActionSpec, EncodedAction, InvocationId, InvocationUpdate, OperationKind,
-    ResourceSpec,
+    ActionFailure, ActionSpec, ActionState, EncodedAction, InvocationId, InvocationUpdate,
+    OperationKind, ResourceSpec,
 };
 use tilo_app::framework::{HostedActions, HostedActionsLink, HostedInvocation};
 use ui::application::{
@@ -24,7 +24,7 @@ use ui::application::{
 };
 
 use super::{Action, begin, declared_keywords};
-use crate::shell::chrome_state::Chrome;
+use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::i18n::t;
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ActionReceipt, InvocationDisposition, PendingInvocation};
@@ -47,23 +47,83 @@ struct Invocation {
     arguments: serde_json::Map<String, serde_json::Value>,
 }
 
+/// What the published actions show of the shell's state now: each row's
+/// badge, keys and parameters, and whether it has anything to act on.
+pub(crate) struct Live<'a> {
+    state: &'a ChromeState,
+    shortcuts: settings_store::hardware::ShortcutConfig,
+    display_waiting: bool,
+    invite_offered: bool,
+}
+
+impl<'a> Live<'a> {
+    pub(crate) fn read(state: &'a ChromeState) -> Self {
+        Self {
+            state,
+            shortcuts: settings_store::hardware::ShortcutConfig::load(),
+            display_waiting: super::display_change_waiting(),
+            invite_offered: state.peer_sync_enabled
+                && crate::shell::invite_policy::active_invite_route(state)
+                    .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here),
+        }
+    }
+
+    /// Whether `action` is offered here at all: a session without peer
+    /// sync has nothing to invite into, an invitation the issuer would
+    /// refuse from here has no composer, and an agent needs a room and a
+    /// working broker.
+    fn offered(&self, action: &Action) -> bool {
+        let id = action.id;
+        if (id.starts_with("peer.") || super::INVITATION_ACTION_IDS.contains(&id))
+            && !self.state.peer_sync_enabled
+        {
+            return false;
+        }
+        if matches!(id, "peer.invite" | "peer.invite.named") && !self.invite_offered {
+            return false;
+        }
+        !(id.starts_with("agent.")
+            && (!self.state.collab_available()
+                || self.state.tree().desktop.active_workspace().is_none()))
+    }
+
+    fn availability(&self, action: &Action) -> tilo_actions::Availability {
+        if !self.offered(action) {
+            tilo_actions::Availability::Unavailable {
+                code: "not_offered".into(),
+                reason: t("shell-action-not-offered"),
+            }
+        } else if !super::action_available(action.id, self.state, self.display_waiting) {
+            tilo_actions::Availability::Unavailable {
+                code: "nothing_to_act_on".into(),
+                reason: t("shell-action-nothing-to-act-on"),
+            }
+        } else {
+            tilo_actions::Availability::Available
+        }
+    }
+}
+
 impl Action {
     /// What this action is published as: its address, words, parameters,
-    /// contract and kind, as declared.
-    pub(crate) fn spec(&'static self) -> ActionSpec {
+    /// contract and kind, as declared, and what its row shows of the
+    /// shell's state now.
+    pub(crate) fn spec(&'static self, live: &Live<'_>) -> ActionSpec {
         let id = self.id;
         let kind = match self.kind {
             OperationKind::View => OperationKind::View,
             // The handler changes the shell's state, not the app's document.
             _ => OperationKind::Effect,
         };
-        ActionSpec::typed_operation(
+        let mut contract = self.contract();
+        contract.availability = live.availability(self);
+        let spec = ActionSpec::typed_operation(
             id,
             t(self.label),
             "",
             kind,
             OPERATION,
-            self.params.to_vec(),
+            super::live_params(self, live.state),
             move |args| EncodedAction {
                 type_id: OPERATION.into(),
                 payload: serde_json::to_vec(&Invocation {
@@ -74,17 +134,82 @@ impl Action {
             },
         )
         .with_description(t(self.subtitle))
-        .with_keywords(declared_keywords(self.keywords))
-        .with_contract(self.contract())
+        .with_keywords(published_keywords(self))
+        .with_contract(contract)
+        .with_state(ActionState {
+            badge: super::state_badge(id, live.state),
+            toggles: self.toggles,
+            shortcut: super::action_shortcut(&live.shortcuts, id),
+        });
+        match super::action_icon(id) {
+            Some(icon) => spec.with_icon(icon.name()),
+            None => spec,
+        }
     }
 }
 
+/// The other words an action is found by: its declared keywords, and for
+/// joining a workspace the community site's name ("tilo.coffee"), which is
+/// the image's configuration rather than a word.
+fn published_keywords(action: &Action) -> Vec<String> {
+    let mut keywords = declared_keywords(action.keywords);
+    if action.id == "peer.connect"
+        && let Some(site) = crate::shell::network::configured_community_site()
+        && let Some(host) = site.host_str()
+    {
+        keywords.push(host.to_owned());
+    }
+    keywords
+}
+
 /// Every shell action, as the one resource the shell publishes.
-pub(crate) fn resource() -> ResourceSpec {
+pub(crate) fn resource(state: &ChromeState) -> ResourceSpec {
+    let live = Live::read(state);
     Action::ALL.iter().fold(
         ResourceSpec::new(RESOURCE, RESOURCE, t("search-kind-actions")),
-        |resource, action| resource.with_action(action.spec()),
+        |resource, action| resource.with_action(action.spec(&live)),
     )
+}
+
+/// What the published specs are built from, cheap to read every frame: the
+/// shell publishes anew only when it changes.
+#[derive(Clone, PartialEq, Eq)]
+struct Published {
+    chrome: u64,
+    revision: u64,
+    external_tree_revision: u64,
+    locale: String,
+    settings: Option<settings_store::SettingsStamp>,
+    peer_sync: bool,
+    collab: bool,
+    /// Whether things that come and go are there to act on.
+    present: [bool; 8],
+}
+
+impl Published {
+    fn read(state: &ChromeState) -> Self {
+        Self {
+            chrome: state.instance(),
+            revision: state.revision,
+            external_tree_revision: state.tree().desktop.external_revision,
+            locale: crate::shell::i18n::current_locale(),
+            settings: settings_store::stamp(),
+            peer_sync: state.peer_sync_enabled,
+            collab: state.collab_available(),
+            present: [
+                state.dnd(),
+                state.axis_navigation_enabled(),
+                state.overlays.projection,
+                state.search_context.following,
+                state.search_context.dictating,
+                state.notification_log().history().is_empty(),
+                state.can_undo_notification_history_clear(),
+                crate::bluetooth::PairingPromptHandle::global()
+                    .current()
+                    .is_some(),
+            ],
+        }
+    }
 }
 
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
@@ -142,8 +267,8 @@ pub(crate) struct ShellActionsHost {
     app: Box<dyn ui::widget::AppWidget>,
     woken: Arc<AtomicBool>,
     waiting: Vec<Waiting>,
-    /// The locale the published labels are in.
-    locale: String,
+    /// What the published specs were built from.
+    published: Published,
 }
 
 impl ShellActionsHost {
@@ -151,9 +276,11 @@ impl ShellActionsHost {
     pub(crate) fn mount(
         apps: &crate::shell::in_process::SharedInProcessApps,
         room: &str,
+        state: &ChromeState,
     ) -> Option<Self> {
         let link = HostedActionsLink::new(OPERATION);
-        link.publish(vec![resource()]);
+        let published = Published::read(state);
+        link.publish(vec![resource(state)]);
         let woken = Arc::new(AtomicBool::new(false));
         {
             let woken = Arc::clone(&woken);
@@ -194,7 +321,7 @@ impl ShellActionsHost {
             app,
             woken,
             waiting: Vec::new(),
-            locale: crate::shell::i18n::current_locale(),
+            published,
         })
     }
 
@@ -223,7 +350,7 @@ impl ShellActionsHost {
             if held.is_none() && tried {
                 return None;
             }
-            *held = Self::mount(&apps, &room);
+            *held = Self::mount(&apps, &room, &chrome.borrow());
             if held.is_none() {
                 REFUSED_ROOM.with(|refused| *refused.borrow_mut() = Some(room));
             }
@@ -239,11 +366,15 @@ impl ShellActionsHost {
         doc: &ui::widget::AppModel,
         path: &ui::widget::ModelPath,
     ) -> bool {
-        let locale = crate::shell::i18n::current_locale();
-        if locale != self.locale {
-            // Labels are published in the person's language.
-            self.link.publish(vec![resource()]);
-            self.locale = locale;
+        {
+            // Labels are published in the person's language, and each row
+            // shows the state it acts on as it is now.
+            let state = chrome.borrow();
+            let published = Published::read(&state);
+            if published != self.published {
+                self.link.publish(vec![resource(&state)]);
+                self.published = published;
+            }
         }
         let woken = self.woken.swap(false, Ordering::AcqRel);
         let mut changed = self.app.update(doc, path) | woken;

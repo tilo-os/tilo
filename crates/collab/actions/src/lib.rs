@@ -213,10 +213,10 @@ pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
     reason = "existing app impls still name this trait until they publish through tilo_resource"
 )]
 pub use resource::{
-    ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionType, ArgsBuilder, Collects,
-    ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
-    ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET, PROMPTED_PARAM,
-    ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
+    ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionState, ActionType,
+    ArgsBuilder, Collects, ContinuationArguments, ContinuationEvidence, ContinuationKey,
+    ContinuationQuery, ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET,
+    PROMPTED_PARAM, ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
     ResourceViewMountSpec, ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target, flatten,
     listed_row, listed_row_problems, sole_text_argument,
 };

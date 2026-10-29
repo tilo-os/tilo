@@ -32,6 +32,7 @@ fn write_binding(mut b: collab_capnp::published_invocation_binding::Builder<'_>)
 fn row(r: collab_capnp::action_directory_row::Builder<'_>) {
     let contract = tilo_actions::ActionContract::view();
     let descriptor = ExportedAction {
+        state: tilo_actions::ActionState::default(),
         resource: "r".into(),
         semantic_identity: None,
         action: "a".into(),

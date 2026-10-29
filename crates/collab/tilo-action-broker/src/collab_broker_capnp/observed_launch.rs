@@ -362,6 +362,7 @@ impl CapnpChannelHandle {
 /// `launch`, an undoable effect.
 fn launch_descriptor(app: &str) -> tilo_actions::ActionDescriptor {
     tilo_actions::ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: tilo_actions::ActionAddress::new(app, "launch"),
         resource_kind: "application".into(),

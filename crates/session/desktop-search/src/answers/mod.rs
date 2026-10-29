@@ -1,13 +1,14 @@
 //! Answers to queries that are not names, worked out from what was typed
-//! alone: arithmetic ("12*7"), unit conversions ("5 km in miles"), an
-//! address ("example.com") and the web searches a query can be ([`web`]).
-//! Every desktop offers the same ones: the native shell's quick-answers and
-//! web providers word and run them as its own rows, the portable palette
-//! through [`crate::providers::Answers`] and [`crate::providers::WebSearch`].
+//! alone: arithmetic ("12*7"), unit conversions ("5 km in miles"), money at
+//! the rates the host last fetched ([`currency`]), an address
+//! ("example.com") and the web searches a query can be ([`web`]). Every
+//! desktop offers them as [`crate::providers::Answers`] and
+//! [`crate::providers::WebSearch`].
 //!
 //! Nothing here is fetched, and nothing typed leaves the machine before a
 //! person chooses a row.
 
+pub mod currency;
 pub mod units;
 pub mod web;
 

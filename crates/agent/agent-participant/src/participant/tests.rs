@@ -293,6 +293,7 @@ fn a_placeholder_stands_for_the_latest_content_from_another_app() {
 #[test]
 fn an_unknown_action_names_what_is_offered() {
     let descriptor = |resource: &str, action: &str| ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new(resource, action),
         resource_kind: "sheets.sheet".into(),

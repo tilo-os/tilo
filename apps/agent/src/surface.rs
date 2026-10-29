@@ -340,6 +340,7 @@ fn surface_offers(surfaces: &[ui::collaboration::BrokerActionSurface]) -> Vec<Of
                 broker_peer_id: surface.provider.is_none().then_some(surface.peer_id),
                 broker_provider: surface.provider.clone(),
                 descriptor: ActionDescriptor {
+                    state: tilo_actions::ActionState::default(),
                     // The pushed directory routes invocations; it does not
                     // open views.
                     view: None,
@@ -960,6 +961,7 @@ mod tests {
                 has_children: false,
                 visibility: None,
                 action: Some(ActionDescriptor {
+                    state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
                     address: ActionAddress::new("calculator.document", "clear"),
                     resource_kind: "calculator.document".into(),
@@ -1001,6 +1003,7 @@ mod tests {
                 broker_peer_id: Some(0),
                 broker_provider: None,
                 descriptor: ActionDescriptor {
+                    state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
                     address,
                     resource_kind: APPLICATION_KIND.into(),
@@ -1195,6 +1198,7 @@ mod tests {
             broker_peer_id: None,
             broker_provider: None,
             descriptor: ActionDescriptor {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: ActionAddress::new(resource, action),
                 resource_kind: format!("{app}.thing"),

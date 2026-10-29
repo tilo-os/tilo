@@ -17,7 +17,7 @@ homepage.workspace = true
 lazy-search = []
 # The session's on-disk indexes: what apps publish of their content, and
 # the bodies of the person's files. Native only.
-indexes = ["dep:serde", "dep:serde_json", "dep:tilo-lock", "dep:tilo-paths", "dep:tilo-reference", "dep:tempfile", "dep:tilo-search", "dep:tracing", "dep:walkdir"]
+indexes = ["dep:serde", "dep:tilo-lock", "dep:tilo-paths", "dep:tilo-reference", "dep:tempfile", "dep:tilo-search", "dep:tracing", "dep:walkdir"]
 
 [dependencies]
 # Every Tilo app's manifest metadata: where it runs, its names and keywords.
@@ -25,7 +25,7 @@ app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true, optional = true }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock", optional = true }
 tilo-paths = { workspace = true, optional = true }

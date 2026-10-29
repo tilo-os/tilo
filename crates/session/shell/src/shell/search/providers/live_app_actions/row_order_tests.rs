@@ -47,6 +47,7 @@ fn equal_rows_come_in_title_order() {
                 app_id: APP.into(),
                 route: CrdtRoute::record(APP, room.to_string(), format!("page-{page}")),
                 actions: vec![PublishedAction {
+                    state: tilo_actions::ActionState::default(),
                     semantic_identity: None,
                     resource: format!("note:{page}"),
                     action: "rename".into(),

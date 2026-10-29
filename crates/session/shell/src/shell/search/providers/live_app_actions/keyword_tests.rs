@@ -5,6 +5,7 @@ use crate::shell::collab_broker::CrdtRoute;
 
 fn action(label: &str, id: &str, keywords: &[&str]) -> PublishedAction {
     PublishedAction {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: format!("resource:{id}"),
         action: id.into(),

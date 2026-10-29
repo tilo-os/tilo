@@ -36,6 +36,7 @@ use tilo_automation::SHORTCUTS_APP_ID;
 /// read it.
 fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
     ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: ActionAddress::new(resource, action),
         resource_kind: "workspace".into(),
@@ -393,6 +394,7 @@ fn directory_rows() -> Vec<runtime_collab::ActionDirectoryRow> {
         .tags
         .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
     let descriptor = runtime_collab::ExportedAction {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         resource: "workspace:atlas".into(),
         action: "read".into(),

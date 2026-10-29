@@ -248,6 +248,7 @@ impl SurfaceTable {
                     continue;
                 };
                 actions.push(ExportedAction {
+                    state: tilo_actions::ActionState::default(),
                     resource: resource.resource.clone(),
                     semantic_identity: resource.fields.semantic_identity.clone(),
                     resource_kind: resource.fields.resource_kind.clone(),
@@ -283,6 +284,7 @@ mod tests {
 
     fn shape(action: &str, label: &str) -> ExportedAction {
         ExportedAction {
+            state: tilo_actions::ActionState::default(),
             resource: String::new(),
             semantic_identity: None,
             action: action.into(),
@@ -405,6 +407,7 @@ mod tests {
             shapes: vec![(
                 id(3),
                 ExportedAction {
+                    state: tilo_actions::ActionState::default(),
                     resource: "leak".into(),
                     ..shape("x", "X")
                 },

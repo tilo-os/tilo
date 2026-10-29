@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use tilo_actions::{ActionAddress, ActionSpec, ResourceId};
+use tilo_actions::{ActionAddress, ActionDescriptor, ActionSpec, ResourceId};
 
 use ui::search::system::{self, KindGroup, ResourceKind};
 
@@ -19,14 +19,22 @@ pub enum Target {
     /// Run an action an application publishes, resolved against the live
     /// resource tree when it runs.
     Action(Box<ActionTarget>),
+    /// Run an action an application publishes through the session's action
+    /// host, by its address at the provider that publishes it, with the
+    /// arguments the row collected.
+    Invoke(Box<InvokeTarget>),
     /// A host command, by id.
     Command { id: String },
     /// Put `text` on the clipboard: a worked-out answer.
     Copy { text: String },
     /// Open `uri`, a web address, where the host opens addresses: the
     /// native desktop's browser, a new tab of the browser the web desktop
-    /// runs in.
-    Open { uri: String },
+    /// runs in. Where nothing takes `uri`'s scheme (`web+search:`, an app's
+    /// own), `fallback` opens instead, when there is one.
+    Open {
+        uri: String,
+        fallback: Option<String>,
+    },
 }
 
 /// An application action as the palette offers it.
@@ -63,6 +71,25 @@ impl std::fmt::Debug for ActionTarget {
             .field("label", &self.spec.label)
             .finish_non_exhaustive()
     }
+}
+
+/// An action an app publishes through the session's action host, run there
+/// by its address: inert data, no closure. The host routes it to the app in
+/// `room`, launching the app first when it is closed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InvokeTarget {
+    /// The app publishing the action.
+    pub app: String,
+    /// The room (workspace) the app publishes it in.
+    pub room: String,
+    pub address: ActionAddress,
+    /// What the row carries or collected, by parameter name: the anchor an
+    /// `open` shows, the one line typed for a prompted action. Empty for
+    /// the nullary majority.
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+    /// The published action, when the row is the action itself rather than
+    /// something it opens: what the row shows and asks for.
+    pub descriptor: Option<ActionDescriptor>,
 }
 
 /// One row a source offers for a needle. `score` is on the source's own

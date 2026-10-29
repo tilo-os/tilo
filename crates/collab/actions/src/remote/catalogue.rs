@@ -422,6 +422,7 @@ mod tests {
                 presentation: None,
             },
             action: action.map(|action| ActionDescriptor {
+                state: crate::ActionState::default(),
                 semantic_identity: None,
                 address: ActionAddress::new(resource, action),
                 resource_kind: "notes.note".into(),

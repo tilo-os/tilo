@@ -57,6 +57,7 @@ pub(crate) fn open_row(room: &str, app: &str) -> CatalogueRow {
         target.provider,
         app,
         tilo_actions::door::ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: target.address,
             resource_kind: "applications.app".into(),

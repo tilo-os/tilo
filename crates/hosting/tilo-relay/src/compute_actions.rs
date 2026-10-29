@@ -73,6 +73,7 @@ fn place_row(workspace_id: u64) -> CatalogueRow {
             presentation: None,
         },
         action: Some(ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new(resource, PLACE_JOB),
             resource_kind: COMPUTE_KIND.into(),

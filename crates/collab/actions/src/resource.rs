@@ -305,6 +305,44 @@ impl ResourceId {
     }
 }
 
+/// What an action's row shows of the state the action acts on, beside its
+/// label: data, never drawing code. Every surface that lists the action (the
+/// palette, a menu, an agent's listing) reads the same.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ActionState {
+    /// A short live status ("On", "Current").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub badge: Option<String>,
+    /// The action flips the state its badge shows, so choosing it keeps the
+    /// list it was chosen from open on the new state.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub toggles: bool,
+    /// The keys that do the same, spelled as the keyboard layout in use
+    /// reads them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shortcut: Option<String>,
+}
+
+impl ActionState {
+    pub const MAX_BADGE_BYTES: usize = ResourcePresentation::MAX_BADGE_BYTES;
+
+    /// Nothing to show.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// A row showing `badge`.
+    #[must_use]
+    pub fn badge(badge: impl Into<String>) -> Self {
+        Self {
+            badge: Some(badge.into()),
+            ..Self::default()
+        }
+    }
+}
+
 /// Bounded, declarative search presentation for a resource.
 ///
 /// This is data, never app-provided drawing code: the shell chooses the
@@ -935,6 +973,10 @@ pub struct ActionType {
     /// The action's own picture beside its label, by its Lucide name.
     pub icon: Option<String>,
     pub description: Option<String>,
+    /// What the action's row shows of the state it acts on: its badge,
+    /// whether it flips that state in place, its shortcut. Published with
+    /// the action and published anew whenever that state changes.
+    pub state: ActionState,
     /// Declared execution locus (mirrors the concrete action's
     /// [`Action::locus`]), so the palette can show/route it before the
     /// action is built.
@@ -1374,6 +1416,7 @@ impl ActionSpec {
             keywords: Vec::new(),
             icon: None,
             description: None,
+            state: ActionState::default(),
             locus: seed.locus,
             kind: seed.kind,
             operation_type: seed.operation_type,
@@ -1922,6 +1965,14 @@ impl ActionSpec {
     #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.type_mut().description = Some(description.into());
+        self
+    }
+
+    /// Show `state` on the action's row ([`ActionState`]): publish the
+    /// action anew when it changes.
+    #[must_use]
+    pub fn with_state(mut self, state: ActionState) -> Self {
+        self.type_mut().state = state;
         self
     }
 

@@ -4,6 +4,20 @@
 use super::LiveAppActionsProvider;
 
 impl LiveAppActionsProvider {
+    /// What `read` says of the published action behind row `id`, when the
+    /// retained snapshot holds it.
+    pub(super) fn published_entry<T>(
+        &self,
+        id: &str,
+        read: impl FnOnce(&super::PublishedAction) -> T,
+    ) -> Option<T> {
+        let snapshot = self.surface_snapshot.borrow();
+        snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.entry(id))
+            .map(|(_, action)| read(action))
+    }
+
     /// The icon and picture of row `id`.
     pub(super) fn row_picture(
         &self,

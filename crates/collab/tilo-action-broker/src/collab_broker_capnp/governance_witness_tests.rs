@@ -27,6 +27,7 @@ impl WorkspaceGovernanceServices for Governance {
     }
     fn descriptors(&self, _: &Workspace) -> Vec<ActionDescriptor> {
         vec![ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             address: tilo_actions::ActionAddress::new(RESOURCE, ACTION),
             resource_kind: RESOURCE.into(),
             contract: tilo_actions::ActionContract {

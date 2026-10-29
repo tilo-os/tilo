@@ -54,6 +54,7 @@ impl HostStepServices for Counter {
 
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             address: tilo_actions::ActionAddress::new(RESOURCE, "read"),
             resource_kind: RESOURCE.into(),

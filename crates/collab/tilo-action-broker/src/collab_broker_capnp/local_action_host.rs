@@ -852,6 +852,7 @@ mod tests {
             provider,
             "test-app",
             ActionDescriptor {
+                state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address,
                 resource_kind: "test-resource".into(),

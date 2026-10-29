@@ -104,6 +104,7 @@ impl HostStepServices for Steps {
 
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         vec![tilo_actions::ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
             semantic_identity: None,
             icon: None,
             address: tilo_actions::ActionAddress::new(
