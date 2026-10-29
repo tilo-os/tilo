@@ -643,6 +643,15 @@ impl ui::widget::Filterable for SettingsWindow {
 }
 
 impl Widget for SettingsWindow {
+    // Tests and hosts reach the window by its type.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::widget::Queryable>() {
             if self.pane_query().is_some() {

@@ -117,7 +117,7 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
     /// A toggle for the flag at `field`.
     pub fn toggle(self, field: Path<R, bool>) -> Item {
         let on = self.cx.value_at(&field);
-        let toggle = self.bound(
+        let toggle = bound(
             self.toggle_widget(&on),
             self.cx.actions().field_binding(field),
         );
@@ -139,7 +139,7 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
     /// A slider for the number at `field`.
     pub fn slider(self, field: Path<R, f64>) -> Item {
         let value = self.cx.value_at(&field);
-        let slider = self.bound(
+        let slider = bound(
             self.slider_widget(&value),
             self.cx.actions().field_binding(field),
         );
@@ -158,7 +158,7 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
         V: Model + Settable + 'static,
     {
         let value = self.cx.value(read);
-        let slider = self.bound(
+        let slider = bound(
             self.slider_widget(&value),
             self.cx.actions().set_binding(field, value_of),
         );
@@ -193,11 +193,11 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
                     .ok_or_else(|| format!("no choice {index}"))?;
                 value(option.clone())
             });
-            let segments = self.bound(segments, binding);
+            let segments = bound(segments, binding);
             return self.control(Box::new(segments));
         }
         let binding = self.cx.actions().set_binding(field, value);
-        let chooser = self.bound(self.chooser(options, &current), binding);
+        let chooser = bound(self.chooser(options, &current), binding);
         self.control(Box::new(chooser))
     }
 
@@ -216,7 +216,7 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
         let (options, value) = labelled(values, label.clone());
         let current = self.shown(&field, label);
         let binding = self.cx.actions().set_binding(field, value);
-        let menu = self.bound(self.chooser(options, &current), binding);
+        let menu = bound(self.chooser(options, &current), binding);
         self.control(Box::new(menu))
     }
 
@@ -244,7 +244,7 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
             chooser = chooser.with_id(id);
         }
         chooser.set_value_options(choices);
-        let chooser = self.bound(chooser, self.cx.actions().set_binding(field, value));
+        let chooser = bound(chooser, self.cx.actions().set_binding(field, value));
         self.control(Box::new(chooser))
     }
 
@@ -310,7 +310,7 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
                 .cloned()
                 .ok_or_else(|| format!("no choice {index}"))
         });
-        let picker = self.bound(picker, binding);
+        let picker = bound(picker, binding);
         self.stacked = true;
         self.control(Box::new(picker))
     }
@@ -357,19 +357,6 @@ impl<R: Resource<State = R> + Model> Setting<'_, R> {
         item: impl FnOnce(&mut ViewCx<P>) -> Item,
     ) -> Option<Item> {
         record_item(self.cx, record, item)
-    }
-
-    /// `control` bound to `binding`, or disabled where the record does not
-    /// publish it.
-    fn bound<I, C: ActionControl<I>>(
-        &self,
-        control: C,
-        binding: Option<ui::tilo_actions::ActionBinding<I>>,
-    ) -> C {
-        match binding {
-            Some(binding) => control.bind_action(binding),
-            None => control.unavailable(),
-        }
     }
 
     /// The row around a bound `slider`: on the trailing edge at one width
@@ -452,6 +439,18 @@ pub fn record_item<R: Resource, T: 'static, P: Resource>(
         element
     })?;
     Some(Item::from_parts(shape.get(), element))
+}
+
+/// `control` bound to `binding`, or disabled where the record does not
+/// publish it.
+fn bound<I, C: ActionControl<I>>(
+    control: C,
+    binding: Option<ui::tilo_actions::ActionBinding<I>>,
+) -> C {
+    match binding {
+        Some(binding) => control.bind_action(binding),
+        None => control.unavailable(),
+    }
 }
 
 /// The most options a row shows as segments rather than a menu.
