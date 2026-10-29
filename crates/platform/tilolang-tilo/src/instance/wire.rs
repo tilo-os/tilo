@@ -137,7 +137,8 @@ impl Convert<'_> {
             | Value::Node(_)
             | Value::Rec(_)
             | Value::Event
-            | Value::State { .. } => wire::Value::Unit,
+            | Value::State { .. }
+            | Value::AtEvent { .. } => wire::Value::Unit,
         }
     }
 }

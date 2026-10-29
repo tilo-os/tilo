@@ -145,6 +145,11 @@ impl Runtime {
             .chain(meta.views.iter().map(|v| format!("v_{}", v.id)))
             .chain(meta.flows.iter().map(|f| format!("f_{}", f.id)))
             .chain(meta.fns.iter().map(|f| format!("n_{}", f.id)))
+            .chain(
+                meta.at_event
+                    .iter()
+                    .map(|f| tilolang::ir::at_event_export(&f.id)),
+            )
             .chain(meta.actions.iter().flat_map(|a| {
                 a.params
                     .iter()
