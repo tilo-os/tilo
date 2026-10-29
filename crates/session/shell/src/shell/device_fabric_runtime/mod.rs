@@ -1508,7 +1508,7 @@ impl BluetoothHandoffTransaction {
 
 #[derive(Debug)]
 enum BluetoothWorkerOutcome {
-    TargetInspected(Result<os_actions::BluetoothHandoffTarget, String>),
+    TargetInspected(Result<os_actions::bluez::HandoffTarget, String>),
     SourceDisconnected(Result<(), String>),
     TargetPaired(Result<(), String>),
     TargetConnected(Result<(), String>),
@@ -1550,22 +1550,26 @@ impl BluetoothHandoffState {
         std::thread::spawn(move || {
             let outcome = match operation {
                 BluetoothWorkerOperation::InspectTarget => BluetoothWorkerOutcome::TargetInspected(
-                    os_actions::inspect_bluetooth_handoff_target(
+                    os_actions::bluez::inspect_handoff_target(
                         &address,
                         BLUETOOTH_HANDOFF_DISCOVERY,
                     ),
                 ),
                 BluetoothWorkerOperation::DisconnectSource => {
-                    BluetoothWorkerOutcome::SourceDisconnected(os_actions::bt_disconnect(&address))
+                    BluetoothWorkerOutcome::SourceDisconnected(
+                        os_actions::bluez::disconnect_address(&address),
+                    )
                 }
-                BluetoothWorkerOperation::PairTarget => BluetoothWorkerOutcome::TargetPaired(
-                    os_actions::pair_bluetooth_handoff(&address),
+                BluetoothWorkerOperation::PairTarget => {
+                    BluetoothWorkerOutcome::TargetPaired(os_actions::bluez::pair_handoff(&address))
+                }
+                BluetoothWorkerOperation::ConnectTarget => BluetoothWorkerOutcome::TargetConnected(
+                    os_actions::bluez::connect_address(&address),
                 ),
-                BluetoothWorkerOperation::ConnectTarget => {
-                    BluetoothWorkerOutcome::TargetConnected(os_actions::bt_connect(&address))
-                }
                 BluetoothWorkerOperation::ReconnectSource => {
-                    BluetoothWorkerOutcome::SourceReconnected(os_actions::bt_connect(&address))
+                    BluetoothWorkerOutcome::SourceReconnected(os_actions::bluez::connect_address(
+                        &address,
+                    ))
                 }
             };
             let _ = result_tx.send(BluetoothWorkerResult {
@@ -1680,7 +1684,7 @@ fn run_bluetooth_rollback(
         ),
         BluetoothRollback::DisconnectTarget => {
             std::thread::spawn(move || {
-                let _ = os_actions::bt_disconnect(&address);
+                let _ = os_actions::bluez::disconnect_address(&address);
             });
         }
     }
@@ -4747,7 +4751,7 @@ fn pump_bluetooth_handoffs(network: &ShellNetwork) {
         if !transaction.outbound && transaction.phase == BluetoothHandoffPhase::AwaitingAcceptance {
             let address = transaction.address.clone();
             std::thread::spawn(move || {
-                let _ = os_actions::bt_disconnect(&address);
+                let _ = os_actions::bluez::disconnect_address(&address);
             });
         }
         tracing::warn!(
@@ -4782,11 +4786,11 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
                     return None;
                 }
                 match inspected {
-                    Some(os_actions::BluetoothHandoffTarget::Paired) => {
+                    Some(os_actions::bluez::HandoffTarget::Paired) => {
                         transaction.phase = BluetoothHandoffPhase::Ready;
                         Some((transaction.clone(), true))
                     }
-                    Some(os_actions::BluetoothHandoffTarget::Pairable) => {
+                    Some(os_actions::bluez::HandoffTarget::Pairable) => {
                         transaction.phase = BluetoothHandoffPhase::AwaitingLocalAuthorization;
                         None
                     }
@@ -4946,7 +4950,7 @@ fn finish_bluetooth_worker(network: &ShellNetwork, result: BluetoothWorkerResult
                 }
                 if success {
                     std::thread::spawn(move || {
-                        let _ = os_actions::bt_disconnect(&address);
+                        let _ = os_actions::bluez::disconnect_address(&address);
                     });
                 }
             }
@@ -4982,7 +4986,7 @@ pub fn request_bluetooth_handoff(
     target: &tilo_network_actor::fabric::DeviceId,
 ) -> Result<[u8; 16], String> {
     require_continuity(ContinuityCapability::Media)?;
-    if !super::device_fabric::valid_bluetooth_address(address)
+    if !os_actions::bluez::valid_address(address)
         || name.is_empty()
         || name.len() > 128
         || name.chars().any(char::is_control)
@@ -4991,9 +4995,9 @@ pub fn request_bluetooth_handoff(
             "device-fabric-error-bt-identity-invalid",
         ));
     }
-    let accessory = os_actions::list_bt_devices()?
+    let accessory = os_actions::bluez::paired_devices()?
         .into_iter()
-        .find(|device| device.mac.eq_ignore_ascii_case(address) && device.connected)
+        .find(|device| device.address.eq_ignore_ascii_case(address) && device.connected)
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-bt-not-connected"))?;
     if accessory.name.is_empty()
         || accessory.name.len() > 128

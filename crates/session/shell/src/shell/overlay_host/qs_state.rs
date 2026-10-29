@@ -65,8 +65,8 @@ impl ShellOverlayHost {
                     .into_iter()
                     .map(|d| BtDevice {
                         name: d.name,
-                        address: d.mac,
-                        battery: d.battery,
+                        address: d.address,
+                        battery: d.battery.unwrap_or(0),
                         connected: d.connected,
                     })
                     .collect();

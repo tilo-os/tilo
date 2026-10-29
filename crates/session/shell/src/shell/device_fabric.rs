@@ -1123,7 +1123,7 @@ impl PersonalFabricActionEnvelope {
                     .map_err(|_| FabricError::InvalidAction)?;
             }
             PersonalFabricAction::BluetoothHandoffPrepare { address, name } => {
-                if !valid_bluetooth_address(address)
+                if !os_actions::bluez::valid_address(address)
                     || name.is_empty()
                     || name.len() > 128
                     || name.chars().any(char::is_control)
@@ -1153,7 +1153,7 @@ impl PersonalFabricActionEnvelope {
                 request_id,
                 address,
             } => {
-                if request_id == &[0; 16] || !valid_bluetooth_address(address) {
+                if request_id == &[0; 16] || !os_actions::bluez::valid_address(address) {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -2664,24 +2664,12 @@ fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
     }
 }
 
-pub(super) fn valid_bluetooth_address(address: &str) -> bool {
-    let bytes = address.as_bytes();
-    bytes.len() == 17
-        && bytes.iter().enumerate().all(|(index, byte)| {
-            if matches!(index, 2 | 5 | 8 | 11 | 14) {
-                *byte == b':'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
-}
-
 fn valid_bluetooth_pairing_action(
     request_id: &[u8; 16],
     address: &str,
     authorization: &[u8; 16],
 ) -> bool {
-    request_id != &[0; 16] && authorization != &[0; 16] && valid_bluetooth_address(address)
+    request_id != &[0; 16] && authorization != &[0; 16] && os_actions::bluez::valid_address(address)
 }
 
 /// Whether a settings-store leaf is part of a person's fabric: a leaf of a

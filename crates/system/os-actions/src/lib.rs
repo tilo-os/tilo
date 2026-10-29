@@ -39,7 +39,6 @@
 
 pub mod backlight_events;
 pub mod battery;
-pub mod bluetooth;
 pub mod bluez;
 pub mod brightness;
 pub mod bus_follow;
@@ -78,10 +77,6 @@ pub use battery::{
     BatteryHistory, BatteryHistoryPoint, BatteryInfo, CapacityUnit, ChargeCapBackend,
     ChargeCapCapability, PowerDevice, PowerSupplyKind, charge_capability, load_battery_history,
     power_devices, set_charge_limit, set_charge_limit_checked,
-};
-pub use bluetooth::{
-    BluetoothHandoffTarget, BtDeviceInfo, bt_connect, bt_disconnect, get_bluetooth,
-    inspect_bluetooth_handoff_target, list_bt_devices, pair_bluetooth_handoff, set_bluetooth,
 };
 pub use brightness::{
     BrightnessKind, BrightnessService, BrightnessTarget, MonitorBrightness, MonitorLevel,
@@ -307,7 +302,7 @@ pub trait Dispatcher {
     /// Returns an error when the address is unknown locally or `BlueZ` cannot
     /// establish the requested profiles.
     fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluetooth::bt_connect(address)
+        bluez::connect_address(address)
     }
     /// Disconnect an accessory without forgetting its local bond.
     ///
@@ -316,7 +311,7 @@ pub trait Dispatcher {
     /// Returns an error when the address is unknown locally or `BlueZ` rejects
     /// the disconnect.
     fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluetooth::bt_disconnect(address)
+        bluez::disconnect_address(address)
     }
     /// Enable or disable wired (ethernet) networking.
     ///
@@ -456,10 +451,10 @@ impl Dispatcher for RealDispatcher {
         bluez::set_powered(enabled)
     }
     fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluetooth::bt_connect(address)
+        bluez::connect_address(address)
     }
     fn disconnect_bluetooth(&self, address: &str) -> Result<(), String> {
-        bluetooth::bt_disconnect(address)
+        bluez::disconnect_address(address)
     }
     fn set_wired(&self, enabled: bool) -> Result<(), String> {
         network::set_wired(enabled)
