@@ -731,16 +731,7 @@ impl App {
             if let (Some(act), Some(fid)) = (action, app.focused_node) {
                 let mut any = false;
                 for _ in 0..times {
-                    any |= app
-                        .dispatch_node(fid, |widget, doc, root| {
-                            widget.perform_action(
-                                &act,
-                                &[],
-                                &mut crate::widget::Edits::lend(doc),
-                                root,
-                            )
-                        })
-                        .unwrap_or(false);
+                    any |= app.perform_node_action(fid, &act).unwrap_or(false);
                 }
                 if any {
                     handled = true;

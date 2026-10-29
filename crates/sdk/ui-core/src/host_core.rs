@@ -295,6 +295,18 @@ pub(crate) trait HostCore {
         }
     }
 
+    /// Perform `action` on the widget laid out at `node`, writing through
+    /// its binding. Whether the widget took it.
+    fn perform_node_action(
+        &mut self,
+        node: NodeId,
+        action: &crate::a11y::Action,
+    ) -> Result<bool, crate::bound_dispatch::BoundDispatchError> {
+        self.dispatch_node(node, |widget, doc, root| {
+            widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
+        })
+    }
+
     fn dispatch_semantic_node<R>(
         &mut self,
         node: NodeId,

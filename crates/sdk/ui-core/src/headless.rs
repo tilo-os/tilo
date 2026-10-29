@@ -1335,14 +1335,7 @@ impl FrameHarness {
             return;
         };
         let activated = self
-            .dispatch_node(focused, |widget, doc, root| {
-                widget.perform_action(
-                    &crate::a11y::Action::Activate,
-                    &[],
-                    &mut crate::widget::Edits::lend(doc),
-                    root,
-                )
-            })
+            .perform_node_action(focused, &crate::a11y::Action::Activate)
             .unwrap_or(false);
         if activated {
             *handled = true;
