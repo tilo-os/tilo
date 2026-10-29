@@ -499,11 +499,12 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
+        let project = returned_ref(w.call(&apps.todo, "new_project", vec![res(&list)]));
         w.call(
             &apps.todo,
             "rename",
-            vec![res(&list), Value::text("Groceries")],
+            vec![res(&project), Value::text("Groceries")],
         );
         post(&w, &apps, &conv, "agent:helper", "", "1 + 2");
         post(
@@ -512,7 +513,7 @@ mod cases {
             &conv,
             "agent:helper",
             "",
-            &format!("@todo.TodoList:{}", list.id_string()),
+            &format!("@todo.Project:{}", project.id_string()),
         );
         let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(view.tree());
@@ -699,12 +700,12 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         let first = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
         let second = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("eggs")]));
         let remove = |item: &ResourceRef| {
             format!(
-                "button(\"Remove\", on: todo.remove(@todo.TodoList:{}, @todo.Todo:{}))",
+                "button(\"Remove\", on: todo.remove(@todo.Tasks:{}, @todo.Task:{}))",
                 list.id_string(),
                 item.id_string()
             )
@@ -758,9 +759,9 @@ mod cases {
         let (mut a, mut b) = (AmStore::new(), AmStore::new());
         let (wa, wb) = (world(&apps, &a), world(&apps, &b));
         let (_, conv) = start_chat(&wa, &apps);
-        let list = wa.create("TodoList");
+        let list = wa.create("Tasks");
         wa.auth.trust_principal("agent:helper");
-        let src = format!("todo.add(@todo.TodoList:{}, \"bread\")", list.id_string());
+        let src = format!("todo.add(@todo.Tasks:{}, \"bread\")", list.id_string());
         let message = post(&wa, &apps, &conv, "agent:helper", "", &src);
 
         assert_eq!(
@@ -805,9 +806,9 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         w.auth.trust_principal("agent:helper");
-        let src = format!("todo.add(@todo.TodoList:{}, \"spam\")", list.id_string());
+        let src = format!("todo.add(@todo.Tasks:{}, \"spam\")", list.id_string());
 
         let mallory = Principal::new("person:mallory");
         let message = post(&w, &apps, &conv, "person:mallory", "", &src);
@@ -1072,14 +1073,15 @@ mod cases {
     fn a_lists_filter_is_window_state_and_changes_nothing_in_the_list() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         for (t, done) in [("milk", true), ("eggs", false)] {
             let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
             if done {
                 w.call(&apps.todo, "check", vec![res(&item)]);
             }
         }
-        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+        // It starts on the inbox: what is in no project, done or not.
         assert_eq!(row_titles(v.tree()), ["milk", "eggs"]);
         let before = w.rt.history(&list.doc).unwrap().len();
         choose(&v, "is:done");
@@ -1092,11 +1094,11 @@ mod cases {
         );
         assert_eq!(
             (
-                &node_with(tree, "ui.NavItem", "key", "all").props["count"],
-                &node_with(tree, "ui.NavItem", "key", "is:open").props["count"],
+                &node_with(tree, "ui.NavItem", "key", "is:inbox").props["count"],
+                &node_with(tree, "ui.NavItem", "key", "is:today").props["count"],
                 &node_with(tree, "ui.NavItem", "key", "is:done").props["count"]
             ),
-            (&Value::Int(2), &Value::Int(1), &Value::Int(1))
+            (&Value::Int(2), &Value::Int(0), &Value::Int(1))
         );
 
         assert_eq!(
@@ -1329,15 +1331,19 @@ mod cases {
     fn todo_is_one_row_per_item_at_every_width() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         for t in ["a", "b"] {
             w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]);
         }
-        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
             assert!(of_kind(tree, "grid").is_empty());
-            assert!(of_kind(tree, "ui.TextInput").is_empty());
+            assert_eq!(
+                of_kind(tree, "ui.TextInput").len(),
+                1,
+                "the quick add alone"
+            );
             let rows = of_kind(tree, "ui.ListRow");
             assert_eq!(rows.len(), 2);
             assert!(
@@ -1351,13 +1357,13 @@ mod cases {
     fn the_new_item_action_adds_an_item_that_opens_in_its_editor() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("TodoList");
-        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        let list = w.create("Tasks");
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         assert_eq!(
             text_prop(of_kind(v.tree(), "ui.EmptyState")[0], "title"),
-            "Nothing to do"
+            "No tasks here"
         );
-        let item = returned_ref(w.call(&apps.todo, "new_item", vec![res(&list)]));
+        let item = returned_ref(w.call(&apps.todo, "new_task", vec![res(&list)]));
         v.poll_patches().unwrap();
         assert_eq!(item_titled(v.tree(), ""), item);
         let editor = w.rt.open_resource(&me(), &item, None).unwrap();
@@ -1372,7 +1378,7 @@ mod cases {
     fn an_action_whose_requirement_fails_is_not_offered_and_is_refused_with_its_reason() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
         let labels = |v: &ViewInstance| -> Vec<String> {
             of_kind(v.tree(), "ui.Button")
@@ -1380,7 +1386,7 @@ mod cases {
                 .map(|button| text_prop(button, "label"))
                 .collect()
         };
-        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         assert!(
             !labels(&v).contains(&"Clear done".to_owned()),
             "nothing is done, so the header offers no Clear done: {:?}",
@@ -1409,7 +1415,7 @@ mod cases {
     fn clearing_done_removes_only_the_finished_items() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let list = w.create("TodoList");
+        let list = w.create("Tasks");
         for (t, done) in [("milk", true), ("eggs", false), ("rice", true)] {
             let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text(t)]));
             if done {
