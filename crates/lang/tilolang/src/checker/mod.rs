@@ -17,6 +17,7 @@
 //! there are no closures at run time. Every error found is reported, not only the first
 //! ([`crate::diag`]).
 
+mod agentq;
 mod boundary;
 mod call;
 mod component;
@@ -114,6 +115,9 @@ struct FnState {
     prefix: String,
     /// The templates being expanded, outermost first.
     expanding: Vec<String>,
+    /// The resource the view being lowered shows: its first parameter, when that is one. What
+    /// the system's parts of its controls are about (a rich input's `@` drawer).
+    subject: Option<(LocalId, Ty)>,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.
@@ -479,6 +483,11 @@ impl Checker<'_> {
 
     fn run_view(&mut self, c: &Callable, v: &ast::ViewDecl) -> ir::Func {
         self.begin(Ctx::View, &c.params, Ty::View, &c.id);
+        self.st.subject = c
+            .params
+            .first()
+            .and_then(|p| self.lookup(&p.name))
+            .filter(|(_, ty)| matches!(ty, Ty::Record(_)));
         let rest = self.view_state(&c.name, &v.body);
         let env = self.env;
         let row_of = env
@@ -936,6 +945,26 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
+        if let Some(kind) = info.origin.as_deref().and_then(crate::origin::kind)
+            && let Some(of) = kind.field(&field.name)
+            && !of.people
+            && !self.st.scenario
+        {
+            self.err(
+                "E113",
+                field.span,
+                format!(
+                    "`{}` comes from the service (`{}`): only it writes it, so a refresh never undoes what someone did; people change {}",
+                    field.name,
+                    kind.name,
+                    {
+                        let theirs: Vec<&str> =
+                            kind.fields.iter().filter(|f| f.people).map(|f| f.name).collect();
+                        if theirs.is_empty() { "none of its fields".to_owned() } else { theirs.join(", ") }
+                    }
+                ),
+            );
+        }
         if self.st.ctx != Ctx::Action {
             let who = self.st.ctx.word();
             self.err("E040", span, format!("{who} cannot change `{}.{}`; only an action mutates fields. Write an action and apply it", key.name, f.name));

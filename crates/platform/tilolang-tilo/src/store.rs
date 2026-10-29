@@ -2693,6 +2693,22 @@ impl Store for TiloStore {
         self.inner.borrow_mut().subs.retain(|held| held.id != sub);
     }
 
+    /// The last `window` notes of the document, newest first, read in place.
+    fn recent_authors(
+        &self,
+        at: &ResourceRef,
+        limit: usize,
+        window: usize,
+    ) -> Result<Vec<String>, StoreError> {
+        let inner = self.inner.borrow();
+        if !inner.index.contains_key(&at.doc) {
+            return Err(not_found(format!("resource {}", at.doc)));
+        }
+        Ok(inner.notes.get(&at.doc).map_or_else(Vec::new, |notes| {
+            tilolang_runtime::store::recent_authors_in(notes.iter().rev().take(window), at, limit)
+        }))
+    }
+
     fn outbox_pending(&self) -> Vec<OutboxEntry> {
         let inner = self.inner.borrow();
         // A store without the record has queued nothing yet; what the record holds is carried

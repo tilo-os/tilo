@@ -1,6 +1,6 @@
 //! Installed Flatpak inventory and target-user restoration. Home migration owns
 //! `.var/app` and the user installation (including overrides and OSTree objects).
-//! System apps are reinstalled through Flatpak, never by copying deployment refs.
+//! System apps travel as a sealed applications unit of their signed deployments.
 //! No imported application is launched and signature verification stays enabled.
 
 use serde::{Deserialize, Serialize};
@@ -208,17 +208,6 @@ pub fn discover(runner: &impl Runner, home: &Path) -> Result<Inventory, String> 
     Ok(result)
 }
 
-/// A reviewed repository definition including its signing key. Remote names
-/// are target names, preventing collisions between source installations. Only
-/// the explicitly supplied `.flatpakrepo` files may establish new trust.
-#[derive(Clone, Debug)]
-pub struct ApprovedRemote {
-    pub source_installation: Installation,
-    pub source_name: String,
-    pub target_name: String,
-    pub definition: PathBuf,
-}
-
 /// Resolve each installation root using a deployed ref rather than guessing
 /// custom system installation paths. No filesystem content is copied here.
 pub fn installation_roots(
@@ -274,123 +263,6 @@ pub fn installation_roots(
 pub struct RestoreReport {
     pub restored: Vec<String>,
     pub failed: Vec<(String, String)>,
-}
-
-/// Reinstalls selected system refs in the new user's installation. Runtimes
-/// precede apps; Flatpak also resolves dependencies and verifies signatures.
-/// Online restores need the original repositories. Sideload repositories can
-/// reduce downloads but do not promise offline availability of remote indexes.
-/// User refs are owned by the full-home transfer and must not be passed here.
-pub fn restore_system_refs(
-    runner: &impl Runner,
-    target_home: &Path,
-    selected: &[InstalledRef],
-    approved: &[ApprovedRemote],
-    sideload: Option<&Path>,
-) -> Result<RestoreReport, String> {
-    restore_refs(runner, target_home, selected, approved, sideload, false)
-}
-pub fn repair_system_refs(
-    runner: &impl Runner,
-    target_home: &Path,
-    selected: &[InstalledRef],
-    approved: &[ApprovedRemote],
-) -> Result<RestoreReport, String> {
-    restore_refs(runner, target_home, selected, approved, None, true)
-}
-fn restore_refs(
-    runner: &impl Runner,
-    target_home: &Path,
-    selected: &[InstalledRef],
-    approved: &[ApprovedRemote],
-    sideload: Option<&Path>,
-    reinstall: bool,
-) -> Result<RestoreReport, String> {
-    let mut mapping = BTreeMap::new();
-    let mut target_names = BTreeSet::new();
-    for remote in approved {
-        if !token(&remote.source_name)
-            || !token(&remote.target_name)
-            || !remote.definition.is_absolute()
-            || remote
-                .definition
-                .extension()
-                .is_none_or(|ext| ext != "flatpakrepo")
-            || !target_names.insert(remote.target_name.clone())
-            || mapping
-                .insert(
-                    (
-                        remote.source_installation.clone(),
-                        remote.source_name.clone(),
-                    ),
-                    remote,
-                )
-                .is_some()
-        {
-            return Err("Invalid or ambiguous approved Flatpak remote".into());
-        }
-    }
-    let mut targets = BTreeSet::new();
-    for item in selected {
-        if item.installation == Installation::User
-            || !reference(&item.reference)
-            || !token(&item.origin)
-        {
-            return Err("Invalid system Flatpak selection".into());
-        }
-        if !targets.insert(item.reference.clone()) {
-            return Err("Choose one source for each Flatpak application or runtime".into());
-        }
-    }
-    if sideload.is_some_and(|path| !path.is_absolute()) {
-        return Err("Flatpak sideload repository must be absolute".into());
-    }
-    let mut report = RestoreReport::default();
-    let mut ready = BTreeSet::new();
-    let mut refs: Vec<_> = selected.iter().collect();
-    refs.sort_by_key(|item| (item.app_id().is_some(), item.reference.clone()));
-    for item in refs {
-        let key = (item.installation.clone(), item.origin.clone());
-        let Some(remote) = mapping.get(&key) else {
-            report
-                .failed
-                .push((item.reference.clone(), "Repository needs approval".into()));
-            continue;
-        };
-        if ready.insert(key.clone()) {
-            let args = vec![
-                "remote-add".into(),
-                "--user".into(),
-                "--if-not-exists".into(),
-                "--from".into(),
-                remote.target_name.clone(),
-                remote.definition.to_string_lossy().into_owned(),
-            ];
-            if let Err(error) = runner.run(target_home, &args) {
-                ready.remove(&key);
-                report.failed.push((item.reference.clone(), error));
-                continue;
-            }
-        }
-        let mut args = vec![
-            "install".into(),
-            "--user".into(),
-            "--noninteractive".into(),
-            "--assumeyes".into(),
-        ];
-        if reinstall {
-            args.push("--reinstall".into());
-        }
-        if let Some(repo) = sideload {
-            args.push(format!("--sideload-repo={}", repo.display()));
-        }
-        args.extend([remote.target_name.clone(), item.reference.clone()]);
-        match runner.run(target_home, &args) {
-            Ok(_) => report.restored.push(item.reference.clone()),
-            Err(error) => report.failed.push((item.reference.clone(), error)),
-        }
-    }
-    Ok(report)
 }
 
 /// Exports installed signed objects with Flatpak's native USB exporter. It

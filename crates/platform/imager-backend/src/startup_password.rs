@@ -2,6 +2,15 @@
 //! A host cannot attest the destination's TPM policy, so preparation always
 //! requires an independent disk passphrase rather than a TPM-protected PIN.
 
+/// The destination's own rule on the live installer, which can attest its
+/// TPM policy: a short TPM PIN when `tpm_pin`, else the strong passphrase.
+///
+/// # Errors
+/// The sentence that says why `secret` is refused.
+pub fn validate_on_destination(secret: &str, tpm_pin: bool) -> Result<(), &'static str> {
+    tilo_unlock_protocol::startup_secret::validate(secret, tpm_pin)
+}
+
 /// Presentation-independent rejection of a prepared installation password.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValidationError {

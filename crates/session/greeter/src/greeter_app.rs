@@ -65,6 +65,7 @@ use ui::widget::{
 
 mod boot_mode;
 mod console;
+mod recovery;
 mod sign_in_comforts;
 mod touch_keyboard;
 
@@ -628,8 +629,13 @@ struct Requests {
     power: Cell<Option<PowerAction>>,
     account: Cell<Option<usize>>,
     accessibility: Cell<Option<AccessibilityRequest>>,
-    /// "Can't sign in", at the boot sign-in.
+    /// "Can't sign in": the other ways of opening the disk at boot, the
+    /// recovery form after it.
     cant_sign_in: Cell<bool>,
+    /// Set the new secret with the recovery key.
+    recover: Cell<bool>,
+    /// Leave the recovery form.
+    cancel_recovery: Cell<bool>,
 }
 
 const SESSION_DIAGNOSTICS: [(&str, &str); 4] = [
@@ -756,6 +762,10 @@ pub struct GreeterApp {
     /// Whether a keyboard is attached, where the kiosk's own report cannot
     /// be trusted ([`crate::keyboards`]); `None` takes the host's.
     keyboards: Option<bool>,
+    /// The recovery form, in the passcode form's place while it is open.
+    recovery: Option<recovery::Recovery>,
+    /// `tilo-authd`'s socket, which sets a new secret.
+    auth_socket: std::path::PathBuf,
 }
 
 /// The greeter as the boot's sign-in screen: it shows the people and notes
@@ -996,6 +1006,8 @@ impl GreeterApp {
             touch_keyboard: touch_keyboard::Shared::default(),
             environment: ui::InteractionEnvironment::default(),
             keyboards: None,
+            recovery: None,
+            auth_socket: crate::handoff::DEFAULT_SOCKET.into(),
         }
     }
 
@@ -1426,6 +1438,9 @@ impl GreeterApp {
     /// The credentials, the sign-in action beside the passcode, the status
     /// line, the alternate factor, and the other accounts to switch to.
     fn build_form(&self, busy: bool, theme: &Theme, align: AlignItems) -> Box<dyn Widget> {
+        if let Some(recovery) = &self.recovery {
+            return self.build_recovery(recovery, theme, align);
+        }
         let s = &theme.tokens.spacing;
         let challenge = self.auth_session.as_ref().and_then(AuthSession::challenge);
         let mut form: Vec<Box<dyn Widget>> = Vec::new();
@@ -1485,6 +1500,9 @@ impl GreeterApp {
                     .width_auto(),
                 )),
         ));
+        // Directly under the field, at boot and after it alike, so the card
+        // is the same on both.
+        form.extend(self.build_cant_sign_in(busy, align));
         if self.phase == AuthPhase::Authenticating && self.auth_session.is_some() {
             let requests = Rc::clone(&self.requests);
             form.push(Box::new(
@@ -1521,7 +1539,6 @@ impl GreeterApp {
         if self.offers_account_choice() {
             form.push(self.build_accounts(busy, theme, align));
         }
-        form.extend(self.build_cant_sign_in(busy, align));
         Box::new(
             Stack::column(s.s3, form)
                 .max_width(FORM_WIDTH)
@@ -1724,12 +1741,17 @@ impl GreeterApp {
     ///
     /// Focus continuity contract: the focusable set is, in tree order, the
     /// optional username field, passcode field (and its show/hide control),
-    /// sign-in action, fingerprint action, other accounts, then the footer's
+    /// sign-in action, "Can't sign in" (at boot, and after it with a known
+    /// account), fingerprint action, other accounts, then the footer's
     /// accessibility toggles, session picker (only with more than one
     /// session) and power menu. With a known account the passcode is the
-    /// first focusable control. Notices, the Caps-Lock note and the spinner
-    /// are non-focusable, so an incidental rebuild keeps keyboard focus AND
-    /// the caret in place — see `main.rs`'s `autofocus_on_structure_change`.
+    /// first focusable control. While the recovery form is open it stands
+    /// in the passcode form's place: the recovery key, the new secret, its
+    /// confirmation, Cancel and the action that sets it, the key first so
+    /// it takes focus when the form opens. Notices, the Caps-Lock note and
+    /// the spinner are non-focusable, so an incidental rebuild keeps keyboard
+    /// focus AND the caret in place — see `main.rs`'s
+    /// `autofocus_on_structure_change`.
     ///
     /// While an attempt is in flight the inputs are **disabled** (dimmed and
     /// dropped from the focus order); the phase transition raises
@@ -2282,8 +2304,13 @@ impl Widget for GreeterApp {
             self.clear_password();
             self.dirty_structure = true;
         }
+        // Enter in the recovery form sets the new secret.
         if self.requests.sign_in.take() {
-            self.attempt_login(AuthMethod::Password);
+            if self.recovery.is_some() {
+                self.submit_recovery();
+            } else {
+                self.attempt_login(AuthMethod::Password);
+            }
         }
 
         if self.requests.fingerprint.take() {
@@ -2294,17 +2321,25 @@ impl Widget for GreeterApp {
             self.request_power(action);
         }
 
-        if self.requests.cant_sign_in.take()
-            && self.phase == AuthPhase::Idle
-            && let Some(boot) = &self.boot
-        {
-            self.clear_password();
-            if boot.link.cant_sign_in().is_ok() {
-                self.begin_authenticating();
+        if self.requests.cant_sign_in.take() && self.phase == AuthPhase::Idle {
+            if let Some(boot) = &self.boot {
+                self.clear_password();
+                if boot.link.cant_sign_in().is_ok() {
+                    self.begin_authenticating();
+                } else {
+                    self.show_error("greeter-error-service");
+                }
             } else {
-                self.show_error("greeter-error-service");
+                self.open_recovery();
             }
         }
+        if self.requests.recover.take() {
+            self.submit_recovery();
+        }
+        if self.requests.cancel_recovery.take() {
+            self.cancel_recovery();
+        }
+        self.take_recovery_result();
     }
 
     fn build_layout(
@@ -2493,7 +2528,12 @@ impl Widget for GreeterApp {
             self.requests.sign_in.set(true);
             *ctx.handled = true;
         }
-        // Esc not taken by an open menu starts the passcode over.
+        // Esc not taken by an open menu leaves the recovery form, or starts
+        // the passcode over.
+        if escape_pressed && !*ctx.handled && self.recovery.is_some() {
+            self.requests.cancel_recovery.set(true);
+            *ctx.handled = true;
+        }
         if escape_pressed && !*ctx.handled && self.phase == AuthPhase::Idle {
             self.clear_form();
             *ctx.handled = true;
@@ -2579,6 +2619,10 @@ impl Widget for GreeterApp {
             return;
         }
         if self.keep_screen_reader_chord(payload) {
+            return;
+        }
+        if payload == recovery::RECOVERY_WAKE {
+            self.take_recovery_result();
             return;
         }
         if payload == crate::output_scale::OUTPUTS_WAKE {

@@ -32,7 +32,8 @@ impl FrameHarness {
     /// arrow off the surface and where nothing asks for another.
     #[must_use]
     pub fn pointer_cursor(&self) -> winit::window::CursorIcon {
-        self.pointer_at
+        self.pointer
+            .at
             .and_then(|point| self.cursor_at(point))
             .unwrap_or_default()
     }

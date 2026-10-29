@@ -60,6 +60,16 @@ pub(super) fn create_strip(state: &mut ChromeState, args: &ActionArgs) -> Result
         .map_err(ActionError::Refused)
 }
 
+/// Lay the active workspace's windows out on its canvas.
+pub(super) fn show_canvas(state: &mut ChromeState, _: &ActionArgs) -> Result<(), ActionError> {
+    state.set_arrangement(true).map_err(ActionError::Refused)
+}
+
+/// Lay the active workspace's windows out in their strips again.
+pub(super) fn show_strips(state: &mut ChromeState, _: &ActionArgs) -> Result<(), ActionError> {
+    state.set_arrangement(false).map_err(ActionError::Refused)
+}
+
 pub(super) fn rename_strip(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
     let Some(supplied) = args.text("name") else {
         if args.integer("strip").is_some() {

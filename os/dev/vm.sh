@@ -381,21 +381,30 @@ cmd_pointer() {
     || die "pointer coordinate ($x,$y) is outside ${TILO_XRES}x${TILO_YRES}"
   local qx=$((x * 32767 / (TILO_XRES - 1)))
   local qy=$((y * 32767 / (TILO_YRES - 1)))
-  hmp "mouse_move $qx $qy 1" >/dev/null
+  # Through QMP as absolute axes: HMP's mouse_move queues relative motion,
+  # which the absolute tablet never sees.
+  qmp '{"execute":"input-send-event","arguments":{"events":[
+    {"type":"abs","data":{"axis":"x","value":'"$qx"'}},
+    {"type":"abs","data":{"axis":"y","value":'"$qy"'}}]}}' \
+    || die "pointer: QEMU refused the tablet motion"
 }
 
 cmd_click() {
   local x="${1:?usage: click X Y [left|right|middle]}"
   local y="${2:?usage: click X Y [left|right|middle]}"
-  local button="${3:-left}" mask
+  local button="${3:-left}"
   case "$button" in
-    left) mask=1;; right) mask=2;; middle) mask=4;;
+    left|right|middle) ;;
     *) die "click button must be left, right, or middle";;
   esac
   cmd_pointer "$x" "$y"
-  hmp "mouse_button $mask" >/dev/null
+  qmp '{"execute":"input-send-event","arguments":{"events":[
+    {"type":"btn","data":{"down":true,"button":"'"$button"'"}}]}}' \
+    || die "click: QEMU refused the button press"
   sleep 0.08
-  hmp "mouse_button 0" >/dev/null
+  qmp '{"execute":"input-send-event","arguments":{"events":[
+    {"type":"btn","data":{"down":false,"button":"'"$button"'"}}]}}' \
+    || die "click: QEMU refused the button release"
 }
 
 # One finger on the multitouch screen, which only QMP can drive. Its axes use

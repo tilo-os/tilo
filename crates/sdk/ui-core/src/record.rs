@@ -3465,6 +3465,14 @@ impl RecordStore {
         checkout: &RecordCheckout,
         mutation: collab_types::DocumentMutation,
     ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
+        // The room's record may still be decoding off the frame when its
+        // route's committed history arrives: take it in first, as every open
+        // of it does, so the history lands on it.
+        self.0
+            .try_borrow_mut()
+            .map_err(|_| RecordOpenError::Busy.to_string())?
+            .take_in_opening(&checkout.id, true)
+            .map_err(|error| error.to_string())?;
         let identity = self.replica_identity_stamp(checkout)?;
         let merged = self.with_action_state(&checkout.id, |doc, history, actions| {
             let mut local = doc.clone();

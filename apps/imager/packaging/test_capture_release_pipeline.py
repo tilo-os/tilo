@@ -119,7 +119,7 @@ class BuildOrder(unittest.TestCase):
                 return
             worker = next(i for i, cmd in enumerate(commands) if '--build-only' in cmd)
             assembly = next(i for i, cmd in enumerate(commands) if 'assemble' in cmd)
-            host = next(i for i, cmd in enumerate(commands) if '--bin' in cmd and cmd[-1] == 'imager/host-media-writer')
+            host = next(i for i, cmd in enumerate(commands) if '--bin' in cmd and cmd[-1].startswith('imager/host-media-writer'))
             cohort = next(i for i, cmd in enumerate(commands) if 'cohort' in cmd)
             qualification = len(commands) - 1
             self.assertLess(worker, assembly)
@@ -130,10 +130,11 @@ class BuildOrder(unittest.TestCase):
             prerequisites = commands[worker - 1]
             for package, name in (('tilo-install-helpers', 'tilo-staging-handoff'),
                                   ('tilo-install-helpers', 'tilo-install-handoff-copy'),
+                                  ('tilo-install-helpers', 'tilo-firstboot-home-seeds'),
                                   ('tilo-firstboot-files', 'tilo-firstboot-files')):
                 self.assertIn(package, prerequisites)
                 self.assertIn(name, prerequisites)
-            self.assertIn('tilo-firstboot-home-seeds', commands[host])
+            self.assertIn('tilo-installer', commands[host])
             self.assertIn('tilo-installer-prepared-setup-extract', commands[host])
             self.assertNotIn('TILO_CAPTURE_PINS', calls[worker][1])
             self.assertEqual(calls[host][1]['TILO_CAPTURE_PINS'], str(output / 'pins.json'))

@@ -1,11 +1,7 @@
 //! Production Imager codec → live extractor → installer validator → backend binding.
 #![cfg(target_os = "linux")]
-#[path = "../../../crates/session/installer/src/layouts.rs"]
-pub mod layouts;
-#[path = "../../../crates/session/installer/src/media_profile.rs"]
-pub mod media_profile;
-
 use imager::{model, profile};
+use imager_backend::destination::media_profile;
 use sha2::{Digest, Sha256};
 use std::{fs, process::Command};
 

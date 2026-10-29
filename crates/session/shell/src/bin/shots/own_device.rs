@@ -156,12 +156,8 @@ impl OwnDevice {
 
     /// Bring what this device has to `shown`, which keeps `shown_list` as
     /// the person's list on that device: the signed workspace list, then the
-    /// room's content. Returns the ids of tabs that arrived.
-    pub fn deliver(
-        &mut self,
-        shown: &mut WorkspaceTree,
-        shown_list: &mut PersonalWorkspaces,
-    ) -> Vec<u64> {
+    /// room's content.
+    pub fn deliver(&mut self, shown: &mut WorkspaceTree, shown_list: &mut PersonalWorkspaces) {
         // The laptop's own host serves the room.
         let held = HeldRooms::from([(self.room, self.cert.device_public_key)]);
         self.list.publish_local(&self.tree, &held);
@@ -179,7 +175,6 @@ impl OwnDevice {
         for entry in shown_list.adopt_into(shown, &board.device_public_key).enter {
             let _ = shown.adopt_personal_room(entry.room, &entry.name);
         }
-        let before = tab_ids(shown);
         // The room's content, as its host serves it to every member.
         let content = self
             .tree
@@ -197,10 +192,6 @@ impl OwnDevice {
         {
             workspace.strips = content;
         }
-        tab_ids(shown)
-            .into_iter()
-            .filter(|tab| !before.contains(tab))
-            .collect()
     }
 }
 
@@ -208,15 +199,4 @@ impl OwnDevice {
 pub fn board_list() -> PersonalWorkspaces {
     let (_, cert) = device(&root(), 0xB0, "Orange Pi");
     PersonalWorkspaces::new(cert.user_public_key, cert.device_public_key)
-}
-
-fn tab_ids(tree: &WorkspaceTree) -> Vec<u64> {
-    tree.desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.strips)
-        .flat_map(|strip| &strip.window_groups)
-        .flat_map(|group| &group.tabs)
-        .map(|tab| tab.id)
-        .collect()
 }

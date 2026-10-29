@@ -181,7 +181,19 @@ impl ResourceApp for TlApp {
             window
         };
         // What its runtime invokes is decided by the person's standing as the host keeps it.
-        let window = window.with_standing(cx.standing());
+        let mut window = window.with_standing(cx.standing());
+        // Types whose origin is a mail server are kept in step with the servers of the
+        // workspace's mail accounts, in a live window.
+        if cx.mode() == ui::framework::RunMode::Live
+            && tilolang_tilo::origin::uses_origin(&meta, "imap")
+        {
+            let wake = ui::wake::WakeHandle::new();
+            let origin = crate::mail::live_origin(
+                crate::mail::settings_accounts(cx.storage().config_root()),
+                std::sync::Arc::new(move || wake.wake()),
+            );
+            window = window.with_origin(origin);
+        }
         // A search hit, or an agent's `open`, shows the resource it names.
         let opens = window.open_requests();
         cx.on_open(move |anchor: &str| {

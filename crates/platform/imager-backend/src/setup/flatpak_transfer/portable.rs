@@ -19,11 +19,11 @@ pub(super) mod export;
 mod extra_data;
 pub use export::{ReviewedSubset, SourceExportGrant, SubsetExportGrant};
 mod home_phase;
+mod local;
 mod native;
 #[cfg(test)]
 pub mod native_tests;
 mod restore;
-mod scoped;
 mod selected_state;
 mod stage;
 mod state_grant;
@@ -31,6 +31,7 @@ pub use selected_state::AppState;
 pub use state_grant::ApplicationStateGrant;
 #[cfg(any(test, feature = "test-support"))]
 pub mod tests;
+pub use local::SealedApplications;
 pub use native::{CancellableOfflineRunner, NativeOfflineRunner};
 pub use restore::ApplicationImport;
 pub use stage::{Applications, Expectation, StageGrant, StagedApplications};
@@ -272,6 +273,10 @@ pub struct PortableFlatpakSource {
     selected_state: Option<selected_state::SelectedState>,
 }
 impl PortableFlatpakSource {
+    /// The reviewed selected apps.
+    pub fn selected(&self) -> &[InstalledRef] {
+        &self.selected
+    }
     /// Conservative full-original-repo bound, not a claim of minimal subset size.
     #[cfg(any(
         feature = "capture-worker",
@@ -611,8 +616,7 @@ impl PortableFlatpakSource {
     }
     /// Closed reviewed dependencies come from the protected original intent;
     /// boot never rediscovers a different runtime, extension or latest commit.
-    #[cfg(any(feature = "capture-worker", test))]
-    pub(in crate::setup::flatpak_transfer) fn review_closed_original(
+    pub(in crate::setup) fn review_closed_original(
         runner: &super::SourceScopedRunner<NativeOfflineRunner>,
         inventory: &super::HandoffInventory,
         home: &Path,
@@ -629,7 +633,6 @@ impl PortableFlatpakSource {
     ) -> Result<Arc<Self>, String> {
         Self::review_closed_material(runner, inventory, home, true, cancel)
     }
-    #[cfg(any(feature = "capture-worker", test))]
     fn review_closed_material(
         runner: &super::SourceScopedRunner<NativeOfflineRunner>,
         inventory: &super::HandoffInventory,

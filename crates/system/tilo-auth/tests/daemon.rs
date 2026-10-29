@@ -758,6 +758,57 @@ fn a_secret_changes_with_the_current_one_or_with_the_recovery_key_as_root() {
 }
 
 #[test]
+fn the_login_screen_sets_a_new_secret_with_the_recovery_key() {
+    let m = machine!(true, &[("ada", "123456")]);
+    m.leave_proof();
+    let daemon = m.daemon();
+    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
+    let recovery = m.recovery.formatted();
+    assert_eq!(
+        reply(daemon.handle(
+            ROOT,
+            Request::AddRecovery {
+                user: "ada".into(),
+                secret: secret("123456"),
+                recovery: secret(&recovery),
+            }
+        )),
+        Reply::success()
+    );
+    let change = |current: Option<&str>, recovery: Option<&str>, new: &str| {
+        reply(daemon.handle(
+            GREETER,
+            Request::SetSecret {
+                user: "ada".into(),
+                current: current.map(secret),
+                recovery: recovery.map(secret),
+                new: secret(new),
+            },
+        ))
+    };
+
+    // Knowing the current secret gives the greeter nothing.
+    assert_eq!(
+        change(Some("123456"), None, "2468"),
+        refused(Refusal::NotPermitted)
+    );
+    let other = RecoveryKey::from_bytes([6; 32]).formatted();
+    assert_eq!(change(None, Some(&other), "2468"), refused(Refusal::Wrong));
+    assert_eq!(
+        change(None, Some("not a recovery key"), "2468"),
+        refused(Refusal::Wrong)
+    );
+    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
+
+    assert_eq!(change(None, Some(&recovery), "2468"), Reply::success());
+    assert_eq!(
+        verify(&daemon, ADA, "ada", "123456").error,
+        Some(Refusal::Wrong)
+    );
+    assert_eq!(verify(&daemon, ADA, "ada", "2468"), Reply::success());
+}
+
+#[test]
 fn the_admins_recovery_key_must_be_the_machines() {
     let m = machine!(true, &[("ada", "123456")]);
     m.leave_proof();

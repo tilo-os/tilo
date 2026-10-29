@@ -310,7 +310,10 @@ mod tests {
                 .active_workspace()
                 .unwrap()
                 .room();
-            let record = crate::shell::tab_documents::scratch_tab_record(note);
+            let record = ui::record::RecordCheckout::new(
+                ui::record::RecordId::for_tab(note),
+                ui::record::RecordKind::new("note"),
+            );
             room_index
                 .borrow_mut()
                 .seed_observed([crate::shell::room_records::ObservedRecord {
@@ -496,17 +499,18 @@ mod tests {
         let files = frame
             .mounted_mut(file_explorer::mounted_files)
             .expect("actual Files app");
-        files.refresh();
-        let entries = files.displayed_entries();
+        files.state().refresh();
+        let entries = files.state().displayed_entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "Welcome.txt");
         assert_eq!(entries[0].path, child.join("Welcome.txt"));
         assert!(
             files
+                .state()
                 .open_entry(0, &mut file_explorer::files_app::SystemRunner)
                 .unwrap()
         );
-        let told = files.notice_line().expect("a refused open is said");
+        let told = files.state().notice_line().expect("a refused open is said");
         // The notice comes from Files' catalogue, not the shell's: naming the
         // key apart from the call keeps the shell's catalogue check from
         // claiming it.

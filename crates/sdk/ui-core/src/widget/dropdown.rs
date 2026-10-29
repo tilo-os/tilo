@@ -996,15 +996,13 @@ impl Dropdown {
 
     /// Scroll so the row at filtered-position `vi` is fully visible.
     fn ensure_visible(&mut self, vi: usize, n: usize) {
-        let box_h = f32_of_f64(self.rows_height(n));
-        let top = f32_of_f64(f64_of_usize(vi) * self.item_h);
-        let bottom = top + f32_of_f64(self.item_h);
-        if top < self.scroll {
-            self.scroll = top;
-        } else if bottom > self.scroll + box_h {
-            self.scroll = bottom - box_h;
-        }
-        self.scroll = self.scroll.clamp(0.0, self.max_scroll(n));
+        let top = f64_of_usize(vi) * self.item_h;
+        self.scroll = f32_of_f64(crate::widget::scroll_region::reveal_offset(
+            f64::from(self.scroll),
+            self.rows_height(n),
+            top..top + self.item_h,
+            f64::from(self.max_scroll(n)),
+        ));
     }
 
     /// Arm the option whose label begins with what has been typed: letters

@@ -1,6 +1,6 @@
 use super::*;
-use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
-use crate::shell::personal_continuity_registry::{ContinuationRegistry, global_registry};
+use crate::shell::continuation::{AppInstanceId, LaunchIntent};
+use crate::shell::continuation_registry::{ContinuationRegistry, global_registry};
 use crate::shell::state::{RoomId, next_id};
 
 const APP: &str = "dev.tilo.record-restart-test";
@@ -9,11 +9,11 @@ struct RuntimeReset(Option<std::sync::Arc<std::sync::Mutex<ContinuationRegistry>
 impl RuntimeReset {
     fn new() -> Self {
         launcher::clear_pending_placements();
-        Self(
-            crate::shell::personal_continuity_registry::replace_test_registry(Some(
-                std::sync::Arc::new(std::sync::Mutex::new(ContinuationRegistry::default())),
-            )),
-        )
+        Self(crate::shell::continuation_registry::replace_test_registry(
+            Some(std::sync::Arc::new(std::sync::Mutex::new(
+                ContinuationRegistry::default(),
+            ))),
+        ))
     }
     fn clear_registry() {
         *global_registry().lock().unwrap() = ContinuationRegistry::default();
@@ -21,7 +21,7 @@ impl RuntimeReset {
 }
 impl Drop for RuntimeReset {
     fn drop(&mut self) {
-        crate::shell::personal_continuity_registry::replace_test_registry(self.0.take());
+        crate::shell::continuation_registry::replace_test_registry(self.0.take());
         launcher::clear_pending_placements();
     }
 }

@@ -354,3 +354,13 @@ search.md, "What a type declares" and "Types, references and paths".
   date and lists each change with why it is there; `check --write-ids` and `build` write it,
   drawing new ids at random so packages never share one. `build` writes its module to `--out`
   (default `target/tilolang`), never into the package.
+- **Outside origins are kinds the platform declares.** `type T (origin: imap.message)` names a
+  kind of `crate::origin::KINDS`; each kind lists its fields with their types and whether people
+  change them. A type declares the kind's fields it shows, with the kind's types (E112), and may
+  add its own; a collection field of a kind holds a type of that origin's kind it names
+  (`Collection<imap.thread>`). Writing a field of the kind people do not change is E113 outside a
+  scenario, whose seed data stands in for the service. The metadata carries `origin` per type;
+  fields are matched by name. A named filter may test a set holding a literal
+  (`boxes.contains("inbox")`), the index's run of that value.
+- **`outside` capabilities are a checked list** (`crate::origin::CAPABILITIES`: `post`,
+  `smtp.send`), in the compiler and the runtime alike.

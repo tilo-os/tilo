@@ -131,7 +131,7 @@ impl App {
             | WindowEvent::MouseWheel { .. }
             | WindowEvent::Touch(_)
             | WindowEvent::Ime(winit::event::Ime::Commit(_)) => true,
-            WindowEvent::CursorMoved { .. } => self.input.pointer_buttons != 0,
+            WindowEvent::CursorMoved { .. } => self.input.pointer.buttons != 0,
             _ => false,
         };
         if input {

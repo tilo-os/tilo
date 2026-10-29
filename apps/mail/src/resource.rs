@@ -1222,17 +1222,13 @@ pub(crate) fn live_extras(app: &MailApp) -> Vec<tilo_actions::ResourceSpec> {
 
 /// Mail's preferences, which follow the person across their devices and are
 /// never seen by collaborators: the format a new message is written in and
-/// the accounts whose folders the sidebar keeps folded, and the senders
-/// whose remote images load.
+/// the accounts whose folders the sidebar keeps folded.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MailPreferences {
     #[serde(default)]
     pub compose_format: crate::model::ComposeFormat,
     #[serde(default)]
     pub collapsed_accounts: Vec<String>,
-    /// The senders whose remote images load without asking.
-    #[serde(default)]
-    pub remote_content_senders: Vec<String>,
 }
 
 impl ui::storage::SettingsSchema for MailPreferences {
@@ -1443,6 +1439,9 @@ impl ResourceSurface<Mail, MailEffect> for MailApp {
         if cx.mode().is_live() {
             self.wake_from_workers(cx.waker());
             self.follow_preferences(cx.settings::<MailPreferences>());
+            if let Some(trusted) = cx.person::<crate::trusted_senders::TrustedSenders>() {
+                self.follow_trusted_senders(trusted);
+            }
             self.contact_directory = cx.shared_person::<tilo_contact_directory::ContactDirectory>();
             if let Some(accounts) = cx.shared_person::<accounts::person::PersonAccounts>() {
                 self.follow_person_accounts(accounts);

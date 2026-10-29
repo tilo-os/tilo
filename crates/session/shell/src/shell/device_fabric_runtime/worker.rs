@@ -19,24 +19,22 @@
 //! 2. Relay-room and native-enrollment state, then the joined room's
 //!    `owner.mutation`.
 //! 3. `ShellNetwork::room_push`.
-//! 4. `personal_continuity_fingerprint`, then `personal_continuity_counter`,
-//!    then `personal_continuity`.
-//! 5. `ShellNetwork::replica`.
-//! 6. The workspace tree. Taken inside it: the native store writer, owner
+//! 4. `ShellNetwork::replica`.
+//! 5. The workspace tree. Taken inside it: the native store writer, owner
 //!    authority, `personal_workspaces`, `next_sync_pull`, the continuation
-//!    registry (`personal_continuity_registry::global_registry`), and last
+//!    registry (`continuation_registry::global_registry`), and last
 //!    the tree guard's own holder and policy locks.
-//! 7. Input-control operations, then input declines.
-//! 8. Subsystem roots, never held together: media-handoff statuses, the
+//! 6. Input-control operations, then input declines.
+//! 7. Subsystem roots, never held together: media-handoff statuses, the
 //!    gamepad manager, speaker-group routes (then remote audio, then the
 //!    speaker core and clock state), remote capture (then its adapter and
 //!    broker), the realtime adapter, MPRIS.
-//! 9. `authenticated_personal_routes`.
-//! 10. `spatial_input_state`, then peer departures.
-//! 11. Sending: `personal_device_peers`, then registered home devices; then
+//! 8. `authenticated_personal_routes`.
+//! 9. `spatial_input_state`, then peer departures.
+//! 10. Sending: `personal_device_peers`, then registered home devices; then
 //!     `joined_topics` on its own.
-//! 12. `device_fabric`, then the state writer's queue.
-//! 13. Leaves, under which nothing else is taken: Nearby drop state, the
+//! 11. `device_fabric`, then the state writer's queue.
+//! 12. Leaves, under which nothing else is taken: Nearby drop state, the
 //!     Nearby store thread's follow-up and wake slots, the selection store,
 //!     the settings store, `KnownContents`, the continuity durability ledger
 //!     (its obligations run after it is released), the wake state, queued

@@ -262,6 +262,10 @@ pub fn foreign_acts(
                 }
             }
         }
+        let later = after.tree.workspaces.iter().find(|w| w.id == workspace.id);
+        for tab in moved_on_canvas(workspace, later, &foreign) {
+            note(tab, Act::Move);
+        }
     }
     let live = |id: u64| now.tabs.contains_key(&id) || now.strips.contains_key(&StripId(id));
     let lived = |id: u64| was.tabs.contains_key(&id) || was.strips.contains_key(&StripId(id));
@@ -280,6 +284,31 @@ pub fn foreign_acts(
         }
     }
     touched
+}
+
+/// The windows of `before` that `foreign` names whose group stands elsewhere
+/// on the canvas in `after`: moving a window on the canvas moves it as much
+/// as moving it along a strip. Placing one that stood nowhere yet (a canvas
+/// finding room for a window someone opened) moves nothing.
+fn moved_on_canvas(
+    before: &crate::workspace::Workspace,
+    after: Option<&crate::workspace::Workspace>,
+    foreign: &dyn Fn(u64) -> bool,
+) -> Vec<TabId> {
+    before
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .filter(|group| {
+            before.arrangement.place_of(group.id).is_some_and(|was_at| {
+                after
+                    .and_then(|w| w.arrangement.place_of(group.id))
+                    .is_some_and(|now_at| now_at != was_at)
+            })
+        })
+        .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
+        .filter(|tab| foreign(*tab))
+        .collect()
 }
 
 /// The strips and windows `after` adds to `before` in someone else's name
