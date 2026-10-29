@@ -407,8 +407,9 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
 fn write_arrangement(doc: &mut AutoCommit, entry: &ObjId, arrangement: &Arrangement) {
     match arrangement.kind {
         ArrangementKind::Strips => delete_if_present(doc, entry, ARRANGEMENT_KEY),
-        kind => {
-            let _ = doc.put_str_if_changed(entry, ARRANGEMENT_KEY, kind.as_str());
+        ArrangementKind::Canvas => {
+            let _ =
+                doc.put_str_if_changed(entry, ARRANGEMENT_KEY, ArrangementKind::Canvas.as_str());
         }
     }
     if !arrangement.places.is_empty() || obj(doc, entry, CANVAS_KEY).is_some() {

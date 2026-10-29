@@ -71,23 +71,23 @@ impl CanvasPlace {
     /// The right edge, exclusive.
     #[must_use]
     pub fn right(&self) -> i64 {
-        i64::from(self.x) + i64::from(self.width)
+        i64::from(self.x).saturating_add(i64::from(self.width))
     }
 
     /// The bottom edge, exclusive.
     #[must_use]
     pub fn bottom(&self) -> i64 {
-        i64::from(self.y) + i64::from(self.height)
+        i64::from(self.y).saturating_add(i64::from(self.height))
     }
 
     /// Whether the two overlap, or come closer than `gap` to each other.
     #[must_use]
     pub fn crowds(&self, other: &Self, gap: u32) -> bool {
         let gap = i64::from(gap);
-        i64::from(self.x) < other.right() + gap
-            && i64::from(other.x) < self.right() + gap
-            && i64::from(self.y) < other.bottom() + gap
-            && i64::from(other.y) < self.bottom() + gap
+        i64::from(self.x) < other.right().saturating_add(gap)
+            && i64::from(other.x) < self.right().saturating_add(gap)
+            && i64::from(self.y) < other.bottom().saturating_add(gap)
+            && i64::from(other.y) < self.bottom().saturating_add(gap)
     }
 
     /// Whether the two share any area.
@@ -102,9 +102,9 @@ impl CanvasPlace {
     pub fn distance_sq(&self, (x, y): (i32, i32)) -> i64 {
         let cx = i64::from(x).clamp(i64::from(self.x), self.right());
         let cy = i64::from(y).clamp(i64::from(self.y), self.bottom());
-        let dx = i64::from(x) - cx;
-        let dy = i64::from(y) - cy;
-        dx * dx + dy * dy
+        let dx = i64::from(x).saturating_sub(cx);
+        let dy = i64::from(y).saturating_sub(cy);
+        dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy))
     }
 }
 
@@ -181,16 +181,16 @@ impl Arrangement {
         let mut ys = vec![i64::from(anchor.1)];
         for o in &others {
             xs.extend([
-                o.right() + gap,
-                i64::from(o.x) - gap - w,
+                o.right().saturating_add(gap),
+                i64::from(o.x).saturating_sub(gap).saturating_sub(w),
                 i64::from(o.x),
-                o.right() - w,
+                o.right().saturating_sub(w),
             ]);
             ys.extend([
-                o.bottom() + gap,
-                i64::from(o.y) - gap - h,
+                o.bottom().saturating_add(gap),
+                i64::from(o.y).saturating_sub(gap).saturating_sub(h),
                 i64::from(o.y),
-                o.bottom() - h,
+                o.bottom().saturating_sub(h),
             ]);
         }
         let clamp = |v: i64| i32::try_from(v).unwrap_or(if v < 0 { i32::MIN } else { i32::MAX });
@@ -201,8 +201,8 @@ impl Arrangement {
                 if !free(&place) {
                     continue;
                 }
-                let dx = x - i64::from(anchor.0);
-                let dy = y - i64::from(anchor.1);
+                let dx = x.saturating_sub(i64::from(anchor.0));
+                let dy = y.saturating_sub(i64::from(anchor.1));
                 let distance = dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy));
                 if best.is_none_or(|(d, b)| (distance, b.y, b.x) < (d, place.y, place.x)) {
                     best = Some((distance, place));
@@ -214,7 +214,7 @@ impl Arrangement {
                 // Every candidate crowded something (cannot happen with a
                 // finite set: right of the rightmost is always free); go there.
                 let right = others.iter().map(CanvasPlace::right).max().unwrap_or(0);
-                CanvasPlace::new(clamp(right + gap), anchor.1, width, height)
+                CanvasPlace::new(clamp(right.saturating_add(gap)), anchor.1, width, height)
             },
             |(_, place)| place,
         )
@@ -232,7 +232,7 @@ impl Arrangement {
         except: Option<GroupId>,
     ) -> CanvasPlace {
         let gap = i64::from(CANVAS_GAP);
-        let x = i32::try_from(subject.right() + gap).unwrap_or(i32::MAX);
+        let x = i32::try_from(subject.right().saturating_add(gap)).unwrap_or(i32::MAX);
         self.free_place_near((x, subject.y), width, height, except)
     }
 
@@ -240,7 +240,7 @@ impl Arrangement {
     /// nearest first.
     #[must_use]
     pub fn near(&self, point: (i32, i32), radius: u32) -> Vec<GroupId> {
-        let reach = i64::from(radius) * i64::from(radius);
+        let reach = i64::from(radius).saturating_mul(i64::from(radius));
         let mut hits: Vec<(i64, GroupId)> = self
             .places
             .iter()
@@ -272,8 +272,8 @@ impl Arrangement {
         Some(CanvasPlace::new(
             i32::try_from(x0).ok()?,
             i32::try_from(y0).ok()?,
-            u32::try_from(x1 - x0).ok()?,
-            u32::try_from(y1 - y0).ok()?,
+            u32::try_from(x1.saturating_sub(x0)).ok()?,
+            u32::try_from(y1.saturating_sub(y0)).ok()?,
         ))
     }
 
