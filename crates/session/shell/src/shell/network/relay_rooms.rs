@@ -406,27 +406,6 @@ impl ShellNetwork {
         )
     }
 
-    /// [`Self::govern`], answered whenever the host answers: while the
-    /// room's sessions last, never on a clock. For a caller whose own wait
-    /// ends with the room's sessions too, on a worker.
-    pub(super) fn govern_held(
-        &self,
-        target: &HeldRoom,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<serde_json::Value, HostAskError> {
-        let invoke = invocation(
-            ROOM_GOVERNANCE_PROVIDER,
-            room_governance_resource(&target.room.to_string()),
-            action,
-            arguments,
-        );
-        let answer = self
-            .ask_relay(room_topic_id(target.room), target.host, invoke)
-            .map_err(HostAskError::Unreachable)?;
-        held_answer(&answer)
-    }
-
     /// Have the host governing `room` record `receipt`, the member's own
     /// terminal receipt, answered whenever the host answers: while the
     /// room's sessions last. For a worker.

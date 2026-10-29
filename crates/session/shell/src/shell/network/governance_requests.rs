@@ -1,126 +1,87 @@
 //! Taking the governance changes made at this device where they are made.
-//! A change to a room's members, roles or grants this device writes itself,
-//! signed with its own key, and publishes as it publishes any room change:
-//! the room's admission decides it, here and on every device that receives
-//! it. The rest of a room's governance is its owner's, changed at its
-//! governor, its host's `Rooms`; this device asks and reads the answer back
-//! from the room's admitted document, as every other member does.
+//! A change to a room's members, roles, grants or settings this device
+//! writes itself, signed with its own key, and publishes as it publishes
+//! any room change: the room's admission decides it, here and on every
+//! device that receives it.
 use super::ShellNetwork;
 use super::relay_rooms::HostAskError;
 use crate::shell::state::{GovernanceRequest, RoomId};
-use tilo_action_policy::roles::owner_commands as verbs;
+use tilo_peer_state::workspace_membership::{
+    AppAction, SettingsChange, WorkspaceMembershipCommand, app_action_lifetime,
+};
 
-/// Why a change has no route to its governor.
-const NO_GOVERNOR_ACTION: &str = "the workspace host has no action for this change";
-/// Why a membership change has no route to its governor.
-const WRITTEN_HERE: &str = "a membership change is written by this device, not asked of a host";
+/// Why a desktop command is not a change to the room's governance.
+const NOT_GOVERNANCE: &str = "this change is not one of the room's own";
 
-/// What a request asks of the room's host: one of its room governance
-/// verbs (provider `tilo.workspace`), with its arguments. The host decides
-/// it against the caller's own standing in the room.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct GovernanceRoute {
-    pub(crate) action: &'static str,
-    pub(crate) arguments: serde_json::Map<String, serde_json::Value>,
-}
-
-impl GovernanceRoute {
-    fn with(action: &'static str, arguments: serde_json::Value) -> Self {
-        let arguments = match arguments {
-            serde_json::Value::Object(arguments) => arguments,
-            _ => serde_json::Map::new(),
-        };
-        Self { action, arguments }
-    }
-}
-
-/// The route `request` takes to its room's governor, or why it has none. A
-/// membership change has none: this device writes it itself
-/// ([`ShellNetwork::write_membership`]).
-pub(crate) fn route(request: GovernanceRequest) -> Result<GovernanceRoute, String> {
-    use serde_json::json;
-    let route = match request {
-        GovernanceRequest::Policy(_) => return Err(WRITTEN_HERE.into()),
-        GovernanceRequest::GrantSandbox(capability) => {
-            GovernanceRoute::with(verbs::GRANT_SANDBOX, json!({ "capability": capability }))
+/// The command this device writes for `request`, or why it writes none.
+pub(crate) fn command(request: GovernanceRequest) -> Result<WorkspaceMembershipCommand, String> {
+    let settings = match request {
+        GovernanceRequest::Policy(change) => {
+            return Ok(WorkspaceMembershipCommand::Member { change });
         }
+        GovernanceRequest::GrantSandbox(capability) => SettingsChange::GrantSandbox { capability },
         GovernanceRequest::RevokeSandbox(capability) => {
-            GovernanceRoute::with(verbs::REVOKE_SANDBOX, json!({ "capability": capability }))
+            SettingsChange::RevokeSandbox { capability }
         }
-        GovernanceRequest::Command(command) => command_route(command)?,
+        GovernanceRequest::Command(command) => settings_change(command)?,
     };
-    Ok(route)
+    Ok(WorkspaceMembershipCommand::Settings(settings))
 }
 
-/// The route of a desktop `command` to its room's governor, or why it has
-/// none.
-fn command_route(
+/// The settings change a desktop `command` makes, or why it makes none.
+fn settings_change(
     command: tilo_desktop_model::commands::DesktopCommand,
-) -> Result<GovernanceRoute, String> {
-    use serde_json::json;
+) -> Result<SettingsChange, String> {
+    use tilo_action_policy::{Lifetime, Subject};
     use tilo_desktop_model::commands::DesktopCommand;
-    let route = match command {
-        DesktopCommand::RenameWorkspace { name } => {
-            GovernanceRoute::with(verbs::RENAME_WORKSPACE, json!({ "name": name }))
-        }
-        DesktopCommand::SavePreset { preset_json } => {
-            GovernanceRoute::with(verbs::SAVE_PRESET, json!({ "preset": preset_json }))
-        }
+    Ok(match command {
+        DesktopCommand::RenameWorkspace { name } => SettingsChange::Rename { name },
+        DesktopCommand::SavePreset { preset_json } => SettingsChange::SavePreset {
+            preset: serde_json::from_str(&preset_json)
+                .map_err(|error| format!("the grant set does not decode: {error}"))?,
+        },
         DesktopCommand::AssignPreset {
             preset,
             subject_kind,
             subject,
             expires_unix,
-        } => {
-            let mut route = GovernanceRoute::with(
-                verbs::ASSIGN_PRESET,
-                json!({
-                    "preset": preset,
-                    "subject_kind": subject_kind,
-                    "subject": subject,
-                }),
-            );
-            // No expiry is written as none at all.
-            if expires_unix != 0 {
-                route
-                    .arguments
-                    .insert("expires_unix".into(), expires_unix.into());
-            }
-            route
-        }
+        } => SettingsChange::AssignPreset {
+            preset,
+            subject: match subject_kind.as_str() {
+                "person" => Subject::person(subject),
+                "app" => Subject::app(subject),
+                "agent" => Subject::agent(subject),
+                other => {
+                    return Err(format!(
+                        "a grant set is assigned to a person, an app or an agent, not `{other}`"
+                    ));
+                }
+            },
+            lifetime: match expires_unix {
+                0 => Lifetime::UntilRevoked,
+                seconds => Lifetime::Until(seconds.saturating_mul(1000)),
+            },
+        },
         DesktopCommand::GrantAppAction {
             app,
             target_app,
             resource,
             action,
             lifetime,
-        } => GovernanceRoute::with(
-            verbs::GRANT_APP_ACTION,
-            json!({
-                "app": app,
-                "target_app": target_app,
-                "resource": resource,
-                "action": action,
-                "lifetime": lifetime,
-            }),
-        ),
+        } => {
+            app_action_lifetime(&lifetime)?;
+            SettingsChange::GrantAppAction(AppAction::new(&app, &target_app, &resource, &action)?)
+        }
         DesktopCommand::RevokeAppAction {
             app,
             target_app,
             resource,
             action,
-        } => GovernanceRoute::with(
-            verbs::REVOKE_APP_ACTION,
-            json!({
-                "app": app,
-                "target_app": target_app,
-                "resource": resource,
-                "action": action,
-            }),
-        ),
-        _ => return Err(NO_GOVERNOR_ACTION.into()),
-    };
-    Ok(route)
+        } => {
+            SettingsChange::RevokeAppAction(AppAction::new(&app, &target_app, &resource, &action)?)
+        }
+        _ => return Err(NOT_GOVERNANCE.into()),
+    })
 }
 
 /// The room host this device runs, answering for the rooms placed on it
@@ -129,11 +90,6 @@ fn command_route(
 pub(crate) trait LocalGovernor: Send + Sync {
     /// Whether this device's own host governs `room`.
     fn governs(&self, room: RoomId) -> bool;
-    /// Ask the host for `route` in `room`, and wait for its answer.
-    ///
-    /// # Errors
-    /// The host refused it, or could not be asked.
-    fn ask(&self, room: RoomId, route: GovernanceRoute) -> Result<(), String>;
     /// Have the host record `receipt` in `room`, this device's member
     /// receipt, and wait for its answer.
     ///
@@ -231,24 +187,14 @@ impl ShellNetwork {
         let mut answers = Vec::with_capacity(entries.len());
         for entry in entries {
             let answer = match &entry.change {
-                RoomChange::Governance(GovernanceRequest::Policy(change)) => {
-                    match self.write_membership(entry.room, change.clone()) {
+                RoomChange::Governance(request) => {
+                    match self.write_governance_change(entry.room, request.clone()) {
                         Ok(()) => HostAnswer::Accepted,
                         Err(HostAskError::Refused(error)) => {
-                            tracing::info!(room = %entry.room, %error, "a membership change was refused here");
+                            tracing::info!(room = %entry.room, %error, "a governance change was refused here");
                             HostAnswer::Refused(error)
                         }
                         Err(HostAskError::Unreachable(_)) => HostAnswer::Unreachable,
-                    }
-                }
-                RoomChange::Governance(request) => {
-                    match self.ask_governor_if_reachable(entry.room, request) {
-                        Some(Ok(())) => HostAnswer::Accepted,
-                        Some(Err(error)) => {
-                            tracing::info!(room = %entry.room, %error, "the workspace host refused a governance change");
-                            HostAnswer::Refused(error)
-                        }
-                        None => HostAnswer::Unreachable,
                     }
                 }
                 RoomChange::Receipt(receipt) => self.record_receipt(entry.room, receipt),
@@ -307,86 +253,35 @@ impl ShellNetwork {
         }
     }
 
-    /// Ask `room`'s governor for `request` when it can be reached now:
-    /// `None` when it cannot, or its host could not be reached to answer
-    /// ([`HostAskError::Unreachable`]); only the governor's own refusal is
-    /// `Some(Err)`.
-    fn ask_governor_if_reachable(
-        &self,
-        room: RoomId,
-        request: &GovernanceRequest,
-    ) -> Option<Result<(), String>> {
-        let route = match route(request.clone()) {
-            Ok(route) => route,
-            Err(refused) => return Some(Err(refused)),
-        };
-        if let Some(local) = self.local_governor.get()
-            && local.governs(room)
-        {
-            return Some(local.ask(room, route));
-        }
-        if !self.governor_reachable(room) {
-            return None;
-        }
-        match self.ask_governor_over_network(room, route) {
-            Ok(()) => Some(Ok(())),
-            Err(HostAskError::Refused(reason)) => Some(Err(reason)),
-            Err(HostAskError::Unreachable(reason)) => {
-                tracing::debug!(%room, %reason, "the workspace host is out of reach; the governance change waits");
-                None
-            }
-        }
-    }
-
-    /// Whether `room`'s governor can be asked over the network now: the
-    /// network runs and this device holds a session with the host.
-    fn governor_reachable(&self, room: RoomId) -> bool {
-        self.runtime.is_some() && self.administered_room(room).is_some()
-    }
-
-    /// Ask `room`'s governor for `request` and wait for its answer: for a
-    /// worker, never the frame loop.
-    pub(crate) fn ask_governor(
+    /// Write `request` into `room`'s governance as this device and wait
+    /// for the room's admission: for a worker, never the frame loop.
+    pub(crate) fn write_governance(
         &self,
         room: RoomId,
         request: GovernanceRequest,
     ) -> Result<(), String> {
-        if let GovernanceRequest::Policy(change) = request {
-            return self.write_membership(room, change).map_err(String::from);
-        }
-        let route = route(request)?;
-        if let Some(local) = self.local_governor.get()
-            && local.governs(room)
-        {
-            return local.ask(room, route);
-        }
-        self.ask_governor_over_network(room, route)
+        self.write_governance_change(room, request)
             .map_err(String::from)
     }
 
-    /// Write `change` to `room`'s members as this device, signed with its
-    /// own key, and publish it as any room change: the room's admission
+    /// Write `request` into `room`'s governance as this device, signed with
+    /// its own key, and publish it as any room change: the room's admission
     /// decides it against this person's grants, here at once and on every
     /// device that receives it. Blocks on the owner's open: for a worker,
     /// never the frame loop. Unreachable while this device holds no replica
     /// of the room to write to yet.
-    pub(crate) fn write_membership(
+    pub(crate) fn write_governance_change(
         &self,
         room: RoomId,
-        change: tilo_action_policy::Change,
+        request: GovernanceRequest,
     ) -> Result<(), HostAskError> {
-        use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+        let command = command(request).map_err(HostAskError::Refused)?;
         let owner = self.native_owner().map_err(HostAskError::Unreachable)?;
         let caller = owner
             .with_current(room, |view| Ok(view.device().clone()))
             .map_err(HostAskError::Unreachable)?;
-        self.commit_membership_here(
-            &owner,
-            room,
-            caller,
-            WorkspaceMembershipCommand::Member { change },
-        )
-        .map_err(HostAskError::Refused)
+        self.commit_membership_here(&owner, room, caller, command)
+            .map_err(HostAskError::Refused)
     }
 
     /// Commit `command` in `room` as `caller`, this device, signed with its
@@ -411,30 +306,17 @@ impl ShellNetwork {
         self.schedule_native_owner_publication(room);
         Ok(())
     }
-
-    /// Ask `room`'s governor over the network for `route`, answered whenever
-    /// its host answers: while the room's sessions last, never on a clock.
-    fn ask_governor_over_network(
-        &self,
-        room: RoomId,
-        route: GovernanceRoute,
-    ) -> Result<(), HostAskError> {
-        let held = self.administered_room(room).ok_or_else(|| {
-            HostAskError::Unreachable("this device holds no session with the workspace host".into())
-        })?;
-        self.govern_held(&held, route.action, route.arguments)
-            .map(drop)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{GovernanceRoute, route};
+    use super::command;
     use crate::shell::state::GovernanceRequest;
-    use serde_json::json;
-    use tilo_action_policy::roles::owner_commands;
-    use tilo_action_policy::{Change, Role};
+    use tilo_action_policy::{Change, Lifetime, Role, Subject};
     use tilo_desktop_model::commands::DesktopCommand;
+    use tilo_peer_state::workspace_membership::{
+        AppAction, SettingsChange, WorkspaceMembershipCommand,
+    };
 
     const PERSON: &str = "ab";
 
@@ -442,14 +324,16 @@ mod tests {
         PERSON.repeat(32)
     }
 
-    /// The verb and arguments `request` asks the host for.
-    fn asked(request: GovernanceRequest) -> (&'static str, serde_json::Value) {
-        let route = route(request).expect("a route to the host");
-        (route.action, serde_json::Value::Object(route.arguments))
+    /// The settings change this device writes for `request`.
+    fn written(request: GovernanceRequest) -> SettingsChange {
+        match command(request).expect("a command to write") {
+            WorkspaceMembershipCommand::Settings(change) => change,
+            other => panic!("not a settings change: {other:?}"),
+        }
     }
 
     #[test]
-    fn sandbox_capabilities_and_desktop_commands_ask_the_hosts_verbs() {
+    fn sandbox_capabilities_and_desktop_commands_are_settings_changes() {
         let capability = crate::shell::state::CapOverride::grant(
             collab_types::caps::Subject::app("so.tilo.reader"),
             collab_types::caps::Scope::NetHost("example.org".into()),
@@ -457,57 +341,68 @@ mod tests {
         )
         .with_id("cap-1");
         assert_eq!(
-            asked(GovernanceRequest::GrantSandbox(capability.clone())),
-            (
-                owner_commands::GRANT_SANDBOX,
-                json!({ "capability": capability })
-            )
+            written(GovernanceRequest::GrantSandbox(capability.clone())),
+            SettingsChange::GrantSandbox { capability }
         );
         assert_eq!(
-            asked(GovernanceRequest::RevokeSandbox("cap-1".into())),
-            (
-                owner_commands::REVOKE_SANDBOX,
-                json!({ "capability": "cap-1" })
-            )
+            written(GovernanceRequest::RevokeSandbox("cap-1".into())),
+            SettingsChange::RevokeSandbox {
+                capability: "cap-1".into()
+            }
         );
         assert_eq!(
-            asked(GovernanceRequest::Command(
+            written(GovernanceRequest::Command(
                 DesktopCommand::RenameWorkspace {
                     name: "Design".into(),
                 }
             )),
-            (
-                owner_commands::RENAME_WORKSPACE,
-                json!({ "name": "Design" })
-            )
+            SettingsChange::Rename {
+                name: "Design".into()
+            }
         );
+        let preset = tilo_action_policy::Preset::new("Reviewers", "Review", Vec::new());
         assert_eq!(
-            asked(GovernanceRequest::Command(DesktopCommand::SavePreset {
-                preset_json: "{}".into(),
+            written(GovernanceRequest::Command(DesktopCommand::SavePreset {
+                preset_json: serde_json::to_string(&preset).unwrap(),
             })),
-            (owner_commands::SAVE_PRESET, json!({ "preset": "{}" }))
+            SettingsChange::SavePreset { preset }
+        );
+        assert!(
+            command(GovernanceRequest::Command(DesktopCommand::SavePreset {
+                preset_json: "not json".into(),
+            }))
+            .is_err()
         );
         assert_eq!(
-            asked(GovernanceRequest::Command(DesktopCommand::AssignPreset {
+            written(GovernanceRequest::Command(DesktopCommand::AssignPreset {
                 preset: "Reviewers".into(),
                 subject_kind: "person".into(),
                 subject: person(),
                 expires_unix: 0,
             })),
-            (
-                owner_commands::ASSIGN_PRESET,
-                json!({ "preset": "Reviewers", "subject_kind": "person", "subject": person() })
-            ),
-            "no expiry is sent as none"
+            SettingsChange::AssignPreset {
+                preset: "Reviewers".into(),
+                subject: Subject::person(person()),
+                lifetime: Lifetime::UntilRevoked,
+            },
+            "no expiry is none at all"
         );
-        let action = json!({
-            "app": "so.tilo.notes",
-            "target_app": "so.tilo.files",
-            "resource": "files",
-            "action": "read",
-        });
         assert_eq!(
-            asked(GovernanceRequest::Command(
+            written(GovernanceRequest::Command(DesktopCommand::AssignPreset {
+                preset: "Reviewers".into(),
+                subject_kind: "agent".into(),
+                subject: "scribe".into(),
+                expires_unix: 7,
+            })),
+            SettingsChange::AssignPreset {
+                preset: "Reviewers".into(),
+                subject: Subject::agent("scribe"),
+                lifetime: Lifetime::Until(7000),
+            }
+        );
+        let action = AppAction::new("so.tilo.notes", "so.tilo.files", "files", "read").unwrap();
+        assert_eq!(
+            written(GovernanceRequest::Command(
                 DesktopCommand::RevokeAppAction {
                     app: "so.tilo.notes".into(),
                     target_app: "so.tilo.files".into(),
@@ -515,26 +410,35 @@ mod tests {
                     action: "read".into(),
                 }
             )),
-            (owner_commands::REVOKE_APP_ACTION, action.clone())
+            SettingsChange::RevokeAppAction(action.clone())
         );
-        let mut granted = action;
-        granted["lifetime"] = "always".into();
         assert_eq!(
-            asked(GovernanceRequest::Command(DesktopCommand::GrantAppAction {
+            written(GovernanceRequest::Command(DesktopCommand::GrantAppAction {
                 app: "so.tilo.notes".into(),
                 target_app: "so.tilo.files".into(),
                 resource: "files".into(),
                 action: "read".into(),
                 lifetime: "always".into(),
             })),
-            (owner_commands::GRANT_APP_ACTION, granted)
+            SettingsChange::GrantAppAction(action)
+        );
+        assert!(
+            command(GovernanceRequest::Command(DesktopCommand::GrantAppAction {
+                app: "so.tilo.notes".into(),
+                target_app: "so.tilo.files".into(),
+                resource: "files".into(),
+                action: "read".into(),
+                lifetime: "session".into(),
+            }))
+            .is_err(),
+            "a room has no session to end a grant with"
         );
     }
 
     #[test]
-    fn a_command_the_host_has_no_verb_for_is_said_so_not_applied_here() {
+    fn a_command_that_is_not_the_rooms_own_is_said_so_not_written() {
         assert!(
-            route(GovernanceRequest::Command(DesktopCommand::DeleteShortcut {
+            command(GovernanceRequest::Command(DesktopCommand::DeleteShortcut {
                 id: "s".into()
             }))
             .is_err()
@@ -542,144 +446,15 @@ mod tests {
     }
 
     #[test]
-    fn a_membership_change_is_never_asked_of_a_host() {
-        assert!(
-            route(GovernanceRequest::Policy(Change::SetRole {
-                person: "ab".repeat(32),
-                role: Role::Viewer,
-            }))
-            .is_err()
-        );
-    }
-
-    /// This device's own host, applying what it is asked as the room's
-    /// projection then carries it: a rename shows as the workspace's name.
-    struct OwnHost {
-        room: crate::shell::state::RoomId,
-        tree: crate::shell::state::WorkspaceTreeHandle,
-    }
-
-    impl super::LocalGovernor for OwnHost {
-        fn governs(&self, room: crate::shell::state::RoomId) -> bool {
-            room == self.room
-        }
-
-        fn ask(
-            &self,
-            room: crate::shell::state::RoomId,
-            route: GovernanceRoute,
-        ) -> Result<(), String> {
-            let Some(name) = route
-                .arguments
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .filter(|_| route.action == owner_commands::RENAME_WORKSPACE)
-            else {
-                return Err("this host only renames".into());
-            };
-            let name = name.to_owned();
-            self.tree
-                .write()
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room() == room)
-                .ok_or("no such room")?
-                .name = name;
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn a_rename_made_with_its_host_out_of_reach_applies_after_a_restart() {
-        let directory = tempfile::tempdir().expect("tempdir");
-        let path = directory.path().join("state.json");
-        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        tree.persist_path = Some(path.clone());
-        let room = tree.desktop.active_workspace().expect("a workspace").room();
-        let rename = GovernanceRequest::Command(DesktopCommand::RenameWorkspace {
-            name: "Design".into(),
-        });
-        tree.request_governance(room, rename.clone());
-        let handle = tree.shared();
-
-        // No network and no host yet: nothing is asked, nothing is lost.
-        let (network, _commands) = crate::shell::network::shell_network_for_test(handle.clone(), 1);
-        network.send_outbox_off_loop();
+    fn a_membership_change_is_written_as_one() {
+        let change = Change::SetRole {
+            person: person(),
+            role: Role::Viewer,
+        };
         assert_eq!(
-            governance_in_outbox(&handle.read()),
-            vec![(room, rename.clone())],
-            "a change whose host is out of reach waits"
+            command(GovernanceRequest::Policy(change.clone())),
+            Ok(WorkspaceMembershipCommand::Member { change })
         );
-        network.send_outbox_off_loop();
-        assert_eq!(
-            handle.read().room_outbox.len(),
-            1,
-            "and is not asked again on every tick"
-        );
-        crate::shell::persist::save_tree_to(&handle.read(), &path).expect("save");
-        drop(network);
-        drop(handle);
-
-        // A restart, with this device's own host governing the room.
-        let mut loaded = crate::shell::persist::load_tree_from(&path).expect("load");
-        assert_eq!(
-            governance_in_outbox(&loaded),
-            vec![(room, rename)],
-            "the waiting change survives the restart"
-        );
-        loaded.persist_path = Some(path);
-        let handle = loaded.shared();
-        let (network, _commands) = crate::shell::network::shell_network_for_test(handle.clone(), 1);
-        network.install_local_governor(std::sync::Arc::new(OwnHost {
-            room,
-            tree: handle.clone(),
-        }));
-        network.send_outbox_off_loop();
-        assert!(handle.read().room_outbox.is_empty(), "the host took it");
-        assert_eq!(
-            handle
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room() == room)
-                .map(|workspace| workspace.name.as_str()),
-            Some("Design"),
-            "and the rename applies"
-        );
-    }
-
-    /// The governance changes `tree`'s outbox holds, in order.
-    fn governance_in_outbox(
-        tree: &crate::shell::state::WorkspaceTree,
-    ) -> Vec<(crate::shell::state::RoomId, GovernanceRequest)> {
-        tree.room_outbox
-            .iter()
-            .filter_map(|entry| match &entry.change {
-                crate::shell::state::RoomChange::Governance(request) => {
-                    Some((entry.room, request.clone()))
-                }
-                crate::shell::state::RoomChange::Receipt(_)
-                | crate::shell::state::RoomChange::WindowUnshare { .. } => None,
-            })
-            .collect()
-    }
-
-    /// A room host that refuses everything it is asked, for `reason`.
-    struct Refusing {
-        room: crate::shell::state::RoomId,
-        reason: &'static str,
-    }
-
-    impl super::LocalGovernor for Refusing {
-        fn governs(&self, room: crate::shell::state::RoomId) -> bool {
-            room == self.room
-        }
-
-        fn ask(&self, _: crate::shell::state::RoomId, _: GovernanceRoute) -> Result<(), String> {
-            Err(self.reason.into())
-        }
     }
 
     /// Take the active workspace of `chrome`'s tree, as it stands, for what
@@ -707,21 +482,11 @@ mod tests {
         tree.room_docs.insert(workspace.room(), document);
     }
 
-    /// Ask `chrome`'s room host, which refuses, for what was queued, and
-    /// let the chrome say it.
-    fn refused_by_the_host(chrome: &crate::shell::chrome_state::Chrome) {
+    /// Write what was queued, which this device cannot (it holds no custody
+    /// of the room to sign with), and let the chrome say it.
+    fn refused_here(chrome: &crate::shell::chrome_state::Chrome) {
         let handle = chrome.borrow().tree_handle();
-        let room = handle
-            .read()
-            .desktop
-            .active_workspace()
-            .expect("a workspace")
-            .room();
         let (network, _commands) = crate::shell::network::shell_network_for_test(handle, 1);
-        network.install_local_governor(std::sync::Arc::new(Refusing {
-            room,
-            reason: "only the room's owner may do that",
-        }));
         network.send_outbox_off_loop();
         assert!(
             crate::shell::workspace_governance::report_governance_refusals(
@@ -839,7 +604,7 @@ mod tests {
                 .narrow_sandbox(workspace, &governor, "reader-net"),
             "the capability is taken back here at once"
         );
-        refused_by_the_host(&chrome);
+        refused_here(&chrome);
 
         let state = chrome.borrow();
         let tree = state.tree();
