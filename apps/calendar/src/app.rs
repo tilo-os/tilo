@@ -2601,11 +2601,7 @@ impl CalendarApp {
         Ok(
             cx.save_file(request, ics.into_bytes(), |app: &mut Self, saved, _| {
                 app.status.show(if saved {
-                    format!(
-                        "Exported {} events · {} tasks",
-                        app.model.events.len(),
-                        app.model.tasks.len()
-                    )
+                    status::exported_summary(app.model.events.len(), app.model.tasks.len())
                 } else {
                     "Export cancelled".into()
                 });

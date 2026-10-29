@@ -21,6 +21,22 @@ fn kind_of(message: &str) -> ToastKind {
     }
 }
 
+/// What a finished export says it saved: counts in words, each noun
+/// agreeing with its count.
+pub(super) fn exported_summary(events: usize, tasks: usize) -> String {
+    let counted =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    match (events, tasks) {
+        (_, 0) => format!("Exported {}", counted(events, "event", "events")),
+        (0, _) => format!("Exported {}", counted(tasks, "task", "tasks")),
+        _ => format!(
+            "Exported {} and {}",
+            counted(events, "event", "events"),
+            counted(tasks, "task", "tasks")
+        ),
+    }
+}
+
 impl CalendarApp {
     pub(super) fn draw_status(
         &mut self,
@@ -61,6 +77,14 @@ impl CalendarApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_export_says_what_it_saved_in_words() {
+        assert_eq!(exported_summary(3, 2), "Exported 3 events and 2 tasks");
+        assert_eq!(exported_summary(1, 1), "Exported 1 event and 1 task");
+        assert_eq!(exported_summary(4, 0), "Exported 4 events");
+        assert_eq!(exported_summary(0, 1), "Exported 1 task");
+    }
 
     #[test]
     fn a_message_takes_the_severity_it_reports() {

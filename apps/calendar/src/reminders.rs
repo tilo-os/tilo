@@ -110,7 +110,8 @@ fn body(shown: &crate::shown::Shown<'_>) -> String {
     if shown.event.location.trim().is_empty() {
         when
     } else {
-        format!("{when} — {}", shown.event.location.trim())
+        // Two facts, two lines: never one line joined by a dash.
+        format!("{when}\n{}", shown.event.location.trim())
     }
 }
 
@@ -222,7 +223,7 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(due[1].body, "3:00 PM–3:45 PM — Meet");
+        assert_eq!(due[1].body, "3:00 PM–3:45 PM\nMeet");
         assert!(due.iter().all(|reminder| reminder.title != "No reminder"));
         assert!(
             due.iter().all(|reminder| reminder.title != "Earlier"),
