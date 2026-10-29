@@ -104,6 +104,10 @@ struct Connected {
 pub struct HostedWindow {
     instance: Option<u64>,
     connected: Option<Connected>,
+    /// Whether a frame showing the instance's tree was drawn yet.
+    tree_drawn: bool,
+    /// Whether any frame was drawn yet.
+    drawn: bool,
     /// Shown until the patch connection arrives: the platform's loading state.
     waiting: ui::widget::Element,
 }
@@ -118,6 +122,8 @@ impl HostedWindow {
         let mut window = Self {
             instance,
             connected: None,
+            tree_drawn: false,
+            drawn: false,
             waiting: Box::new(ui::widget::Spinner::new()),
         };
         window.connect();
@@ -142,6 +148,7 @@ impl HostedWindow {
         });
         match connected {
             Ok((transport, watched)) => {
+                tilo_startup_metrics::mark("tilolang-patch-connected");
                 let watch = Watch::start(watched, ui::wake::WakeHandle::new());
                 self.connected = Some(Connected {
                     view: AppWindow::new(Box::new(transport), Vec::new()),
@@ -255,6 +262,19 @@ impl Widget for HostedWindow {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
+        // What the window's first frames show, for its launch timing: the instance's own
+        // tree, or the loading state before it arrived.
+        let showing_tree = self
+            .connected
+            .as_ref()
+            .is_some_and(|connected| connected.view.composed().is_some());
+        if showing_tree && !self.tree_drawn {
+            self.tree_drawn = true;
+            tilo_startup_metrics::mark("tilolang-first-tree-drawn");
+        } else if !showing_tree && !self.drawn {
+            tilo_startup_metrics::mark("tilolang-first-draw-before-tree");
+        }
+        self.drawn = true;
         self.content_mut()
             .draw(scene, transform, text, theme, presence);
     }

@@ -428,6 +428,12 @@ impl Hosted {
             .instance
             .host()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
+        if encoded.type_id == tilo_actions::resource::INVALID_ARGUMENTS_TYPE {
+            return Err(Refused::new(
+                "action_invalid_arguments",
+                String::from_utf8_lossy(&encoded.payload),
+            ));
+        }
         if encoded.type_id == EDIT_TYPE {
             // A history verb, on the record as the invoker's own step.
             let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)

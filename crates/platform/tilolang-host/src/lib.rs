@@ -81,6 +81,17 @@ struct Opening {
     /// The window's connection, until the instance runs.
     window: Option<Channel>,
     identity: Option<OwnedFd>,
+    /// When the host was handed the instance, and the stages it reached since, with how long
+    /// after: what an instance's launch spends in the host.
+    received: std::time::Instant,
+    reached: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl Opening {
+    /// The instance reached the stage `stage` now.
+    fn reached(&mut self, stage: &'static str) {
+        self.reached.push((stage, self.received.elapsed()));
+    }
 }
 
 enum Stage {
@@ -224,6 +235,8 @@ impl TilolangHost {
             },
             window: Some(window),
             identity: Some(fds.identity),
+            received: std::time::Instant::now(),
+            reached: Vec::new(),
         });
         Ok(())
     }
@@ -248,6 +261,8 @@ impl TilolangHost {
             },
             window: Some(window),
             identity: None,
+            received: std::time::Instant::now(),
+            reached: Vec::new(),
         });
     }
 
@@ -274,6 +289,7 @@ impl TilolangHost {
                             return Err(AdmitError::Module("its reader ended".to_owned()));
                         }
                     };
+                    opening.reached("module");
                     opening.stage =
                         self.join(request, broker, opening.identity.as_ref(), bundle)?;
                 }
@@ -299,6 +315,7 @@ impl TilolangHost {
                         };
                         return Ok(Step::Waiting);
                     }
+                    opening.reached("joined");
                     let Some(reader) = PrimaryRead::of(&manager).map_err(AdmitError::Join)? else {
                         return self.run(opening, spec, bundle, manager, None);
                     };
@@ -327,6 +344,7 @@ impl TilolangHost {
                     return match read.try_recv() {
                         Ok(read) => {
                             let read = read.map_err(AdmitError::Join)?;
+                            opening.reached("read");
                             self.run(opening, spec, bundle, manager, Some(read))
                         }
                         Err(TryRecvError::Empty) => {
@@ -427,6 +445,18 @@ impl TilolangHost {
             Some(identity) => hosted.holding_identity(identity),
             None => hosted,
         };
+        opening.reached("opened");
+        let stages: Vec<String> = opening
+            .reached
+            .iter()
+            .map(|(stage, after)| format!("{stage}={}", after.as_micros()))
+            .collect();
+        tracing::info!(
+            app = opening.app,
+            instance = opening.instance,
+            stages_us = stages.join(","),
+            "tilolang instance opened"
+        );
         Ok(Step::Open(Box::new(hosted), watched))
     }
 

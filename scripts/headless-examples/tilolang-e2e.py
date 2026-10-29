@@ -132,6 +132,7 @@ class Session:
     """One headless nested session and the environment its tools act in."""
 
     def __init__(self, state: Path, ready: dict):
+        self.pid = 0
         self.state = state
         self.control = ready["control"]
         self.runtime = ready["runtime"]
@@ -276,6 +277,56 @@ def switches(pid: int) -> dict[str, int]:
             out[f"{task.name} {comm}"] = total
         except OSError:
             pass
+    return out
+
+
+def anon_kib(pid: int) -> int | None:
+    """The anonymous memory `pid` holds, in KiB."""
+    try:
+        status = Path(f"/proc/{pid}/status").read_text()
+    except OSError:
+        return None
+    for line in status.splitlines():
+        if line.startswith("RssAnon:"):
+            return int(line.split()[1])
+    return None
+
+
+def host_pids(session_pid: int) -> list[int]:
+    """The tilolang hosts of the session."""
+    return [p for p in descendants(session_pid) if exe(p).endswith("/bin/tilolang-host")]
+
+
+def launch_timings(session: Session) -> dict:
+    """Where hosted launches spent their time: the shell's handover of each instance and the
+    host's opening of it, by stage, in µs."""
+    return {
+        "handed_over": log_lines(session, "tilolang instance handed over"),
+        "opened": log_lines(session, "tilolang instance opened"),
+    }
+
+
+def window_marks(state: Path) -> dict:
+    """Each hosted window's own startup marks (ms after its process began, the launcher's
+    before it), by the file it wrote: when its patch connection and first tree arrived and
+    what its first frame drew."""
+    out = {}
+    for path in state.glob("**/startup-*.json"):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        marks = {e["name"]: round(e["ns"] / 1e6, 1) for e in data.get("events", [])}
+        if not any(name.startswith("tilolang-") for name in marks):
+            continue
+        origin = data.get("origin_epoch_us", 0)
+        launcher = {e["name"]: round((e["epoch_us"] - origin) / 1000, 1) for e in data.get("launcher", [])}
+        keep = ("tilolang-", "first-frame", "render-worker-first", "gpu-device-request-done",
+                "window-render-context-done")
+        out[str(path.relative_to(state))] = {
+            "launcher": launcher,
+            "marks": {k: v for k, v in marks.items() if k.startswith(keep)},
+        }
     return out
 
 
@@ -679,9 +730,18 @@ def windows_of(session: Session, app: str, workspace: str) -> list:
     return [w for w in session.windows() if w.get("app_id") == app and w.get("workspace") == workspace]
 
 
-# The "New note" button of tilolang Notes' notebook, by its test id: its component's key, which
-# the notebook's id (apps/tl/notes/app.ids) and the standard notebook view's parts make.
-NOTES_NEW_NOTE_BUTTON = "akcqjax3.t34.t15.52/0"
+COMPONENTS = REPO / "target/debug/examples/components"
+
+
+def test_id_of(package: str, kind: str, label: str) -> str:
+    """The test id of the `kind` component saying `label` in the first window of the tilolang
+    package `package` (apps/tl/<package>), as its instance builds it: the key the compiler gave
+    it, read from the same compiler (tilolang-host's `components` example)."""
+    for line in run([COMPONENTS, REPO / "apps/tl" / package]).splitlines():
+        component = json.loads(line)
+        if component["kind"] == kind and component["label"] == label:
+            return component["key"]
+    raise Failed(f"apps/tl/{package}'s first window shows no {kind} saying {label!r}")
 
 
 def activate(session: Session, test_id: str) -> None:
@@ -695,7 +755,11 @@ def check_host_edit(session: Session, pids_of) -> dict:
     and the app started again edits too."""
     notes = app_id("notes")
     out = {"history": new_note_in(session, notes)}
-    # A second window: the first duplicated, as Super+T does.
+    # A second window: the first duplicated, as Super+T does. The host's memory before and after
+    # is what one more instance costs it.
+    time.sleep(2)
+    hosts = host_pids(session.pid)
+    out["host_anon_before"] = anon_kib(hosts[0]) if len(hosts) == 1 else None
     first = windows_of(session, notes, "Lounge")[0]
     session.invoke("desktop-windows", f"tab.focus:{first['group']}:{first['tab']}")
     session.invoke("actions", "tab.duplicate")
@@ -703,12 +767,16 @@ def check_host_edit(session: Session, pids_of) -> dict:
     until("a frame of the second window", lambda: sum(
         1 for f in session.control_json("raw", '{"op":"foreign_frames"}')["foreign_frames"]["frames"]
         if f["app_id"] == notes and f["presented"] and f["pixels_ready"]) == 2, 30)
+    hosts = host_pids(session.pid)
+    if len(hosts) != 1:
+        raise Failed(f"the Lounge's tilolang apps run in {len(hosts)} hosts, not one: {hosts}")
+    out["host_anon_kib"] = [out.pop("host_anon_before"), anon_kib(hosts[0])]
     # The second window, in front, presses its own "New note".
     second = next(w for w in windows_of(session, notes, "Lounge")
                   if (w["group"], w["tab"]) != (first["group"], first["tab"]))
     session.invoke("desktop-windows", f"tab.focus:{second['group']}:{second['tab']}")
     before = until("Notes' history", lambda: (lambda t: None if t is None else (t,))(history_now(session, notes)))[0]
-    activate(session, NOTES_NEW_NOTE_BUTTON)
+    activate(session, test_id_of("notes", "ui.Button", "New note"))
     after = until("the second window's 'New note' in Notes' history",
                   lambda: (lambda t: t if t is not None and t > before else None)(history_now(session, notes)), 15)
     out["second_window"] = [before, after]
@@ -720,6 +788,25 @@ def check_host_edit(session: Session, pids_of) -> dict:
     until("Notes closed", lambda: not windows_of(session, notes, "Lounge") and not pids_of(notes), 30)
     open_in_workspace(session, [notes], "Lounge")
     out["relaunched"] = new_note_in(session, notes)
+    return out
+
+
+def check_host_idle(session: Session, seconds: float = 10.0) -> dict:
+    """The tilolang host, its instances untouched for 10 s, sleeps: what each of its threads
+    woke is recorded, and it must not wake more than once a second."""
+    time.sleep(3)
+    hosts = host_pids(session.pid)
+    if len(hosts) != 1:
+        raise Failed(f"expected one tilolang host, found {hosts}")
+    before = switches(hosts[0])
+    time.sleep(seconds)
+    after = switches(hosts[0])
+    woke = {t: after[t] - before.get(t, 0) for t in after if after[t] != before.get(t, 0)}
+    total = sum(woke.values())
+    out = {"pid": hosts[0], "seconds": seconds, "switches": total, "threads": woke,
+           "anon_kib": anon_kib(hosts[0])}
+    if total > seconds:
+        raise Failed(f"the idle tilolang host woke {total} times in {seconds:.0f} s: {json.dumps(out)}")
     return out
 
 
@@ -1031,6 +1118,7 @@ def host_phases(summary: dict, out: Path, running: dict) -> None:
         proc, session = start_session(host_state, out, tapps, tag, native="notes chat",
                                       community=site.url, fresh=fresh)
         running["proc"] = proc
+        session.pid = proc.pid
         return session
 
     def stop(tag: str) -> None:
@@ -1067,7 +1155,10 @@ def host_phases(summary: dict, out: Path, running: dict) -> None:
         ("host", lambda: check_host(session, site.room, out)),
         ("host-edit", lambda: check_host_edit(session, pids_of)),
         ("host-undo", lambda: check_host_undo(session)),
+        ("host-idle", lambda: check_host_idle(session)),
     ])
+    summary["checks"].setdefault("host", {})["launch_timings"] = launch_timings(session)
+    summary["checks"]["host"]["window_marks"] = window_marks(session.state)
     stop("host")
 
 
@@ -1093,7 +1184,8 @@ def main() -> int:
     if not args.no_build:
         print("==> building the tilolang tool and the probe", file=sys.stderr)
         run(["cargo", "build", "-p", "tilolang-cli", "--bin", "tilolang",
-             "-p", "collab-probe", "--bin", "tilo-collab-probe"], cwd=REPO)
+             "-p", "collab-probe", "--bin", "tilo-collab-probe",
+             "-p", "tilolang-host", "--example", "components"], cwd=REPO)
     runtime = (state / "runtimes/.version").read_text().strip()
     print("==> tilolang build", file=sys.stderr)
     run([tool, "build", REPO / "apps/tl/today", "--search", REPO / "apps/tl", "--out", out / "build",

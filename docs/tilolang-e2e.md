@@ -10,9 +10,11 @@ scripts/headless-examples/tilolang-e2e.py --no-build # reuses target/nested-sess
 
 Without `--no-build` it builds the nested session through
 `dist/dev/nested-session.sh` (on the rcargo builder, or on t without rcargo)
-and the `tilolang` tool and `tilo-collab-probe` with cargo. `--no-build` needs
-`target/nested-session`, `target/debug/tilolang` and
-`target/debug/tilo-collab-probe` to exist already.
+and the `tilolang` tool, `tilo-collab-probe` and tilolang-host's `components`
+example (which names the test ids of an app's components) with cargo.
+`--no-build` needs `target/nested-session`, `target/debug/tilolang`,
+`target/debug/tilo-collab-probe` and `target/debug/examples/components` to
+exist already.
 
 The session is headless and runs with `--software`: the shell, its render
 service and every app render on lavapipe, and the shell probes no GPU. It

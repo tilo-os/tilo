@@ -163,6 +163,7 @@ fn hand_over_now(
     patch: OwnedFd,
 ) -> std::io::Result<()> {
     let refused = |what: String| std::io::Error::new(std::io::ErrorKind::PermissionDenied, what);
+    let began = std::time::Instant::now();
     let workspace = room.to_string();
     let installed = super::installed_copy(app)
         .ok_or_else(|| refused("the app is not installed as launched".to_owned()))?;
@@ -182,9 +183,11 @@ fn hand_over_now(
         runtime: verified.runtime,
         app_runtime: verified.app_runtime,
     };
+    let verified_us = began.elapsed().as_micros();
     let module = verified.module.encode();
     let module_len = module.len() as u64;
     let module = tilo_render_protocol::shm::sealed_blob("tilolang-module", &module)?;
+    let module_us = began.elapsed().as_micros();
     let broker = instance_collaboration(&app.package_id, &workspace, instance, launched)?;
     // Opened and named for the app and workspace exactly as the launcher opens a launched
     // app's: the identity service signs for that app in that workspace only.
@@ -193,6 +196,7 @@ fn hand_over_now(
             .map_err(|error| std::io::Error::other(error.to_string()))?
             .ok_or_else(|| refused("the identity service is unavailable".to_owned()))?
             .host;
+    let connections_us = began.elapsed().as_micros();
     let request = InstanceRequest {
         app: app.package_id.clone(),
         room: workspace,
@@ -206,7 +210,18 @@ fn hand_over_now(
         module,
         window: patch,
     };
-    send_to_host(&key, &request, &fds)
+    let started = send_to_host(&key, &request, &fds)?;
+    tracing::info!(
+        package_id = %app.package_id,
+        instance,
+        verified_us,
+        module_us,
+        connections_us,
+        handed_us = began.elapsed().as_micros(),
+        host_started = started,
+        "tilolang instance handed over"
+    );
+    Ok(())
 }
 
 /// The instance's collaboration connection, attested as the launch of the window `instance` of
@@ -234,7 +249,8 @@ fn instance_collaboration(
     Ok(stream.into())
 }
 
-/// Send the instance to the host `key`, starting it first when none runs.
+/// Send the instance to the host `key`, starting it first when none runs. Whether it started
+/// the host.
 #[allow(
     clippy::significant_drop_tightening,
     reason = "a host is chosen, started and handed the instance in one hold, so it never ends in between"
@@ -243,14 +259,14 @@ fn send_to_host(
     key: &HostKey,
     request: &InstanceRequest,
     fds: &InstanceFds,
-) -> std::io::Result<()> {
+) -> std::io::Result<bool> {
     let mut hosts = lock(&HOSTS);
     let hosts = hosts.get_or_insert_with(HashMap::new);
     if let Some(host) = hosts.get_mut(key) {
         match runtime_portal::tilolang_host::send_instance(&host.door, request, fds) {
             Ok(()) => {
                 host.instances.insert(request.instance);
-                return Ok(());
+                return Ok(false);
             }
             // The host is ending: start another.
             Err(error) => {
@@ -263,7 +279,7 @@ fn send_to_host(
     runtime_portal::tilolang_host::send_instance(&host.door, request, fds)?;
     host.instances.insert(request.instance);
     hosts.insert(key.clone(), host);
-    Ok(())
+    Ok(true)
 }
 
 /// Where the host `key` keeps what its instances keep.
