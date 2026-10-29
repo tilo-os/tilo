@@ -11,8 +11,10 @@ name: Dev / apps-macos
 # which checks the runtime the apps share. Nothing here requests an OIDC token or touches the release
 # label `imager-macos-aarch64`.
 on:
-  schedule:
-    - cron: "17 1 * * *"
+  # No `schedule:`: a scheduled run's actor is forgejo-actions, which the hosted-runner
+  # admission patch does not admit, so such a run would wait for a runner that never takes it.
+  # The CI host controller dispatches this workflow at its cron slots instead
+  # (apps/ci-runners/host_controller.py, TIMER_WORKFLOWS), as a user the patch admits.
   workflow_dispatch:
 
 concurrency:
