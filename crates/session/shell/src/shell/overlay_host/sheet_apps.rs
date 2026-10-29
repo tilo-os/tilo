@@ -127,6 +127,11 @@ impl<S: Seat> SheetHost<S> {
         self.seat.presentation().close()
     }
 
+    /// Take the sheet down at once: nothing of it is drawn any more.
+    pub(crate) fn close_now(&self) {
+        self.seat.presentation().gone();
+    }
+
     /// Asked to be up, mounted or not yet.
     pub(crate) fn requested(&self) -> bool {
         self.seat.presentation().is_open()
@@ -276,5 +281,64 @@ impl<S: Seat> ShellLayer for SheetHost<S> {
     fn is_animating(&self, _now: Instant) -> bool {
         self.is_drawn()
             && (self.node.is_none() || self.app.as_ref().is_some_and(|app| app.needs_redraw()))
+    }
+}
+
+/// Mount a sheet's app lent `seat`: through the session's in-process apps
+/// when this host has them, so its actions are published on the session's
+/// broker, else as this device's own person with no route beyond it.
+///
+/// # Errors
+/// The app refuses the context.
+pub(crate) fn mount_sheet<S: Seat>(
+    apps: Option<&crate::shell::in_process::SharedInProcessApps>,
+    definition: &'static ApplicationDefinition,
+    room: &str,
+    instance: u64,
+    seat: S,
+) -> Result<
+    (
+        ui::application::AppComponent,
+        Option<ui::collaboration::CollaborationManager>,
+    ),
+    ui::launch::LaunchError,
+> {
+    match apps {
+        Some(apps) => apps
+            .borrow()
+            .mount_sheet(definition, room, instance, |cx| cx.lend(seat)),
+        None => crate::shell::in_process::mount_sheet(
+            definition,
+            &crate::shell::state::local_user_id(),
+            "this-device",
+            room,
+            instance,
+            |cx| cx.lend(seat),
+        )
+        .map(|component| (component, None)),
+    }
+}
+
+impl super::ShellOverlayHost {
+    /// The room the person works in, which sheets publish their actions in.
+    pub(super) fn sheet_room(&self) -> String {
+        self.chrome
+            .as_ref()
+            .and_then(|chrome| {
+                chrome
+                    .borrow()
+                    .tree()
+                    .desktop
+                    .active_workspace()
+                    .map(|workspace| workspace.room().to_string())
+            })
+            .unwrap_or_else(|| "desktop".to_owned())
+    }
+
+    /// The session's in-process apps, when this host has them.
+    pub(super) fn sheet_apps(&self) -> Option<crate::shell::in_process::SharedInProcessApps> {
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        state.hosted_inputs.in_process().cloned()
     }
 }

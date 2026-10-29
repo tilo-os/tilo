@@ -268,6 +268,7 @@ mod palette_run;
 mod palette_search;
 mod people_overlay;
 use palette_search::LaunchpadMark;
+mod display_confirm_sheet;
 mod nested_shortcuts;
 mod peer_sync;
 mod portal_prompts;

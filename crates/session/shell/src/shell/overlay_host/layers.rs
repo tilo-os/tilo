@@ -39,7 +39,7 @@ use tilo_desktop::window_switcher::{WindowAddress, WindowSwitcher, WindowThumbna
 
 use super::sheet_apps::SheetHost;
 use super::tab_menu::{TabMenuLayer, TabMenuTarget};
-use crate::shell::display_confirm::DisplayConfirmPrompt;
+use crate::shell::display_confirm::DisplayQuestion;
 use crate::shell::window_menu::WindowMenuAction;
 
 /// Every shell overlay, topmost first. Declaration order *is* the stacking
@@ -600,7 +600,11 @@ pub(crate) trait ShellLayer {
 /// The overlays that have joined the stack, and the arbitration they share.
 #[derive(Default)]
 pub(crate) struct OverlayStack {
-    pub(crate) display_confirm: DisplayConfirmPrompt,
+    /// The question about a tool's display change, an app
+    /// ([`tilo_sheets::display_confirm`]).
+    pub(crate) display_confirm: SheetHost<tilo_sheets::display_confirm::ConfirmSeat>,
+    /// The transaction that question waits on.
+    pub(crate) display_question: DisplayQuestion,
     pub(crate) window_switcher: WindowSwitcher,
     pub(crate) dictation: super::dictation_layer::DictationSurface,
     pub(crate) emoji_picker: EmojiPicker,

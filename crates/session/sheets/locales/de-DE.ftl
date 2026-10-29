@@ -15,3 +15,12 @@ power-restart = Neu starten
 power-restart-detail = Geöffnete Apps werden geschlossen
 power-shut-down = Ausschalten
 power-shut-down-detail = Geöffnete Apps werden geschlossen
+
+## Display change
+
+display-confirm-keep = Behalten
+display-confirm-revert = Zurücksetzen
+display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
+display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
+display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
+display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat. Dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.

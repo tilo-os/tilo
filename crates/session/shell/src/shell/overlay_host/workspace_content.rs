@@ -78,20 +78,6 @@ impl ShellOverlayHost {
             .number_by_shared_order(&self.outputs, layout);
     }
 
-    /// Ask the person to keep or revert display transaction `transaction`,
-    /// which a layout tool applied. Settings and the Super+P sheet ask in
-    /// their own UI; this is for changes from anywhere else.
-    pub fn show_display_confirmation(
-        &mut self,
-        transaction: u64,
-        tool: Option<settings_store::display_tools::DisplayTool>,
-    ) {
-        self.layers
-            .display_confirm
-            .show(transaction, tool, Instant::now());
-        self.bump_chrome();
-    }
-
     /// Tell the person `tool` applied a display layout again right after
     /// they reverted it, and was refused instead of asking them again.
     pub fn report_refused_display_reapply(
@@ -110,28 +96,6 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow_mut().push_notification(title, String::new());
         }
-    }
-
-    /// Whether the keep-or-revert prompt for a tool's display change is up.
-    /// It owns the keyboard and pointer while it is.
-    pub fn display_confirmation_visible(&self) -> bool {
-        self.layers.display_confirm.visible()
-    }
-
-    /// Re-read the transaction the prompt asks about now: close it if it
-    /// was answered elsewhere, revert it if its time ran out. Returns
-    /// whether the prompt closed.
-    pub fn poll_display_confirmation(&mut self) -> bool {
-        let closed = self.layers.display_confirm.poll(Instant::now(), true);
-        if closed && let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bump();
-        }
-        closed
-    }
-
-    /// Where the prompt's card sits on each display.
-    pub fn display_confirmation_cards(&self) -> Vec<crate::shell::display_confirm::ConfirmCard> {
-        self.layers.display_confirm.cards(&self.layer_outputs())
     }
 
     /// Every display's rect; the host's bounds alone before it knows of any.

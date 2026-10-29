@@ -11,7 +11,7 @@ use super::*;
 
 use tilo_sheets::power::{Offers, PowerEffect, PowerSeat};
 
-use super::sheet_apps::SheetHost;
+use super::sheet_apps::{SheetHost, mount_sheet};
 
 impl Default for SheetHost<PowerSeat> {
     fn default() -> Self {
@@ -52,31 +52,12 @@ impl ShellOverlayHost {
     /// Mount the menu's app in the room the person works in, as an app the
     /// session launched, so its actions are published there.
     pub(super) fn mount_power_menu(&mut self) {
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        let state = chrome.borrow();
-        let room = state.tree().desktop.active_workspace().map_or_else(
-            || "desktop".to_owned(),
-            |workspace| workspace.room().to_string(),
-        );
-        let apps = state.hosted_inputs.in_process().cloned();
-        drop(state);
+        let room = self.sheet_room();
+        let apps = self.sheet_apps();
         self.layers
             .power_menu
-            .mount(&room, |definition, room, instance, seat| match &apps {
-                Some(apps) => apps
-                    .borrow()
-                    .mount_sheet(definition, room, instance, |cx| cx.lend(seat)),
-                None => crate::shell::in_process::mount_sheet(
-                    definition,
-                    &crate::shell::state::local_user_id(),
-                    "this-device",
-                    room,
-                    instance,
-                    |cx| cx.lend(seat),
-                )
-                .map(|component| (component, None)),
+            .mount(&room, |definition, room, instance, seat| {
+                mount_sheet(apps.as_ref(), definition, room, instance, seat)
             });
     }
 

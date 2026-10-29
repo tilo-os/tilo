@@ -413,7 +413,8 @@ impl Widget for ShellOverlayHost {
         if !self.layers.power_menu.is_mounted() {
             self.mount_power_menu();
         }
-        let power_menu_dirty = self.pump_power_menu(doc, path);
+        let power_menu_dirty =
+            self.pump_power_menu(doc, path) | self.pump_display_confirmation(doc, path);
         let session_action_dirty = self.drain_session_action_results();
         steps.mark("launches-and-session-actions");
         // Also driven by the widget's own `update`, but routed here too so
@@ -579,6 +580,13 @@ impl Widget for ShellOverlayHost {
         if app_sheet_window.is_none() {
             self.app_sheet_nodes = None;
         }
+        let display_confirm_window = self.layers.display_confirm.build_layout(
+            taffy,
+            theme,
+            node_map,
+            self.rect,
+            self.rect.origin(),
+        );
         let power_menu_window = self.layers.power_menu.build_layout(
             taffy,
             theme,
@@ -686,6 +694,7 @@ impl Widget for ShellOverlayHost {
         children.extend(self.peer_sync_node);
         children.extend(app_sheet_window);
         children.extend(power_menu_window);
+        children.extend(display_confirm_window);
         // `new_with_children` only errs on a foreign/removed child
         // `NodeId`, and every id in `children` was just created above in
         // this same tree — but rather than assert that, fall back to the
@@ -832,6 +841,9 @@ impl Widget for ShellOverlayHost {
         self.apply_app_sheet_layout(taffy);
         self.layers
             .power_menu
+            .apply_layout(taffy, self.rect.origin());
+        self.layers
+            .display_confirm
             .apply_layout(taffy, self.rect.origin());
         if let Some(node) = self.peer_sync_node {
             // The sheet centres on, and measures itself against, the
@@ -1146,6 +1158,7 @@ impl Widget for ShellOverlayHost {
             out.push(sheet.dialog());
         }
         out.extend(self.layers.power_menu.widget());
+        out.extend(self.layers.display_confirm.widget());
         out
     }
 
@@ -1195,6 +1208,7 @@ impl Widget for ShellOverlayHost {
             out.push(sheet.dialog_mut());
         }
         out.extend(self.layers.power_menu.widget_mut());
+        out.extend(self.layers.display_confirm.widget_mut());
         out
     }
 
@@ -1283,6 +1297,7 @@ impl Widget for ShellOverlayHost {
             | self.peer_sync_overlay.take_structure_dirty()
             | self.take_app_sheet_changed()
             | self.layers.power_menu.structure_changed()
+            | self.layers.display_confirm.structure_changed()
             | (self.agent_quick_composer.is_open() != self.agent_quick_composer_node.is_some())
             | self.agent_quick_composer.take_structure_dirty()
             | self.bar_popovers.structure_stale()
