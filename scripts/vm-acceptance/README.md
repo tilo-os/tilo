@@ -158,9 +158,9 @@ its executable; it proves the device key on each bus connection instead
 (docs/identity-security.md). C01 (`checks/secrets.py`) judges that in the slot: its
 `/proc/<pid>/exe` is hidden from its own user, `tilo-secret-service apps list` names
 `binary:/usr/bin/shell` with the MLS key it keeps, the sealed MLS state sits in an
-owner-only directory with no custody warning in the session log, and Notes' portal secret
-(`org.freedesktop.portal.Secret`, asked from an `app-tilo-so.tilo.notes-<n>.scope` as a
-host-launched app asks) comes from the store, and comes back the same after
+owner-only directory with no custody warning in the session log, and Passwords' portal
+secret (`org.freedesktop.portal.Secret`, asked on the app's own `xdg-dbus-proxy` socket, the
+bus its sandbox has) comes from the store, and comes back the same after
 `tilo-secret-service` restarts under the running compositor. C02 takes the dev account
 R08 signed in at seat0 through first use on its own control socket's `onboarding` actions:
 its identity must name `secret_ref.backend = secret-service-v1` with no key file beside it,

@@ -10,9 +10,9 @@ real compositor on the installed image.
 
 C01 judges the run's slot: the compositor is non-dumpable, the store is open and lists
 the compositor with the MLS key it keeps there, its sealed MLS state sits in an
-owner-only directory, an app's portal secret (org.freedesktop.portal.Secret, asked the
-way a host-launched app asks, from its own `app-tilo-<id>-<pid>.scope`) is answered from
-the store, and the same secret is answered again after `tilo-secret-service` restarts
+owner-only directory, an app's portal secret (org.freedesktop.portal.Secret, asked
+through the app's own filtered bus proxy, the only bus its sandbox reaches) is answered
+from the store, and the same secret is answered again after `tilo-secret-service` restarts
 under the running compositor, whose connection must prove itself again.
 
 C02 judges a person's own login: the dev account signs in at seat0's greeter (as R08
@@ -41,7 +41,8 @@ from .resources import SIGN_OUT, dev_account, sign_in
 AREA = "secrets"
 
 COMPOSITOR_APP = "binary:/usr/bin/shell"
-PORTAL_APP = "so.tilo.notes"
+# An app whose manifest declares the secrets portal, so its bus proxy lets it ask.
+PORTAL_APP = "so.tilo.passwords"
 MLS_UNAVAILABLE = "MLS collaboration unavailable"
 # The compositor's warnings when it could not use what the store keeps for it.
 CUSTODY_WARNINGS = (MLS_UNAVAILABLE, "channel encryption unavailable", "MLS key")
@@ -90,19 +91,29 @@ log=$(getent passwd "$(id -nu __UID__)" | cut -d: -f6)/__LOG__
 __GREPS__
 """
 
-# As the slot's user, in its session's view: ask the portal for the app's secret from a
-# scope named the way the launcher names the app's own (`app-tilo-<id>-<pid>.scope`,
-# crates/packaging/launcher/src/scope.rs), so xdg-desktop-portal derives the app's id
-# and the compositor resolves it to the running app. The secret arrives on the
-# descriptor; only its length and whether it equals the earlier answer are printed.
+# As the slot's user, in its session's view: ask the portal for the app's secret on the
+# bus the app itself has, its launcher's `xdg-dbus-proxy` socket
+# (`$XDG_RUNTIME_DIR/tilo/dbus-proxy/<launcher pid>.sock`, bound into its sandbox as the
+# session bus). The portal sees the proxy as the requester, and the compositor names the
+# app by the launch that proxy belongs to. The secret arrives on the descriptor; only its
+# length and whether it equals the earlier answer are printed.
 PORTAL = r"""
+ASK='__ASK__'
 keep="$XDG_RUNTIME_DIR/acceptance-portal-secret"
+launcher=""
+for d in /proc/[0-9]*; do
+  [ "$(cat "$d/comm" 2>/dev/null)" = tilo-launcher ] || continue
+  tr '\0' '\n' < "$d/cmdline" 2>/dev/null | grep -A1 -x -- --app-id | tail -n 1 | grep -qx '__APP__' \
+    && launcher=${d#/proc/}
+done
+echo "LAUNCHER=$launcher"
+bus="$XDG_RUNTIME_DIR/tilo/dbus-proxy/$launcher.sock"
+[ -n "$launcher" ] && [ -S "$bus" ] || { echo "NO-APP-BUS"; exit 0; }
 f=$(mktemp "$XDG_RUNTIME_DIR/acceptance-portal.XXXXXX")
 chmod 600 "$f"
-systemd-run --user --scope --quiet --unit="app-tilo-__APP__-$$" -- \
-  busctl --user call org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
-  org.freedesktop.portal.Secret RetrieveSecret 'ha{sv}' 3 0 3>"$f" > "$f.reply" 2>&1
+python3 -I -c "$ASK" "unix:path=$bus" "$f" > "$f.reply" 2>&1
 echo "CALL-EXIT=$?"
+sed -n 's/^RESPONSE=/RESPONSE=/p' "$f.reply"
 sed 's/^/REPLY: /' "$f.reply"
 i=0; while [ $i -lt 50 ] && [ "$(stat -c %s "$f")" -lt __LEN__ ]; do i=$((i + 1)); sleep 0.2; done
 echo "LENGTH=$(stat -c %s "$f")"
@@ -112,6 +123,32 @@ else
   cp "$f" "$keep" && chmod 600 "$keep" && echo "SAME=first"
 fi
 rm -f "$f" "$f.reply"
+"""
+# What the app does on that bus: RetrieveSecret with the descriptor, then it stays connected
+# until the portal's Response, as a portal client must (the proxy's connection for it ends
+# with it, and the compositor names the requester by that connection's process).
+ASK = """
+import os, sys
+from gi.repository import Gio, GLib
+bus = Gio.DBusConnection.new_for_address_sync(sys.argv[1],
+    Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
+token = "acceptance%d" % os.getpid()
+path = "/org/freedesktop/portal/desktop/request/%s/%s" % (bus.get_unique_name()[1:].replace(".", "_"), token)
+loop, code = GLib.MainLoop(), []
+bus.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request", "Response", path,
+    None, Gio.DBusSignalFlags.NONE, lambda *a: (code.append(a[5].unpack()[0]), loop.quit()))
+fds = Gio.UnixFDList.new()
+fd = os.open(sys.argv[2], os.O_WRONLY)
+index = fds.append(fd)
+os.close(fd)
+reply, _ = bus.call_with_unix_fd_list_sync("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+    "org.freedesktop.portal.Secret", "RetrieveSecret",
+    GLib.Variant("(ha{sv})", (index, {"handle_token": GLib.Variant("s", token)})),
+    GLib.VariantType("(o)"), Gio.DBusCallFlags.NONE, -1, fds, None)
+print("handle", reply.unpack()[0])
+GLib.timeout_add_seconds(20, loop.quit)
+loop.run()
+print("RESPONSE=%s" % (code[0] if code else "none"))
 """
 PORTAL_FORGET = 'rm -f "$XDG_RUNTIME_DIR/acceptance-portal-secret"'
 FIELD = re.compile(r"^([A-Z-]+)=(.*)$", re.M)
@@ -181,11 +218,16 @@ def log_warnings(ctx, uid: int) -> dict:
 
 
 def portal_secret(ctx, label: str) -> dict:
-    text = ctx.vm.exec(PORTAL.replace("__APP__", PORTAL_APP).replace("__LEN__", str(SECRET_LEN)),
+    text = ctx.vm.exec(PORTAL.replace("__ASK__", ASK).replace("__APP__", PORTAL_APP)
+                       .replace("__LEN__", str(SECRET_LEN)),
                        timeout=90, check=False)
     ctx.write(f"{label}.txt", text)
+    if "NO-APP-BUS" in text:
+        raise CheckFailed(f"{PORTAL_APP} runs with no bus proxy of its own to ask the portal on: "
+                          f"{text.strip()[-300:]!r}")
     f = fields(text)
-    return {"exit": f.get("CALL-EXIT"), "length": int(f.get("LENGTH") or 0), "same": f.get("SAME"),
+    return {"exit": f.get("CALL-EXIT"), "response": f.get("RESPONSE"),
+            "length": int(f.get("LENGTH") or 0), "same": f.get("SAME"),
             "reply": [l[7:] for l in text.splitlines() if l.startswith("REPLY: ")]}
 
 
@@ -229,8 +271,8 @@ def compositor_secrets_in_the_store(ctx, res):
     ctx.vm.exec(PORTAL_FORGET, check=False)
     ctx.open_app(PORTAL_APP)
     first = portal_secret(ctx, "C01-portal-first")
-    res.metrics["portal_first"] = {k: first[k] for k in ("exit", "length", "same")}
-    expect(first["exit"] == "0" and first["length"] == SECRET_LEN,
+    res.metrics["portal_first"] = {k: first[k] for k in ("exit", "response", "length", "same")}
+    expect(first["exit"] == "0" and first["response"] == "0" and first["length"] == SECRET_LEN,
            f"the portal answered no {SECRET_LEN}-byte secret: {first}")
     after_portal = store(ctx, uid, "C01-after-portal")
     expect(f"sandbox:{PORTAL_APP}" in after_portal["apps"],
@@ -243,8 +285,8 @@ def compositor_secrets_in_the_store(ctx, res):
         raise CheckFailed("tilo-secret-service did not come back open after a restart")
     res.metrics["store_unit_before_after"] = [before["unit"], restarted["unit"]]
     second = portal_secret(ctx, "C01-portal-after-store-restart")
-    res.metrics["portal_after_store_restart"] = {k: second[k] for k in ("exit", "length", "same")}
-    expect(second["exit"] == "0" and second["length"] == SECRET_LEN,
+    res.metrics["portal_after_store_restart"] = {k: second[k] for k in ("exit", "response", "length", "same")}
+    expect(second["exit"] == "0" and second["response"] == "0" and second["length"] == SECRET_LEN,
            f"after the store restarted, the compositor's next secret call failed: {second}")
     expect(second["same"] == "yes", "after the store restarted, the portal answered a different secret")
 
