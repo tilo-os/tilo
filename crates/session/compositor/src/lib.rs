@@ -38,6 +38,8 @@ mod power;
 mod present;
 mod protocols;
 pub mod render;
+mod requests;
+pub mod selection;
 mod state;
 mod tablet;
 mod text_input;
@@ -63,7 +65,8 @@ pub use input::{
     GestureEvent, HostKey, InputEvent, KeyModifiers, Switch, TabletEvent, TabletPhase,
 };
 pub use output::{ModeRequest, OutputChange, OutputConfig};
-pub use policy::{Arrangement, StackPolicy, WindowInfo, WindowPolicy};
+pub use policy::{Arrangement, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy, WindowRequest};
+pub use selection::Selection;
 pub use state::State;
 
 /// Why the compositor could not start or keep running.
@@ -140,6 +143,7 @@ impl Compositor {
                 |_, _, _| Ok(PostAction::Continue),
             )
             .map_err(io)?;
+        state.loop_handle = Some(event_loop.handle());
         let backend = make_backend(&event_loop.handle(), &mut state)?;
         Ok(Self {
             event_loop,
@@ -370,6 +374,42 @@ impl Compositor {
             .session
             .resume_from_sleep(std::time::Instant::now());
         self.apply_idle(transitions)
+    }
+
+    /// Offer `offer` (bytes per format) as `selection` for a hosted
+    /// surface app, as a client's copy would; Wayland and X11 clients read
+    /// it from the compositor. An empty offer drops a hosted app's
+    /// selection.
+    pub fn set_selection(
+        &mut self,
+        selection: Selection,
+        offer: Vec<(String, Vec<u8>)>,
+    ) -> Result<(), Error> {
+        self.data.state.set_host_selection(selection, offer);
+        self.display.flush_clients()?;
+        Ok(())
+    }
+
+    /// The formats `selection` offers now, whoever owns it.
+    pub fn selection_formats(&self, selection: Selection) -> Vec<String> {
+        self.data.state.selections.offered(selection).to_vec()
+    }
+
+    /// Read `selection` as `mime`: the returned pipe yields the bytes and
+    /// ends when the owner is done (a client writes it as the loop runs,
+    /// so read it without blocking the loop).
+    pub fn receive_selection(
+        &mut self,
+        selection: Selection,
+        mime: &str,
+    ) -> Result<std::io::PipeReader, Error> {
+        let (reader, writer) = std::io::pipe()?;
+        self.data
+            .state
+            .receive_selection(selection, mime, writer.into())
+            .map_err(|error| Error::Io(std::io::Error::other(error)))?;
+        self.display.flush_clients()?;
+        Ok(reader)
     }
 
     /// Whether the panel of the output named `name` is lit (not blanked,

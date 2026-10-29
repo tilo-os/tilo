@@ -32,6 +32,34 @@ pub struct Arrangement {
     pub size: Option<(i32, i32)>,
 }
 
+/// Which edges of a window a resize drags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "a window has four edges, each dragged or not"
+)]
+pub struct ResizeEdges {
+    pub top: bool,
+    pub bottom: bool,
+    pub left: bool,
+    pub right: bool,
+}
+
+/// What a window asks of the window manager (Wayland and X11 alike).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowRequest {
+    /// Move it with the pointer while the pressed button is held.
+    Move,
+    /// Resize it with the pointer by these edges.
+    Resize(ResizeEdges),
+    /// Maximize it (`true`) or restore it.
+    Maximize(bool),
+    /// Make it fullscreen (on the named output, else its own) or restore it.
+    Fullscreen { on: bool, output: Option<String> },
+    /// Hide it until it is brought back.
+    Minimize,
+}
+
 /// Decides placement, initial size and focus for windows.
 pub trait WindowPolicy {
     /// The size a new toplevel is configured to before its first buffer, or
@@ -85,6 +113,17 @@ pub trait WindowPolicy {
     /// A switch changed state: the lid closed or opened, a convertible
     /// folded into or out of tablet shape.
     fn switch(&mut self, _switch: Switch, _on: bool) {}
+
+    /// A window asked to be moved, resized, maximized, made fullscreen or
+    /// minimized. Return `true` to have the compositor do what a floating
+    /// window manager does (a pointer grab; covering the output and
+    /// restoring), `false` when the policy answers it itself (through
+    /// [`WindowPolicy::arrange`], which is asked next). By default every
+    /// request but minimizing, which needs somewhere to bring the window
+    /// back from, is granted.
+    fn request(&mut self, _window: &WindowInfo, request: &WindowRequest) -> bool {
+        !matches!(request, WindowRequest::Minimize)
+    }
 }
 
 /// Floating windows centred on the first output, each focused as it maps
