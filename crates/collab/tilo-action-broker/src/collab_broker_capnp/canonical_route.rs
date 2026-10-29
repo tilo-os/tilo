@@ -258,8 +258,10 @@ impl CapnpBrokerState {
     ) -> Result<ActionDirectoryRoot, ActionHostError> {
         let uuid = token
             .strip_prefix(PROVIDER_PREFIX)
-            .and_then(|value| uuid::Uuid::parse_str(value).ok())
             .ok_or_else(unavailable)?;
+        let uuid = uuid::Uuid::parse_str(uuid).map_err(|error| ActionHostError::Unavailable {
+            reason: format!("the canonical application provider token is malformed: {error}"),
+        })?;
         let requested = self
             .canonical_directories
             .lock()

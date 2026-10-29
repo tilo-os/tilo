@@ -3,29 +3,6 @@
 # --update records a file that shed some. Report the error, or mark a genuinely
 # optional read with `// optional-decode: <why>`.
 [files]
-"crates/collab/collaboration/src/app_surface.rs" = 4
-"crates/collab/collaboration/src/broker.rs" = 6
-"crates/collab/collaboration/src/document_routes.rs" = 1
-"crates/collab/collaboration/src/held_inbound.rs" = 1
-"crates/collab/collaboration/src/history_source/authors.rs" = 3
-"crates/collab/collaboration/src/history_source/steps.rs" = 2
-"crates/collab/collaboration/src/lib.rs" = 2
-"crates/collab/collaboration/src/record.rs" = 3
-"crates/collab/collaboration/src/state/undo_log.rs" = 6
-"crates/collab/tilo-action-broker/src/app_actions.rs" = 2
-"crates/collab/tilo-action-broker/src/channel_encryption.rs" = 2
-"crates/collab/tilo-action-broker/src/collab_broker_capnp.rs" = 3
-"crates/collab/tilo-action-broker/src/collab_broker_capnp/action_host.rs" = 2
-"crates/collab/tilo-action-broker/src/collab_broker_capnp/action_host/directory.rs" = 1
-"crates/collab/tilo-action-broker/src/collab_broker_capnp/action_host/shortcut_run.rs" = 1
-"crates/collab/tilo-action-broker/src/collab_broker_capnp/native_media.rs" = 2
-"crates/collab/tilo-action-broker/src/collab_broker_capnp/published_invocation.rs" = 7
-"crates/collab/tilo-action-broker/src/collab_broker_capnp/tracker_runs.rs" = 2
-"crates/collab/tilo-action-broker/src/collab_broker_capnp/witness.rs" = 2
-"crates/collab/tilo-action-broker/src/collab_history.rs" = 2
-"crates/collab/tilo-action-broker/src/collab_presence.rs" = 2
-"crates/collab/tilo-action-broker/src/lib.rs" = 1
-"crates/collab/tilo-action-broker/src/services/task_execution.rs" = 2
 "crates/session/shell/src/bin/pressure_fixture.rs" = 2
 "crates/session/shell/src/bin/shots/driver.rs" = 1
 "crates/session/shell/src/bin/shots/driver/desktop_control.rs" = 1

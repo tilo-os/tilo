@@ -192,6 +192,7 @@ fn connected(service: &FloatingSurfaceService, allowed: bool) -> u64 {
                 connection: id,
                 app_id,
                 network_status_allowed,
+                ..
             } = event
             {
                 assert_eq!(app_id, "so.tilo.network-boundary");

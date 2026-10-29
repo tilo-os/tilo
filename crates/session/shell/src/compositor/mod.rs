@@ -68,6 +68,7 @@ pub mod input_environment;
 pub mod input_method;
 #[cfg(target_os = "linux")]
 pub mod input_method_service;
+pub mod input_order;
 pub mod key_latency;
 #[cfg(target_os = "linux")]
 pub mod keymap_typing;

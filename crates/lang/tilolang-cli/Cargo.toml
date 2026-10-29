@@ -24,6 +24,8 @@ rustix = { workspace = true, features = ["event", "process", "termios"] }
 serde.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
+# The publisher key, written whole beside its place before it is linked there.
+tempfile.workspace = true
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # The publisher key file.
 registry-types = { path = "../../packaging/registry-types" }
@@ -40,7 +42,6 @@ tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 [dev-dependencies]
 collab-types = { path = "../../collab/collab-types" }
 launcher = { path = "../../packaging/launcher" }
-tempfile.workspace = true
 
 [lints]
 workspace = true

@@ -181,9 +181,10 @@ An unsupported supervisor is refused before Terminal sends an open request.
 This control connection retains the same authenticated caller for every request;
 each Host request still checks the current owner grant and original requester.
 A successful version-two session reply includes `"protocol":2` and exactly two
-close-on-exec descriptors, in order: the PTY master and a private session lease;
-a session that negotiated `editor_protocol` appends the editor capability as a
-third, last descriptor.
+close-on-exec descriptors, in order: the PTY master and a private session lease.
+The supervisor offers no native editor capability: an `editor_protocol` in a
+request is ignored, since an environment session runs ush's own shell, which
+does not serve it.
 The control connection remains available for subsequent targets. Requests are
 bounded to 4096 bytes and eight active leases. Malformed requests close control;
 completed sequential sessions do not exhaust a lifetime request counter.

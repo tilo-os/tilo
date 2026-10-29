@@ -55,6 +55,19 @@ pub const TASK_VERB: &[u8] = b"task";
 /// ended; the host names no app.
 pub const ENDED_VERB: &[u8] = b"ended";
 
+/// The verb the host says on its door last, as it exits: why, in words its supervisor logs and
+/// shows. A host gone without saying it ended unheard (killed, or crashed).
+pub const EXITING_VERB: &[u8] = b"exiting";
+
+/// What a host says on its door.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FromHost {
+    /// The instance of this window ended (its window closed, or it never opened).
+    Ended(u64),
+    /// The host exits, for this reason.
+    Exiting(String),
+}
+
 /// The largest request: a few names and numbers.
 pub const MAX_MESSAGE: usize = 4096;
 
@@ -447,16 +460,42 @@ pub fn send_ended(door: &Descriptor, instance: u64) -> io::Result<()> {
     }
 }
 
-/// The next instance the host behind the session's `door` says ended; `None` at end of file,
-/// when the host is gone.
+/// Say on the host's end of `door`, last, why the host exits.
 ///
 /// # Errors
-/// The socket's error, or a message that is no ended instance.
-pub fn receive_ended(door: &Descriptor) -> io::Result<Option<u64>> {
+/// The socket's error, or [`io::ErrorKind::Unsupported`] off Linux.
+pub fn send_exiting(door: &Descriptor, reason: &str) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        let mut buffer = [0_u8; 64];
+        // Cut on a character boundary to what the door carries.
+        let room = MAX_MESSAGE.saturating_sub(EXITING_VERB.len().saturating_add(1));
+        let end = (0..=reason.len().min(room))
+            .rev()
+            .find(|end| reason.is_char_boundary(*end))
+            .unwrap_or(0);
+        // A NUL separates the door's fields.
+        let reason = reason.get(..end).unwrap_or_default().replace('\0', " ");
+        crate::jobs::send(door.as_fd(), &[EXITING_VERB, reason.as_bytes()], &[])
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (door, reason);
+        Err(unsupported())
+    }
+}
+
+/// The next thing the host behind the session's `door` says; `None` at end of file, when the
+/// host is gone.
+///
+/// # Errors
+/// The socket's error, or a message that is neither an ended instance nor an exit.
+pub fn receive_from_host(door: &Descriptor) -> io::Result<Option<FromHost>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsFd as _;
+        let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
+        let mut buffer = [0_u8; MAX_MESSAGE];
         let Some((length, _fds)) = crate::jobs::receive(door.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
@@ -465,11 +504,13 @@ pub fn receive_ended(door: &Descriptor) -> io::Result<Option<u64>> {
             [verb, instance] if verb == ENDED_VERB => std::str::from_utf8(instance)
                 .ok()
                 .and_then(|instance| instance.parse().ok())
-                .map(Some)
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no instance")),
-            _ => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "the host said something other than an ended instance",
+                .map(|instance| Some(FromHost::Ended(instance)))
+                .ok_or_else(|| invalid("an ended instance that is no instance")),
+            [verb, reason] if verb == EXITING_VERB => std::str::from_utf8(reason)
+                .map(|reason| Some(FromHost::Exiting(reason.to_owned())))
+                .map_err(|_| invalid("an exit whose reason is no text")),
+            _ => Err(invalid(
+                "the host said something other than an ended instance or its exit",
             )),
         }
     }
@@ -521,9 +562,19 @@ mod tests {
     fn an_ended_instance_crosses_the_door_back() {
         let (shell, host) = pair().unwrap();
         send_ended(&host, 42).unwrap();
-        assert_eq!(receive_ended(&shell).unwrap(), Some(42));
+        assert_eq!(
+            receive_from_host(&shell).unwrap(),
+            Some(FromHost::Ended(42))
+        );
+        send_exiting(&host, "the session closed its door and no instance runs").unwrap();
+        assert_eq!(
+            receive_from_host(&shell).unwrap(),
+            Some(FromHost::Exiting(
+                "the session closed its door and no instance runs".into()
+            ))
+        );
         drop(host);
-        assert_eq!(receive_ended(&shell).unwrap(), None, "the host is gone");
+        assert_eq!(receive_from_host(&shell).unwrap(), None, "the host is gone");
     }
 
     #[test]

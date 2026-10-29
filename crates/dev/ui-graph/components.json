@@ -327,6 +327,12 @@
           }
         }
       ],
+      "events": [
+        {
+          "name": "submit",
+          "doc": "Enter was pressed: what was written is done (a composer's message is sent). With it, Enter sends rather than breaking the line; Shift+Enter still breaks it."
+        }
+      ],
       "bindings": [
         {
           "name": "value",

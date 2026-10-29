@@ -1009,6 +1009,16 @@ impl Host {
         }
     }
 
+    /// The argument of the type `ty` (as metadata writes it) of an action of `meta` that
+    /// `json` gives, read as the door reads an invocation's arguments: a resource by its id, a
+    /// case by its name, a person as the workspace subject they are.
+    ///
+    /// # Errors
+    /// `json` does not read as a value of `ty`, with why.
+    pub fn argument(&self, meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
+        value_of(&self.inner, meta, json, ty)
+    }
+
     /// Whether the type `ty` is registered (a package of it was loaded here).
     #[must_use]
     pub fn knows_type(ty: &str) -> bool {

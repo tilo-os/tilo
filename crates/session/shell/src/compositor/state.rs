@@ -1050,6 +1050,9 @@ pub struct State {
     pub seat: Seat<Self>,
     /// Monotonic counter for input serials — reusing old `Serial`s would make wayland clients ignore the motion/button.
     pub serial_counter: u32,
+    /// Which input each app's process was sent, so what the person does in its window's bar
+    /// keeps its place among it.
+    pub input_order: crate::compositor::input_order::InputOrder,
     /// Recently issued seat serials and their issue time. The activation
     /// protocol carries a serial but no timestamp for the underlying input;
     /// retaining this short bounded history lets us reject fabricated and
@@ -2192,6 +2195,7 @@ impl State {
             surface_tracker: SurfaceTracker::new(),
             seat,
             serial_counter: 0,
+            input_order: crate::compositor::input_order::InputOrder::default(),
             activation_serials: VecDeque::new(),
             clients_given_input: std::collections::HashSet::new(),
             start_time: std::time::Instant::now(),

@@ -1834,8 +1834,13 @@ fn pump_floating_surface_service(
                 connection,
                 app_id,
                 network_status_allowed,
+                pid,
             } => {
                 appearance.connected(connection, &app_id, network_status_allowed);
+                state.input_order.connected(
+                    connection,
+                    pid.map(crate::compositor::input_order::launch_of),
+                );
                 frame_builder
                     .host_mut()
                     .connect_window_share(connection, &app_id);
@@ -2432,6 +2437,7 @@ fn pump_floating_surface_service(
                     .host_mut()
                     .forget_history_descriptions(connection);
                 appearance.disconnected(connection);
+                state.input_order.disconnected(connection);
                 // Closing the control socket does not destroy the last Wayland
                 // buffer. Preserve its protection until the toplevel dies.
                 let tabs = foreign::foreign_tabs_anywhere(&state.workspace_tree.read());
@@ -2498,12 +2504,21 @@ fn pump_floating_surface_service(
         }
     }
     // What the person did with apps' slots in their windows' bars.
-    for (connection, event) in frame_builder.host_mut().take_toolbar_outbox() {
+    // Each names the input sent the app's process before the person used the bar.
+    for (connection, event, clock) in frame_builder.host_mut().take_placed_toolbar_outbox() {
+        let after_input = state.input_order.after_input(connection, clock);
+        tracing::debug!(
+            connection,
+            clock,
+            ?after_input,
+            "a window-bar event, after the app's input"
+        );
         service.send(
             connection,
-            &ui::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { event },
+            &ui::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { event, after_input },
         );
     }
+    state.input_order.placed();
     // What the desktop says of windows shared live, to the apps it concerns.
     for (connection, message) in frame_builder.host_mut().take_window_share_outbox() {
         service.send(connection, &message);

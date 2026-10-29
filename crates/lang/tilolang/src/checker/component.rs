@@ -175,6 +175,10 @@ impl Checker<'_> {
                 );
             }
         }
+        // A rich input's `@` drawer offers the conversation's people however it is written.
+        if d.name == "RichInput" && !given.contains("speakers") && !given.contains("people") {
+            self.drawer_props(n);
+        }
         if let Some(block) = &c.block {
             self.component_block(n, d, block, span);
         }

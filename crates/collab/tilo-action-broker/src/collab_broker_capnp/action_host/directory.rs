@@ -153,6 +153,7 @@ impl CapnpBrokerState {
         caller: &Caller,
         request: &InvokeRequest,
     ) -> Option<ActionDirectoryRoot> {
+        // optional-decode: a provider that is not a peer number names a canonical, launchable or host provider, not a live publication
         let peer_id = request.target.provider.parse::<u64>().ok()?;
         let address = &request.target.address;
         let eager = self.surfaces.lock().is_ok_and(|surfaces| {

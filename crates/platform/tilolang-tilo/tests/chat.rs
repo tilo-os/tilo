@@ -333,6 +333,35 @@ fn shown_in(row: &UiNode) -> Vec<String> {
 }
 
 #[test]
+fn enter_in_the_composer_sends_and_empties_it() {
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
+    let all = Value::resource(&ada.host.root_of(APP).unwrap());
+    ada.commit();
+    let design = call(&ada, "new_channel", vec![all, Value::text("design")]);
+    ada.commit();
+    let mut view = ada.host.open_resource(&target(&design), None).unwrap();
+    let input = find(view.tree(), "ui.RichInput")
+        .expect("the composer")
+        .clone();
+    assert!(
+        input.events.contains_key("submit"),
+        "the composer sends on Enter"
+    );
+    view.edit(&input.key, &rich("Is the build out?")).unwrap();
+    let outcome = view.fire(&input.key, "submit").unwrap();
+    assert!(
+        matches!(outcome, InvokeOutcome::Done(_)),
+        "sent: {outcome:?}"
+    );
+    ada.commit();
+    assert_eq!(said(&mut view), ["Is the build out?"]);
+    assert!(
+        matches!(view.bound_value(&input.key), Some(Value::Rich(r)) if r.is_empty()),
+        "the composer is empty again"
+    );
+}
+
+#[test]
 fn its_author_edits_a_message_in_place_and_anyone_pins_it() {
     let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(CHAT, CHAT_IDS)]);
     let all = Value::resource(&ada.host.root_of(APP).unwrap());

@@ -631,6 +631,8 @@ impl ShellOverlayHost {
             feedback_point: crate::shell::feedback_entry::FeedbackPoint::default(),
             feedback_picker: crate::shell::feedback_pick::NativePicker::default(),
             window_toolbars: window_toolbars::WindowToolbars::default(),
+            placed_toolbar_events: Vec::new(),
+            chrome_input_clock: 0,
             live_shares: live_shares::NativeLiveShares::default(),
             hosted_windows_revision: None,
             desktop_control: desktop_control_chips::DesktopControlMarks::default(),
