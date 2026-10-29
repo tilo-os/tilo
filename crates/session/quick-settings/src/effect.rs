@@ -542,11 +542,11 @@ mod tests {
             ..crate::actions::QsActionAvailability::all()
         };
         state.brightness_available = false;
-        let statuses = statuses(&state);
-        assert!(statuses.contains(&EffectStatus::labelled(QsEffect::SET_VOLUME, "Volume")));
-        assert!(statuses.contains(&EffectStatus::labelled(QsEffect::TOGGLE_WIFI, "Wi-Fi")));
+        let offered = statuses(&state);
+        assert!(offered.contains(&EffectStatus::labelled(QsEffect::SET_VOLUME, "Volume")));
+        assert!(offered.contains(&EffectStatus::labelled(QsEffect::TOGGLE_WIFI, "Wi-Fi")));
         assert!(
-            statuses.contains(
+            offered.contains(
                 &EffectStatus::unavailable(
                     QsEffect::BRIGHTNESS_UP,
                     LACKS_CONTROL,
