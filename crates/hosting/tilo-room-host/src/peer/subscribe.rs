@@ -241,17 +241,11 @@ async fn admit_subscription(
         }));
     }
     // Only the relay owner's own devices can be enrolled into an autobound
-    // room, so only they may cause one to be bound; and every person the
-    // relay trusts may have it carry their own room.
-    let own_room = crate::own_room_workspace_id_matches(&peer.user_public_key, workspace_id);
+    // room, so only they may cause one to be bound.
     let autobind = session
         .autobind
-        .filter(|_| own_room || peer.user_public_key == *session.own_user_public_key);
-    let ws = if own_room {
-        bind_own_room(session.workspaces, autobind, workspace_id).await?
-    } else {
-        get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?
-    };
+        .filter(|_| peer.user_public_key == *session.own_user_public_key);
+    let ws = get_or_autobind_workspace(session.workspaces, autobind, workspace_id).await?;
     let Some(ws) = ws else {
         return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
             workspace_id,
@@ -446,35 +440,6 @@ pub(super) async fn handle_unsubscribe(
     }
     subscribed.retain(|id| id != &workspace_id);
     Ok(None)
-}
-
-/// The person's own room ([`tilo_relay_protocol::own_room`]) bound for
-/// `peer`: a room whose id their root alone derives, so any of their devices
-/// is admitted to it, and no device of anyone else
-/// ([`crate::room_access`]). The relay only carries it, as it carries any
-/// room: what their devices seal into it stays theirs.
-async fn bind_own_room(
-    workspaces: &WorkspaceRegistry,
-    autobind: Option<&WorkspaceAutobind>,
-    workspace_id: u64,
-) -> Result<Option<SharedWorkspace>, StoreError> {
-    let existing = workspaces.lock().await.get(&workspace_id).cloned();
-    Ok(match (existing, autobind) {
-        (Some(workspace), _) => Some(workspace),
-        (None, None) => None,
-        (None, Some(autobind)) => Some(
-            crate::workspace_io::get_or_initialize(
-                workspaces,
-                autobind.state_root.clone(),
-                &autobind.shell_payloads,
-                workspace_id,
-                true,
-                crate::room_access::AdmissionMode::Explicit,
-                MAX_AUTOBOUND_WORKSPACES,
-            )
-            .await?,
-        ),
-    })
 }
 
 pub async fn get_or_autobind_workspace(

@@ -2,7 +2,7 @@
 //! cloud host governs. Their record is this profile's own file, never the
 //! desktop session's; each room syncs over one relay session with the host
 //! its enrollment pins, which also carries the room's channel governance
-//! between this device and the room's steward. The room's governor applies a
+//! between this device and the room's participants. The room's governor applies a
 //! foreign device's limits to this device there, as it does to every member.
 use neighbour_wire::NeighbourMsg;
 use std::{
@@ -211,8 +211,9 @@ impl Joined {
         Arc::clone(&self.governance_wake)
     }
 
-    /// The device key of `room`'s governor, which stewards its channels.
-    pub(super) fn steward_of(&self, room: RoomId) -> Option<collab_types::Ed25519PublicKey> {
+    /// The device key of `room`'s governor, a participant of every channel
+    /// of the room.
+    pub(super) fn governor_of(&self, room: RoomId) -> Option<collab_types::Ed25519PublicKey> {
         self.owner
             .with_current(room, |view| {
                 Ok(collab_types::Ed25519PublicKey::from_bytes(
@@ -220,6 +221,31 @@ impl Joined {
                 ))
             })
             .ok()
+    }
+
+    /// The member devices `room`'s governance lets read `channel` at `now`
+    /// (Unix seconds): the projection the channel's group follows.
+    pub(super) fn channel_readers(
+        &self,
+        room: RoomId,
+        channel: collab_types::ChannelId,
+        route: Option<&collab_types::ChannelRoute>,
+        now: u64,
+    ) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
+        let at = std::time::SystemTime::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(now))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        self.owner
+            .with_current(room, |view| {
+                view.peer().governance().channel_readers(at, channel, route)
+            })
+            .map(|readers| {
+                readers
+                    .into_iter()
+                    .map(collab_types::Ed25519PublicKey::from_bytes)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn invited_room(&self, invitation: &str) -> Result<RoomId, String> {
@@ -518,15 +544,14 @@ impl OwnerCommitService for Joined {
     }
 }
 
-/// Governance goes to every member of its room, the steward among them, as
-/// the room's host fans presence out; it is signed end to end.
+/// Governance goes to every member of its room, as the room's host fans
+/// presence out; it is signed end to end.
 impl GovernanceTransport for Joined {
     fn publish(&self, message: NeighbourMsg) -> bool {
         let room = match &message {
             NeighbourMsg::MlsGovernance { room, .. }
             | NeighbourMsg::MlsAccessRequest { room, .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { room, .. }
-            | NeighbourMsg::MlsGovernanceAck { room, .. } => RoomId::parse(room),
+            | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => RoomId::parse(room),
             _ => None,
         };
         let live = room.and_then(|room| self.live(room));

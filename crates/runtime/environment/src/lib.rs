@@ -32,7 +32,7 @@ use tilo_resource::{
 
 use crate::files::{
     AppendFileOp, CopyOp, FileAction, FileTask, LinkOp, MakeDirOp, MoveOp, RemoveDirOp, RemoveOp,
-    RestoreOp, RevertOp, TruncateOp, UndoEntry, paths_of,
+    RestoreOp, RevertOp, TruncateOp, UndoEntry, WriteOp, paths_of,
 };
 
 /// The app id every environment grant is written against — an app in the
@@ -462,6 +462,32 @@ impl Environment {
         self.queue_file(cx, files, device, action)
     }
 
+    /// Write a file.
+    ///
+    /// Makes each file hold exactly `text`, keeping what it held aside; a
+    /// file that is missing is made. What a shell's `>` does.
+    #[action(undo = Self::revert_queued, keywords = "write, save, redirect")]
+    pub fn write(
+        &mut self,
+        cx: &mut ActionCx,
+        files: &mut Outbox<FileTask, Vec<UndoEntry>>,
+        #[param("The device whose files change")] device: String,
+        #[param("Absolute paths of the files")] paths: Vec<String>,
+        #[param("The contents, as given")] text: String,
+        #[param("`text` is base64 of the contents, for contents that are not text")] base64: Option<
+            bool,
+        >,
+        #[param("Only make a file that is not there yet")] no_clobber: Option<bool>,
+    ) -> Result<(), String> {
+        let action = FileAction::Write(WriteOp {
+            files: paths_of(paths),
+            text,
+            base64: base64.unwrap_or(false),
+            no_clobber: no_clobber.unwrap_or(false),
+        });
+        self.queue_file(cx, files, device, action)
+    }
+
     /// Restore a kept file.
     ///
     /// Puts back one thing the environment's recoverable store keeps, by
@@ -599,6 +625,13 @@ impl Environment {
                 device,
                 paths: texts(&op.files),
                 text: op.text.clone(),
+            }),
+            FileAction::Write(op) => Self::WRITE.with(environment::Write {
+                device,
+                paths: texts(&op.files),
+                text: op.text.clone(),
+                base64: Some(op.base64),
+                no_clobber: Some(op.no_clobber),
             }),
             FileAction::Restore(op) => Self::RESTORE.with(environment::Restore {
                 device,

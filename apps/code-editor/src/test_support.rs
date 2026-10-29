@@ -23,7 +23,7 @@ impl Sample {
         let path = crate::disk::canonical(&self.root.join(relative));
         self.app
             .effect(&CodeEditorEffect::OpenFile {
-                path: Some(path.display().to_string()),
+                path: Some(ui::tilo_resource::AbsolutePath::new(path).unwrap()),
             })
             .unwrap();
         self.app.settle();

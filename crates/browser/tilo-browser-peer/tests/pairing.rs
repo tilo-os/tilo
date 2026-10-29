@@ -20,8 +20,8 @@
     reason = "in a test these are the assertion, not a hazard; each test is one pairing, in order"
 )]
 
-#[path = "support/steward.rs"]
-mod steward;
+#[path = "support/participant.rs"]
+mod participant;
 mod support;
 
 // This binary re-execs as the automerge worker (a governed room uses it).
@@ -202,7 +202,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let https = host.https();
     let page = Host::Https(https.clone());
 

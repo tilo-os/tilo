@@ -11,8 +11,8 @@
     reason = "in a test these are the assertion, not a hazard; the host lives as long as the scenario"
 )]
 
-#[path = "support/steward.rs"]
-mod steward;
+#[path = "support/participant.rs"]
+mod participant;
 mod support;
 
 use std::collections::BTreeSet;
@@ -104,7 +104,7 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
 
     let author = start_peer(
         Host::Https(host.https()),

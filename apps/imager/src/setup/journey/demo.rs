@@ -38,6 +38,7 @@ mod tests {
     use super::*;
     use crate::resource::ImagerShell;
     use ui::framework::testing::TestApp;
+    use ui::tilo_resource::AbsolutePath;
 
     fn state(app: &mut TestApp<ImagerShell>) -> serde_json::Value {
         app.effect(&InstallerPreviewEffect::ReadPreview)
@@ -225,13 +226,13 @@ mod tests {
             InstallerPreviewEffect::StartExistingDevicePairing,
             InstallerPreviewEffect::ChoosePreviewAvatar,
             InstallerPreviewEffect::SelectPreviewAvatar {
-                source_file: "/etc/passwd".into(),
+                source_file: AbsolutePath::new("/etc/passwd").unwrap(),
             },
             InstallerPreviewEffect::SelectMigrationHome {
-                source: "/home".into(),
+                source: AbsolutePath::new("/home").unwrap(),
             },
             InstallerPreviewEffect::ExportPreparedIdentity {
-                destination: "/dev/sda".into(),
+                destination: AbsolutePath::new("/dev/sda").unwrap(),
             },
         ] {
             assert!(!admits(&effect));

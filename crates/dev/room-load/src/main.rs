@@ -104,7 +104,7 @@ pub struct HostArgs {
     /// The room's governor holds the chat record guests write from the
     /// start, as a persistent room seeds its chat: the guests' sealed
     /// writes then reach the governor's copy, which follows, reads and
-    /// compacts them with the channel keys it stewards.
+    /// compacts them with the channel keys it holds.
     #[arg(long)]
     pub seeded_chat: bool,
 }

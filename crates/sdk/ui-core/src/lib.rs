@@ -162,7 +162,7 @@ pub mod component;
 pub mod component_lifecycle;
 pub mod content;
 pub mod content_layout;
-mod damage;
+pub mod damage;
 pub mod date;
 pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
@@ -331,6 +331,7 @@ pub mod snap;
 mod standalone_history;
 mod standalone_history_host;
 pub mod state;
+pub mod strip_layers;
 pub mod surface;
 pub mod sysdirs;
 #[cfg(any(test, feature = "test-support"))]
@@ -604,6 +605,7 @@ mod physical_input_trace;
 #[cfg(all(feature = "native", feature = "test-support"))]
 #[doc(hidden)]
 pub use physical_input_trace::Trace as NativePhysicalInputTrace;
+#[cfg(feature = "native")]
 pub mod input_frame;
 pub mod semantic_document_read;
 pub mod synthetic_input;

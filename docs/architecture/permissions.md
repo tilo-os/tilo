@@ -233,46 +233,46 @@ a filtered one, because an automerge change graph cannot be served in part
 ([workspace.md](workspace.md), "State").
 
 What carries a read decision to the bytes is the record's channel key, and
-channel stewards admit devices per channel, that is per record
+a channel's participants admit devices per channel, that is per record
 (`ChannelDirectory::allowed_devices(room, channel, route, now)`). A device is
 admitted to a record's channel only while its person reads the room and the
-same read decision allows the record (`Workspace::answer_at` on a desktop
-steward, `PeerGovernance::withheld_record_readers` over `check_document_read` on a
-relay steward). So a Read Deny on a record, on its app, or on any pattern of
-records covering it withholds that record's key: the steward never admits the
-denied person's devices, and a device that already held the key is removed in
+same read decision allows the record (`Workspace::answer_at` on a desktop,
+`PeerGovernance::channel_readers` over `check_document_read` on a relay or a
+standalone runtime). So a Read Deny on a record, on its app, or on any
+pattern of records covering it withholds that record's key: no participant
+admits the denied person's devices, every participant refuses a commit that
+would, and a device that already held the key is removed in
 a new epoch of that channel alone, while every other channel of the room keeps
 its epoch and its readers. As with any removal, the device keeps what it could
 read before. Lifting the Deny admits it again when it asks.
 
-A channel id is a hash of its record's route, so the steward has to be told
-which record a channel carries. It learns it two ways, and neither asks it to
+A channel id is a hash of its record's route, so a participant has to be
+told which record a channel carries. It learns it two ways, and neither asks it to
 trust anyone:
 
 - A grant naming the record (`room › app › resource`, or below it) gives the
   route itself (`collab_types::named_record_of_channel`).
 - A device asking for a channel's key sends the record's route beside its
   request (`NeighbourMsg::MlsRoutedAccessRequest`, `collab_types::ChannelRoute`),
-  as does the steward's own endpoint. The route proves itself: the steward
-  keeps it only if it hashes, with the room, to the channel's id, and refuses
+  as does the participant's own endpoint. The route proves itself: a
+  participant keeps it only if it hashes, with the room, to the channel's id, and refuses
   a request whose route does not. It keeps the route beside the channel's
   group and decides every later change of the channel with it, after a restart
   too. A kept route is checked again when it is read back, so a damaged file
   names no record rather than a wrong one.
 
-A channel whose record the steward cannot name may be any record that nothing
+A channel whose record a participant cannot name may be any record that nothing
 names. It is withheld from every device whose person may not read one of the
 records a Deny over a pattern stands for (`collab_types::pattern_read_witnesses`:
 for each such grant, a record it covers that no grant names), and admitted to
 every other reader of the room. So "Finance: Deny Read" keeps its person out
 of every channel of the room until a device names the channel's record, while
 everyone else reads as before. This also makes the order of arrival harmless:
-a plain request that reaches the steward before its routed copy admits no one
-the Deny could keep out. A device sends both forms while a steward may predate
-routes, and a steward that predates them decides with the room alone. The
+a plain request that reaches a participant before its routed copy admits no
+one the Deny could keep out. The
 record of a channel nobody has written yet is named by its first request, so a
 new record admits its author and every other reader the decision allows from
-its first key. Nothing a steward keeps can let a denied device back in: a lost
+its first key. Nothing a participant keeps can let a denied device back in: a lost
 or unreadable route makes the channel one whose record is unknown, which
 withholds more, never less.
 

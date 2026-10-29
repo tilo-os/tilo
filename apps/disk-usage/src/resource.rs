@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use ui::framework::{Fixture, LiveRow, ResourceApp, ViewCx};
 use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_resource::{self, Model, resource};
+use ui::tilo_resource::{self, AbsolutePath, Model, resource};
 use ui::widget::Element;
 
 use crate::scan::ScanResult;
@@ -33,8 +33,8 @@ pub enum DiskUsageEffect {
     /// Scans it and shows what takes up its space.
     #[effect(job)]
     Analyze {
-        #[param("The folder to analyze")]
-        path: String,
+        #[param("Absolute path of the folder to analyze")]
+        path: AbsolutePath,
     },
     /// Choose folder.
     ///
@@ -62,19 +62,23 @@ impl DiskUsage {}
 
 /// One remembered folder, offered to analyze again.
 pub(crate) fn recent_row(path: &std::path::Path) -> LiveRow {
-    LiveRow::new(
+    let row = LiveRow::new(
         format!("disk-usage.recent:{}", path.display()),
         "disk-usage.recent",
         folder_name(path),
-    )
-    .effect(&analyze(path))
+    );
+    match analyze(path) {
+        Some(effect) => row.effect(&effect),
+        None => row,
+    }
 }
 
-/// The analyze effect for `path`.
-pub(crate) fn analyze(path: &std::path::Path) -> DiskUsageEffect {
-    DiskUsageEffect::Analyze {
-        path: path.to_string_lossy().into_owned(),
-    }
+/// The analyze effect for `path`; `None` for a relative path, which names
+/// no folder.
+pub(crate) fn analyze(path: &std::path::Path) -> Option<DiskUsageEffect> {
+    AbsolutePath::new(path)
+        .ok()
+        .map(|path| DiskUsageEffect::Analyze { path })
 }
 
 /// A folder's name as rows and cards show it.
@@ -87,12 +91,15 @@ pub(crate) fn folder_name(path: &std::path::Path) -> String {
 
 /// One folder a live row offers to analyze.
 pub(crate) fn folder_row(label: &str, path: &std::path::Path) -> LiveRow {
-    LiveRow::new(
+    let row = LiveRow::new(
         format!("disk-usage.folder:{}", path.display()),
         "disk-usage.folder",
         label,
-    )
-    .effect(&analyze(path))
+    );
+    match analyze(path) {
+        Some(effect) => row.effect(&effect),
+        None => row,
+    }
 }
 
 /// Framework app.
@@ -200,8 +207,15 @@ mod tests {
             assert!(surface.contains(published), "{published}: {surface}");
         }
 
+        // A relative path is refused: it names no folder on its own.
+        let relative = app.call("analyze", serde_json::json!({"path": "photos"}));
+        assert!(
+            relative.unwrap_err().to_string().contains("absolute"),
+            "a relative folder must be refused"
+        );
+
         let versions = app.versions().len();
-        let answer = app.effect(&analyze(&folder)).unwrap();
+        let answer = app.effect(&analyze(&folder).unwrap()).unwrap();
         let answer = answer.value.unwrap();
         assert_eq!(answer["path"], folder.to_string_lossy().as_ref());
         assert!(answer["bytes"].as_u64().unwrap() >= 4096, "{answer}");
@@ -237,7 +251,7 @@ mod tests {
         assert!(frame.contains("File system"), "{frame}");
 
         let missing = folder.join("not-there");
-        assert!(app.effect(&analyze(&missing)).is_err());
+        assert!(app.effect(&analyze(&missing).unwrap()).is_err());
         let _ = std::fs::remove_dir_all(&folder);
     }
 
@@ -285,7 +299,7 @@ mod tests {
         let frame = app.harness().inspection_json().unwrap();
         assert!(!frame.contains("Analyze storage"), "{frame}");
 
-        app.effect(&analyze(&folder)).unwrap();
+        app.effect(&analyze(&folder).unwrap()).unwrap();
         settle_until_recent(&mut app, &folder);
         let bar = ui::window_toolbar::declared().expect("the window's slots");
         let name = folder.file_name().unwrap().to_string_lossy().into_owned();

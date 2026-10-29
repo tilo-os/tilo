@@ -238,7 +238,7 @@ fn click(app: &mut ui::framework::testing::TestApp<tube::TubeShell>, id: &str) {
 }
 
 fn route(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> Route {
-    app.with_surface::<TubeApp, _>(|tube| tube.route_for_test().clone())
+    app.with_surface::<TubeApp, _>(|tube| tube.route_for_test())
         .expect("the window shows Tube")
 }
 
@@ -265,18 +265,18 @@ fn the_rail_and_cards_navigate_and_back_returns() {
         click_id(&mut framed, "video_card_vid_donut");
         assert_eq!(
             framed.route_for_test(),
-            &Route::Watch("vid_donut".into()),
+            Route::Watch("vid_donut".into()),
             "clicking a card opens its watch page"
         );
         Framed::harness_mut(&mut framed).key("Escape");
         Framed::harness_mut(&mut framed).relayout();
-        assert_eq!(framed.route_for_test(), &Route::Home, "Escape goes back");
+        assert_eq!(framed.route_for_test(), Route::Home, "Escape goes back");
     }
     // Case `a_creator_tile_opens_the_creator`.
     {
         let mut framed = mount(TubeApp::sample().with_route_shot(Route::Subscriptions));
         click_id(&mut framed, "creator_ch_kurz");
-        assert_eq!(framed.route_for_test(), &Route::Channel("ch_kurz".into()));
+        assert_eq!(framed.route_for_test(), Route::Channel("ch_kurz".into()));
     }
     // Case `a_browsed_page_shows_back_and_it_returns`.
     for destination in [
@@ -315,7 +315,7 @@ fn the_rail_and_cards_navigate_and_back_returns() {
     {
         let mut framed = mount(TubeApp::sample().with_route_shot(Route::Watch("vid_donut".into())));
         click_control(&mut framed, "Playback settings");
-        assert_eq!(framed.route_for_test(), &Route::Settings);
+        assert_eq!(framed.route_for_test(), Route::Settings);
     }
 }
 
@@ -598,7 +598,7 @@ fn search_inputs_are_present_and_navigate() {
             .with_model_for_test(sample)
             .with_search_for_test(query, ids.clone());
         let mut h = Harness::new(app, VIEWPORT);
-        assert_eq!(h.app.route_for_test(), &Route::Search(query.into()));
+        assert_eq!(h.app.route_for_test(), Route::Search(query.into()));
         assert!(
             h.app.can_go_back_for_test(),
             "arriving via search leaves Home to go back to"
@@ -629,7 +629,7 @@ fn search_inputs_are_present_and_navigate() {
             .clone();
         h.click_id(&format!("video_card_{opened}"));
         assert!(
-            matches!(h.app.route_for_test(), Route::Watch(id) if *id == opened),
+            matches!(&h.app.route_for_test(), Route::Watch(id) if *id == opened),
             "clicking a result opens its watch page"
         );
 
@@ -641,7 +641,7 @@ fn search_inputs_are_present_and_navigate() {
         h.click_id("back_btn");
         assert_eq!(
             h.app.route_for_test(),
-            &Route::Search(query.into()),
+            Route::Search(query.into()),
             "Back returns to the exact same search results",
         );
         assert!(h.has_id("video_grid"), "the results list is rendered again");
@@ -712,7 +712,7 @@ fn watch_page_lays_out_player_pills_and_timeline() {
         let app = TubeApp::sample().with_route_shot(Route::Watch("vid_donut".into()));
         let h = Harness::new(app, VIEWPORT);
         assert!(
-            matches!(h.app.route_for_test(), Route::Watch(_)),
+            matches!(&h.app.route_for_test(), Route::Watch(_)),
             "the app is on a watch page"
         );
         assert!(
@@ -726,7 +726,7 @@ fn watch_page_lays_out_player_pills_and_timeline() {
         // tree — the surface is scoped to the watch page, not always-on.
         let app = TubeApp::sample().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1));
         let h = Harness::new(app, VIEWPORT);
-        assert_eq!(h.app.route_for_test(), &Route::Home);
+        assert_eq!(h.app.route_for_test(), Route::Home);
         assert!(
             !h.has_id("watch_video_surface"),
             "the video-player surface only exists on the watch page"

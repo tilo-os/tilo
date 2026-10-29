@@ -498,11 +498,17 @@ fn exports_are_written_where_the_caller_names() {
         "written, not answered: {answer}"
     );
     assert!(std::fs::read_to_string(&svg).unwrap().starts_with("<svg"));
-    for (action, path) in [
-        ("export", "halves.png"),
-        ("export", "/tmp/x.gif"),
-        ("export-svg", "/tmp/x.png"),
-    ] {
+    // A relative path is refused before it reaches the app: it would land
+    // wherever the process runs.
+    for action in ["export", "export-svg", "save-artwork"] {
+        let error = <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(
+            action,
+            json!({"path": "halves.png"}).as_object().unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.contains("absolute"), "{action}: {error}");
+    }
+    for (action, path) in [("export", "/tmp/x.gif"), ("export-svg", "/tmp/x.png")] {
         assert!(
             app.effect(
                 &<canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(

@@ -411,9 +411,10 @@ mod tests {
             .effect(&CodeEditorEffect::Reveal {
                 file: None,
                 path: Some(
-                    crate::disk::canonical(&sample.root.join("src/main.rs"))
-                        .display()
-                        .to_string(),
+                    ui::tilo_resource::AbsolutePath::new(crate::disk::canonical(
+                        &sample.root.join("src/main.rs"),
+                    ))
+                    .unwrap(),
                 ),
                 line: 3,
                 column: 4,
@@ -434,12 +435,25 @@ mod tests {
     }
 
     #[test]
+    fn path_effects_refuse_a_relative_path() {
+        for id in ["reveal", "open-file", "open-folder", "save"] {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("path".into(), "src/main.rs".into());
+            arguments.insert("line".into(), 0.into());
+            arguments.insert("column".into(), 0.into());
+            arguments.insert("results".into(), false.into());
+            let error = CodeEditorEffect::decode(id, &arguments).unwrap_err();
+            assert!(error.contains("absolute"), "{id}: {error}");
+        }
+    }
+
+    #[test]
     fn a_missing_path_fails_the_effect_and_says_why() {
         let mut sample = sample();
         let error = sample
             .app
             .effect(&CodeEditorEffect::OpenFile {
-                path: Some("/definitely/missing/tilo-code-file".into()),
+                path: Some("/definitely/missing/tilo-code-file".parse().unwrap()),
             })
             .expect_err("a missing file cannot be opened");
         assert!(error.to_string().contains("tilo-code-file"), "{error}");

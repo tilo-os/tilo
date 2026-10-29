@@ -7,7 +7,7 @@ use tilo_relay_protocol::agents::TaskState;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use super::{
-    enrol, first_turn, model_endpoint, planning_agent, run_task, start_host, steward, tool_call,
+    enrol, first_turn, model_endpoint, participant, planning_agent, run_task, start_host, tool_call,
 };
 
 const WRITER: &str = "so.tilo.word-processor";
@@ -60,7 +60,7 @@ async fn on_the_scan(
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let store = tilo_content::ContentStore::memory();
     let scan = format!("tilo.content:{}", store.put(&png(1600, 1200)).unwrap());
     let done = tool_call(

@@ -70,7 +70,9 @@ On Tilo OS the engine is not part of the Browser tapp. It is its own signed
 runtime bundle, `tilo-runtime/<version>-chromium`
 (`ui::webview::chromium::runtime`), which the image installs at
 `/usr/lib/tilo-runtime/<version>`. The Browser's manifest lists it under
-`[package].optional-runtimes`; the launcher verifies it against the trusted
-runtime publishers and mounts it read-only into the Browser's sandbox, so the
-app updates through the registry while the engine stays a verified runtime.
-Without the engine the Browser says so and offers its install.
+`[package].optional-runtimes`, the manifest key of its required runtimes:
+installing or updating the Browser brings that exact engine in the same step
+or not at all. The launcher verifies it against the trusted runtime
+publishers and mounts it read-only into the Browser's sandbox, and refuses to
+start the Browser without it, so the app updates through the registry while
+the engine stays a verified runtime.

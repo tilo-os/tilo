@@ -71,9 +71,14 @@ using `CARGO` (default `cargo`), then runs nextest from a cleared environment.
 and `--goldens` without compiling or running tests. Set `CARGO` to your build
 executor if you want compilation elsewhere.
 
-[tools/test-env.sh](../../../tools/test-env.sh) is an execution wrapper, not a
-dependency probe: it requires software Vulkan, can generate native fixtures and
-starts private audio.
+`cargo nextest run --profile ci` sets up the suite's runtime itself, on the
+machine that runs the tests, including a remote builder cargo is forwarded to:
+the profile's setup scripts ([.config/nextest.toml](../../../.config/nextest.toml),
+[tools/test-env-setup.sh](../../../tools/test-env-setup.sh)) require software
+Vulkan, generate native fixtures for a run that reads them and start private
+audio. [tools/test-env.sh](../../../tools/test-env.sh) runs the same setup for
+a command that is not a nextest run; it is an execution wrapper, not a
+dependency probe.
 [tools/with-test-environment.sh](../../../tools/with-test-environment.sh)
 provides just the isolated home/session environment. Use the
 [isolation guide](../test-isolation.md) for direct binary runs. Neither wrapper

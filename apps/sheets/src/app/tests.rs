@@ -566,7 +566,7 @@ fn every_format_exports_to_a_path_and_imports_back_once() {
     for ext in ["csv", "xlsx", "ods"] {
         let mut app = sample_app();
         let path = dir.path().join(format!("Budget.{ext}"));
-        let at = Some(path.display().to_string());
+        let at = Some(path.as_path().try_into().unwrap());
         let (export, import) = match ext {
             "csv" => (
                 SheetsEffect::ExportCsv { path: at.clone() },
@@ -686,7 +686,7 @@ fn the_file_chooser_saves_exports_and_picks_imports() {
     assert_eq!(active, before, "the imported sheet is shown");
     assert!(status.contains("already open"), "{status}");
     app.effect(&SheetsEffect::ImportCsv {
-        path: Some(path.display().to_string()),
+        path: Some(path.as_path().try_into().unwrap()),
     })
     .unwrap();
     app.settle();
@@ -704,7 +704,7 @@ fn a_file_that_cannot_be_read_fails_its_import() {
     let before = app.state().sheets.len();
     let error = app
         .effect(&SheetsEffect::ImportXlsx {
-            path: Some(path.display().to_string()),
+            path: Some(path.as_path().try_into().unwrap()),
         })
         .expect_err("a broken package fails");
     assert!(
@@ -2361,7 +2361,7 @@ fn a_notion_export_lands_as_every_table_in_one_undoable_step() {
     let mut app = sample_app();
     let before = app.state().sheets.len();
     app.effect(&SheetsEffect::ImportNotion {
-        path: Some(path.display().to_string()),
+        path: Some(path.as_path().try_into().unwrap()),
     })
     .unwrap();
     app.settle();
@@ -2408,7 +2408,7 @@ fn a_notion_export_with_no_table_fails_its_import() {
     let before = app.state().sheets.len();
     let error = app
         .effect(&SheetsEffect::ImportNotion {
-            path: Some(path.display().to_string()),
+            path: Some(path.as_path().try_into().unwrap()),
         })
         .expect_err("an export with no table fails");
     assert!(
@@ -2416,4 +2416,23 @@ fn a_notion_export_with_no_table_fails_its_import() {
         "{error:?}"
     );
     assert_eq!(app.state().sheets.len(), before, "nothing was added");
+}
+
+#[test]
+fn a_relative_path_is_refused_for_every_path_action() {
+    use ui::tilo_resource::Effect as _;
+    for id in [
+        "import-csv",
+        "import-xlsx",
+        "import-notion",
+        "import-ods",
+        "export-csv",
+        "export-xlsx",
+        "export-ods",
+    ] {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("path".into(), "Budget.csv".into());
+        let error = SheetsEffect::decode(id, &arguments).expect_err(id);
+        assert!(error.contains("absolute"), "{id}: {error}");
+    }
 }

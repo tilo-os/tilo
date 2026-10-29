@@ -48,7 +48,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub mod cli;
+pub use tilo_environment::files::cli;
 pub mod command;
 pub mod watch;
 
@@ -58,7 +58,7 @@ use tilo_clock::unix_now;
 use tilo_environment::Environment;
 pub use tilo_environment::files::{
     AppendFileOp, CopyOp, FileAction, FileTask, LinkOp, MakeDirOp, MoveOp, RemoveDirOp, RemoveOp,
-    RestoreOp, RevertOp, TruncateOp, UndoEntry, normalize,
+    RestoreOp, RevertOp, TruncateOp, UndoEntry, WriteOp, anchored, normalize,
 };
 use tilo_resource::{Id, Invoke, Replica, Settled};
 
@@ -269,6 +269,7 @@ pub fn plan(action: &FileAction) -> Result<Plan, Refusal> {
         FileAction::Truncate(op) => plan_truncate(op),
         FileAction::Touch(op) => plan_touch(op),
         FileAction::Append(op) => plan_append(op),
+        FileAction::Write(op) => plan_write(op),
         FileAction::Revert(_) | FileAction::Restore(_) => Ok(Plan::default()),
     }
 }
@@ -915,68 +916,6 @@ fn deny(state: &BrokerState, request: &str, subject: &str, reason: &str) {
     );
 }
 
-/// `action` with every path it names made absolute against `cwd`, the
-/// directory the command was typed in. A symbolic link's target stays as it
-/// was written: it is read from where the link is, not from `cwd`.
-#[must_use]
-pub fn anchored(action: FileAction, cwd: &Path) -> FileAction {
-    let at = |path: PathBuf| {
-        if path.is_absolute() {
-            path
-        } else {
-            // `join` keeps a trailing separator, which says "a directory".
-            cwd.join(path)
-        }
-    };
-    let all = |paths: Vec<PathBuf>| paths.into_iter().map(at).collect();
-    match action {
-        FileAction::Copy(op) => FileAction::Copy(CopyOp {
-            sources: all(op.sources),
-            destination: at(op.destination),
-            ..op
-        }),
-        FileAction::Move(op) => FileAction::Move(MoveOp {
-            sources: all(op.sources),
-            destination: at(op.destination),
-            ..op
-        }),
-        FileAction::Remove(op) => FileAction::Remove(RemoveOp {
-            paths: all(op.paths),
-            ..op
-        }),
-        FileAction::MakeDir(op) => FileAction::MakeDir(MakeDirOp {
-            dirs: all(op.dirs),
-            ..op
-        }),
-        FileAction::RemoveDir(op) => FileAction::RemoveDir(RemoveDirOp {
-            dirs: all(op.dirs),
-            ..op
-        }),
-        FileAction::Link(op) => FileAction::Link(LinkOp {
-            target: if op.symbolic {
-                op.target
-            } else {
-                at(op.target)
-            },
-            path: at(op.path),
-            ..op
-        }),
-        FileAction::Truncate(op) => FileAction::Truncate(TruncateOp {
-            files: all(op.files),
-            ..op
-        }),
-        FileAction::Touch(op) => FileAction::Touch(AppendFileOp {
-            files: all(op.files),
-            ..op
-        }),
-        FileAction::Append(op) => FileAction::Append(AppendFileOp {
-            files: all(op.files),
-            ..op
-        }),
-        other @ (FileAction::Revert(_) | FileAction::Restore(_)) => other,
-    }
-}
-
 fn plan_copy(op: &CopyOp) -> Result<Plan, Refusal> {
     let mut plan = Plan::default();
     let into = destination_is_dir(&op.destination, op.sources.len());
@@ -1242,6 +1181,40 @@ fn plan_append(op: &AppendFileOp) -> Result<Plan, Refusal> {
     Ok(plan)
 }
 
+fn plan_write(op: &WriteOp) -> Result<Plan, Refusal> {
+    let contents = op.contents().map_err(Refusal::Nothing)?;
+    let mut plan = Plan::default();
+    for named in &op.files {
+        // A write follows a symbolic link, as a shell's `>` does, so what
+        // the grants are asked about is the file it reaches.
+        let file = match fs::symlink_metadata(named) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                fs::canonicalize(named).unwrap_or_else(|_| named.clone())
+            }
+            _ => named.clone(),
+        };
+        plan = plan.writes(file.clone());
+        if let Ok(meta) = fs::metadata(&file) {
+            if meta.is_dir() {
+                return Err(Refusal::IsDirectory(named.clone()));
+            }
+            if op.no_clobber {
+                return Err(Refusal::Exists(named.clone()));
+            }
+            let existing = fs::read(&file).map_err(|_| Refusal::Missing(named.clone()))?;
+            plan = plan.push(Operation::Keep {
+                path: file.clone(),
+                contents: Some(existing),
+            });
+        }
+        plan = plan.push(Operation::Write {
+            path: file,
+            contents: contents.clone(),
+        });
+    }
+    Ok(plan)
+}
+
 /// `size` bytes of zeroes, which is what `truncate` writes.
 fn sized(size: u64) -> Vec<u8> {
     vec![0u8; usize::try_from(size).unwrap_or(usize::MAX)]
@@ -1356,4 +1329,4 @@ fn link(target: &Path, path: &Path, symbolic: bool) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

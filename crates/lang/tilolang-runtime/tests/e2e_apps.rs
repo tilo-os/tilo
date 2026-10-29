@@ -400,6 +400,30 @@ mod cases {
     }
 
     #[test]
+    fn a_press_right_after_a_keystroke_sends_the_keystroke_too() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        let (_, conv) = start_chat(&w, &apps);
+        let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+        let draft = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
+        let send = button_labelled(view.tree(), "Send").key.clone();
+        view.edit(&draft, &Value::text("on my wa")).unwrap();
+        view.poll_patches().unwrap();
+        // The last keystroke and the press arrive together: the view has not drawn since.
+        view.edit(&draft, &Value::text("on my way")).unwrap();
+        assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
+        assert_eq!(
+            thread(&w, &conv)
+                .last()
+                .map(|(_, parts)| parts[0].1.clone()),
+            Some("on my way".to_owned()),
+            "the action reads the draft when it is pressed"
+        );
+        view.poll_patches().unwrap();
+        assert_eq!(view.bound_value(&draft), Some(Value::text("")));
+    }
+
+    #[test]
     fn an_agents_block_that_is_a_notes_view_renders_that_view_inline_and_stays_live() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());

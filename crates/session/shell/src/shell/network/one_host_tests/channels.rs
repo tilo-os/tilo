@@ -21,7 +21,7 @@ use crate::shell::state::RoomId;
 const SECRET: &str = "the quarterly figures, for members only";
 const RECORD: &str = "figures";
 
-/// The record's channel keys on `device`, once the room's steward admitted
+/// The record's channel keys on `device`, once a participant admitted
 /// it: what the identity service answers the notes app there.
 fn keys_on(
     devices: &[&Device],

@@ -897,7 +897,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         activate_palette_action(&mut app, "prompt");
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query("prompted");
         palette_key(&mut app, Key::Named(NamedKey::Enter), None);
@@ -908,7 +908,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         palette_frame(&mut app);
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query(r#"{"value":"typed","enabled":true}"#);
         palette_key(&mut app, Key::Named(NamedKey::Enter), None);
@@ -983,7 +983,7 @@ fn activate_palette_action(app: &mut App, action: &str) {
     assert!(
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .activate_bound(&target)
     );

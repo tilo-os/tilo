@@ -526,14 +526,14 @@ mod tests {
     fn a_content_key_reader_opens_existing_content_but_cannot_seal() {
         let dir = tempfile::tempdir().unwrap();
         let channel = collab_types::document_channel_id("app", "room", "record");
-        let steward = channel_crypto::ChannelSteward::open_or_create(
-            dir.path(),
+        let creator = channel_crypto::ChannelPeer::create_now(
+            Some(dir.path()),
             channel,
-            ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+            Box::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
             &channel_crypto::VaultKey::new([8; 32]),
         )
         .unwrap();
-        let keys = steward.content_keys().unwrap();
+        let keys = creator.content_keys().unwrap();
         let artifact = collab_types::ArtifactId::new();
         let (metadata, payload) = keys
             .seal_content(artifact, ContentRetention::Delta, b"existing content")
@@ -568,14 +568,14 @@ mod tests {
             cluster_id: "room".into(),
             record: "record".into(),
         };
-        let steward = channel_crypto::ChannelSteward::open_or_create(
-            dir.path(),
+        let creator = channel_crypto::ChannelPeer::create_now(
+            Some(dir.path()),
             collab_types::document_channel_id("app", "room", "record"),
-            ed25519_dalek::SigningKey::from_bytes(&[7; 32]),
+            Box::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
             &channel_crypto::VaultKey::new([8; 32]),
         )
         .unwrap();
-        let keys = steward.content_keys().unwrap();
+        let keys = creator.content_keys().unwrap();
         let node = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let author = collab_types::Ed25519PublicKey::from_bytes(node.verifying_key().to_bytes());
         let mut merged = AutoCommit::new();

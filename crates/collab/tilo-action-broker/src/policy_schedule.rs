@@ -1,7 +1,7 @@
 //! When the broker re-checks what it already admitted.
 //!
 //! Admitted native context subscribers, membership surfaces and the devices
-//! a channel steward lets read were re-checked once a second, forever, so an
+//! a channel's participants let read were re-checked once a second, forever, so an
 //! expiring grant or certificate was enforced within a second. Now a re-check
 //! runs when one of its inputs announces a change
 //! ([`tilo_identity_host::policy_change`]) or when the earliest expiry the

@@ -97,6 +97,49 @@ fn sync_once(path: &Path) -> Result<(), StoreError> {
     }
 }
 
+/// The journal a generation's group commits append their records to
+/// before those records are renamed into place. A record named in a
+/// generation's journal is durable through it: opening the store restores
+/// every record the journal of a lineage's active generation names. It is a
+/// dot-file, which no listing of records reads.
+pub const JOURNAL: &str = ".journal";
+
+/// Records whose bytes this process made durable only through their
+/// generation's [`JOURNAL`], not in their own file.
+fn unsettled() -> std::sync::MutexGuard<'static, std::collections::HashSet<PathBuf>> {
+    use std::sync::{Mutex, OnceLock};
+    static UNSETTLED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+    UNSETTLED.get_or_init(Mutex::default).lock_recover()
+}
+
+/// Note that the record at `path` is durable through its generation's
+/// journal only: a hard link to it must sync it first ([`link`]).
+pub fn journaled(path: &Path) {
+    unsettled().insert(path.to_owned());
+}
+
+/// Hard-link the retained record `source` as `target`. A new generation
+/// shares its records' files with the one it replaces, and outlives that
+/// generation's journal: a record durable only through that journal is
+/// synced first, once.
+///
+/// # Errors
+///
+/// Returns an error when the record cannot be synced or linked.
+pub fn link(source: &Path, target: &Path) -> Result<(), StoreError> {
+    if unsettled().remove(source) {
+        let synced = fs::File::open(source)
+            .map_err(StoreError::from)
+            .and_then(|file| crate::fsync(&file).map_err(StoreError::from));
+        if let Err(error) = synced {
+            journaled(source);
+            return Err(error);
+        }
+    }
+    fs::hard_link(source, target)?;
+    Ok(())
+}
+
 /// Create the directory `path` if it is missing, and make its entry in
 /// its parent durable.
 ///
@@ -253,6 +296,7 @@ impl GenerationGc {
                         && entry.file_type()?.is_file()
                     {
                         fs::remove_file(entry.path())?;
+                        unsettled().remove(&entry.path());
                         self.removed = true;
                     }
                     entries.advance();
@@ -291,11 +335,12 @@ impl GenerationGc {
     }
 }
 fn known_record(name: &std::ffi::OsStr) -> bool {
-    name.to_str().is_some_and(|name| {
-        let name = name.strip_suffix(".continuity-v1").unwrap_or(name);
-        name == "checkpoint.delta"
-            || (name.strip_suffix(".delta").is_some_and(|prefix| {
-                matches!(prefix.len(), 8 | 16) && prefix.bytes().all(|b| b.is_ascii_hexdigit())
-            }))
-    })
+    name == JOURNAL
+        || name.to_str().is_some_and(|name| {
+            let name = name.strip_suffix(".continuity-v1").unwrap_or(name);
+            name == "checkpoint.delta"
+                || (name.strip_suffix(".delta").is_some_and(|prefix| {
+                    matches!(prefix.len(), 8 | 16) && prefix.bytes().all(|b| b.is_ascii_hexdigit())
+                }))
+        })
 }

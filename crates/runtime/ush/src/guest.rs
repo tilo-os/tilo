@@ -159,6 +159,12 @@ pub struct GuestPlan {
     /// A served session's terminal, handed to the guest's first process at
     /// [`crate::setup::TERMINAL_FD`] ([`crate::setup`]).
     pub terminal: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
+    /// The control socket of a guest that serves a Tilo-side shell's
+    /// programs, handed to its first process at
+    /// [`crate::guest_exec::CONTROL_FD`]. Such a guest has no terminal of its
+    /// own and a process group of its own: the terminal reaches only the
+    /// programs given it.
+    pub control: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
 }
 
 impl GuestPlan {
@@ -779,6 +785,31 @@ pub fn spawn(
             });
         }
     }
+    if let Some(control) = &plan.control {
+        use std::os::fd::{AsFd, AsRawFd};
+        use std::os::unix::process::CommandExt;
+        let fd = control.as_raw_fd();
+        cmd.stdin(std::process::Stdio::null());
+        // What the guest says outside a program is the session's log.
+        cmd.stdout(std::io::stderr().as_fd().try_clone_to_owned()?);
+        cmd.process_group(0);
+        // SAFETY: only dup2/fcntl on descriptors this process owns, between
+        // fork and exec.
+        unsafe {
+            cmd.pre_exec(move || {
+                let target = crate::guest_exec::CONTROL_FD;
+                let placed = if fd == target {
+                    libc::fcntl(fd, libc::F_SETFD, 0)
+                } else {
+                    libc::dup2(fd, target)
+                };
+                if placed < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     if let Some(netns) = netns {
         netns.enter(&mut cmd);
     }
@@ -937,6 +968,7 @@ mod tests {
             resolver: None,
             editor: None,
             terminal: None,
+            control: None,
         }
     }
 

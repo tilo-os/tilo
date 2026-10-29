@@ -553,7 +553,7 @@ fn the_in_app_palette_lists_one_history_launcher() {
     let mut app = document(&["v1"]);
     present(&mut app);
     app.open_action_palette();
-    let palette = app.actions.action_palette.as_mut().unwrap();
+    let palette = app.actions.action_palette.as_deref_mut().unwrap();
     palette.set_query("");
     let labels = app.action_palette().unwrap().result_labels();
     let chrome = crate::i18n::I18nManager::lookup_plain("standalone-history-title");

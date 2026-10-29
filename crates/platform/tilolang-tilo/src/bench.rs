@@ -25,6 +25,9 @@
 //!   first button.
 //! * `peer_edit`: another replica retitles an item, or bumps the root's counter; the change
 //!   merges into the room and the main view is brought up to date.
+//! * `peer_post`: for a package whose items hold a collection of their own, another replica
+//!   posts into an item (a message into a conversation), each time another: a change of the
+//!   item, which a list sorted by when its items last changed moves to the top.
 //! * `scroll`: the list shows the next page of rows.
 //! * `filter`: the first of the main window's places that filters (the item type's first
 //!   toggle filter) is chosen and the list shows the first page of what it holds: a filtered
@@ -914,6 +917,7 @@ const BUDGETS: &[(&str, usize, f64)] = &[
     ("press", 95, 2.0),
     // A peer's change, and a peer's message: one row more, whatever the length.
     ("peer_edit", 95, 2.0),
+    ("peer_post", 95, 2.0),
     ("thread_post", 95, 2.0),
     ("scroll", 50, 1.0),
     ("thread_scroll", 50, 1.0),
@@ -1271,10 +1275,12 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
             out.push(press(&sized, &mut room)?);
         }
         out.push(peer_edit(&sized, &mut room)?);
-        if let Some(record) = scroll(&sized, &mut room)? {
-            out.push(record);
-        }
-        if let Some(record) = filter(&sized, &mut room)? {
+        let more = [
+            peer_post(&sized, &mut room)?,
+            scroll(&sized, &mut room)?,
+            filter(&sized, &mut room)?,
+        ];
+        for record in more.into_iter().flatten() {
             out.push(record);
         }
         out.push(idle(&sized, &mut room)?);
@@ -1845,6 +1851,68 @@ fn peer_edit(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
     }
     let (samples, extra) = changes.into_record(room.phases.take());
     Ok(sized.record("peer_edit", "ms", samples, extra))
+}
+
+/// A peer posting into items of the main list (a message into a conversation), each sample into
+/// another item: the item's own collection gains an item, which is a change of the item, so a
+/// list sorted by when its items last changed moves it to the top. Only for a package whose
+/// list items hold a collection of their own.
+fn peer_post(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
+    let Some((subject, list)) = sized.shape.subject() else {
+        return Ok(None);
+    };
+    let Some(nested) = &list.nested else {
+        return Ok(None);
+    };
+    let principals = thread::principals(sized.packages);
+    let mut peer = room.doc.fork();
+    let mut changes = Changes::default();
+    let first = sized.target(room.list.tree());
+    for sample in 0..sized.config.samples {
+        let item = first.saturating_add(sample).min(sized.n.saturating_sub(1));
+        let id = format!("post-{sample:06}");
+        let message = thread::filled(
+            (&id, &nested.item_ty),
+            &format!("Peer post {sample}"),
+            1,
+            &principals,
+        )?;
+        // The seeded items' own collections hold nothing: the post is their first.
+        let at = tilolang_runtime::place::Placement::At {
+            place: tilolang_runtime::place::Place {
+                parent: Some(item_id(item)),
+                field: nested.field.clone(),
+                key: crate::action::keys_in_order(1).pop().unwrap_or_default(),
+            },
+            was: None,
+        };
+        let action = DynAction {
+            app: subject.app.clone(),
+            kind: format!("tl.{}.edit", subject.app),
+            action_id: "$edit".into(),
+            args: Json::Null,
+            authorship: Authorship::default(),
+            edits: vec![DynEdit::Insert {
+                id: root_id(subject),
+                item: id,
+                record: tilo_resource::Model::to_json(&message),
+                at: at.encode(),
+            }],
+        };
+        execute(&mut peer, &action, "peer")?;
+        let before = Work::of(room, &[]);
+        let start = Instant::now();
+        room.doc
+            .merge_incoming(&mut peer)
+            .map_err(|e| e.to_string())?;
+        let patches = room.frame(&mut [])?;
+        let took = ms(start.elapsed());
+        let mut done = Work::of(room, &[]).since(before);
+        done.patches = patches as u64;
+        changes.push(took, done);
+    }
+    let (samples, extra) = changes.into_record(room.phases.take());
+    Ok(Some(sized.record("peer_post", "ms", samples, extra)))
 }
 
 /// A virtual list scrolled a few rows a frame: it shows the rows that came into view and

@@ -10,7 +10,7 @@ use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use super::{
     CANVAS, CHAT, MESSAGES, SHEETS, endpoint_planner, enrol, message_text, model_endpoint, offers,
-    planning_agent, run_task, set_cells_plan, start_host, steward, tool_call,
+    participant, planning_agent, run_task, set_cells_plan, start_host, tool_call,
 };
 
 const NOTES: &str = "so.tilo.notes";
@@ -55,7 +55,7 @@ async fn a_task_is_told_its_apps_in_full_and_looks_up_another() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let set_cells = "sheets.workbook#set-cells";
     let (url, sent) = model_endpoint(vec![
         tool_call(
@@ -156,7 +156,7 @@ async fn a_reference_keeps_the_apps_it_described() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
-    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let _laptop = participant::Participant::start(&host.relay, &root).await;
     let (url, sent) = model_endpoint(
         ["A1", "A2", "A3"]
             .map(|cell| set_cells_plan(&[], &[("Sheet1", cell, "x")]))

@@ -1,75 +1,61 @@
-//! The browser as a `channel-crypto` member device.
+//! The browser as a participant device of `channel-crypto` channels.
 //!
-//! Every document route of a room another device governs is an encrypted
-//! channel whose steward is the room's governor, which keeps the MLS group.
-//! The browser takes part exactly as a native member does, through the host:
+//! Every document route of a room is an encrypted channel whose MLS group
+//! holds the room's participant devices ([`channel_crypto::peer`]). The
+//! browser takes part through the host:
 //!
-//! - it learns the room's governor once per room: from a pin the page holds,
-//!   or from the first genesis frame of any of the room's channels whose
-//!   sender the host authenticated and whose announced, valid certificate
-//!   names a device of this browser's own identity that may govern
-//!   workspaces. Every channel of the room is stewarded by that device;
-//!   another device's genesis in the room is refused;
-//! - it asks the governor for access to each channel it opens, with a
+//! - it asks the participants for access to each channel it opens, with a
 //!   request carrying a fresh key package, signed by its device key (which
-//!   stays in page custody), re-asking with backoff until the Welcome
-//!   arrives;
-//! - it applies the steward's frames in chain order (Welcome with the key
-//!   history, then commits), acknowledges them cumulatively, and hands the
-//!   session the route's content keys whenever they change.
+//!   stays in page custody), re-asking with backoff until a Welcome arrives
+//!   (with a fresh member key once an answer is long overdue);
+//! - it applies the commits any participant writes (Welcome with the key
+//!   history, then commits), keeps of two commits on one epoch the one with
+//!   the lower digest, and hands the session the route's content keys
+//!   whenever they change;
+//! - it checks every commit against the room as the host vouches for it: a
+//!   commit may add only a device whose certificate the host relayed (the
+//!   room's admitted member devices), a member of the group or the room's
+//!   governor, and must be signed by one of them.
 //!
-//! Nothing is ever written in the clear: a route's writes are held until this
-//! device holds the route's content keys. A replay that names no governor
-//! does not mean the room has none, since the governor's genesis may still
-//! be on its way to the host. The host carries every message as retained,
-//! opaque governance and never holds a key. Member state and the room governors
-//! are exported for the profile's durable store, so a reloaded page keeps
-//! its access instead of asking again. Member state is sealed under a vault
-//! key the store keeps apart from it: in the page, wrapped by a
-//! non-extractable `WebCrypto` key.
+//! The page writes no commits itself: whether a device may read a record
+//! depends on Read grants over that record, which the page does not hold,
+//! so it leaves admitting and removing to the native participants, which
+//! do. Nothing is ever written in the clear: a route's writes are held until
+//! this device holds the route's content keys. The host carries every
+//! message as retained, opaque governance and never holds a key. Channel
+//! state is exported for the profile's durable store, so a reloaded page
+//! keeps its access instead of asking again. It is sealed under a vault key
+//! the store keeps apart from it: in the page, wrapped by a non-extractable
+//! `WebCrypto` key.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use tilo_sort::CompactSort as _;
 
-use channel_crypto::{Access, ChannelContentKeys, ChannelMember, MemberEvent, VaultKey};
-use collab_types::{
-    ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
-    MlsGovernanceFrameV1,
-};
+use channel_crypto::{Access, ChannelContentKeys, ChannelPeer, PeerEvent, VaultKey};
+use collab_types::{ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceFrame};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
 use crate::document::{ContentCipher, DocumentRoute};
 
-/// First and longest wait before a waiting member asks again. An answer
-/// takes the request's turn in the host's order and then the steward's
-/// change's: in a public room a crowd is joining, seconds. Every ask is two
-/// retained writes the host fans out to the whole room, so asking again
+/// First and longest wait before a waiting device asks again. An answer
+/// takes the request's turn in the host's order and then a participant's
+/// commit's: in a public room a crowd is joining, seconds. Every ask is a
+/// retained write the host fans out to the whole room, so asking again
 /// before an answer could arrive only lengthened that wait.
 const REQUEST_FIRST_MS: u64 = 8_000;
 const REQUEST_LONGEST_MS: u64 = 120_000;
-/// The wait from which a member asks with a fresh key package: the host
-/// keeps only a channel's newest change, so an admission replaced before it
-/// reached this page is gone, and the steward answers the same request
-/// once. A replaced admission the page hears of (a later change of its
-/// channel) is asked about again at once (`MemberEvent::Desynchronised`);
-/// this wait is for one it never hears of. A fresh key package from a
-/// device the steward already admitted makes it remove the device and add
-/// it again, changes every member applies: asked after 16 s, in a crowd
-/// whose admissions took longer than that to arrive, it replaced them
-/// faster than they arrived.
+/// The wait from which a device asks with a fresh member key: the host
+/// keeps only a channel's newest commit, so an admission replaced before it
+/// reached this page is gone, and the participants see the device admitted
+/// with the key it asked with. A fresh key makes them admit it again, a
+/// change every member applies: asked sooner, in a crowd whose admissions
+/// took longer to arrive, it replaced them faster than they arrived.
 const REQUEST_FRESH_MS: u64 = 60_000;
-/// How long a member holds back acknowledging the changes it applied after
-/// joining. Acknowledgements are cumulative and only spare the steward
-/// redelivery, while every member of a busy channel acknowledging every
-/// change is a host write per member per change: a public room of 300
-/// acknowledging every 20 s spent a third of its host's disk writes on it.
-const ACK_DELAY_MS: u64 = 60_000;
-/// Frames kept for a channel no route of this page has opened yet.
+/// Frames kept for a channel no route of this page has opened yet, and for
+/// an open one whose signer's certificate has not arrived yet.
 const MAX_UNOPENED_FRAMES: usize = 256;
 /// Channels whose frames are kept before a route opens them.
 const MAX_UNOPENED_CHANNELS: usize = 256;
-/// Genesis frames kept while their sender's certificate is on its way.
-const MAX_CANDIDATES: usize = 256;
 
 /// A route's content keys as the session's cipher.
 pub(crate) struct KeysCipher(pub(crate) ChannelContentKeys);
@@ -106,19 +92,13 @@ impl ContentCipher for KeysCipher {
 /// A governance message this device has to sign and send: the device key
 /// is in page custody, so signing happens in the session.
 pub(crate) enum Outgoing {
-    /// Ask the steward for access, naming the record the channel carries
-    /// so the steward can decide Read on it.
+    /// Ask the participants for access, naming the record the channel
+    /// carries so they can decide Read on it.
     Request {
         workspace_id: u64,
         room: String,
         request: MlsAccessRequestV1,
         route: collab_types::ChannelRoute,
-    },
-    /// Acknowledge every frame applied so far.
-    Ack {
-        workspace_id: u64,
-        room: String,
-        ack: MlsGovernanceAckV1,
     },
 }
 
@@ -136,18 +116,22 @@ impl Changes {
     pub(crate) fn is_empty(&self) -> bool {
         self.keys.is_empty() && self.outgoing.is_empty()
     }
+
+    pub(crate) fn extend(&mut self, other: Self) {
+        self.keys.extend(other.keys);
+        self.outgoing.extend(other.outgoing);
+    }
 }
 
-/// The verdict on an op for `route` from a page's mirror of its channel's
-/// journal, through the one gate a broker checks too
+/// The verdict on an op for `route` from the gate of the page's state for
+/// its channel, through the one gate a broker checks too
 /// ([`channel_crypto::admission`]). A page that holds the channel's content
-/// keys (`sealed`) knows the channel requires them, journal or not, as a
-/// broker that registered its gate does. `governance_known`: the host
-/// answered `Ready` for the route's room, after the governance it holds,
-/// so a channel the mirror has no journal of requires nothing; before that,
-/// cleartext waits.
+/// keys (`sealed`) knows the channel requires them, as a broker that
+/// registered its gate does. `governance_known`: the host answered `Ready`
+/// for the route's room, after the governance it holds, so a channel the
+/// page has no state of requires nothing; before that, cleartext waits.
 pub fn document_admission(
-    journal: Option<&channel_crypto::GovernanceJournal>,
+    gate: Option<channel_crypto::ChannelGate>,
     governance_known: bool,
     sealed: bool,
     route: &DocumentRoute,
@@ -157,93 +141,82 @@ pub fn document_admission(
         encryption_required: true,
         head_epoch: None,
     });
-    let gates = journal
-        .map(channel_crypto::GovernanceJournal::gate)
-        .into_iter()
-        .chain(keys);
     channel_crypto::admission(
-        gates,
+        gate.into_iter().chain(keys),
         governance_known,
         Channels::channel(route),
         encryption,
     )
 }
 
-/// What this page knows of who governs a room.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Governance {
-    /// No governor has shown up yet.
-    Unknown,
-    /// Every channel of the room is stewarded by this device.
-    Governed(Ed25519PublicKey),
+/// The page's signer as its channel state sees it: the device key stays in
+/// page custody and signs in the session, and the page writes no commits.
+struct PageCustody([u8; 32]);
+
+impl channel_crypto::DeviceSigner for PageCustody {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.0
+    }
+
+    fn sign(&self, _: Vec<u8>) -> channel_crypto::SignFuture<'_> {
+        Box::pin(async {
+            Err(collab_types::signer::SignError(
+                "this page writes no channel commits".into(),
+            ))
+        })
+    }
 }
 
 struct Route {
     document: DocumentRoute,
     workspace_id: u64,
-    member: Option<ChannelMember>,
-    /// Frames seen before the steward was known, with their senders.
-    early: Vec<([u8; 32], MlsGovernanceFrameV1)>,
-    /// The pending request, re-sent until the steward answers it.
+    peer: ChannelPeer,
+    /// Frames refused for a signer whose certificate has not arrived yet,
+    /// applied again when one does.
+    early: Vec<MlsGovernanceFrame>,
+    /// The pending request, re-sent until a participant answers it.
     request: Option<MlsAccessRequestV1>,
     next_request_ms: u64,
     request_delay_ms: u64,
     installed_epoch: Option<u64>,
-    /// When the acknowledgement held back for changes applied is due.
-    ack_due_ms: Option<u64>,
 }
 
-/// A member's state as [`Channels::export`] hands it to the durable store.
+/// A channel's state as [`Channels::export_if_changed`] hands it to the
+/// durable store.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SavedMember {
     pub channel: ChannelId,
-    pub steward: [u8; 32],
     pub sealed: Vec<u8>,
 }
 
-/// This page's channel state for the durable store. Member state in it is
-/// sealed under the store's vault ([`crate::PeerStore::channel_vault`]),
-/// which is kept apart from it.
+/// This page's channel state for the durable store, sealed under the
+/// store's vault ([`crate::PeerStore::channel_vault`]), which is kept apart
+/// from it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SavedChannels {
-    pub governors: Vec<(String, [u8; 32])>,
-    pub members: Vec<SavedMember>,
-}
-
-/// Channel state as pages stored it while the vault was kept inside it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct LegacySavedChannels {
-    pub vault: [u8; 32],
-    pub governors: Vec<(String, [u8; 32])>,
     pub members: Vec<SavedMember>,
 }
 
 /// Every channel this page takes part in.
 pub(crate) struct Channels {
     device: Ed25519PublicKey,
-    /// The identity that certified this device; only its devices govern
-    /// the rooms this page takes part in.
+    /// The identity that certified this device.
     user: [u8; 32],
     vault: VaultKey,
     /// Certificates announced through the host, bound to the device the
-    /// host authenticated as their sender.
+    /// host authenticated as their sender: the room's admitted devices.
     certs: HashMap<[u8; 32], DeviceCert>,
     routes: HashMap<ChannelId, Route>,
-    unopened: HashMap<ChannelId, Vec<([u8; 32], MlsGovernanceFrameV1)>>,
-    rooms: HashMap<String, Governance>,
-    /// Governors the page learned from the room itself, which no genesis
-    /// frame can override.
+    unopened: HashMap<ChannelId, Vec<MlsGovernanceFrame>>,
+    /// Governors the page learned from the room itself.
     pinned: HashMap<String, Ed25519PublicKey>,
-    /// The host, when its root certified it to own workspaces: a node
-    /// governs the rooms it hosts unless a genesis frame names another of
-    /// this person's devices.
+    /// The host, when its root certified it to own workspaces: the node
+    /// that governs the rooms it hosts.
     host: Option<Ed25519PublicKey>,
-    /// Devices this page's own root revoked: none of them stewards a
-    /// channel, whatever the page learned or saved before.
+    /// Devices this page's own root revoked: none of them takes part in a
+    /// channel here.
     revocations: RevocationList,
-    /// Genesis frames whose sender's certificate has not arrived yet.
-    candidates: Vec<(String, [u8; 32], MlsGovernanceFrameV1)>,
-    /// Restored member state, waiting for its route to open.
+    /// Restored channel state, waiting for its route to open.
     saved: HashMap<ChannelId, SavedMember>,
     saved_requests: HashMap<ChannelId, MlsAccessRequestV1>,
     dirty: bool,
@@ -259,26 +232,17 @@ impl Channels {
             certs: HashMap::new(),
             routes: HashMap::new(),
             unopened: HashMap::new(),
-            rooms: HashMap::new(),
             pinned: HashMap::new(),
             host: None,
             revocations: RevocationList::new(),
-            candidates: Vec::new(),
             saved: HashMap::new(),
             saved_requests: HashMap::new(),
             dirty: false,
         }
     }
 
-    /// Pick up where a previous page left off: the governors it learned and
-    /// its members' state.
+    /// Pick up where a previous page left off.
     pub(crate) fn restore(&mut self, saved: SavedChannels) {
-        for (room, governor) in saved.governors {
-            self.rooms.insert(
-                room,
-                Governance::Governed(Ed25519PublicKey::from_bytes(governor)),
-            );
-        }
         self.saved = saved
             .members
             .into_iter()
@@ -286,39 +250,8 @@ impl Channels {
             .collect();
     }
 
-    /// Pick up state stored with its vault beside it: its members are
-    /// sealed again under this page's vault, and the next export stores
-    /// them without the old one.
-    pub(crate) fn restore_legacy(&mut self, legacy: LegacySavedChannels) {
-        let old = VaultKey::new(legacy.vault);
-        let members = legacy
-            .members
-            .into_iter()
-            .filter_map(|saved| {
-                let steward = Ed25519PublicKey::from_bytes(saved.steward);
-                let member = ChannelMember::restore_in_memory(
-                    saved.channel,
-                    self.device,
-                    steward,
-                    &saved.sealed,
-                    &old,
-                )
-                .ok()?;
-                Some(SavedMember {
-                    sealed: member.export_sealed(&self.vault).ok()?,
-                    ..saved
-                })
-            })
-            .collect();
-        self.restore(SavedChannels {
-            governors: legacy.governors,
-            members,
-        });
-        self.dirty = true;
-    }
-
-    /// Restore requests with their sealed member state, so a reload cannot
-    /// race an earlier request with an unnecessary replacement key package.
+    /// Restore requests with their sealed state, so a reload cannot race an
+    /// earlier request with an unnecessary replacement key package.
     pub(crate) fn restore_requests(&mut self, requests: Vec<MlsAccessRequestV1>) {
         self.saved_requests = requests
             .into_iter()
@@ -333,10 +266,7 @@ impl Channels {
         let mut requests = self.saved_requests.clone();
         for (channel, route) in &self.routes {
             if let Some(request) = &route.request
-                && route
-                    .member
-                    .as_ref()
-                    .is_some_and(|member| matches!(member.access(), Access::Waiting))
+                && matches!(route.peer.access(), Access::Waiting)
             {
                 requests.insert(*channel, request.clone());
             } else {
@@ -361,57 +291,43 @@ impl Channels {
         }
         let mut members: HashMap<ChannelId, SavedMember> = self.saved.clone();
         for (channel, route) in &self.routes {
-            if let Some(member) = &route.member
-                && let Ok(sealed) = member.export_sealed(&self.vault)
-            {
+            if let Ok(sealed) = route.peer.export_sealed(&self.vault) {
                 members.insert(
                     *channel,
                     SavedMember {
                         channel: *channel,
-                        steward: *member.steward().as_bytes(),
                         sealed,
                     },
                 );
             }
         }
-        let mut governors: Vec<(String, [u8; 32])> = self
-            .rooms
-            .iter()
-            .filter_map(|(room, governance)| match governance {
-                Governance::Governed(device) => Some((room.clone(), *device.as_bytes())),
-                Governance::Unknown => None,
-            })
-            .collect();
-        governors.compact_sort();
         let mut members: Vec<SavedMember> = members.into_values().collect();
         members.compact_sort_by_key(|member| member.channel.0);
-        Some(SavedChannels { governors, members })
+        Some(SavedChannels { members })
     }
 
     pub(crate) fn channel(route: &DocumentRoute) -> ChannelId {
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record)
     }
 
-    /// The verdict on an op for `route` from this page's mirror of its
-    /// channel's journal ([`document_admission`]).
+    /// The verdict on an op for `route` from this page's state for its
+    /// channel ([`document_admission`]).
     pub(crate) fn admission(
         &self,
         route: &DocumentRoute,
         (governance_known, sealed): (bool, bool),
         encryption: Option<&collab_types::EncryptionMetadata>,
     ) -> collab_types::inbound::OpAdmission {
-        let journal = self
+        let gate = self
             .routes
             .get(&Self::channel(route))
-            .and_then(|route| route.member.as_ref())
-            .map(ChannelMember::journal);
-        document_admission(journal, governance_known, sealed, route, encryption)
+            .map(|route| route.peer.gate());
+        document_admission(gate, governance_known, sealed, route, encryption)
     }
 
-    /// Let the host govern the rooms no device of this person was seen
-    /// governing, when `host` (its verified certificate) owns workspaces:
-    /// the node a person's root certified to host and govern their rooms.
-    /// A plain host never governs.
+    /// Take the host as the governor of the rooms it hosts, when `host`
+    /// (its verified certificate) owns workspaces: the node a person's root
+    /// certified to host and govern their rooms. A plain host never governs.
     pub(crate) fn govern_by_host(&mut self, host: &DeviceCert) {
         self.host = (host.capabilities.can_own_workspaces
             && !host.capabilities.foreign
@@ -419,155 +335,41 @@ impl Channels {
         .then(|| Ed25519PublicKey::from_bytes(host.device_public_key));
     }
 
-    fn governance(&self, room: &str) -> Governance {
-        if let Some(pinned) = self.pinned.get(room) {
-            return Governance::Governed(*pinned);
-        }
-        let host = self.host.filter(|host| !self.revoked(host));
-        match (self.rooms.get(room), host) {
-            (Some(learned), _) => *learned,
-            (None, Some(host)) => Governance::Governed(host),
-            (None, None) => Governance::Unknown,
-        }
+    /// `room`'s governor as this page knows it: a participant of every
+    /// channel of the room.
+    fn governor(&self, room: &str) -> Option<Ed25519PublicKey> {
+        self.pinned
+            .get(room)
+            .copied()
+            .or(self.host)
+            .filter(|governor| !self.revocations.is_revoked(governor.as_bytes()))
     }
 
-    fn revoked(&self, device: &Ed25519PublicKey) -> bool {
-        self.revocations.is_revoked(device.as_bytes())
-    }
-
-    /// Learn revocations this page's root signed. A revoked device stewards
-    /// nothing from then on: a governor the page learned from a genesis,
-    /// saved from an earlier page or took from the host is forgotten, and
-    /// the channels it stewarded start over under whoever governs next. A
-    /// governor the room itself pinned stays: the room decides who succeeds
-    /// it. Entries of another root, or that do not verify, are ignored.
+    /// Learn revocations this page's root signed: a revoked device takes
+    /// part in no channel from then on. Entries of another root, or that do
+    /// not verify, are ignored.
     pub(crate) fn note_revocations(
         &mut self,
         entries: impl IntoIterator<Item = RevocationEntry>,
-        now_ms: u64,
+        _now_ms: u64,
     ) -> Changes {
-        let mut learned = false;
         for entry in entries {
             if entry.user_public_key == self.user {
-                learned |= self.revocations.insert(entry).unwrap_or(false);
+                let _ = self.revocations.insert(entry);
             }
         }
-        let mut changes = Changes::default();
-        if !learned {
-            return changes;
-        }
-        let revocations = &self.revocations;
-        let before = self.rooms.len();
-        self.rooms.retain(|_, governance| match governance {
-            Governance::Governed(governor) => !revocations.is_revoked(governor.as_bytes()),
-            Governance::Unknown => true,
-        });
-        self.dirty |= self.rooms.len() != before;
-        let channels: Vec<ChannelId> = self
-            .routes
-            .iter()
-            .filter(|(_, route)| {
-                !self.pinned.contains_key(&route.document.cluster_id)
-                    && route
-                        .member
-                        .as_ref()
-                        .is_some_and(|member| self.revoked(&member.steward()))
-            })
-            .map(|(channel, _)| *channel)
-            .collect();
-        for channel in channels {
-            if let Some(route) = self.routes.get_mut(&channel) {
-                route.member = None;
-                route.request = None;
-                route.installed_epoch = None;
-            }
-            self.dirty = true;
-            self.settle(channel, now_ms, &mut changes);
-        }
-        changes
+        Changes::default()
     }
 
     /// Name `room`'s governor as the page learned it from the room itself.
-    /// Channels already stewarded by another device start over under it.
     pub(crate) fn pin_governor(&mut self, room: &str, governor: [u8; 32], now_ms: u64) -> Changes {
-        let governor = Ed25519PublicKey::from_bytes(governor);
-        self.pinned.insert(room.to_owned(), governor);
-        self.set_governor(room, governor, now_ms)
+        self.pinned
+            .insert(room.to_owned(), Ed25519PublicKey::from_bytes(governor));
+        self.retry_early(now_ms)
     }
 
-    fn set_governor(&mut self, room: &str, governor: Ed25519PublicKey, now_ms: u64) -> Changes {
-        self.rooms
-            .insert(room.to_owned(), Governance::Governed(governor));
-        self.dirty = true;
-        let channels: Vec<ChannelId> = self
-            .routes
-            .iter()
-            .filter(|(_, route)| route.document.cluster_id == room)
-            .map(|(channel, _)| *channel)
-            .collect();
-        let mut changes = Changes::default();
-        for channel in channels {
-            if let Some(route) = self.routes.get_mut(&channel)
-                && route
-                    .member
-                    .as_ref()
-                    .is_some_and(|member| member.steward() != governor)
-            {
-                route.member = None;
-                route.request = None;
-                route.installed_epoch = None;
-            }
-            self.settle(channel, now_ms, &mut changes);
-        }
-        changes
-    }
-
-    /// Whether `author`'s verified certificate lets it govern `room`, a
-    /// room this page takes part in: a device of this identity that owns
-    /// workspaces. A host governs only when its root also granted it that
-    /// (a node that hosts and governs a person's workspaces); a plain host
-    /// never does.
-    fn may_govern(&self, author: &[u8; 32]) -> bool {
-        self.certs.get(author).is_some_and(|cert| {
-            cert.user_public_key == self.user
-                && cert.capabilities.can_own_workspaces
-                && !cert.capabilities.foreign
-                && !self.revocations.is_revoked(author)
-        })
-    }
-
-    /// Learn `room`'s governor from a genesis frame `author` sent, when the
-    /// room has none yet and the frame is the author's own, valid genesis.
-    fn consider_genesis(
-        &mut self,
-        room: &str,
-        author: [u8; 32],
-        frame: &MlsGovernanceFrameV1,
-        now_ms: u64,
-    ) -> Changes {
-        let genesis = matches!(frame.action, MlsGovernanceAction::Genesis)
-            && frame.previous_frame_digest == [0; 32]
-            && frame.signed_by.as_bytes() == &author
-            && frame.verify_signature().is_ok();
-        let learned = self.pinned.contains_key(room)
-            || matches!(self.rooms.get(room), Some(Governance::Governed(_)));
-        if !genesis || learned {
-            return Changes::default();
-        }
-        if !self.certs.contains_key(&author) {
-            if self.candidates.len() < MAX_CANDIDATES {
-                self.candidates
-                    .push((room.to_owned(), author, frame.clone()));
-            }
-            return Changes::default();
-        }
-        if !self.may_govern(&author) {
-            return Changes::default();
-        }
-        self.set_governor(room, frame.signed_by, now_ms)
-    }
-
-    /// Remember a certificate a device sent through the host.
+    /// Remember a certificate a device sent through the host, and apply
+    /// what waited for it.
     pub(crate) fn note_cert(&mut self, author: [u8; 32], cert: DeviceCert, now_ms: u64) -> Changes {
         if cert.device_public_key != author
             || tilo_user_identity::verify_device_cert(&cert).is_err()
@@ -575,17 +377,54 @@ impl Channels {
             return Changes::default();
         }
         self.certs.insert(author, cert);
-        // A genesis frame that arrived before its sender's certificate can
-        // name its room's governor now.
-        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.candidates)
-            .into_iter()
-            .partition(|(_, sender, _)| *sender == author);
-        self.candidates = waiting;
+        self.retry_early(now_ms)
+    }
+
+    /// Apply again the frames held for a signer this page could not vouch
+    /// for yet.
+    fn retry_early(&mut self, now_ms: u64) -> Changes {
         let mut changes = Changes::default();
-        for (room, sender, frame) in ready {
-            changes.extend(self.consider_genesis(&room, sender, &frame, now_ms));
+        let channels: Vec<ChannelId> = self
+            .routes
+            .iter()
+            .filter(|(_, route)| !route.early.is_empty())
+            .map(|(channel, _)| *channel)
+            .collect();
+        for channel in channels {
+            let early = self
+                .routes
+                .get_mut(&channel)
+                .map(|route| std::mem::take(&mut route.early))
+                .unwrap_or_default();
+            for frame in early {
+                self.apply(channel, frame, now_ms, &mut changes);
+            }
         }
         changes
+    }
+
+    /// The devices a commit to `route`'s channel may be signed by and add,
+    /// as the page knows the room: every device whose certificate the host
+    /// relayed and this page's root did not revoke, the group's members, the
+    /// room's governor and this device. A device `frame` removes (and does
+    /// not add again) counts as not backed: whether a Read grant still lets
+    /// it read the record is the native participants' call.
+    fn allowed(&self, route: &Route, frame: &MlsGovernanceFrame) -> BTreeSet<Ed25519PublicKey> {
+        let mut allowed: BTreeSet<Ed25519PublicKey> = self
+            .certs
+            .keys()
+            .filter(|device| !self.revocations.is_revoked(device))
+            .map(|device| Ed25519PublicKey::from_bytes(*device))
+            .collect();
+        allowed.extend(route.peer.members());
+        allowed.extend(self.governor(&route.document.cluster_id));
+        allowed.insert(self.device);
+        for removed in frame.removed() {
+            if !frame.added().contains(removed) {
+                allowed.remove(removed);
+            }
+        }
+        allowed
     }
 
     /// Take part in `route`'s channel from now on.
@@ -598,91 +437,124 @@ impl Channels {
         let Ok(workspace_id) = route.workspace_id() else {
             return changes;
         };
-        let early = self.unopened.remove(&channel).unwrap_or_default();
+        let signer = || Box::new(PageCustody(*self.device.as_bytes()));
+        let restored = self.saved.remove(&channel).and_then(|saved| {
+            ChannelPeer::restore(channel, signer(), &saved.sealed, &self.vault).ok()
+        });
+        let request = restored
+            .as_ref()
+            .filter(|peer| matches!(peer.access(), Access::Waiting))
+            .and_then(|_| self.saved_requests.remove(&channel));
+        let peer = match restored {
+            Some(peer) => peer,
+            None => match ChannelPeer::waiting(None, channel, signer(), &self.vault) {
+                Ok(peer) => peer,
+                Err(_) => return changes,
+            },
+        };
         self.routes.insert(
             channel,
             Route {
                 document: route.clone(),
                 workspace_id,
-                member: None,
-                early,
-                request: None,
+                peer,
+                early: Vec::new(),
+                request,
                 next_request_ms: now_ms,
                 request_delay_ms: REQUEST_FIRST_MS,
                 installed_epoch: None,
-                ack_due_ms: None,
             },
         );
-        self.settle(channel, now_ms, &mut changes);
+        self.dirty = true;
+        for frame in self.unopened.remove(&channel).unwrap_or_default() {
+            self.apply(channel, frame, now_ms, &mut changes);
+        }
+        self.after(channel, None, now_ms, &mut changes);
         changes
     }
 
-    /// Apply one governance frame of `room` the host delivered from
-    /// `author`.
+    /// Apply one governance frame of `room` the host delivered.
     pub(crate) fn receive_frame(
         &mut self,
-        author: [u8; 32],
+        _author: [u8; 32],
         room: &str,
-        frame: MlsGovernanceFrameV1,
+        frame: MlsGovernanceFrame,
         now_ms: u64,
     ) -> Changes {
-        let mut changes = self.consider_genesis(room, author, &frame, now_ms);
+        let mut changes = Changes::default();
         let channel = frame.channel;
-        let Some(route) = self.routes.get_mut(&channel) else {
+        if !self.routes.contains_key(&channel) {
             if self.unopened.len() < MAX_UNOPENED_CHANNELS || self.unopened.contains_key(&channel) {
                 let frames = self.unopened.entry(channel).or_default();
                 if frames.len() < MAX_UNOPENED_FRAMES {
-                    frames.push((author, frame));
+                    frames.push(frame);
                 }
             }
             return changes;
-        };
-        match route.member.as_mut() {
-            None => {
-                if route.early.len() < MAX_UNOPENED_FRAMES {
-                    route.early.push((author, frame));
-                }
-                self.settle(channel, now_ms, &mut changes);
-            }
-            Some(member) => {
-                let events = member.receive(frame, &self.vault).unwrap_or_default();
-                self.after_events(channel, &events, now_ms, &mut changes);
-            }
+        }
+        if self
+            .routes
+            .get(&channel)
+            .is_some_and(|route| route.document.cluster_id == room)
+        {
+            self.apply(channel, frame, now_ms, &mut changes);
         }
         changes
     }
 
-    /// One line per room, certificate and route for diagnostics: whom a
-    /// room follows, which senders may govern, and where each route's
-    /// membership stands.
+    fn apply(
+        &mut self,
+        channel: ChannelId,
+        frame: MlsGovernanceFrame,
+        now_ms: u64,
+        changes: &mut Changes,
+    ) {
+        let Some(route) = self.routes.get(&channel) else {
+            return;
+        };
+        let allowed = self.allowed(route, &frame);
+        // A commit naming a device the page cannot vouch for yet waits for
+        // that device's certificate.
+        let unknown = std::iter::once(&frame.signed_by)
+            .chain(frame.added())
+            .any(|device| !allowed.contains(device));
+        let Some(route) = self.routes.get_mut(&channel) else {
+            return;
+        };
+        match route.peer.receive(frame.clone(), &allowed, &self.vault) {
+            Ok(event) => self.after(channel, Some(event), now_ms, changes),
+            Err(_) if unknown => {
+                if route.early.len() < MAX_UNOPENED_FRAMES {
+                    route.early.push(frame);
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// One line per certificate and route for diagnostics: which senders
+    /// this page vouches for, and where each route's membership stands.
     pub(crate) fn describe(&self) -> String {
         let short = |key: &[u8]| hex::encode(key.get(..4).unwrap_or_default());
         let mut lines = Vec::new();
-        for room in self.rooms.keys() {
-            let governance = match self.governance(room) {
-                Governance::Governed(device) => format!("governed by {}", short(device.as_bytes())),
-                Governance::Unknown => "unknown".to_owned(),
-            };
-            lines.push(format!("room {room}: {governance}"));
-        }
-        for (device, cert) in &self.certs {
+        for (room, governor) in &self.pinned {
             lines.push(format!(
-                "cert {}: may govern {}",
-                short(device),
-                self.may_govern(&cert.device_public_key)
+                "room {room}: governed by {}",
+                short(governor.as_bytes())
             ));
         }
-        for (room, sender, _) in &self.candidates {
-            lines.push(format!("candidate genesis {room} from {}", short(sender)));
+        for device in self.certs.keys() {
+            lines.push(format!(
+                "cert {}: revoked {}",
+                short(device),
+                self.revocations.is_revoked(device)
+            ));
         }
         for (channel, route) in &self.routes {
-            let access = route.member.as_ref().map_or_else(
-                || "no member".to_owned(),
-                |member| match member.access() {
-                    Access::Ready { .. } => "ready".to_owned(),
-                    other => format!("{other:?}"),
-                },
-            );
+            let access = match route.peer.access() {
+                Access::Ready { .. } => "ready".to_owned(),
+                other => format!("{other:?}"),
+            };
             lines.push(format!(
                 "route {}/{} ({channel:?}): {access}; request {}; early {}",
                 route.document.app_id,
@@ -697,149 +569,38 @@ impl Channels {
         lines.join("\n")
     }
 
-    /// Re-ask stewards whose answer is overdue.
+    /// Ask again where an answer is overdue.
     pub(crate) fn tick(&mut self, now_ms: u64) -> Changes {
         let mut changes = Changes::default();
         let channels: Vec<ChannelId> = self.routes.keys().copied().collect();
         for channel in channels {
             self.request_if_due(channel, now_ms, &mut changes);
-            self.ack_if_due(channel, now_ms, &mut changes);
         }
         changes
     }
 
-    fn ack_if_due(&mut self, channel: ChannelId, now_ms: u64, changes: &mut Changes) {
-        let Some(route) = self.routes.get_mut(&channel) else {
-            return;
-        };
-        if route.ack_due_ms.is_none_or(|due| due > now_ms) {
-            return;
-        }
-        route.ack_due_ms = None;
-        if let Some(member) = route.member.as_ref()
-            && !member.journal().frames().is_empty()
-        {
-            changes.outgoing.push(Outgoing::Ack {
-                workspace_id: route.workspace_id,
-                room: route.document.cluster_id.clone(),
-                ack: MlsGovernanceAckV1::unsigned(
-                    channel,
-                    self.device,
-                    member.journal().head_digest(),
-                ),
-            });
-        }
-    }
-
-    /// Take part in `channel` under its room's governor, once known, then
-    /// replay what the governor sent so far.
-    fn settle(&mut self, channel: ChannelId, now_ms: u64, changes: &mut Changes) {
-        let Some(route) = self.routes.get(&channel) else {
-            return;
-        };
-        if route.member.is_some() {
-            return;
-        }
-        // A governor that is this device stewards through its own governor
-        // (a host's room actions run under the host's certificate), and
-        // this session takes part as a member.
-        let Governance::Governed(steward) = self.governance(&route.document.cluster_id) else {
-            return;
-        };
-        let restored = self
-            .saved
-            .remove(&channel)
-            .filter(|saved| saved.steward == *steward.as_bytes())
-            .and_then(|saved| {
-                ChannelMember::restore_in_memory(
-                    channel,
-                    self.device,
-                    steward,
-                    &saved.sealed,
-                    &self.vault,
-                )
-                .ok()
-            });
-        let request = restored
-            .as_ref()
-            .filter(|member| matches!(member.access(), Access::Waiting))
-            .and_then(|_| self.saved_requests.remove(&channel));
-        let member = match restored {
-            Some(member) => member,
-            None => match ChannelMember::in_memory(channel, self.device, steward) {
-                Ok(member) => member,
-                Err(_) => return,
-            },
-        };
-        let Some(route) = self.routes.get_mut(&channel) else {
-            return;
-        };
-        let mut member = member;
-        let mut events = Vec::new();
-        for (_, frame) in std::mem::take(&mut route.early) {
-            if frame.signed_by == steward {
-                events.extend(member.receive(frame, &self.vault).unwrap_or_default());
-            }
-        }
-        route.member = Some(member);
-        route.request = request;
-        route.next_request_ms = now_ms;
-        route.request_delay_ms = REQUEST_FIRST_MS;
-        self.dirty = true;
-        self.after_events(channel, &events, now_ms, changes);
-    }
-
-    fn after_events(
+    fn after(
         &mut self,
         channel: ChannelId,
-        events: &[MemberEvent],
+        event: Option<PeerEvent>,
         now_ms: u64,
         changes: &mut Changes,
     ) {
         let Some(route) = self.routes.get_mut(&channel) else {
             return;
         };
-        let Some(member) = route.member.as_ref() else {
-            return;
-        };
-        let moved = events
-            .iter()
-            .any(|event| !matches!(event, MemberEvent::Duplicate | MemberEvent::Buffered));
-        if moved {
+        if event.is_some_and(|event| !matches!(event, PeerEvent::Duplicate | PeerEvent::Ignored)) {
             self.dirty = true;
         }
-        // Joining is acknowledged at once; later changes in a while.
-        let joined = events
-            .iter()
-            .any(|event| matches!(event, MemberEvent::Joined { .. }));
-        if moved && !joined {
-            route.ack_due_ms = Some(
-                route
-                    .ack_due_ms
-                    .unwrap_or_else(|| now_ms.saturating_add(ACK_DELAY_MS)),
-            );
-        }
-        if joined && !member.journal().frames().is_empty() {
-            route.ack_due_ms = None;
-            changes.outgoing.push(Outgoing::Ack {
-                workspace_id: route.workspace_id,
-                room: route.document.cluster_id.clone(),
-                ack: MlsGovernanceAckV1::unsigned(
-                    channel,
-                    self.device,
-                    member.journal().head_digest(),
-                ),
-            });
-        }
-        // Ask again with a fresh key package: the request sent before was
-        // answered with a Welcome this device cannot open, or by an
-        // admission the steward has since replaced.
-        if events.contains(&MemberEvent::Desynchronised) || events.contains(&MemberEvent::Removed) {
+        // Ask again with a fresh member key: the request sent before was
+        // answered with a Welcome this device cannot open, by an admission
+        // since replaced, or this device was removed.
+        if matches!(event, Some(PeerEvent::Desynchronised | PeerEvent::Removed)) {
             route.request = None;
             route.next_request_ms = now_ms;
             route.request_delay_ms = REQUEST_FIRST_MS;
         }
-        if let Some(keys) = member.content_keys()
+        if let Some(keys) = route.peer.content_keys()
             && route.installed_epoch != Some(keys.epoch())
         {
             route.installed_epoch = Some(keys.epoch());
@@ -852,18 +613,17 @@ impl Channels {
         let Some(route) = self.routes.get_mut(&channel) else {
             return;
         };
-        let Some(member) = route.member.as_mut() else {
-            return;
-        };
-        if matches!(member.access(), Access::Ready { .. }) || now_ms < route.next_request_ms {
+        if matches!(route.peer.access(), Access::Ready { .. }) || now_ms < route.next_request_ms {
             return;
         }
-        if route.request_delay_ms >= REQUEST_FRESH_MS {
+        let fresh = route.request_delay_ms >= REQUEST_FRESH_MS;
+        if fresh {
             route.request = None;
         }
         if route.request.is_none() {
-            route.request = member
-                .unsigned_access_request(now_ms / 1000, &self.vault)
+            route.request = route
+                .peer
+                .unsigned_access_request(now_ms / 1000, fresh, &self.vault)
                 .ok()
                 .flatten();
             self.dirty = true;
@@ -888,29 +648,20 @@ impl Channels {
     }
 }
 
-impl Changes {
-    pub(crate) fn extend(&mut self, other: Self) {
-        self.keys.extend(other.keys);
-        self.outgoing.extend(other.outgoing);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use channel_crypto::ChannelSteward;
     use ed25519_dalek::{Signer as _, SigningKey};
-    use std::collections::{BTreeMap, BTreeSet};
     use tilo_user_identity::DeviceCapabilities;
 
     const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
-    fn cert(root: &SigningKey, key: &SigningKey, capabilities: DeviceCapabilities) -> DeviceCert {
+    fn cert(root: &SigningKey, key: &SigningKey) -> DeviceCert {
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
             device_public_key: key.verifying_key().to_bytes(),
             device_label: "device".into(),
-            capabilities,
+            capabilities: DeviceCapabilities::primary(),
             issued_at_ns: 1,
             expires_at_ns: None,
             signature: [0; 64],
@@ -927,323 +678,74 @@ mod tests {
         }
     }
 
-    fn genesis(key: &SigningKey, route: &DocumentRoute) -> MlsGovernanceFrameV1 {
-        MlsGovernanceFrameV1::signed(
-            Channels::channel(route),
-            [1; 32],
-            1,
-            [0; 32],
-            0,
-            MlsGovernanceAction::Genesis,
-            key,
-        )
-        .unwrap()
-    }
-
     fn device(key: &SigningKey) -> [u8; 32] {
         key.verifying_key().to_bytes()
     }
 
-    fn steward_of(channels: &Channels, route: &DocumentRoute) -> Option<[u8; 32]> {
-        channels.routes[&Channels::channel(route)]
-            .member
-            .as_ref()
-            .map(|member| *member.steward().as_bytes())
+    fn public(key: &SigningKey) -> Ed25519PublicKey {
+        Ed25519PublicKey::from_bytes(device(key))
     }
 
-    fn requests(changes: &Changes) -> usize {
+    fn requests(changes: &Changes) -> Vec<MlsAccessRequestV1> {
         changes
             .outgoing
             .iter()
-            .filter(|outgoing| matches!(outgoing, Outgoing::Request { .. }))
-            .count()
+            .map(|Outgoing::Request { request, .. }| request.clone())
+            .collect()
     }
 
-    /// Only a device of this browser's identity that may govern names the
-    /// room's governor, from a genesis on any of the room's channels; it
-    /// then stewards every channel of the room, and another device's
-    /// genesis does not take a channel over. A pin from the room wins.
-    #[test]
-    fn a_room_is_governed_by_one_governing_device_of_this_identity() {
-        let user = SigningKey::from_bytes(&[1; 32]);
-        let stranger_root = SigningKey::from_bytes(&[2; 32]);
-        let browser = SigningKey::from_bytes(&[3; 32]);
-        let laptop = SigningKey::from_bytes(&[4; 32]);
-        let desktop = SigningKey::from_bytes(&[5; 32]);
-        let stranger = SigningKey::from_bytes(&[6; 32]);
-        let server = SigningKey::from_bytes(&[7; 32]);
-        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
-        let note = route("note-1");
-        let other = route("note-2");
-        assert_eq!(requests(&channels.open(&note, 0)), 0);
-        for (key, root, capabilities) in [
-            (&stranger, &stranger_root, DeviceCapabilities::primary()),
-            (&server, &user, DeviceCapabilities::host()),
-        ] {
-            channels.note_cert(device(key), cert(root, key, capabilities), 0);
-            let changes = channels.receive_frame(device(key), ROOM, genesis(key, &note), 0);
-            assert_eq!(requests(&changes), 0);
-            assert_eq!(steward_of(&channels, &note), None);
-        }
-        let changes = channels.receive_frame(device(&laptop), ROOM, genesis(&laptop, &other), 0);
-        assert_eq!(requests(&changes), 0);
-        let changes = channels.note_cert(
-            device(&laptop),
-            cert(&user, &laptop, DeviceCapabilities::primary()),
-            0,
+    fn signed(browser: &SigningKey, mut request: MlsAccessRequestV1) -> MlsAccessRequestV1 {
+        request.signature = collab_types::Signature::from_bytes(
+            browser.sign(&request.signing_bytes().unwrap()).to_bytes(),
         );
-        assert_eq!(requests(&changes), 1, "asks the governor for the open note");
-        assert_eq!(steward_of(&channels, &note), Some(device(&laptop)));
-
-        channels.note_cert(
-            device(&desktop),
-            cert(&user, &desktop, DeviceCapabilities::primary()),
-            0,
-        );
-        channels.receive_frame(device(&desktop), ROOM, genesis(&desktop, &note), 0);
-        assert_eq!(steward_of(&channels, &note), Some(device(&laptop)));
-
-        let changes = channels.pin_governor(ROOM, device(&desktop), 0);
-        assert_eq!(requests(&changes), 1);
-        assert_eq!(steward_of(&channels, &note), Some(device(&desktop)));
+        request
     }
 
-    /// A node the person's root certified to host and govern their
-    /// workspaces governs; a foreign device that owns workspaces does not.
-    #[test]
-    fn a_node_that_hosts_and_governs_names_the_governor() {
-        let user = SigningKey::from_bytes(&[1; 32]);
-        let browser = SigningKey::from_bytes(&[3; 32]);
-        let foreign = SigningKey::from_bytes(&[4; 32]);
-        let server = SigningKey::from_bytes(&[5; 32]);
-        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
-        let note = route("note-1");
-        channels.open(&note, 0);
-        let mut foreign_capabilities = DeviceCapabilities::primary();
-        foreign_capabilities.foreign = true;
-        channels.note_cert(
-            device(&foreign),
-            cert(&user, &foreign, foreign_capabilities),
-            0,
-        );
-        channels.receive_frame(device(&foreign), ROOM, genesis(&foreign, &note), 0);
-        assert_eq!(steward_of(&channels, &note), None);
-
-        let capabilities = tilo_user_identity::cloud_enrollment::host_capabilities();
-        channels.note_cert(device(&server), cert(&user, &server, capabilities), 0);
-        let changes = channels.receive_frame(device(&server), ROOM, genesis(&server, &note), 0);
-        assert_eq!(requests(&changes), 1);
-        assert_eq!(steward_of(&channels, &note), Some(device(&server)));
-    }
-
-    fn revoke(root: &SigningKey, device: &SigningKey) -> RevocationEntry {
-        let mut entry = RevocationEntry {
-            user_public_key: root.verifying_key().to_bytes(),
-            revoked_device_public_key: device.verifying_key().to_bytes(),
-            revoked_at_ns: 2,
-            reason: tilo_user_identity::RevocationReason::Stolen,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_revocation_entry(&mut entry, root).unwrap();
-        entry
-    }
-
-    /// A device this person's root revoked stewards nothing: its genesis
-    /// names no governor, a governor the page already follows is dropped
-    /// when its revocation arrives (the channel asks the next governor), and
-    /// another root's revocation changes nothing.
-    #[test]
-    fn a_revoked_device_never_stewards_a_channel() {
-        let user = SigningKey::from_bytes(&[1; 32]);
-        let stranger_root = SigningKey::from_bytes(&[2; 32]);
-        let browser = SigningKey::from_bytes(&[3; 32]);
-        let laptop = SigningKey::from_bytes(&[4; 32]);
-        let desktop = SigningKey::from_bytes(&[5; 32]);
-        let note = route("note-1");
-
-        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
-        channels.open(&note, 0);
-        let changes = channels.note_revocations([revoke(&user, &laptop)], 0);
-        assert_eq!(requests(&changes), 0);
-        channels.note_cert(
-            device(&laptop),
-            cert(&user, &laptop, DeviceCapabilities::primary()),
-            0,
-        );
-        channels.receive_frame(device(&laptop), ROOM, genesis(&laptop, &note), 0);
-        assert_eq!(steward_of(&channels, &note), None, "a revoked genesis");
-
-        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
-        channels.open(&note, 0);
-        for key in [&laptop, &desktop] {
-            channels.note_cert(
-                device(key),
-                cert(&user, key, DeviceCapabilities::primary()),
-                0,
-            );
-        }
-        channels.receive_frame(device(&laptop), ROOM, genesis(&laptop, &note), 0);
-        assert_eq!(steward_of(&channels, &note), Some(device(&laptop)));
-        let changes = channels.note_revocations([revoke(&stranger_root, &laptop)], 0);
-        assert_eq!(requests(&changes), 0);
-        assert_eq!(steward_of(&channels, &note), Some(device(&laptop)));
-
-        channels.note_revocations([revoke(&user, &laptop)], 0);
-        assert_eq!(
-            steward_of(&channels, &note),
+    /// A native participant that created `route`'s channel.
+    fn laptop(key: &SigningKey, route: &DocumentRoute) -> ChannelPeer {
+        ChannelPeer::create_now(
             None,
-            "the revoked steward is dropped"
-        );
-        assert!(
-            channels
-                .export_if_changed()
-                .is_some_and(|saved| saved.governors.is_empty()),
-            "nor is it saved as the room's governor"
-        );
-        let changes = channels.receive_frame(device(&desktop), ROOM, genesis(&desktop, &note), 0);
-        assert_eq!(requests(&changes), 1, "asks the next governor");
-        assert_eq!(steward_of(&channels, &note), Some(device(&desktop)));
+            Channels::channel(route),
+            Box::new(key.clone()),
+            &VaultKey::new([9; 32]),
+        )
+        .unwrap()
     }
 
-    /// A page on a node asks the node for a room's channels without waiting
-    /// for a genesis, also in another person's room; a plain host governs
-    /// nothing, and a device of this person that governs the room still
-    /// takes its channels over.
-    #[test]
-    fn a_node_host_governs_the_rooms_it_hosts() {
-        let owner = SigningKey::from_bytes(&[1; 32]);
-        let guest = SigningKey::from_bytes(&[2; 32]);
-        let browser = SigningKey::from_bytes(&[3; 32]);
-        let server = SigningKey::from_bytes(&[5; 32]);
-        let laptop = SigningKey::from_bytes(&[6; 32]);
-        let note = route("note-1");
-        let node_cert = cert(
-            &owner,
-            &server,
-            tilo_user_identity::cloud_enrollment::host_capabilities(),
-        );
-
-        let mut plain = Channels::new(device(&browser), device(&guest), [4; 32]);
-        plain.govern_by_host(&cert(&owner, &server, DeviceCapabilities::host()));
-        plain.open(&note, 0);
-        assert_eq!(steward_of(&plain, &note), None);
-
-        let mut invited = Channels::new(device(&browser), device(&guest), [4; 32]);
-        invited.govern_by_host(&node_cert);
-        assert_eq!(requests(&invited.open(&note, 0)), 1);
-        assert_eq!(steward_of(&invited, &note), Some(device(&server)));
-
-        let mut own = Channels::new(device(&browser), device(&owner), [4; 32]);
-        own.govern_by_host(&node_cert);
-        own.open(&note, 0);
-        own.note_cert(
-            device(&laptop),
-            cert(&owner, &laptop, DeviceCapabilities::primary()),
-            0,
-        );
-        let changes = own.receive_frame(device(&laptop), ROOM, genesis(&laptop, &note), 0);
-        assert_eq!(requests(&changes), 1);
-        assert_eq!(steward_of(&own, &note), Some(device(&laptop)));
+    /// Hand the page what `committer` queued, as the host would.
+    fn deliver(channels: &mut Channels, committer: &mut ChannelPeer) -> Changes {
+        let mut changes = Changes::default();
+        for frame in committer.outbox().to_vec() {
+            changes.extend(channels.receive_frame([0; 32], ROOM, frame, 0));
+        }
+        committer.published(&VaultKey::new([9; 32])).unwrap();
+        changes
     }
 
-    /// A session of the governing host's own device (its room actions)
-    /// starts no group of its own for a room it does not hold as its own
-    /// room: the host's channel steward holds the group and hands this
-    /// session its keys. A group started here sealed the session off from
-    /// everything the governor wrote, so the host's actions saw no record.
-    #[test]
-    fn the_governing_hosts_own_session_stewards_no_room_channel() {
-        let owner = SigningKey::from_bytes(&[1; 32]);
-        let server = SigningKey::from_bytes(&[5; 32]);
-        let note = route("note-1");
-        let mut host = Channels::new(device(&server), device(&owner), [4; 32]);
-        host.govern_by_host(&cert(
-            &owner,
-            &server,
-            tilo_user_identity::cloud_enrollment::host_capabilities(),
-        ));
-        host.open(&note, 0);
-        assert_eq!(
-            steward_of(&host, &note),
-            Some(device(&server)),
-            "the session is a member of the host steward's group"
-        );
-    }
-
-    /// A room whose governor has not shown up is not ungoverned: a genesis
-    /// that arrives later still names it, and the route asks for access.
-    #[test]
-    fn a_late_genesis_still_names_the_governor_of_an_open_route() {
-        let user = SigningKey::from_bytes(&[1; 32]);
-        let browser = SigningKey::from_bytes(&[3; 32]);
-        let laptop = SigningKey::from_bytes(&[4; 32]);
-        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
-        let note = route("note-1");
-        let changes = channels.open(&note, 0);
-        assert!(changes.keys.is_empty() && changes.outgoing.is_empty());
-        assert_eq!(steward_of(&channels, &note), None);
-
-        channels.note_cert(
-            device(&laptop),
-            cert(&user, &laptop, DeviceCapabilities::primary()),
-            0,
-        );
-        let changes = channels.receive_frame(device(&laptop), ROOM, genesis(&laptop, &note), 0);
-        assert_eq!(requests(&changes), 1);
-        assert!(changes.keys.is_empty());
-        assert_eq!(steward_of(&channels, &note), Some(device(&laptop)));
-    }
-
-    /// A reloaded page restores its membership: the keys it was admitted
-    /// with are back without a new request.
     #[test]
     fn membership_survives_a_reload_without_asking_again() {
         let user = SigningKey::from_bytes(&[1; 32]);
         let browser = SigningKey::from_bytes(&[3; 32]);
-        let laptop = SigningKey::from_bytes(&[4; 32]);
+        let laptop_key = SigningKey::from_bytes(&[4; 32]);
         let note = route("note-1");
-        let channel = Channels::channel(&note);
-        let vault = VaultKey::new([9; 32]);
-        let dir = tempfile::tempdir().unwrap();
-        let mut steward =
-            ChannelSteward::open_or_create(dir.path(), channel, laptop.clone(), &vault).unwrap();
+        let mut laptop = laptop(&laptop_key, &note);
         let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
-        channels.open(&note, 0);
-        channels.note_cert(
-            device(&laptop),
-            cert(&user, &laptop, DeviceCapabilities::primary()),
-            0,
-        );
-        let changes = channels.receive_frame(
-            device(&laptop),
-            ROOM,
-            steward.journal().frames()[0].clone(),
-            0,
-        );
-        let Some(Outgoing::Request { mut request, .. }) = changes
-            .outgoing
+        channels.note_cert(device(&laptop_key), cert(&user, &laptop_key), 0);
+        let changes = channels.open(&note, 0);
+        let request = requests(&changes).pop().expect("an access request");
+        deliver(&mut channels, &mut laptop);
+        laptop
+            .learn_request(signed(&browser, request), &VaultKey::new([9; 32]))
+            .unwrap();
+        let allowed = BTreeSet::from([public(&laptop_key), public(&browser)]);
+        laptop
+            .reconcile_now(&allowed, &VaultKey::new([9; 32]))
+            .unwrap();
+        let (_, keys) = deliver(&mut channels, &mut laptop)
+            .keys
             .into_iter()
-            .find(|outgoing| matches!(outgoing, Outgoing::Request { .. }))
-        else {
-            panic!("an access request");
-        };
-        request.signature = collab_types::Signature::from_bytes(
-            browser.sign(&request.signing_bytes().unwrap()).to_bytes(),
-        );
-        let allowed = BTreeSet::from([
-            Ed25519PublicKey::from_bytes(device(&laptop)),
-            Ed25519PublicKey::from_bytes(device(&browser)),
-        ]);
-        let pending = BTreeMap::from([(request.device, request)]);
-        steward.reconcile(&allowed, &pending, &vault).unwrap();
-        let mut keys = None;
-        for outgoing in steward.outbox() {
-            for frame in outgoing.frames {
-                let changes = channels.receive_frame(device(&laptop), ROOM, frame, 0);
-                keys = keys.or_else(|| changes.keys.into_iter().next());
-            }
-        }
-        let (_, keys) = keys.expect("admitted");
+            .next()
+            .expect("admitted");
         let saved = channels.export_if_changed().expect("state to save");
         assert!(
             channels.export_if_changed().is_none(),
@@ -1253,97 +755,53 @@ mod tests {
         let mut reloaded = Channels::new(device(&browser), device(&user), [4; 32]);
         reloaded.restore(saved.clone());
         let changes = reloaded.open(&note, 0);
-        assert_eq!(requests(&changes), 0, "a reload does not ask again");
+        assert!(requests(&changes).is_empty(), "a reload does not ask again");
         let (_, restored) = changes.keys.into_iter().next().expect("keys are back");
         assert_eq!(restored.epoch(), keys.epoch());
 
         // Under another vault the stored state does not open, so the page
         // asks again.
         let mut elsewhere = Channels::new(device(&browser), device(&user), [5; 32]);
-        elsewhere.restore(saved.clone());
+        elsewhere.restore(saved);
         let changes = elsewhere.open(&note, 0);
         assert!(changes.keys.is_empty());
-        assert_eq!(requests(&changes), 1);
-
-        // State stored with its vault beside it moves under the page's vault
-        // and is stored without the old one.
-        let mut migrated = Channels::new(device(&browser), device(&user), [5; 32]);
-        migrated.restore_legacy(LegacySavedChannels {
-            vault: [4; 32],
-            governors: saved.governors,
-            members: saved.members,
-        });
-        let resaved = migrated
-            .export_if_changed()
-            .expect("migrated state to save");
-        let mut after = Channels::new(device(&browser), device(&user), [5; 32]);
-        after.restore(resaved);
-        let changes = after.open(&note, 0);
-        assert_eq!(requests(&changes), 0, "a migrated page does not ask again");
-        let (_, restored) = changes.keys.into_iter().next().expect("keys are back");
-        assert_eq!(restored.epoch(), keys.epoch());
+        assert_eq!(requests(&changes).len(), 1);
     }
-    /// A steward may receive the request queued by the old page before the
-    /// reloaded page's request. Both admissions reach the reload in order.
+
+    /// A participant may take the request the old page queued before the
+    /// reloaded page's. The reload joins from whichever admission names the
+    /// key it holds.
     #[test]
     fn a_pending_reload_survives_the_old_request_being_admitted_first() {
         let user = SigningKey::from_bytes(&[1; 32]);
         let browser = SigningKey::from_bytes(&[3; 32]);
-        let laptop = SigningKey::from_bytes(&[4; 32]);
+        let laptop_key = SigningKey::from_bytes(&[4; 32]);
         let note = route("note-pending-reload");
-        let channel = Channels::channel(&note);
-        let vault = VaultKey::new([9; 32]);
-        let dir = tempfile::tempdir().unwrap();
-        let mut steward =
-            ChannelSteward::open_or_create(dir.path(), channel, laptop.clone(), &vault).unwrap();
+        let mut laptop = laptop(&laptop_key, &note);
         let mut first = Channels::new(device(&browser), device(&user), [4; 32]);
-        first.open(&note, 0);
-        first.note_cert(
-            device(&laptop),
-            cert(&user, &laptop, DeviceCapabilities::primary()),
-            0,
-        );
-        let first_changes = first.receive_frame(
-            device(&laptop),
-            ROOM,
-            steward.journal().frames()[0].clone(),
-            0,
-        );
-        let saved = first.export_if_changed().expect("waiting member is stored");
+        let first_changes = first.open(&note, 0);
+        let saved = first.export_if_changed().expect("waiting state is stored");
         let pending = first.pending_requests();
         let mut reload = Channels::new(device(&browser), device(&user), [4; 32]);
+        reload.note_cert(device(&laptop_key), cert(&user, &laptop_key), 0);
         reload.restore(saved);
         reload.restore_requests(pending);
         let reload_changes = reload.open(&note, 1);
-        let allowed = BTreeSet::from([
-            Ed25519PublicKey::from_bytes(device(&laptop)),
-            Ed25519PublicKey::from_bytes(device(&browser)),
-        ]);
+        let allowed = BTreeSet::from([public(&laptop_key), public(&browser)]);
+        deliver(&mut reload, &mut laptop);
         for changes in [first_changes, reload_changes] {
-            for outgoing in changes.outgoing {
-                if let Outgoing::Request { mut request, .. } = outgoing {
-                    request.signature = collab_types::Signature::from_bytes(
-                        browser.sign(&request.signing_bytes().unwrap()).to_bytes(),
-                    );
-                    steward
-                        .reconcile(
-                            &allowed,
-                            &BTreeMap::from([(request.device, request)]),
-                            &vault,
-                        )
-                        .unwrap();
-                }
+            for request in requests(&changes) {
+                laptop
+                    .learn_request(signed(&browser, request), &VaultKey::new([9; 32]))
+                    .unwrap();
+                laptop
+                    .reconcile_now(&allowed, &VaultKey::new([9; 32]))
+                    .unwrap();
+                deliver(&mut reload, &mut laptop);
             }
         }
-        for outgoing in steward.outbox() {
-            for frame in outgoing.frames {
-                reload.receive_frame(device(&laptop), ROOM, frame, 2);
-            }
-        }
-        let keys = reload.routes[&channel]
-            .member
-            .as_ref()
-            .unwrap()
+        let keys = reload.routes[&Channels::channel(&note)]
+            .peer
             .content_keys()
             .expect("the reload keeps its admitted channel keys");
         let artifact =
@@ -1356,7 +814,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            steward
+            laptop
                 .content_keys()
                 .unwrap()
                 .open_content(artifact, &metadata, &sealed)
@@ -1364,5 +822,50 @@ mod tests {
                 .to_vec(),
             b"before the reload",
         );
+    }
+
+    /// The page follows a commit whoever of the room's devices wrote it, and
+    /// holds one adding a device the host never vouched for until its
+    /// certificate arrives.
+    #[test]
+    fn commits_of_any_participant_are_followed_and_checked() {
+        let user = SigningKey::from_bytes(&[1; 32]);
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let laptop_key = SigningKey::from_bytes(&[4; 32]);
+        let phone_key = SigningKey::from_bytes(&[5; 32]);
+        let note = route("note-any-participant");
+        let mut laptop = laptop(&laptop_key, &note);
+        let vault = VaultKey::new([9; 32]);
+        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
+        channels.note_cert(device(&laptop_key), cert(&user, &laptop_key), 0);
+        let request = requests(&channels.open(&note, 0)).pop().unwrap();
+        deliver(&mut channels, &mut laptop);
+        laptop
+            .learn_request(signed(&browser, request), &vault)
+            .unwrap();
+        let everyone = BTreeSet::from([public(&laptop_key), public(&browser), public(&phone_key)]);
+        laptop.reconcile_now(&everyone, &vault).unwrap();
+        deliver(&mut channels, &mut laptop);
+        let joined = channels.routes[&Channels::channel(&note)].peer.access();
+        assert_eq!(joined, Access::Ready { epoch: 1 });
+
+        // The laptop admits the phone, whose certificate the page has not
+        // seen: the commit waits, and applies once it arrives.
+        let mut phone = ChannelPeer::waiting(
+            None,
+            Channels::channel(&note),
+            Box::new(phone_key.clone()),
+            &vault,
+        )
+        .unwrap();
+        let ask = phone.access_request_now(1, false, &vault).unwrap().unwrap();
+        laptop.learn_request(ask, &vault).unwrap();
+        laptop.reconcile_now(&everyone, &vault).unwrap();
+        deliver(&mut channels, &mut laptop);
+        let state = |channels: &Channels| channels.routes[&Channels::channel(&note)].peer.access();
+        assert_eq!(state(&channels), Access::Ready { epoch: 1 });
+        let changes = channels.note_cert(device(&phone_key), cert(&user, &phone_key), 0);
+        assert_eq!(state(&channels), Access::Ready { epoch: 2 });
+        assert_eq!(changes.keys.len(), 1);
     }
 }

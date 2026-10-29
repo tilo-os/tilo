@@ -329,7 +329,7 @@ impl InputRuntime {
 /// capabilities.
 pub(super) struct ActionRuntime {
     pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
-    pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
+    pub(super) action_palette: Option<Box<crate::action_palette::ActionPalette>>,
     /// The window the palette was opened from, when the app hosts several
     /// (the desktop's tiles): the palette centres on it, not on the screen.
     pub(super) palette_window: Option<vello::kurbo::Rect>,

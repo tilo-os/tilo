@@ -55,7 +55,7 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
         state.overlays.quick_settings = true;
         state.quick_settings.brightness_available = true;
         // A volume slider shows only once the sound output has been read.
-        state.quick_settings.status.volume = Some(os_actions::VolumeState {
+        state.quick_settings.status.volume = Some(media::audio::default_node::VolumeState {
             level: 0.4,
             muted: false,
         });

@@ -65,7 +65,7 @@ pub enum ManifestError {
     BadIcon(String),
     #[error(
         "entrypoint.runtime {0:?} must also be listed in package.optional-runtimes, so the \
-         runtime is offered for install like every other one the app names"
+         runtime installs with the app like every other one it names"
     )]
     EntrypointRuntimeUndeclared(String),
     #[error("only kind=app packages execute a runtime's binary through entrypoint.runtime")]
@@ -102,9 +102,9 @@ pub enum ManifestError {
     )]
     BadProvides(String),
     #[error("package.optional-runtimes lists {0:?} more than once, or as package.runtime as well")]
-    DuplicateOptionalRuntime(String),
-    #[error("package.optional-runtimes lists more than {MAX_OPTIONAL_RUNTIMES} runtimes")]
-    TooManyOptionalRuntimes,
+    DuplicateRequiredRuntime(String),
+    #[error("package.optional-runtimes lists more than {MAX_REQUIRED_RUNTIMES} runtimes")]
+    TooManyRequiredRuntimes,
     #[error("kind=app requires `[entrypoint]` with `bin` set")]
     AppMissingEntrypoint,
     #[error("kind=format-provider requires non-empty `providers.mime`")]
@@ -200,7 +200,7 @@ pub enum ManifestError {
 /// Returns the specific [`ManifestError`] variant for the first invariant
 /// violated. Validation proceeds through filesystem policy (writes before
 /// reads), platforms and capabilities, continuity and accessibility, package
-/// version, optional runtimes and runtime entrypoint, runtime dependency and
+/// version, required runtimes and runtime entrypoint, runtime dependency and
 /// provides, service protocol, kind-specific entrypoint, image metadata,
 /// provider/resource/service declarations, publisher identity and signature,
 /// then target compatibility.
@@ -219,7 +219,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     Version::parse(&m.package.version)
         .map_err(|e| ManifestError::BadVersion(m.package.version.clone(), e.to_string()))?;
 
-    validate_optional_runtimes(m)?;
+    validate_required_runtimes(m)?;
     if m.package.kind == Kind::Runtime
         && let Some(entrypoint) = &m.entrypoint
         && entrypoint
@@ -407,7 +407,7 @@ fn validate_language_pack(m: &Manifest) -> Result<(), ManifestError> {
         ("package.runtime", m.package.runtime.is_some()),
         (
             "package.optional-runtimes",
-            !m.package.optional_runtimes.is_empty(),
+            !m.package.required_runtimes.is_empty(),
         ),
         ("[package.isa]", !m.package.isa.is_empty()),
         (
@@ -643,7 +643,7 @@ fn validate_icon(m: &Manifest) -> Result<(), ManifestError> {
 }
 
 /// An entrypoint that executes a runtime's binary belongs to an app, names a
-/// runtime the package declares among its optional runtimes, and a safe path
+/// runtime the package declares among its required runtimes, and a safe path
 /// inside that runtime.
 fn validate_entrypoint_runtime(m: &Manifest) -> Result<(), ManifestError> {
     let Some(entrypoint) = &m.entrypoint else {
@@ -658,7 +658,7 @@ fn validate_entrypoint_runtime(m: &Manifest) -> Result<(), ManifestError> {
     validate_runtime_string(runtime)?;
     if !m
         .package
-        .optional_runtimes
+        .required_runtimes
         .iter()
         .any(|declared| declared == runtime)
     {
@@ -912,21 +912,21 @@ fn validate_offers(offers: &[crate::manifest::OfferedAction]) -> Result<(), Mani
 
 /// How many further runtime bundles one package may ask the launcher to
 /// mount.
-pub const MAX_OPTIONAL_RUNTIMES: usize = 4;
+pub const MAX_REQUIRED_RUNTIMES: usize = 4;
 
-fn validate_optional_runtimes(m: &Manifest) -> Result<(), ManifestError> {
-    let optional = &m.package.optional_runtimes;
-    if optional.is_empty() {
+fn validate_required_runtimes(m: &Manifest) -> Result<(), ManifestError> {
+    let required = &m.package.required_runtimes;
+    if required.is_empty() {
         return Ok(());
     }
     if m.package.kind == Kind::Runtime {
         return Err(ManifestError::RuntimeKindHasRuntime);
     }
-    if optional.len() > MAX_OPTIONAL_RUNTIMES {
-        return Err(ManifestError::TooManyOptionalRuntimes);
+    if required.len() > MAX_REQUIRED_RUNTIMES {
+        return Err(ManifestError::TooManyRequiredRuntimes);
     }
     let mut seen = std::collections::BTreeSet::new();
-    for raw in optional {
+    for raw in required {
         validate_runtime_string(raw)?;
         // Bundles are installed and mounted by version alone, so two
         // references naming one version would name one bundle.
@@ -940,7 +940,7 @@ fn validate_optional_runtimes(m: &Manifest) -> Result<(), ManifestError> {
             .and_then(|runtime| runtime.split_once('/'))
             .map(|(_, version)| version);
         if !seen.insert(version) || base == Some(version) {
-            return Err(ManifestError::DuplicateOptionalRuntime(raw.clone()));
+            return Err(ManifestError::DuplicateRequiredRuntime(raw.clone()));
         }
     }
     Ok(())
@@ -949,7 +949,7 @@ fn validate_optional_runtimes(m: &Manifest) -> Result<(), ManifestError> {
 /// `package.provides` belongs to a native runtime package and names the
 /// runtime it is: the exact build of the runtime thin apps link
 /// (`<name>/<release>+native.<digest>`), or an engine runtime an app mounts
-/// as an optional runtime (`<name>/<version>`).
+/// as one of its required runtimes (`<name>/<version>`).
 fn validate_provides(m: &Manifest) -> Result<(), ManifestError> {
     match (&m.package.kind, &m.package.provides) {
         (Kind::Runtime, Some(provides)) => validate_runtime_string(provides)
@@ -1496,7 +1496,7 @@ mode = "off"
                 Some("tilo-runtime/2026.07")
             );
             assert_eq!(
-                manifest.package.optional_runtimes,
+                manifest.package.required_runtimes,
                 ["tilo-runtime/2026.10.23-chromium"]
             );
             assert_eq!(validate_manifest(&manifest), Ok(()));
@@ -1504,10 +1504,10 @@ mode = "off"
     }
 
     #[test]
-    fn optional_runtimes_are_runtime_references() {
+    fn required_runtimes_are_runtime_references() {
         let mut m = minimal_runtime_manifest();
         // phase: a_runtime_package_names_no_further_runtimes
-        m.package.optional_runtimes = vec!["tilo-runtime/2026.10.0-chromium".into()];
+        m.package.required_runtimes = vec!["tilo-runtime/2026.10.0-chromium".into()];
         assert_eq!(
             validate_manifest(&m),
             Err(ManifestError::RuntimeKindHasRuntime)
@@ -1516,32 +1516,32 @@ mode = "off"
         m.package.runtime = Some("tilo-runtime/2026.07".into());
         assert_eq!(validate_manifest(&m), Ok(()));
         // phase: a_malformed_reference_is_refused
-        m.package.optional_runtimes = vec!["chromium".into()];
+        m.package.required_runtimes = vec!["chromium".into()];
         assert!(matches!(
             validate_manifest(&m),
             Err(ManifestError::BadRuntimeForm(_))
         ));
         // phase: one_bundle_version_is_named_once
-        m.package.optional_runtimes = vec![
+        m.package.required_runtimes = vec![
             "tilo-runtime/2026.10.0-chromium".into(),
             "engine/2026.10.0-chromium".into(),
         ];
         assert!(matches!(
             validate_manifest(&m),
-            Err(ManifestError::DuplicateOptionalRuntime(_))
+            Err(ManifestError::DuplicateRequiredRuntime(_))
         ));
-        m.package.optional_runtimes = vec!["tilo-runtime/2026.07".into()];
+        m.package.required_runtimes = vec!["tilo-runtime/2026.07".into()];
         assert!(matches!(
             validate_manifest(&m),
-            Err(ManifestError::DuplicateOptionalRuntime(_))
+            Err(ManifestError::DuplicateRequiredRuntime(_))
         ));
         // phase: the_list_is_bounded
-        m.package.optional_runtimes = (0..=MAX_OPTIONAL_RUNTIMES)
+        m.package.required_runtimes = (0..=MAX_REQUIRED_RUNTIMES)
             .map(|minor| format!("tilo-runtime/2026.{}.0", minor + 10))
             .collect();
         assert_eq!(
             validate_manifest(&m),
-            Err(ManifestError::TooManyOptionalRuntimes)
+            Err(ManifestError::TooManyRequiredRuntimes)
         );
     }
 

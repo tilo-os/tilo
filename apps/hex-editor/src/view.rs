@@ -1123,7 +1123,7 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
         match effect {
             HexEffect::Search | HexEffect::GotoOffset => Ok(Effected::done()),
             HexEffect::OpenFile { path: Some(path) } => {
-                self.open_path(PathBuf::from(path))?;
+                self.open_path(path.into_path_buf())?;
                 Ok(Effected::done())
             }
             HexEffect::OpenFile { path: None } => {
@@ -1134,15 +1134,7 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
                 Err("open a file first".into())
             }
             HexEffect::SaveAs { path } => {
-                let path = std::path::Path::new(&path);
-                // A relative path would land wherever this process runs.
-                if !path.is_absolute() {
-                    return Err(format!(
-                        "the path to save to must be absolute: {}",
-                        path.display()
-                    ));
-                }
-                self.write_to(path)?;
+                self.write_to(&path)?;
                 Ok(Effected::done())
             }
             HexEffect::Save => {

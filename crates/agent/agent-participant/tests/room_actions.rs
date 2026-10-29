@@ -23,8 +23,8 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-#[path = "../../../browser/tilo-browser-peer/tests/support/steward.rs"]
-mod steward;
+#[path = "../../../browser/tilo-browser-peer/tests/support/participant.rs"]
+mod participant;
 #[path = "../../../browser/tilo-browser-peer/tests/support/mod.rs"]
 pub(crate) mod support;
 
@@ -867,12 +867,12 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
 /// until the hold is dropped.
 async fn create_withheld(
     browser: &mut Browser,
-    steward: &steward::Steward,
+    laptop: &participant::Participant,
     host_key: [u8; 32],
-) -> (DocumentRoute, steward::HeldAdmission) {
+) -> (DocumentRoute, participant::HeldAdmission) {
     let mut held = None;
     let route = browser.create_before_publish(SHEETS, |route| {
-        held = Some(steward.hold_admission(route, host_key));
+        held = Some(laptop.hold_admission(route, host_key));
     });
     let held = held.unwrap();
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
@@ -887,7 +887,7 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let steward = steward::Steward::start(&hosted.relay, &root).await;
+    let laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
 
@@ -941,7 +941,7 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
     );
 
     // A second record arrives sealed, and the host's admission to it is held.
-    let (withheld, held) = create_withheld(&mut browser, &steward, host_key).await;
+    let (withheld, held) = create_withheld(&mut browser, &laptop, host_key).await;
 
     // Nothing about the first record waits for the second's keys.
     let started = Instant::now();
@@ -1004,7 +1004,7 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
     );
 
     // Keys that never arrive refuse the invocation clearly; nothing runs.
-    let (refused, held) = create_withheld(&mut browser, &steward, host_key).await;
+    let (refused, held) = create_withheld(&mut browser, &laptop, host_key).await;
     let started = Instant::now();
     let never = browser
         .invoke(request(
@@ -1032,9 +1032,9 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
             .is_some_and(|changes| changes.iter().any(|(author, _)| *author == host_key)),
         "the host wrote nothing to a record it could not open"
     );
-    // The steward stops before the hold is released, so it never admits
+    // The laptop stops before the hold is released, so it never admits
     // the host into a relay that is shutting down.
-    drop(steward);
+    drop(laptop);
     drop(held);
 
     // A request held back by keys that do not come waits as long as the
@@ -1061,7 +1061,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let themes = browser.create("so.tilo.themes");
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
@@ -1151,7 +1151,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let steward = steward::Steward::start(&hosted.relay, &root).await;
+    let laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
 
@@ -1310,7 +1310,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     // not a synchronization boundary on a fast or differently scheduled host.
     let mut held = None;
     let busy_route = browser.create_before_publish(SHEETS, |route| {
-        held = Some(steward.hold_admission(route, host_key));
+        held = Some(laptop.hold_admission(route, host_key));
     });
     let held = held.unwrap();
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
@@ -1430,7 +1430,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let _steward = steward::Steward::start(&hosted.relay, &root).await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
     let sheets = browser.create(SHEETS);

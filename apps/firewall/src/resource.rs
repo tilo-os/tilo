@@ -11,20 +11,14 @@
 //! last is that device's own setting, so an unchanged configuration is not
 //! pushed again.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use serde::{Deserialize, Serialize};
-use ui::framework::{
-    EffectCx, EffectStatus, Effected, ResourceApp, ResourceSurface, SeedCx, Setting, SurfaceCx,
-    ViewCx,
-};
+use ui::framework::{ResourceApp, SeedCx, Setting, ViewCx};
 use ui::prelude::Effect;
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{self, Availability, Derived, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::widget::Element;
 
-use crate::app::{FirewallApp, Notice, Tone};
+use crate::app::{Notice, Tone};
 use crate::backend::Backend;
 pub use crate::model::Firewall;
 use crate::model::{FirewallConfig, ZoneKind};
@@ -258,7 +252,7 @@ pub(crate) fn remember_applied(applied: &Setting<AppliedConfig>, config: &Firewa
 }
 
 /// Read this device's firewalld; `Err` says why it cannot be shown.
-fn read_device() -> Result<FirewallConfig, String> {
+pub(crate) fn read_device() -> Result<FirewallConfig, String> {
     match crate::backend::import() {
         Some(config) if config.validate().is_ok() => Ok(config),
         Some(_) => {
@@ -272,7 +266,7 @@ fn read_device() -> Result<FirewallConfig, String> {
 pub struct FirewallShell;
 
 /// Every screenshot scenario. All but `service-error` show the sample
-/// ruleset; the rest is view state the surface stages.
+/// ruleset; the rest is view state the view stages.
 #[cfg(feature = "samples")]
 const SCENARIOS: &[&str] = &[
     "empty",
@@ -305,7 +299,7 @@ impl ResourceApp for FirewallShell {
     const ICON: Option<&'static str> = Some("firewall");
 
     fn view(cx: &mut ViewCx<Firewall>) -> Element {
-        cx.surface(FirewallApp::new())
+        crate::app::window(cx)
     }
 
     #[cfg(feature = "samples")]
@@ -362,96 +356,6 @@ impl ResourceApp for FirewallShell {
         vec![Firewall::import_of(&config)]
     }
 }
-
-impl ResourceSurface<Firewall, FirewallEffect> for FirewallApp {
-    fn present(&mut self, state: &Rc<Firewall>) {
-        let config = state.config();
-        self.show_config(&config);
-        self.apply_to_device(&config);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Firewall>) {
-        let applied = cx.settings::<AppliedConfig>();
-        self.attach_framework(cx.dispatcher(), applied);
-        // Apply the stored configuration to this device after every change.
-        // A capture stages a sample and neither queues nor runs the job.
-        let writes = cx.mode() == ui::framework::RunMode::Live || cfg!(test);
-        self.set_host_writes(writes);
-        if writes {
-            self.follow_jobs(cx.jobs());
-        }
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        if let Some(name) = scenario {
-            self.pose_fixture(name);
-        }
-    }
-
-    fn effect(
-        &mut self,
-        effect: FirewallEffect,
-        cx: &mut EffectCx<Firewall, Self>,
-    ) -> Result<Effected, String> {
-        match effect {
-            FirewallEffect::ApplyConfig => {
-                let config = cx.live().get().config();
-                if config.zones.is_empty() {
-                    return Err("Firewall service is unavailable".into());
-                }
-                let door = self.capability().clone();
-                let writes = self.host_writes();
-                Ok(cx.thread(
-                    move |_| {
-                        let result = apply_on_device(&config, &door, writes);
-                        (config, result)
-                    },
-                    |app: &mut Self, (config, result): (FirewallConfig, Applied), _| {
-                        app.finish_apply(&config, &result);
-                        result.map(|_| Effected::done())
-                    },
-                ))
-            }
-            FirewallEffect::ReadBlocked => {
-                self.mark_blocked_loading();
-                Ok(cx.thread(
-                    |_| crate::blocked::read(ui::time::Duration::from_secs(60 * 60)),
-                    |app: &mut Self, read: Result<crate::blocked::BlockedReport, String>, _| {
-                        app.finish_blocked(read);
-                        Ok(Effected::done())
-                    },
-                ))
-            }
-            FirewallEffect::Retry => Ok(cx.thread(
-                |_| read_device(),
-                |app: &mut Self, read: Result<FirewallConfig, String>, cx| {
-                    let config = app.finish_retry(read)?;
-                    cx.submit(Firewall::import_of(&config));
-                    Ok(Effected::done())
-                },
-            )),
-        }
-    }
-
-    fn effects(&self) -> Vec<EffectStatus> {
-        if self.is_available() {
-            vec![EffectStatus::unavailable(
-                FirewallEffect::RETRY,
-                "connected",
-                "The firewall configuration is already loaded",
-            )]
-        } else {
-            vec![EffectStatus::unavailable(
-                FirewallEffect::APPLY_CONFIG,
-                "unavailable",
-                "Firewall service is unavailable",
-            )]
-        }
-    }
-}
-
-/// Where a failed apply of the projection goes until the surface reports it.
-pub(crate) type ApplyOutcome = Rc<RefCell<Option<Notice>>>;
 
 #[cfg(test)]
 mod tests {

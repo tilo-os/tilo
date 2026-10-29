@@ -113,9 +113,9 @@ pub use document_transfer::{
 pub use event::{ChannelEvent, RoleAttestation};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
 pub use mls_governance::{
-    Admission, ChannelRoute, JoinMaterial, Joining, MAX_CHANNEL_ROUTE_ID_BYTES, MLS_ACCESS_VERSION,
-    MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceAction,
-    MlsGovernanceContext, MlsGovernanceError, MlsGovernanceFrameV1,
+    ChannelRoute, JoinMaterial, Joining, MAX_CHANNEL_ROUTE_ID_BYTES, MAX_COMMIT_DEVICES,
+    MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAction,
+    MlsGovernanceError, MlsGovernanceFrame,
 };
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,

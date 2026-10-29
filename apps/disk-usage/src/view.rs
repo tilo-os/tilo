@@ -363,7 +363,11 @@ impl Nav {
                 result,
                 inspected: None,
             }),
-            None => self.dispatcher.effect(&analyze(&path)),
+            None => {
+                if let Some(effect) = analyze(&path) {
+                    self.dispatcher.effect(&effect);
+                }
+            }
         }
     }
 
@@ -461,7 +465,7 @@ fn answer_effects(cx: &ViewCx<DiskUsage>, nav: &Nav) {
     cx.effects(move |effect: DiskUsageEffect, cx| match effect {
         DiskUsageEffect::Analyze { path } => {
             let push_history = nav.analysis().is_some();
-            Ok(nav.scan(PathBuf::from(path), push_history, cx))
+            Ok(nav.scan(path.into_path_buf(), push_history, cx))
         }
         DiskUsageEffect::Choose => Ok(nav.choose_folder(cx)),
         DiskUsageEffect::Back => Ok(nav.go_back(cx)),
@@ -492,8 +496,11 @@ fn page_view(
         Page::Needs => Box::new(ui::attention::Stack::with_presses(nav.needs.clone())),
         Page::Analysis { result, inspected } => {
             let dispatcher = nav.dispatcher.clone();
-            let analyze: Rc<dyn Fn(PathBuf)> =
-                Rc::new(move |path: PathBuf| dispatcher.effect(&analyze(&path)));
+            let analyze: Rc<dyn Fn(PathBuf)> = Rc::new(move |path: PathBuf| {
+                if let Some(effect) = analyze(&path) {
+                    dispatcher.effect(&effect);
+                }
+            });
             pages.analysis(result, inspected.as_deref(), analyze)
         }
         Page::Error(path, message) => pages.error(path, message),
@@ -511,7 +518,7 @@ impl Pages {
         match self
             .actions
             .as_ref()
-            .and_then(|actions| actions.effect(&analyze(path)))
+            .and_then(|actions| actions.effect(&analyze(path)?))
         {
             Some(binding) => row.on_action(binding),
             None => row.with_enabled(false),

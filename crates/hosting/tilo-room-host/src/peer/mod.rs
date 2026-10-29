@@ -56,7 +56,7 @@ use state::{
     FanoutStamp, LiveEnvelope, PreparedRecipients, SelectedPublication, SessionLease, SessionLives,
     StateCommit, authorized_state_source, captured_live_current, desktop_refusal,
     gated_checkpoint_channel, governor_notice, handle_delta, handle_delta_prefix, live_audience,
-    steward_audience, steward_only_delta, unpublished,
+    unpublished,
 };
 pub use state::{Lag, StateSource};
 pub(crate) use state::{StateDelivery, StateSession, tell_governor};

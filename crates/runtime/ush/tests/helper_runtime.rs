@@ -31,6 +31,7 @@ fn plan(root: &Path) -> std::io::Result<ush::guest::GuestPlan> {
         resolver: None,
         editor: None,
         terminal: None,
+        control: None,
     })
 }
 

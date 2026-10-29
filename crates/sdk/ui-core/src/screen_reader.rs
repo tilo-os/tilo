@@ -781,17 +781,30 @@ pub fn is_form_field(node: &AccessNode) -> bool {
     )
 }
 
-/// DFS, collapsing presentational widgets (`accessibility() == None`)
-/// exactly as [`crate::accesskit_bridge::build_tree_update`] does. A widget's
-/// synthetic children (a table's rows, a keyboard's keys) follow its widget
-/// children, as in the retained tree, each placed where the widget draws it
-/// ([`crate::a11y::with_synthetic_bounds`]).
+/// DFS, collapsing presentational widgets (`accessibility() == None`) and
+/// exporting children ([`crate::a11y_tree::exported_children`]) exactly as
+/// [`crate::accesskit_bridge::build_tree_update`] does. A widget's synthetic
+/// children (a table's rows, a keyboard's keys) follow its widget children,
+/// as in the retained tree, each placed where the widget draws it
+/// ([`crate::a11y::with_synthetic_bounds`]) and followed by the widgets it
+/// hosts.
 pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
-    fn synthetic(mut node: AccessNode, out: &mut Vec<AccessNode>) {
+    use crate::a11y_tree::{HostedIn, HostedWidget, exported_children, hosted_in};
+
+    fn synthetic(mut node: AccessNode, hosted: Vec<HostedWidget<'_>>, out: &mut Vec<AccessNode>) {
         let children = std::mem::take(&mut node.children);
         out.push(node);
-        for child in children {
-            synthetic(child, out);
+        match hosted_in(hosted) {
+            HostedIn::Nested(mut nested) => {
+                for (index, child) in children.into_iter().enumerate() {
+                    synthetic(child, nested.remove(&index).unwrap_or_default(), out);
+                }
+            }
+            HostedIn::Direct(direct) => {
+                for child in direct {
+                    visit(child, out);
+                }
+            }
         }
     }
     fn visit(w: &dyn Widget, out: &mut Vec<AccessNode>) {
@@ -806,11 +819,13 @@ pub fn flatten_reading_order(root: &dyn Widget) -> Vec<AccessNode> {
         // keyboard is on inside it); the order lists them after it.
         let children = node.children.clone();
         out.push(node);
-        for child in w.children() {
+        let exported = exported_children(w);
+        let mut hosted = exported.hosted;
+        for (_, child) in exported.direct {
             visit(child, out);
         }
-        for child in children {
-            synthetic(child, out);
+        for (index, child) in children.into_iter().enumerate() {
+            synthetic(child, hosted.remove(&index).unwrap_or_default(), out);
         }
     }
     let mut out = Vec::new();

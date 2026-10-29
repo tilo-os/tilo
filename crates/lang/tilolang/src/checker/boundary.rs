@@ -723,7 +723,7 @@ fn names_in_ui(stmts: &[UiStmt], out: &mut BTreeSet<String>) {
     }
 }
 
-fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
+pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
     match &e.kind {
         ExprKind::Int(_)
         | ExprKind::Float(_)

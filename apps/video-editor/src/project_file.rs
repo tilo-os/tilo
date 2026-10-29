@@ -1,11 +1,10 @@
-//! The editor's **project file** — what a user saves, copies, and hands to
-//! someone else.
+//! The editor's **project file**: a copy of the project a person exports,
+//! hands to someone else, and opens back in.
 //!
-//! Until this existed the editor had exactly one project: an implicit
-//! autosaved document keyed by the app's package id
-//! ([`ui::persist::open`]). Nothing was ever lost, but a user could not
-//! have two projects, could not copy one, and could not see where their
-//! work lived. This module is the file behind Save / Save As / Open.
+//! The project itself is the app's resource, kept, versioned and synced
+//! like any other; nothing has to be saved for work to be safe. The file is
+//! a projection of it: Export project file writes one, and Open project
+//! file brings one in as the project, one undoable edit.
 //!
 //! ## The payload is the CRDT document
 //!
@@ -70,7 +69,7 @@
 //! understand gets [`ProjectFileError::TooNew`], carrying both versions, and
 //! the caller says so on screen.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ui::tilo_resource::Replica;
 
@@ -214,24 +213,6 @@ pub fn decode(bytes: &[u8]) -> Result<Project, ProjectFileError> {
         .map_err(|e| ProjectFileError::Corrupt(e.to_string()))
 }
 
-/// Write `project` to `path`.
-///
-/// Deliberately a plain write rather than the usual write-temp-then-rename:
-/// under a strict sandbox the portal grant is for *the file the user chose*,
-/// not for creating siblings next to it, so a temp file in the same
-/// directory is a write the app has no right to make. The length in the
-/// header is what covers the risk that buys — a write cut short is detected
-/// as [`ProjectFileError::Truncated`] on the way back in, instead of loading
-/// as a convincing half-project.
-///
-/// # Errors
-///
-/// [`ProjectFileError::Io`] when the file cannot be written.
-pub fn save(path: &Path, project: &Project) -> Result<(), ProjectFileError> {
-    crate::files::save(path, &encode(project)?)
-        .map_err(|e| ProjectFileError::Io(format!("Could not save: {e}")))
-}
-
 /// Read a project from `path`.
 ///
 /// # Errors
@@ -292,22 +273,34 @@ pub fn missing_sources(project: &Project) -> Vec<(String, crate::media::Hydratio
         .collect()
 }
 
-/// The projects opened or saved lately on this device, newest first.
+/// Point `project`'s media that sit beside the file it came from, in `dir`,
+/// at their place there.
 ///
-/// A device-local setting, never the collaborative document: whoever shares
-/// the project must not see this device's paths, and the list has to
-/// survive an Open, which replaces every project map in the document.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RecentProjects {
-    pub projects: ui::tilo_resource::Recents<PathBuf, 8>,
+/// A `.qvp` can be copied somewhere with its footage beside it, and a
+/// project built by hand (a script, the export probe) can carry a path
+/// relative to where it was written. Neither is a workspace reference: once
+/// the project is this app's resource the file's directory is gone, so a
+/// relative path that only resolves beside the file is made absolute as the
+/// file comes in. A path the workspace or this device already resolves is
+/// left alone.
+pub fn anchor_media(project: &mut Project, dir: &Path) {
+    for media in &mut project.media {
+        let relative = Path::new(&media.path);
+        if media.path.is_empty()
+            || relative.is_absolute()
+            || crate::media::resolve(&media.path).is_decodable()
+        {
+            continue;
+        }
+        let beside = dir.join(relative);
+        if beside.exists() {
+            media.path = beside.to_string_lossy().into_owned();
+        }
+    }
 }
 
-impl ui::storage::SettingsSchema for RecentProjects {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
-}
-
-/// How a project file is named in menus: its stem, which is what the user
-/// named the project.
+/// How a project file is named in notices: its stem, which is what the
+/// user named the project.
 pub fn label(path: &Path) -> String {
     name_from_path(path).unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
@@ -420,7 +413,7 @@ mod tests {
             let path = std::env::temp_dir()
                 .join(format!("tilo-ve-proj-{}.{EXTENSION}", std::process::id()));
             let p = rich_project();
-            save(&path, &p).expect("saves");
+            std::fs::write(&path, encode(&p).expect("the project encodes")).expect("saves");
             let back = load(&path).expect("loads");
             assert_eq!(back.name, p.name);
             assert_eq!(back.clips.len(), 1);
@@ -592,6 +585,30 @@ mod tests {
                 "only the source whose bytes are absent is reported",
             );
             std::fs::remove_file(&here).ok();
+        }
+        // Case `media_beside_the_file_is_found_there`: a relative path that
+        // only resolves beside the file it came from is pointed there, and
+        // one found nowhere is left as the workspace reference it is.
+        {
+            let dir = std::env::temp_dir().join(format!("tilo-ve-beside-{}", std::process::id()));
+            std::fs::create_dir_all(dir.join("footage")).unwrap();
+            std::fs::write(dir.join("footage/take.mp4"), b"bytes").unwrap();
+            let mut p = Project::new("beside");
+            for path in ["footage/take.mp4", "footage/elsewhere.mp4"] {
+                p.media.push(MediaItem {
+                    id: Uuid::new_v4(),
+                    kind: MediaKind::Video,
+                    path: path.into(),
+                    ..Default::default()
+                });
+            }
+            anchor_media(&mut p, &dir);
+            assert_eq!(
+                Path::new(&p.media[0].path),
+                dir.join("footage/take.mp4").as_path()
+            );
+            assert_eq!(p.media[1].path, "footage/elsewhere.mp4");
+            std::fs::remove_dir_all(&dir).ok();
         }
     }
 }

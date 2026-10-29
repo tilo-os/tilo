@@ -354,7 +354,7 @@ pub(crate) fn search_resource() -> ResourceSpec {
             ActionParam::optional(
                 SCOPE_PARAM,
                 ParamType::Text,
-                "ResourceSpec id of the part of the app to search",
+                "Resource id of the part of the app to search",
             ),
             ActionParam::optional(
                 SCOPE_LABEL_PARAM,

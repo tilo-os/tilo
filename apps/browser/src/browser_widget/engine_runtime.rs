@@ -1,29 +1,16 @@
-//! The engine this window browses with: which runtime is live, why it is not,
-//! and what the page area offers a person when it is missing or failed.
+//! The engine this window browses with: which runtime is live, and what the
+//! page area shows a person when it did not start.
 //!
 //! There is no simulated page: live browsing runs the Chromium engine runtime,
-//! and a window without one says so instead of inventing pixels.
+//! and a window without one says so instead of inventing pixels. The engine
+//! is a runtime Browser requires: it installs and updates with Browser, and
+//! the launcher refuses to start Browser without it. So a window without a
+//! running engine is an engine that failed to start, or a broken install;
+//! either way what a developer needs goes to the log.
 
-use super::{BrowsingMode, SharedEngine, megabytes};
+use super::{BrowsingMode, SharedEngine};
 use ui::icons::Icon;
-use ui::tilo_actions::ActionBinding;
 use ui::widget::{Column, EmptyState, Widget};
-
-/// Why live browsing has no running engine, in the terms the page area
-/// shows a person. What a developer needs goes to the log.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum EngineProblem {
-    /// The Chromium engine runtime is not installed.
-    NotInstalled,
-    /// The engine is installed but did not start.
-    Failed,
-}
-
-/// Exceptional repair of the offline engine baseline. Store resolves the
-/// installed Browser root and reviews its exact declared optional component;
-/// opening this handoff never consents to a payload download.
-pub(crate) const ENGINE_INSTALL_URI: &str =
-    "tilo-store:runtime/so.tilo.browser/tilo-runtime/2026.10.23-chromium";
 
 /// Live browsing runs the Chromium engine runtime
 /// ([`ui::webview::chromium::runtime`]); there is no other engine and no
@@ -31,31 +18,36 @@ pub(crate) const ENGINE_INSTALL_URI: &str =
 /// stream (the engine's layout as a display list, drawn by this toolkit)
 /// instead of its pixels: what a web client of this host sees. Either way the
 /// session can share the page as that stream.
-pub(super) fn default_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
+///
+/// Returns the engine and whether it failed to start.
+pub(super) fn default_engine(mode: BrowsingMode) -> (SharedEngine, bool) {
     #[cfg(test)]
     if let Some(engine) = test_window_engine::take() {
-        return (engine, None);
+        return (engine, false);
     }
-    let (engine, problem) = native_engine(mode);
-    if problem.is_some() {
-        return (engine, problem);
+    let (engine, failed) = native_engine(mode);
+    if failed {
+        return (engine, true);
     }
     if std::env::var("TILO_BROWSER_PAINT").as_deref() == Ok("1") {
-        return (ui::webview::paint::PaintEngine::new(engine), None);
+        return (ui::webview::paint::PaintEngine::new(engine), false);
     }
     // Drawn from pixels here; captured as a display list only while the
     // session shares the window with someone watching (a web member).
-    (ui::webview::paint::PaintEngine::streaming(engine), None)
+    (ui::webview::paint::PaintEngine::streaming(engine), false)
 }
 
 /// Deterministic rendering is confined to `new_headless`.
-fn native_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
+fn native_engine(mode: BrowsingMode) -> (SharedEngine, bool) {
     if let Err(missing) = ui::webview::chromium::runtime::locate() {
-        tracing::warn!(hint = %missing.developer_hint(), "browser engine is not installed");
-        return (
-            unavailable_engine(mode, EngineProblem::NotInstalled),
-            Some(EngineProblem::NotInstalled),
+        // Browser requires the engine, so installing or updating it brought
+        // the engine and the launcher would not have started it without:
+        // this is a broken install or a run outside the launcher.
+        tracing::error!(
+            hint = %missing.developer_hint(),
+            "the browser engine Browser requires is missing"
         );
+        return (unavailable_engine(mode), true);
     }
     let started = if mode.is_private() {
         crate::storage::explicit_root()
@@ -77,67 +69,42 @@ fn native_engine(mode: BrowsingMode) -> (SharedEngine, Option<EngineProblem>) {
     engine_or_error(started)
 }
 
-pub(super) fn engine_or_error(
-    result: Result<SharedEngine, String>,
-) -> (SharedEngine, Option<EngineProblem>) {
+/// The started engine, or one that answers with the failure, and whether it
+/// failed.
+pub(super) fn engine_or_error(result: Result<SharedEngine, String>) -> (SharedEngine, bool) {
     match result {
-        Ok(engine) => (engine, None),
+        Ok(engine) => (engine, false),
         Err(error) => {
             tracing::error!(%error, "browser engine failed to start");
-            (
-                ui::webview::chromium::UnavailableEngine::new(user_message(EngineProblem::Failed)),
-                Some(EngineProblem::Failed),
-            )
+            (failed_engine(), true)
         }
     }
 }
 
-/// An engine that renders nothing and answers navigation with the problem.
+fn failed_engine() -> SharedEngine {
+    ui::webview::chromium::UnavailableEngine::new(
+        ui::webview::chromium::runtime::FAILED_MESSAGE.to_owned(),
+    )
+}
+
+/// An engine that renders nothing and answers navigation with the failure.
 /// A private window's disposable root is released at once: nothing will
 /// ever write to it.
-pub(super) fn unavailable_engine(mode: BrowsingMode, problem: EngineProblem) -> SharedEngine {
+pub(super) fn unavailable_engine(mode: BrowsingMode) -> SharedEngine {
     if mode.is_private()
         && let Some(root) = crate::storage::explicit_root()
     {
         ui::webview::chromium::release_private_root(root);
     }
-    ui::webview::chromium::UnavailableEngine::new(user_message(problem))
+    failed_engine()
 }
 
-fn user_message(problem: EngineProblem) -> String {
-    match problem {
-        EngineProblem::NotInstalled => ui::webview::chromium::runtime::NOT_INSTALLED_MESSAGE,
-        EngineProblem::Failed => ui::webview::chromium::runtime::FAILED_MESSAGE,
-    }
-    .to_owned()
-}
-
-/// The page area while the engine is missing or stopped: what happened,
-/// and the one thing a person can do about it.
-pub(super) fn engine_problem_state(
-    problem: EngineProblem,
-    install: Option<ActionBinding<()>>,
-    setup: Option<&crate::engine_setup::Setup>,
-) -> Box<dyn Widget> {
-    if let (EngineProblem::NotInstalled, Some(setup)) = (problem, setup) {
-        return engine_setup_state(setup, install);
-    }
-    let state = match problem {
-        EngineProblem::NotInstalled => {
-            let state = EmptyState::new(ui::webview::chromium::runtime::NOT_INSTALLED_MESSAGE)
-                .with_icon(Icon::Download)
-                .with_message(ui::i18n!("browser-engine-repair-message"))
-                .with_action(ui::i18n!("browser-engine-repair-action"))
-                .with_action_id("browser.install-engine");
-            match install {
-                Some(binding) => state.on_action(binding),
-                None => state,
-            }
-        }
-        EngineProblem::Failed => EmptyState::new(ui::webview::chromium::runtime::FAILED_MESSAGE)
-            .with_icon(Icon::Info)
-            .with_message(ui::i18n!("browser-engine-reopen")),
-    };
+/// The page area while the engine is not running: what happened, and what a
+/// person can do about it.
+pub(super) fn engine_failed_state() -> Box<dyn Widget> {
+    let state = EmptyState::new(ui::webview::chromium::runtime::FAILED_MESSAGE)
+        .with_icon(Icon::Info)
+        .with_message(ui::i18n!("browser-engine-failed"));
     Box::new(
         Column::new()
             .with_no_padding()
@@ -145,69 +112,6 @@ pub(super) fn engine_problem_state(
             .with_fill_remaining_height()
             .push(Box::new(state)),
     )
-}
-
-/// The page area while the host fetches the engine: what is happening and
-/// how far along, in the toolkit's own empty state and progress bar.
-pub(super) fn engine_setup_state(
-    setup: &crate::engine_setup::Setup,
-    retry: Option<ActionBinding<()>>,
-) -> Box<dyn Widget> {
-    use crate::engine_setup::Setup;
-    use ui::webview::chromium::install::InstallPhase;
-    let mut column = Column::new()
-        .with_no_padding()
-        .with_gap(0.0)
-        .with_fill_remaining_height();
-    match setup {
-        Setup::Fetching {
-            phase,
-            received,
-            total,
-        } => {
-            let message = match (phase, total) {
-                (InstallPhase::Preparing, _) => "Preparing…".to_owned(),
-                (InstallPhase::Installing, _) => "Installing…".to_owned(),
-                (InstallPhase::Downloading, Some(total)) => format!(
-                    "Downloading, {} of {}",
-                    megabytes(*received),
-                    megabytes(*total)
-                ),
-                (InstallPhase::Downloading, None) => {
-                    format!("Downloading, {}", megabytes(*received))
-                }
-            };
-            column = column.push(Box::new(
-                EmptyState::new("Getting the browser engine")
-                    .with_icon(Icon::Download)
-                    .with_message(message)
-                    .busy(),
-            ));
-            let bar = setup.fraction().map_or_else(
-                ui::widget::ProgressBar::indeterminate,
-                ui::widget::ProgressBar::new,
-            );
-            column = column.push(Box::new(bar.with_label("Browser engine")));
-        }
-        Setup::Reopened => {
-            column = column.push(Box::new(
-                EmptyState::new("The browser engine is ready")
-                    .with_icon(Icon::Info)
-                    .with_message("Browser opened in a new window. You can close this one."),
-            ));
-        }
-        Setup::Failed(error) => {
-            let state = EmptyState::error("Couldn’t get the browser engine", error)
-                .with_icon(Icon::Download)
-                .with_action("Try again")
-                .with_action_id("browser.install-engine");
-            column = column.push(Box::new(match retry {
-                Some(binding) => state.on_action(binding),
-                None => state,
-            }));
-        }
-    }
-    Box::new(column)
 }
 
 /// The engine a test's next live window drives instead of the native one,

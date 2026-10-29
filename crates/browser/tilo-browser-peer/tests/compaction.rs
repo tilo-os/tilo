@@ -231,15 +231,14 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
     )
     .await;
     let route = route();
-    let steward_dir = tempfile::tempdir().unwrap();
-    let steward = channel_crypto::ChannelSteward::open_or_create(
-        steward_dir.path(),
+    let creator = channel_crypto::ChannelPeer::create_now(
+        None,
         document_channel_id(&route.app_id, &route.cluster_id, &route.record),
-        laptop.key.clone(),
+        Box::new(laptop.key.clone()),
         &channel_crypto::VaultKey::new([7; 32]),
     )
     .unwrap();
-    let keys = || -> Box<dyn ContentCipher> { Box::new(Keys(steward.content_keys().unwrap())) };
+    let keys = || -> Box<dyn ContentCipher> { Box::new(Keys(creator.content_keys().unwrap())) };
     let https = || Host::Https(host.https());
     let mut members: Vec<Member> = [a, b]
         .into_iter()

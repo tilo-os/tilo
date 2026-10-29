@@ -82,7 +82,7 @@ mod community_tests;
 mod device_approval_tests;
 pub(crate) mod device_approvals;
 #[cfg(test)]
-mod device_steward_tests;
+mod device_leaf_tests;
 pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
@@ -2759,8 +2759,7 @@ impl ShellNetwork {
             | NeighbourMsg::SyncResp { room, .. }
             | NeighbourMsg::MlsGovernance { room, .. }
             | NeighbourMsg::MlsAccessRequest { room, .. }
-            | NeighbourMsg::MlsRoutedAccessRequest { room, .. }
-            | NeighbourMsg::MlsGovernanceAck { room, .. } => Some(room.as_str()),
+            | NeighbourMsg::MlsRoutedAccessRequest { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
             | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
             | NeighbourMsg::RecordContentWant { cluster_id, .. }
@@ -3174,16 +3173,15 @@ impl ShellNetwork {
     }
 
     /// Publish one piece of channel governance to `room`. Durable workspace
-    /// hosts retain it (the frame chain per channel, the newest request and
-    /// acknowledgement per device), so devices that are offline now still
-    /// receive it. Returns whether it was handed to the transport.
+    /// hosts retain it (each channel's geneses and newest frame, the newest
+    /// request per device), so devices that are offline now still receive
+    /// it. Returns whether it was handed to the transport.
     pub fn publish_channel_governance(&self, message: NeighbourMsg) -> bool {
         if !matches!(
             message,
             NeighbourMsg::MlsGovernance { .. }
                 | NeighbourMsg::MlsAccessRequest { .. }
                 | NeighbourMsg::MlsRoutedAccessRequest { .. }
-                | NeighbourMsg::MlsGovernanceAck { .. }
         ) {
             return false;
         }
@@ -7655,11 +7653,6 @@ impl ShellNetwork {
                     });
                 }
             }
-            NeighbourMsg::MlsGovernanceAck { room, ack, .. } => {
-                if let Some(room) = RoomId::parse(&room) {
-                    self.queue_channel_governance(InboundChannelGovernance::Ack { room, ack });
-                }
-            }
             message @ (NeighbourMsg::RecordContentWant { .. }
             | NeighbourMsg::RecordContentPiece { .. }
             | NeighbourMsg::RecordContentLacks { .. }) => {
@@ -7932,7 +7925,6 @@ impl ShellNetwork {
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsRoutedAccessRequest { .. }
-            | NeighbourMsg::MlsGovernanceAck { .. }
             | NeighbourMsg::PersonalWorkspaces { .. }
             | NeighbourMsg::RoomArchive { .. } => None,
         }

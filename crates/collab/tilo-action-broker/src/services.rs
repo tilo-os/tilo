@@ -285,11 +285,21 @@ pub trait WorkspaceMemberships: Send + Sync {
         false
     }
 
-    /// Whether `room` is held here but governed by the node that stewards
-    /// it, where this device asks that host to commit the room's own
+    /// Whether `room` is held here but governed by the node that takes part
+    /// in its channels, where this device asks that host to commit the room's own
     /// membership changes, decided by the room's governance as they are
     /// where this device governs the room itself.
     fn grants_authorship_at_host(&self, _room: &str) -> bool {
+        false
+    }
+
+    /// Whether `room`'s membership actions are still to come here: this
+    /// device holds the room, joins it or has it placed on its host, and its
+    /// replica is not projected yet ([`Self::requires_room`] or
+    /// [`Self::grants_authorship_at_host`] turns true once it is, which
+    /// announces a policy change). An app opening in such a room waits for
+    /// them; one opening in any other room unpublished is refused.
+    fn membership_pending(&self, _room: &str) -> bool {
         false
     }
 

@@ -11,7 +11,7 @@ use tilolang_runtime::store::{
     FieldKey, FieldRead, FieldValue, Listing, Lit, Pred, Splice, StoreError,
 };
 
-use super::derive::{in_of, item_path, member_list};
+use super::derive::{column_field, in_of, item_path, member_list};
 use super::lists::Entry;
 use super::merged::{Base, Merged};
 use super::overlay::{ListState, Overlay};
@@ -30,7 +30,7 @@ pub(super) fn index_error(error: IndexError) -> StoreError {
 #[derive(Clone, Copy)]
 pub struct View<'a> {
     pub snapshot: &'a Arc<Snapshot>,
-    pub overlay: &'a Overlay,
+    pub overlay: &'a Arc<Overlay>,
 }
 
 /// A resource holding text, as [`View::every_text`] lists it.
@@ -57,10 +57,8 @@ impl View<'_> {
     /// # Errors
     /// The index cannot be read or is corrupt.
     pub fn field(&self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError> {
-        // The versions of a resource are the log's: open writes have none yet.
-        if super::reflect::is_reflected(field) {
-            return self.snapshot.field(resource, field);
-        }
+        // A resource's versions are the log's, with the provisional ones of the actions this
+        // device committed and the record does not hold yet.
         if let Some(written) = self.overlay.field(resource, field) {
             return Ok(written);
         }
@@ -141,7 +139,7 @@ impl View<'_> {
     /// The index cannot be read or is corrupt.
     pub fn list(&self, resource: &str, field: &str) -> Result<Merged, IndexError> {
         let name = member_list(resource, field);
-        Ok(match self.overlay.list(resource, &name) {
+        let merged = match self.overlay.list(resource, &name) {
             None => Merged::new(Base::Pages(self.snapshot.pages(&name)?), Vec::new(), &[]),
             Some(ListState::Delta { added, removed }) => {
                 let removed: Vec<Entry> = removed.into_iter().collect();
@@ -152,6 +150,83 @@ impl View<'_> {
                 )
             }
             Some(ListState::Whole(entries)) => Merged::new(held(entries), Vec::new(), &[]),
+        };
+        Ok(merged.locating(self.locate((resource, field), None)))
+    }
+
+    /// What finds the entries an item of the collection `field` of `resource` has, as this
+    /// view holds them: in the list of its items, or, given an item type and a column of it,
+    /// in that column's list ([`Merged::position`]).
+    pub(super) fn locate(
+        &self,
+        (resource, field): (&str, &str),
+        column: Option<(&str, &str)>,
+    ) -> super::merged::Locate {
+        let snapshot = Arc::clone(self.snapshot);
+        let overlay = Arc::clone(self.overlay);
+        let resource = resource.to_owned();
+        let field = field.to_owned();
+        let column = column.map(|(ty, name)| (ty.to_owned(), name.to_owned()));
+        Box::new(move |id| {
+            let view = View {
+                snapshot: &snapshot,
+                overlay: &overlay,
+            };
+            let column = column
+                .as_ref()
+                .map(|(ty, name)| (ty.as_str(), name.as_str()));
+            view.entries_of((&resource, &field), id, column).ok()
+        })
+    }
+
+    /// The entries the item `id` of the collection `field` of `resource` has in the list of its
+    /// items, or in the list of the column `column` of its type: none when it is not there.
+    /// A column's are those the index holds of the item and those its fields give now (they
+    /// differ for an item the open writes changed); the list holds one of them.
+    fn entries_of(
+        &self,
+        (resource, field): (&str, &str),
+        id: &str,
+        column: Option<(&str, &str)>,
+    ) -> Result<Vec<Entry>, IndexError> {
+        let path = child(resource, id);
+        let Some(key) = self.key_in(&path, (resource, field))? else {
+            return Ok(Vec::new());
+        };
+        let Some((ty, column)) = column else {
+            return Ok(vec![(key, id.to_owned())]);
+        };
+        let schema = lookup(ty).ok_or(IndexError::Corrupt)?;
+        let spec = schema.column(column).ok_or(IndexError::Corrupt)?;
+        let mut values = self.column_values(&path, schema, spec)?;
+        if let Some(held) = self.snapshot.text(&path, &column_field(column))? {
+            values.extend(held.split(super::columns::SEP).map(str::to_owned));
+        }
+        values.sort();
+        values.dedup();
+        Ok(values
+            .iter()
+            .map(|value| super::columns::scope_entry(value, &key, id))
+            .collect())
+    }
+
+    /// The values the column `column` of the resource at `path` (of `schema`) holds as this
+    /// view reads its fields: a collection as how many items it holds.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub(super) fn column_values(
+        &self,
+        path: &str,
+        schema: &TypeSchema,
+        column: &crate::schema::ColumnSchema,
+    ) -> Result<Vec<String>, IndexError> {
+        super::columns::values(column, schema, &mut |f| {
+            if f.kind == MergeKind::Collection {
+                let len = self.list(path, &f.id)?.len();
+                return Ok(FieldValue::Counter(i64::try_from(len).unwrap_or(i64::MAX)));
+            }
+            Ok(self.field(path, &f.id)?.unwrap_or_else(|| default_value(f)))
         })
     }
 

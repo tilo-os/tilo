@@ -104,7 +104,15 @@ export TZ=UTC
 export XKB_DEFAULT_LAYOUT=us
 unset XKB_DEFAULT_VARIANT XKB_DEFAULT_MODEL XKB_DEFAULT_OPTIONS XKB_DEFAULT_RULES
 
+# The run's private audio endpoint (tools/test-env-setup.sh audio) is the
+# test environment's own, not a desktop's: keep its address.
+test_audio=
+if [ -n "${TILO_HEADLESS_AUDIO_PID:-}" ] && [ -n "${PULSE_RUNTIME_PATH:-}" ] &&
+    [ "${PULSE_SERVER:-}" = "unix:$PULSE_RUNTIME_PATH/native" ]; then
+    test_audio=$PULSE_SERVER
+fi
 unset "${session_vars[@]}"
+[ -z "$test_audio" ] || export PULSE_SERVER="$test_audio"
 # Nothing ever listens on these paths. A test that needs a bus brings its own
 # (a p2p socket pair, or a private dbus-daemon) and hands its address to the
 # code under test.

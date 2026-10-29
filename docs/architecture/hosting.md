@@ -37,8 +37,8 @@ This page uses the names the code is moving to:
 - **Part** and **channel** stay: a piece of a large resource, and the path a
   resource's changes travel on.
 - **Committed**, **sealed** and **legacy** stop being kinds of workspace or
-  code paths (see "Keys" below). **Governor**, **steward** and **native
-  owner** stop being roles (see "Governance" below).
+  code paths (see "Keys" below). **Governor** and **native owner** stop
+  being roles (see "Governance" below).
 - **Relay** and **home relay** stay as they are. The room service is renamed
   for what it is: the host program.
 

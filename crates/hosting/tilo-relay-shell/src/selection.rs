@@ -594,9 +594,10 @@ impl Selection {
         let name = format!("{:016x}.delta", self.ordinal);
         bounded::increment(&mut self.ordinal)?;
         let path = self.staged.join(name);
-        // Every source belongs to an already durable retained generation. The
-        // Commit phase syncs this hard-link directory before switching CURRENT.
-        fs::hard_link(self.store.root().join(&meta.source), &path)?;
+        // Every source belongs to a durable retained generation, perhaps
+        // through its journal only, which `link` settles. The Commit phase
+        // syncs this hard-link directory before switching CURRENT.
+        tilo_relay_store::durable::link(&self.store.root().join(&meta.source), &path)?;
         self.store.copy_measured(
             &self.store.root().join(&meta.source),
             &path,
@@ -1365,9 +1366,9 @@ impl Selection {
                     meta.pin = self.ordinal;
                     bounded::increment(&mut self.ordinal)?;
                     let pin = self.staged.join(format!("gc-{:016x}.delta", meta.pin));
-                    // This is another link to an already durable retained
-                    // inode; the staged-directory barrier precedes CURRENT.
-                    fs::hard_link(self.store.root().join(&meta.source), &pin)?;
+                    // Another link to a durable retained inode, settled
+                    // by `link`; the staged-directory barrier precedes CURRENT.
+                    tilo_relay_store::durable::link(&self.store.root().join(&meta.source), &pin)?;
                     write_meta(&mut self.gc_output, &meta)?;
                     return Ok(Step::More);
                 }

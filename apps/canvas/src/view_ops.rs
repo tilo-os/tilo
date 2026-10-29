@@ -658,7 +658,7 @@ pub enum PictureFinish {
     Export {
         format: &'static str,
         quality: u8,
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
 }
 
@@ -913,7 +913,7 @@ pub fn draw_export(
     let named = export
         .path
         .as_deref()
-        .and_then(|path| std::path::Path::new(path).extension())
+        .and_then(std::path::Path::extension)
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase);
     let format = export
@@ -956,7 +956,7 @@ fn finish_export(
     (width, height): (u32, u32),
     format: &'static str,
     quality: u8,
-    path: Option<&str>,
+    path: Option<&std::path::Path>,
 ) -> Result<(Picture, Value), String> {
     let bytes = match format {
         "jpeg" => encode_jpeg_at(rgba, width, height, quality)?,

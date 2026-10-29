@@ -32,9 +32,9 @@ fn thread_id() -> String {
 
 /// The fields of the packages' types that hold a principal (a message's author), by type and
 /// field id: a register a seeded record has no default for.
-type Principals = HashSet<(String, String)>;
+pub(super) type Principals = HashSet<(String, String)>;
 
-fn principals(packages: &[Compiled]) -> Principals {
+pub(super) fn principals(packages: &[Compiled]) -> Principals {
     packages
         .iter()
         .flat_map(|package| &package.meta.types)
@@ -50,7 +50,7 @@ fn principals(packages: &[Compiled]) -> Principals {
 /// A record of type `ty` with `label` in every text field, a principal of its own in every
 /// field that holds one, and, `depth` collections down, one item in each collection (a
 /// message's text part), whose id is the record's `id` and `-part`.
-fn filled(
+pub(super) fn filled(
     (id, ty): (&str, &str),
     label: &str,
     depth: usize,

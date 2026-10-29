@@ -22,22 +22,6 @@ impl VideoEditorApp {
     ) -> bool {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         let shift = modifiers.state().shift_key();
-        // The unsaved-work question owns the keyboard: Esc stays put, Enter
-        // takes the safe answer. Nothing else fires meanwhile, so a stray key
-        // cannot edit the project that is being asked about.
-        if self.pending_open.is_some() {
-            match key {
-                Key::Named(NamedKey::Escape) => {
-                    self.resolve_pending_open(state, DiscardChoice::Cancel);
-                    return true;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.resolve_pending_open(state, DiscardChoice::Save);
-                    return true;
-                }
-                _ => return false,
-            }
-        }
         if self.presentation.export_open {
             if matches!(key, Key::Named(NamedKey::Escape)) {
                 // Esc closes the dialog, not the render: the window bar's
@@ -199,26 +183,24 @@ impl VideoEditorApp {
                 let _ = r;
                 true
             }
-            // Ctrl+O opens a project. It used to import media, from before the
-            // editor had projects to open — and Ctrl+O means "open a document"
-            // in every app a person has ever used, so leaving it on import
-            // would make the one shortcut everybody already knows do the one
-            // thing they did not ask for. Import keeps the same letter, one
-            // modifier along, and both are in the shortcut sheet.
+            // Ctrl+O opens a project file, as "open" does in every app;
+            // import keeps the same letter, one modifier along. There is no
+            // Ctrl+S: the project is kept as it is edited. Ctrl+Shift+S, a
+            // copy elsewhere, exports it as a project file.
             Key::Character(c) if ctrl && shift && c.eq_ignore_ascii_case("o") => {
                 self.trigger_import();
                 true
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("o") => {
-                self.request_open_project();
+                self.invoke_effect(&crate::actions::VideoEditorEffect::OpenProjectFile {
+                    path: None,
+                });
                 true
             }
             Key::Character(c) if ctrl && shift && c.eq_ignore_ascii_case("s") => {
-                self.request_save_as();
-                true
-            }
-            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("s") => {
-                self.queue_save_project();
+                self.invoke_effect(&crate::actions::VideoEditorEffect::ExportProjectFile {
+                    path: None,
+                });
                 true
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("c") => {
@@ -431,37 +413,17 @@ impl VideoEditorApp {
     /// Whether a full-window scrim is up — the editor behind it is
     /// unavailable, and every click belongs to the surface on top.
     pub(super) fn is_modal(&self) -> bool {
-        self.pending_open.is_some()
-            || self.presentation.export_open
-            || self.navigation.help_open
-            || self.goto_entry.is_some()
+        self.presentation.export_open || self.navigation.help_open || self.goto_entry.is_some()
     }
 
     #[expect(
         clippy::too_many_lines,
         reason = "one hit test per pressable region, in paint order"
     )]
-    pub(super) fn handle_press(&mut self, state: &AutoCommit, r: &Regions, shift: bool) {
+    pub(super) fn handle_press(&mut self, r: &Regions, shift: bool) {
         let p = self.last_mouse;
 
-        // Modals own all clicks. The unsaved-work question is asked over the
-        // export dialog too (Ctrl+O works while it is up), so it is first.
-        if self.pending_open.is_some() {
-            // Laid out from the current state — see `chrome_theme`. The
-            // question has no scrim dismissal and no close control: its way
-            // out is the Cancel it shows.
-            let hit = self
-                .with_dialog_layout(super::VideoEditorApp::discard_layout)
-                .and_then(|l| l.modal.hit(p));
-            let choice = match hit {
-                Some(ModalHit::Action(0)) => DiscardChoice::Cancel,
-                Some(ModalHit::Action(1)) => DiscardChoice::Discard,
-                Some(ModalHit::Action(2)) => DiscardChoice::Save,
-                _ => return,
-            };
-            self.resolve_pending_open(state, choice);
-            return;
-        }
+        // Modals own all clicks.
         if self.presentation.export_open {
             if !self.open_folded_strip(StripHost::Export, p) {
                 self.press_export(p);

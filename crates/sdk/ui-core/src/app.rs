@@ -36,7 +36,7 @@ mod native_input_isolation;
 
 #[cfg(feature = "native")]
 #[path = "animation_schedule.rs"]
-mod animation_schedule;
+pub mod animation_schedule;
 
 mod action_directory_snapshot;
 mod bound_record_sync;
@@ -514,7 +514,7 @@ pub struct App {
     startup_renderer: Option<native_runner::startup::RendererPreparation>,
     control_domain: crate::ControlDomain,
     wake_scope: Option<crate::wake::WakeScope>,
-    state: State,
+    state: Box<State>,
     root_widget: Box<dyn Widget>,
     history: Option<crate::history_mode::host::HistoryChrome>,
     #[cfg(any(test, feature = "test-support"))]
@@ -566,7 +566,7 @@ pub struct App {
 
     presence: PresenceRuntime,
 
-    accessibility: AccessibilityRuntime,
+    accessibility: Box<AccessibilityRuntime>,
 
     /// Compared against [`crate::widget::Widget::fullscreen_intent`] each
     /// frame so a steady desired state issues one `set_fullscreen` call —
@@ -576,11 +576,11 @@ pub struct App {
         crate::collaboration::RouteSpec,
         crate::collaboration::CommittedDocument,
     )>,
-    persistence: PersistenceRuntime,
+    persistence: Box<PersistenceRuntime>,
     autosave_generation: u64,
     document_routes: crate::history_mode::routes::OwnerDocumentRoutes,
 
-    actions: ActionRuntime,
+    actions: Box<ActionRuntime>,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
     history_chrome_enabled: bool,
     native_document_chrome: bool,
@@ -598,7 +598,7 @@ pub struct App {
     /// Optional app → shell lifecycle channel for detachable surfaces. It is
     /// discovered from the launcher-provided service fd and absent outside a
     /// Tilo session, where apps simply keep their overlays attached.
-    floating: FloatingRuntime,
+    floating: Box<FloatingRuntime>,
 }
 
 /// Lazy private inputs keep discovery at the original initializer/callback boundary.

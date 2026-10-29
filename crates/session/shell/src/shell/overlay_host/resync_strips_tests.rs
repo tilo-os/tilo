@@ -1677,7 +1677,7 @@ fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
     };
     frame(&mut host);
     assert_eq!(
-        host.strip_deck().map(ui::widget::StripDeck::shown),
+        host.strip_deck().map(|deck| deck.shown(None)),
         Some(0),
         "fixture: the person is on the first strip"
     );
@@ -1709,11 +1709,11 @@ fn a_window_the_person_opened_on_another_strip_slides_the_view_there() {
     let frozen = ui::motion::testing::frozen();
     let _ = ui::widget::Widget::take_structure_dirty(&mut host);
     let deck = host.strip_deck().expect("a strip deck");
-    assert_eq!(deck.shown(), 1, "the view goes to the other strip");
+    assert_eq!(deck.shown(None), 1, "the view goes to the other strip");
     assert!(
-        deck.position() < 1.0 - f64::EPSILON,
+        deck.position(None) < 1.0 - f64::EPSILON,
         "it slides there rather than jumping: the deck stands at {}",
-        deck.position()
+        deck.position(None)
     );
     drop(frozen);
     frame(&mut host);

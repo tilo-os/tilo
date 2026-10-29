@@ -320,6 +320,13 @@ search.md, "What a type declares" and "Types, references and paths".
 - **`a.then(b)` joins actions.** It is a method of action values, so it means the same wherever
   one is written; `b` runs once `a` is done. A composer sends its lens draft and clears it with
   `send(c, draft).then(set(draft, ""))`; a button presents the first action.
+- **An action a view applies reads its view state at the press.** View state given as an
+  argument (`send(c, draft)`, `set(draft, other)`) is the slot itself (`state_at`), read when
+  the event fires, in the view instance that took the typing: the window's last draw may be a
+  keystroke behind. Every action reference applied from a view does this, buttons, events of
+  components and `then` alike. An argument that computes from view state (`"{draft}!"`,
+  `n + 1`) would be read at the draw, so it is refused (E111): give the state and compute in
+  the action.
 - **`if let`, `?.`, `??` and key paths add no context rules.** A match stays exhaustive in a
   view as anywhere; absent renders nothing through `if let` and `Option<View>` parameters,
   which are type rules. `a?.b.c` is not a chain: write `a?.b?.c`.

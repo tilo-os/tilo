@@ -23,7 +23,7 @@ impl Counter {
     }
 }
 
-/// A record the person keeps beside the app's own.
+/// A record the app keeps beside its own.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Prefs {
     pub compact: bool,
@@ -88,11 +88,11 @@ fn the_surface_report_names_verbs_fields_and_unpublished_bindings() {
     assert_eq!(report["unbound"], serde_json::json!([]));
     assert_eq!(
         report["resources"][1]["kind"], "test.counter-prefs",
-        "the person's records the view opens are part of the surface: {report}"
+        "the records the view opens beside its own are part of the surface: {report}"
     );
-    assert_eq!(
-        report["resources"][1]["person"], true,
-        "marked as the person's, the only kinds kept in their room: {report}"
+    assert!(
+        report["resources"][1].get("person").is_none(),
+        "kept in the room the app is open in, like its own: {report}"
     );
     assert!(
         report["resources"][0].get("person").is_none(),

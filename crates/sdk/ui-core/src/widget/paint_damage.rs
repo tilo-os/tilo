@@ -253,8 +253,8 @@ impl PaintParts {
 /// Retains only draw caches; no document state, history or input is stored here.
 #[derive(Default)]
 pub struct PaintDamage {
-    previous: Option<PaintFrame>,
-    current: Option<PaintFrame>,
+    previous: Option<Box<PaintFrame>>,
+    current: Option<Box<PaintFrame>>,
     recorded: bool,
     previous_bounds: Option<Rect>,
     current_bounds: Option<Rect>,
@@ -264,7 +264,7 @@ impl PaintDamage {
     /// A missing proof explicitly requests conservative full bounds.
     pub fn record(&mut self, bounds: Rect, frame: Option<PaintFrame>) {
         self.current_bounds = Some(bounds);
-        self.current = frame;
+        self.current = frame.map(Box::new);
         self.recorded = true;
     }
 
@@ -275,7 +275,8 @@ impl PaintDamage {
 
     /// Collect after drawing and before `mark_drawn`, as the native host does.
     pub fn collect(&self, fallback: Rect, regions: &mut Vec<Rect>) {
-        let Some((previous, current)) = self.previous.as_ref().zip(self.current.as_ref()) else {
+        let Some((previous, current)) = self.previous.as_deref().zip(self.current.as_deref())
+        else {
             regions.push(self.full_bounds(fallback));
             return;
         };

@@ -8,7 +8,7 @@ use super::*;
 
 impl ShellOverlayHost {
     pub(crate) fn content_animating_leaves(&self) -> Vec<String> {
-        crate::shell::animation_diagnostics::animating_leaves(self.content.as_ref())
+        ui::app::animation_schedule::animating_leaves(self.content.as_ref())
     }
 
     /// Stable, allocation-free diagnostics for animation demand. Each bit is
@@ -22,7 +22,7 @@ impl ShellOverlayHost {
                 onboarding: self.onboarding.is_some(),
                 onboarding_animating: self
                     .onboarding
-                    .as_ref()
+                    .as_deref()
                     .is_some_and(Widget::needs_animation_frame),
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.overview_zoom_moving(now),
@@ -130,9 +130,9 @@ impl ShellOverlayHost {
         } = &mut *sections;
         let contextual_tour = self
             .onboarding
-            .as_ref()
+            .as_deref()
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
-        if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+        if !contextual_tour && let Some(onboarding) = self.onboarding.as_deref_mut() {
             onboarding.draw(backdrop, transform, text_renderer, theme, presence);
             let desktop = transform.transform_rect_bbox(self.rect);
             overlay_part(
@@ -490,7 +490,7 @@ impl ShellOverlayHost {
             },
         );
         overlay_part(above_quick_settings, "shell.tour", desktop, |scene| {
-            if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
+            if contextual_tour && let Some(onboarding) = self.onboarding.as_deref_mut() {
                 onboarding.draw(scene, transform, text_renderer, theme, presence);
                 self.draw_portal_dialog_sheet(scene, transform, text_renderer, theme);
             }
@@ -777,7 +777,7 @@ impl ShellOverlayHost {
             (
                 "onboarding",
                 self.onboarding
-                    .as_ref()
+                    .as_deref()
                     .and_then(Widget::next_wake_deadline),
             ),
             ("people", self.people_wake_deadline()),
@@ -863,7 +863,7 @@ impl ShellOverlayHost {
     /// for the desktop's widget tree, the deepest widgets holding it.
     pub(crate) fn wake_deadline_owners(&self, due: Instant) -> Vec<String> {
         let limit = due
-            .checked_add(crate::shell::animation_diagnostics::WAKE_MATCH_SLACK)
+            .checked_add(ui::app::animation_schedule::WAKE_MATCH_SLACK)
             .unwrap_or(due);
         let mut owners = Vec::new();
         for (name, deadline) in self.wake_deadline_sources(Instant::now()) {
@@ -872,12 +872,9 @@ impl ShellOverlayHost {
             }
             if name == "content" {
                 owners.extend(
-                    crate::shell::animation_diagnostics::wake_deadline_leaves(
-                        self.content.as_ref(),
-                        due,
-                    )
-                    .into_iter()
-                    .map(|leaf| format!("content{leaf}")),
+                    ui::app::animation_schedule::waking_leaves(self.content.as_ref(), due)
+                        .into_iter()
+                        .map(|leaf| format!("content{leaf}")),
                 );
             } else {
                 owners.push(name.to_string());

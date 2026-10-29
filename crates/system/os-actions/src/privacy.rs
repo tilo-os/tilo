@@ -66,7 +66,11 @@ pub fn get_privacy_status() -> PrivacyStatus {
 
 fn get_privacy_status_from(rfkill: &Path, dev: &Path) -> PrivacyStatus {
     let mut status = PrivacyStatus {
-        microphone_muted: crate::audio::get_source_state().ok().map(|s| s.muted),
+        microphone_muted: media::audio::default_node::volume_state(
+            media::audio::default_node::DefaultNode::Source,
+        )
+        .ok()
+        .map(|s| s.muted),
         camera_present: std::fs::read_dir(dev).is_ok_and(|entries| {
             entries
                 .flatten()

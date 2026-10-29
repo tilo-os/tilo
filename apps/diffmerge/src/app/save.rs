@@ -40,7 +40,7 @@ impl DiffMergeApp {
     pub(super) fn answer_save(
         &self,
         cx: &mut EffectCx<Session, Self>,
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
         ask: bool,
     ) -> EffectAnswer {
         let Some(merged) = &self.merged else {
@@ -49,7 +49,7 @@ impl DiffMergeApp {
         let bytes = merged.clone().into_bytes();
         if let Some(path) = path {
             return Ok(cx.thread(
-                move |_progress| write_text(Path::new(&path), &bytes),
+                move |_progress| write_text(&path, &bytes),
                 |app: &mut Self, written, _| app.finish_save(written),
             ));
         }

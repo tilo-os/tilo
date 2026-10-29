@@ -1041,42 +1041,6 @@ impl VideoEditorApp {
         }
     }
 
-    /// The unsaved-work question, carrying the same three answers the card
-    /// paints and the same account of what each one costs.
-    pub(super) fn a11y_discard_dialog(&self) -> AccessNode {
-        let Some(pending) = &self.pending_open else {
-            return AccessNode::new(Role::Dialog).with_name("Save first?");
-        };
-        let opening = crate::project_file::label(&pending.path);
-        let kids = vec![
-            AccessNode::new(Role::StaticText)
-                .with_name("What happens")
-                .with_value(format!(
-                    "{} has never been saved to a file. Opening {opening} replaces it. \
-                     Ctrl+Z brings it back.",
-                    pending.losing,
-                ))
-                .with_key(0),
-            AccessNode::new(Role::Button)
-                .with_name("Cancel")
-                .with_key(1)
-                .with_state(AccessState::new().focusable(true)),
-            AccessNode::new(Role::Button)
-                .with_name("Open anyway")
-                .with_key(2)
-                .with_state(AccessState::new().focusable(true)),
-            AccessNode::new(Role::Button)
-                .with_name("Save…")
-                .with_key(3)
-                .with_state(AccessState::new().focusable(true)),
-        ];
-        AccessNode::new(Role::Dialog)
-            .with_name(format!("Save {} first?", pending.losing))
-            .with_key(ui::a11y::hash_key(&"discard"))
-            .with_state(AccessState::new().modal(true))
-            .with_children(kids)
-    }
-
     /// The render's state as a node of its own, outside the dialog's subtree.
     ///
     /// `export_status` was read in exactly two places and both were inside the

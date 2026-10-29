@@ -2929,7 +2929,7 @@ fn the_attach_action_chooses_files_where_the_device_has_no_paths() {
     app.external_services = false;
     app.active_channel = "c_chat".into();
     let refused = app
-        .attach_file_effect("c_crit", Some("/home/ada/plan.pdf"))
+        .attach_file_effect("c_crit", Some(&"/home/ada/plan.pdf".parse().unwrap()))
         .unwrap_err();
     assert!(refused.contains("leave out the path"), "{refused}");
     assert!(app.device_pick.is_none(), "a refused path asks nothing");
@@ -2939,4 +2939,17 @@ fn the_attach_action_chooses_files_where_the_device_has_no_paths() {
         "the files' conversation opens"
     );
     assert!(app.device_pick.is_some(), "the platform's chooser is asked");
+}
+
+/// The attach action refuses a relative path before Chat sees it: it would
+/// name a file wherever the app happens to run.
+#[test]
+fn the_attach_action_refuses_a_relative_path() {
+    use ui::tilo_resource::Effect as _;
+    let arguments = serde_json::Map::from_iter([
+        ("channel".to_owned(), serde_json::json!("c_chat")),
+        ("path".to_owned(), serde_json::json!("plan.pdf")),
+    ]);
+    let refused = crate::effects::ChatEffect::decode("attach-file", &arguments).unwrap_err();
+    assert!(refused.contains("absolute"), "{refused}");
 }

@@ -58,8 +58,13 @@ impl Base {
         }
     }
 
-    /// Where `(key, id)` is or would go, and whether it is there. A reversed slice is never
-    /// merged with entries, so it answers nothing.
+    /// Whether its entries run from the last: a reversed slice.
+    pub fn reversed(&self) -> bool {
+        matches!(self, Self::Slice { reversed: true, .. })
+    }
+
+    /// Where `(key, id)` is or would go, and whether it is there. In a reversed slice the
+    /// entries after it come before it.
     pub fn rank(&self, key: &str, id: &str) -> (usize, bool) {
         match self {
             Self::Pages(pages) => pages.rank(key, id),
@@ -69,14 +74,18 @@ impl Base {
                 end,
                 reversed,
             } => {
-                if *reversed {
-                    return (0, false);
-                }
                 let (at, found) = pages.rank(key, id);
-                let inside = at >= *start && at < *end;
+                let found = found && at >= *start && at < *end;
+                let before = at.clamp(*start, *end).saturating_sub(*start);
+                if !*reversed {
+                    return (before, found);
+                }
+                // Those after it, in the slice: it then is the one before them.
+                let len = end.saturating_sub(*start);
                 (
-                    at.clamp(*start, *end).saturating_sub(*start),
-                    found && inside,
+                    len.saturating_sub(before)
+                        .saturating_sub(usize::from(found)),
+                    found,
                 )
             }
             Self::Held(held) => {
@@ -90,15 +99,22 @@ impl Base {
     }
 }
 
+/// The entries an item has in a list as one state of the index holds it (an item has one
+/// per value of a column of a set): what finds where the item is ([`Merged::position`]).
+/// `None` when they cannot be read.
+pub type Locate = Box<dyn Fn(&str) -> Option<Vec<Entry>>>;
+
 /// `base` with the entries `added` put in and those `removed` taken out.
 pub struct Merged {
     base: Base,
-    /// In order, none of them in `base`.
+    /// In the base's order, none of them in `base`.
     added: Vec<(String, Rc<str>)>,
     /// Where each of `added` is in the merged list, ascending.
     added_at: Vec<usize>,
     /// The indexes in `base` of the entries taken out, ascending.
     removed: Vec<usize>,
+    /// Finds an item's entries, when the list was given the means.
+    locate: Option<Locate>,
 }
 
 impl std::fmt::Debug for Merged {
@@ -124,6 +140,9 @@ impl Merged {
         gone.dedup();
         added.sort();
         added.dedup();
+        if base.reversed() {
+            added.reverse();
+        }
         let mut kept = Vec::with_capacity(added.len());
         let mut added_at = Vec::with_capacity(added.len());
         for (key, id) in added {
@@ -142,7 +161,29 @@ impl Merged {
             added: kept,
             added_at,
             removed: gone,
+            locate: None,
         }
+    }
+
+    /// The list, finding where an item is by its entries as `locate` reads them.
+    #[must_use]
+    pub fn locating(mut self, locate: Locate) -> Self {
+        self.locate = Some(locate);
+        self
+    }
+
+    /// Where the item `id` is, found by its entries: `Some(None)` when it is not in the list,
+    /// `None` when the list cannot find it so.
+    pub fn position(&self, id: &str) -> Option<Option<usize>> {
+        let entries = (self.locate.as_ref()?)(id)?;
+        Some(
+            entries
+                .iter()
+                .find_map(|(key, id)| match self.rank(key, id) {
+                    (at, true) => Some(at),
+                    _ => None,
+                }),
+        )
     }
 
     pub fn len(&self) -> usize {
@@ -181,9 +222,15 @@ impl Merged {
         let (at, found) = self.base.rank(key, id);
         let gone_before = self.removed.partition_point(|g| *g < at);
         let found_in_base = found && self.removed.binary_search(&at).is_err();
-        let added_before = self
-            .added
-            .partition_point(|(k, i)| (k.as_str(), &**i) < (key, id));
+        let reversed = self.base.reversed();
+        let added_before = self.added.partition_point(|(k, i)| {
+            let entry = (k.as_str(), &**i);
+            if reversed {
+                entry > (key, id)
+            } else {
+                entry < (key, id)
+            }
+        });
         let found_added = self
             .added
             .get(added_before)
@@ -202,6 +249,10 @@ impl PagedItems for Merged {
 
     fn get(&self, index: usize) -> Option<Rc<str>> {
         Self::get(self, index)
+    }
+
+    fn position(&self, id: &str) -> Option<Option<usize>> {
+        Self::position(self, id)
     }
 }
 

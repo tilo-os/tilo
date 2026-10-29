@@ -1,7 +1,7 @@
 //! Change notification for what this host's authorization decisions read.
 //!
 //! The collaboration broker re-checks what it already admitted (native
-//! context subscribers, membership surfaces, the devices a channel steward
+//! context subscribers, membership surfaces, the devices a channel participant
 //! lets read) when something those decisions read may have changed, instead
 //! of on a fixed clock: the workspace tree, the device fleet and
 //! identity registry, the native owner's task store, the devices the network

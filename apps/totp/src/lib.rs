@@ -19,11 +19,11 @@
 //! * [`list`] — the [`list::AccountList`] main screen.
 //! * [`add_panel`] — the [`add_panel::AddAccountPanel`] sheet.
 //! * [`qr`] — QR ingestion: pure-Rust, offline decode from an image file.
-//! * [`app`] — the [`app::AuthenticatorApp`] surface that ties them
+//! * [`app`] — the [`app::AuthenticatorApp`] window that ties them
 //!   together.
 //! * [`resource`] — the [`Totp`] resource, its effects and the
 //!   [`TotpShell`] app: the navigation shell with its header row around the
-//!   surface.
+//!   window.
 //! * `secrets` — each account's seed in this device's secret store.
 
 // An app runs as its own sandboxed process, so an integer that wraps here

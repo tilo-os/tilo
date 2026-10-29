@@ -19,6 +19,7 @@ use std::rc::Rc;
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
+use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, Live, ViewCx};
 use ui::icons::Icon;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, LaunchChannel, LaunchOutcome, PickRequest,
@@ -50,7 +51,7 @@ use crate::model::{
 };
 use crate::opml;
 use crate::reader_pane::{ReaderPane, ReaderState};
-use crate::resource::library;
+use crate::resource::{FeedsEffect, library};
 #[cfg(feature = "samples")]
 use crate::sample;
 use crate::sidebar::SidebarNav;
@@ -433,6 +434,10 @@ pub(crate) enum Awaited {
 
 /// The state of the window.
 pub(crate) struct Core {
+    /// The library as the document holds it, followed as it changes; `None`
+    /// for a window outside the framework.
+    live: Option<Live<Library>>,
+    presented: Option<(u64, u64)>,
     /// The library as it was presented last; the window changes it only
     /// through the library's door.
     pub(crate) store: Rc<Library>,
@@ -501,6 +506,8 @@ fn read_edit(id: &Id, read: bool) -> ui::tilo_resource::Edit<Library> {
 impl Core {
     fn new(store: Library) -> Self {
         Self {
+            live: None,
+            presented: None,
             store: Rc::new(store),
             filter: Filter::All,
             selected: None,
@@ -1610,7 +1617,7 @@ pub struct FeedsApp {
     /// The dialog opened or closed: the retained tree must be rebuilt.
     overlays_dirty: bool,
     /// A screenshot scenario to stage once the shell has laid out.
-    pending_scenario: Option<String>,
+    pending_scenario: Rc<RefCell<Option<String>>>,
     /// How many layouts in a row gave the window the same rect.
     settled_layouts: u32,
     mount: Option<OverlayMount>,
@@ -1659,7 +1666,7 @@ impl FeedsApp {
             settings_panel: None,
             modal: None,
             overlays_dirty: false,
-            pending_scenario: None,
+            pending_scenario: Rc::default(),
             settled_layouts: 0,
             mount: None,
             opened: Rc::default(),
@@ -1696,11 +1703,11 @@ impl FeedsApp {
     /// * `"reader-settings"` — the reading settings under their button.
     /// * `"context-menu"` — a feed's menu on its sidebar row.
     pub fn stage(&mut self, scenario: &str) {
-        self.pending_scenario = Some(scenario.to_string());
+        *self.pending_scenario.borrow_mut() = Some(scenario.to_string());
     }
 
     fn stage_pending_scenario(&mut self) {
-        let Some(scenario) = self.pending_scenario.take() else {
+        let Some(scenario) = self.pending_scenario.borrow_mut().take() else {
             return;
         };
         match scenario.as_str() {
@@ -1719,7 +1726,7 @@ impl FeedsApp {
                 drop(core);
                 let ready = self.shell.geometry().content_column.width() > 0.0;
                 if !ready {
-                    self.pending_scenario = Some(scenario);
+                    *self.pending_scenario.borrow_mut() = Some(scenario);
                     return;
                 }
                 self.toggle_settings_panel();
@@ -1740,7 +1747,7 @@ impl FeedsApp {
             "context-menu" => {
                 let row = self.core.borrow().first_feed_row.clone();
                 let Some((id, rect)) = row else {
-                    self.pending_scenario = Some(scenario);
+                    *self.pending_scenario.borrow_mut() = Some(scenario);
                     return;
                 };
                 self.core.borrow_mut().open_feed_menu(id, rect);
@@ -1773,7 +1780,8 @@ impl FeedsApp {
         };
     }
 
-    /// Attach the framework dispatcher when hosted as a resource surface.
+    /// Edit through `dispatcher`, as the framework does.
+    #[cfg(test)]
     pub(crate) fn attach_framework(&self, dispatcher: ui::framework::Dispatcher<Library>) {
         self.core.borrow_mut().dispatcher = Some(dispatcher);
     }
@@ -2121,11 +2129,15 @@ impl ui::widget::Decorator for FeedsApp {
         &mut self.shell
     }
 
+    // While a dialog is open it is the window's one live part: what its
+    // controls run reaches it, not the shell behind its scrim.
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::undo::LocalUndo>() {
             request.provide::<dyn ui::undo::LocalUndo>(self);
         } else if request.wants::<dyn ui::undo::UndoControl>() {
             request.provide::<dyn ui::undo::UndoControl>(self);
+        } else if let Some(modal) = &self.modal {
+            Widget::provide(&modal.dialog, request);
         } else {
             Widget::provide(&self.shell, request);
         }
@@ -2135,6 +2147,8 @@ impl ui::widget::Decorator for FeedsApp {
             request.provide::<dyn ui::undo::LocalUndo>(self);
         } else if request.wants::<dyn ui::undo::UndoControl>() {
             request.provide::<dyn ui::undo::UndoControl>(self);
+        } else if let Some(modal) = &mut self.modal {
+            Widget::provide_mut(&mut modal.dialog, request);
         } else {
             Widget::provide_mut(&mut self.shell, request);
         }
@@ -2166,7 +2180,9 @@ impl ui::widget::Decorator for FeedsApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
             let (doc, _) = ui::doc::document_ref(state, path);
-            self.core.borrow_mut().sync_document(doc);
+            let mut core = self.core.borrow_mut();
+            core.follow_document();
+            core.sync_document(doc);
         }
         self.take_toast();
         Widget::sync(&mut self.shell, state, path);
@@ -2182,6 +2198,7 @@ impl ui::widget::Decorator for FeedsApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.core.borrow_mut().follow_document();
         if self.settled_layouts >= SETTLED_LAYOUTS {
             self.stage_pending_scenario();
         }
@@ -2440,7 +2457,7 @@ impl ui::widget::Decorator for FeedsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.pending_scenario.is_some()
+        self.pending_scenario.borrow().is_some()
             || self.core.borrow().needs_frames()
             || Widget::needs_animation_frame(&self.shell)
     }
@@ -2597,68 +2614,129 @@ impl Core {
     }
 }
 
-impl FeedsApp {
-    pub(crate) fn present_library(&self, store: Rc<Library>) {
-        let mut core = self.core.borrow_mut();
-        let first = !core.synced;
-        core.store = store;
-        core.arrive();
+impl Core {
+    /// Show the library the document holds when it changed.
+    fn follow_document(&mut self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let held = (live.revision(), live.loads());
+        if self.presented == Some(held) {
+            return;
+        }
+        self.presented = Some(held);
+        let library = live.get();
+        self.present_library(library);
+    }
+
+    fn present_library(&mut self, store: Rc<Library>) {
+        let first = !self.synced;
+        self.store = store;
+        self.arrive();
         // A feed shown on its own that is gone (unsubscribed here or by a
         // collaborator) leaves the list on everything.
-        if matches!(&core.filter, Filter::Feed(id) if core.store.feed(id).is_none()) {
-            core.set_filter(Filter::All);
+        if matches!(&self.filter, Filter::Feed(id) if self.store.feed(id).is_none()) {
+            self.set_filter(Filter::All);
         }
-        core.ensure_selection();
-        if first && core.selected.is_none() {
-            core.select_featured();
+        self.ensure_selection();
+        if first && self.selected.is_none() {
+            self.select_featured();
         }
         // A subscription that is gone takes its recorded failure with it.
-        let store = Rc::clone(&core.store);
-        core.feed_failures.retain(|id, _| store.feed(id).is_some());
-        core.synced = true;
+        let store = Rc::clone(&self.store);
+        self.feed_failures.retain(|id, _| store.feed(id).is_some());
+        self.synced = true;
     }
-    pub(crate) fn attach_dispatcher(&self, dispatcher: ui::framework::Dispatcher<Library>) {
-        self.attach_framework(dispatcher);
+
+    /// Answer `effect`, invoked by a control, the palette, an agent or a
+    /// script.
+    fn answer(&mut self, effect: FeedsEffect, cx: &mut EffectCx<Library>) -> EffectAnswer {
+        self.follow_document();
+        match effect {
+            FeedsEffect::RefreshAll => {
+                if let Some((_, reason)) = self.refresh_unavailable() {
+                    return Err(reason.into());
+                }
+                self.refresh_all();
+                self.refresh_reply = Some(cx.reply());
+                return Ok(Effected::Pending);
+            }
+            FeedsEffect::ImportOpml => self.request_import(),
+            FeedsEffect::ExportOpml => self.export_opml(),
+            FeedsEffect::RevealTag { tag } => {
+                if !self.store.has_tag(&tag) {
+                    return Err("no article carries that tag".into());
+                }
+                self.set_filter(crate::resource::tag_filter(&tag));
+            }
+            FeedsEffect::ReaderTextLarger => {
+                self.change_read_settings(|s| s.adjust_text_percent(1))?;
+            }
+            FeedsEffect::ReaderTextSmaller => {
+                self.change_read_settings(|s| s.adjust_text_percent(-1))?;
+            }
+            FeedsEffect::ReaderFont { font } => {
+                let font = ReadFont::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.as_str() == font)
+                    .ok_or_else(|| format!("no reader font {font:?}: sans, serif or mono"))?;
+                self.change_read_settings(|s| s.font = font)?;
+            }
+            FeedsEffect::ReaderPaper { paper } => {
+                let theme = ReadTheme::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.as_str() == paper)
+                    .ok_or_else(|| format!("no reader paper {paper:?}: light, sepia or dark"))?;
+                self.change_read_settings(|s| s.theme = theme)?;
+            }
+        }
+        Ok(Effected::done())
     }
-    pub(crate) fn follow_read_settings(&self, setting: ui::framework::Setting<ReadSettings>) {
-        self.core.borrow_mut().follow_read_settings(setting);
+
+    /// Refreshing is unavailable while it runs or with nothing to refresh.
+    fn effect_statuses(&self) -> Vec<EffectStatus> {
+        self.refresh_unavailable()
+            .map(|(code, reason)| EffectStatus::unavailable(FeedsEffect::REFRESH_ALL, code, reason))
+            .into_iter()
+            .collect()
     }
-    pub(crate) fn change_read_settings(
-        &self,
-        change: impl FnOnce(&mut ReadSettings),
-    ) -> Result<(), String> {
-        self.core.borrow_mut().change_read_settings(change)
+}
+
+impl FeedsApp {
+    /// Show `store` as the document holding it would.
+    #[cfg(test)]
+    pub(crate) fn present_library(&self, store: Rc<Library>) {
+        self.core.borrow_mut().present_library(store);
     }
     #[cfg(test)]
     pub(crate) fn read_settings_for_test(&self) -> ReadSettings {
         self.core.borrow().settings
     }
-    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+}
+
+/// The Feeds window over the document's library: it shows the item a search
+/// hit or an agent's `open` names, answers [`FeedsEffect`] and stages the
+/// captures.
+pub(crate) fn window(cx: &ViewCx<Library>) -> ui::widget::Element {
+    let app = FeedsApp::new();
+    {
+        let mut core = app.core.borrow_mut();
+        core.live = Some(cx.live().clone());
+        core.dispatcher = Some(cx.dispatcher());
+        core.follow_read_settings(cx.settings::<ReadSettings>());
+        core.follow_document();
+    }
+    // A picked search hit (or an agent's `open`) shows its item.
+    cx.on_open_item(app.opener());
+    let core = Rc::clone(&app.core);
+    let statuses = Rc::clone(&app.core);
+    cx.effects(move |effect: FeedsEffect, cx| core.borrow_mut().answer(effect, cx))
+        .status(move || statuses.borrow().effect_statuses());
+    let pending = Rc::clone(&app.pending_scenario);
+    cx.on_stage(move |scenario| {
         if let Some(name) = scenario {
-            self.stage(name);
+            *pending.borrow_mut() = Some(name.to_owned());
         }
-    }
-    pub(crate) fn refresh_for(&self, reply: ui::framework::EffectReply) {
-        let mut core = self.core.borrow_mut();
-        core.refresh_all();
-        core.refresh_reply = Some(reply);
-    }
-    pub(crate) fn refresh_unavailable(&self) -> Option<(&'static str, &'static str)> {
-        self.core.borrow().refresh_unavailable()
-    }
-    pub(crate) fn request_import(&self) {
-        self.core.borrow_mut().request_import();
-    }
-    pub(crate) fn export_opml(&self) {
-        self.core.borrow_mut().export_opml();
-    }
-    /// Show the articles tagged `tag`.
-    pub(crate) fn reveal_tag(&self, tag: &str) -> Result<(), String> {
-        let mut core = self.core.borrow_mut();
-        if !core.store.has_tag(tag) {
-            return Err("no article carries that tag".into());
-        }
-        core.set_filter(crate::resource::tag_filter(tag));
-        Ok(())
-    }
+    });
+    Box::new(app)
 }

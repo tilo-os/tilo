@@ -761,12 +761,10 @@ impl LogsWindow {
 
     /// Show the filter the document holds when it changed.
     fn follow_document(&mut self) {
-        let held = (self.live.revision(), self.live.loads());
-        if self.presented == Some(held) {
+        let Some(shown) = self.live.changed_since(&mut self.presented) else {
             return;
-        }
-        self.presented = Some(held);
-        let filter = self.live.with(Logs::filter);
+        };
+        let filter = Logs::filter(&shown);
         self.journal.borrow_mut().adopt_filter(filter);
     }
 

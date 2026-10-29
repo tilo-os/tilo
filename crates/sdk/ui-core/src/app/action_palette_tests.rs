@@ -341,7 +341,7 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
             );
             app.actions
                 .action_palette
-                .as_mut()
+                .as_deref_mut()
                 .unwrap()
                 .set_query("Flip it");
             assert!(
@@ -390,7 +390,7 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         app.open_action_palette();
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query("restricted");
         // A query advances one provider page immediately; remaining providers
@@ -399,7 +399,7 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         let mut progress = app
             .actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .advance_search_page();
         for _ in 0..8 {
@@ -409,7 +409,7 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
             progress = app
                 .actions
                 .action_palette
-                .as_mut()
+                .as_deref_mut()
                 .unwrap()
                 .advance_search_page();
         }
@@ -743,7 +743,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         // action, its row is the top one.
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query("Flip it");
         app.needs_sync = false;
@@ -830,7 +830,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         app.open_action_palette();
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query("ada");
         let labels = app.action_palette().unwrap().result_labels();
@@ -886,7 +886,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         app.open_action_palette();
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query("focus");
         assert!(app.action_palette_handle_key(&synth_enter()));
@@ -930,7 +930,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         app.open_action_palette();
         app.actions
             .action_palette
-            .as_mut()
+            .as_deref_mut()
             .unwrap()
             .set_query("focus");
         let labels = app.action_palette().unwrap().result_labels();

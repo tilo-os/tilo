@@ -11,7 +11,8 @@
 //! it, and until it opens nothing else marks it as wanted.
 //!
 //! A runtime is needed while any installed package names it: as its
-//! `runtime`, or among its manifest's `optional-runtimes`. Both the user's
+//! `runtime`, or among the further runtimes it requires (`optional-runtimes`).
+//! Both the user's
 //! store and the image's count, and so does every payload tree an update
 //! left behind because a launch held it or a running app had it mounted:
 //! that launch runs on the old build's runtime. A manifest that cannot be
@@ -227,7 +228,7 @@ pub fn retained_runtimes(packages: &Path) -> io::Result<BTreeSet<String>> {
     Ok(versions)
 }
 
-/// The runtime and optional runtimes the manifest `text` of `who` names.
+/// The runtime and required runtimes the manifest `text` of `who` names.
 fn manifest_runtimes(text: &str, who: &str) -> io::Result<Vec<String>> {
     let manifest = tilo_app_package::Manifest::from_toml_str(text)
         .map_err(|error| io::Error::other(format!("{who}: manifest: {error}")))?;
@@ -241,7 +242,7 @@ fn manifest_runtimes(text: &str, who: &str) -> io::Result<Vec<String>> {
     versions.extend(
         manifest
             .package
-            .optional_runtimes
+            .required_runtimes
             .iter()
             .filter_map(|raw| version_of(raw)),
     );

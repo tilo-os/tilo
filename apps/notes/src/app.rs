@@ -320,13 +320,13 @@ pub struct NotesApp {
     workspace: Workspace,
     sidebar: PageSidebar,
     /// The open note's headings, under the page tree.
-    outline: crate::outline::NotesOutline,
+    outline: Box<crate::outline::NotesOutline>,
     note_menu: ContextMenu,
     note_menu_target: Option<PageId>,
     note_menu_editor: bool,
     note_menu_table: Option<(String, usize, usize)>,
     note_menu_table_source: Option<String>,
-    main: MainPanel,
+    main: Box<MainPanel>,
     /// The note's save + page/word status, surfaced on the save status
     /// surface (see `save_status`) instead of a permanent strip.
     status: StatusModel,
@@ -348,7 +348,7 @@ pub struct NotesApp {
     /// The window shell: the header row, the sidebar toggle, the regions and
     /// the drawer. The page tree and the note panel are laid out in the slots
     /// it places (see [`crate::columns`]).
-    shell: NavShell,
+    shell: Box<NavShell>,
     /// Where the shell put the two columns, written by its slots.
     columns: Columns,
     /// What the shell's header buttons asked for.
@@ -598,7 +598,7 @@ impl NotesApp {
         let mut app = Self::build_widget(workspace, sidebar, main);
         // The pictures are read like any later ones, without waiting here.
         app.refresh_canonical_assets();
-        app.main = app.main.project_canonical(doc, &app.workspace)?;
+        *app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
         app.projection_adopted = true;
         app.refresh_link_pages();
@@ -717,8 +717,8 @@ impl NotesApp {
             note_menu_table: None,
             note_menu_table_source: None,
             sidebar,
-            outline: crate::outline::NotesOutline::new(),
-            main,
+            outline: Box::new(crate::outline::NotesOutline::new()),
+            main: Box::new(main),
             status: StatusModel::new(),
             word_count: None,
             link_copy: ui::CopyWatch::default(),
@@ -726,7 +726,7 @@ impl NotesApp {
             undo_requested: false,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
-            shell,
+            shell: Box::new(shell),
             columns,
             header,
             header_in_bar: false,
@@ -912,8 +912,8 @@ impl NotesApp {
     fn popup_open(&self) -> bool {
         self.sidebar.menu_is_open()
             || self.main.has_editor_popup()
-            || Widget::modal_capture(&self.shell).is_some()
-            || Widget::modal_capture(&self.main).is_some()
+            || Widget::modal_capture(&*self.shell).is_some()
+            || Widget::modal_capture(&*self.main).is_some()
             || Widget::modal_capture(self.sidebar.tree()).is_some()
     }
 
@@ -2265,7 +2265,7 @@ impl NotesApp {
 
     /// The laid-out rect of the shell's control with test id `id`.
     fn header_button_rect(&self, id: &str) -> Option<Rect> {
-        ui::widget::find_test_id(&self.shell, id).map(Widget::get_rect)
+        ui::widget::find_test_id(&*self.shell, id).map(Widget::get_rect)
     }
 
     /// Test hook: whether a live page-tree drag is in flight.
@@ -2474,7 +2474,7 @@ impl ui::application_view::ApplicationViewState for NotesApp {
             .active_tag
             .filter(|id| workspace.tags().iter().any(|tag| tag.id == *id));
         // All validation/projection above precedes the first saved local change.
-        self.main = main;
+        *self.main = main;
         // The notes that changed since the window last showed the notebook
         // are indexed again for search and links.
         self.adopt(workspace);
@@ -3078,18 +3078,18 @@ impl Widget for NotesApp {
     fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::with_capacity(6);
         if SHELL_PRESENTS_HISTORY.get() {
-            children.push(&self.shell);
+            children.push(&*self.shell);
         }
         if self.sidebar_shown() {
             if self.outline_node.is_some() {
-                children.push(&self.outline);
+                children.push(&*self.outline);
             }
             children.push(self.sidebar.tree());
         }
         if self.note_menu.is_open() {
             children.push(&self.note_menu);
         }
-        children.push(&self.main);
+        children.push(&*self.main);
         children.push(&self.shortcuts);
         children
     }
@@ -3098,18 +3098,18 @@ impl Widget for NotesApp {
         let show_sidebar = self.sidebar_shown();
         let mut children: Vec<&mut dyn Widget> = Vec::with_capacity(6);
         if SHELL_PRESENTS_HISTORY.get() {
-            children.push(&mut self.shell);
+            children.push(&mut *self.shell);
         }
         if show_sidebar {
             if self.outline_node.is_some() {
-                children.push(&mut self.outline);
+                children.push(&mut *self.outline);
             }
             children.push(self.sidebar.tree_mut());
         }
         if self.note_menu.is_open() {
             children.push(&mut self.note_menu);
         }
-        children.push(&mut self.main);
+        children.push(&mut *self.main);
         children.push(&mut self.shortcuts);
         children
     }

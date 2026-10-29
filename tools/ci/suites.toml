@@ -56,6 +56,10 @@ by = "os/tests/test_image_size_budget.py"
 suite = "tools/test-assets.py"
 by = "tools/tests/test_test_assets.py"
 
+[[covered]]
+suite = "tools/test-env-setup.sh"
+by = "tools/tests/test_test_environment.py"
+
 [[group]]
 name = "android-runtime-supervisor"
 requirement = { cores = 1, memory = "1GiB" }
@@ -922,6 +926,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
+  "crates/platform/tilolang-tilo/tests/reflection.rs",
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
 ]
 
@@ -1551,6 +1556,13 @@ inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "t
 readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs", "crates/browser/tilo-browser-peer/tests/headless_audio_lifetime.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "scripts/moq-browser/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
+[[cargo]]
+package = "tilo-test-env"
+# The ci profile's setup (its nextest setup scripts) and the audio endpoint
+# that ends with its owner.
+inputs = [".config/nextest.toml", "tools/test-env-setup.sh", "tools/with-headless-audio.sh", "tools/with-test-environment.sh"]
+readers = ["crates/dev/test-env/tests/run_environment.rs"]
+
 [[cargo-exempt]]
 file = "crates/session/shell/tests/headless_examples_smoke.rs"
 reason = "#[ignore]d: runs scripts/headless-examples/ against a built compositor on request"
@@ -2000,7 +2012,7 @@ reason = "the nightly workspace-test checks' runner (t.toml); it runs the worksp
 
 [[unrequired]]
 suite = "tools/test-env.sh"
-reason = "the test environment tools/ci/t-nextest.sh sources, not a suite of its own"
+reason = "the test environment for commands that are not a nextest run, not a suite of its own"
 
 [[unrequired]]
 suite = "os/tests/trust_input_copy_equivalence.py"
@@ -2032,7 +2044,7 @@ reason = "drives distrobox and host GPU encoders"
 
 [[unrequired]]
 suite = "scripts/test-local.sh"
-reason = "developer entry point for the Rust suite, which CI runs through tools/test-env.sh"
+reason = "developer entry point for the Rust suite, which CI runs with nextest's ci profile"
 
 [[unrequired]]
 suite = "scripts/two-host-sync-test.sh"
