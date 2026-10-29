@@ -1541,6 +1541,7 @@ impl App {
     /// technology activates a hand-hit-tested control: the press a person
     /// makes on it, through the window's own input path. Whether the window
     /// shows such a control.
+    #[cfg(feature = "native")]
     pub(super) fn activate_test_id(&mut self, test_id: &str) -> bool {
         fn find(widget: &dyn Widget, test_id: &str) -> Option<KurboRect> {
             if widget.test_id() == Some(test_id) {
