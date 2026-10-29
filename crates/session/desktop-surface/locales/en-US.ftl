@@ -1253,3 +1253,19 @@ people-follows = Following { $person }
 people-follows-you = Following you
 people-follows-where = { $place }, following { $person }
 people-follows-you-where = { $place }, following you
+
+## The desktop's published actions
+desktop-actions-chrome = Desktop
+desktop-actions-desk = Windows
+desktop-action-toggle-overview = Show or hide the overview
+desktop-action-toggle-quick-settings = Show or hide quick settings
+desktop-action-toggle-tilo-menu = Show or hide the Tilo menu
+desktop-action-toggle-workspace-menu = Show or hide the workspace menu
+desktop-action-switch-workspace = Go to another workspace
+desktop-action-step-strip = Go to another strip
+desktop-action-new-workspace = New workspace
+desktop-action-focus-tab = Bring a window forward
+desktop-action-close-tab = Close a window
+desktop-action-open-search = Search
+desktop-action-param-delta = How many workspaces on, back when negative
+desktop-action-param-steps = How many strips on, back when negative
