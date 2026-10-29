@@ -17,15 +17,16 @@ impl TubeApp {
     /// The window bar's slots for what the window shows now.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {
         let mut toolbar = self.shell.window_toolbar();
-        let title = screens::title(&self.model.route);
+        let tube = self.tube.borrow();
+        let title = screens::title(&tube.model.route);
         toolbar.location = (!title.is_empty()).then(|| ToolbarLocation {
             label: title,
             ..ToolbarLocation::default()
         });
-        if matches!(self.model.route, Route::History) && !self.model.history.is_empty() {
+        if matches!(tube.model.route, Route::History) && !tube.model.history.is_empty() {
             NavShell::push_window_actions(
                 &mut toolbar,
-                [self
+                [tube
                     .bar
                     .entry(
                         "trash",
@@ -47,8 +48,9 @@ impl TubeApp {
             if self.shell.window_toolbar_event(&event) {
                 continue;
             }
-            if let Some(action) = self.bar.pressed(&event) {
-                action::push(&self.bus, action);
+            let tube = self.tube.borrow();
+            if let Some(action) = tube.bar.pressed(&event) {
+                action::push(&tube.bus, action);
             }
         }
         asked
@@ -78,20 +80,21 @@ mod tests {
 
     #[test]
     fn the_window_bar_names_the_screen_and_the_page_titles_itself() {
-        let mut app = TubeApp::sample();
+        let app = TubeApp::sample();
         assert_eq!(location(&app).as_deref(), Some("Home"));
         assert!(action_names(&app).is_empty(), "{:?}", action_names(&app));
-        app.apply(Action::Navigate(Route::Search("donut".into())));
+        app.tube()
+            .apply(Action::Navigate(Route::Search("donut".into())));
         assert_eq!(location(&app).as_deref(), Some("Search: donut"));
-        app.apply(Action::OpenVideo("vid_donut".into()));
+        app.tube().apply(Action::OpenVideo("vid_donut".into()));
         assert_eq!(location(&app), None, "a video page titles itself");
     }
 
     #[test]
     fn clear_history_is_the_window_bars_on_a_history_with_videos() {
         let mut app = TubeApp::sample();
-        app.apply(Action::OpenVideo("vid_donut".into()));
-        app.apply(Action::Navigate(Route::History));
+        app.tube().apply(Action::OpenVideo("vid_donut".into()));
+        app.tube().apply(Action::Navigate(Route::History));
         let clear = app
             .window_toolbar()
             .actions
@@ -100,16 +103,16 @@ mod tests {
             .expect("the History screen offers Clear history in the bar");
         assert!(clear.menu, "a destructive action waits in the bar's menu");
 
-        action::drain(&app.bus);
+        action::drain(&app.tube().bus);
         ui::window_toolbar::deliver(ToolbarEvent::Action { id: clear.id });
         assert!(app.take_window_toolbar_events());
         assert_eq!(
-            action::drain(&app.bus),
+            action::drain(&app.tube().bus),
             [Action::Effect(TubeEffect::ClearHistory)],
             "the bar's press asks for the same effect the palette runs"
         );
 
-        app.perform(TubeEffect::ClearHistory).unwrap();
+        app.tube().perform(TubeEffect::ClearHistory).unwrap();
         assert!(
             !action_names(&app).contains(&"Clear history".to_owned()),
             "an empty history offers nothing to clear"

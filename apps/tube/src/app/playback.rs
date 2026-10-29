@@ -14,7 +14,7 @@ use crate::i18n::{arg, t, t_args};
 use crate::model::Route;
 use crate::screens;
 
-use super::{PLAYBACK_SPEEDS, QUALITIES, TubeApp};
+use super::{PLAYBACK_SPEEDS, QUALITIES, Tube};
 
 /// How far the playhead moves between two writes of the watch history: a
 /// two-hour video is a few hundred small edits, not one per frame, and still
@@ -27,7 +27,7 @@ pub(super) fn pump_player(player: &mut VideoPlayer) {
     player.sync(&(), &());
 }
 
-impl TubeApp {
+impl Tube {
     /// If the current route is a watch page we haven't started playing yet, ask
     /// the worker to resolve + decode a real stream for it — exactly once per
     /// watch-open. Online-only, so the offline `--shots`/test paths never spawn

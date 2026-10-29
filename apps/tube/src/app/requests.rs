@@ -8,9 +8,9 @@ use crate::api::{Request, Update, Worker};
 use crate::i18n::t;
 use crate::model::Route;
 
-use super::TubeApp;
+use super::Tube;
 
-impl TubeApp {
+impl Tube {
     /// Start a bounded background request without ever stalling UI input.
     /// Returns false only when the worker could not accept the newest intent;
     /// in that case [`Self::request_rejected`] has already made the outcome

@@ -1,4 +1,6 @@
-//! `TubeApp` — the root widget.
+//! The Tube window: the [`Tube`] the view shares with its effect handler
+//! (the catalogue, navigation, playback and the network worker) and the
+//! [`TubeApp`] widget that lays it out in its shell.
 //!
 //! Tube renders a single in-memory [`TubeModel`]. The shared library in it
 //! (likes, queue, subscriptions, comment likes) is what the resource was
@@ -22,7 +24,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::{AppModel, Element, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -30,7 +32,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::framework::{Actions, Dispatcher, PersonRecord};
+use ui::framework::{Actions, Dispatcher, Effected, Live, PersonRecord, Publishes, ViewCx};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -66,7 +68,7 @@ type ScrollCell = Rc<Cell<(f32, f32)>>;
     reason = "each bool is an independent render/interaction cache (rebuild-dirty flags, \
               --shots staging, sidebar bookkeeping), not a state machine"
 )]
-pub struct TubeApp {
+pub(crate) struct Tube {
     model: TubeModel,
     /// Where library edits and effects go: the framework's door for the
     /// resource. `None` until the framework attaches the surface; a bare
@@ -86,8 +88,6 @@ pub struct TubeApp {
     bus: ActionBus,
     /// The window bar's entries, each carrying the action it asks for.
     bar: ui::framework::BarCommands<Action>,
-    /// Whether browsing can go back, read by the shell's Back chip.
-    can_go_back: Rc<std::cell::Cell<bool>>,
     worker: Option<Worker>,
     /// Wakes this window when the worker posts a result; the framework's,
     /// from [`Self::wake_with`]. Detached (waking nothing) until attached.
@@ -96,24 +96,6 @@ pub struct TubeApp {
     device_sync: crate::sync::DeviceSync,
     #[cfg(feature = "grayjay-sync")]
     device_sync_seeded: bool,
-
-    /// The window shell: the navigation rail and the current screen. It lives as long as the app, so the person's sidebar choice
-    /// and its motion survive navigation; `build_layout` swaps the screen
-    /// into it when the structure, theme or width changed.
-    shell: NavShell,
-    /// The current screen has been built into `shell` at least once.
-    shell_built: bool,
-    /// The transient notice ("Link copied", a skipped segment) last shown
-    /// as the shell's toast.
-    toasted: u64,
-    /// Live `YouTube` search answers handed to the platform search.
-    /// A structural change the host took from `take_structure_dirty` that
-    /// the next `build_layout` has not rebuilt yet.
-    shell_stale: bool,
-    /// Theme and width the current shell was built for.
-    shell_key: Option<u64>,
-    child_node: Option<NodeId>,
-    rect: Rect,
 
     structure_dirty: bool,
     /// Process-local text for the top-bar search. `TextInput::from_state`
@@ -128,13 +110,6 @@ pub struct TubeApp {
     /// the row that searches it.
     suggested: crate::suggest::Suggested,
 
-    /// The user's explicit sidebar preference for this session, carried
-    /// across the structural rebuilds that recreate the widget tree. `None`
-    /// means "follow the layout default" (docked ⇒ open, overlay ⇒ closed);
-    /// the hamburger / scrim / Esc set it to `Some(_)`. The live [`NavSplit`]
-    /// owns the canonical state per frame; this mirrors it so a navigation
-    /// rebuild doesn't snap the flap back to its default.
-    sidebar_open: Option<bool>,
     /// Whether this instance should reach out to the live data backend. Set by
     /// [`TubeApp::online`] — the live binary turns it on; the `--shots` /
     /// offscreen path leaves it off so every screenshot stays hermetic on the
@@ -195,10 +170,6 @@ pub struct TubeApp {
     /// The stack is the source of truth for "can I go back" and "where to"; the
     /// live `model.route` mirrors its current entry.
     nav: ui::NavStack<Route>,
-    /// The left-edge back-gesture recognizer (toolkit primitive). Pointer events
-    /// feed it; a recognized swipe pushes [`Action::Back`], so swipe-nav works at
-    /// the toolkit layer without app-specific gesture code.
-    back_gesture: ui::EdgeSwipeBack,
     /// Per-view scroll positions, keyed by a route's view key, so returning to a
     /// view (via Back or re-navigation) restores exactly where it was scrolled —
     /// and a structural rebuild never snaps the scroll back to the top. Shared
@@ -208,6 +179,57 @@ pub struct TubeApp {
     /// Channels whose avatar/subscriber fetch is already in flight, so opening a
     /// watch page (or re-rendering) never re-requests the same channel.
     requested_channels: HashSet<String>,
+    /// What the window's shell is asked to do next, from an effect or an
+    /// action that ran away from it.
+    shell_asks: Vec<ShellAsk>,
+}
+
+/// What [`Tube`] asks of the window's shell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ShellAsk {
+    ToggleSidebar,
+    /// Close the sidebar when it covers the content.
+    DismissOverlayRail,
+    /// Show the sidebar now, without its motion (the narrow still).
+    OpenSidebar,
+    /// The sidebar dragged out to this width (the sidebar-list still).
+    SidebarWidth(f64),
+}
+
+/// The [`Tube`] as the window and the view's effect handler share it.
+pub(crate) type Shared = Rc<RefCell<Tube>>;
+
+/// The window: the shared [`Tube`] in a [`NavShell`], its current screen
+/// rebuilt when the structure, the theme or the width changed.
+pub struct TubeApp {
+    tube: Shared,
+    /// The library as the document holds it, shown as it changes; `None`
+    /// for a window outside the framework.
+    live: Option<Live<Library>>,
+    /// The `(revision, loads)` of the library last shown.
+    presented: Option<(u64, u64)>,
+    /// Whether browsing can go back, read by the shell's Back chip.
+    can_go_back: Rc<Cell<bool>>,
+    /// The window shell: the navigation rail and the current screen. It
+    /// lives as long as the window, so the person's sidebar choice and its
+    /// motion survive navigation; `build_layout` swaps the screen into it
+    /// when the structure, theme or width changed.
+    shell: NavShell,
+    /// The current screen has been built into `shell` at least once.
+    shell_built: bool,
+    /// The transient notice ("Link copied", a skipped segment) last shown
+    /// as the shell's toast.
+    toasted: u64,
+    /// A structural change the host took from `take_structure_dirty` that
+    /// the next `build_layout` has not rebuilt yet.
+    shell_stale: bool,
+    /// Theme and width the current shell was built for.
+    shell_key: Option<u64>,
+    child_node: Option<NodeId>,
+    rect: Rect,
+    /// The left-edge back-gesture recognizer (toolkit primitive). Pointer
+    /// events feed it; a recognized swipe pushes [`Action::Back`].
+    back_gesture: ui::EdgeSwipeBack,
     /// Last pointer position (logical px), tracked so a mouse-button press can
     /// seed the edge-swipe back gesture with the press point.
     last_pointer: Point,
@@ -220,13 +242,106 @@ impl Default for TubeApp {
 }
 
 impl TubeApp {
-    /// An instance with no catalogue and no network: Home renders its
+    /// A window with no catalogue and no network: Home renders its
     /// "Nothing to show yet" empty state and nothing is fetched until
     /// [`Self::online`]. A past version of the library is shown in this.
     pub fn new() -> Self {
-        let bus = action::new_bus();
+        Self::over(Tube::new())
+    }
+
+    /// The window over `tube`.
+    pub(crate) fn over(tube: Tube) -> Self {
         let can_go_back = Rc::new(Cell::new(false));
-        let shell = Self::new_shell(&bus, &can_go_back);
+        let shell = Self::new_shell(&tube.bus, &can_go_back);
+        Self {
+            tube: Rc::new(RefCell::new(tube)),
+            live: None,
+            presented: None,
+            can_go_back,
+            shell,
+            shell_built: false,
+            toasted: 0,
+            shell_stale: true,
+            shell_key: None,
+            child_node: None,
+            rect: Rect::ZERO,
+            back_gesture: ui::EdgeSwipeBack::default_back(),
+            last_pointer: Point::ZERO,
+        }
+    }
+
+    /// What the window shows, shared with the view's effect handler.
+    pub(crate) fn tube(&self) -> std::cell::RefMut<'_, Tube> {
+        self.tube.borrow_mut()
+    }
+
+    /// The window's [`Tube`] itself, for the view that shares it.
+    pub(crate) fn shared(&self) -> Shared {
+        Rc::clone(&self.tube)
+    }
+
+    /// An offline window over the bundled sample catalogue, which captures
+    /// and tests review: invented channels, invented view counts.
+    #[cfg(feature = "samples")]
+    pub fn sample() -> Self {
+        Self::over(Tube::sample())
+    }
+
+    /// Opt this window into live data: see [`Tube::online`].
+    #[must_use]
+    pub fn online(self) -> Self {
+        self.tube().go_online();
+        self
+    }
+
+    /// Show the library the document holds now, when it changed since.
+    fn follow_document(&mut self) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        let held = (live.revision(), live.loads());
+        if self.presented == Some(held) {
+            return;
+        }
+        self.presented = Some(held);
+        live.with(|library| self.tube.borrow_mut().present_library(library));
+    }
+
+    /// Do what the shell was asked to: from an effect, a staged scenario or
+    /// an action that ran away from it.
+    fn answer_shell_asks(&mut self) {
+        let asks = std::mem::take(&mut self.tube().shell_asks);
+        for ask in asks {
+            match ask {
+                ShellAsk::ToggleSidebar => self.shell.toggle_sidebar(),
+                ShellAsk::DismissOverlayRail => {
+                    if !self.shell.geometry().side_by_side && self.shell.is_sidebar_open() {
+                        self.shell.toggle_sidebar();
+                    }
+                }
+                ShellAsk::OpenSidebar => {
+                    self.shell.open_sidebar();
+                    self.shell.snap();
+                }
+                ShellAsk::SidebarWidth(width) => self.shell.stage_sidebar_width(width),
+            }
+        }
+    }
+
+    fn new_shell(bus: &ActionBus, can_go_back: &Rc<std::cell::Cell<bool>>) -> NavShell {
+        let can = Rc::clone(can_go_back);
+        let bus = Rc::clone(bus);
+        NavShell::new()
+            .content_kind(ui::widget::ContentKind::Grid)
+            .with_id("tube_shell")
+            .with_window_toolbar()
+            .on_back(move || can.get(), move || action::push(&bus, Action::Back))
+    }
+}
+
+impl Tube {
+    fn new() -> Self {
+        let bus = action::new_bus();
         Self {
             model: TubeModel::default(),
             dispatcher: None,
@@ -242,19 +357,10 @@ impl TubeApp {
             device_sync: crate::sync::DeviceSync::default(),
             #[cfg(feature = "grayjay-sync")]
             device_sync_seeded: false,
-            shell,
-            can_go_back,
-            shell_built: false,
-            toasted: 0,
-            shell_stale: true,
-            shell_key: None,
-            child_node: None,
-            rect: Rect::ZERO,
             structure_dirty: false,
             search_query: ui::LocalState::new(String::new()),
             palette_query: String::new(),
             suggested: crate::suggest::Suggested::default(),
-            sidebar_open: None,
             online: false,
             kicked_off: false,
             playing_id: None,
@@ -268,10 +374,9 @@ impl TubeApp {
             show_skip_end: None,
             mpris_started: false,
             nav: ui::NavStack::new(Route::Home),
-            back_gesture: ui::EdgeSwipeBack::default_back(),
             scroll_cells: RefCell::new(HashMap::new()),
             requested_channels: HashSet::new(),
-            last_pointer: Point::ZERO,
+            shell_asks: Vec::new(),
         }
     }
 
@@ -284,31 +389,6 @@ impl TubeApp {
             changed |= self.apply(action);
         }
         changed
-    }
-
-    /// The window shell: a docked sidebar of destinations beside the
-    /// screen, the screen's title and actions in the window's bar, and
-    /// the shell's Back for the pages reached by browsing (a video, its
-    /// creator, a playlist). Escape, Alt+Left, the mouse back button and an
-    /// edge swipe do the same.
-    fn sidebar_currently_open(&self) -> bool {
-        self.shell.is_sidebar_open()
-    }
-
-    fn dismiss_overlay_rail(&mut self) {
-        if !self.shell.geometry().side_by_side && self.shell.is_sidebar_open() {
-            self.shell.toggle_sidebar();
-        }
-    }
-
-    fn new_shell(bus: &ActionBus, can_go_back: &Rc<std::cell::Cell<bool>>) -> NavShell {
-        let can = Rc::clone(can_go_back);
-        let bus = Rc::clone(bus);
-        NavShell::new()
-            .content_kind(ui::widget::ContentKind::Grid)
-            .with_id("tube_shell")
-            .with_window_toolbar()
-            .on_back(move || can.get(), move || action::push(&bus, Action::Back))
     }
 
     #[allow(
@@ -338,25 +418,21 @@ impl TubeApp {
                     .ok_or_else(|| format!("there is no result type `{kind}`"))?;
                 self.model.search_type_filter.click(kind);
             }
-            TubeEffect::ToggleSidebar => {
-                let now = self.sidebar_currently_open();
-                self.sidebar_open = Some(!now);
-                self.shell.toggle_sidebar();
-            }
+            TubeEffect::ToggleSidebar => self.shell_asks.push(ShellAsk::ToggleSidebar),
             TubeEffect::OpenVideo { video } => {
                 self.adopt_suggested(&video);
                 if self.model.video(&video).is_none() {
                     return Err("That video is no longer available".into());
                 }
                 self.open_video(video);
-                self.dismiss_overlay_rail();
+                self.shell_asks.push(ShellAsk::DismissOverlayRail);
             }
             TubeEffect::OpenCreator { creator } => {
                 if self.model.channel(&creator).is_none() {
                     return Err("That creator is no longer available".into());
                 }
                 self.navigate_to(Route::Channel(creator.clone()));
-                self.dismiss_overlay_rail();
+                self.shell_asks.push(ShellAsk::DismissOverlayRail);
                 self.request_live(Request::Channel(creator));
             }
             TubeEffect::OpenPlaylist { playlist } => {
@@ -364,7 +440,7 @@ impl TubeApp {
                     return Err("That playlist is no longer available".into());
                 }
                 self.navigate_to(Route::Playlist(playlist.clone()));
-                self.dismiss_overlay_rail();
+                self.shell_asks.push(ShellAsk::DismissOverlayRail);
                 self.request_live(Request::PlaylistPage(playlist));
             }
             TubeEffect::Search { query } => {
@@ -374,7 +450,7 @@ impl TubeApp {
                 }
                 self.search_query.set(query.to_owned());
                 self.apply(Action::SubmitSearch);
-                self.dismiss_overlay_rail();
+                self.shell_asks.push(ShellAsk::DismissOverlayRail);
             }
             TubeEffect::TogglePlayback => {
                 self.player.borrow_mut().toggle_play();
@@ -666,7 +742,7 @@ impl TubeApp {
     /// An offline instance over the bundled sample catalogue, which captures
     /// and tests review: invented channels, invented view counts.
     #[cfg(feature = "samples")]
-    pub fn sample() -> Self {
+    fn sample() -> Self {
         Self {
             model: crate::sample::model(),
             ..Self::new()
@@ -679,8 +755,7 @@ impl TubeApp {
     /// spawns the fetch worker and requests the home/trending feed; if the
     /// network is unreachable (or the `live` feature is off) the worker reports
     /// an offline state and Home explains that no live catalogue is available.
-    #[must_use]
-    pub fn online(mut self) -> Self {
+    fn go_online(&mut self) {
         // Device sync starts at framework attachment, using that host's secret
         // store and paired-device settings rather than opening a second store.
         self.online = true;
@@ -691,7 +766,6 @@ impl TubeApp {
         // network fetcher. Kept off the offline/`--shots` path (which never
         // calls `online`) so screenshots stay hermetic.
         self.images = Some(crate::images::image_store());
-        self
     }
 
     /// Show the shared library the resource holds: likes, the queue,
@@ -773,12 +847,6 @@ impl TubeApp {
         self.follow_history();
     }
 
-    /// Crate-internal read-only model view, so [`crate::actions`] can publish the
-    /// open-resource tree (the playing video + its comments) for Ctrl+K.
-    pub(crate) fn model_ref(&self) -> &TubeModel {
-        &self.model
-    }
-
     /// What device sync shows: its status and the paired devices.
     #[cfg(feature = "grayjay-sync")]
     pub(crate) fn device_sync_view(&self) -> &crate::sync::SyncView {
@@ -795,137 +863,6 @@ impl TubeApp {
         static UNAVAILABLE: std::sync::LazyLock<crate::sync::SyncView> =
             std::sync::LazyLock::new(crate::sync::SyncView::default);
         &UNAVAILABLE
-    }
-
-    /// The UI context the screens are built from.
-    fn ui<'a>(&'a self, theme: &'a Theme) -> screens::Ui<'a> {
-        screens::Ui {
-            model: &self.model,
-            theme,
-            bus: &self.bus,
-            actions: self.actions.as_ref(),
-            imgs: crate::images::Imgs(self.images.as_ref()),
-            content_width: self.content_width(theme),
-            waiting: &self.waiting,
-        }
-    }
-
-    /// The current screen, ready for the shell's content column.
-    fn build_screen(&self, theme: &Theme) -> Box<dyn Widget> {
-        self.waiting.begin_build();
-        let screen = self.build_route(theme);
-        self.waiting.end_build();
-        screen
-    }
-
-    fn build_route(&self, theme: &Theme) -> Box<dyn Widget> {
-        let ui = self.ui(theme);
-        let content = match &self.model.route {
-            Route::Home => screens::home(ui),
-            Route::Search(query) => screens::search_results(ui, query),
-            Route::Trending => screens::trending(ui),
-            Route::Subscriptions => screens::subscriptions(ui),
-            Route::Queue => screens::queue(ui),
-            Route::History => screens::history(ui),
-            Route::Settings => {
-                #[cfg(feature = "grayjay-sync")]
-                {
-                    screens::settings_with_sync(
-                        ui,
-                        self.device_sync.view(),
-                        self.device_sync.pairing_input.clone(),
-                    )
-                }
-                #[cfg(not(feature = "grayjay-sync"))]
-                {
-                    screens::settings(ui)
-                }
-            }
-            Route::Watch(id) => screens::watch(
-                ui,
-                id,
-                (self.content_width(theme), self.content_height(theme)),
-                self.player.clone(),
-            ),
-            Route::Channel(id) => screens::channel(ui, id),
-            Route::Playlist(id) => screens::playlist(ui, id),
-        };
-        // Each view keeps its scroll position across rebuilds and returns to
-        // it via Back.
-        Box::new(content.with_persisted_offset(self.scroll_cell_for(&self.model.route)))
-    }
-
-    /// The navigation sidebar: Tube's destinations, the current one
-    /// selected. The shell shows them as a rail by default and as a list
-    /// once the person widens it.
-    /// Choosing one invokes the same published navigation action an agent or
-    /// the palette uses.
-    fn build_rail(&self) -> NavList {
-        use ui::icons::Icon;
-        let item = |route: &Route, label: &str, icon: Icon| {
-            NavItem::new(route.nav_section(), label).icon(icon)
-        };
-        let mut list = NavList::new(vec![NavSection::untitled(
-            "destinations",
-            vec![
-                item(&Route::Home, &t("tube-nav-home"), Icon::Home),
-                item(&Route::Trending, &t("tube-nav-trending"), Icon::Flame),
-                item(
-                    &Route::Subscriptions,
-                    &t("tube-nav-subscriptions"),
-                    Icon::GalleryVerticalEnd,
-                ),
-                item(&Route::Queue, &t("tube-nav-queue"), Icon::ListVideo),
-                item(&Route::History, &t("tube-nav-history"), Icon::History),
-                item(&Route::Settings, &t("tube-nav-settings"), Icon::Settings),
-            ],
-        )])
-        .with_accessible_name(t("tube-nav-name"))
-        .on_view("tube_rail", {
-            let bus = self.bus.clone();
-            move |id| action::push(&bus, Action::Effect(TubeEffect::ShowScreen { screen: id }))
-        });
-        list.set_selected(Some(self.model.route.nav_section()));
-        list
-    }
-
-    /// Put the current screen, the rail and the header into the shell.
-    fn rebuild_shell(&mut self, theme: &Theme) {
-        let screen = self.build_screen(theme);
-        self.can_go_back.set(self.nav.can_go_back());
-        self.shell.set_can_go_back(self.nav.can_go_back());
-        // Catalogue updates may arrive between pointer motion and press.
-        // Keep the static destinations and their real input/focus state while
-        // refreshing content; the shell still lays them out for theme/width.
-        if let Some(rail) = self.shell.sidebar_mut::<NavList>() {
-            rail.set_selected(Some(self.model.route.nav_section()));
-        } else {
-            let rail = self.build_rail();
-            self.shell.set_sidebar(Some(Box::new(rail)));
-        }
-        self.shell.set_content(screen);
-        self.shell_built = true;
-    }
-
-    /// Logical width of the shell's content column: the window less the rail
-    /// while it shows. Sizes the width-driven watch player and picks the
-    /// watch page's one- or two-column arrangement.
-    fn content_width(&self, theme: &Theme) -> f64 {
-        let column = self.shell.geometry().content_column.width();
-        if column > 0.0 {
-            return column;
-        }
-        let rail = if self.shell.is_sidebar_open() || !self.shell_built {
-            f64::from(theme.tokens.metrics.rail_width)
-        } else {
-            0.0
-        };
-        (self.rect.width() - rail).max(0.0)
-    }
-
-    /// Logical height under the header row, which caps the watch player.
-    fn content_height(&self, theme: &Theme) -> f64 {
-        (self.rect.height() - f64::from(theme.tokens.metrics.header_height)).max(1.0)
     }
 
     /// A stable key naming a route's *view*, for the per-view scroll-position
@@ -982,21 +919,6 @@ impl TubeApp {
         self.images.as_ref().is_some_and(|s| s.pending() > 0)
     }
 
-    /// Show a notice pushed since the last frame as the shell's toast.
-    fn show_new_notices(&mut self) {
-        use std::hash::{Hash, Hasher};
-        let mut identity = std::collections::hash_map::DefaultHasher::new();
-        self.model.notices.first().hash(&mut identity);
-        let current = identity.finish();
-        if current != self.toasted {
-            if let Some(notice) = self.model.notices.first() {
-                self.shell.toast(notice.clone(), ToastKind::Info);
-                tracing::debug!(target: "tube::share", at = ?ui::time::now(), "notice toast created");
-            }
-            self.toasted = current;
-        }
-    }
-
     /// Apply one drained action. Returns true if the model changed enough to
     /// warrant a structural rebuild.
     fn apply(&mut self, action: Action) -> bool {
@@ -1007,15 +929,15 @@ impl TubeApp {
                     self.search_query.set(q.clone());
                 }
                 self.navigate_to(route);
-                self.dismiss_overlay_rail();
+                self.shell_asks.push(ShellAsk::DismissOverlayRail);
             }
             Action::OpenVideo(id) => {
                 self.open_video(id);
-                self.dismiss_overlay_rail();
+                self.shell_asks.push(ShellAsk::DismissOverlayRail);
             }
             Action::OpenChannel(id) => {
                 self.navigate_to(Route::Channel(id.clone()));
-                self.dismiss_overlay_rail();
+                self.shell_asks.push(ShellAsk::DismissOverlayRail);
                 self.request_live(Request::Channel(id));
             }
             Action::Back => {
@@ -1083,21 +1005,337 @@ impl TubeApp {
     }
 }
 
-impl FullscreenProvider for TubeApp {
-    fn fullscreen_intent(&self) -> Option<bool> {
-        FullscreenProvider::fullscreen_intent(&*self.player.borrow())
+impl TubeApp {
+    /// The current screen, ready for the shell's content column.
+    fn build_screen(&self, theme: &Theme) -> Box<dyn Widget> {
+        let tube = self.tube.borrow();
+        tube.waiting.begin_build();
+        let screen = self.build_route(&tube, theme);
+        tube.waiting.end_build();
+        screen
     }
 
-    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
-        FullscreenProvider::fullscreen_params(&*self.player.borrow())
+    fn build_route(&self, tube: &Tube, theme: &Theme) -> Box<dyn Widget> {
+        let ui = screens::Ui {
+            model: &tube.model,
+            theme,
+            bus: &tube.bus,
+            actions: tube.actions.as_ref(),
+            imgs: crate::images::Imgs(tube.images.as_ref()),
+            content_width: self.content_width(theme),
+            waiting: &tube.waiting,
+        };
+        let content = match &tube.model.route {
+            Route::Home => screens::home(ui),
+            Route::Search(query) => screens::search_results(ui, query),
+            Route::Trending => screens::trending(ui),
+            Route::Subscriptions => screens::subscriptions(ui),
+            Route::Queue => screens::queue(ui),
+            Route::History => screens::history(ui),
+            Route::Settings => {
+                #[cfg(feature = "grayjay-sync")]
+                {
+                    screens::settings_with_sync(
+                        ui,
+                        tube.device_sync.view(),
+                        tube.device_sync.pairing_input.clone(),
+                    )
+                }
+                #[cfg(not(feature = "grayjay-sync"))]
+                {
+                    screens::settings(ui)
+                }
+            }
+            Route::Watch(id) => screens::watch(
+                ui,
+                id,
+                (self.content_width(theme), self.content_height(theme)),
+                tube.player.clone(),
+            ),
+            Route::Channel(id) => screens::channel(ui, id),
+            Route::Playlist(id) => screens::playlist(ui, id),
+        };
+        // Each view keeps its scroll position across rebuilds and returns to
+        // it via Back.
+        Box::new(content.with_persisted_offset(tube.scroll_cell_for(&tube.model.route)))
     }
 
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        FullscreenProvider::on_fullscreen_changed(&mut *self.player.borrow_mut(), active);
+    /// The navigation sidebar: Tube's destinations, the current one
+    /// selected. The shell shows them as a rail by default and as a list
+    /// once the person widens it.
+    /// Choosing one invokes the same published navigation action an agent or
+    /// the palette uses.
+    fn build_rail(tube: &Tube) -> NavList {
+        use ui::icons::Icon;
+        let item = |route: &Route, label: &str, icon: Icon| {
+            NavItem::new(route.nav_section(), label).icon(icon)
+        };
+        let mut list = NavList::new(vec![NavSection::untitled(
+            "destinations",
+            vec![
+                item(&Route::Home, &t("tube-nav-home"), Icon::Home),
+                item(&Route::Trending, &t("tube-nav-trending"), Icon::Flame),
+                item(
+                    &Route::Subscriptions,
+                    &t("tube-nav-subscriptions"),
+                    Icon::GalleryVerticalEnd,
+                ),
+                item(&Route::Queue, &t("tube-nav-queue"), Icon::ListVideo),
+                item(&Route::History, &t("tube-nav-history"), Icon::History),
+                item(&Route::Settings, &t("tube-nav-settings"), Icon::Settings),
+            ],
+        )])
+        .with_accessible_name(t("tube-nav-name"))
+        .on_view("tube_rail", {
+            let bus = tube.bus.clone();
+            move |id| action::push(&bus, Action::Effect(TubeEffect::ShowScreen { screen: id }))
+        });
+        list.set_selected(Some(tube.model.route.nav_section()));
+        list
+    }
+
+    /// Put the current screen, the rail and the header into the shell.
+    fn rebuild_shell(&mut self, theme: &Theme) {
+        let screen = self.build_screen(theme);
+        let tube = self.tube.borrow();
+        let can_go_back = tube.nav.can_go_back();
+        self.can_go_back.set(can_go_back);
+        self.shell.set_can_go_back(can_go_back);
+        // Catalogue updates may arrive between pointer motion and press.
+        // Keep the static destinations and their real input/focus state while
+        // refreshing content; the shell still lays them out for theme/width.
+        if let Some(rail) = self.shell.sidebar_mut::<NavList>() {
+            rail.set_selected(Some(tube.model.route.nav_section()));
+        } else {
+            let rail = Self::build_rail(&tube);
+            self.shell.set_sidebar(Some(Box::new(rail)));
+        }
+        drop(tube);
+        self.shell.set_content(screen);
+        self.shell_built = true;
+    }
+
+    /// Logical width of the shell's content column: the window less the rail
+    /// while it shows. Sizes the width-driven watch player and picks the
+    /// watch page's one- or two-column arrangement.
+    fn content_width(&self, theme: &Theme) -> f64 {
+        let column = self.shell.geometry().content_column.width();
+        if column > 0.0 {
+            return column;
+        }
+        let rail = if self.shell.is_sidebar_open() || !self.shell_built {
+            f64::from(theme.tokens.metrics.rail_width)
+        } else {
+            0.0
+        };
+        (self.rect.width() - rail).max(0.0)
+    }
+
+    /// Logical height under the header row, which caps the watch player.
+    fn content_height(&self, theme: &Theme) -> f64 {
+        (self.rect.height() - f64::from(theme.tokens.metrics.header_height)).max(1.0)
+    }
+
+    /// Show a notice pushed since the last frame as the shell's toast.
+    fn show_new_notices(&mut self) {
+        use std::hash::{Hash, Hasher};
+        let tube = self.tube.borrow();
+        let mut identity = std::collections::hash_map::DefaultHasher::new();
+        tube.model.notices.first().hash(&mut identity);
+        let current = identity.finish();
+        if current != self.toasted {
+            if let Some(notice) = tube.model.notices.first() {
+                self.shell.toast(notice.clone(), ToastKind::Info);
+                tracing::debug!(target: "tube::share", at = ?ui::time::now(), "notice toast created");
+            }
+            self.toasted = current;
+        }
     }
 }
 
-impl TubeApp {
+impl Tube {
+    /// The actions queued since, applied, and the worker's results folded
+    /// in. Returns whether the view changed.
+    fn settle_input(&mut self) -> bool {
+        let mut changed = self.apply_queued();
+        // If a just-applied action opened a watch page, kick off real playback
+        // (resolve + decode) for it — once. No-op off the watch route / offline.
+        self.ensure_playback();
+        // Fold any ready worker results (live data + decoded frames).
+        changed |= self.pump();
+        changed
+    }
+
+    /// What a frame does before the shell syncs: follow the person's
+    /// history and preferences, device sync, the first fetch and playback.
+    fn sync_before_shell(&mut self) {
+        if self.follow_history() | self.refresh_preferences() {
+            self.structure_dirty = true;
+        }
+        #[cfg(feature = "grayjay-sync")]
+        {
+            if !self.device_sync_seeded {
+                self.device_sync_seeded = true;
+                let _ = self
+                    .device_sync
+                    .sync_now(crate::sync::lifecycle_state(&self.model));
+            }
+            let (view_changed, pulled) = self.device_sync.pump();
+            if view_changed {
+                self.structure_dirty = true;
+            }
+            for remote in pulled {
+                if self.import_device_sync_state(remote) {
+                    self.structure_dirty = true;
+                }
+            }
+        }
+        // First live frame: spawn the fetch worker and pull the home/trending
+        // feed. One-shot (guarded) and online-only, so the offscreen path never
+        // reaches here with `online` set.
+        if self.online && !self.kicked_off {
+            self.kicked_off = true;
+            self.request_live(Request::Feed);
+        }
+        // A persisted/boot route that is already a watch page starts playing on
+        // the first live sync (guarded so it fires once).
+        self.ensure_playback();
+    }
+
+    /// What a frame does after the shell synced: the actions its Back chip
+    /// queued, media keys, the player's own settings and the playhead.
+    fn sync_after_shell(&mut self) {
+        // The shell's Back chip queues on the bus; go back this frame.
+        if self.apply_queued() {
+            self.structure_dirty = true;
+        }
+        // External media-control commands (media keys / the system media widget)
+        // → the shared player, so hardware keys drive playback.
+        self.player.borrow_mut().pump_media_controls();
+        // App-registered player settings the user changed on the player itself
+        // (the resolution selector now lives ON the player). Round-trip each
+        // back into the model so the preferred quality persists.
+        let setting_events = self.player.borrow_mut().take_setting_events();
+        for ev in setting_events {
+            self.apply_player_setting_event(ev);
+        }
+        // The watch page's player pumped its engine in the sync above; now mirror
+        // the engine playhead onto the model and run SponsorBlock auto-skip /
+        // autoplay-next against the real position. Only flags a rebuild when a
+        // skip notice or an autoplay navigation actually happens (not every
+        // advancing frame), so a playing video repaints without churning the tree.
+        if self.tick_playback() {
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Whether the window should keep pumping frames while a watch stream
+    /// is still resolving: armed (`playing_id`) but with no source loaded
+    /// into the engine yet.
+    fn resolving(&self) -> bool {
+        self.online
+            && matches!(&self.model.route, Route::Watch(id)
+                if self.playing_id.as_deref() == Some(id.as_str())
+                    && self.player_video.as_deref() != Some(id.as_str()))
+    }
+}
+
+/// The view of the library: `window` takes part in the resource, its
+/// [`Tube`] answers the effects and publishes what the window shows, the
+/// catalogue's rows and search entries, and looks the platform search's
+/// queries up on `YouTube`.
+pub(crate) fn window(cx: &ViewCx<Library>, mut window: TubeApp) -> Element {
+    window.live = Some(cx.live().clone());
+    let tube = window.shared();
+    {
+        let mut tube = tube.borrow_mut();
+        // Only a live window follows the person's own history: a capture
+        // shows the sample's, a past version none.
+        let history = cx
+            .mode()
+            .is_live()
+            .then(|| cx.person::<WatchHistory>())
+            .flatten();
+        tube.follow_preferences(cx.settings::<crate::model::Settings>());
+        // Only a live window pairs and syncs devices, with the app's secret
+        // store and the devices paired on this one.
+        #[cfg(feature = "grayjay-sync")]
+        if cx.mode().is_live() {
+            tube.start_device_sync(
+                &cx.storage().secrets(),
+                cx.storage().settings::<crate::sync::PairedDevices>(),
+            );
+        }
+        tube.wake_with(cx.waker());
+        tube.attach_framework(cx.dispatcher(), cx.actions(), history);
+    }
+    {
+        let (answer, status) = (Rc::clone(&tube), Rc::clone(&tube));
+        cx.effects(move |effect: TubeEffect, _| {
+            answer
+                .borrow_mut()
+                .perform(effect)
+                .map(|()| Effected::done())
+        })
+        .status(move || {
+            let tube = status.borrow();
+            crate::rows::effect_statuses(&tube.model, tube.device_sync_view())
+        });
+    }
+    #[cfg(feature = "samples")]
+    {
+        let tube = Rc::clone(&tube);
+        cx.on_stage(move |scenario| {
+            if let Some(scenario) = scenario {
+                tube.borrow_mut().stage_scenario(scenario);
+            }
+        });
+    }
+    let (rows, row, entries, query) = (
+        Rc::clone(&tube),
+        Rc::clone(&tube),
+        Rc::clone(&tube),
+        Rc::clone(&tube),
+    );
+    cx.publishing(
+        Publishes::new()
+            .live_rows(move || {
+                let tube = rows.borrow();
+                crate::rows::live_rows(&tube.model, tube.device_sync_view())
+            })
+            .live_row(move |id| {
+                let tube = row.borrow();
+                crate::rows::live_row(&tube.model, tube.device_sync_view(), id)
+            })
+            // The videos, creators, playlists and watch history shown here,
+            // and a `YouTube` search for what was typed.
+            .search_entries(move || entries.borrow().search_entries_of_model())
+            // The catalogue holds only what has loaded, so the results offer
+            // to search `YouTube` for what the platform search asks.
+            .search_query(move |asked| query.borrow_mut().follow_palette_query(asked.text()))
+            .search_pending(move || tube.borrow().suggestions_pending()),
+        Box::new(window),
+    )
+}
+
+impl FullscreenProvider for TubeApp {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        FullscreenProvider::fullscreen_intent(&*self.tube.borrow().player.borrow())
+    }
+
+    fn fullscreen_params(&self) -> ui::fullscreen::FullscreenRequest {
+        FullscreenProvider::fullscreen_params(&*self.tube.borrow().player.borrow())
+    }
+
+    fn on_fullscreen_changed(&mut self, active: bool) {
+        FullscreenProvider::on_fullscreen_changed(
+            &mut *self.tube.borrow().player.borrow_mut(),
+            active,
+        );
+    }
+}
+
+impl Tube {
     /// The videos, creators, playlists and watch history shown here, as
     /// search entries.
     pub(crate) fn search_entries_of_model(&self) -> Vec<ui::tilo_resource::SearchEntry> {
@@ -1177,62 +1415,14 @@ impl Widget for TubeApp {
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.follow_document();
         self.take_window_toolbar_events();
-        if self.follow_history() | self.refresh_preferences() {
-            self.structure_dirty = true;
-        }
-        #[cfg(feature = "grayjay-sync")]
-        {
-            if !self.device_sync_seeded {
-                self.device_sync_seeded = true;
-                let _ = self
-                    .device_sync
-                    .sync_now(crate::sync::lifecycle_state(&self.model));
-            }
-            let (view_changed, pulled) = self.device_sync.pump();
-            if view_changed {
-                self.structure_dirty = true;
-            }
-            for remote in pulled {
-                if self.import_device_sync_state(remote) {
-                    self.structure_dirty = true;
-                }
-            }
-        }
-        // First live frame: spawn the fetch worker and pull the home/trending
-        // feed. One-shot (guarded) and online-only, so the offscreen path never
-        // reaches here with `online` set.
-        if self.online && !self.kicked_off {
-            self.kicked_off = true;
-            self.request_live(Request::Feed);
-        }
-        // A persisted/boot route that is already a watch page starts playing on
-        // the first live sync (guarded so it fires once).
-        self.ensure_playback();
+        self.tube().sync_before_shell();
+        self.answer_shell_asks();
         self.show_new_notices();
         self.shell.sync(state, path);
-        // The shell's Back chip queues on the bus; go back this frame.
-        if self.apply_queued() {
-            self.structure_dirty = true;
-        }
-        // External media-control commands (media keys / the system media widget)
-        // → the shared player, so hardware keys drive playback.
-        self.player.borrow_mut().pump_media_controls();
-        // App-registered player settings the user changed on the player itself
-        // (the resolution selector now lives ON the player). Round-trip each
-        // back into the model so the preferred quality persists.
-        let setting_events = self.player.borrow_mut().take_setting_events();
-        for ev in setting_events {
-            self.apply_player_setting_event(ev);
-        }
-        // The watch page's player pumped its engine in the sync above; now mirror
-        // the engine playhead onto the model and run SponsorBlock auto-skip /
-        // autoplay-next against the real position. Only flags a rebuild when a
-        // skip notice or an autoplay navigation actually happens (not every
-        // advancing frame), so a playing video repaints without churning the tree.
-        if self.tick_playback() {
-            self.structure_dirty = true;
-        }
+        self.tube().sync_after_shell();
+        self.answer_shell_asks();
         self.declare_window_toolbar();
     }
 
@@ -1257,14 +1447,15 @@ impl Widget for TubeApp {
             self.content_width(theme).to_bits().hash(&mut hasher);
             hasher.finish()
         };
+        self.answer_shell_asks();
         if !self.shell_built
             || self.shell_stale
-            || self.structure_dirty
+            || self.tube.borrow().structure_dirty
             || self.shell_key != Some(key)
         {
             self.rebuild_shell(theme);
             self.shell_stale = false;
-            self.structure_dirty = false;
+            self.tube().structure_dirty = false;
             self.shell_key = Some(key);
         }
         let node = self.shell.build_layout(taffy, theme, node_map);
@@ -1323,8 +1514,9 @@ impl Widget for TubeApp {
             let is_back = matches!(logical_key, Key::Named(NamedKey::BrowserBack))
                 || (ctx.modifiers.state().alt_key()
                     && matches!(logical_key, Key::Named(NamedKey::ArrowLeft)));
-            if is_back && self.nav.can_go_back() {
-                action::push(&self.bus, Action::Back);
+            let tube = self.tube.borrow();
+            if is_back && tube.nav.can_go_back() {
+                action::push(&tube.bus, Action::Back);
                 *ctx.handled = true;
             }
         }
@@ -1336,10 +1528,11 @@ impl Widget for TubeApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_pointer = ctx.logical(position);
+                let tube = self.tube.borrow();
                 if self.back_gesture.pointer_move(self.last_pointer) == Some(ui::NavAction::Back)
-                    && self.nav.can_go_back()
+                    && tube.nav.can_go_back()
                 {
-                    action::push(&self.bus, Action::Back);
+                    action::push(&tube.bus, Action::Back);
                 }
             }
             WindowEvent::MouseInput {
@@ -1372,29 +1565,27 @@ impl Widget for TubeApp {
                     },
                 ..
             } = event
-            && self.nav.can_go_back()
+            && self.tube.borrow().nav.can_go_back()
         {
-            action::push(&self.bus, Action::Back);
+            action::push(&self.tube.borrow().bus, Action::Back);
             *ctx.handled = true;
         }
 
-        let mut changed = self.apply_queued();
-        // If a just-applied action opened a watch page, kick off real playback
-        // (resolve + decode) for it — once. No-op off the watch route / offline.
-        self.ensure_playback();
-        // Fold any ready worker results (live data + decoded frames).
-        changed |= self.pump();
-
-        if changed {
-            self.structure_dirty = true;
+        let mut tube = self.tube();
+        if tube.settle_input() {
+            tube.structure_dirty = true;
         }
+        drop(tube);
+        self.answer_shell_asks();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let structure_dirty = std::mem::take(&mut self.structure_dirty);
+        let mut tube = self.tube();
+        let structure_dirty = std::mem::take(&mut tube.structure_dirty);
         // Fold any results that arrived between events so live data still
         // lands when the user is idle.
-        let dirty = self.pump() || structure_dirty;
+        let dirty = tube.pump() || structure_dirty;
+        drop(tube);
         // Image loads must not force a structural rebuild: thumbnails, avatars
         // and banners resolve their decoded image *lazily* in their own `sync`
         // (they hold an `ImageStore` handle + URL) and repaint via
@@ -1410,8 +1601,9 @@ impl Widget for TubeApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.structure_dirty
-            || self.images_pending()
+        let tube = self.tube.borrow();
+        tube.structure_dirty
+            || tube.images_pending()
             || !self.shell_built
             || self.shell.needs_redraw()
     }
@@ -1430,7 +1622,7 @@ impl Widget for TubeApp {
         // results need no polling: each one wakes the window
         // (`api::Updates`). The worker lives as long as the window, so
         // asking for idle syncs while it existed asked for them forever.
-        self.images_pending()
+        self.tube.borrow().images_pending()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1444,11 +1636,8 @@ impl Widget for TubeApp {
         // loop go idle instead of spinning at 60 Hz forever (which kept the app
         // needlessly busy and made scrolling feel heavy). Redraws are
         // vsync-throttled by the renderer regardless.
-        let resolving = self.online
-            && matches!(&self.model.route, Route::Watch(id)
-                if self.playing_id.as_deref() == Some(id.as_str())
-                    && self.player_video.as_deref() != Some(id.as_str()));
-        resolving || self.images_pending() || self.shell.needs_animation_frame()
+        let tube = self.tube.borrow();
+        tube.resolving() || tube.images_pending() || self.shell.needs_animation_frame()
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1461,21 +1650,20 @@ impl Widget for TubeApp {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        let route = match &self.model.route {
+        let tube = self.tube.borrow();
+        let model = &tube.model;
+        let route = match &model.route {
             Route::Home => "Home".to_string(),
             Route::Trending => "Trending".to_string(),
             Route::Subscriptions => "Subscriptions".to_string(),
             Route::Queue => "Shared watch queue".to_string(),
-            Route::Watch(id) => self
-                .model
+            Route::Watch(id) => model
                 .video(id)
                 .map_or_else(|| "Video".to_string(), |video| video.title.clone()),
-            Route::Channel(id) => self
-                .model
+            Route::Channel(id) => model
                 .channel(id)
                 .map_or_else(|| "Creator".to_string(), |channel| channel.name.clone()),
-            Route::Playlist(id) => self
-                .model
+            Route::Playlist(id) => model
                 .playlist(id)
                 .map_or_else(|| "Playlist".to_string(), |playlist| playlist.title.clone()),
             Route::History => "Watch history".to_string(),
@@ -1485,7 +1673,7 @@ impl Widget for TubeApp {
         Some(
             AccessNode::new(Role::Window)
                 .with_name(format!("Tube — {route}"))
-                .with_state(AccessState::new().busy(self.model.feed_loading)),
+                .with_state(AccessState::new().busy(model.feed_loading)),
         )
     }
 
@@ -1495,6 +1683,10 @@ impl Widget for TubeApp {
 
     // Screenshot scenarios and tests reach the app through the framework's
     // surface to read what it shows.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
