@@ -111,7 +111,7 @@ impl PanelActions {
     fn lent<T>(&self, actions: Actions<Settings>, build: impl FnOnce() -> T) -> T {
         *self.0.borrow_mut() = Some(actions);
         let built = build();
-        self.0.borrow_mut().take();
+        *self.0.borrow_mut() = None;
         built
     }
 }
