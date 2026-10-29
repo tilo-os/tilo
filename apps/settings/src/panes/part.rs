@@ -429,10 +429,6 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
 /// Every pane, by the categories it shows.
 pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
-        categories: &[Category::ExternalAccounts],
-        build: |app, _| model_pane(accounts::area(app).map(accounts::AccountsArea::model)),
-    },
-    crate::area::PaneEntry {
         categories: &[Category::AgentModels],
         build: |app, _| {
             model_pane(agent_models::area(app).map(agent_models::AgentModelsArea::model))

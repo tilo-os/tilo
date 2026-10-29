@@ -5,8 +5,8 @@ mod lane_tests;
 #[cfg(test)]
 mod tests;
 use super::{
-    AccountKind, AccountsEffect, AccountsPane, Button, Effect, LiveRow, ProbeJob, Row,
-    SettingsEffect, SettingsSection, Step, merge_config, note, row, rows, section,
+    AccountKind, AccountsEffect, AccountsPane, Button, Effect, LiveRow, ProbeJob, Row, Settings,
+    SettingsEffect, SettingsSection, Step, ViewCx, merge_config, note, row, rows, section,
     setting_row_described, t, value_row,
 };
 
@@ -162,7 +162,7 @@ impl AccountsPane {
         Ok(())
     }
 
-    pub(super) fn calendar_selection_form(&self) -> SettingsSection {
+    pub(super) fn calendar_selection_form(&self, cx: &ViewCx<Settings>) -> SettingsSection {
         let mut body = vec![note(&t(if self.calendar_source.is_some() {
             "accounts-nextcloud-calendar-caption"
         } else {
@@ -191,7 +191,8 @@ impl AccountsPane {
             } else {
                 "accounts-calendar-select"
             });
-            let button = self.bound(
+            let button = Self::bound(
+                cx,
                 Button::new(
                     &format!("settings.accounts.calendar:{}", calendar.href),
                     &label,
@@ -217,16 +218,14 @@ impl AccountsPane {
         }
         body.push(row(Box::new(
             Row::new()
-                .push(Box::new(
-                    self.bound(
-                        Button::new("settings.accounts.form.save", &t("accounts-save"))
-                            .with_enabled(
-                                self.calendar_choices.iter().any(|(_, selected)| *selected),
-                            ),
-                        AccountsEffect::SaveAccountForm,
-                    ),
-                ))
-                .push(Box::new(self.bound(
+                .push(Box::new(Self::bound(
+                    cx,
+                    Button::new("settings.accounts.form.save", &t("accounts-save"))
+                        .with_enabled(self.calendar_choices.iter().any(|(_, selected)| *selected)),
+                    AccountsEffect::SaveAccountForm,
+                )))
+                .push(Box::new(Self::bound(
+                    cx,
                     Button::new("settings.accounts.form.cancel", &t("accounts-cancel")),
                     AccountsEffect::CancelAccountForm,
                 ))),

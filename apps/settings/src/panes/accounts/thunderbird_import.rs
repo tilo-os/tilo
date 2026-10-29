@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use accounts::thunderbird::{Candidate, DiscoveryError, Transport};
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::Effect;
 use ui::widget::Button;
 
@@ -146,8 +146,9 @@ impl AccountsPane {
         vec![root]
     }
 
-    pub(super) fn thunderbird_import_card(&self) -> SettingsSection {
-        let button = Box::new(self.bound(
+    pub(super) fn thunderbird_import_card(&self, cx: &ViewCx<Settings>) -> SettingsSection {
+        let button = Box::new(Self::bound(
+            cx,
             Button::new(
                 "settings.accounts.import.choose",
                 &t("accounts-import-choose"),
@@ -159,10 +160,11 @@ impl AccountsPane {
             body.push(note(status));
         }
         for choice in &self.import_review.choices {
-            body.extend(self.import_choice_widgets(choice).into_iter().map(row));
+            body.extend(self.import_choice_widgets(cx, choice).into_iter().map(row));
         }
         if !self.import_review.choices.is_empty() {
-            body.push(row(Box::new(self.bound(
+            body.push(row(Box::new(Self::bound(
+                cx,
                 Button::new(
                     "settings.accounts.import.commit",
                     &t("accounts-import-continue"),
@@ -171,7 +173,8 @@ impl AccountsPane {
                     revision: self.import_review.revision,
                 },
             ))));
-            body.push(row(Box::new(self.bound(
+            body.push(row(Box::new(Self::bound(
+                cx,
                 Button::new(
                     "settings.accounts.import.cancel",
                     &t("accounts-import-cancel"),
@@ -181,7 +184,11 @@ impl AccountsPane {
         }
         section_with(&t("accounts-import-title"), button, rows(body))
     }
-    fn import_choice_widgets(&self, choice: &super::import_review::Choice) -> Vec<El> {
+    fn import_choice_widgets(
+        &self,
+        cx: &ViewCx<Settings>,
+        choice: &super::import_review::Choice,
+    ) -> Vec<El> {
         let mut body = Vec::new();
         let candidate = &choice.candidate;
         body.push(caption(&t_args(
@@ -234,7 +241,8 @@ impl AccountsPane {
             ),
         ] {
             if candidate.reviewed_config(method).is_ok() {
-                body.push(Box::new(self.bound(
+                body.push(Box::new(Self::bound(
+                    cx,
                     Button::new(
                         &format!("settings.accounts.import.{source}.{auth}"),
                         &t(if choice.selected {

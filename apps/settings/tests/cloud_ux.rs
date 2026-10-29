@@ -9,7 +9,6 @@ use std::time::Instant;
 use settings::SettingsShell;
 use settings::accounts::AccountRoot;
 use settings::panes::accounts::{AccountsPane, BrowserOpener};
-use settings::panes::model::PaneModel;
 use ui::framework::testing::TestApp;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;

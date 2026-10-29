@@ -92,6 +92,7 @@ pub(crate) fn view(
         crate::categories::Category::TimeDate => time_date::view(cx, app),
         crate::categories::Category::DeviceMesh => device_mesh::view(cx, app),
         crate::categories::Category::About => about::view(cx, app),
+        crate::categories::Category::ExternalAccounts => accounts::view(cx, app),
         _ => None,
     }
 }
