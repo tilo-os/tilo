@@ -1030,3 +1030,76 @@ fn a_running_task_reads_the_same_in_the_list_and_on_its_issue() {
         "a paused run stays the task, held"
     );
 }
+
+/// Whether the list's New issue button can be pressed now.
+fn new_issue_enabled(app: &mut TestApp<App>) -> bool {
+    let harness = app.harness();
+    let button = harness
+        .a11y_node_named("New issue")
+        .expect("the list offers New issue");
+    let (_, node) = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == button)
+        .expect("the button is in the tree");
+    !node.is_disabled()
+}
+
+/// The row that makes an issue cannot make one without a title: the view
+/// can only hand `create` a title it parsed, so the button is disabled and
+/// Enter does nothing while the field is blank, and nothing is refused or
+/// shown over the window. Once the field says something, Enter and the
+/// button each make an issue and empty the field.
+#[test]
+fn a_blank_new_issue_cannot_be_invoked() {
+    let mut app = open();
+    app.settle();
+    assert!(!new_issue_enabled(&mut app), "a blank title disables it");
+    app.harness()
+        .click_named("tasks-list-new-create")
+        .expect("press New issue");
+    app.settle();
+    app.harness()
+        .click_named("tasks-list-new-title")
+        .expect("focus the title");
+    app.harness().type_text("   ");
+    app.harness().key("Enter");
+    app.settle();
+    assert!(app.state().issues.is_empty(), "nothing blank is made");
+    assert!(
+        app.refused().is_none(),
+        "nothing was refused: {:?}",
+        app.refused()
+    );
+    assert!(
+        app.harness().refusal_shown().is_none(),
+        "nothing is said over the window"
+    );
+    assert!(!new_issue_enabled(&mut app), "spaces are still blank");
+
+    app.harness().type_text("Ship it");
+    app.settle();
+    assert!(new_issue_enabled(&mut app), "a title enables it");
+    app.harness().key("Enter");
+    app.settle();
+    let issue = only(&app);
+    assert_eq!(app.state().issues.get(&issue).unwrap().title, "Ship it");
+    assert!(
+        !new_issue_enabled(&mut app),
+        "the field is emptied for the next"
+    );
+
+    app.harness().type_text("Write the notes");
+    app.settle();
+    app.harness()
+        .click_named("tasks-list-new-create")
+        .expect("press New issue");
+    app.settle();
+    let titles: Vec<String> = app
+        .state()
+        .issues
+        .values()
+        .map(|issue| issue.title.clone())
+        .collect();
+    assert_eq!(titles, ["Ship it", "Write the notes"]);
+}

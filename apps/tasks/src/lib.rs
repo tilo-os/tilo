@@ -286,26 +286,33 @@ fn sidebar_sections(tracker: &Tracker, me: Option<&str>) -> Vec<NavSection> {
 /// A row to create an issue: its title, then Enter or the button.
 pub(crate) fn new_issue(cx: &ViewCx<Tracker>, parent: Option<Id>, id: &str) -> Element {
     let draft = cx.local(String::new());
-    let title = TextInput::from_state(&draft)
-        .with_id(&format!("{id}-title"))
-        .with_placeholder(if parent.is_some() {
-            "tasks-new-sub-issue-placeholder"
-        } else {
-            "tasks-new-issue-placeholder"
-        });
-    let create = Tracker::CREATE.map(move |()| {
-        let title = draft.get();
-        draft.set(String::new());
-        crate::model::tracker::Create {
-            title,
+    let create_under_parent = parent.is_some();
+    // The issue is made from what the field parses to: nothing while it is
+    // blank, so the button is disabled and Enter does nothing until there is
+    // a title.
+    let create = Tracker::CREATE.try_map(move |title: String| {
+        Some(crate::model::tracker::Create {
+            title: ui::tilo_resource::NonBlank::parse(&title)?,
             parent: parent.clone(),
             body: None,
             status: None,
             assignee: None,
-        }
+        })
     });
-    let button = cx.actions().bind(
+    let title = cx.actions().submit_draft(
+        TextInput::from_state(&draft)
+            .with_id(&format!("{id}-title"))
+            .with_placeholder(if create_under_parent {
+                "tasks-new-sub-issue-placeholder"
+            } else {
+                "tasks-new-issue-placeholder"
+            }),
+        &draft,
+        create.clone(),
+    );
+    let button = cx.actions().bind_draft(
         Button::new(&format!("{id}-create"), "tasks-new-issue").with_icon(ui::icons::Icon::Plus),
+        &draft,
         create,
     );
     Box::new(

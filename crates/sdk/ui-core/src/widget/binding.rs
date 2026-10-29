@@ -57,6 +57,27 @@ pub(crate) fn local<T: Clone + PartialEq + 'static>(
     (value, Box::new(binding))
 }
 
+/// What `derive` makes of `state` ("the draft parses"), followed as
+/// `state` changes: the value now, and its binding.
+pub(crate) fn derived<S: Clone + 'static, T: 'static>(
+    state: &crate::LocalState<S>,
+    derive: impl Fn(&S) -> T + 'static,
+) -> (T, BoxedBinding<T>) {
+    struct Derived<S, F> {
+        source: crate::local_state::LocalBinding<S>,
+        derive: F,
+    }
+    impl<S: Clone, T, F: Fn(&S) -> T> ValueBinding<T> for Derived<S, F> {
+        fn pull(&mut self, _model: &AppModel, _path: &ModelPath) -> Pulled<T> {
+            self.source.poll().map_or(Pulled::Unchanged, |value| {
+                Pulled::Value((self.derive)(&value))
+            })
+        }
+    }
+    let (value, source) = crate::local_state::LocalBinding::new(state);
+    (derive(&value), Box::new(Derived { source, derive }))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::a11y::Action;

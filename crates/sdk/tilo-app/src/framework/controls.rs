@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::cell::Cell;
 
 use tilo_actions::ActionBinding;
-use tilo_resource::{ActionKey, Binds, Edit, Effect, Invoke, Path, Resource};
+use tilo_resource::{ActionKey, Binds, Edit, Effect, Invoke, Path, Resource, TryMapped};
 use ui_core::widget::{
     Button, Checkbox, Dropdown, EditableLabel, EmptyState, NumberInput, Slider, TextInput, Toggle,
 };
@@ -727,6 +727,121 @@ impl<R: Resource> Actions<R> {
         }
     }
 
+    /// `button`, bound to submit what `draft` holds through `action`, which
+    /// parses it ([`ActionRef::try_map`](tilo_resource::ActionRef::try_map)):
+    /// disabled while the draft does not parse, and the draft cleared once
+    /// submitted. The row that creates an item from a title typed beside
+    /// its button; [`Self::submit_draft`] makes Enter in the field do the
+    /// same.
+    pub fn bind_draft<A, T, F>(
+        &self,
+        button: Button,
+        draft: &ui_core::LocalState<String>,
+        action: TryMapped<R, A, F>,
+    ) -> Button
+    where
+        A: serde::Serialize + 'static,
+        T: Into<A>,
+        F: Fn(String) -> Option<T> + Send + Sync + 'static,
+    {
+        self.bind_draft_clearing(button, draft, &[], action)
+    }
+
+    /// [`Self::bind_draft`] for a draft with further fields `parse` reads
+    /// beside it (a person's role beside their name): they are cleared with
+    /// it once submitted.
+    pub fn bind_draft_clearing<A, T, F>(
+        &self,
+        button: Button,
+        draft: &ui_core::LocalState<String>,
+        others: &[&ui_core::LocalState<String>],
+        action: TryMapped<R, A, F>,
+    ) -> Button
+    where
+        A: serde::Serialize + 'static,
+        T: Into<A>,
+        F: Fn(String) -> Option<T> + Send + Sync + 'static,
+    {
+        let (key, parse) = draft_arguments(action);
+        let mut drafts = vec![draft.clone()];
+        drafts.extend(others.iter().map(|other| (*other).clone()));
+        self.bind_parsed_draft(button, key, parse, drafts)
+    }
+
+    /// The type-erased half of [`Self::bind_draft_clearing`]: one copy for
+    /// every action a draft is bound to.
+    fn bind_parsed_draft(
+        &self,
+        button: Button,
+        key: ActionKey,
+        parse: DraftArguments,
+        drafts: Vec<ui_core::LocalState<String>>,
+    ) -> Button {
+        let Some(draft) = drafts.first().cloned() else {
+            return button.unavailable();
+        };
+        let ready = {
+            let parse = std::sync::Arc::clone(&parse);
+            move |text: &String| parse(text.clone()).is_ok()
+        };
+        let submitted = draft.clone();
+        let submit = move |()| {
+            let arguments = parse(submitted.get())?;
+            for draft in &drafts {
+                draft.set(String::new());
+            }
+            Ok(arguments)
+        };
+        match self
+            .table
+            .control_binding_in(key, R::APP_ID, Box::new(submit))
+        {
+            Some(binding) => button.bind_action(binding).enabled_while(&draft, ready),
+            None => button.unavailable(),
+        }
+    }
+
+    /// `field` (the text field `draft` follows), with Enter submitting what
+    /// it holds through `action`, as [`Self::bind_draft`]'s button does:
+    /// Enter on text that does not parse does nothing, and a submission
+    /// clears the draft.
+    pub fn submit_draft<A, T, F>(
+        &self,
+        field: TextInput,
+        draft: &ui_core::LocalState<String>,
+        action: TryMapped<R, A, F>,
+    ) -> TextInput
+    where
+        A: serde::Serialize + 'static,
+        T: Into<A>,
+        F: Fn(String) -> Option<T> + Send + Sync + 'static,
+    {
+        let (key, parse) = draft_arguments(action);
+        self.submit_parsed_draft(field, key, parse, draft.clone())
+    }
+
+    /// The type-erased half of [`Self::submit_draft`].
+    fn submit_parsed_draft(
+        &self,
+        field: TextInput,
+        key: ActionKey,
+        parse: DraftArguments,
+        draft: ui_core::LocalState<String>,
+    ) -> TextInput {
+        let submit = move |text: String| {
+            let arguments = parse(text)?;
+            draft.set(String::new());
+            Ok(arguments)
+        };
+        match self
+            .table
+            .control_binding_in(key, R::APP_ID, Box::new(submit))
+        {
+            Some(binding) => field.on_submit_action(binding),
+            None => field,
+        }
+    }
+
     /// The binding of effect `effect` for a control with input `I`
     /// (`Backups::RESTORE` for a dropdown of snapshots).
     pub fn effect_binding<E: Effect, I: 'static>(
@@ -769,6 +884,25 @@ impl<R: Resource> Actions<R> {
             None => control.unavailable(),
         }
     }
+}
+
+/// What a draft's text makes for the action it is bound to, or why it makes
+/// nothing: shared by the control's readiness and its submission.
+type DraftArguments = std::sync::Arc<
+    dyn Fn(String) -> Result<serde_json::Map<String, serde_json::Value>, String> + Send + Sync,
+>;
+
+/// `action`'s key and its parse of a draft's text, erased so the controls
+/// bound to drafts share one copy of their code.
+fn draft_arguments<R, A, T, F>(action: TryMapped<R, A, F>) -> (ActionKey, DraftArguments)
+where
+    R: Resource,
+    A: serde::Serialize + 'static,
+    T: Into<A>,
+    F: Fn(String) -> Option<T> + Send + Sync + 'static,
+{
+    let key = Binds::<R, String>::action_key(&action);
+    (key, std::sync::Arc::new(move |text| action.arguments(text)))
 }
 
 /// The key the effect a control is bound to is offered under: the one its

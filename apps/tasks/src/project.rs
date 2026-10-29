@@ -9,6 +9,7 @@
 //! saying so grants nothing, because sharing is the framework's.
 
 use ui::prelude::*;
+use ui::tilo_resource::NonBlank;
 use ui::widget::{Fact, Facts};
 
 use crate::model::{Kind, Tracker, tracker};
@@ -149,21 +150,24 @@ fn people(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         .with_id("tasks-project-person-role")
         .with_accessible_name(tr("tasks-field-role"))
         .with_placeholder("tasks-project-role-placeholder");
-    let involve = Tracker::INVOLVE.map(move |()| {
-        let (name_draft, role_draft) = (draft.clone(), role.clone());
-        let role = role_draft.get();
-        let person = tracker::Involve {
-            area: area.clone(),
-            name: name_draft.get(),
-            role: (!role.trim().is_empty()).then_some(role),
-        };
-        name_draft.set(String::new());
-        role_draft.set(String::new());
-        person
+    // Someone is involved by name: the button waits for one. The role is
+    // read as it stands when they are added, and cleared with the name.
+    let involve = Tracker::INVOLVE.try_map({
+        let role = role.clone();
+        move |name: String| {
+            let role_text = role.get();
+            Some(tracker::Involve {
+                area: area.clone(),
+                name: NonBlank::parse(&name)?,
+                role: (!role_text.trim().is_empty()).then_some(role_text),
+            })
+        }
     });
-    let button = cx.actions().bind(
+    let button = cx.actions().bind_draft_clearing(
         Button::new("tasks-project-involve", "tasks-project-involve")
             .with_icon(ui::icons::Icon::Plus),
+        &draft,
+        &[&role],
         involve,
     );
     let rows = cx.switch(&people, |_cx, people| {
@@ -336,8 +340,11 @@ impl NewProject {
             let (name, asking) = (name.clone(), asking.clone());
             let dispatcher = cx.dispatcher();
             move || {
+                let Some(parsed) = NonBlank::parse(&name.get()) else {
+                    return;
+                };
                 let created = tracker::CreateArea {
-                    name: name.get(),
+                    name: parsed,
                     kind: Some(Kind::Project),
                 };
                 asking.set(false);
@@ -356,6 +363,10 @@ impl NewProject {
         let dialog = ui::widget::ModalDialog::new(tr("tasks-new-project"), content)
             .with_test_id("tasks-new-project")
             .primary_action(tr("tasks-create-button"), create)
+            .primary_enabled_if({
+                let name = name.clone();
+                move |_| NonBlank::parse(&name.get()).is_some()
+            })
             .secondary_action(tr("tasks-cancel"), cancel)
             .on_dismiss(dismiss);
         Self {

@@ -536,6 +536,20 @@ impl Button {
         self
     }
 
+    /// Follow `state` for whether the button can act, as `ready` reads it:
+    /// "Create" enabled while the draft beside it parses.
+    #[must_use]
+    pub fn enabled_while<S: Clone + 'static>(
+        mut self,
+        state: &crate::LocalState<S>,
+        ready: impl Fn(&S) -> bool + 'static,
+    ) -> Self {
+        let (enabled, binding) = super::binding::derived(state, ready);
+        self.enabled = enabled;
+        self.enabled_binding = Some(binding);
+        self
+    }
+
     /// Mark this button as its page's encouraged action: when the page is
     /// rebuilt with a focus reset, keyboard focus starts here, so Enter
     /// activates it.
