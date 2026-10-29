@@ -40,6 +40,9 @@ pub struct SettingEntry {
 pub enum Shown {
     /// The row its pane shows, over the sections `follows` keeps current.
     Row(fn(&PaneCx, &Follows) -> Item),
+    /// The row its page shows, as view code over its section
+    /// ([`setting_row!`]); `None` where the section cannot be held.
+    Bound(fn(&ui::framework::ViewCx<crate::resource::Settings>) -> Option<Item>),
     /// What it is set to, as its pane reads it in the window: its section,
     /// followed in `follows`, or what its area last read of the device
     /// (never reading it). `None` while that is unknown. Read at every
@@ -83,6 +86,23 @@ macro_rules! setting_entry {
     };
 }
 pub use crate::setting_entry;
+
+/// The [`SettingEntry`] of the setting `$id`, whose row `$row(cx)` builds
+/// as view code over the section `$section`: the function its page builds
+/// the row with.
+#[macro_export]
+macro_rules! setting_row {
+    ($id:literal, $section:ty => $row:path) => {
+        $crate::setting::SettingEntry {
+            id: $id,
+            shown: $crate::setting::Shown::Bound(|cx| {
+                let section = cx.settings::<$section>();
+                provider_settings_ui::bound::record_item(cx, &section, $row)
+            }),
+        }
+    };
+}
+pub use crate::setting_row;
 
 /// The [`SettingEntry`] of the setting `$id`, which search shows by name
 /// with what `$value(app, follows)` says it is set to; `known` when that is
@@ -132,7 +152,7 @@ pub fn reads(
             |setting| match entry(setting.id).map(|entry| &entry.shown) {
                 Some(Shown::Value(value)) => Read::Value(value(app, follows)),
                 Some(Shown::Switch(read, _)) => read(app, follows),
-                Some(Shown::Row(_)) | None => Read::Value(None),
+                Some(Shown::Row(_) | Shown::Bound(_)) | None => Read::Value(None),
             },
         )
         .collect()
@@ -264,11 +284,32 @@ pub fn matching(query: &str) -> Vec<&'static Setting> {
         .collect()
 }
 
+/// The rows of `settings` whose pages are view code, built in `cx`, by
+/// their place: what [`Found`] shows for them.
+#[must_use]
+pub fn bound_rows(
+    cx: &ui::framework::ViewCx<crate::resource::Settings>,
+    settings: &[&'static Setting],
+) -> Vec<Option<Item>> {
+    settings
+        .iter()
+        .map(
+            |setting| match entry(setting.id).map(|entry| &entry.shown) {
+                Some(Shown::Bound(row)) => row(cx),
+                _ => None,
+            },
+        )
+        .collect()
+}
+
 /// What Settings' search found: the matching settings, grouped by the page
 /// each is on, as the rows that change them.
 pub struct Found {
     cx: PaneCx,
     follows: Follows,
+    /// The rows of the settings found whose pages are view code, built by
+    /// the view that shows this list, by the setting's place in `settings`.
+    bound: RefCell<Vec<Option<Item>>>,
     /// The settings found, best first, and what each shown by name or as a
     /// switch of the device is set to ([`reads`]).
     settings: Vec<&'static Setting>,
@@ -277,11 +318,19 @@ pub struct Found {
 }
 
 impl Found {
+    /// The settings found, `bound` holding the rows built as view code
+    /// for those whose pages are ([`bound_rows`]).
     #[must_use]
-    pub fn new(cx: PaneCx, settings: Vec<&'static Setting>, reads: Vec<Read>) -> Self {
+    pub fn new(
+        cx: PaneCx,
+        settings: Vec<&'static Setting>,
+        reads: Vec<Read>,
+        bound: Vec<Option<Item>>,
+    ) -> Self {
         Self {
             cx,
             follows: Follows::default(),
+            bound: RefCell::new(bound),
             settings,
             reads,
             composed: ui::widget::Composed::default(),
@@ -305,8 +354,11 @@ impl Found {
         let category = Category::from_slug(page)?;
         let items: Vec<Item> = found
             .iter()
-            .filter_map(|&at| Some((*self.settings.get(at)?, self.reads.get(at))))
-            .map(|(setting, read)| {
+            .filter_map(|&at| Some((at, *self.settings.get(at)?, self.reads.get(at))))
+            .map(|(at, setting, read)| {
+                if let Some(row) = self.bound.borrow_mut().get_mut(at).and_then(Option::take) {
+                    return row;
+                }
                 let value = match (entry(setting.id).map(|entry| &entry.shown), read) {
                     (Some(Shown::Row(row)), _) => return row(&self.cx, &self.follows),
                     (Some(Shown::Switch(_, row)), Some(&Read::Switch(on))) => {

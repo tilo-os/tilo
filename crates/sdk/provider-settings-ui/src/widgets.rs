@@ -65,6 +65,43 @@ enum ItemKind {
     Note(String),
 }
 
+/// Whether an entry joins the rows around it into one list or stands as a
+/// block ([`Item::into_parts`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemShape {
+    Row,
+    Block,
+}
+
+impl Item {
+    /// The entry's element and how it stands in its group: what a part of
+    /// a view over another record builds and hands back
+    /// ([`crate::bound::record_item`]). A note becomes its caption.
+    #[must_use]
+    pub fn into_parts(self) -> (ItemShape, El) {
+        match self.0 {
+            ItemKind::Row(element) => (ItemShape::Row, element),
+            ItemKind::Block(element) => (ItemShape::Block, element),
+            ItemKind::Note(text) => (ItemShape::Block, caption(&text)),
+        }
+    }
+
+    /// The entry of `element`, standing as `shape` says.
+    #[must_use]
+    pub fn from_parts(shape: ItemShape, element: El) -> Self {
+        match shape {
+            ItemShape::Row => row(element),
+            ItemShape::Block => block(element),
+        }
+    }
+
+    /// The entry's element, as a whole group's part of a view.
+    #[must_use]
+    pub fn into_element(self) -> El {
+        self.into_parts().1
+    }
+}
+
 /// The entries of one group: what [`rows`] collects.
 pub struct Body(Vec<Item>);
 
@@ -140,6 +177,14 @@ impl SettingsSection {
     }
 }
 
+impl SettingsSection {
+    /// The group as an element of a page ([`page_of`]).
+    #[must_use]
+    pub fn into_element(self) -> El {
+        Box::new(self.into_section())
+    }
+}
+
 fn notes_block(notes: &[String]) -> El {
     let mut column = Column::new()
         .with_no_padding()
@@ -161,6 +206,20 @@ pub fn page(sections: Vec<SettingsSection>) -> El {
                 .with_intrinsic_height()
                 .with_rhythm(Rhythm::Group),
             |page, section| page.push(Box::new(section.into_section())),
+        ),
+    )
+}
+
+/// A page of groups built as elements ([`SettingsSection::into_element`]),
+/// each a part of a view over its own record: one `group` apart.
+pub fn page_of(groups: Vec<El>) -> El {
+    Box::new(
+        groups.into_iter().fold(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(Rhythm::Group),
+            Column::push,
         ),
     )
 }

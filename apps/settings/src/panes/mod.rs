@@ -58,10 +58,12 @@ pub const PARTS: &[&crate::area::Part] = &[&crate::effects::PART, &PART];
 /// (`cx.record(&section, ..)`), for the panes built that way; `None` for a
 /// pane its area builds ([`crate::area::PaneEntry`]).
 pub(crate) fn view(
-    cx: &mut ui::framework::ViewCx<crate::resource::Settings>,
+    cx: &ui::framework::ViewCx<crate::resource::Settings>,
     app: &std::rc::Rc<crate::settings_app::SettingsApp>,
     category: crate::categories::Category,
 ) -> Option<ui::widget::Element> {
-    let _ = (cx, app, category);
-    None
+    match category {
+        crate::categories::Category::Appearance => appearance::view(cx, app),
+        _ => None,
+    }
 }

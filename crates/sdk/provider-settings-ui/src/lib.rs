@@ -23,6 +23,7 @@ use admin::AdminRead;
 mod app;
 #[cfg(test)]
 mod app_tests;
+pub mod bound;
 pub mod i18n;
 pub mod widgets;
 pub use app::{ProviderSettingsApp, definition};

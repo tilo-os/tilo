@@ -92,11 +92,13 @@ pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
     let key = ui::LocalState::new(PaneKey::of(app.selected()));
     let content = {
         let app = Rc::clone(&app);
-        cx.switch(&key, move |cx, key| {
-            content(&app, key, |category| crate::panes::view(cx, &app, category))
-        })
+        cx.switch(&key, move |cx, key| content(&app, key, Some(&*cx)))
     };
-    let window = SettingsWindow::over(Rc::clone(&app), Content::Bound(key, Some(content)));
+    let mut window = SettingsWindow::over(Rc::clone(&app), Content::Bound(key, Some(content)));
+    window.look = Some(Look {
+        prefs: cx.settings::<crate::prefs::AppearancePrefs>(),
+        device: cx.settings::<crate::prefs::AppearanceDevicePrefs>(),
+    });
     let (rows, row, pending, intents) = (Rc::clone(&app), Rc::clone(&app), Rc::clone(&app), app);
     cx.publishing(
         Publishes::new()
@@ -117,24 +119,23 @@ pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
 
 /// What the content column shows for `key`, scrolled: the settings found,
 /// the request for a workspace identity, a note while the pane's area reads,
-/// or the pane — `bound` builds it where it is view code over its sections,
-/// else its area's widget.
-fn content(
-    app: &SettingsApp,
-    key: &PaneKey,
-    bound: impl FnOnce(Category) -> Option<Element>,
-) -> Element {
+/// or the pane. In the view (`cx`), a pane that is view code over its
+/// sections is built as such, and so are the rows found of such a pane;
+/// outside it, only the panes the areas build show.
+fn content(app: &Rc<SettingsApp>, key: &PaneKey, cx: Option<&ViewCx<Settings>>) -> Element {
     let (body, offset): (Element, ScrollOffset) = if key.found.is_empty() {
         (
-            pane_body(app, key.category, bound),
+            pane_body(app, key.category, cx),
             app.scroll_offset(key.category),
         )
     } else {
+        let bound = cx.map_or_else(Vec::new, |cx| crate::setting::bound_rows(cx, &key.found));
         (
             Box::new(crate::setting::Found::new(
                 app.host().clone(),
                 key.found.clone(),
                 key.reads.clone(),
+                bound,
             )),
             ScrollOffset::default(),
         )
@@ -152,11 +153,7 @@ fn content(
 }
 
 /// The body of `category`'s pane: see [`content`].
-fn pane_body(
-    app: &SettingsApp,
-    category: Category,
-    bound: impl FnOnce(Category) -> Option<Element>,
-) -> Element {
+fn pane_body(app: &Rc<SettingsApp>, category: Category, cx: Option<&ViewCx<Settings>>) -> Element {
     if category.needs_workspace_identity() && ui::workspace_identity::missing() {
         app.pane_waits().set(false);
         app.keyboard_partial().set(false);
@@ -177,7 +174,7 @@ fn pane_body(
             crate::widgets::note(&crate::i18n::t("settings-pane-reading")),
         ]))]);
     }
-    if let Some(pane) = bound(category) {
+    if let Some(pane) = cx.and_then(|cx| crate::panes::view(cx, app, category)) {
         return pane;
     }
     crate::area::registry()
@@ -188,6 +185,13 @@ fn pane_body(
             || crate::widgets::page(Vec::new()),
             |pane| (pane.build)(app, category),
         )
+}
+
+/// The person's appearance, followed while the view lives: the look the
+/// window shows itself in while the page that changes it is open.
+struct Look {
+    prefs: ui::framework::Setting<crate::prefs::AppearancePrefs>,
+    device: ui::framework::Setting<crate::prefs::AppearanceDevicePrefs>,
 }
 
 /// How the window's content column is built.
@@ -234,6 +238,9 @@ pub struct SettingsWindow {
     value_follows: crate::setting::Follows,
     pages_seen: u64,
     secret: Option<crate::secrets::ShownPrompt>,
+    /// The person's appearance, as the view follows it; `None` outside a
+    /// view, where it is read from the settings when asked.
+    look: Option<Look>,
 }
 
 impl std::ops::Deref for SettingsWindow {
@@ -288,6 +295,7 @@ impl SettingsWindow {
             value_follows: crate::setting::Follows::default(),
             pages_seen: 0,
             secret: None,
+            look: None,
         }
     }
 
@@ -444,7 +452,7 @@ impl SettingsWindow {
     fn take_content(&mut self) -> Option<Element> {
         match &mut self.content {
             Content::Bound(_, content) => content.take(),
-            Content::Detached(key) => Some(content(&self.app, key, |_| None)),
+            Content::Detached(key) => Some(content(&self.app, key, None)),
         }
     }
 
@@ -1086,6 +1094,35 @@ impl Widget for SettingsWindow {
 
     fn name(&self) -> &'static str {
         "SettingsWindow"
+    }
+
+    /// While the page that changes the look is open, the window shows
+    /// itself in it the instant a control changes it: the host applies
+    /// what differs. The toolkit folds in the contrast, the interface
+    /// scale and the text scale.
+    fn appearance_intent(&self) -> Option<ui::theme::AppearanceIntent> {
+        if self.app.selected() != Category::Appearance {
+            return None;
+        }
+        Some(match &self.look {
+            Some(look) => look.prefs.state().with(|prefs| {
+                look.device
+                    .state()
+                    .with(|device| crate::panes::appearance::intent(prefs, device))
+            }),
+            None => crate::panes::appearance::intent(
+                &self
+                    .app
+                    .host()
+                    .settings::<crate::prefs::AppearancePrefs>()
+                    .get(),
+                &self
+                    .app
+                    .host()
+                    .settings::<crate::prefs::AppearanceDevicePrefs>()
+                    .get(),
+            ),
+        })
     }
 
     /// Stable landmark for the responsive shell: the sidebar and pane subtree

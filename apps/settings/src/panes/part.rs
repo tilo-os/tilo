@@ -475,15 +475,6 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
         },
     },
     crate::area::PaneEntry {
-        categories: &[Category::Appearance],
-        build: |app, _| {
-            Box::new(appearance::AppearancePane::new(
-                app.host().clone(),
-                app.wallpaper_status().clone(),
-            ))
-        },
-    },
-    crate::area::PaneEntry {
         categories: &[Category::Accessibility],
         build: |app, _| {
             Box::new(accessibility::AccessibilityPane::new(
@@ -604,7 +595,7 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
 /// The settings these panes show, as Settings' search shows them: a row
 /// built by the function its pane builds it with, or what it is set to.
 const SETTINGS: &[crate::setting::SettingEntry] = &[
-    crate::setting::setting_entry!("appearance.hide_top_bar", crate::prefs::DesktopControlsDevice => appearance::hide_top_bar),
+    crate::setting::setting_row!("appearance.hide_top_bar", crate::prefs::DesktopControlsDevice => appearance::hide_top_bar),
     crate::setting::setting_entry!("appearance.text_size", crate::prefs::AppearancePrefs => accessibility::text_size),
     crate::setting::setting_entry!("appearance.high_contrast", crate::prefs::AppearancePrefs => accessibility::high_contrast),
     crate::setting::setting_entry!("appearance.reduce_motion", crate::prefs::AppearancePrefs => accessibility::reduce_motion),
