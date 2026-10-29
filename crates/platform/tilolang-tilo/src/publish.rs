@@ -6,6 +6,7 @@
 //! no agent-side code. The build closure of each action runs the wasm **planner** and encodes
 //! the resulting [`DynAction`].
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use serde_json::Value as Json;
@@ -373,7 +374,11 @@ fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &st
 /// does ([`crate::search::SearchIndex`]): until it ends, updates change nothing.
 pub struct Publications {
     watch: crate::store::Watch,
-    trees: std::collections::BTreeMap<String, ResourceSpec>,
+    /// Each the very tree it was while the record publishes the same: a reader holding it
+    /// knows by its pointer that nothing in it changed.
+    trees: std::collections::BTreeMap<String, Rc<ResourceSpec>>,
+    /// Moves whenever a tree is added, replaced or removed.
+    revision: u64,
     /// Per record, the resource whose text names it now.
     named_by: std::collections::BTreeMap<String, Option<String>>,
     /// Records being built whole off the frame.
@@ -495,6 +500,7 @@ impl Publications {
         Self {
             watch: host.store().watch(),
             trees: std::collections::BTreeMap::new(),
+            revision: 0,
             named_by: std::collections::BTreeMap::new(),
             building: None,
             wake: None,
@@ -593,21 +599,41 @@ impl Publications {
             named_by,
         } in built
         {
-            self.trees.insert(doc.clone(), tree);
+            self.trees.insert(doc.clone(), Rc::new(tree));
             self.named_by.insert(doc.clone(), named_by);
             touched.push(doc);
+            self.revision = self.revision.wrapping_add(1);
         }
     }
 
-    /// The published records, by document id.
+    /// The published records, by document id. A record whose tree did not change since an
+    /// earlier call is the very same tree.
     #[must_use]
-    pub fn trees(&self) -> &std::collections::BTreeMap<String, ResourceSpec> {
+    pub fn trees(&self) -> &std::collections::BTreeMap<String, Rc<ResourceSpec>> {
         &self.trees
+    }
+
+    /// A number that moves whenever [`Self::trees`] changes, and only then.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Republish what changed since the last update. Returns the documents whose published tree
     /// changed (or went away).
     pub fn update(&mut self, host: &crate::host::Host, planner: &Arc<dyn Planner>) -> Vec<String> {
+        let touched = self.update_trees(host, planner);
+        if !touched.is_empty() {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        touched
+    }
+
+    fn update_trees(
+        &mut self,
+        host: &crate::host::Host,
+        planner: &Arc<dyn Planner>,
+    ) -> Vec<String> {
         use std::collections::BTreeSet;
 
         use tilolang_runtime::store::ANY_FIELD;
@@ -675,12 +701,13 @@ impl Publications {
             else {
                 continue;
             };
-            at.republish(
+            if at.republish(
                 tree,
                 (fields, &changes),
                 self.named_by.entry(doc.clone()).or_default(),
-            );
-            touched.push(doc.clone());
+            ) {
+                touched.push(doc.clone());
+            }
         }
         if !whole_docs.is_empty() {
             // Built off the frame; changes from now on stay in the watch until it is taken in.
@@ -812,6 +839,11 @@ impl Published<'_> {
             .and_then(|top| self.holder(top))
             .map(|(_, field)| field);
         for key in fields {
+            // A resource's first and last versions (`created(r)`, `updated(r)`), which every
+            // change moves: nothing published reads them.
+            if tilolang_runtime::store::Reflected::of(&key.field).is_some() {
+                continue;
+            }
             if key.resource == self.doc {
                 let kind = self.schema.field(&key.field).map(|f| f.kind);
                 if kind == Some(crate::schema::MergeKind::Collection) {
@@ -873,16 +905,22 @@ impl Published<'_> {
 
     /// Republish in `tree` what the changes to `fields` reached; `named_by` is the resource
     /// whose text names the record, kept up to date.
+    /// Whether the tree changed. A change that reached nothing the tree shows (a note's body
+    /// typed into, which no label reads) leaves it the very tree it was.
     fn republish(
         &self,
-        tree: &mut ResourceSpec,
+        tree: &mut Rc<ResourceSpec>,
         (fields, changes): (
             &std::collections::BTreeSet<tilolang_runtime::store::FieldKey>,
             &crate::store::Changes,
         ),
         named_by: &mut Option<String>,
-    ) {
+    ) -> bool {
         let mut rework = self.rework(fields, named_by.as_deref());
+        if self.shows_the_same(tree, &rework, named_by.as_deref()) {
+            return false;
+        }
+        let tree = Rc::make_mut(tree);
         for (path, field) in &rework.collections {
             if self.within(path, &rework.nodes) {
                 continue;
@@ -901,12 +939,42 @@ impl Published<'_> {
         self.rebuild(tree, &rework.nodes);
         self.relabel(tree, &rework.relabels);
         let (label, named) = match &rework.relabel {
-            Relabel::Kept => return,
+            Relabel::Kept => return true,
             Relabel::Within(top) => self.label_within(top).unwrap_or_else(|| self.label()),
             Relabel::Whole => self.label(),
         };
         tree.label = label;
         *named_by = named;
+        true
+    }
+
+    /// Whether `rework` would leave `tree` as it is: it builds and moves no item, and every
+    /// label it reads again reads as the tree has it.
+    fn shows_the_same(&self, tree: &ResourceSpec, rework: &Rework, named_by: Option<&str>) -> bool {
+        if !rework.nodes.is_empty() || !rework.collections.is_empty() {
+            return false;
+        }
+        let relabeled = rework.relabels.iter().all(|path| {
+            let (Some(at), Some(schema), Some(node)) =
+                (self.at(path), self.schema_at(path), self.node(tree, path))
+            else {
+                return false;
+            };
+            let label = self
+                .store
+                .first_text(&at)
+                .map_or_else(|| schema.name.clone(), |(text, _)| text);
+            node.label == label
+        });
+        if !relabeled {
+            return false;
+        }
+        let (label, named) = match &rework.relabel {
+            Relabel::Kept => return true,
+            Relabel::Within(top) => self.label_within(top).unwrap_or_else(|| self.label()),
+            Relabel::Whole => self.label(),
+        };
+        tree.label == label && named.as_deref() == named_by
     }
 
     /// Whether the resource at `path` is one of `paths` or within one of them, as the store has
@@ -1155,6 +1223,18 @@ impl Published<'_> {
 
     /// The published resource at `path` in `tree`, the record's: each item found where its
     /// listing puts it.
+    fn node<'t>(&self, tree: &'t ResourceSpec, path: &str) -> Option<&'t ResourceSpec> {
+        let app = &self.types.meta().app;
+        let chain = self.chain(path)?;
+        let mut node = tree;
+        for at in chain.iter().skip(1) {
+            let id = resource_id(app, at);
+            let index = self.child_index(node, at, &id)?;
+            node = node.children.get(index)?;
+        }
+        Some(node)
+    }
+
     fn node_mut<'t>(&self, tree: &'t mut ResourceSpec, path: &str) -> Option<&'t mut ResourceSpec> {
         let app = &self.types.meta().app;
         let chain = self.chain(path)?;
