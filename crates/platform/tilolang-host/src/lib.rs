@@ -22,6 +22,7 @@
 pub mod hosted;
 pub mod phrases;
 pub mod task;
+pub mod wait;
 
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
@@ -625,16 +626,20 @@ impl TilolangHost {
         changed
     }
 
-    /// The window connections to watch: one closing ends its instance.
+    /// The running instances' window connections, to wait on: what one sends is its instance's
+    /// next frame's, and one closing ends its instance.
     pub fn windows(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
         self.running
             .iter()
             .filter_map(|running| running.window.as_ref().map(OwnedFd::as_fd))
-            .chain(
-                self.opening
-                    .iter()
-                    .filter_map(|open| open.window.as_ref().map(AsFd::as_fd)),
-            )
+    }
+
+    /// The window connections of the instances being opened, to wait on for closing only: what
+    /// one sends stays in it until its instance runs, and one closing ends its opening.
+    pub fn opening_windows(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
+        self.opening
+            .iter()
+            .filter_map(|open| open.window.as_ref().map(AsFd::as_fd))
     }
 
     /// One frame of every instance; an instance whose window closed ends, its record written

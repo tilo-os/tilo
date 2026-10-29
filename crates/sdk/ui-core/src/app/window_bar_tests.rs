@@ -143,7 +143,10 @@ fn relay(app: &mut App, shell: &mut ShellEnd, window: &mut WindowGroup) {
     for _ in 0..3 {
         for (tab, event) in window.take_toolbar_events() {
             assert_eq!(tab, 1, "events go to the tab the app shows");
-            shell.send(&FloatingSurfaceHostMessage::ToolbarEvent { event });
+            shell.send(&FloatingSurfaceHostMessage::ToolbarEvent {
+                event,
+                after_input: None,
+            });
         }
         app.pump_floating_surface_service();
         for message in shell.read() {
@@ -293,7 +296,10 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
     let events = window.take_toolbar_events();
     assert_eq!(events, vec![(1, ToolbarEvent::History)]);
     for (_, event) in events {
-        shell.send(&FloatingSurfaceHostMessage::ToolbarEvent { event });
+        shell.send(&FloatingSurfaceHostMessage::ToolbarEvent {
+            event,
+            after_input: None,
+        });
     }
     app.pump_floating_surface_service();
     // The app opens it on its next frame, as its runner draws one.
@@ -354,6 +360,7 @@ fn an_apps_history_has_the_shell_describe_its_changes_and_keeps_the_answer_in_th
     // each wrote.
     shell.send(&FloatingSurfaceHostMessage::ToolbarEvent {
         event: ToolbarEvent::History,
+        after_input: None,
     });
     app.pump_floating_surface_service();
     super::super::framework_history_tests::layout(&mut app);
@@ -529,7 +536,10 @@ fn relay_bar(app: &mut App, shell: &mut ShellEnd, frame: &mut crate::headless::F
         drop(window);
         for (tab, event) in events {
             assert_eq!(tab, 1, "events go to the tab the app shows");
-            shell.send(&FloatingSurfaceHostMessage::ToolbarEvent { event });
+            shell.send(&FloatingSurfaceHostMessage::ToolbarEvent {
+                event,
+                after_input: None,
+            });
         }
         native_frame(app);
         for message in shell.read() {

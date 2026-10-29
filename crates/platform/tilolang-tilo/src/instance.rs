@@ -241,6 +241,10 @@ pub struct Instance {
     publication: Option<Box<dyn Publication>>,
     root: Option<Shown>,
     detail: Option<Shown>,
+    /// The space the window last said each lane's view has (`ToApp::Space`): a view opened in
+    /// the lane later starts from it.
+    root_space: Option<crate::runtime::space::Space>,
+    detail_space: Option<crate::runtime::space::Space>,
     transport: Box<dyn Transport>,
     /// What waits to be sent this frame.
     out: Vec<ToUi>,
@@ -325,6 +329,8 @@ impl Instance {
             publication: None,
             root: None,
             detail: None,
+            root_space: None,
+            detail_space: None,
             transport,
             out: Vec::new(),
             lenses: HashMap::new(),
@@ -736,11 +742,11 @@ impl Instance {
             tracing::warn!(app = self.app, "the new build has no root to open");
             return;
         };
-        self.root = Some(Shown::new(target, view));
+        self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
         self.send_open(Lane::Root, None);
         self.detail = detail.and_then(|(target, with)| {
             let view = host.open_resource(&target, with.as_deref()).ok()?;
-            let mut view = Shown::new(target, view);
+            let mut view = Shown::new(target, self.spaced(Lane::Detail, view));
             view.with = with;
             Some(view)
         });
@@ -785,7 +791,7 @@ impl Instance {
         };
         match host.open_main(&self.app) {
             Ok(view) => {
-                self.root = Some(Shown::new(target, view));
+                self.root = Some(Shown::new(target, self.spaced(Lane::Root, view)));
                 if self.detail.take().is_some() {
                     self.out.push(ToUi::Close);
                 }
@@ -837,7 +843,7 @@ impl Instance {
         }
         match host.open_resource(target, with) {
             Ok(view) => {
-                let mut view = Shown::new(target.clone(), view);
+                let mut view = Shown::new(target.clone(), self.spaced(Lane::Detail, view));
                 view.with = with.map(str::to_owned);
                 self.detail = Some(view);
                 self.lenses_changed = true;
@@ -1391,6 +1397,36 @@ impl Instance {
         changed
     }
 
+    /// The view of `lane` has `width` by `height` rem of the window now: its `space` follows,
+    /// with a class changing only past its boundary by the hysteresis, and the view runs again
+    /// only when something it read of it changed.
+    fn offer_space(&mut self, lane: Lane, width: f64, height: f64) {
+        let slot = match lane {
+            Lane::Root => &mut self.root_space,
+            Lane::Detail => &mut self.detail_space,
+        };
+        let space = slot.map_or_else(
+            || crate::runtime::space::Space::from_rem(width, height),
+            |before| before.followed(width, height),
+        );
+        *slot = Some(space);
+        if let Some(view) = self.view(lane) {
+            view.borrow_mut().set_space("", space);
+        }
+    }
+
+    /// `view`, about to be shown in `lane`, offered the space the lane has.
+    fn spaced(&self, lane: Lane, mut view: ViewInstance) -> ViewInstance {
+        let space = match lane {
+            Lane::Root => self.root_space,
+            Lane::Detail => self.detail_space,
+        };
+        if let Some(space) = space {
+            view.set_space("", space);
+        }
+        view
+    }
+
     fn event(&mut self, message: ToApp) {
         let first = self.host().map(|host| host.next_ticket());
         let mut ran: Option<(ActionRef, Value)> = None;
@@ -1462,6 +1498,14 @@ impl Instance {
                 if self.told.tell(me, others) {
                     self.names_changed = true;
                 }
+                Ok(())
+            }
+            ToApp::Space {
+                lane,
+                width,
+                height,
+            } => {
+                self.offer_space(lane, f64::from(width), f64::from(height));
                 Ok(())
             }
         };
