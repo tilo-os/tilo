@@ -118,6 +118,14 @@ fn reopen(door: Option<&OpenDoor>, chrome: &Chrome, place: &Place) -> Result<(),
     if let Some(anchor) = place.anchor.as_deref() {
         return super::app_content::open_at(door, chrome, &place.app_id, &place.room, anchor);
     }
+    // The window only while it still shows this app: a window id outlives
+    // its window in the record, and a later session can give the same id to
+    // another app's window.
+    let shows_this_app = |tab: &tilo_desktop_model::Tab| {
+        tab.id == place.tab
+            && tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                .is_some_and(|app| app.as_str() == place.app_id)
+    };
     let window = {
         let state = chrome.borrow();
         let tree = state.tree();
@@ -126,7 +134,7 @@ fn reopen(door: Option<&OpenDoor>, chrome: &Chrome, place: &Place) -> Result<(),
                 strip
                     .window_groups
                     .iter()
-                    .find(|group| group.tabs.iter().any(|tab| tab.id == place.tab))
+                    .find(|group| group.tabs.iter().any(shows_this_app))
                     .map(|group| (workspace.id, strip.id, group.id))
             })
         })
@@ -222,6 +230,89 @@ mod tests {
             doc: &doc,
             doc_root: &automerge::ROOT,
         })
+    }
+
+    /// A place without an anchor brings its window forward only while that
+    /// window still shows the place's app. Window ids outlive their windows
+    /// in the record, so the same id can name another app's window later;
+    /// Continue must never bring that window forward instead.
+    #[test]
+    fn a_place_brings_forward_only_a_window_of_its_own_app() {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+        let (room, tab, app) = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let active = state.active_tab_id();
+            let workspace = tree
+                .desktop
+                .active_workspace()
+                .expect("a workspace in front");
+            let (tab, app) = workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .filter(|candidate| Some(candidate.id) != active)
+                .find_map(|candidate| {
+                    tilo_desktop_model::apps::canonical_app_id(&candidate.tile)
+                        .map(|app| (candidate.id, app.as_str().to_owned()))
+                })
+                .expect("the workspace in front has a window that is not in front");
+            let room = workspace.room().to_string();
+            drop(tree);
+            (room, tab, app)
+        };
+        let open = |label: &str| {
+            let state = chrome.borrow();
+            let doc = automerge::AutoCommit::new();
+            let row = ContinueProvider::without_broker()
+                .launcher_rows(SearchContext {
+                    query_scope: Some(SearchScope::All),
+                    include_programmatic: false,
+                    needle: "",
+                    wanted: &[ResourceKind::Record],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|row| row.title == label)
+                .expect("the place is listed");
+            drop(state);
+            let mut doc = automerge::AutoCommit::new();
+            // A place whose app is not installed fails to launch; what
+            // matters is which window, if any, came forward.
+            let _ = (row.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            );
+        };
+
+        let before = chrome.borrow().active_tab_id();
+        recent_places::visit_ago(
+            "so.tilo.not-this-window",
+            &room,
+            tab,
+            "Someone else's place",
+            None,
+            Duration::from_secs(60),
+        );
+        open("Someone else's place");
+        assert_eq!(
+            chrome.borrow().active_tab_id(),
+            before,
+            "a window of another app under the same id stays where it is"
+        );
+
+        recent_places::visit_ago(&app, &room, tab, "Its own place", None, Duration::ZERO);
+        open("Its own place");
+        assert_eq!(
+            chrome.borrow().active_tab_id(),
+            Some(tab),
+            "the place's own window comes forward"
+        );
     }
 
     /// Continue is where the windows were: newest first, at most six, the

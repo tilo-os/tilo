@@ -681,6 +681,92 @@ mod tests {
         chrome.borrow_mut().present_notifications(at, &ids, false);
     }
 
+    /// Clearing the notification list, and undoing that, are actions: a
+    /// script, an agent or a screen-reader user reaches them without the
+    /// notification centre's buttons, and gets the centre's own outcome.
+    #[test]
+    fn clearing_notifications_and_its_undo_are_actions() {
+        use crate::shell::search::action_api::{ActionArgs, ActionError};
+        use crate::shell::search::providers::actions::ActionsProvider;
+        use crate::shell::search::{ResourceKind, SearchContext, SearchProvider as _};
+
+        // A workspace the person owns: their authority admits acting there.
+        let chrome = {
+            use crate::shell::state::{FreshId as _, Workspace, WorkspaceId, WorkspaceTreeHandle};
+            let mut tree = WorkspaceTree::default();
+            let id = WorkspaceId::new();
+            let mut workspace = Workspace::new(id, "Demo");
+            workspace.set_owner("shell-fixture");
+            tree.desktop.workspaces.push(workspace);
+            tree.desktop.active = id;
+            ChromeState::new_with_fixture_handle(
+                WorkspaceTreeHandle::new(tree),
+                crate::shell::hosted_inputs::HostedTileInputs::default(),
+            )
+        };
+        chrome.borrow_mut().set_notification_policy_for_tests(
+            settings_store::notification_policy::NotificationPolicy::default(),
+        );
+        let invoke = |needle: &str, id: &str| {
+            let doc = automerge::AutoCommit::new();
+            let rows = {
+                let state = chrome.borrow();
+                ActionsProvider::new().query(SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
+                    needle,
+                    wanted: &[ResourceKind::Action],
+                    chrome: &state,
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+            };
+            let row = rows
+                .iter()
+                .find(|row| row.id == id)
+                .unwrap_or_else(|| panic!("searching {needle:?} finds {id}"));
+            let mut doc = automerge::AutoCommit::new();
+            (row.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            )
+        };
+
+        assert!(
+            matches!(
+                invoke("clear notifications", "notifications.clear"),
+                Err(ActionError::Refused(_))
+            ),
+            "an empty list has nothing to clear"
+        );
+        for title in ["first", "second"] {
+            let id = chrome.borrow_mut().push_notification(title, "");
+            chrome.borrow_mut().dismiss_notification(id);
+        }
+        invoke("clear notifications", "notifications.clear").expect("the list is cleared");
+        assert!(chrome.borrow().notification_history().is_empty());
+        assert!(chrome.borrow().can_undo_notification_history_clear());
+
+        invoke("undo clear notifications", "notifications.clear.undo")
+            .expect("the clear is undone");
+        let titles: Vec<String> = chrome
+            .borrow()
+            .notification_history()
+            .iter()
+            .map(|n| n.title.clone())
+            .collect();
+        assert_eq!(titles, ["first", "second"], "back in their order");
+        assert!(
+            matches!(
+                invoke("undo clear notifications", "notifications.clear.undo"),
+                Err(ActionError::Refused(_))
+            ),
+            "nothing is left to restore"
+        );
+    }
+
     #[test]
     fn toast_queue_pushes_caps_dismisses_and_expires() {
         fn push_appends_to_chrome_queue() {

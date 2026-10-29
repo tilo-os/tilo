@@ -428,6 +428,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         "notifications.dnd.toggle"
+        | "notifications.clear"
+        | "notifications.clear.undo"
         | "appearance.theme.dark"
         | "appearance.theme.light"
         | "appearance.language" => {
@@ -2924,6 +2926,33 @@ impl Action {
             |st, _| {
                 st.toggle_dnd();
                 Ok(())
+            },
+        ),
+        chrome(
+            "notifications.clear",
+            "search-action-notifications-clear",
+            "search-action-notifications-clear-subtitle",
+            |st, _| {
+                if st.notification_history().is_empty() {
+                    return Err(ActionError::Refused("no notifications to clear".into()));
+                }
+                st.clear_notification_history();
+                Ok(())
+            },
+        ),
+        chrome(
+            "notifications.clear.undo",
+            "search-action-notifications-clear-undo",
+            "search-action-notifications-clear-undo-subtitle",
+            |st, _| {
+                st.undo_notification_history_clear()
+                    .then_some(())
+                    .ok_or_else(|| {
+                        ActionError::Refused(
+                            "no cleared notifications to restore: a clear can be undone for eight seconds"
+                                .into(),
+                        )
+                    })
             },
         ),
         chrome(
