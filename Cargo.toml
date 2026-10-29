@@ -424,6 +424,7 @@ members = [
     "crates/session/output-passes",
     "crates/session/overview",
     "crates/session/polkit-agent",
+    "crates/session/portal",
     "crates/session/quick-settings",
     "crates/session/session-record",
     "crates/session/sheets",
