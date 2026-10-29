@@ -185,20 +185,9 @@ view document<R>(of: R, content: View) {
                 page {
                     stack(gap: .section) {
                         content
-                        std.edited(of)
                     }
                 }
             }
-        }
-    }
-}
-
-/// When `of` was last changed and by whom, from its history: what a document says at its foot.
-view edited<R>(of: R) {
-    if let u = updated(of) {
-        ui.PropertyList {
-            ui.Property(phrase("tilolang-edited"), u.at)
-            ui.Property(phrase("tilolang-edited-by"), u.who.name())
         }
     }
 }
