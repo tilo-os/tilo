@@ -1,22 +1,21 @@
-//! The keyboard as the surface of [`Osk`].
+//! The keyboard as the window of [`Osk`]'s view.
 //!
 //! [`OskSurface`] presents the person's keyboard preferences — their
 //! settings — to the [`OskWidget`], stores the changes the keyboard makes
 //! itself (a layout key, an emoji pick) and the ones a palette, agent or
-//! script asks for through an [`OskEffect`], and publishes the preferences
-//! as live rows beside the resource. What typing teaches the
-//! keyboard is kept in the keyboard's [`Learned`] record, synced with the
-//! workspace it is open in. In the keyboard's own
-//! process ([`crate::service::serve`]) a live surface also connects to the
+//! script asks for through an [`OskEffect`], which the view answers on it.
+//! The view publishes the preferences as live rows beside the resource.
+//! What typing teaches the keyboard is kept in the keyboard's [`Learned`]
+//! record, synced with the workspace it is open in. In the keyboard's own
+//! process ([`crate::service::serve`]) a live window also connects to the
 //! session: it follows the focused field over the input method and types
 //! into it.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::framework::{
-    EffectAnswer, EffectCx, Effected, LiveRow, PersonRecord, ResourceSurface, Setting, SurfaceCx,
-};
-use ui::widget::{AppModel, Decorator, ModelPath, Widget};
+use ui::framework::{EffectAnswer, Effected, PersonRecord, Publishes, Setting, ViewCx};
+use ui::widget::{AppModel, Decorator, Element, ModelPath, Widget};
 
 use crate::actions::{OskEffect, SetPreference};
 use crate::learned::{Learned, learned};
@@ -58,6 +57,8 @@ pub struct OskSurface {
     /// session through one.
     focus: Option<service::FocusChanges>,
     context: Option<service::ContextChanges>,
+    /// The scenario to stage on the next sync.
+    staged: Rc<RefCell<Option<Scenario>>>,
 }
 
 impl Default for OskSurface {
@@ -92,6 +93,7 @@ impl OskSurface {
             vocabulary_identity: (None, 0),
             focus: None,
             context: None,
+            staged: Rc::default(),
         }
     }
 
@@ -180,7 +182,7 @@ impl OskSurface {
 
     /// Serve the session: take its input method, unless the launch said
     /// otherwise, and type into the focused field.
-    fn connect(&mut self, cx: &SurfaceCx<Osk>) {
+    fn connect(&mut self, cx: &ViewCx<Osk>) {
         let choice = if cx.launch_flag(NO_INPUT_METHOD_FLAG) {
             InputMethodChoice::Off
         } else if cx.launch_flag(INPUT_METHOD_FLAG) {
@@ -228,6 +230,10 @@ impl Decorator for OskSurface {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let staged = self.staged.borrow_mut().take();
+        if let Some(Scenario(scenario)) = staged {
+            self.stage(scenario.as_deref());
+        }
         if let Some(focus) = &mut self.focus {
             for transition in focus.take() {
                 self.keyboard.follow_input_method(transition);
@@ -289,10 +295,26 @@ impl Decorator for OskSurface {
     }
 }
 
-impl ResourceSurface<Osk, OskEffect> for OskSurface {
-    fn present(&mut self, _state: &Rc<Osk>) {}
+/// A screenshot scenario to stage, `None` for a plain capture.
+struct Scenario(Option<String>);
 
-    fn attach(&mut self, cx: SurfaceCx<Osk>) {
+/// The keyboard window of `cx`'s view: it answers the preference effects
+/// and publishes the preferences as live rows.
+pub(crate) fn window(cx: &ViewCx<Osk>) -> Element {
+    let mut window = OskSurface::new();
+    window.attach(cx);
+    let staged = Rc::clone(&window.staged);
+    cx.on_stage(move |scenario| *staged.borrow_mut() = Some(Scenario(scenario.map(str::to_owned))));
+    cx.window_effects(|window: &mut OskSurface, effect: OskEffect, _cx| window.answer(&effect));
+    let preferences = cx.settings::<OskPreferences>();
+    cx.publishing(
+        Publishes::new().live_rows(move || crate::actions::preference_rows(&preferences.get())),
+        Box::new(window),
+    )
+}
+
+impl OskSurface {
+    fn attach(&mut self, cx: &ViewCx<Osk>) {
         if cx.mode().is_live() {
             self.keyboard
                 .set_personal_vocabulary(Some(ui::personal_dictionary::reader()));
@@ -311,7 +333,7 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
         }
         self.present_preferences();
         if cx.mode().is_live() && service::serving() {
-            self.connect(&cx);
+            self.connect(cx);
         }
     }
 
@@ -373,7 +395,7 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
         }
     }
 
-    fn effect(&mut self, effect: OskEffect, _cx: &mut EffectCx<Osk, Self>) -> EffectAnswer {
+    fn answer(&mut self, effect: &OskEffect) -> EffectAnswer {
         if let Some(change) = effect.preference() {
             self.store(&[change])?;
         } else {
@@ -381,15 +403,6 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
             self.submit_edits();
         }
         Ok(Effected::done())
-    }
-
-    fn live_rows(&self) -> Vec<LiveRow> {
-        let current = self
-            .preferences
-            .as_ref()
-            .map(|(setting, _)| setting.get())
-            .unwrap_or_default();
-        crate::actions::preference_rows(&current)
     }
 }
 

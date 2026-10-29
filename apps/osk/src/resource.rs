@@ -18,7 +18,6 @@ use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 
 use crate::actions::LETTER_LAYOUTS;
-use crate::surface::OskSurface;
 
 /// A keyboard height, independent of the desktop's density.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,7 +137,7 @@ pub const NO_INPUT_METHOD_FLAG: &str = "--no-input-method";
 /// context grows and shrinks them.
 pub const HIT_OVERLAY_FLAG: &str = "--debug-hit-areas";
 
-/// The on-screen keyboard app: the keyboard surface over [`Osk`].
+/// The on-screen keyboard app: the keyboard window over [`Osk`].
 pub struct OskShell;
 
 impl ResourceApp for OskShell {
@@ -155,7 +154,7 @@ impl ResourceApp for OskShell {
         &[INPUT_METHOD_FLAG, NO_INPUT_METHOD_FLAG, HIT_OVERLAY_FLAG];
 
     fn view(cx: &mut ViewCx<Osk>) -> Element {
-        cx.surface(OskSurface::new())
+        crate::surface::window(cx)
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
@@ -183,6 +182,7 @@ impl ResourceApp for OskShell {
 mod tests {
     use super::*;
     use crate::actions::OskEffect;
+    use crate::surface::OskSurface;
     use ui::framework::testing::TestApp;
     use ui::tilo_resource::Effect;
 

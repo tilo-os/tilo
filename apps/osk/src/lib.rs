@@ -28,7 +28,7 @@
 //!   swipes, and renders a tappable **suggestion bar** above the keys.
 //!
 //! ## Text injection and session integration
-//! * [`OskShell`] is the app: the keyboard surface over its [`Osk`]
+//! * [`OskShell`] is the app: the keyboard window over its [`Osk`]
 //!   preferences, which follow the person across their devices.
 //! * [`service`] connects the keyboard's own process to the session it types
 //!   into.
