@@ -122,7 +122,6 @@ settings-sections = { path = "../../system/settings-sections" }
 tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
 # The login screens' comforts go to tilo-authd over its socket protocol.
 tilo-auth = { path = "../../system/tilo-auth", default-features = false }
-notify.workspace = true
 tilo-paths.workspace = true
 # Where the control sockets live, shared with the `tilo-control` client.
 tilo-control = { path = "../control-cli" }

@@ -11,14 +11,14 @@ pub mod atomic;
     feature = "watch",
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
-mod change_watch;
+pub(crate) mod change_watch;
 #[cfg(all(
     feature = "watch",
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
 pub use change_watch::{
-    ChangeWatch, THREAD_NAME as CHANGE_WATCH_THREAD, watch_changes, watch_presence,
-    watch_tree_changes,
+    ChangeWatch, Event as WatchEvent, THREAD_NAME as CHANGE_WATCH_THREAD, Watcher, watch_changes,
+    watch_presence, watch_tree_changes,
 };
 #[cfg(all(
     feature = "watch",
@@ -123,7 +123,7 @@ pub fn create_dir_all(path: &std::path::Path) -> std::io::Result<()> {
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
 pub fn watch_entries(dir: &std::path::Path) -> Result<crate::Watch, crate::FsError> {
-    crate::disk_watch::watch_entries(dir)
+    change_watch::stream(dir, &crate::VPath::root(), false)
 }
 
 /// The extended attribute a FUSE filesystem answers on its directories when
@@ -146,7 +146,7 @@ pub const CHANGE_SIGNAL_XATTR: &str = "user.tilo.change-signal";
 ))]
 #[must_use]
 pub fn watch_sees_every_change(dir: &std::path::Path) -> bool {
-    crate::disk_watch::sees_every_change(dir)
+    change_watch::sees_every_change(dir)
 }
 
 #[cfg(test)]

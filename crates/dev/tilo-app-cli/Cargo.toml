@@ -28,7 +28,6 @@ hex.workspace = true
 # The shared web room's owner root and one-time admission tokens.
 getrandom.workspace = true
 libc.workspace = true
-notify.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Inside a Tilo session, `dev` hands the app the shell's file chooser the
@@ -44,7 +43,7 @@ sha2.workspace = true
 registry-types = { path = "../../packaging/registry-types" }
 registry-client = { path = "../../packaging/registry-client" }
 tilo-paths = { path = "../../platform/tilo-paths" }
-tilo-files = { path = "../../platform/tilo-files" }
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 bounded-command = { path = "../../system/bounded-command" }
 # The portability rules table deserializes into typed rules.
 serde.workspace = true

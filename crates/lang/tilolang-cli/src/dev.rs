@@ -17,14 +17,15 @@
 //! restarts their windows on it. Each later change of the binary re-bakes and reinstalls the
 //! bundle and restarts the apps that use it; the session keeps running.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::time::Instant;
 
-use notify::{RecursiveMode, Watcher as _};
 use tilo_app_package::pack::SigningIdentity;
+use tilo_files::ChangeKind;
+use tilo_files::native::{ChangeWatch, WatchEvent, Watcher};
 use tilolang::PackageMeta;
 use tilolang_tilo::upgrade::{Upgrade, compare};
 
@@ -185,7 +186,7 @@ pub struct DevOptions {
 
 /// What wakes the loop: a file event, or the end of the session the tool started.
 pub(crate) enum Wake {
-    File(notify::Result<notify::Event>),
+    File(Vec<WatchEvent>),
     Ended(std::io::Result<std::process::ExitStatus>),
 }
 
@@ -424,36 +425,37 @@ impl Dev {
 
     fn watch(
         &self,
-        watcher: &mut notify::RecommendedWatcher,
-        watching: &mut BTreeSet<PathBuf>,
+        wakes: &mpsc::Sender<Wake>,
+        watching: &mut BTreeMap<PathBuf, ChangeWatch>,
     ) -> Result<(), String> {
-        let mut dirs: Vec<(PathBuf, RecursiveMode)> = self
+        let mut dirs: Vec<(PathBuf, bool)> = self
             .watched_dirs()?
             .into_iter()
-            .map(|dir| (dir, RecursiveMode::NonRecursive))
+            .map(|dir| (dir, false))
             .collect();
         match self.runtime.as_ref() {
             Some(DevRuntime {
                 built_in: Some((repo, _)),
                 ..
-            }) => dirs.extend(
-                RUNTIME_SOURCES
-                    .iter()
-                    .map(|dir| (repo.join(dir), RecursiveMode::Recursive)),
-            ),
+            }) => dirs.extend(RUNTIME_SOURCES.iter().map(|dir| (repo.join(dir), true))),
             Some(runtime) => dirs.extend(
                 runtime
                     .binary
                     .parent()
-                    .map(|dir| (dir.to_path_buf(), RecursiveMode::NonRecursive)),
+                    .map(|dir| (dir.to_path_buf(), false)),
             ),
             None => {}
         }
-        for (dir, mode) in dirs {
-            if watching.insert(dir.clone()) {
-                watcher
-                    .watch(&dir, mode)
-                    .map_err(|error| format!("{}: {error}", dir.display()))?;
+        for (dir, tree) in dirs {
+            if let std::collections::btree_map::Entry::Vacant(slot) = watching.entry(dir) {
+                let watcher = if tree {
+                    Watcher::tree(slot.key())
+                } else {
+                    Watcher::entries(slot.key())
+                };
+                let watch = watch_into(watcher, wakes.clone())
+                    .map_err(|error| format!("{}: {error}", slot.key().display()))?;
+                slot.insert(watch);
             }
         }
         Ok(())
@@ -518,35 +520,35 @@ impl Dev {
     pub(crate) fn follow(
         &mut self,
         wakes: &mpsc::Receiver<Wake>,
-        watcher: &mut notify::RecommendedWatcher,
+        sender: &mpsc::Sender<Wake>,
     ) -> Result<(), String> {
-        let mut watching = BTreeSet::new();
-        self.watch(watcher, &mut watching)?;
+        let mut watching = BTreeMap::new();
+        self.watch(sender, &mut watching)?;
         loop {
-            let event = match wakes.recv() {
-                Ok(Wake::File(event)) => event,
+            let events = match wakes.recv() {
+                Ok(Wake::File(events)) => events,
                 Ok(Wake::Ended(status)) => return ended(status),
                 Err(_) => return Err("the file watcher stopped".to_owned()),
             };
-            let Ok(event) = event else { continue };
-            let mut source = is_source_edit(&event);
-            let mut runtime = self.is_runtime_change(&event);
-            let mut runtime_source = self.is_runtime_source_edit(&event);
-            if !source && !runtime && !runtime_source {
-                continue;
-            }
+            let (mut source, mut runtime, mut runtime_source) = (false, false, false);
+            let mut take = |events: &[WatchEvent]| {
+                for event in events {
+                    source |= is_source_edit(event);
+                    runtime |= self.is_runtime_change(event);
+                    runtime_source |= self.is_runtime_source_edit(event);
+                }
+            };
+            take(&events);
             // An editor's save, or a link of the runtime, is several events: take every one
-            // already queued with this one.
+            // already queued with these.
             while let Ok(wake) = wakes.try_recv() {
                 match wake {
                     Wake::Ended(status) => return ended(status),
-                    Wake::File(Ok(more)) => {
-                        source |= is_source_edit(&more);
-                        runtime |= self.is_runtime_change(&more);
-                        runtime_source |= self.is_runtime_source_edit(&more);
-                    }
-                    Wake::File(Err(_)) => {}
+                    Wake::File(more) => take(&more),
                 }
+            }
+            if !source && !runtime && !runtime_source {
+                continue;
             }
             if runtime_source {
                 match self.build_runtime() {
@@ -561,15 +563,14 @@ impl Dev {
             } else {
                 self.rebuild();
             }
-            if let Err(error) = self.watch(watcher, &mut watching) {
+            if let Err(error) = self.watch(sender, &mut watching) {
                 eprintln!("{error}");
             }
         }
     }
 
     /// A new binary of a runtime built by hand.
-    fn is_runtime_change(&self, event: &notify::Event) -> bool {
-        use notify::EventKind;
+    fn is_runtime_change(&self, event: &WatchEvent) -> bool {
         let Some(runtime) = self
             .runtime
             .as_ref()
@@ -577,13 +578,12 @@ impl Dev {
         else {
             return false;
         };
-        matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
-            && event.paths.contains(&runtime.binary)
+        matches!(event.kind, ChangeKind::Created | ChangeKind::Changed)
+            && event.path == runtime.binary
     }
 
     /// An edit of the sources of a runtime the tool builds.
-    fn is_runtime_source_edit(&self, event: &notify::Event) -> bool {
-        use notify::EventKind;
+    fn is_runtime_source_edit(&self, event: &WatchEvent) -> bool {
         let Some(repo) = self
             .runtime
             .as_ref()
@@ -592,29 +592,33 @@ impl Dev {
         else {
             return false;
         };
-        matches!(
-            event.kind,
-            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-        ) && event.paths.iter().any(|path| {
-            RUNTIME_SOURCES
+        let path = &event.path;
+        event.kind != ChangeKind::Rescan
+            && RUNTIME_SOURCES
                 .iter()
                 .any(|dir| path.starts_with(repo.join(dir)))
-                && (path.extension().is_some_and(|extension| extension == "rs")
-                    || path.file_name().is_some_and(|name| name == "Cargo.toml"))
-        })
+            && (path.extension().is_some_and(|extension| extension == "rs")
+                || path.file_name().is_some_and(|name| name == "Cargo.toml"))
     }
 }
 
-/// Whether `event` changed a package's source.
-pub(crate) fn is_source_edit(event: &notify::Event) -> bool {
-    use notify::EventKind;
-    matches!(
-        event.kind,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-    ) && event
-        .paths
-        .iter()
-        .any(|path| path.extension().is_some_and(|extension| extension == "tl"))
+/// Whether `event` changed a package's source, or changes may have been missed.
+pub(crate) fn is_source_edit(event: &WatchEvent) -> bool {
+    event.kind == ChangeKind::Rescan
+        || event
+            .path
+            .extension()
+            .is_some_and(|extension| extension == "tl")
+}
+
+/// Start `watcher`, its changes sent to `wakes`.
+pub(crate) fn watch_into(
+    watcher: Watcher,
+    wakes: mpsc::Sender<Wake>,
+) -> std::io::Result<ChangeWatch> {
+    watcher.start(move |events| {
+        let _ = wakes.send(Wake::File(events.to_vec()));
+    })
 }
 
 /// The signed runtime package that offers the baked bundle in `bundle` as `tilolang/<version>`,
@@ -713,10 +717,6 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
     let mut dev = Dev::new(build, identity, vec![peer], bin);
     dev.runtime = runtime;
     let (sender, wakes) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(move |event| {
-        let _ = sender.send(Wake::File(event));
-    })
-    .map_err(|error| error.to_string())?;
     if dev.runtime.is_some() {
         dev.build_runtime()?;
         dev.install_runtime()?;
@@ -735,7 +735,7 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
             ""
         }
     );
-    dev.follow(&wakes, &mut watcher)
+    dev.follow(&wakes, &sender)
 }
 
 /// Mark `path` executable: a build server's outputs arrive as plain files.
