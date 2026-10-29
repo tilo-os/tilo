@@ -706,9 +706,9 @@ pub struct RetainedGpuTarget {
     last_sparse_render_stats: Option<vello::SparseRenderStats>,
     /// The layers strip pans are composited from, allocated by the first
     /// frame that comes as layers ([`Self::render_layers_until`]).
-    strip_layers: Option<super::strip_layers::StripLayers>,
+    strip_layers: Option<ui::strip_layers::StripLayers>,
     /// The work the latest layered frame did.
-    last_layer_work: Option<super::strip_layers::LayerWork>,
+    last_layer_work: Option<ui::strip_layers::LayerWork>,
     /// The scroll copies of the frame of the revision named, for the next
     /// render of it ([`Self::stage_scroll_copies`]).
     staged_copies: Option<(u64, crate::shell::frame::ScrollCopies)>,

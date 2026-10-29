@@ -160,76 +160,7 @@ pub struct ScrollCopies {
     pub raster: Vec<FineDamageRect>,
 }
 
-/// A strip drawn in canvas coordinates. The presenter shows the workspace
-/// layer `scroll_x` pixels to the right of `dest_*`, in scene pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StripBlit {
-    pub dest_x: u32,
-    pub dest_y: u32,
-    pub dest_w: u32,
-    pub dest_h: u32,
-    pub scroll_x: u32,
-}
-
-/// A frame as layers a presenter retains between frames.
-#[derive(Clone)]
-pub struct FrameCache {
-    /// Width of the widest strip's canvas in scene pixels: wider than the
-    /// screen when a strip's content is wider than its viewport.
-    pub width: u32,
-    /// Where each strip of [`FrameLayers::strips`] is shown, and how far it
-    /// is panned, in the same order.
-    pub strips: Vec<StripBlit>,
-    pub layers: FrameLayers,
-    /// Tells this drawing of the desktop as layers apart from every other
-    /// one its producer made, so a presenter knows which drawing each of
-    /// its layer textures holds.
-    pub generation: u64,
-    /// Where [`FrameLayers::chrome`] differs from an earlier drawing's
-    /// chrome; `None` when that is not known.
-    pub chrome_damage: Option<ChromeDamage>,
-}
-
-/// Where the chrome of a drawing of the desktop as layers differs from the
-/// chrome of the drawing `since` ([`FrameCache::generation`]), in scene
-/// pixels and whole 16-pixel tiles: a presenter whose chrome texture still
-/// holds that drawing's chrome brings it up to date by rasterising only
-/// these rects. Measured on a pan's frames from the frame before and on the
-/// layers drawn while the desktop rests ([`FrameBuilder::layers_at_rest`])
-/// from the drawing at rest before, so the strip rail moving during a pan or
-/// a clock tick at rest rasterises a few tiles, not the whole layer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChromeDamage {
-    pub since: u64,
-    pub rects: Vec<FineDamageRect>,
-}
-
-/// The desktop's sections as layers, bottom to top, in scene pixels.
-/// Drawing them over each other in order (source over) gives the frame's
-/// scene ([`crate::shell::render::strip_layers::compose`]), so a presenter
-/// can rasterize each into its own retained buffer and composite the
-/// buffers: a strip's pan then moves that strip's pixels over a backdrop and
-/// chrome that stay put, without drawing any of them again.
-#[derive(Clone)]
-pub struct FrameLayers {
-    /// The wallpaper and anything drawn behind every window.
-    pub backdrop: Scene,
-    /// What of the workspace no strip carries, in place, below the strips.
-    pub workspace: Scene,
-    /// Each strip on screen, top to bottom, drawn on its own in canvas
-    /// coordinates with the surfaces floating over it: shown inside its
-    /// [`FrameCache::strips`] destination, read at its pan. Strips whose
-    /// drawings meet (each draws its shadows past its row) each draw over
-    /// the other there, as on screen.
-    pub strips: Vec<Scene>,
-    /// The damage parts each of `strips` marked, in the same order: one per
-    /// window group, so a presenter rasterises only where a group's drawing
-    /// changed. `None` for a strip drawn without well-nested parts.
-    pub strip_parts: Vec<Option<ui::scene_parts::SectionParts>>,
-    /// Everything above: notices over the desktop, the top bar, quick
-    /// settings and every overlay above them.
-    pub chrome: Scene,
-}
+pub use ui::strip_layers::{ChromeDamage, FrameCache, FrameLayers, StripBlit};
 
 /// The strips the host drew apart for a frame drawn as layers, in scene
 /// pixels ([`FrameBuilder::panned_pieces`]).
@@ -3045,7 +2976,7 @@ impl FrameBuilder {
         // fullscreen client is up.
         let (scene, scanout, cache) = if let Some(cache) = layered {
             (
-                crate::shell::render::strip_layers::compose(&cache),
+                ui::strip_layers::compose(&cache),
                 None,
                 separable.then_some(cache),
             )

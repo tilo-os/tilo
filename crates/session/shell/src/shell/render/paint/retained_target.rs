@@ -14,8 +14,8 @@ use super::{
     LINUX_FENCE_WAIT, LINUX_FRAME_BUDGET, LINUX_MAP_CALLBACK_WAIT, MAX_VELLO_BINS, PIPELINE_WARMUP,
     RESILIENT_RENDER_ATTEMPTS, RetainedGpuTarget, SceneDamage, VELLO_BIN_PIXELS, VelloDrmBridge,
 };
-use crate::shell::render::strip_layers;
 use tilo_output_passes::warmup;
+use ui::strip_layers;
 
 /// Whether this process has published its pipelines for apps (see [`ui::pipeline_seed`]).
 static PIPELINE_SEED_PUBLISHED: std::sync::atomic::AtomicBool =
@@ -711,21 +711,9 @@ impl RetainedGpuTarget {
                 Ok(done.then_some(whole))
             }
             WorkspaceWork::Pan { copies, uncovered } => {
-                if !copies.is_empty() {
-                    let mut encoder =
-                        self.device
-                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                label: Some("tilo-strip-layer-warm-pan"),
-                            });
-                    if let Some(layers) = self.strip_layers.as_mut() {
-                        layers.encode_copies(&self.device, &mut encoder, copies);
-                    }
-                    self.queue.submit([encoder.finish()]);
-                }
-                if !uncovered.is_empty() {
-                    let regions = self
-                        .renderer
-                        .sparse_fine_supported()
+                let copied = self.copy_bands(copies, "tilo-strip-layer-warm-pan");
+                if !copied || !uncovered.is_empty() {
+                    let regions = (copied && self.renderer.sparse_fine_supported())
                         .then(|| uncovered.clone());
                     self.render_layer(
                         Layer::Workspace,
@@ -986,22 +974,10 @@ impl RetainedGpuTarget {
                 self.render_layer(Layer::Workspace, &scene, None, transparent, policy)?;
             }
             WorkspaceWork::Pan { copies, uncovered } => {
-                if !copies.is_empty() {
-                    let mut encoder =
-                        self.device
-                            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                label: Some("tilo-strip-layer-pan"),
-                            });
-                    if let Some(layers) = self.strip_layers.as_mut() {
-                        layers.encode_copies(&self.device, &mut encoder, copies);
-                    }
-                    self.queue.submit([encoder.finish()]);
-                }
-                if !uncovered.is_empty() {
+                let copied = self.copy_bands(copies, "tilo-strip-layer-pan");
+                if !copied || !uncovered.is_empty() {
                     let scene = panned();
-                    let regions = self
-                        .renderer
-                        .sparse_fine_supported()
+                    let regions = (copied && self.renderer.sparse_fine_supported())
                         .then(|| uncovered.clone());
                     self.render_layer(Layer::Workspace, &scene, regions, transparent, policy)?;
                 }
@@ -1027,6 +1003,23 @@ impl RetainedGpuTarget {
         post_render(&self.device, &mut encoder, &self.view);
         let submission = self.queue.submit([encoder.finish()]);
         self.wait_submission(submission, policy)
+    }
+
+    /// Move the strips layer's bands `copies` names. `false` when they were
+    /// not moved: the layer is then rasterised whole.
+    fn copy_bands(&mut self, copies: &[strip_layers::BandCopy], label: &'static str) -> bool {
+        if copies.is_empty() {
+            return true;
+        }
+        let Some(layers) = self.strip_layers.as_mut() else {
+            return false;
+        };
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some(label) });
+        let moved = layers.encode_copies(&self.device, &mut encoder, copies);
+        self.queue.submit([encoder.finish()]);
+        moved
     }
 
     /// Render `scene` into one layer's texture, through the target's own

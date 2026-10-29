@@ -331,6 +331,7 @@ pub mod snap;
 mod standalone_history;
 mod standalone_history_host;
 pub mod state;
+pub mod strip_layers;
 pub mod surface;
 pub mod sysdirs;
 #[cfg(any(test, feature = "test-support"))]

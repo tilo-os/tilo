@@ -1843,13 +1843,12 @@ fn pixel_oracle_detects_the_entire_real_render_change_across_blocks() {
 /// differ in, and a copy can show it.
 #[cfg(target_os = "linux")]
 fn moved_render_apart(
-    work: &crate::shell::render::strip_layers::LayerWork,
+    work: &ui::strip_layers::LayerWork,
     before: &[u8],
     after: &[u8],
     width: u32,
 ) -> (usize, u8) {
-    let crate::shell::render::strip_layers::WorkspaceWork::Pan { copies, .. } = &work.workspace
-    else {
+    let ui::strip_layers::WorkspaceWork::Pan { copies, .. } = &work.workspace else {
         return (0, 0);
     };
     let pixel = |pixels: &[u8], x: u32, y: u32| {
@@ -2134,7 +2133,7 @@ fn render_strips_alone(
 ) -> Option<Vec<u8>> {
     let cache = painted.cache.as_ref()?;
     let mut scene = Scene::new();
-    crate::shell::render::strip_layers::append_panned(&mut scene, &cache.layers, &cache.strips);
+    ui::strip_layers::append_panned(&mut scene, &cache.layers, &cache.strips);
     Some(render_whole(target, &scene, painted.revision, label))
 }
 
@@ -2494,9 +2493,7 @@ fn assert_first_frame_from_warmed_rest(
     let raster = work.raster_pixels(layered.size());
     let apart = layers_apart(warmed, cache);
     assert!(
-        !work.backdrop
-            && !work.chrome
-            && work.workspace != crate::shell::render::strip_layers::WorkspaceWork::Whole,
+        !work.backdrop && !work.chrome && work.workspace != ui::strip_layers::WorkspaceWork::Whole,
         "{label}: the first frame from a warmed rest rasterises neither the backdrop nor the \
          chrome nor the strips' layer whole ({work:?}); the layers warmed and the pan's differ \
          in\n{apart}"
@@ -2885,7 +2882,7 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
         );
         assert!(
             !work.backdrop
-                && work.workspace == crate::shell::render::strip_layers::WorkspaceWork::Unchanged
+                && work.workspace == ui::strip_layers::WorkspaceWork::Unchanged
                 && work.raster_pixels(SIZE) < output / 16,
             "{theme_name}: the first frame drawn in screen space after the pan is composited \
              from layers that already show it, rasterising at most a change of the chrome: \
