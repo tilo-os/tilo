@@ -668,7 +668,8 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         | (Type::Principal, Value::Principal(_))
         | (Type::Resource, Value::Ref(_))
         | (Type::Icon | Type::Time, Value::Text(_))
-        | (Type::RichText, Value::Rich(_)) => true,
+        | (Type::RichText, Value::Rich(_))
+        | (Type::Action, Value::Action(_)) => true,
         (Type::Option(inner), Value::Opt(Some(held))) => fits(held, inner),
         (Type::Option(inner), other) => fits(other, inner),
         (_, Value::Opt(Some(held))) => fits(held, ty),
@@ -684,7 +685,6 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         (Type::Map { key, value }, Value::Map(entries)) => {
             entries.iter().all(|(k, v)| fits(k, key) && fits(v, value))
         }
-        (Type::Action, Value::Action(_)) => true,
         _ => false,
     }
 }

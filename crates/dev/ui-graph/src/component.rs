@@ -396,23 +396,20 @@ pub enum Value {
 }
 
 /// An action offered to the person, as a component holds one: how a control shows it, and the
-/// event of the instance that choosing it fires.
+/// event of the instance that choosing it fires. Every field is always written: the wire's
+/// encoding is not self-describing.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Offered {
     /// What it does, as a button or a menu names it.
     pub label: String,
     /// Its icon's kebab-case name, when it has one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// Whether it is its resource's primary action.
-    #[serde(default, skip_serializing_if = "is_false")]
     pub primary: bool,
     /// Whether it takes something away: undone, not confirmed.
-    #[serde(default, skip_serializing_if = "is_false")]
     pub destructive: bool,
     /// Whether the state it toggles is on, when it toggles one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<bool>,
     /// The event of the instance choosing it fires.
     pub event: String,
