@@ -3,7 +3,7 @@
 //! it, narrow it and choose what it found through the same actions.
 //!
 //! The launcher keeps no document. What is being searched (the query, the
-//! scope, the kinds chosen) and what was found live in the surface for as
+//! scope, the kinds chosen) and what was found live in the window for as
 //! long as it is open and are published as its live rows; nothing of it is
 //! recorded, synced or kept in History.
 
@@ -11,8 +11,6 @@ use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Model, resource};
 use ui::widget::Element;
-
-use crate::surface::LauncherSurface;
 
 /// The launcher resource: the door its effects and result rows are
 /// published on. It holds nothing.
@@ -106,7 +104,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "narrow",
 ];
 
-/// The launcher app: the search surface over [`Launcher`].
+/// The launcher app: the search window over [`Launcher`].
 pub struct LauncherShell;
 
 impl ResourceApp for LauncherShell {
@@ -123,9 +121,7 @@ impl ResourceApp for LauncherShell {
 
     fn view(cx: &mut ViewCx<Launcher>) -> Element {
         let lent = cx.take_lent::<crate::source::LauncherService>();
-        let surface = LauncherSurface::new(lent.map(|service| service.link));
-        surface.link().wake_with(cx.waker());
-        cx.surface(surface)
+        crate::surface::window(cx, lent.map(|service| service.link))
     }
 
     fn scenarios() -> &'static [&'static str] {
