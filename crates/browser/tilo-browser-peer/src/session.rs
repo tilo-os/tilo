@@ -2805,6 +2805,11 @@ impl Task {
             tilo_clock::unix_now_ms(),
         );
         self.absorb(changes);
+        // Writes held for a certificate or governance the room now has; the
+        // room's `Ready` decides those of its replay.
+        if lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true) {
+            self.decide_held(workspace_id);
+        }
     }
 
     /// One retained or live message the host relayed to `workspace_id`:
@@ -2861,17 +2866,17 @@ impl Task {
                 );
                 self.absorb(changes);
             }
-            neighbour_wire::NeighbourMsg::AppDocument {
-                app_id,
-                cluster_id,
-                record_id,
-                envelope,
+            ref message @ neighbour_wire::NeighbourMsg::AppDocument {
+                ref app_id,
+                ref cluster_id,
+                ref record_id,
+                ref envelope,
                 ..
             } => {
                 let route = DocumentRoute {
-                    app_id,
-                    cluster_id,
-                    record: record_id,
+                    app_id: app_id.clone(),
+                    cluster_id: cluster_id.clone(),
+                    record: record_id.clone(),
                 };
                 // A room the host resumes after it lagged can replay an entry
                 // its live deliveries already carried; the page takes it once.
@@ -2881,10 +2886,34 @@ impl Task {
                 {
                     return;
                 }
+                let Ok(workspace_id) = route.workspace_id() else {
+                    return;
+                };
+                // The room's governance decides the write before any app
+                // sees it, and holds it while it cannot yet.
+                let retained = lock(&self.shared).status.rooms.get(&workspace_id) != Some(&true);
+                match self.replicas.decide_document(
+                    workspace_id,
+                    author,
+                    retained,
+                    message,
+                    web_time::SystemTime::now(),
+                ) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.hold_document(route, OpKey::of(envelope), body, author);
+                        return;
+                    }
+                    Err(error) => {
+                        self.refused = (self.refused.0.saturating_add(1), error.clone());
+                        self.emit(&PeerEvent::DocumentRejected(error));
+                        return;
+                    }
+                }
                 if !self.config.watching {
                     self.open_channel(&route);
                 }
-                let waits = match envelope.encryption {
+                let waits = match &envelope.encryption {
                     Some(metadata) => self
                         .ciphers
                         .get(&route)
@@ -2915,7 +2944,7 @@ impl Task {
                     if self.config.watching {
                         self.watched.want(route.clone());
                     }
-                    let key = OpKey::of(&envelope);
+                    let key = OpKey::of(envelope);
                     self.hold_document(route, key, body, author);
                     return;
                 }

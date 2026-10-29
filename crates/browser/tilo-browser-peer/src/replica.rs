@@ -8,13 +8,18 @@
 //! replica from it and admits every governance message the host relays
 //! through it: members' certificates and the room document. What the room's
 //! governance says is read off that replica: whether it shares its members'
-//! layout, who its members are, and who takes part in its channels.
+//! layout, who its members are, who takes part in its channels, and whether
+//! a member's write reaches the page's apps. The replica decides each
+//! document as native devices do (its author's certificate and role, its
+//! signature and route, its claims against the app surface it names) and
+//! keeps none: the page's apps hold their records.
 //!
 //! A workspace the host binds for its own person without governing it (a
 //! same-owner room) has no governance and no bootstrap: its members are the
 //! person's own devices the host admits. There the page takes the devices
 //! whose certificates the host relays, of its own person and not revoked by
-//! them, and the host when its person certified it to own workspaces.
+//! them, and the host when its person certified it to own workspaces, and
+//! admits a write that its relaying device signed for its route.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,6 +81,29 @@ impl Ungoverned {
             .or_default()
             .insert(author, cert)
             .is_none())
+    }
+
+    /// Admit the document `author` wrote to a workspace with no
+    /// governance: one its relaying device signed for its route.
+    fn document(author: [u8; 32], message: &NeighbourMsg) -> Result<bool, String> {
+        let NeighbourMsg::AppDocument {
+            app_id,
+            cluster_id,
+            record_id,
+            envelope,
+            ..
+        } = message
+        else {
+            return Err("not a document message".into());
+        };
+        collab_types::verify_op(envelope).map_err(|error| error.to_string())?;
+        if *envelope.author.as_bytes() != author {
+            return Err("envelope author is not the authenticated device".into());
+        }
+        if envelope.artifact != collab_types::document_artifact_id(app_id, cluster_id, record_id) {
+            return Err("artifact does not match route".into());
+        }
+        Ok(true)
     }
 
     fn participants(&self, workspace_id: u64) -> BTreeSet<Ed25519PublicKey> {
@@ -164,6 +192,12 @@ impl Replicas {
             return Ok(false);
         }
         let peer = StatePeer::from_join(&room, authority, roster, &revocations, now)?;
+        #[cfg(feature = "toolkit")]
+        let peer = {
+            let mut peer = peer;
+            peer.set_surfaces(page_surfaces());
+            peer
+        };
         self.peers.insert(workspace_id, peer);
         Ok(true)
     }
@@ -200,6 +234,32 @@ impl Replicas {
         };
         let outcome = peer.receive_from(origin, message, now)?;
         Ok(outcome.changed || outcome.metadata_changed)
+    }
+
+    /// Decide `message`, a document `author` wrote to `workspace_id`;
+    /// `retained` while the host replays the room. `Ok(true)` lets it reach
+    /// the page's apps, `Ok(false)` holds it until the room's governance
+    /// can decide it.
+    ///
+    /// # Errors
+    /// The room's governance refuses it.
+    pub(crate) fn decide_document(
+        &self,
+        workspace_id: u64,
+        author: [u8; 32],
+        retained: bool,
+        message: &NeighbourMsg,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let Some(peer) = self.peers.get(&workspace_id) else {
+            return Ungoverned::document(author, message);
+        };
+        let origin = if retained {
+            TransportOrigin::RetainedRelayDelta(author)
+        } else {
+            TransportOrigin::RelayDelta(author)
+        };
+        peer.decide_relayed_document(origin, message, now)
     }
 
     /// `workspace_id`'s room, whether its governance keeps each member's
@@ -261,4 +321,20 @@ impl Replicas {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+/// The app surfaces a page decides members' writes against: those of the
+/// apps it runs, by the hash a write names. A write naming another version's
+/// surface waits until the page runs that version, as it would on a native
+/// device that has not fetched it.
+#[cfg(feature = "toolkit")]
+fn page_surfaces() -> collab_types::Surfaces {
+    collab_types::Surfaces::from_source(std::sync::Arc::new(
+        collab_types::surface::ContentSurfaces::new(|record, hash| {
+            let running = ui::app_surface::hash_of(record.app)?;
+            (hex::encode(running) == hash)
+                .then(|| ui::app_surface::bytes_of(record.app).map(<[u8]>::to_vec))
+                .flatten()
+        }),
+    ))
 }
