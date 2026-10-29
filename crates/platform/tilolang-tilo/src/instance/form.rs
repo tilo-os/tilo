@@ -255,35 +255,7 @@ impl Pending {
                 return node("toggle", &field.key, props, None, Vec::new());
             }
             FieldType::Named(_) | FieldType::Principal | FieldType::Resource(_) => {
-                let cases = self.cases(host, names, field, optional);
-                let mut props = BTreeMap::new();
-                props.insert(
-                    "cases".to_owned(),
-                    ui::Value::List(
-                        cases
-                            .into_iter()
-                            .map(|(name, label)| {
-                                ui::Value::List(vec![
-                                    ui::Value::Text(name),
-                                    ui::Value::Text(label),
-                                    ui::Value::Opt(None),
-                                ])
-                            })
-                            .collect(),
-                    ),
-                );
-                props.insert("selected".to_owned(), ui::Value::text(text));
-                let placeholder = match inner(&field.field_type) {
-                    FieldType::Principal => "Choose someone",
-                    FieldType::Resource(_) => "Choose one",
-                    _ => "Choose",
-                };
-                props.insert("placeholder".to_owned(), ui::Value::text(placeholder));
-                if !matches!(inner(&field.field_type), FieldType::Named(_)) {
-                    // People and resources are picked from a menu, whatever their number.
-                    props.insert("menu".to_owned(), ui::Value::Bool(true));
-                }
-                node("choice", &field.key, props, None, Vec::new())
+                self.choice_node(host, names, field, text, optional)
             }
             other => {
                 let mut props = BTreeMap::new();
@@ -352,6 +324,47 @@ impl Pending {
                 parts,
             )],
         )
+    }
+
+    /// The choice `field` shows `text` in: an enum's cases, the workspace's members, or the
+    /// resources of its type.
+    fn choice_node(
+        &self,
+        host: &Host,
+        names: &dyn NameHost,
+        field: &Field,
+        text: &str,
+        optional: bool,
+    ) -> ui::Node {
+        let cases = self.cases(host, names, field, optional);
+        let mut props = BTreeMap::new();
+        props.insert(
+            "cases".to_owned(),
+            ui::Value::List(
+                cases
+                    .into_iter()
+                    .map(|(name, label)| {
+                        ui::Value::List(vec![
+                            ui::Value::Text(name),
+                            ui::Value::Text(label),
+                            ui::Value::Opt(None),
+                        ])
+                    })
+                    .collect(),
+            ),
+        );
+        props.insert("selected".to_owned(), ui::Value::text(text));
+        let placeholder = match inner(&field.field_type) {
+            FieldType::Principal => "Choose someone",
+            FieldType::Resource(_) => "Choose one",
+            _ => "Choose",
+        };
+        props.insert("placeholder".to_owned(), ui::Value::text(placeholder));
+        if !matches!(inner(&field.field_type), FieldType::Named(_)) {
+            // People and resources are picked from a menu, whatever their number.
+            props.insert("menu".to_owned(), ui::Value::Bool(true));
+        }
+        node("choice", &field.key, props, None, Vec::new())
     }
 
     /// What the choice of `field` offers: an enum's cases, the workspace's members, or the
