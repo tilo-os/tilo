@@ -216,11 +216,6 @@ impl ApplicationsTestSource {
         (generation, u128::from(generation), 0, generation)
     }
 
-    pub(crate) fn materializations(&self) -> usize {
-        self.materializations
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
     fn snapshot(&self) -> (u64, ApplicationsTestState) {
         self.materializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
