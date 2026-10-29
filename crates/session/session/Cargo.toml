@@ -23,6 +23,11 @@ app-catalogue = { path = "../../packaging/app-catalogue" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
 settings-store = { path = "../../system/settings-store" }
+# The registries' listing as this device last accepted it, for the apps a
+# person can get.
+app-cli = { path = "../../packaging/app-cli" }
+# Following the directories search's lists are read from.
+tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-paths.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }

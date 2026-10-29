@@ -179,54 +179,14 @@ fn setup(host_desktop: bool) -> Option<tilo_session::OnboardingView> {
         (true, true) => OnboardingView::new_for_host_desktop_recovery(identity_dir),
     })
 /// What search reads of this device: the Tilo apps installed here and the
-/// machine's own, the apps the person can get, what apps hold, the
-/// person's files, and the search sources they switched off.
+/// machine's own and the apps the person can get, each followed as it
+/// changes, what apps hold, the person's files, and the search sources they
+/// switched off.
 #[cfg(target_os = "linux")]
 fn search_options() -> tilo_session::SearchOptions {
     use std::sync::Arc;
-    use tilo_desktop_search::providers::AppEntry;
     use tilo_desktop_search::providers::files::FileNames;
-    use tilo_desktop_search::providers::host_apps::HostAppEntry;
 
-    let installed = tilo_installed_apps::read_from_env().unwrap_or_else(|error| {
-        eprintln!("tilo-session: installed apps: {error}");
-        Vec::new()
-    });
-    let applications = installed
-        .iter()
-        .filter(|app| app.has_gui)
-        .map(|app| AppEntry {
-            id: app.package_id.clone(),
-            title: app.display_name.clone(),
-            category: app.category.clone(),
-            description: None,
-        })
-        .collect();
-    let scan = desktop_entry::scan::scan();
-    let host_apps = scan
-        .entries
-        .iter()
-        .filter(|entry| !entry.no_display && !entry.hidden)
-        .map(|entry| HostAppEntry {
-            desktop_id: entry.id.clone(),
-            name: entry.name.clone(),
-            generic_name: entry.generic_name.clone(),
-            comment: entry.comment.clone(),
-            keywords: entry.keywords.clone(),
-        })
-        .collect();
-    let present = app_catalogue::Installed::from_ids(
-        installed
-            .iter()
-            .map(|app| app.package_id.clone())
-            .chain(scan.entries.iter().map(|entry| entry.id.clone())),
-    );
-    let catalogue = app_catalogue::Catalogue::from_sources(
-        Vec::new(),
-        app_catalogue::appstream::load_cached("en"),
-    );
-    let blocks = app_catalogue::BlockList::load();
-    let catalogue = catalogue.offered(&present, &blocks).cloned().collect();
     let files = tilo_paths::home().map(|home| {
         let content = tilo_desktop_search::files_index::FilesIndex::open_or_create(&home)
             .ok()
@@ -234,9 +194,7 @@ fn search_options() -> tilo_session::SearchOptions {
         (home.clone(), FileNames::scan(home), content)
     });
     tilo_session::SearchOptions {
-        applications,
-        host_apps,
-        catalogue,
+        lists: tilo_session::Lists::of_device(),
         content: Some(tilo_desktop_search::content_index::session()),
         files,
         preferences: tilo_desktop_search::SearchPreferences::from_values(

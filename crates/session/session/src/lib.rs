@@ -26,6 +26,7 @@ mod config;
 mod controls;
 mod env;
 mod keys;
+mod lists;
 mod panels;
 mod setup;
 mod sheets;
@@ -52,6 +53,7 @@ use ui::application::ComponentRunnerInputs;
 use ui::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
 
+pub use lists::{AppLists, Lists};
 pub use search::{AppActions, SearchOptions};
 pub use tilo_quick_settings::device::{DeviceHost, SessionRequest, Wake};
 pub use tilo_quick_settings::host::PanelHost;
