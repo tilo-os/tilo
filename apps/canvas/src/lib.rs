@@ -145,6 +145,7 @@ impl ResourceApp for App {
                     .inspector(Box::new(Group::new(sidebar(cx, &tools, &dock)))),
             ),
             &tools,
+            cx.live().clone(),
             cx.dispatcher(),
         ));
         // Over a blank artwork, a welcome saying what can be done here and

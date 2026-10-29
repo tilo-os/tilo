@@ -133,6 +133,9 @@ fn toolbar(tools: &Tools, title: &str, open: bool) -> WindowToolbar {
 pub(crate) struct WindowBar {
     child: Element,
     tools: Tools,
+    /// The artwork, whose title the bar shows as the window's location, so
+    /// a rename by anyone shows at once.
+    live: ui::framework::Live<Artwork>,
     dispatch: ui::framework::Dispatcher<Artwork>,
     /// The notice last put in the window's bar, so the same one is not
     /// re-sent every frame and a cleared one is taken down.
@@ -143,11 +146,13 @@ impl WindowBar {
     pub(crate) fn new(
         child: Element,
         tools: &Tools,
+        live: ui::framework::Live<Artwork>,
         dispatch: ui::framework::Dispatcher<Artwork>,
     ) -> Self {
         Self {
             child,
             tools: tools.clone(),
+            live,
             dispatch,
             notice: std::cell::RefCell::new(None),
         }
@@ -190,7 +195,7 @@ impl WindowBar {
     }
 
     fn declare(&self) {
-        let title = self.tools.title.get();
+        let title = self.live.with(|art| art.title.clone());
         let open = self.tools.sidebar.get();
         ui::window_toolbar::declare(Some(toolbar(&self.tools, &title, open)));
         self.publish_notice();

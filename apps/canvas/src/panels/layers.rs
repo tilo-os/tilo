@@ -225,6 +225,7 @@ fn follow_new_layers(known: &RefCell<Vec<String>>, rows: &[LayerRow], target: &L
 fn pictures(cx: &ViewCx<Artwork>, tools: &Tools, row: &LayerRow) -> Row {
     let thumb = |layer: &str, name: &str| -> Element {
         let mut picture = crate::thumb::Thumb::new(
+            cx.live().clone(),
             tools.renderer.clone(),
             Some(layer.to_owned()),
             THUMB.0,
@@ -233,7 +234,7 @@ fn pictures(cx: &ViewCx<Artwork>, tools: &Tools, row: &LayerRow) -> Row {
         if row.mask.is_some() {
             picture = picture.ringed_while(&tools.layer, layer);
         }
-        let picture = cx.surface(picture);
+        let picture: Element = Box::new(picture);
         if row.mask.is_none() {
             return picture;
         }

@@ -3480,11 +3480,6 @@ impl ResourceSurface<Artwork, ViewOp> for CanvasSurface {
             self.text = None;
         }
         self.art = Rc::clone(state);
-        // The window's bar says where the window is: the artwork's name, as
-        // the canvas reads it here, so a rename by anyone shows at once.
-        if self.tools.title.with(|shown| *shown != state.title) {
-            self.tools.title.set(state.title.clone());
-        }
         // What the window shows is what the magic wand finds colour in.
         crate::author::see(&self.tools.renderer, &self.art);
     }

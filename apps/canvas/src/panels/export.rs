@@ -556,8 +556,9 @@ fn preview(cx: &ViewCx<crate::model::Artwork>, tools: &Tools) -> Element {
         cut.as_ref()
             .map(|known| (Rc::clone(&known.part), known.region, bare))
     });
-    let thumb = crate::thumb::Thumb::new(tools.renderer.clone(), None, 0.0, 0.0).framed(framing);
-    super::layout::themed(cx.surface(thumb), |theme, style| {
+    let thumb = crate::thumb::Thumb::new(cx.live().clone(), tools.renderer.clone(), None, 0.0, 0.0)
+        .framed(framing);
+    super::layout::themed(Box::new(thumb), |theme, style| {
         style.size.width = ui::taffy::Dimension::length(theme.tokens.metrics.inspector_width);
         style.size.height = ui::taffy::Dimension::length(theme.tokens.metrics.overview_width);
     })
