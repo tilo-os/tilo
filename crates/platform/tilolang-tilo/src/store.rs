@@ -569,11 +569,14 @@ fn scan(doc: &Doc) -> BTreeMap<DocId, (AppId, TypeId)> {
     else {
         return out;
     };
-    for app in doc.keys(&records) {
-        let Ok(Some((AmValue::Object(ObjType::Map), app_obj))) = doc.get(&records, app.as_str())
+    for stored in doc.keys(&records) {
+        let Ok(Some((AmValue::Object(ObjType::Map), app_obj))) = doc.get(&records, stored.as_str())
         else {
             continue;
         };
+        // Records stored under an id their app had before (`previously:`) are that app's.
+        let app = crate::schema::successor(&stored);
+        let own = app == stored;
         for id in doc.keys(&app_obj) {
             let Ok(Some((AmValue::Object(ObjType::Map), obj))) = doc.get(&app_obj, id.as_str())
             else {
@@ -581,6 +584,7 @@ fn scan(doc: &Doc) -> BTreeMap<DocId, (AppId, TypeId)> {
             };
             if let Ok(Some((AmValue::Scalar(scalar), _))) = doc.get(&obj, TYPE_KEY)
                 && let ScalarValue::Str(ty) = scalar.as_ref()
+                && (own || !out.contains_key(&id))
             {
                 out.insert(id, (app.clone(), ty.to_string()));
             }
@@ -815,7 +819,11 @@ impl TiloStore {
             },
         };
         inner.apps.insert(app.to_owned(), held);
-        if inner.mirror.is_some() {
+        if let Some(mirror) = inner.mirror.clone() {
+            // The records under ids the app had before are its own from now on.
+            if !crate::schema::previously(app).is_empty() {
+                inner.index = scan(&mirror);
+            }
             inner.bring_up(app);
         } else {
             inner.index_docs();

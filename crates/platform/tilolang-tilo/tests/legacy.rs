@@ -465,3 +465,83 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
     assert!(replica.doc.get(&coll, message.as_str()).unwrap().is_some());
     let _ = id;
 }
+
+/// Todo's package, published as Tasks: the same declarations and ids lock, under the id
+/// `so.tilo.lang.tasks`, declaring it was `so.tilo.lang.todo` before.
+fn todo_as_tasks() -> (String, &'static str) {
+    let (source, ids) = app!("todo");
+    let (header, rest) = source.split_once('\n').unwrap();
+    assert!(header.starts_with("app so.tilo.lang.todo "), "{header}");
+    let renamed = format!(
+        "app so.tilo.lang.tasks \"Tasks\" (icon: .list_checks, category: .office, previously: so.tilo.lang.todo)\n{rest}"
+    );
+    (renamed, ids)
+}
+
+#[test]
+fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
+    let (source, ids) = todo_as_tasks();
+    let packages = vec![(source.as_str(), ids)];
+    let mut replica = open(include_str!("legacy/todo.hex"), &packages);
+    let heads = replica.doc.get_heads();
+    let app = "so.tilo.lang.tasks";
+    let stored = |replica: &Replica| -> Vec<(String, String)> {
+        records(&replica.doc)
+            .into_iter()
+            .map(|(app, id, _)| (app, id))
+            .collect()
+    };
+    let before = stored(&replica);
+    assert!(
+        before.iter().all(|(held, _)| held == "so.tilo.lang.todo"),
+        "{before:?}"
+    );
+    // The root is the one Todo made, and its items read as before, by their ids.
+    let list = root(&replica, app);
+    assert!(before.iter().any(|(_, id)| *id == list.doc), "{list:?}");
+    let (items_field, item_ty) = field(&replica, app, "TodoList", "items");
+    let items = listed(&replica, &list, &items_field);
+    assert!(items.len() >= 3, "{items:?}");
+    // Opening changed nothing in the record.
+    assert_eq!(replica.doc.get_heads(), heads);
+    assert!(replica.host.take_committed().is_empty());
+    // Actions of the renamed app change them where they are, keeping every id.
+    let item = |id: &str| Value::resource(&list.item(id, item_ty.clone()));
+    call(
+        &mut replica,
+        app,
+        "check",
+        vec![item(&items[0]), Value::Bool(true)],
+    );
+    assert_eq!(
+        replica
+            .host
+            .runtime()
+            .read(&list.item(&items[0], item_ty.clone()), "done")
+            .unwrap(),
+        Value::Bool(true)
+    );
+    call(
+        &mut replica,
+        app,
+        "move",
+        vec![Value::resource(&list), item(&items[2]), item(&items[0])],
+    );
+    assert_eq!(listed(&replica, &list, &items_field)[1], items[2]);
+    call(
+        &mut replica,
+        app,
+        "add",
+        vec![Value::resource(&list), Value::text("after the rename")],
+    );
+    assert_eq!(listed(&replica, &list, &items_field).len(), items.len() + 1);
+    // Every record is where it was, under the id it had.
+    assert_eq!(stored(&replica), before);
+    check_index(&replica, &packages, app);
+    // A peer that opens the room afterwards reads the same.
+    let fresh = Replica::new("fresh", replica.doc.clone().fork(), &packages).0;
+    assert_eq!(
+        listed(&fresh, &root(&fresh, app), &items_field),
+        listed(&replica, &list, &items_field)
+    );
+}

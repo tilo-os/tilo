@@ -366,6 +366,7 @@ fn build_meta(
         title: module.app.title.clone(),
         icon: module.app.icon.clone(),
         category: module.app.category.clone(),
+        previously: module.app.previously.clone(),
         ..PackageMeta::default()
     };
     let type_id =

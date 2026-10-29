@@ -174,6 +174,14 @@ struct Parser<'a> {
     next_node: NodeId,
 }
 
+/// What the options after an app's title declare.
+#[derive(Default)]
+struct AppOptions {
+    icon: Option<String>,
+    category: Option<String>,
+    previously: Vec<String>,
+}
+
 /// The launcher categories an app declares (`category: .office`), as the platform's menu
 /// categories name them in lower case.
 pub const APP_CATEGORIES: &[&str] = &[
@@ -349,49 +357,76 @@ impl<'a> Parser<'a> {
         Ok(out)
     }
 
-    /// The options after the app's title: `(icon: .note, category: .office)`, each at most once.
-    fn app_options(&mut self) -> PResult<(Option<String>, Option<String>)> {
-        let (mut icon, mut category) = (None, None);
+    /// The options after the app's title: `(icon: .note, category: .office, previously:
+    /// so.tilo.old)`, each at most once. `previously:` takes an app id, or several in brackets.
+    fn app_options(&mut self) -> PResult<AppOptions> {
+        let mut out = AppOptions::default();
+        let mut seen_previously = false;
         if !self.eat(&Tok::LParen) {
-            return Ok((icon, category));
+            return Ok(out);
         }
         loop {
             self.skip_nl();
             if self.eat(&Tok::RParen) {
                 break;
             }
-            let key = self.ident("`icon` or `category`")?;
+            let key = self.ident("`icon`, `category` or `previously`")?;
             self.expect(&Tok::Colon)?;
-            self.expect(&Tok::Dot)?;
-            let value = self.ident("a name after the dot, such as `.note`")?;
-            let slot = match key.name.as_str() {
-                "icon" => &mut icon,
-                "category" => {
-                    if !APP_CATEGORIES.contains(&value.name.as_str()) {
+            if key.name == "previously" {
+                if std::mem::replace(&mut seen_previously, true) {
+                    return self.fail(key.span, "`previously:` is given twice".to_owned());
+                }
+                if self.eat(&Tok::LBracket) {
+                    loop {
+                        self.skip_nl();
+                        if self.eat(&Tok::RBracket) {
+                            break;
+                        }
+                        out.previously.push(self.app_id()?);
+                        self.skip_nl();
+                        if !self.eat(&Tok::Comma) {
+                            self.skip_nl();
+                            self.expect(&Tok::RBracket)?;
+                            break;
+                        }
+                    }
+                } else {
+                    out.previously.push(self.app_id()?);
+                }
+            } else {
+                self.expect(&Tok::Dot)?;
+                let value = self.ident("a name after the dot, such as `.note`")?;
+                let slot = match key.name.as_str() {
+                    "icon" => &mut out.icon,
+                    "category" => {
+                        if !APP_CATEGORIES.contains(&value.name.as_str()) {
+                            return self.fail(
+                                value.span,
+                                format!(
+                                    "`.{}` is not a category; an app is one of {}",
+                                    value.name,
+                                    APP_CATEGORIES
+                                        .iter()
+                                        .map(|c| format!("`.{c}`"))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                ),
+                            );
+                        }
+                        &mut out.category
+                    }
+                    other => {
                         return self.fail(
-                            value.span,
+                            key.span,
                             format!(
-                                "`.{}` is not a category; an app is one of {}",
-                                value.name,
-                                APP_CATEGORIES
-                                    .iter()
-                                    .map(|c| format!("`.{c}`"))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
+                                "an app has an `icon:`, a `category:` and `previously:`, not `{other}:`"
                             ),
                         );
                     }
-                    &mut category
+                };
+                if slot.replace(value.name).is_some() {
+                    return self.fail(key.span, format!("`{}:` is given twice", key.name));
                 }
-                other => {
-                    return self.fail(
-                        key.span,
-                        format!("an app has an `icon:` and a `category:`, not `{other}:`"),
-                    );
-                }
-            };
-            if slot.replace(value.name).is_some() {
-                return self.fail(key.span, format!("`{}:` is given twice", key.name));
             }
             self.skip_nl();
             if !self.eat(&Tok::Comma) {
@@ -400,7 +435,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        Ok((icon, category))
+        Ok(out)
     }
 
     fn plain_string(&mut self, what: &str) -> PResult<String> {
@@ -524,12 +559,13 @@ impl<'a> Parser<'a> {
             self.bump();
             let id = self.app_id().ok()?;
             let title = self.plain_string("the app title in quotes").ok()?;
-            let (icon, category) = self.app_options().ok()?;
+            let options = self.app_options().ok()?;
             AppHeader {
                 id,
                 title,
-                icon,
-                category,
+                icon: options.icon,
+                category: options.category,
+                previously: options.previously,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
         } else {
@@ -569,12 +605,13 @@ impl<'a> Parser<'a> {
                 })
                 .ok();
             match title {
-                Some((id, title, (icon, category))) => {
+                Some((id, title, options)) => {
                     header = Some(AppHeader {
                         id,
                         title,
-                        icon,
-                        category,
+                        icon: options.icon,
+                        category: options.category,
+                        previously: options.previously,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });
                 }
