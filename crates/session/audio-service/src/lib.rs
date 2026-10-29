@@ -10,12 +10,19 @@
 //! the session bus as MPRIS describes them, and the answers to the commands
 //! the compositor sends those players. The helper stops when its standard
 //! input closes, so it never outlives the compositor that started it.
+//!
+//! Started with `--serve`, it is the session's audio service instead: it
+//! serves the [`sound`] resource over JSON lines ([`tilo_service::lines`])
+//! on the same pipes, reading the graph again whenever a device arrives or
+//! leaves.
 
 pub mod handoff;
 #[cfg(feature = "service")]
 pub mod mpris;
 #[cfg(feature = "service")]
 pub mod policy;
+#[cfg(feature = "service")]
+pub mod sound;
 
 use serde::{Deserialize, Serialize};
 

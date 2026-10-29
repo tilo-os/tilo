@@ -249,3 +249,24 @@ impl std::io::Write for Shared {
         Ok(())
     }
 }
+
+/// A service in a child process: started, read once it wrote its first
+/// readings, and stopped by closing its input when dropped.
+#[test]
+fn a_child_process_is_a_service() {
+    let mut command = std::process::Command::new("sh");
+    command.args([
+        "-c",
+        r#"echo '{"reading":{"resource":"lamp","value":{"on":true,"dimmable":true}}}'; cat > /dev/null"#,
+    ]);
+    let mut process = lines::Process::spawn(command, publish, None).expect("spawned");
+    assert_eq!(
+        process.read("lamp"),
+        Some(json!({"on": true, "dimmable": true}))
+    );
+    assert_eq!(
+        process.invoke("lamp", "dim", &Map::new()),
+        Ok(Started::Accepted)
+    );
+    drop(process);
+}

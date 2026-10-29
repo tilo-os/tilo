@@ -1,9 +1,10 @@
 //! `tilo-audio`: the session's audio policy and MPRIS client, started by the
-//! compositor.
+//! session.
 //!
-//! It reads one request per line on standard input, writes one event per
-//! line to standard output and stops when standard input closes (see the
-//! crate docs).
+//! Alone, it reads one request per line on standard input, writes one event
+//! per line to standard output and stops when standard input closes (see the
+//! crate docs). With `--serve` it is the session's audio service: the same
+//! policy, and the sound resource served over JSON lines on the same pipes.
 
 use std::io::{BufRead as _, Write as _};
 use std::sync::mpsc;
@@ -25,7 +26,7 @@ fn main() {
         )
         .with_writer(std::io::stderr)
         .init();
-    // A compositor that dies without closing our standard input (killed
+    // A session that dies without closing our standard input (killed
     // outright) still takes the helper with it.
     #[cfg(target_os = "linux")]
     // SAFETY: prctl(PR_SET_PDEATHSIG) only sets this process's own
@@ -45,6 +46,10 @@ fn main() {
             return;
         }
     };
+    if std::env::args().skip(1).any(|arg| arg == "--serve") {
+        serve(Mpris::start(runtime.handle().clone(), |_| {}));
+        return;
+    }
     let mpris = Mpris::start(runtime.handle().clone(), |event| emit(&event));
     let (events, received) = mpsc::channel();
     let stop = events.clone();
@@ -72,4 +77,48 @@ fn main() {
         events,
         &received,
     );
+}
+
+/// The session's audio service: the policy on a thread of its own, the
+/// sound resource served on the pipes until the session closes them.
+fn serve(mpris: Mpris) {
+    use std::sync::Arc;
+    use tilo_audio_service::sound::{SoundService, SystemGraph};
+    use tilo_service::lines;
+
+    let (incoming, requests, wake) = lines::incoming();
+    let mut sound = match SoundService::new(Arc::new(SystemGraph::default()), Some(wake)) {
+        Ok(sound) => sound,
+        Err(error) => {
+            tracing::error!(%error, "the sound service did not start");
+            return;
+        }
+    };
+    let refresh = sound.refresher();
+    let (events, received) = mpsc::channel();
+    let stop = events.clone();
+    let policy = std::thread::Builder::new()
+        .name("tilo-audio-policy".into())
+        .spawn(move || {
+            policy::serve(
+                move |_| refresh(),
+                move || mpris.pause_playing(),
+                events,
+                &received,
+            );
+        });
+    let reader = std::thread::Builder::new()
+        .name("tilo-audio-requests".into())
+        .spawn(move || lines::read_lines(std::io::stdin().lock(), &incoming));
+    if let Err(error) = reader {
+        tracing::error!(%error, "the request reader did not start");
+        return;
+    }
+    if let Err(error) = lines::serve(&mut sound, &requests, std::io::stdout().lock()) {
+        tracing::warn!(%error, "the session stopped reading");
+    }
+    let _ = stop.send(PolicyEvent::Stop);
+    if let Ok(policy) = policy {
+        let _ = policy.join();
+    }
 }

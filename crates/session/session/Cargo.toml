@@ -20,12 +20,18 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-quick-settings = { path = "../quick-settings" }
 tilo-notification-banners = { path = "../notification-banners" }
+tilo-service = { path = "../service" }
+tilo-connectivity-service = { path = "../connectivity-service" }
+# The sound resource's specs, for the audio service the session starts.
+tilo-audio-service = { path = "../audio-service", default-features = false }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 serde_json.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+media = { package = "tilo-media", path = "../../platform/tilo-media" }
+tilo-audio-service = { path = "../audio-service" }
 rustix = { workspace = true, features = ["fs"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 wayland-client.workspace = true
