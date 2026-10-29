@@ -16,27 +16,24 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
     let mut app = mount(backend.clone());
     app.harness().resize((1800, 6000)).unwrap();
     app.settle();
-    // Choosing a known provider adds it and opens its form.
+    // Choosing a provider adds it and opens its form, the endpoint to fill.
     app.harness()
         .click_named("agent-models-add-provider")
         .unwrap();
     app.harness().type_text("Anthropic-compatible provider");
-    app.settle();
     app.harness()
         .click_named("agent-models-preset-anthropic-compatible")
         .unwrap();
     app.settle();
-    assert_eq!(config(&mut app).profiles.len(), 1);
+    let [added] = config(&mut app).profiles.try_into().unwrap();
     assert_eq!(
-        config(&mut app).profiles[0].label,
-        "Anthropic-compatible provider"
+        (added.label, added.endpoint),
+        (
+            "Anthropic-compatible provider".into(),
+            "https://api.example.com".into()
+        )
     );
-    // Its endpoint is the person's to fill in.
-    assert_eq!(
-        config(&mut app).profiles[0].endpoint,
-        "https://api.example.com"
-    );
-    let id = config(&mut app).profiles[0].id.clone();
+    let id = added.id;
     let save = format!("agent-models-save-provider-{id}");
     assert_eq!(
         rendered_enabled(app.harness().root_widget(), &save),
