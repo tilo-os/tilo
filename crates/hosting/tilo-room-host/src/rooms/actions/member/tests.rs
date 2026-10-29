@@ -10,12 +10,12 @@ use tilo_actions::remote::{
 };
 use tilo_relay_session::rooms::{
     MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RESOURCE_PERMITS,
-    SAVE_SHORTCUT, SHARE_RESOURCE, UNSHARE_RESOURCE, member_resource,
+    SHARE_RESOURCE, UNSHARE_RESOURCE, member_resource,
 };
 use tilo_user_identity::DeviceCert;
 
 use super::super::HostRoomActions;
-use super::super::tests::{admit, admit_device, caller, governed, settled};
+use super::super::tests::{admit, caller, governed, settled};
 use crate::rooms::tests::{governor, guest_device, test_host};
 
 fn member_request(room: &str, action: &str, argument: Value) -> InvokeRequest {
@@ -97,7 +97,6 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
         [
             RECORD_EFFECT_RECEIPT,
             PREPARE_APPLICATION_RECORD,
-            SAVE_SHORTCUT,
             SHARE_RESOURCE,
             UNSHARE_RESOURCE,
             RESOURCE_PERMITS
@@ -220,64 +219,6 @@ async fn a_receipt_sent_again_after_a_restart_is_recorded_once() {
         "nor after the host restarted"
     );
     relay.shutdown().await;
-}
-
-fn shortcut(id: &str) -> tilo_automation::Shortcut {
-    tilo_automation::Shortcut {
-        id: id.into(),
-        name: id.into(),
-        inputs: Vec::new(),
-        steps: Vec::new(),
-        step_timeout_secs: None,
-        output: None,
-        grant: Vec::new(),
-        triggers: Vec::new(),
-        saved_by: None,
-        saved_proof: None,
-    }
-}
-
-#[tokio::test]
-async fn a_member_saves_a_shortcut_only_as_themselves() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, owner) = governor();
-    let relay = test_host(dir.path(), &key, &owner).await;
-    let rooms = relay.rooms();
-    let (room, workspace, host) = governed(rooms).await;
-    let (ada_key, ada) = admit_device(rooms, &room, &owner, 1).await;
-    let save = |shortcut: tilo_automation::Shortcut| {
-        let change = tilo_automation::ShortcutChange::Save(Box::new(shortcut));
-        member_request(
-            &room,
-            SAVE_SHORTCUT,
-            json!({ "change": serde_json::to_string(&change).unwrap() }),
-        )
-    };
-    let held = || async {
-        let governed = rooms.room(&room).await.unwrap();
-        let governed = governed.lock().await;
-        tilo_automation::decode_saved(&tilo_desktop_model::projection::workspace_shortcuts_of(
-            governed.peer().admitted_room().unwrap(),
-        ))
-    };
-
-    // Ada names the owner as who saved it, with her own device's proof.
-    let mut forged = shortcut("water");
-    tilo_peer_state::room::sign_saved_shortcut(&room, &mut forged, &ada, &ada_key).unwrap();
-    forged.saved_by = Some(hex::encode(owner.user_public_key));
-    assert!(matches!(
-        invoke(&host, workspace, &ada, save(forged)).await,
-        Err(ActionHostError::Refused { .. })
-    ));
-    assert!(held().await.is_empty());
-
-    let mut own = shortcut("water");
-    tilo_peer_state::room::sign_saved_shortcut(&room, &mut own, &ada, &ada_key).unwrap();
-    let saved = invoke(&host, workspace, &ada, save(own.clone()))
-        .await
-        .unwrap();
-    assert!(saved["generation"].as_u64().is_some(), "{saved}");
-    assert_eq!(held().await, vec![own]);
 }
 
 /// An item of Notes' own record of `room`, by its id.

@@ -1441,11 +1441,10 @@ pub struct NativeShortcutLibrary(
     pub Option<Arc<super::network::ShellNetwork>>,
 );
 impl NativeShortcutLibrary {
-    /// `change` committed in `room` by its governor: the host governing it
-    /// (the owner's device or a node), or this device's own owner when it
-    /// governs the room itself. A saved shortcut carries this device's proof
-    /// that its person, `actor`, saved it. Runs on the session runtime; the
-    /// owner's durable publication on a blocking thread.
+    /// `change` written into `room` by this device, signed with its own key.
+    /// A saved shortcut carries this device's proof that its person,
+    /// `actor`, saved it. Runs on the session runtime; the owner's durable
+    /// publication on a blocking thread.
     pub(crate) async fn commit(
         tree: WorkspaceTreeHandle,
         network: Option<Arc<super::network::ShellNetwork>>,
@@ -1486,20 +1485,6 @@ impl NativeShortcutLibrary {
         };
         if let Some(network) = &network {
             network.check_native_custody(&owner, room)?;
-            if let Some(committed) = Arc::clone(network)
-                .save_shortcut_at_host(room, change.clone())
-                .await
-            {
-                trace::note(|| format!("shortcut commit in {room}: {committed:?}"));
-                return committed;
-            }
-        }
-        trace::note(|| format!("shortcut commit in {room}: no host governs it"));
-        // No host governs the room: this device does, or it holds a room a
-        // device governed before rooms had hosts, which takes no shortcuts.
-        let governs = owner.with_current(room, |view| Ok(view.device() == view.governor()))?;
-        if !governs {
-            return Err("this workspace's governing device has no host to save shortcuts".into());
         }
         let request = tilo_owner_commit::OwnerCommitRequest {
             room: room.to_string(),
@@ -1510,7 +1495,7 @@ impl NativeShortcutLibrary {
             },
         };
         tokio::task::spawn_blocking(move || {
-            owner.commit_shortcut_change(&request, &device, &key, std::time::SystemTime::now())
+            owner.commit_shortcut_change(&request, &key, std::time::SystemTime::now())
         })
         .await
         .map_err(|_| "the shortcut's commit stopped".to_owned())??;

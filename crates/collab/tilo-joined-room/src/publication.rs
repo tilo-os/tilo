@@ -928,6 +928,11 @@ fn validate_member_changes(
         .workspace_memberships
         .values()
         .any(|receipt| receipt.receipt.binding == entry.binding)
+        && view
+            .record
+            .shortcut_change
+            .as_ref()
+            .is_none_or(|receipt| receipt.binding != entry.binding)
     {
         return Err("native membership publication lacks its receipt".into());
     }

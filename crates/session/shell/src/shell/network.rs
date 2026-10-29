@@ -103,9 +103,9 @@ pub(crate) use session_host::Placement;
 mod room_gate;
 #[cfg(test)]
 mod room_gate_tests;
+mod room_signer;
 #[cfg(test)]
 mod same_person_room_tests;
-mod shortcut_saves;
 mod site_join;
 #[cfg(test)]
 mod site_join_tests;

@@ -123,11 +123,6 @@ pub const MEMBER_RESOURCE_KIND: &str = "workspace.member";
 /// and `redacted`, its canonical redacted public receipt as JSON text.
 /// Answers the room's `generation` that carries it.
 pub const RECORD_EFFECT_RECEIPT: &str = "effect-receipt.record";
-/// Save or remove one shortcut of the room as the caller: `change`, a
-/// shortcut change as JSON text, whose saved shortcut names as its saver
-/// nobody or the caller, by their device's proof. Answers the room's
-/// `generation` that carries it.
-pub const SAVE_SHORTCUT: &str = "shortcut.save";
 /// Have the host governing the room create the record `record` (`""` for
 /// the app's primary) of `app`, empty and signed by the host: what opening
 /// an app there for the first time asks when the room does not hold its

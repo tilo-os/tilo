@@ -35,21 +35,21 @@ fn saved(peer: &crate::StatePeer) -> Vec<Shortcut> {
 
 #[test]
 fn a_members_own_device_saves_and_removes_its_shortcut_in_the_room() {
-    let (mut governor, authority, device, cert, now) = crate::admission_tests::seeded();
+    let (mut governor, _, device, cert, now) = crate::admission_tests::seeded();
     let room = governor.core.room.clone();
     let water = signed(&room, "water", &cert, &device);
     let save = ShortcutChange::Save(Box::new(water.clone()));
     assert_eq!(
         governor
             .workspace_mut()
-            .apply_shortcut_change(&cert, &save, &authority, now),
+            .apply_shortcut_change(&cert, &save, &device, now),
         Ok(true)
     );
     assert_eq!(saved(&governor), vec![water]);
     assert_eq!(
         governor
             .workspace_mut()
-            .apply_shortcut_change(&cert, &save, &authority, now),
+            .apply_shortcut_change(&cert, &save, &device, now),
         Ok(false),
         "the same save again changes nothing"
     );
@@ -57,17 +57,37 @@ fn a_members_own_device_saves_and_removes_its_shortcut_in_the_room() {
     assert_eq!(
         governor
             .workspace_mut()
-            .apply_shortcut_change(&cert, &delete, &authority, now),
+            .apply_shortcut_change(&cert, &delete, &device, now),
         Ok(true)
     );
     assert!(saved(&governor).is_empty());
     assert!(
         governor
             .workspace_mut()
-            .apply_shortcut_change(&cert, &delete, &authority, now)
+            .apply_shortcut_change(&cert, &delete, &device, now)
             .is_err(),
         "nothing to remove"
     );
+}
+
+#[test]
+fn a_shortcut_change_is_signed_by_its_callers_own_device() {
+    let (mut governor, authority, device, cert, now) = crate::admission_tests::seeded();
+    let room = governor.core.room.clone();
+    let water = signed(&room, "water", &cert, &device);
+    assert!(
+        governor
+            .workspace_mut()
+            .apply_shortcut_change(
+                &cert,
+                &ShortcutChange::Save(Box::new(water)),
+                &authority,
+                now
+            )
+            .is_err(),
+        "another device, the owner's included, does not write it for the caller"
+    );
+    assert!(saved(&governor).is_empty());
 }
 
 #[test]
@@ -87,7 +107,7 @@ fn a_member_saves_only_as_themselves() {
                 .apply_shortcut_change(
                     &editor,
                     &ShortcutChange::Save(Box::new(shortcut)),
-                    &authority,
+                    &editor_key,
                     now,
                 )
                 .is_err()
@@ -102,7 +122,7 @@ fn a_member_saves_only_as_themselves() {
             .apply_shortcut_change(
                 &editor,
                 &ShortcutChange::Save(Box::new(unproven)),
-                &authority,
+                &editor_key,
                 now,
             )
             .is_err()
@@ -114,7 +134,7 @@ fn a_member_saves_only_as_themselves() {
         governor.workspace_mut().apply_shortcut_change(
             &editor,
             &ShortcutChange::Save(Box::new(own.clone())),
-            &authority,
+            &editor_key,
             now,
         ),
         Ok(true)
@@ -131,7 +151,7 @@ fn a_member_sees_a_saved_shortcut_and_never_the_governors_forgery() {
     let governor_device = authority.verifying_key().to_bytes();
     let mut member = governor.clone();
 
-    // The editor's save, committed by the governor, reaches the member.
+    // The editor's save, relayed by the owner's device, reaches the member.
     let before = governor.clone();
     let own = signed(&room, "water", &editor, &editor_key);
     governor
@@ -139,7 +159,7 @@ fn a_member_sees_a_saved_shortcut_and_never_the_governors_forgery() {
         .apply_shortcut_change(
             &editor,
             &ShortcutChange::Save(Box::new(own.clone())),
-            &authority,
+            &editor_key,
             now,
         )
         .unwrap();
