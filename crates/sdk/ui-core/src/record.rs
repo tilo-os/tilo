@@ -3458,7 +3458,7 @@ impl RecordStore {
                     let shared: Vec<automerge::ChangeHash> = heads
                         .iter()
                         .copied()
-                        .filter(|head| local.get_change_by_hash(head).is_some())
+                        .filter(|head| local.get_change_meta_by_hash(head).is_some())
                         .collect();
                     if shared.len() == heads.len() {
                         candidate = local.clone();
@@ -3472,10 +3472,12 @@ impl RecordStore {
                             .load_incoming(&incoming.save_after(&[]))
                             .map_err(|error| error.to_string())?;
                     } else {
-                        let unshared = local.save_after(&shared);
+                        // Merging walks back to what both sides hold. Saving
+                        // after the shared heads alone would re-encode the
+                        // whole local history when the snapshot is ahead.
                         incoming.set_actor(local.get_actor().clone());
                         incoming
-                            .load_incoming(&unshared)
+                            .merge_incoming(&mut local)
                             .map_err(|error| error.to_string())?;
                         candidate = incoming;
                     }
