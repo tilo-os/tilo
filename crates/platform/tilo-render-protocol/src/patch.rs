@@ -516,33 +516,42 @@ pub enum ToApp {
         event: String,
         value: Option<Value>,
     },
-    /// The checkbox or switch `key` is now `checked`.
+    /// The checkbox or switch `key` of the view of `target` is now `checked`.
+    ///
+    /// An edit names the resource the lane showed when the person made it: it applies to that
+    /// resource, whatever the lane shows by the time the app takes it.
     Toggle {
         lane: Lane,
+        target: ResourceRef,
         key: String,
         checked: bool,
     },
-    /// Text typed into the bound control `key`: `delete` bytes at byte `at` replaced by
-    /// `insert`, against what the control showed. `seq` counts the control's splices.
+    /// Text typed into the bound control `key` of the view of `target`: `delete` bytes at byte
+    /// `at` replaced by `insert`, against what the control showed. `seq` counts the control's
+    /// splices.
     Splice {
         lane: Lane,
+        target: ResourceRef,
         key: String,
         seq: u64,
         at: u32,
         delete: u32,
         insert: String,
     },
-    /// The bound control `key`, which edits a value other than text (a number, a date), now
-    /// holds `text`.
+    /// The bound control `key` of the view of `target`, which edits a value other than text (a
+    /// number, a date), now holds `text`.
     Edit {
         lane: Lane,
+        target: ResourceRef,
         key: String,
         text: String,
     },
-    /// The bound rich-text control `key` now holds `rich`: its paragraphs, marks and
-    /// references (the runtime brings the field to it by splices and marks).
+    /// The bound rich-text control `key` of the view of `target` now holds `rich`: its
+    /// paragraphs, marks and references (the runtime brings the field to it by splices and
+    /// marks).
     EditRich {
         lane: Lane,
+        target: ResourceRef,
         key: String,
         rich: rich::RichText,
     },
@@ -789,6 +798,10 @@ mod tests {
         for rich in [rich::RichText::default(), plain] {
             let edit = vec![ToApp::EditRich {
                 lane: Lane::Root,
+                target: ResourceRef {
+                    id: "n1".into(),
+                    ty: "Note".into(),
+                },
                 key: "draft".into(),
                 rich,
             }];

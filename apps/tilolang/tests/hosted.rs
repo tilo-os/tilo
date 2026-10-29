@@ -14,9 +14,13 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
+use collaboration::{
+    CollabEvent, CollabRequest, CollabTransport, CollaborationManager, DocumentMutation,
+    PeerTransport, RouteSpec, TransportCommand, TransportError, TransportStatus,
+};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilolang_app::hosted::HostedWindow;
@@ -61,6 +65,54 @@ impl PeerTransport for Broker {
 
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         self.joined.take().map(Ok)
+    }
+}
+
+/// The broker's end of a connection whose queue fills up: while `busy`, it takes no change of
+/// the record (`TransportError::Busy`, as the broker transport's queue says under fast typing);
+/// the changes it takes are kept in `changes`.
+struct Crowded {
+    route: RouteSpec,
+    busy: Arc<AtomicBool>,
+    changes: Arc<Mutex<Vec<Vec<u8>>>>,
+    joined: Option<RouteSpec>,
+}
+
+impl CollabTransport for Crowded {
+    fn status(&self) -> TransportStatus {
+        TransportStatus::Ready
+    }
+
+    fn submit(&mut self, command: TransportCommand) -> Result<(), TransportError> {
+        match command {
+            TransportCommand::Primary(CollabRequest::Hello { .. }) => {
+                self.joined = Some(self.route.clone());
+            }
+            TransportCommand::Primary(CollabRequest::Document { mutation, .. }) => {
+                if self.busy.load(Ordering::SeqCst) {
+                    return Err(TransportError::Busy);
+                }
+                match mutation {
+                    DocumentMutation::Incremental(bytes) | DocumentMutation::Snapshot(bytes) => {
+                        self.changes.lock().unwrap().push(bytes);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn drain(&mut self, _: &mut Vec<CollabEvent>) {}
+
+    fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
+        self.joined.take().map(Ok)
+    }
+
+    fn take_action_directory_requests(
+        &mut self,
+        _: &mut Vec<collaboration::ActionDirectoryRequest>,
+    ) {
     }
 }
 
@@ -177,7 +229,8 @@ impl Window {
 struct Session {
     host: TilolangHost,
     window: Window,
-    _inbox: Inbox,
+    /// The broker's end of the instance's connection.
+    _broker: Box<dyn std::any::Any>,
 }
 
 impl Session {
@@ -193,6 +246,31 @@ impl Session {
             app.init_layout();
             Window::Live(Box::new(app))
         })
+    }
+
+    /// A person at a Notes window the live `App` runs, whose connection's queue is full while
+    /// `busy`; the broker's end keeps the record's changes it took in `changes`.
+    fn crowded_notes(busy: &Arc<AtomicBool>, changes: &Arc<Mutex<Vec<Vec<u8>>>>) -> Self {
+        let route = RouteSpec::app(NOTES, uuid::Uuid::new_v4());
+        let manager = CollaborationManager::with_transport(Box::new(Crowded {
+            route: route.clone(),
+            busy: Arc::clone(busy),
+            changes: Arc::clone(changes),
+            joined: None,
+        }));
+        Self::over(
+            manager,
+            &route,
+            NOTES,
+            "../tl/notes",
+            "ada",
+            Box::new(()),
+            |hosted| {
+                let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
+                app.init_layout();
+                Window::Live(Box::new(app))
+            },
+        )
     }
 
     /// `person` at a harness window of the package `app` in `dir`, whose presence `present`
@@ -223,12 +301,27 @@ impl Session {
     ) -> Self {
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
-        let mut manager = CollaborationManager::with_peer_transport(Broker {
+        let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
             sent,
             inbox: Rc::clone(&inbox),
             joined: None,
         });
+        Self::over(manager, &route, app, dir, person, Box::new(inbox), window)
+    }
+
+    /// `person` at the window `window` makes of the hosted window of the package `app` in
+    /// `dir`, whose instance's connection is `manager`, on `route`; `broker` is what the broker's
+    /// end holds.
+    fn over(
+        mut manager: CollaborationManager,
+        route: &RouteSpec,
+        app: &str,
+        dir: &str,
+        person: &str,
+        broker: Box<dyn std::any::Any>,
+        window: impl FnOnce(HostedWindow) -> Window,
+    ) -> Self {
         assert!(manager.send(CollabRequest::Hello {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id,
@@ -261,7 +354,7 @@ impl Session {
         let mut session = Self {
             host,
             window: window(HostedWindow::over(theirs)),
-            _inbox: inbox,
+            _broker: broker,
         };
         session.settle();
         session
@@ -459,6 +552,94 @@ fn keys_typed_right_after_new_note_land_in_the_new_notes_title_whenever_the_host
 #[test]
 fn keys_typed_right_after_new_note_land_in_the_new_notes_title_in_the_live_window() {
     new_notes_take_the_keys_typed_right_after_new_note(Session::live_notes());
+}
+
+/// "+" and its title typed at once, several times over before the host answers any: each new
+/// note gets the keys typed after its own press, none another note's.
+fn keys_typed_after_each_of_several_presses_land_in_the_note_that_press_made(mut session: Session) {
+    let names = ["Alpha", "Beta", "Gamma"];
+    for name in names {
+        let plus = session.new_note_button();
+        session.window.click_at(plus.0, plus.1);
+        session.window.type_text(name);
+    }
+    session.settle();
+    let mut titles = session.titles();
+    titles.sort();
+    assert_eq!(
+        titles,
+        ["UntitledAlpha", "UntitledBeta", "UntitledGamma"],
+        "each note has the keys typed after its own press"
+    );
+}
+
+#[test]
+fn keys_typed_after_each_of_several_presses_land_in_their_own_note() {
+    keys_typed_after_each_of_several_presses_land_in_the_note_that_press_made(Session::notes());
+}
+
+#[test]
+fn keys_typed_after_each_of_several_presses_land_in_their_own_note_in_the_live_window() {
+    keys_typed_after_each_of_several_presses_land_in_the_note_that_press_made(Session::live_notes());
+}
+
+#[test]
+fn every_key_typed_while_the_connection_is_full_is_kept_and_reaches_the_room_once_it_has_room() {
+    let busy = Arc::new(AtomicBool::new(false));
+    let changes = Arc::default();
+    let mut session = Session::crowded_notes(&busy, &changes);
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
+    session.settle();
+    // The connection's queue fills up while the person types fast into notes, open and new.
+    busy.store(true, Ordering::SeqCst);
+    let before = changes.lock().unwrap().len();
+    let title = session.field("Title");
+    session.window.click_at(title.0 + 40.0, title.1);
+    for key in ["Be", "ta", "Gam", "ma"] {
+        session.window.type_text(key);
+        session.settle();
+    }
+    let body = session.body();
+    session.window.click_at(body.0, body.1);
+    session.window.type_text("Body");
+    session.settle();
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
+    session.window.type_text("WV");
+    session.settle();
+    let mut titles = session.titles();
+    titles.sort();
+    assert_eq!(
+        titles,
+        ["UntitledBetaGamma", "UntitledWV"],
+        "every key is kept while the room cannot take it yet"
+    );
+    assert_eq!(
+        changes.lock().unwrap().len(),
+        before,
+        "nothing went out while the queue was full"
+    );
+    // The queue has room again: the host's next frames hand the room all of it.
+    busy.store(false, Ordering::SeqCst);
+    session.settle();
+    let mut room = automerge::AutoCommit::new();
+    for change in changes.lock().unwrap().iter() {
+        room.load_incremental(change).unwrap();
+    }
+    let mut record = session
+        .host
+        .instances()
+        .next()
+        .unwrap()
+        .record()
+        .doc()
+        .clone();
+    assert_eq!(
+        room.get_heads(),
+        record.get_heads(),
+        "the room holds every key typed while its connection was full"
+    );
 }
 
 #[test]

@@ -105,6 +105,8 @@ struct Window {
     root: Option<patch::Node>,
     /// The tree of the lane beside the root: the item the window shows.
     detail: Option<patch::Node>,
+    /// The resource the detail lane shows.
+    detail_target: Option<patch::ResourceRef>,
     /// The instance asked the window to come forward.
     activated: bool,
 }
@@ -131,9 +133,13 @@ impl Window {
                     }
                     ToUi::Open {
                         lane: Lane::Detail,
+                        target,
                         tree,
                         ..
-                    } => self.detail = Some(tree),
+                    } => {
+                        self.detail = Some(tree);
+                        self.detail_target = Some(target);
+                    }
                     ToUi::Patch {
                         lane: Lane::Detail,
                         patches,
@@ -253,6 +259,7 @@ fn running_with(
         transport: ChannelTransport::new(theirs).unwrap(),
         root: None,
         detail: None,
+        detail_target: None,
         activated: false,
     };
     (host, window, sent, inbox, route)
@@ -659,6 +666,7 @@ fn a_slow_open_does_not_hold_up_another_instances_frame() {
         transport: ChannelTransport::new(theirs).unwrap(),
         root: None,
         detail: None,
+        detail_target: None,
         activated: false,
     };
 
@@ -914,6 +922,7 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
     .unwrap_or_else(|| panic!("the open note has a field `{field}`"))
     .key
     .clone();
+    let target = window.detail_target.clone().expect("the note is open");
     let documents = documents_sent(&sent);
     let mut built = 0;
     let mut shown = String::new();
@@ -921,6 +930,7 @@ fn typing(held: usize, field: &str, typed: &str) -> (usize, Vec<String>) {
         let ((), phases) = tilo_resource::profiling::observe(|| {
             window.send(&[ToApp::Splice {
                 lane: Lane::Detail,
+                target: target.clone(),
                 key: input.clone(),
                 seq: (seq as u64).saturating_add(1),
                 at: u32::try_from(shown.len()).unwrap(),
@@ -971,5 +981,77 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
     assert!(
         labels.iter().any(|label| label == "abcUntitled"),
         "the published surface names the note by its new title: {labels:?}"
+    );
+}
+
+/// The title of the note `target` names, as the instance's runtime reads it.
+fn title_of(host: &TilolangHost, target: &patch::ResourceRef) -> String {
+    let instance = host.instances().next().unwrap().instance();
+    let resource = tilolang_tilo::instance::wire::runtime_resource(target).unwrap();
+    match instance
+        .host()
+        .unwrap()
+        .runtime()
+        .read(&resource, "title")
+        .unwrap()
+    {
+        Value::Text(title) => title,
+        other => panic!("a note's title is {other:?}"),
+    }
+}
+
+#[test]
+fn an_edit_lands_in_the_note_it_was_typed_into_whatever_the_window_shows_when_it_arrives() {
+    let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", NOTES, notes());
+    settle(&mut host, &mut window);
+    let new_note = |window: &mut Window| {
+        let button = node_with(window.root.as_ref().unwrap(), "label", "New note")
+            .expect("the notebook offers a new note")
+            .clone();
+        let event = button.events.keys().next().unwrap().clone();
+        window.send(&[ToApp::Fire {
+            lane: Lane::Root,
+            key: button.key,
+            event,
+            value: None,
+        }]);
+    };
+    new_note(&mut window);
+    settle(&mut host, &mut window);
+    let first = window
+        .detail_target
+        .clone()
+        .expect("the first note is open");
+    let title = node_with(window.detail.as_ref().unwrap(), "placeholder", "Title")
+        .expect("the note has its title field")
+        .key
+        .clone();
+    // The person typed into the first note's title; the window sent it just as their next
+    // press made a second note, which the instance shows by the time the typing arrives.
+    new_note(&mut window);
+    window.send(&[ToApp::Splice {
+        lane: Lane::Detail,
+        target: first.clone(),
+        key: title,
+        seq: 1,
+        at: 0,
+        delete: 0,
+        insert: "Plan ".to_owned(),
+    }]);
+    settle(&mut host, &mut window);
+    let second = window
+        .detail_target
+        .clone()
+        .expect("the second note is open");
+    assert_ne!(first, second, "the press opened the second note");
+    assert_eq!(
+        title_of(&host, &first),
+        "Plan Untitled",
+        "the typing landed in the note it was typed into"
+    );
+    assert_eq!(
+        title_of(&host, &second),
+        "Untitled",
+        "and none of it in the note shown when it arrived"
     );
 }

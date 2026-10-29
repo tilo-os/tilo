@@ -339,17 +339,19 @@ impl AppWindow {
                 }
                 ToUi::Notice { words, kind, undo } => self.notice(&words, kind, undo),
                 ToUi::Ask(ask) => self.rebuild_ask(ask.as_ref()),
-                ToUi::Took { fired } => self.took = self.took.max(fired),
+                ToUi::Took { fired } => {
+                    self.took = self.took.max(fired);
+                    // What was typed after the presses it ran goes to what they opened, before
+                    // what a later press opened (further on in this batch) takes its place.
+                    self.send_typed_into(std::mem::take(&mut opened_for_input));
+                }
             }
         }
         self.check_budget()?;
         if content {
             self.compose();
         }
-        if opened_for_input {
-            self.focus_opened();
-        }
-        self.send_typed();
+        self.send_typed_into(opened_for_input);
         if let Some(front) = front {
             self.show_content(match front {
                 wire::Front::Input => by_input(),
@@ -766,11 +768,27 @@ impl AppWindow {
                     .borrow_mut()
                     .insert(composed.clone(), Value::Rich(rich.clone()));
                 let (lane, key) = lane_of(&composed);
-                ToApp::EditRich { lane, key, rich }
+                let Some(target) = self.target(lane) else {
+                    return;
+                };
+                ToApp::EditRich {
+                    lane,
+                    target,
+                    key,
+                    rich,
+                }
             }
             UiEvent::Toggle(key, checked) => {
                 let (lane, key) = lane_of(&key);
-                ToApp::Toggle { lane, key, checked }
+                let Some(target) = self.target(lane) else {
+                    return;
+                };
+                ToApp::Toggle {
+                    lane,
+                    target,
+                    key,
+                    checked,
+                }
             }
             UiEvent::Resolve(key, approve) => {
                 let (lane, key) = lane_of(&key);
@@ -792,7 +810,13 @@ impl AppWindow {
             Some(_) => false,
         };
         if !edits_text {
-            return Some(ToApp::Edit { lane, key, text });
+            let target = self.target(lane)?;
+            return Some(ToApp::Edit {
+                lane,
+                target,
+                key,
+                text,
+            });
         }
         let before = self.texts.get(composed).cloned().unwrap_or_default();
         // Typing after a press the app has not run yet waits for it: the press may open
@@ -831,7 +855,7 @@ impl AppWindow {
             self.texts.insert(composed.to_owned(), text);
             return None;
         }
-        Some(self.splice(composed, &before, text))
+        self.splice(composed, &before, text)
     }
 
     /// The view a person's press opened takes the keyboard in its first text field, and what
@@ -913,6 +937,15 @@ impl AppWindow {
         true
     }
 
+    /// Send what the person typed after each press the app ran since, into the view a press
+    /// opened for them when `opened` (its first field takes the keyboard).
+    fn send_typed_into(&mut self, opened: bool) {
+        if opened {
+            self.focus_opened();
+        }
+        self.send_typed();
+    }
+
     /// Send what the person typed after each press the app ran since.
     fn send_typed(&mut self) {
         let mut sent = false;
@@ -951,14 +984,18 @@ impl AppWindow {
         }
         let mut text = shown.clone();
         text.replace_range(at..end, &insert);
-        let message = self.splice(&key, &shown, text);
-        self.out.push(message);
+        if let Some(message) = self.splice(&key, &shown, text) {
+            self.out.push(message);
+        }
     }
 
     /// The splice of the bound text control `composed` from `before` to `text`, which it now
     /// shows.
-    fn splice(&mut self, composed: &str, before: &str, text: String) -> ToApp {
+    fn splice(&mut self, composed: &str, before: &str, text: String) -> Option<ToApp> {
         let (lane, key) = lane_of(composed);
+        // Of the resource the lane shows now: the app applies it there, whatever it shows by
+        // the time it takes it.
+        let target = self.target(lane)?;
         let (at, delete, insert) = splice_between(before, &text);
         let seq = self.seqs.entry(composed.to_owned()).or_default();
         *seq = seq.saturating_add(1);
@@ -969,14 +1006,24 @@ impl AppWindow {
             .borrow_mut()
             .insert(composed.to_owned(), Value::Text(text.clone()));
         self.texts.insert(composed.to_owned(), text);
-        ToApp::Splice {
+        Some(ToApp::Splice {
             lane,
+            target,
             key,
             seq,
             at: u32::try_from(at).unwrap_or(u32::MAX),
             delete: u32::try_from(delete).unwrap_or(u32::MAX),
             insert,
+        })
+    }
+
+    /// The resource the view of `lane` shows.
+    fn target(&self, lane: Lane) -> Option<ResourceRef> {
+        match lane {
+            Lane::Root => self.root.as_ref(),
+            Lane::Detail => self.detail.as_ref(),
         }
+        .map(|view| view.target.clone())
     }
 
     // ----- for embedders and tests ---------------------------------------------------------
@@ -1288,6 +1335,14 @@ mod tests {
         out
     }
 
+    /// The note the page shows.
+    fn doc() -> ResourceRef {
+        ResourceRef {
+            id: "doc".to_owned(),
+            ty: "notes.Note".to_owned(),
+        }
+    }
+
     /// A page with one text field bound to a note's title.
     fn titled_page() -> Vec<ToUi> {
         let mut input = UiNode::empty("ui.TextInput", "title");
@@ -1300,10 +1355,7 @@ mod tests {
         vec![
             ToUi::Open {
                 lane: Lane::Root,
-                target: ResourceRef {
-                    id: "doc".to_owned(),
-                    ty: "notes.Note".to_owned(),
-                },
+                target: doc(),
                 tree: page,
                 front: None,
             },
@@ -1331,6 +1383,7 @@ mod tests {
             sent(&mut app),
             [ToApp::Splice {
                 lane: Lane::Root,
+                target: doc(),
                 key: "title".to_owned(),
                 seq: 1,
                 at: 2,
@@ -1408,6 +1461,7 @@ mod tests {
             sent(&mut app),
             [ToApp::Splice {
                 lane: Lane::Root,
+                target: doc(),
                 key: "title".to_owned(),
                 seq: 1,
                 at: 8,
