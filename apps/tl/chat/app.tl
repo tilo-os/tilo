@@ -90,23 +90,22 @@ action start_thread(c: TextChannel, m: Message, name: Text = m.body.excerpt) -> 
 /// The sidebar: channels outside any category first, then each category with its channels.
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
+/// TODO(ui): a category's heading over its channels, a section of the navigation list.
 view sidebar(all: Channels) {
     lens shown: Text = ""
     ui.NavShell(content_kind: .page, sidebar_title: "Channels") {
         sidebar: {
-            for item in all {
-                match item {
-                    c: Category => {
-                        ui.NavList(title: c.name, selected: shown) {
+            ui.NavList(selected: shown) {
+                for item in all {
+                    match item {
+                        c: Category => {
                             for ch in c.channels {
                                 ui.NavItem("{c.name}/{ch.name}", ch.name, icon: .hash) {
                                     on select: set(shown, "{c.name}/{ch.name}").then(open(ch))
                                 }
                             }
                         }
-                    }
-                    ch: TextChannel => {
-                        ui.NavList(selected: shown) {
+                        ch: TextChannel => {
                             ui.NavItem("/{ch.name}", ch.name, icon: .hash) {
                                 on select: set(shown, "/{ch.name}").then(open(ch))
                             }
