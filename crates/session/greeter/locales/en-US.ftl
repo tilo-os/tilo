@@ -82,3 +82,20 @@ greeter-key-letters = Letters
 greeter-key-space = Space
 greeter-key-delete = Delete
 greeter-key-enter = Enter
+
+# "Can't sign in" after boot: a new password or PIN with the recovery key.
+greeter-recovery-intro = Enter your recovery key, then choose a new password or PIN.
+greeter-recovery-key = Recovery key
+greeter-recovery-new = New password or PIN
+greeter-recovery-confirm = Type it again
+greeter-recovery-save = Save
+greeter-recovery-cancel = Cancel
+greeter-recovery-saving = Saving your new password or PIN…
+greeter-recovery-hint-key = Enter your recovery key.
+greeter-recovery-hint-new = Choose a new password or PIN.
+greeter-recovery-mismatch = The two entries don't match. Type them again.
+greeter-recovery-wrong = That recovery key isn't right. Check it and try again.
+greeter-recovery-weak = This computer has no security chip, so it needs a longer password. Choose a longer one.
+greeter-recovery-failed = Your password or PIN couldn't be changed. Try again, or restart the computer.
+greeter-recovery-done-password = Sign in with your new password.
+greeter-recovery-done-pin = Sign in with your new PIN.
