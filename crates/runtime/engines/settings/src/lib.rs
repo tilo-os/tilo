@@ -55,13 +55,32 @@ ui::engine_main!(
     init = settings::enable_provider_administration
 );
 
+/// The engine's self-check ([`self_check`]) for its check binary, by the
+/// unmangled name the binary links, as Settings' binary links
+/// [`tilo_settings_engine_run`]: nothing compiles against this library, so
+/// it exports no Rust item. Prints the report; whether it passed.
+#[cfg(feature = "thin")]
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn tilo_settings_engine_check() -> bool {
+    match self_check() {
+        Ok(report) => {
+            println!("tilo-settings-engine: {report}");
+            true
+        }
+        Err(error) => {
+            eprintln!("tilo-settings-engine: {error}");
+            false
+        }
+    }
+}
+
 /// Run the engine's own code: read the wallpaper catalogue, which must name a
 /// default among its wallpapers, read the keyboard outlines, and ask the NTFS
 /// mount service at a socket that does not exist, which must fail rather
 /// than answer.
 ///
-/// The engine's check binary calls it, so a release proves the library loads
-/// and runs against the runtime it ships with.
+/// The check binary runs it through its unmangled entry, so a release proves
+/// the library loads and runs against the runtime it ships with.
 ///
 /// # Errors
 /// Names what was read or answered wrongly.

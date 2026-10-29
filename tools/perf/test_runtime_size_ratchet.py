@@ -41,7 +41,12 @@ relocation_bytes = 65536
 relocated_bytes = 65536
 symbol_relocations = 64
 """
-TEXT = HEADER + RUNTIME
+ENGINES = """
+[engines.x86_64]
+"libtilo_typst_engine.so" = 65536
+"libtilo_timezone_engine.so" = 65536
+"""
+TEXT = HEADER + RUNTIME + ENGINES
 REASON = 'reason = "the toolkit gained a media engine"\nrun = 90210\n'
 
 R_X86_64_RELATIVE, R_X86_64_GLOB_DAT = 8, 6
@@ -290,6 +295,25 @@ class Closure(Scratch):
                                                     + '[engine_users]\n"libtilo_timezone_engine.so" = ["clocks"]\n')),
                          [])
 
+    def test_an_engine_is_held_to_its_budget(self):
+        runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
+                             "libtilo_typst_engine.so": elf(needed=["libruntime_dylib.so"], padding=70000)})
+        engine = runtime / "libtilo_typst_engine.so"
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(), "x86_64", engines=[engine])
+        self.assertEqual(status, 1)
+        self.assertTrue(any(line.startswith("error: engine libtilo_typst_engine.so x86_64: ")
+                            and "over its budget of 65536" in line for line in lines), lines)
+        self.assertIn('    "libtilo_typst_engine.so" = 65536', lines)
+        raised = budget(typst=f'{REASON}[engines.x86_64]\n"libtilo_typst_engine.so" = 65536\n')
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", raised, "x86_64", engines=[engine])
+        self.assertEqual(status, 0, lines)
+        # One that has no budget fails, and names the line to add.
+        status, lines, _ = ratchet.measure(runtime / "libruntime_dylib.so", budget(HEADER + RUNTIME), "x86_64",
+                                           engines=[engine])
+        self.assertEqual(status, 1)
+        self.assertTrue(any("no budget; add [engines.x86_64] \"libtilo_typst_engine.so\" = 131072" in line
+                            for line in lines), lines)
+
     def test_an_engine_that_does_not_link_the_runtime_fails(self):
         runtime = self.tree({"libruntime_dylib.so": elf(needed=["libc.so.6"]),
                              "libtilo_typst_engine.so": elf(needed=["libc.so.6"])})
@@ -455,6 +479,23 @@ class Check(unittest.TestCase):
                                                       + TEXT)), [])
         self.assertIn("apps_without_media lost an entry; targets only tighten",
                       ratchet.check(before, budget('apps_without_media = ["notes"]\n' + TEXT)))
+
+    def test_an_engine_budget_grows_only_with_a_raise_file(self):
+        after = budget(TEXT.replace('"libtilo_typst_engine.so" = 65536', '"libtilo_typst_engine.so" = 131072'))
+        self.assertEqual(ratchet.check(budget(), after),
+                         ["[engines.x86_64] libtilo_typst_engine.so: raised from 65536 to 131072 beyond the 0 "
+                          "its new raise files add"])
+        typst = f'{REASON}[engines.x86_64]\n"libtilo_typst_engine.so" = 65536\n'
+        self.assertEqual(ratchet.check(budget(), budget(typst=typst)), [])
+        problems = ratchet.check(budget(), budget(typst=typst.replace("typst", "paint")))
+        self.assertTrue(any("names nothing with a budget" in problem for problem in problems), problems)
+
+    def test_engine_budgets_name_a_library_and_an_architecture(self):
+        for table in ('[engines.riscv64]\n"libtilo_typst_engine.so" = 65536\n',
+                      '[engines.aarch64]\n"typst" = 65536\n',
+                      '[engines.aarch64]\n"libtilo_typst_engine.so" = 0\n'):
+            problems = ratchet.check(None, budget(TEXT + table))
+            self.assertTrue(any("[engines." in problem for problem in problems), (table, problems))
 
     def test_every_architecture_has_every_metric(self):
         problems = ratchet.check(None, budget(HEADER + RUNTIME.split("[runtime.aarch64]")[0]))

@@ -27,7 +27,10 @@ Engines a few apps use live in libraries of their own beside the runtime
 (crates/runtime/engines/). `measure --engine FILE` reports each one's
 numbers, fails when one does not link the runtime, and fails when an app of
 `apps_without_media` loads one at exec: an engine is loaded only by its apps,
-and an app of that list that uses one is named in `[engine_users]`.
+and an app of that list that uses one is named in `[engine_users]`. Each
+engine's file has a budget of its own (`[engines.<arch>]`, by library name),
+with the same headroom, rounding and raise files: the build gate fails when
+one is over its budget or has none.
 
 Three gates, as for the per-app tapp budgets (tapp_size_ratchet.py):
 
@@ -222,23 +225,27 @@ class Budget:
         values = self.data.get("targets", {}).get("needed_absent", [])
         return [value for value in values if isinstance(value, str)] if isinstance(values, list) else []
 
-    def added(self, names: set[str] | None = None) -> dict[tuple[str, str], int]:
-        """Bytes or counts the raise files (or only `names`) add, by (architecture, metric)."""
+    def added(self, names: set[str] | None = None, kind: str = "runtime") -> dict[tuple[str, str], int]:
+        """Bytes or counts the raise files (or only `names`) add, by (architecture, metric).
+
+        For `kind` "engines" the metric is the engine library's name: its bytes."""
         sums: dict[tuple[str, str], int] = {}
         for name, raised in self.raises.items():
             if names is not None and name not in names:
                 continue
-            table = raised.get("runtime", {})
+            table = raised.get(kind, {})
             for arch, metrics in (table.items() if isinstance(table, dict) else ()):
                 for metric, value in tapp.ints(metrics).items():
                     sums[(arch, metric)] = sums.get((arch, metric), 0) + value
         return sums
 
-    def totals(self) -> dict[tuple[str, str], int]:
-        """Each (architecture, metric) budget, its raises included."""
-        totals = {(arch, metric): value for arch, table in self.data.get("runtime", {}).items()
+    def totals(self, kind: str = "runtime") -> dict[tuple[str, str], int]:
+        """Each (architecture, metric) budget, its raises included; for `kind` "engines", each
+        (architecture, library) byte budget."""
+        tables = self.data.get(kind, {})
+        totals = {(arch, metric): value for arch, table in (tables.items() if isinstance(tables, dict) else ())
                   for metric, value in tapp.ints(table).items()}
-        for key, value in self.added().items():
+        for key, value in self.added(kind=kind).items():
             if key in totals:
                 totals[key] += value
         return totals
@@ -394,23 +401,46 @@ def closure_lines(path: pathlib.Path, stats: ElfStats, budget: Budget,
     return (1 if errors else 0), [*errors, summary]
 
 
-def engine_lines(path: pathlib.Path, runtime: ElfStats, runtime_name: str) -> tuple[int, list[str]]:
-    """One engine library's numbers, reported only, and whether it links the runtime."""
+def engine_lines(path: pathlib.Path, runtime: ElfStats, runtime_name: str,
+                 budget: Budget) -> tuple[int, list[str]]:
+    """One engine library's numbers, its file against its budget, and whether it links the runtime."""
     try:
         stats = read_elf(path)
     except (ValueError, struct.error) as error:
         return 1, [f"error: engine {path}: {error}"]
     name = path.name
-    if stats.arch != runtime.arch:
-        return 1, [f"error: engine {name} is built for {stats.arch}, not {runtime.arch}"]
-    lines = [f"engine {name} {stats.arch}: {stats.bytes} bytes, {stats.relocations} dynamic relocations "
+    arch = stats.arch
+    if arch != runtime.arch:
+        return 1, [f"error: engine {name} is built for {arch}, not {runtime.arch}"]
+    lines = [f"engine {name} {arch}: {stats.bytes} bytes, {stats.relocations} dynamic relocations "
              f"({stats.symbol_relocations} with a symbol lookup) in {stats.relocation_bytes} bytes, "
              f"writing {stats.relocated_bytes // PAGE} pages ({stats.relocated_bytes} bytes) in its app's process",
-             f"engine {name} {stats.arch}: DT_NEEDED " + " ".join(stats.needed)]
+             f"engine {name} {arch}: DT_NEEDED " + " ".join(stats.needed)]
+    status = 0
+    proposed = budget_for("bytes", stats.bytes, budget.headroom)
+    limit = budget.totals("engines").get((arch, name))
+    if limit is None:
+        status = 1
+        lines.append(f'error: engine {name} {arch}: {stats.bytes} bytes and no budget; add '
+                     f'[engines.{arch}] "{name}" = {proposed} to {DIRECTORY}/budget.toml')
+    elif stats.bytes > limit:
+        status = 1
+        lines += [f"error: engine {name} {arch}: {stats.bytes} bytes is over its budget of {limit} "
+                  f"(+{stats.bytes - limit})",
+                  f"A deliberate growth adds one raise file for the change, {DIRECTORY}/raises/<change>.toml:",
+                  '    reason = "<why the engine grew, at least 20 characters>"',
+                  f"    run = {run_label()}",
+                  f"    [engines.{arch}]",
+                  f'    "{name}" = {proposed - limit}']
+    elif proposed < limit * (1 - SLACK):
+        lines.append(f'engine {name} {arch}: {stats.bytes} bytes, under its budget of {limit}; lower it: '
+                     f'[engines.{arch}] "{name}" = {proposed}, and drop it from its raise files')
+    else:
+        lines.append(f"engine {name} {arch}: {stats.bytes} bytes, within its budget of {limit}")
     if runtime_name not in stats.needed:
         return 1, [*lines, f"error: engine {name} does not link {runtime_name}, so it carries its own "
                            "copy of what the runtime shares"]
-    return 0, lines
+    return status, lines
 
 
 def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: list[pathlib.Path] = (),
@@ -424,9 +454,13 @@ def measure(path: pathlib.Path, budget: Budget, arch: str | None = None, apps: l
         return 1, [f"error: {path} is built for {stats.arch}, not {arch}"], stats
     status, lines = judge(stats, budget)
     for engine in engines:
-        checked, more = engine_lines(engine, stats, path.name)
+        checked, more = engine_lines(engine, stats, path.name, budget)
         status |= checked
         lines += more
+    if engines:
+        built = {engine.name for engine in engines}
+        lines += [f'engine {name} {arch}: has a budget but was not built; drop [engines.{arch}] "{name}"'
+                  for arch, name in sorted(budget.totals("engines")) if arch == stats.arch and name not in built]
     if directories is None:
         return status, lines, stats
     # What every app loads with the runtime, built or not.
@@ -575,6 +609,14 @@ def shape_problems(budget: Budget) -> list[str]:
         values = tapp.ints(table) if isinstance(table, dict) else {}
         if set(values) != set(METRICS) or len(values) != len(table) or any(v <= 0 for v in values.values()):
             problems.append(f"[runtime.{arch}] needs a positive budget for each of {', '.join(METRICS)}")
+    engines = budget.data.get("engines", {})
+    if not isinstance(engines, dict) or not set(engines) <= set(arches):
+        problems.append(f"[engines.<arch>] tables must be among {', '.join(arches)}")
+    for arch, table in (sorted(engines.items()) if isinstance(engines, dict) else ()):
+        values = tapp.ints(table) if isinstance(table, dict) else {}
+        if not isinstance(table, dict) or len(values) != len(table) or any(
+                not engine_library(name) or value <= 0 for name, value in values.items()):
+            problems.append(f"[engines.{arch}] maps each engine library (lib*.so) to a positive byte budget")
     users = budget.data.get("engine_users", {})
     for library, apps in (users.items() if isinstance(users, dict) else [("", None)]):
         if not (library.startswith("lib") and library.endswith(".so") and isinstance(apps, list) and apps
@@ -585,6 +627,10 @@ def shape_problems(budget: Budget) -> list[str]:
     return problems
 
 
+def engine_library(name: str) -> bool:
+    return name.startswith("lib") and name.endswith(".so")
+
+
 def raise_problems(name: str, raised: dict[str, Any], budget: Budget) -> list[str]:
     problems = []
     reason, run = raised.get("reason"), raised.get("run")
@@ -592,22 +638,23 @@ def raise_problems(name: str, raised: dict[str, Any], budget: Budget) -> list[st
             and isinstance(run, int) and not isinstance(run, bool) and run > 0):
         problems.append(f"raise {name} needs a reason of at least {MIN_REASON} characters "
                         "and the run number that measured the growth")
-    unknown = set(raised) - {"reason", "run", "runtime"}
+    unknown = set(raised) - {"reason", "run", "runtime", "engines"}
     if unknown:
         problems.append(f"raise {name} has unknown keys {sorted(unknown)}")
-    base = budget.data.get("runtime", {})
-    table = raised.get("runtime", {})
     adds = 0
-    for arch, metrics in (table.items() if isinstance(table, dict) else ()):
-        for metric, value in (metrics.items() if isinstance(metrics, dict) else ()):
-            adds += 1
-            budgeted = base.get(arch, {}).get(metric) if isinstance(base.get(arch), dict) else None
-            if not isinstance(budgeted, int):
-                problems.append(f"raise {name}: [runtime.{arch}] {metric} names nothing with a budget")
-            elif not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                problems.append(f"raise {name}: [runtime.{arch}] {metric} must add a positive amount")
-            elif value > budgeted:
-                problems.append(f"raise {name}: [runtime.{arch}] {metric} more than doubles its budget")
+    for kind in ("runtime", "engines"):
+        base = budget.data.get(kind, {})
+        table = raised.get(kind, {})
+        for arch, metrics in (table.items() if isinstance(table, dict) else ()):
+            for metric, value in (metrics.items() if isinstance(metrics, dict) else ()):
+                adds += 1
+                budgeted = base.get(arch, {}).get(metric) if isinstance(base.get(arch), dict) else None
+                if not isinstance(budgeted, int):
+                    problems.append(f"raise {name}: [{kind}.{arch}] {metric} names nothing with a budget")
+                elif not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                    problems.append(f"raise {name}: [{kind}.{arch}] {metric} must add a positive amount")
+                elif value > budgeted:
+                    problems.append(f"raise {name}: [{kind}.{arch}] {metric} more than doubles its budget")
     if adds == 0:
         problems.append(f"raise {name} adds nothing")
     return problems
@@ -624,11 +671,12 @@ def increases(before: Budget, after: Budget, new_raises: set[str]) -> list[str]:
         problems.append("[targets] needed_absent lost an entry; targets only tighten")
     if set(before.apps_without_media) - set(after.apps_without_media):
         problems.append("apps_without_media lost an entry; targets only tighten")
-    old, allowance = before.totals(), after.added(new_raises)
-    for key, total in sorted(after.totals().items()):
-        if key in old and total - old[key] > allowance.get(key, 0):
-            problems.append(f"[runtime.{key[0]}] {key[1]}: raised from {old[key]} to {total} beyond the "
-                            f"{allowance.get(key, 0)} its new raise files add")
+    for kind in ("runtime", "engines"):
+        old, allowance = before.totals(kind), after.added(new_raises, kind)
+        for key, total in sorted(after.totals(kind).items()):
+            if key in old and total - old[key] > allowance.get(key, 0):
+                problems.append(f"[{kind}.{key[0]}] {key[1]}: raised from {old[key]} to {total} beyond the "
+                                f"{allowance.get(key, 0)} its new raise files add")
     return problems
 
 
@@ -659,7 +707,7 @@ def main(argv: list[str] | None = None) -> int:
     measured.add_argument("--library-dir", type=pathlib.Path, action="append", default=[],
                           help="a directory the loader searches (the Rust libstd's); repeatable")
     measured.add_argument("--engine", type=pathlib.Path, action="append", default=[],
-                          help="a runtime engine library built with it: reported, and kept out "
+                          help="a runtime engine library built with it: held to its budget, and kept out "
                                "of what apps_without_media load; repeatable")
     published_parser = commands.add_parser("published", help="the newest published runtimes against their budgets")
     published_parser.add_argument("entries", type=pathlib.Path)
