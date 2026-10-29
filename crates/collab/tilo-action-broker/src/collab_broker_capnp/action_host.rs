@@ -421,6 +421,17 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
     }
 }
 
+/// The address `request` is delivered at: on `resource`, the resource it names as its app
+/// publishes it now, when it was written under an id the app had before.
+fn current_address(resource: Option<&str>, request: &InvokeRequest) -> tilo_actions::ActionAddress {
+    resource.map_or_else(
+        || request.target.address.clone(),
+        |resource| {
+            tilo_actions::ActionAddress::new(resource, request.target.address.action.clone())
+        },
+    )
+}
+
 /// What launching an app for `request` needs of its person on the app:
 /// leave to read it when the request shows something that exists in it (a
 /// record, an item of one, such as a note shared with a Viewer), whose
@@ -1844,20 +1855,9 @@ impl CapnpBrokerState {
         // A target written under an id its app had before (a reference kept in a note) opens the
         // app that took its place, on the resource as that app publishes it; the request stays
         // as written.
-        let earlier = self
-            .services
-            .launcher
-            .as_ref()
-            .map(|launcher| launcher.earlier_ids())
-            .unwrap_or_default();
+        let earlier = self.earlier_ids();
         let resource = earlier.current_resource(&request.target.address.resource);
-        let current_address = resource.as_ref().map(|resource| {
-            tilo_actions::ActionAddress::new(
-                resource.clone(),
-                request.target.address.action.clone(),
-            )
-        });
-        let address = current_address.as_ref().unwrap_or(&request.target.address);
+        let address = &current_address(resource.as_deref(), request);
         let (room, app_id, record, offered) =
             if let Some((room, app_id)) = application_provider(&request.target.provider) {
                 let current = earlier.current(app_id).to_owned();
@@ -1957,6 +1957,15 @@ impl CapnpBrokerState {
         })
     }
 
+    /// The ids installed apps had before, as the launcher's catalogue believes them.
+    fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
+        self.services
+            .launcher
+            .as_ref()
+            .map(|launcher| launcher.earlier_ids())
+            .unwrap_or_default()
+    }
+
     /// The action the installed app `app_id`'s signed manifest offers at
     /// `address` while it is closed: what a launch is admitted against until
     /// the app publishes its own.
@@ -1992,13 +2001,7 @@ impl CapnpBrokerState {
         };
         let room = destination.workspace.room().to_string();
         let app_id = &destination.app_id;
-        let current_address = destination.resource.as_ref().map(|resource| {
-            tilo_actions::ActionAddress::new(
-                resource.clone(),
-                request.target.address.action.clone(),
-            )
-        });
-        let address = current_address.as_ref().unwrap_or(&request.target.address);
+        let address = &current_address(destination.resource.as_deref(), request);
         let timeout = self.launchable.delivery_timeout();
         let deadline = tokio::time::sleep(timeout);
         let expired = || ActionHostError::Unavailable {

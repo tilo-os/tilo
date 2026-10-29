@@ -796,7 +796,7 @@ impl Host {
     /// records in the same change that it ran. Returns how many ran. A migration that is
     /// refused or fails leaves its resource as it was, to be tried again the next time.
     pub fn migrate(&self) -> usize {
-        let mut ran = 0;
+        let mut ran: usize = 0;
         for package in self.packages() {
             for migration in package.meta.migrations() {
                 let Some(ty) = migration
@@ -832,7 +832,7 @@ impl Host {
                         .invoke_action(&self.inner.viewer, (migration.id.as_str(), vec![subject]));
                     self.inner.store.set_migrating(None);
                     match outcome {
-                        Ok(InvokeOutcome::Done(_)) => ran += 1,
+                        Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
                         other => tracing::warn!(
                             app = package.meta.app,
                             migration = migration.name,

@@ -401,7 +401,7 @@ mod tests {
         let own = action(EffectClass::Undoable);
         let me = Principal::new(PERSON);
         assert_eq!(
-            renamed(Vec::new()).decide(&me, &[tasks.clone()], &own),
+            renamed(Vec::new()).decide(&me, std::slice::from_ref(&tasks), &own),
             Decision::Allow
         );
 
@@ -415,7 +415,7 @@ mod tests {
             Subject::person(PERSON),
         );
         assert_eq!(
-            renamed(vec![app_denied.clone()]).decide(&me, &[tasks.clone()], &own),
+            renamed(vec![app_denied.clone()]).decide(&me, std::slice::from_ref(&tasks), &own),
             Decision::Deny
         );
         // The person's answer for their agent on Todo holds on Tasks.
@@ -426,11 +426,11 @@ mod tests {
             Answer::Deny,
             Subject::person(PERSON),
         );
-        let authority = renamed(vec![answer.clone()]);
+        let authority = renamed(vec![answer]);
         authority.admit_agent("agent:helper", Some(PERSON));
         let agent = Principal::new("agent:helper");
         assert_eq!(
-            authority.decide(&agent, &[tasks.clone()], &own),
+            authority.decide(&agent, std::slice::from_ref(&tasks), &own),
             Decision::Deny
         );
         // A grant on Todo's node, `room/app:todo/**`, decides for a member on Tasks.
@@ -457,7 +457,7 @@ mod tests {
         let bob = TiloAuthority::new(Principal::new("bob"), move || Some(standing.clone()));
         bob.load_trusted_app(&tasks, TASKS);
         assert_eq!(
-            bob.decide(&Principal::new("bob"), &[tasks.clone()], &own),
+            bob.decide(&Principal::new("bob"), std::slice::from_ref(&tasks), &own),
             Decision::Deny
         );
         // Another app of the room is not Todo's.
