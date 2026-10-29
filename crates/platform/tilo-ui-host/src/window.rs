@@ -141,6 +141,11 @@ pub struct AppWindow {
     /// The control to take the keyboard once the window's tree is laid out, by key in the
     /// composed tree ([`Widget::take_focus_request`]).
     focus_request: Option<String>,
+    /// One `rem` in logical pixels under the theme the window was last laid out in.
+    rem: f32,
+    /// The space last told the app each lane's view has, in rem.
+    root_space: Option<(f32, f32)>,
+    detail_space: Option<(f32, f32)>,
 }
 
 impl AppWindow {
@@ -205,6 +210,9 @@ impl AppWindow {
             typed: std::collections::VecDeque::new(),
             pointed_after: None,
             focus_request: None,
+            rem: 16.0,
+            root_space: None,
+            detail_space: None,
         }
     }
 
@@ -1396,8 +1404,86 @@ pub fn show_bound<S: std::hash::BuildHasher>(
 /// The window stands for its body in the layout and in every walk of the widgets (it adds no
 /// node of its own, so a walk that pairs widgets with layout nodes meets the body's children
 /// under it), taking the person's input and its own changes on the way.
+/// How much a view's size has to change, in rem, before the app is told: less moves no class
+/// boundary and no size a view would show differently.
+const SPACE_STEP_REM: f32 = 0.125;
+
+/// The widget keyed `key` at or under `widget`.
+fn keyed<'a>(widget: &'a dyn Widget, key: &str) -> Option<&'a dyn Widget> {
+    if widget.test_id() == Some(key) {
+        return Some(widget);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| keyed(child, key))
+}
+
+impl AppWindow {
+    /// Tell the app the space each view has where layout placed it, when it changed: a view
+    /// reads `space` from its own container (layout.md, "Responding to space"). The app
+    /// decides the classes, with their hysteresis, and runs a view again only when what it read
+    /// of it changed.
+    fn follow_spaces(&mut self) {
+        let keys = [
+            self.root.as_ref().map(|view| view.tree.key.clone()),
+            self.detail
+                .as_ref()
+                .map(|view| composed_key(Lane::Detail, &view.tree.key)),
+        ];
+        for (lane, key) in [Lane::Root, Lane::Detail].into_iter().zip(keys) {
+            let Some(rect) = key
+                .and_then(|key| keyed(self.body.as_ref(), &key).map(Widget::get_rect))
+                .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            else {
+                continue;
+            };
+            let space = (
+                rect.width() as f32 / self.rem,
+                rect.height() as f32 / self.rem,
+            );
+            let told = match lane {
+                Lane::Root => &mut self.root_space,
+                Lane::Detail => &mut self.detail_space,
+            };
+            let moved = told.is_none_or(|(width, height)| {
+                (width - space.0).abs() >= SPACE_STEP_REM
+                    || (height - space.1).abs() >= SPACE_STEP_REM
+            });
+            if moved {
+                *told = Some(space);
+                self.out.push(ToApp::Space {
+                    lane,
+                    width: space.0,
+                    height: space.1,
+                });
+            }
+        }
+    }
+}
+
 impl ui::widget::Decorator for AppWindow {
     type Inner = dyn Widget;
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        theme: &ui::Theme,
+        node_map: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
+    ) -> ui::taffy::NodeId {
+        self.rem = ui::widget::arrange::rem_of(theme);
+        self.body.build_layout(taffy, theme, node_map)
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        self.body.apply_layout(taffy, node, origin);
+        self.follow_spaces();
+    }
 
     fn inner(&self) -> &(dyn Widget + 'static) {
         self.body.as_ref()
@@ -1538,6 +1624,61 @@ mod tests {
                 acked: 0,
             },
         ]
+    }
+
+    /// The spaces the window told the app, as (lane, width, height) in rem.
+    fn spaces(app: &mut tilo_render_protocol::patch::local::End) -> Vec<(Lane, f32, f32)> {
+        sent(app)
+            .into_iter()
+            .filter_map(|message| match message {
+                ToApp::Space {
+                    lane,
+                    width,
+                    height,
+                } => Some((lane, width, height)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_view_is_told_the_space_layout_gave_it_when_it_changes_by_more_than_a_step() {
+        let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+        let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+        send(&mut app, &titled_page());
+        window.receive();
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (390, 844));
+        let flush = |harness: &mut ui::headless::FrameHarness| {
+            harness
+                .root_widget_mut()
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<AppWindow>())
+                .expect("the window")
+                .flush();
+        };
+        flush(&mut harness);
+        let rem = f64::from(ui::widget::arrange::rem_of(harness.theme()));
+        let told = spaces(&mut app);
+        let [(Lane::Root, width, height)] = told[..] else {
+            panic!("the root view is told its space once: {told:?}");
+        };
+        assert!(
+            (f64::from(width) * rem - 390.0).abs() < 1.0 && f64::from(height) * rem <= 844.0,
+            "the window's width, in rem: {width} × {height} at {rem} px"
+        );
+        // A pixel more moves nothing a view could read: nothing is said.
+        harness.resize((391, 844)).expect("lays out");
+        flush(&mut harness);
+        assert_eq!(spaces(&mut app), []);
+        // A desktop window is a new space.
+        harness.resize((1280, 800)).expect("lays out");
+        flush(&mut harness);
+        let told = spaces(&mut app);
+        assert!(
+            matches!(told[..], [(Lane::Root, width, _)] if (f64::from(width) * rem - 1280.0).abs() < 1.0),
+            "{told:?}"
+        );
     }
 
     #[test]

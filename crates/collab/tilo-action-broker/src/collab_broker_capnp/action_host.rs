@@ -133,10 +133,15 @@ impl BrokerActor {
             CallerPrincipal::Agent(id) => {
                 let agent = Self::agent(format!("agent:{id}"));
                 // A person's own device handed this connection to the agent
-                // (`Caller::delegated_to`); a delegated agent device acts for
-                // the person its certificate chains to.
+                // (`Caller::delegated_to`); an agent member the host admitted
+                // acts for the person who admitted it, with no more than the
+                // room grants it (`Caller::acting_for`); a delegated agent
+                // device acts for the person its certificate chains to.
                 match (caller.acting_for_person(), caller.user_public_key()) {
-                    (Some(person), _) => agent.for_person(person).session_delegated(),
+                    (Some(person), _) if caller.is_session_delegated() => {
+                        agent.for_person(person).session_delegated()
+                    }
+                    (Some(person), _) => agent.for_person(person),
                     (None, Some(root)) => agent.for_person(super::principal_id_for_root(*root)),
                     (None, None) => agent,
                 }
