@@ -69,8 +69,7 @@ impl Canvas {
         }
         let pixels = self.pixels();
         let width = self.size().0 as usize;
-        let mut context = buffer.render();
-        let drawn = context.draw(|memory: &mut [u8]| {
+        let drawn = buffer.render().draw(|memory: &mut [u8]| {
             for region in &regions {
                 for row in region.y..region.y.saturating_add(region.height) {
                     let start = (row as usize)

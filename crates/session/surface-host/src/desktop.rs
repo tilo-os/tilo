@@ -30,7 +30,7 @@ struct Desk {
 impl Desk {
     /// Cover `outputs`' bounding box, the surface laid out against it.
     fn cover(&mut self, outputs: &[Rectangle<i32, Logical>]) {
-        let Some(bounds) = outputs.iter().copied().reduce(|a, b| a.merge(b)) else {
+        let Some(bounds) = outputs.iter().copied().reduce(Rectangle::merge) else {
             return;
         };
         let (Ok(width), Ok(height)) = (u32::try_from(bounds.size.w), u32::try_from(bounds.size.h))
@@ -63,7 +63,10 @@ impl Desk {
                 )]
                 let round = |value: f64| value.round() as i32;
                 Rectangle::new(
-                    Point::from((ox + round(rect.x0), oy + round(rect.y0))),
+                    Point::from((
+                        ox.saturating_add(round(rect.x0)),
+                        oy.saturating_add(round(rect.y0)),
+                    )),
                     (round(rect.width()).max(1), round(rect.height()).max(1)).into(),
                 )
             })
@@ -128,6 +131,12 @@ impl DesktopHost {
     /// (strips and workspaces, the tree it keeps).
     pub fn with_policy<R>(&self, read: impl FnOnce(&mut DesktopPolicy) -> R) -> R {
         read(&mut self.desk.borrow_mut().policy)
+    }
+
+    /// The desk's widget tree as hosted: what it publishes, its
+    /// accessibility tree, the actions it accepts.
+    pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetHost) -> R) -> R {
+        read(&mut self.desk.borrow_mut().host)
     }
 }
 
@@ -212,7 +221,7 @@ impl WindowPolicy for StripPolicy {
         self.desk
             .borrow()
             .shown(window.id)
-            .map_or(Point::from((OFFSTAGE, 0)), |rect| rect.loc)
+            .map_or_else(|| Point::from((OFFSTAGE, 0)), |rect| rect.loc)
     }
 
     fn arrange(
@@ -266,7 +275,12 @@ impl WindowPolicy for StripPolicy {
     }
 
     fn focus_on_click(&mut self, window: &WindowInfo) -> bool {
-        self.desk.borrow_mut().policy.focus(window.id);
+        let mut desk = self.desk.borrow_mut();
+        // Focus moves on the surface's next pass: run it, so the window's
+        // place and focus are known when the compositor asks.
+        if desk.policy.focus(window.id) {
+            desk.host.relayout();
+        }
         true
     }
 

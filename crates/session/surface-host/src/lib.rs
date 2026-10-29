@@ -26,8 +26,11 @@ use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{
-    DeviceId, ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+    DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, RawKeyEvent,
+    TouchPhase, WindowEvent,
 };
+use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey, SmolStr};
+use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
 use canvas::Canvas;
 
@@ -146,7 +149,9 @@ impl AppHost {
             return;
         }
         let size = placement.physical_size();
-        if size != self.placement.physical_size() || placement.scale != self.placement.scale {
+        if size != self.placement.physical_size()
+            || placement.scale.to_bits() != self.placement.scale.to_bits()
+        {
             self.surface.size = PhysicalSize::new(size.0, size.1);
             self.surface.scale = placement.scale;
             self.canvas = Canvas::new(size, RASTER_THREADS);

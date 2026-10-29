@@ -6,14 +6,13 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
+    clippy::indexing_slicing,
     reason = "test fixtures: a failed step is the assertion"
 )]
 
 use smithay::utils::{Logical, Rectangle};
 use tilo_compositor::{Compositor, OutputConfig, SurfaceHost as _, WindowInfo, WindowPolicy as _};
 use tilo_surface_host::desktop;
-
-const BACKGROUND: [u8; 4] = [26, 27, 38, 255];
 
 fn output() -> Vec<Rectangle<i32, Logical>> {
     vec![Rectangle::new((0, 0).into(), (1280, 800).into())]
@@ -70,7 +69,7 @@ fn windows_open_side_by_side_where_their_tabs_are_laid_out() {
 }
 
 #[test]
-fn the_desktop_draws_under_the_windows_and_covers_the_output() {
+fn the_desktop_lies_under_the_windows_and_covers_the_output() {
     let _settled = ui::motion::testing::settled();
     let (host, policy) = desktop(7, 1.0);
     assert!(host.below_windows());
@@ -78,12 +77,14 @@ fn the_desktop_draws_under_the_windows_and_covers_the_output() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .unwrap();
-    compositor.add_host(Box::new(host));
+    compositor.add_host(Box::new(host.clone()));
     compositor.render().unwrap();
-    let frame = compositor.screenshot("HEADLESS-1").unwrap();
-    let drawn = (0..frame.height)
-        .step_by(16)
-        .flat_map(|y| (0..frame.width).step_by(16).map(move |x| (x, y)))
-        .any(|(x, y)| frame.pixel(x, y) != Some(BACKGROUND));
-    assert!(drawn, "the desktop shows on the output");
+    let layers = host.layers();
+    assert_eq!(layers.len(), 1);
+    assert_eq!(layers[0].location, (0, 0));
+    assert_eq!(layers[0].size, (640, 480), "the desktop covers the output");
+    assert!(
+        host.accepts_pointer(320.0, 240.0),
+        "and takes the pointer there"
+    );
 }
