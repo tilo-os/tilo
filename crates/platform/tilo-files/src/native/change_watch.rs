@@ -354,6 +354,7 @@ mod inotify_watch {
             routes.next = routes.next.wrapping_add(1);
             let id = routes.next;
             routes.senders.insert(id, sender);
+            drop(routes);
             id
         }
 
@@ -392,6 +393,7 @@ mod inotify_watch {
                 routes.by_wd.remove(wd);
                 let _ = self.watches.clone().remove(wd.clone());
             }
+            drop(routes);
         }
 
         /// `subscriber` is gone: every watch it held is let go.
@@ -409,6 +411,7 @@ mod inotify_watch {
                 routes.by_wd.remove(&wd);
                 let _ = self.watches.clone().remove(wd);
             }
+            drop(routes);
         }
 
         /// Hand one read's events to the watches they are for, each in order.
@@ -497,6 +500,7 @@ mod inotify_watch {
                 }
             })?;
         *slot = Some(Arc::clone(&hub));
+        drop(slot);
         Ok(hub)
     }
 
@@ -730,7 +734,7 @@ mod inotify_watch {
                             }
                         };
                         for event in &events {
-                            if let Step::Ended = reader.take(event, &mut batch) {
+                            if matches!(reader.take(event, &mut batch), Step::Ended) {
                                 batch.push(Event {
                                     path: reader.root.clone(),
                                     kind: ChangeKind::Removed,
