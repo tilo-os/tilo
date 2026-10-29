@@ -57,7 +57,7 @@ fn last_value(edits: &crate::Intents<Fired>) -> Option<RichText> {
             Some(Value::Rich(rich)) => Some(rich),
             _ => None,
         })
-        .last()
+        .next_back()
 }
 
 #[test]

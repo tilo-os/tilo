@@ -423,3 +423,43 @@ fn the_drawer_is_a_list_that_names_its_count_and_selected_row() {
     assert_eq!(options.len(), 2);
     assert!(options[0].state.selected);
 }
+
+/// Paint the field and its drawer, which floats in the overlay pass.
+fn paint_with_drawer(input: &mut TextInput, theme: &Theme) {
+    draw_with_theme(input, theme);
+    let presence = crate::presence::PresenceCtx::empty();
+    let mut text = TextRenderer::new();
+    let mut scene = Scene::new();
+    Widget::draw_overlay(
+        input,
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        theme,
+        &presence,
+    );
+}
+
+#[test]
+fn the_drawer_height_follows_its_rows_on_the_spring_and_lands_under_reduced_motion() {
+    for reduced in [false, true] {
+        let mut theme = Theme::light();
+        theme.reduce_motion = reduced;
+        let mut input = focused_with_people(Vec::new());
+        input.set_completion_sources(vec![channels()]);
+        type_text(&mut input, "#");
+        // The first height is taken as it is: nothing grows on first paint.
+        paint_with_drawer(&mut input, &theme);
+        assert!(!input.completion.is_animating(), "opening does not grow");
+        type_text(&mut input, "d");
+        // As a tap on a phone's keyboard asks; a hardware key's result lands at once, as every
+        // keyboard result does (`MotionSource::lands_at_once`).
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        paint_with_drawer(&mut input, &theme);
+        assert_eq!(
+            input.completion.is_animating(),
+            !reduced,
+            "three rows narrowed to two: the height moves, unless motion is reduced (reduced: {reduced})"
+        );
+    }
+}

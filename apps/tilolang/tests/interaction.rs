@@ -280,22 +280,35 @@ fn drawer_rows(app: &mut TestApp<TlApp>) -> Vec<String> {
     out
 }
 
+/// Whether `access` or anything under it says `text` in its name or value.
+fn says(access: &ui::a11y::AccessNode, text: &str) -> bool {
+    access
+        .name
+        .as_deref()
+        .is_some_and(|name| name.contains(text))
+        || access
+            .value
+            .as_deref()
+            .is_some_and(|value| value.contains(text))
+        || access.children.iter().any(|child| says(child, text))
+}
+
+/// Everything `access` and what is under it say, in order.
+fn texts(access: &ui::a11y::AccessNode, out: &mut String) {
+    for part in [&access.name, &access.value].into_iter().flatten() {
+        out.push_str(part);
+        out.push(' ');
+    }
+    for child in &access.children {
+        texts(child, out);
+    }
+}
+
 /// Whether some node in the window says `text` in its name or value.
 fn reads(app: &mut TestApp<TlApp>, text: &str) -> bool {
     let snapshot = app.harness().inspection();
     let mut all = Vec::new();
     walk(&snapshot.root, &mut all);
-    fn says(access: &ui::a11y::AccessNode, text: &str) -> bool {
-        access
-            .name
-            .as_deref()
-            .is_some_and(|name| name.contains(text))
-            || access
-                .value
-                .as_deref()
-                .is_some_and(|value| value.contains(text))
-            || access.children.iter().any(|child| says(child, text))
-    }
     all.iter().any(|node| {
         node.semantics
             .as_ref()
@@ -361,15 +374,6 @@ fn the_composers_drawer_offers_the_rooms_people_and_writes_a_mention_that_is_sen
             .and_then(|node| node.semantics.clone())
             .expect("the sent message shows its rich text")
     };
-    fn texts(access: &ui::a11y::AccessNode, out: &mut String) {
-        for part in [&access.name, &access.value].into_iter().flatten() {
-            out.push_str(part);
-            out.push(' ');
-        }
-        for child in &access.children {
-            texts(child, out);
-        }
-    }
     let mut said = String::new();
     texts(&sent, &mut said);
     assert!(

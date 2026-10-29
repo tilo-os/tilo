@@ -383,17 +383,17 @@ impl CompletionList {
         };
         self.dismissed = None;
         let fallback;
-        let source = match self.sources.iter().find(|s| s.trigger() == token.trigger) {
-            Some(source) => source,
-            None => {
+        let source =
+            if let Some(source) = self.sources.iter().find(|s| s.trigger() == token.trigger) {
+                source
+            } else {
                 fallback = PreparedSource::new(if token.trigger == ':' {
                     emoji_source(&token.query)
                 } else {
                     roster_source(roster)
                 });
                 &fallback
-            }
-        };
+            };
         let rows = completion::rows(source, &token.query);
         let matched = rows.iter().any(|entry| matches!(entry, Entry::Item { .. }));
         // A space after a token nothing matches was prose all along.

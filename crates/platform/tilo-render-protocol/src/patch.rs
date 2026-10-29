@@ -679,7 +679,7 @@ mod tests {
             }],
             embeds: Vec::new(),
         };
-        for value in [empty.clone(), plain] {
+        for value in [empty, plain] {
             let batch = vec![ToUi::Patch {
                 lane: Lane::Root,
                 patches: vec![Patch::SetProp {
