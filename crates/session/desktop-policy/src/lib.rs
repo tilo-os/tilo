@@ -12,14 +12,19 @@
 //! reads [`DesktopPolicy::layout`]: the windows to show and where, and those
 //! to hide (background tabs, other strips and workspaces).
 //!
+//! Across several displays each display holds its own windows
+//! ([`DesktopPolicy::set_displays`]).
+//!
 //! Nothing here knows Wayland: windows are plain ids, places are rects in
 //! the surface's logical coordinates.
+
+pub mod displays;
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspace};
+use tilo_desktop_model::{DesktopTree, Display, IdMinter, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Command;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
 use ui::kurbo::Rect;
@@ -91,6 +96,8 @@ pub struct DesktopPolicy {
     /// Windows the desktop has given a tab, so a tab gone without
     /// [`Self::unmap`] is one the person closed.
     placed: BTreeSet<u64>,
+    /// The displays, primary first, a mirror set as one.
+    displays: Vec<Display>,
 }
 
 impl DesktopPolicy {
@@ -117,6 +124,7 @@ impl DesktopPolicy {
             handle,
             arriving,
             placed: BTreeSet::new(),
+            displays: Vec::new(),
         };
         (policy, surface)
     }
@@ -131,6 +139,39 @@ impl DesktopPolicy {
     /// every resize.
     pub fn set_viewport_width(&self, width: f64) {
         self.handle.set_viewport_width(width);
+    }
+
+    /// The outputs the desktop spreads over, primary first, in the
+    /// surface's coordinates: a mirror set is one display
+    /// ([`displays::distinct`]), and with several each display holds its
+    /// own windows, laid out on the surface's next pass. Whether anything
+    /// changed.
+    pub fn set_displays(&mut self, outputs: &[displays::Output]) -> bool {
+        let displays = displays::distinct(outputs);
+        let changed = self.displays != displays;
+        let moved = self.handle.set_displays(&displays);
+        self.displays = displays;
+        changed || moved
+    }
+
+    /// The displays in reading order, left to right: empty on one.
+    #[must_use]
+    pub fn displays(&self) -> Vec<u32> {
+        self.handle.displays()
+    }
+
+    /// The display the window shows on, across several displays.
+    #[must_use]
+    pub fn display_of(&self, window: u64) -> Option<u32> {
+        let group = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .find(|group| group.tabs.iter().any(|tab| foreign(tab) == Some(window)))
+                .map(|group| group.id)
+        })?;
+        self.handle.display_of(group)
     }
 
     /// Give `window` a tab beside the focused window of the shown strip, on

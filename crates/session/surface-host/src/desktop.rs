@@ -17,6 +17,7 @@ use tilo_compositor::gestures::{
 use tilo_compositor::{
     Arrangement, GestureEvent, HostLayer, SurfaceHost, WindowInfo, WindowPolicy,
 };
+use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 
@@ -70,6 +71,27 @@ impl Desk {
             self.policy.set_viewport_width(f64::from(placement.size.0));
             self.host.set_placement(placement);
         }
+        // Each display holds its own windows. A monitor is known by where
+        // it sits, as the policy is told it.
+        let displays: Vec<Output> = outputs
+            .iter()
+            .map(|output| {
+                let x = f64::from(output.loc.x.saturating_sub(bounds.loc.x));
+                let y = f64::from(output.loc.y.saturating_sub(bounds.loc.y));
+                Output {
+                    monitor: format!("output:{},{}", output.loc.x, output.loc.y),
+                    rect: ui::kurbo::Rect::new(
+                        x,
+                        y,
+                        x + f64::from(output.size.w),
+                        y + f64::from(output.size.h),
+                    ),
+                }
+            })
+            .collect();
+        if self.policy.set_displays(&displays) {
+            self.host.relayout();
+        }
     }
 
     /// Where `window`'s content is in the logical layout, as last laid out.
@@ -81,11 +103,6 @@ impl Desk {
             .into_iter()
             .find(|(id, _)| *id == window)
             .map(|(_, rect)| {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "a window's place on a screen"
-                )]
-                let round = |value: f64| value.round() as i32;
                 Rectangle::new(
                     Point::from((
                         ox.saturating_add(round(rect.x0)),
@@ -95,6 +112,15 @@ impl Desk {
                 )
             })
     }
+}
+
+/// `value` rounded to a whole logical pixel.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a window's place on a screen"
+)]
+fn round(value: f64) -> i32 {
+    value.round() as i32
 }
 
 /// The desktop drawn under every window; a clone is the same desktop.

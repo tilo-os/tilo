@@ -342,6 +342,17 @@ impl DeskLayer {
                     return false;
                 }
             }
+            DesktopAction::StepFocus { steps } => {
+                self.handle
+                    .step_focus(i32::try_from(steps).unwrap_or_default());
+            }
+            DesktopAction::FocusDisplay { display } => {
+                self.handle.focus_display(display);
+            }
+            DesktopAction::MoveToDisplay { steps } => {
+                self.handle
+                    .move_focused_to_display(i32::try_from(steps).unwrap_or_default());
+            }
             _ => return false,
         }
         true
@@ -366,6 +377,7 @@ impl ui::resources::PublishesResources for DeskLayer {
             .then_some((query.as_str(), rows.as_slice()));
         vec![desk_resource(&tabs, search)]
         let mut resources = vec![desk_resource(&tabs)];
+        let mut resources = vec![desk_resource(&tabs, &self.handle.displays())];
         if self.handle.read(desk_is_empty) {
             resources.push(launchpad_resource());
         }
@@ -1374,7 +1386,10 @@ impl DesktopChrome {
             | DesktopAction::SearchFor { .. }
             | DesktopAction::ChooseSearchRow { .. } => return false,
             | DesktopAction::OpenSearch
-            | DesktopAction::Launchpad { .. } => return false,
+            | DesktopAction::Launchpad { .. }
+            | DesktopAction::StepFocus { .. }
+            | DesktopAction::FocusDisplay { .. }
+            | DesktopAction::MoveToDisplay { .. } => return false,
         };
         self.apply_intent(intent);
         true
