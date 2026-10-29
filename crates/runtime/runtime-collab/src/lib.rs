@@ -2235,22 +2235,6 @@ impl ChannelHandle {
         Ok(reply.get()?.get_frame()?.to_vec())
     }
 
-    /// Snapshot the authenticated session action directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns malformed catalogue data.
-    pub async fn action_catalogue(&self) -> Result<String, NotAvailable> {
-        let reply = self.inner.action_catalogue_request().send().promise.await?;
-        Ok(reply
-            .get()?
-            .get_catalogue_json()?
-            .to_str()
-            .map_err(|error| capnp::Error::failed(format!("invalid action catalogue: {error}")))?
-            .to_owned())
-    }
-
     /// Subscribe to complete, level-triggered action-directory snapshots.
     ///
     /// # Errors
@@ -2413,21 +2397,6 @@ impl ChannelHandle {
             .to_str()
             .map_err(|error| capnp::Error::failed(format!("invalid cancellation update: {error}")))?
             .to_owned())
-    }
-
-    /// Ask the broker to launch an application from the published catalogue.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns a malformed launch update.
-    pub async fn launch_published_application(
-        &self,
-        app_id: &str,
-        content_hash: Option<&str>,
-    ) -> Result<(u64, String), NotAvailable> {
-        self.launch_installed_application(app_id, content_hash, None)
-            .await
     }
 
     /// Launch an exact installed package through this authenticated channel,

@@ -33,23 +33,6 @@ pub trait Grants {
     fn allow_app(&mut self, subject: Subject, app: &str, kinds: KindSet) -> GrantId {
         self.allow(subject, &TreePath::root().app(app), kinds)
     }
-    /// Let `subject` take `action` on `resource` in the app `app`.
-    fn allow_action(
-        &mut self,
-        subject: Subject,
-        (app, resource, action): (&str, &str, &str),
-        kinds: KindSet,
-    ) -> GrantId {
-        self.allow(
-            subject,
-            &TreePath::root()
-                .app(app)
-                .any(Level::Kind)
-                .resource(resource)
-                .action(action),
-            kinds,
-        )
-    }
 }
 
 impl Grants for Workspace {
