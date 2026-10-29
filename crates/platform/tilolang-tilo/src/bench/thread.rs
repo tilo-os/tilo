@@ -5,6 +5,8 @@
 //! * `thread_open`: opening the item's window and rendering its last page of rows;
 //! * `thread_keystroke`: one character typed into the window's first text input (the composer);
 //! * `thread_post`: another replica appends a row (a message), which the transcript shows;
+//! * `thread_send`: a message typed into the composer is sent with the button beside it, and
+//!   the transcript shows it;
 //! * `thread_scroll`: the transcript shows the page of rows before the one it shows.
 
 use std::collections::HashSet;
@@ -15,11 +17,11 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Collection, Id};
 use tilolang::Compiled;
 use tilolang_runtime::value::{ResourceRef, Value};
-use tilolang_runtime::{Principal, ViewInstance};
+use tilolang_runtime::{Principal, UiNode, ViewInstance};
 
 use super::{
     Changes, Doc, List, Nested, PAGE, Record, Room, SCROLL_STEP, Shape, Sized, Work,
-    composer_input, execute, frame_list, item_id, ms, root_id, text_input, with_work,
+    composer_input, execute, frame_list, item_id, ms, root_id, text_input, typed, with_work,
 };
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::record::{DynRecord, DynValue};
@@ -47,9 +49,9 @@ pub(super) fn principals(packages: &[Compiled]) -> Principals {
         .collect()
 }
 
-/// A record of type `ty` with `label` in every text field, a principal of its own in every
+/// A record of type `ty` with `label` in every text and rich text field, a principal of its own in every
 /// field that holds one, and, `depth` collections down, one item in each collection (a
-/// message's text part), whose id is the record's `id` and `-part`.
+/// message's text part, when it has no rich text), whose id is the record's `id` and `-part`.
 pub(super) fn filled(
     (id, ty): (&str, &str),
     label: &str,
@@ -59,14 +61,20 @@ pub(super) fn filled(
     let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
     let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
     let author = tilolang_runtime::value::to_json(&Value::Principal(Principal::new("bench")))?;
+    // What a record says in rich text it says there alone: a message with a rich text body
+    // has no parts.
+    let rich = schema.fields.iter().any(|f| f.kind == MergeKind::RichText);
     for field in &schema.fields {
         let principal = principals.contains(&(ty.to_owned(), field.id.clone()));
         match (field.kind, record.get_mut(&field.id)) {
             (MergeKind::Text, Some(DynValue::Text(text))) => label.clone_into(text),
+            (MergeKind::RichText, Some(DynValue::RichText(rich))) => {
+                **rich = tilo_document::RichText::from_markdown(label);
+            }
             (MergeKind::Register, Some(DynValue::Register(slot))) if principal => {
                 slot.clone_from(&author);
             }
-            (MergeKind::Collection, Some(DynValue::Collection(slot))) if depth > 0 => {
+            (MergeKind::Collection, Some(DynValue::Collection(slot))) if depth > 0 && !rich => {
                 if let Some(inner) = field.record.as_deref() {
                     let mut items = Collection::default();
                     let part = format!("{id}-part");
@@ -190,7 +198,8 @@ pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec
     room.phases.take();
     out.push(keystroke(sized, &mut room, &mut thread)?);
     out.push(post(sized, nested, &mut room, &mut thread)?);
-    out.push(scroll(sized, &mut thread)?);
+    out.extend(send(sized, &mut room, &mut thread)?);
+    out.push(scroll(sized, &room, &mut thread)?);
     Ok(out)
 }
 
@@ -228,11 +237,12 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         text.push('x');
+        let value = typed(&thread.view, &input, &text);
         let before = Work::of(room, &[&thread.view]);
         let start = Instant::now();
         thread
             .view
-            .edit(&input, &Value::text(text.clone()))
+            .edit(&input, &value)
             .map_err(|e| e.to_string())?;
         let patches = room.frame(&mut [&mut thread.view])?;
         let took = ms(start.elapsed());
@@ -307,22 +317,68 @@ fn post(
     Ok(sized.record("thread_post", "ms", samples, extra))
 }
 
+/// The key of the button beside the input `input` in `node`: what sends what the composer
+/// holds.
+fn button_beside(node: &UiNode, input: &str) -> Option<String> {
+    if let Some(at) = node.children.iter().position(|c| c.key == input) {
+        return node
+            .children
+            .iter()
+            .skip(at)
+            .find(|c| c.kind == "ui.Button")
+            .map(|c| c.key.clone());
+    }
+    node.children.iter().find_map(|c| button_beside(c, input))
+}
+
+/// Typing a message into the composer and sending it with the button beside it: the message
+/// is posted, and the transcript, following its end, shows it. Only for a window whose composer
+/// has a send button.
+fn send(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<Option<Record>, String> {
+    let Some((input, _)) = composer_input(&thread.view, thread.view.tree()) else {
+        return Ok(None);
+    };
+    let Some(button) = button_beside(thread.view.tree(), &input) else {
+        return Ok(None);
+    };
+    let mut changes = Changes::default();
+    for sample in 0..sized.config.samples {
+        let value = typed(&thread.view, &input, &format!("Sent message {sample}"));
+        thread
+            .view
+            .edit(&input, &value)
+            .map_err(|e| e.to_string())?;
+        room.frame(&mut [&mut thread.view])?;
+        let before = Work::of(room, &[&thread.view]);
+        let start = Instant::now();
+        thread.view.press(&button).map_err(|e| e.to_string())?;
+        let patches = room.frame(&mut [&mut thread.view])?;
+        let len = thread.view.list_len(&thread.list).unwrap_or(0);
+        thread.show(len.saturating_sub(PAGE)..len)?;
+        let took = ms(start.elapsed());
+        let mut done = Work::of(room, &[&thread.view]).since(before);
+        done.patches = patches as u64;
+        changes.push(took, done);
+    }
+    let (samples, extra) = changes.into_record(room.phases.take());
+    Ok(Some(sized.record("thread_send", "ms", samples, extra)))
+}
+
 /// The transcript scrolled back a few rows a frame.
-fn scroll(sized: &Sized<'_>, thread: &mut Thread) -> Result<Record, String> {
+fn scroll(sized: &Sized<'_>, room: &Room, thread: &mut Thread) -> Result<Record, String> {
     let mut samples = Vec::new();
+    let mut work = Work::default();
     for _ in 0..sized.config.samples {
         let end = match thread.shown.start.checked_sub(SCROLL_STEP) {
             Some(start) if start > 0 => thread.shown.end.saturating_sub(SCROLL_STEP),
             _ => thread.view.list_len(&thread.list).unwrap_or(0),
         };
+        let before = Work::of(room, &[&thread.view]);
         let start = Instant::now();
         thread.show(end.saturating_sub(PAGE)..end)?;
         samples.push(ms(start.elapsed()));
+        work = work.max(Work::of(room, &[&thread.view]).since(before));
     }
-    Ok(sized.record(
-        "thread_scroll",
-        "ms",
-        samples,
-        json!({"rows_per_frame": SCROLL_STEP, "shown": PAGE}),
-    ))
+    let extra = json!({"rows_per_frame": SCROLL_STEP, "shown": PAGE});
+    Ok(sized.record("thread_scroll", "ms", samples, with_work(extra, work)))
 }

@@ -63,6 +63,16 @@ pub(crate) enum Ctx {
     Block,
 }
 
+/// Who `invoker` names outside an action.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Invoker {
+    /// No one: only an action has an invoker.
+    #[default]
+    None,
+    /// The person looking, where an action is presented: who would invoke it.
+    Viewer,
+}
+
 impl Ctx {
     const fn word(self) -> &'static str {
         match self {
@@ -97,6 +107,9 @@ struct FnState {
     role: Option<String>,
     /// Set while checking an agent's program: a flow that may `print`, `find` and `read`.
     program: bool,
+    /// Who `invoker` is outside an action: while checking an action's requirements where it
+    /// is presented, the person looking, who would invoke it.
+    invoker: Invoker,
     /// Where the UI being lowered stands.
     ui: UiPlace,
     /// For a view made of a loop body, the declared view it was written in (for anchors).
@@ -121,6 +134,9 @@ struct FnState {
     /// The resource the view being lowered shows: its first parameter, when that is one. What
     /// the system's parts of its controls are about (a rich input's `@` drawer).
     subject: Option<(LocalId, Ty)>,
+    /// The locals holding a scalar an event carries (`at` of `on drop(moved: T, at: Int)`),
+    /// boxed until the event puts the value there.
+    event_scalars: std::collections::HashSet<LocalId>,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.
