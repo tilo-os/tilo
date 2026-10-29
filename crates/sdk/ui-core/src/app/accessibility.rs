@@ -409,10 +409,7 @@ impl App {
             .as_deref()
             .is_some_and(|palette| palette.is_presented())
         {
-            let node = self.layout.node_map.keys().copied().find(|&node| {
-                self.inspect_node(node, |widget| widget.test_id() == Some("action-palette"))
-                    .unwrap_or(false)
-            });
+            let node = self.tree().action_palette_node();
             self.focusable_order = node.into_iter().collect();
             self.accessibility.focus_trap_active = true;
             // The trap takes the keyboard as it appears, so the owner is
@@ -423,28 +420,17 @@ impl App {
             self.hand_focus_to(node);
             return;
         }
-        // Focus travels the laid out tree: a widget can lay its children out
-        // under nodes of its own (a shell's columns), and a component or
-        // History lays out nodes no widget lists as a child, so a walk of the
-        // widgets beside the layout pairs controls with the wrong nodes.
-        if self.close_admission.dialog.is_none() {
-            let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
-                self.root_widget.as_ref(),
-                &self.layout.taffy,
-            );
-            self.update_history_focus_order(&restrictions);
-            return;
-        }
         self.focusable_order.clear();
         let Some(root) = self.layout.root_node else {
             return;
         };
-
-        let (order, trap_active) = self
-            .with_native_presentation(|widget, nodes, _, taffy, _| {
-                crate::focus_navigation::order(root, widget, taffy, nodes)
-            })
-            .unwrap_or_default();
+        // The close dialog stands in for the app while it asks.
+        let (order, trap_active) = if let Some(dialog) = self.close_admission.dialog.as_deref() {
+            crate::focus_navigation::order(root, dialog, &self.layout.taffy, &self.layout.node_map)
+        } else {
+            let tree = self.tree();
+            tree.focus_order_under(root, &tree.focus_restrictions())
+        };
         self.focusable_order = order;
         if let Some(next) = crate::focus_navigation::reconcile_trap(
             &mut self.accessibility.focus_trap_active,
@@ -1266,15 +1252,15 @@ impl App {
                 .ok()
                 .flatten()?
         };
-        let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
+        let (taffy_id, key_path, ordinal_path, semantic_target) = match resolved {
             A11yTarget::Root => return None,
-            A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None, false),
+            A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None),
             A11yTarget::Synthetic {
                 owner,
                 key_path,
                 ordinal_path,
                 semantic_target,
-            } => (owner, key_path, ordinal_path, semantic_target, true),
+            } => (owner, key_path, ordinal_path, semantic_target),
         };
         if let Some(target) = semantic_target
             .as_deref()
@@ -1327,26 +1313,7 @@ impl App {
             })
             .flatten();
         let handled = self
-            .dispatch_semantic_node(taffy_id, |widget, doc, root| {
-                if let Some(target) = semantic_target.as_deref() {
-                    crate::a11y_child_route::perform(
-                        widget,
-                        target,
-                        action,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
-                } else if synthetic {
-                    widget.perform_action(
-                        action,
-                        &key_path,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
-                } else {
-                    widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
-                }
-            })
+            .perform_exported_action(taffy_id, semantic_target.as_deref(), &key_path, action)
             .ok()?;
         drop(history_frame);
         // The action may have replaced widgets: their nodes are forgotten
@@ -1403,7 +1370,7 @@ impl App {
         }
         match action {
             Action::Focus => {
-                if synthetic && !ordinal_path.is_empty() {
+                if !ordinal_path.is_empty() {
                     let _ = self.mutate_node(taffy_id, |widget| {
                         widget.focus_synthetic_accessibility(&ordinal_path)
                     });
@@ -1414,30 +1381,8 @@ impl App {
             Action::Activate | Action::ToggleCheck => {
                 // A widget reached through its painting ancestor is pressed
                 // where it stands.
-                let routed = semantic_target.as_deref().and_then(|target| {
-                    self.inspect_node(taffy_id, |widget| {
-                        crate::a11y_child_route::rect(widget, target)
-                    })
-                    .ok()
-                    .flatten()
-                });
-                let rect = if let Some(rect) = routed {
-                    rect
-                } else if synthetic {
-                    self.inspect_node(taffy_id, |widget| {
-                        widget.synthetic_accessibility_rect(&ordinal_path)
-                    })
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| {
-                        self.inspect_node(taffy_id, |widget| widget.get_rect())
-                            .unwrap_or(KurboRect::ZERO)
-                    })
-                } else {
-                    self.inspect_node(taffy_id, |widget| widget.get_rect())
-                        .unwrap_or(KurboRect::ZERO)
-                };
-                let c = rect.center();
+                let c =
+                    self.exported_press_point(taffy_id, semantic_target.as_deref(), &ordinal_path);
                 Some((c.x, c.y))
             }
             _ => None,

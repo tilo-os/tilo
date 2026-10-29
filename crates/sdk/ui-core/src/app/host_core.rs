@@ -115,6 +115,21 @@ impl crate::host_core::HostCore for App {
         self.root_widget.as_mut()
     }
 
+    fn focus_parts(&mut self) -> crate::host_core::HostFocus<'_> {
+        crate::host_core::HostFocus {
+            root: self.root_widget.as_mut(),
+            history: self.history.as_mut(),
+            node_map: &self.layout.node_map,
+            bindings: &self.bindings,
+            taffy: &self.layout.taffy,
+            focused: &mut self.focused_node,
+        }
+    }
+
+    fn history_focus_resumed(&mut self) {
+        self.history_focus = None;
+    }
+
     fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
         self.history.as_mut()
     }

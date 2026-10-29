@@ -83,6 +83,41 @@ impl HostTree<'_> {
         }
     }
 
+    /// The presented action palette's laid-out node: while it is up, the
+    /// whole focus order.
+    pub(crate) fn action_palette_node(&self) -> Option<NodeId> {
+        self.node_map.keys().copied().find(|&node| {
+            self.inspect_node(node, |widget| widget.test_id() == Some("action-palette"))
+                .unwrap_or(false)
+        })
+    }
+
+    /// What embedded History surfaces allow of the focus order.
+    pub(crate) fn focus_restrictions(&self) -> crate::history_mode::embedded::FocusRestrictions {
+        crate::history_mode::embedded::FocusRestrictions::collect(self.root, self.taffy)
+    }
+
+    /// The keyboard focus order of the app laid out at `app_node`, and
+    /// whether a focus trap holds it: read off the layout maps where History
+    /// (open for review, it is walked instead), an embedded History surface
+    /// or a hosted component lays out nodes the widget walk cannot reach,
+    /// else walked over the widget tree.
+    pub(crate) fn focus_order_under(
+        &self,
+        app_node: NodeId,
+        restrictions: &crate::history_mode::embedded::FocusRestrictions,
+    ) -> (Vec<NodeId>, bool) {
+        // Focus travels the laid out tree: a widget can lay its children out
+        // under nodes of its own (a shell's columns), and a component or
+        // History lays out nodes no widget lists as a child, so a walk of the
+        // widgets beside the layout pairs controls with the wrong nodes.
+        let root = self
+            .history
+            .and_then(|history| history.review_layout_node())
+            .unwrap_or(app_node);
+        self.layout_map_focus_order(root, restrictions)
+    }
+
     /// The focus order under `root` read off the layout maps, as History
     /// and embedded History surfaces need it, and whether a trap holds it.
     pub(crate) fn layout_map_focus_order(
@@ -328,6 +363,16 @@ pub(crate) struct HostLayout<'a> {
     pub(crate) focused: &'a mut Option<NodeId>,
 }
 
+/// What moving keyboard focus between the app and History touches.
+pub(crate) struct HostFocus<'a> {
+    pub(crate) root: &'a mut dyn Widget,
+    pub(crate) history: Option<&'a mut crate::history_mode::host::HistoryChrome>,
+    pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
+    pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
+    pub(crate) taffy: &'a TaffyTree<()>,
+    pub(crate) focused: &'a mut Option<NodeId>,
+}
+
 /// What laying a host's widgets out again in place touches.
 pub(crate) struct HostRemount<'a> {
     pub(crate) root: &'a mut dyn Widget,
@@ -503,6 +548,72 @@ pub(crate) trait HostCore {
         !self.composition_dirty()
     }
 
+    /// What moving focus between the app and History touches.
+    fn focus_parts(&mut self) -> HostFocus<'_>;
+
+    /// Focus left History's chrome for the live app, which History had
+    /// saved focus for.
+    fn history_focus_resumed(&mut self) {}
+
+    /// Before focus moves to `target`: an embedded History surface lets go
+    /// of it; leaving History's unopened chrome for the live app resumes the
+    /// app (its controls focused before are told they are not); entering
+    /// History suspends the live focus without a blur, so an unfinished
+    /// editor keeps its caret and input state.
+    fn suspend_history_focus(&mut self, target: Option<NodeId>) {
+        let parts = self.focus_parts();
+        // SAFETY: the host exclusively owns this admitted tree and its maps.
+        if unsafe {
+            crate::history_mode::embedded::move_focus(
+                parts.root,
+                target,
+                *parts.focused,
+                parts.node_map,
+                parts.bindings,
+                parts.taffy,
+            )
+        } {
+            *parts.focused = None;
+        }
+        let taffy = parts.taffy;
+        if let Some(history) = parts.history
+            && !history.captures_input()
+            && history.has_saved_focus()
+            && target.is_some_and(|node| !history.owns_node(node, taffy))
+        {
+            history.discard_saved_focus();
+            self.history_focus_resumed();
+            let tree = self.tree();
+            let outgoing: Vec<_> = tree
+                .node_map
+                .keys()
+                .copied()
+                .filter(|&node| {
+                    Some(node) != target
+                        && tree
+                            .inspect_node(node, |widget| widget.is_focused())
+                            .unwrap_or(false)
+                })
+                .collect();
+            for node in outgoing {
+                let _ = self.mutate_node(node, |widget| widget.set_focus(false));
+            }
+        }
+        let parts = self.focus_parts();
+        if let Some(history) = parts.history
+            && target.is_some_and(|node| history.owns_node(node, parts.taffy))
+            && parts
+                .focused
+                .is_some_and(|node| !history.owns_node(node, parts.taffy))
+        {
+            // SAFETY: as above.
+            unsafe {
+                history.preserve_focus(*parts.focused, parts.node_map, parts.bindings, parts.taffy);
+            }
+            *parts.focused = None;
+        }
+    }
+
     /// Something is about to reach a laid-out widget, which may change what
     /// the host presents next.
     fn widget_reached(&mut self);
@@ -617,6 +728,51 @@ pub(crate) trait HostCore {
                 callback,
             )
         }
+    }
+
+    /// Perform `action` on an accessibility node the widget laid out at
+    /// `node` exports: the widget itself, a child its painting ancestor
+    /// routes to (`semantic_target`), or the synthetic element `key_path`
+    /// names. Whether the widget took it.
+    fn perform_exported_action(
+        &mut self,
+        node: NodeId,
+        semantic_target: Option<&str>,
+        key_path: &[u64],
+        action: &crate::a11y::Action,
+    ) -> Result<bool, String> {
+        self.dispatch_semantic_node(node, |widget, doc, root| {
+            let edits = &mut crate::widget::Edits::lend(doc);
+            match semantic_target {
+                Some(target) => {
+                    crate::a11y_child_route::perform(widget, target, action, edits, root)
+                }
+                None => widget.perform_action(action, key_path, edits, root),
+            }
+        })
+    }
+
+    /// Where an activation the widget left to the pointer presses: on the
+    /// routed child where its painting ancestor stands it, else on the
+    /// synthetic element `ordinal_path` names, else on the widget.
+    fn exported_press_point(
+        &self,
+        node: NodeId,
+        semantic_target: Option<&str>,
+        ordinal_path: &[usize],
+    ) -> vello::kurbo::Point {
+        self.inspect_node(node, |widget| {
+            semantic_target
+                .and_then(|target| crate::a11y_child_route::rect(widget, target))
+                .or_else(|| {
+                    (!ordinal_path.is_empty())
+                        .then(|| widget.synthetic_accessibility_rect(ordinal_path))
+                        .flatten()
+                })
+                .unwrap_or_else(|| widget.get_rect())
+        })
+        .unwrap_or(vello::kurbo::Rect::ZERO)
+        .center()
     }
 
     fn touch_claim_at(&self, point: vello::kurbo::Point) -> crate::interaction::TouchClaim {

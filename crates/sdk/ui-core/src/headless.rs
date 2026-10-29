@@ -4305,27 +4305,11 @@ impl FrameHarness {
             .as_deref()
             .is_some_and(|palette| palette.is_presented())
         {
-            return self
-                .node_map
-                .keys()
-                .copied()
-                .filter(|&node| {
-                    self.inspect_node(node, |widget| widget.test_id() == Some("action-palette"))
-                        .unwrap_or(false)
-                })
-                .collect();
+            return self.tree().action_palette_node().into_iter().collect();
         }
-        let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
-            self.root.as_ref(),
-            &self.taffy,
-        );
-        // The laid out tree, as the live App walks it.
-        let root = self
-            .history
-            .as_ref()
-            .and_then(|history| history.review_layout_node())
-            .unwrap_or(self.child_node);
-        self.tree().layout_map_focus_order(root, &restrictions).0
+        let tree = self.tree();
+        tree.focus_order_under(self.child_node, &tree.focus_restrictions())
+            .0
     }
 
     /// Whether embedded History and a History holding saved focus leave a
@@ -4391,12 +4375,9 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        let root = self
-            .history
-            .as_ref()
-            .and_then(|history| history.review_layout_node())
-            .unwrap_or(self.child_node);
-        let (mut order, trapped) = self.tree().layout_map_focus_order(root, &restrictions);
+        let (mut order, trapped) = self
+            .tree()
+            .focus_order_under(self.child_node, &restrictions);
         if !self.focus_trap_active && trapped {
             // Capture a stable semantic/owner identity, never carry a stale Taffy id
             // through the portable host's complete layout rebuilds.
@@ -4753,74 +4734,11 @@ impl FrameHarness {
         {
             self.active_input_instance = Some(binding.instance_id);
         }
-        if unsafe {
-            crate::history_mode::embedded::move_focus(
-                self.root.as_mut(),
-                node,
-                self.focused,
-                &self.node_map,
-                &self.bindings,
-                &self.taffy,
-            )
-        } {
-            self.focused = None;
-        }
-        let resumed_live = self.history.as_ref().is_some_and(|history| {
-            !history.captures_input()
-                && history.has_saved_focus()
-                && node.is_some_and(|node| !history.owns_node(node, &self.taffy))
-        });
-        if resumed_live {
-            // Tabbing through unopened chrome is temporary suspension. Keep
-            // the chosen editor's current caret; do not restore old view state.
-            if let Some(history) = &mut self.history {
-                history.discard_saved_focus();
-            }
-            let outgoing: Vec<_> = self
-                .node_map
-                .keys()
-                .copied()
-                .filter(|candidate| {
-                    Some(*candidate) != node
-                        && self
-                            .inspect_node(*candidate, |widget| widget.is_focused())
-                            .unwrap_or(false)
-                })
-                .collect();
-            for outgoing in outgoing {
-                let _ = self.mutate_node(outgoing, |widget| widget.set_focus(false));
-            }
-        }
+        self.suspend_history_focus(node);
         if self.focused == node {
             return;
         }
-        if let Some(history) = &mut self.history
-            && node.is_some_and(|node| history.owns_node(node, &self.taffy))
-            && self
-                .focused
-                .is_some_and(|node| !history.owns_node(node, &self.taffy))
-        {
-            // Suspend the runner's live focus without synthesizing blur. The
-            // unfinished live editor and its IME/local state stay in place.
-            unsafe {
-                history.preserve_focus(self.focused, &self.node_map, &self.bindings, &self.taffy);
-            }
-            self.focused = None;
-        }
         self.root.focus_requested(node, &self.taffy);
-        if let Some(history) = &mut self.history
-            && node.is_some_and(|node| history.owns_node(node, &self.taffy))
-            && self
-                .focused
-                .is_some_and(|node| !history.owns_node(node, &self.taffy))
-        {
-            // Suspend the runner's live focus without synthesizing blur. The
-            // unfinished live editor and its IME/local state stay in place.
-            unsafe {
-                history.preserve_focus(self.focused, &self.node_map, &self.bindings, &self.taffy);
-            }
-            self.focused = None;
-        }
         if let Some(target) = node {
             // Root dispatch visits every live app. An exact owner must also
             // clear competing mount/restoration flags, or a preceding editor
@@ -5088,24 +5006,7 @@ impl FrameHarness {
             )
         };
         let handled = self
-            .dispatch_semantic_node(taffy_id, |widget, doc, root| {
-                if let Some(target) = semantic_target.as_deref() {
-                    crate::a11y_child_route::perform(
-                        widget,
-                        target,
-                        action,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
-                } else {
-                    widget.perform_action(
-                        action,
-                        &key_path,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
-                }
-            })
+            .perform_exported_action(taffy_id, semantic_target.as_deref(), &key_path, action)
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
         // The action may have replaced widgets: the node acted on is looked
         // up again only in the newly admitted composition.
@@ -5158,20 +5059,11 @@ impl FrameHarness {
                 // centre. Widget-granular by nature — it cannot reach inside a
                 // canvas, which is why `perform_action` exists.
                 crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck => {
-                    let rect = (!ordinal_path.is_empty())
-                        .then(|| {
-                            self.inspect_node(taffy_id, |widget| {
-                                widget.synthetic_accessibility_rect(&ordinal_path)
-                            })
-                            .ok()
-                            .flatten()
-                        })
-                        .flatten()
-                        .unwrap_or_else(|| {
-                            self.inspect_node(taffy_id, |widget| widget.get_rect())
-                                .unwrap_or(Rect::ZERO)
-                        });
-                    let c = rect.center();
+                    let c = self.exported_press_point(
+                        taffy_id,
+                        semantic_target.as_deref(),
+                        &ordinal_path,
+                    );
                     self.click_at(c.x, c.y);
                 }
                 _ => return Err(format!("the current control did not handle {action:?}")),
@@ -8717,6 +8609,17 @@ impl crate::host_core::HostCore for FrameHarness {
 
     fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root.as_mut()
+    }
+
+    fn focus_parts(&mut self) -> crate::host_core::HostFocus<'_> {
+        crate::host_core::HostFocus {
+            root: self.root.as_mut(),
+            history: self.history.as_mut(),
+            node_map: &self.node_map,
+            bindings: &self.bindings,
+            taffy: &self.taffy,
+            focused: &mut self.focused,
+        }
     }
 
     fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
