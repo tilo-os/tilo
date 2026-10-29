@@ -417,6 +417,7 @@ members = [
     "crates/session/network-actor",
     "crates/session/network-secret-agent",
     "crates/session/notification-banners",
+    "crates/session/notifications-service",
     "crates/session/onboarding",
     "crates/session/output-passes",
     "crates/session/overview",
