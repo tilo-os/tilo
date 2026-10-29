@@ -1126,8 +1126,6 @@ pub(crate) fn workspace_surface_chrome(
         empty_workspace: Some(Box::new(
             tilo_desktop::launchpad::CollaborationLaunchpad::new(),
         )),
-        // The compact bars of the other displays are the top bar app's too.
-        display_chrome: None,
         // Wallpaper before the first window, panning with the strip; the
         // overlay host keeps it at this value every layout.
         leading_inset: overlay_host::STRIP_EDGE_GUTTER_PX,

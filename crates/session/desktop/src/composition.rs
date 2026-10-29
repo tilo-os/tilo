@@ -46,9 +46,6 @@ pub struct SurfaceChrome {
     pub topbar: Box<dyn Widget>,
     pub backdrop: Box<dyn Widget>,
     pub empty_workspace: Option<Box<dyn Widget>>,
-    /// Drawn above the desktop along the edges of the displays other than
-    /// the primary (their compact top bars). It takes no room in layout.
-    pub display_chrome: Option<Box<dyn Widget>>,
     /// The leading edge gutter: how far each strip's first window sits
     /// in from the display's leading edge.
     pub leading_inset: f64,
@@ -65,7 +62,6 @@ impl Default for SurfaceChrome {
             )),
             backdrop: Box::new(crate::backdrop::DesktopBackdrop::new()),
             empty_workspace: None,
-            display_chrome: None,
             leading_inset: 0.0,
             notify: None,
         }
@@ -309,12 +305,9 @@ impl DesktopSurface {
             foreground = foreground.push(chrome.topbar);
         }
         let foreground = foreground.push(Box::new(column));
-        let mut stack = Stack::new()
+        let stack = Stack::new()
             .push(chrome.backdrop)
             .push(Box::new(foreground));
-        if let Some(display_chrome) = chrome.display_chrome {
-            stack = stack.push(display_chrome);
-        }
         let root = Box::new(
             Container::new()
                 .with_no_padding()
@@ -423,13 +416,6 @@ impl DesktopSurface {
         child_mut(self.root.as_mut(), &[0, 0])
             .and_then(Widget::as_any_mut)
             .and_then(|v| v.downcast_mut::<crate::backdrop::DesktopBackdrop>())
-    }
-    /// The layer [`SurfaceChrome::display_chrome`] installed.
-    pub fn display_chrome(&self) -> Option<&dyn Widget> {
-        child(self.root.as_ref(), &[0, 2])
-    }
-    pub fn display_chrome_mut(&mut self) -> Option<&mut dyn Widget> {
-        child_mut(self.root.as_mut(), &[0, 2])
     }
     /// Frame every strip's focused group again on the next layout, as
     /// after the displays or a group's display changed.
@@ -1249,10 +1235,8 @@ impl DesktopSurface {
         if self.external_navigation {
             return;
         }
-        for path in [&[0, 1, 0][..], &[0, 2]] {
-            if let Some(layer) = child_mut(self.root.as_mut(), path) {
-                layer.draw(scene, transform, text, theme, presence);
-            }
+        if let Some(bar) = child_mut(self.root.as_mut(), &[0, 1, 0]) {
+            bar.draw(scene, transform, text, theme, presence);
         }
     }
 
@@ -1292,9 +1276,6 @@ impl DesktopSurface {
         let bar = child_mut(self.root.as_mut(), &[0, 1, 0])?;
         let rect = bar.get_rect();
         bar.draw(topbar, transform, text, theme, presence);
-        if let Some(display_chrome) = child_mut(self.root.as_mut(), &[0, 2]) {
-            display_chrome.draw(topbar, transform, text, theme, presence);
-        }
         Some(Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + 28.0))
     }
 
