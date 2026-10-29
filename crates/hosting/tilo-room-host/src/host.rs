@@ -1103,6 +1103,24 @@ where
     Ok(())
 }
 
+/// The device's own host, as its native owner joins the rooms placed on it.
+impl tilo_peer_state::owner::session::OwnHost for RoomHost {
+    fn join_service(&self) -> Arc<dyn tilo_relay_session::workspace_join::LocalJoinService> {
+        Self::join_service(self)
+    }
+
+    fn connect_local(
+        &self,
+        cert: DeviceCert,
+        key: ed25519_dalek::SigningKey,
+        revocations: RevocationList,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<RelayClient, ClientError>> + Send + '_>,
+    > {
+        Box::pin(Self::connect_local(self, cert, key, revocations))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

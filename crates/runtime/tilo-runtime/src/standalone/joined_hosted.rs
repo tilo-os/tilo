@@ -21,6 +21,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 use tilo_desktop_model::RoomId;
+use tilo_peer_state::owner::session::Reach;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_relay_session::{CoeditPayload, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
 use tilo_room_host::host::RoomHost;
@@ -119,10 +120,22 @@ impl Joined {
             .unwrap_or(false)
     }
 
+    /// How this device reaches a room's host: its own host in process,
+    /// every other over the network.
+    pub(super) fn reach(&self) -> Reach {
+        Reach {
+            endpoint: self.endpoint.clone(),
+            https: None,
+            own_host: self
+                .room_host()
+                .map(|host| Arc::clone(host) as Arc<dyn tilo_peer_state::owner::session::OwnHost>),
+        }
+    }
+
     /// The workspace-join exchange `invitation` asks for: with this
     /// device's own host in process when the invitation names it, an
     /// endpoint cannot dial itself; over the network otherwise.
-    pub(super) fn join_client(&self, invitation: &str) -> WorkspaceJoinClient {
+    pub(super) fn join_client(&self, invitation: &str) -> Result<WorkspaceJoinClient, String> {
         let own = self.own_device();
         let hosted_here = tilo_peer_state::join::decode_and_verify_invitation_text(
             invitation,
@@ -137,43 +150,9 @@ impl Joined {
                 .iter()
                 .any(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own))
         });
-        match self.room_host().filter(|_| hosted_here) {
-            Some(host) => WorkspaceJoinClient::local(host.join_service(), own),
-            None => WorkspaceJoinClient::new(self.endpoint.clone()),
-        }
-    }
-
-    /// The co-edit session of workspace `ws` with the host `hint` pins: in
-    /// process with this device's own host, dialled otherwise.
-    pub(super) async fn connect(
-        &self,
-        ws: u64,
-        hint: &tilo_peer_state::join::TransportHint,
-        device: tilo_user_identity::DeviceCert,
-        revocations: tilo_user_identity::RevocationList,
-    ) -> Result<RelayCoeditSession, String> {
-        let own = self.own_device();
-        let key = self.custody.device_signing_key.clone();
-        if !tilo_peer_state::owner::session::hosted_by(hint, &own) {
-            return Ok(tilo_peer_state::owner::session::dial(
-                self.endpoint.clone(),
-                ws,
-                hint,
-                device,
-                key,
-                revocations,
-            )
-            .await?);
-        }
-        let client = self
-            .room_host()
-            .ok_or("this device's room host is not running")?
-            .connect_local(device, key, revocations)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(tilo_peer_state::owner::session::join_local(
-            client, ws, hint, own,
-        )?)
+        self.reach()
+            .join_client(hosted_here, own)
+            .ok_or_else(|| "this device's room host is not running".into())
     }
 
     /// `channel`'s content keys from this device's own room host when it

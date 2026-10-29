@@ -20,10 +20,10 @@ use tilo_action_broker::{
 };
 use tilo_desktop_model::{RoomId, Workspace, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
-use tilo_peer_state::InputDisposition;
+use tilo_peer_state::join::TransportHint;
 use tilo_peer_state::owner::{
     NativeWorkspaceOwner,
-    session::{Connect, Input, Scope},
+    session::{Connect, DialError, Holder, Input, Link, Reach, Scope, hold},
 };
 use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
 use tilo_relay_session::{Inbound, RelayCoeditSession};
@@ -40,7 +40,6 @@ pub(super) use hosted::RecordCreation;
 pub(super) const JOINED_ROOMS: &str = "joined-rooms.json";
 /// How often a live session asks its host for a fresh checkpoint.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-const REDIAL_LONGEST: Duration = Duration::from_secs(60);
 
 #[path = "mcp_admission.rs"]
 mod mcp_admission;
@@ -90,6 +89,37 @@ struct RoomSession {
     host: Option<[u8; 32]>,
     /// The room's members connected to that host, as it reports them.
     members: std::collections::BTreeSet<[u8; 32]>,
+}
+
+/// One joined room's session, held for as long as the room is.
+struct RoomHolder {
+    joined: Arc<Joined>,
+    /// Wakes the session to send what its owner holds for it.
+    wake: Arc<Notify>,
+}
+
+impl Holder for RoomHolder {
+    fn reach(&self) -> Reach {
+        self.joined.reach()
+    }
+
+    fn dial_failed(
+        &self,
+        _via: TransportHint,
+        _governor: bool,
+        error: DialError,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        tracing::debug!(%error, "joined room session unavailable");
+        Box::pin(std::future::ready(()))
+    }
+
+    fn run(
+        &self,
+        session: RelayCoeditSession,
+        scope: Arc<Scope>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(self.joined.run_session(session, scope, &self.wake))
+    }
 }
 
 impl Joined {
@@ -159,7 +189,7 @@ impl Joined {
         }
         let topic = room_topic(room)?;
         let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
-            self.join_client(invitation),
+            self.join_client(invitation)?,
             self.custody.clone(),
             topic,
             None,
@@ -308,33 +338,23 @@ impl Joined {
             },
         );
         drop(sessions);
-        let joined = Arc::clone(self);
-        tilo_rt::app().spawn(async move { joined.keep_session(room, &wake).await });
+        let Ok(connect) = Connect::new(self.owner.clone(), room) else {
+            return;
+        };
+        let identity = Some(self.custody.clone());
+        let holder = RoomHolder {
+            joined: Arc::clone(self),
+            wake,
+        };
+        tilo_rt::app().spawn(async move {
+            hold(connect, identity, &holder, &Link::default()).await;
+        });
     }
 
-    /// Hold `room`'s session for as long as the room stays enrolled,
-    /// dialing again after each loss.
-    async fn keep_session(&self, room: RoomId, wake: &Notify) {
-        let mut redial = Duration::from_secs(1);
-        while let Ok(connect) = Connect::new(self.owner.clone(), room) {
-            match self.run_session(connect, wake).await {
-                Ok(()) => redial = Duration::from_secs(1),
-                Err(error) => tracing::debug!(%error, %room, "joined room session unavailable"),
-            }
-            tokio::time::sleep(redial).await;
-            redial = redial.saturating_mul(2).min(REDIAL_LONGEST);
-        }
-    }
-
-    async fn run_session(&self, connect: Connect, wake: &Notify) -> Result<(), String> {
-        let (hint, device, revocations, continuity) = connect.material(&self.custody)?;
-        let room = connect.room();
-        let session = Arc::new(
-            self.connect(room_topic(room)?, &hint, device.clone(), revocations)
-                .await?,
-        );
-        let host = hint.host.device_public_key;
-        let scope = Arc::new(Scope::new(connect, hint, device, continuity));
+    async fn run_session(&self, session: RelayCoeditSession, scope: Arc<Scope>, wake: &Notify) {
+        let room = scope.room();
+        let session = Arc::new(session);
+        let host = scope.host().host.device_public_key;
         self.set_live(room, Some((Arc::clone(&session), host)));
         // On the host's live plane the room's members learn this device is
         // connected, and it learns who of them is.
@@ -351,7 +371,7 @@ impl Joined {
                     Some(Inbound::Ready { .. }) => replay = false,
                     Some(Inbound::Delta { author, data }) => {
                         if let Ok(message) = postcard::from_bytes(&data)
-                            && self.admit(&scope.input(author, replay, message))
+                            && self.admit(scope.input(author, replay, message))
                             && let Err(error) = session.resubscribe()
                         {
                             tracing::debug!(%error, %room, "joined room replay not asked");
@@ -391,7 +411,6 @@ impl Joined {
         }
         scope.close();
         self.set_live(room, None);
-        Ok(())
     }
 
     /// `room`'s session connected to its host, or ended. The room's content
@@ -479,49 +498,34 @@ impl Joined {
     /// Admit a relayed delta; another member's admitted document write then
     /// reaches this device's apps on its route. Answers whether the room's
     /// host should replay what it retains ([`tilo_peer_state::ReceiveOutcome::replay_wanted`]).
-    fn admit(&self, input: &Input) -> bool {
-        let report = match input.admit(&self.custody) {
+    fn admit(&self, input: Input) -> bool {
+        let room = input.room();
+        let Some((input, report)) = Input::admit_batch(vec![input], &self.custody).inputs.pop()
+        else {
+            return false;
+        };
+        let report = match report {
             Ok(report) => report,
             Err(error) => {
-                tracing::warn!(%error, room = %input.room(), "joined room admission denied");
+                tracing::warn!(%error, %room, "joined room admission denied");
                 return false;
             }
         };
         let replay = report.summary().replay_wanted;
-        if !matches!(
-            report.primary(),
-            InputDisposition::Accepted(_) | InputDisposition::Duplicate(_)
-        ) || input.author() == self.custody.device_signing_key.verifying_key().to_bytes()
-        {
-            return replay;
-        }
-        let NeighbourMsg::AppDocument {
-            app_id,
-            cluster_id,
-            record_id,
-            envelope,
-            ..
-        } = input.message()
-        else {
+        let Some(write) = input.app_write(&report) else {
             return replay;
         };
-        let Ok(author_standing) = input.standing() else {
-            return replay;
-        };
-        if cluster_id != &input.room().to_string() {
-            return replay;
-        }
         let author = input.author();
         let delivered = collab_inbound::deliver(
             &self.channels,
             &self.fanout,
             RemoteDocument {
-                app_id: app_id.clone(),
-                cluster_id: cluster_id.clone(),
-                record_id: record_id.clone(),
-                author: author_standing,
-                replayed: input.retained(),
-                envelope: (**envelope).clone(),
+                app_id: write.app_id,
+                cluster_id: write.cluster_id,
+                record_id: write.record_id,
+                author: write.author,
+                replayed: write.replayed,
+                envelope: write.envelope,
             },
             |_| format!("peer@{}", hex::encode(author)),
         );

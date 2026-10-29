@@ -1,8 +1,13 @@
 //! One relay co-edit session for an enrolled room: dialing the host its
-//! enrollment pins, admitting what arrives with closed relay provenance, and
-//! sending what the owner holds in outgoing custody. The host drives these
-//! from its own event loop.
+//! enrollment pins and holding the session ([`hold`]), admitting what
+//! arrives with closed relay provenance, and sending what the owner holds
+//! in outgoing custody.
 mod cursor;
+mod hold;
+mod reach;
+
+pub use hold::{Holder, Link, hold};
+pub use reach::{OwnHost, Reach};
 
 use crate::owner::{NativeWorkspaceOwner, RoomId};
 use crate::{Reseal, TransportOrigin, join::TransportHint};
@@ -12,9 +17,8 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
 use tilo_identity_host::custody::HostIdentity;
-use tilo_relay_session::{RelayClient, RelayCoeditSession};
+use tilo_relay_session::RelayCoeditSession;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// An enrolled room to hold a session for.
@@ -98,6 +102,24 @@ impl Connect {
                 })
                 .collect())
         })
+    }
+
+    /// The host to dial after `after` (the first when `None`) among
+    /// [`Self::hosts`]: where the room's session goes next while its
+    /// governor is out of reach. `None` once every host was tried.
+    ///
+    /// # Errors
+    /// The room is not held here.
+    pub fn next_host(
+        &self,
+        own: &[u8; 32],
+        after: Option<&TransportHint>,
+    ) -> Result<Option<TransportHint>, String> {
+        let hosts = self.hosts(own)?;
+        let next = after
+            .and_then(|after| hosts.iter().position(|host| host == after))
+            .map_or(0, |index| index.saturating_add(1));
+        Ok(hosts.into_iter().nth(next))
     }
 
     /// Whether this device is the room's host itself: the host its
@@ -447,12 +469,14 @@ impl Input {
     /// # Errors
     /// The session closed or its pin changed, or admission refuses it.
     pub fn admit(&self, identity: &HostIdentity) -> Result<crate::AdmissionReport, String> {
-        Self::admit_all(std::slice::from_ref(self), identity)?
+        Self::admit_batch(vec![self.clone()], identity)
+            .inputs
             .pop()
             .ok_or_else(|| "native owner admitted no input".to_owned())?
+            .1
     }
     /// Whether `other` came over the same relay session as this one: what
-    /// [`Self::admit_all`] admits together.
+    /// [`Self::admit_batch`] admits together.
     #[must_use]
     pub fn same_session(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.scope, &other.scope)
@@ -460,16 +484,34 @@ impl Input {
     /// Admit `inputs`, all of one relay session, in the order they came, in
     /// one commit of the owner, while the session is still live and pinned
     /// to the owner's current material: each is authorized as one alone is,
-    /// and a burst of them persists once. One report per input.
-    ///
-    /// # Errors
-    /// The inputs span sessions, the session closed or its pin changed, or
-    /// the commit failed: no input is admitted.
+    /// and a burst of them persists once. Each input comes back with its
+    /// report; inputs that span sessions, a closed session, a changed pin
+    /// or a failed commit refuse them all.
+    #[must_use]
+    pub fn admit_batch(inputs: Vec<Self>, identity: &HostIdentity) -> Admitted {
+        let Some(first) = inputs.first() else {
+            return Admitted {
+                inputs: Vec::new(),
+                changed: false,
+            };
+        };
+        let before = first.generation().ok();
+        let reports = Self::admit_pinned(&inputs, identity);
+        let changed = before != first.generation().ok();
+        let inputs = match reports {
+            Ok(reports) => inputs.into_iter().zip(reports).collect(),
+            Err(error) => inputs
+                .into_iter()
+                .map(|input| (input, Err(error.clone())))
+                .collect(),
+        };
+        Admitted { inputs, changed }
+    }
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the live flag stays locked through admission so a close cannot interleave"
     )]
-    pub fn admit_all(
+    fn admit_pinned(
         inputs: &[Self],
         identity: &HostIdentity,
     ) -> Result<Vec<Result<crate::AdmissionReport, String>>, String> {
@@ -508,6 +550,42 @@ impl Input {
             .owner
             .receive_batch(first.room(), batch, std::time::SystemTime::now())
     }
+    /// The app write `report` took in from another device, for this
+    /// device's apps: `None` for anything else, a write the owner neither
+    /// accepted nor already held, this device's own write, a write naming
+    /// another room, or an author without standing.
+    #[must_use]
+    pub fn app_write(&self, report: &crate::AdmissionReport) -> Option<AppWrite> {
+        if !matches!(
+            report.primary(),
+            crate::InputDisposition::Accepted(_) | crate::InputDisposition::Duplicate(_)
+        ) || self.author == self.scope.device.device_public_key
+        {
+            return None;
+        }
+        let NeighbourMsg::AppDocument {
+            peer,
+            app_id,
+            cluster_id,
+            record_id,
+            envelope,
+        } = &self.msg
+        else {
+            return None;
+        };
+        if cluster_id != &self.room().to_string() {
+            return None;
+        }
+        Some(AppWrite {
+            peer: *peer,
+            app_id: app_id.clone(),
+            cluster_id: cluster_id.clone(),
+            record_id: record_id.clone(),
+            author: self.standing().ok()?,
+            replayed: self.retained,
+            envelope: (**envelope).clone(),
+        })
+    }
     /// The author's current standing in the room: the room's policy, and
     /// the bound on a device not theirs.
     pub fn standing(&self) -> Result<tilo_action_policy::Standing, String> {
@@ -517,6 +595,28 @@ impl Input {
                 .map(crate::MemberAuthority::standing)
         })
     }
+}
+
+/// What [`Input::admit_batch`] decided.
+pub struct Admitted {
+    /// Each input, in the order it came, with what its admission decided.
+    pub inputs: Vec<(Input, Result<crate::AdmissionReport, String>)>,
+    /// Whether the admission committed a new owner generation.
+    pub changed: bool,
+}
+
+/// Another device's app write the owner took in ([`Input::app_write`]).
+pub struct AppWrite {
+    /// The writer's peer handle, as the write names it.
+    pub peer: u64,
+    pub app_id: String,
+    pub cluster_id: String,
+    pub record_id: String,
+    /// The author's standing in the room.
+    pub author: tilo_action_policy::Standing,
+    /// Whether the host replayed it from what it retains.
+    pub replayed: bool,
+    pub envelope: collab_types::SignedOp,
 }
 
 /// Why dialing a room's host did not give a session.
@@ -531,8 +631,8 @@ pub enum DialError {
         theirs: u32,
     },
     /// The host closed the stream without answering this device's hello:
-    /// it refused this device, or it predates versioned handshakes. After a
-    /// few of these in a row, [`probe_version`] tells which.
+    /// it refused this device, or it predates versioned handshakes. After
+    /// [`UNANSWERED_BEFORE_PROBE`] of these in a row, a probe tells which.
     NoAnswer(String),
     /// The host admits nobody of this device's person any more: they were
     /// removed (a public room prunes guests away for long), and joining
@@ -599,49 +699,14 @@ impl From<tilo_relay_session::ClientError> for DialError {
 }
 
 /// How many dials in a row the room's host may close without answering
-/// before [`probe_version`] asks whether it predates versioned handshakes.
+/// before a dial asks whether it predates versioned handshakes.
 pub const UNANSWERED_BEFORE_PROBE: u32 = 3;
-
-/// The peer protocol version of the host `hint` pins, when a probe shows it
-/// is not this device's: a host that predates versioned handshakes reads as
-/// [`tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL`]. `None` when the
-/// host speaks this device's version (it refused this device instead), or
-/// the probe could not tell.
-pub async fn probe_version(
-    endpoint: &iroh::Endpoint,
-    hint: &TransportHint,
-    cert: &DeviceCert,
-) -> Option<u32> {
-    let (payload, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(hint).ok()?;
-    let probe = tokio::time::timeout(
-        Duration::from_secs(10),
-        RelayClient::probe_handshake_version(endpoint, payload.endpoint_addr.clone(), cert),
-    )
-    .await
-    .ok()?
-    .ok()?;
-    match probe {
-        tilo_relay_session::client::HandshakeProbe::Unversioned => {
-            Some(tilo_relay_protocol::auth::UNVERSIONED_PEER_PROTOCOL)
-        }
-        tilo_relay_session::client::HandshakeProbe::Versioned(theirs)
-            if theirs != neighbour_wire::PEER_PROTOCOL_VERSION =>
-        {
-            Some(theirs)
-        }
-        tilo_relay_session::client::HandshakeProbe::Versioned(_)
-        | tilo_relay_session::client::HandshakeProbe::Unknown => None,
-    }
-}
 
 /// Dial the host `hint` pins for workspace `ws` and join its co-edit
 /// session as `cert`.
 ///
 /// # Errors
-/// The hint does not authenticate for `ws`, the host authenticates as
-/// another certificate or speaks another peer protocol version
-/// ([`DialError::PeerVersion`]), or the connection fails or takes over 10
-/// seconds.
+/// As [`Reach::session`].
 pub async fn dial(
     endpoint: iroh::Endpoint,
     ws: u64,
@@ -650,120 +715,15 @@ pub async fn dial(
     key: SigningKey,
     revocations: RevocationList,
 ) -> Result<RelayCoeditSession, DialError> {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let (payload, trust) = IrohWorkspaceHostHintV1::authenticate_transport_hint(hint)
-            .map_err(|e| e.to_string())?;
-        if payload.workspace_id != ws {
-            return Err("native relay workspace pin mismatch".into());
-        }
-        let addr = payload.endpoint_addr.clone();
-        let own_device = cert.device_public_key;
-        let client = match trust {
-            WorkspaceHostTrust::CertifiedHost => {
-                RelayClient::connect_v2_to_enrolled_home_peer(
-                    endpoint,
-                    addr,
-                    hint.host.user_public_key,
-                    hint.host.device_public_key,
-                    cert,
-                    key,
-                    revocations,
-                )
-                .await
-            }
-            WorkspaceHostTrust::InteractiveOwner(trust) => {
-                RelayClient::connect_v2_to_interactive_workspace_owner(
-                    endpoint,
-                    addr,
-                    trust,
-                    cert,
-                    key,
-                    revocations,
-                )
-                .await
-            }
-        }
-        .map_err(DialError::from)?;
-        if client.relay_peer.cert != hint.host {
-            return Err("native relay authenticated a different host certificate".into());
-        }
-        RelayCoeditSession::join(client, ws, own_device)
-            .map_err(|error| DialError::Failed(error.to_string()))
-    })
-    .await
-    .map_err(|_| DialError::from("native relay connection timed out"))?
+    let reach = Reach {
+        endpoint,
+        https: None,
+        own_host: None,
+    };
+    reach.session(ws, hint, cert, key, revocations, false).await
 }
 
 pub use crate::owner::hosted_by;
-
-/// Join the co-edit session of workspace `ws` as this device, `own_device`,
-/// over `client`, a session the host `hint` pins opened in this process
-/// (`RoomHost::connect_local`): the same pins [`dial`] checks, without a
-/// network between.
-///
-/// # Errors
-/// The hint does not authenticate for `ws`, it names another host than
-/// this device, or the session authenticated another host certificate.
-pub fn join_local(
-    client: RelayClient,
-    ws: u64,
-    hint: &TransportHint,
-    own_device: [u8; 32],
-) -> Result<RelayCoeditSession, DialError> {
-    let (payload, _) =
-        IrohWorkspaceHostHintV1::authenticate_transport_hint(hint).map_err(|e| e.to_string())?;
-    if payload.workspace_id != ws {
-        return Err("native relay workspace pin mismatch".into());
-    }
-    if !hosted_by(hint, &own_device) {
-        return Err("the room's host is not this device".into());
-    }
-    if client.relay_peer.cert != hint.host {
-        return Err("native relay authenticated a different host certificate".into());
-    }
-    RelayCoeditSession::join(client, ws, own_device)
-        .map_err(|error| DialError::Failed(error.to_string()))
-}
-
-/// [`dial`] the host `hint` pins over its HTTPS routes behind `http`: a
-/// host that publishes no iroh address. Only a certified host serves them,
-/// so the session pins its user and device as [`dial`] does an enrolled
-/// host; the session then carries no private action channel.
-///
-/// # Errors
-/// As [`dial`], and for a hint that pins a person's own device rather than a
-/// certified host.
-pub async fn dial_https(
-    http: std::sync::Arc<dyn tilo_relay_client::HttpClient>,
-    ws: u64,
-    hint: &TransportHint,
-    cert: DeviceCert,
-    key: SigningKey,
-    revocations: RevocationList,
-) -> Result<RelayCoeditSession, DialError> {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let (payload, trust) = IrohWorkspaceHostHintV1::authenticate_transport_hint(hint)
-            .map_err(|e| e.to_string())?;
-        if payload.workspace_id != ws {
-            return Err("native relay workspace pin mismatch".into());
-        }
-        if !matches!(trust, WorkspaceHostTrust::CertifiedHost) {
-            return Err("only a certified host is reached over HTTPS".into());
-        }
-        let own_device = cert.device_public_key;
-        let client =
-            RelayClient::connect_https(http, hint.host.device_public_key, cert, &key, revocations)
-                .await
-                .map_err(DialError::from)?;
-        if client.relay_peer.cert != hint.host {
-            return Err("native relay authenticated a different host certificate".into());
-        }
-        RelayCoeditSession::join(client, ws, own_device)
-            .map_err(|error| DialError::Failed(error.to_string()))
-    })
-    .await
-    .map_err(|_| DialError::from("native relay connection timed out"))?
-}
 
 #[cfg(test)]
 mod dial_error_tests {

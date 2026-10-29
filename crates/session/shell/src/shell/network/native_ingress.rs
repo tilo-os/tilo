@@ -70,18 +70,9 @@ impl ShellNetwork {
             .host_identity
             .as_ref()
             .ok_or("native custody unavailable")?;
-        owner.with_current(room, |view| {
-            let (certificate, _) = identity.current_native_material(view.workspace())?;
-            if &certificate != view.device() {
-                return Err("selected native custody differs from committed enrollment".into());
-            }
-            view.peer()
-                .permissions(certificate.device_public_key, SystemTime::now())?;
-            if !view.peer().certificates().contains(&certificate) {
-                return Err("selected certificate differs from current admitted roster".into());
-            }
-            Ok(())
-        })
+        native_ingress::Connect::new(owner.clone(), room)?
+            .material(identity)
+            .map(drop)
     }
 
     pub(crate) fn connect_native_room(
@@ -148,43 +139,19 @@ impl ShellNetwork {
     fn dispatch_channel_traffic(&self, input: &native_ingress::Input) -> bool {
         let room = input.room();
         match input.message() {
-            NeighbourMsg::MlsGovernance {
-                room: named, frame, ..
-            } => {
-                if RoomId::parse(named) == Some(room) {
-                    self.queue_channel_governance(InboundChannelGovernance::Frame {
-                        room,
-                        frame: frame.clone(),
-                    });
-                }
-                true
-            }
-            NeighbourMsg::MlsAccessRequest {
-                room: named,
-                request,
-                ..
-            } => {
-                if RoomId::parse(named) == Some(room) {
-                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
-                        room,
-                        request: request.clone(),
-                        route: None,
-                    });
-                }
-                true
-            }
-            NeighbourMsg::MlsRoutedAccessRequest {
-                room: named,
-                request,
-                route,
-                ..
-            } => {
-                if RoomId::parse(named) == Some(room) {
-                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
-                        room,
-                        request: request.clone(),
-                        route: Some(route.clone()),
-                    });
+            NeighbourMsg::MlsGovernance { .. }
+            | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { .. } => {
+                if let Some(governance) =
+                    InboundChannelGovernance::from_message(input.message().clone())
+                    && matches!(
+                        &governance,
+                        InboundChannelGovernance::Frame { room: named, .. }
+                            | InboundChannelGovernance::AccessRequest { room: named, .. }
+                            if *named == room
+                    )
+                {
+                    self.queue_channel_governance(governance);
                 }
                 true
             }
@@ -388,7 +355,7 @@ impl ShellNetwork {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };
-        self.complete_native_inputs(super::native_admission::admit(inputs, identity));
+        self.complete_native_inputs(native_ingress::Input::admit_batch(inputs, identity));
     }
 
     /// Handle `input` on the frame loop: what needs no admission here, its
@@ -502,8 +469,11 @@ impl ShellNetwork {
     /// What follows an admission, on the thread handling inbound events:
     /// each input's remainder in the order they came, and the owner's
     /// publication once for the commit.
-    pub(super) fn complete_native_inputs(&self, admitted: super::native_admission::Admitted) {
-        let super::native_admission::Admitted { inputs, changed } = admitted;
+    pub(super) fn complete_native_inputs(
+        &self,
+        admitted: tilo_peer_state::owner::session::Admitted,
+    ) {
+        let tilo_peer_state::owner::session::Admitted { inputs, changed } = admitted;
         let room = inputs.first().map(|(input, _)| input.room());
         for (input, report) in inputs {
             self.complete_native_input(input, changed, report);
@@ -558,35 +528,17 @@ impl ShellNetwork {
         );
         // The durable owner already projected governed shell state. Only an exact
         // admitted app operation may now reach the existing broker fanout.
-        if !matches!(
-            report.primary(),
-            tilo_peer_state::InputDisposition::Accepted(_)
-                | tilo_peer_state::InputDisposition::Duplicate(_)
-        ) {
-            return;
-        }
-        if let NeighbourMsg::AppDocument {
-            peer,
-            app_id,
-            cluster_id,
-            record_id,
-            envelope,
-        } = input.message()
+        if let Some(write) = input.app_write(&report)
+            && write.peer != self.local_peer_hash
         {
-            if *peer == self.local_peer_hash || cluster_id != &input.room().to_string() {
-                return;
-            }
-            let Ok(author) = input.standing() else {
-                return;
-            };
             self.handle_document_message(
-                *peer,
-                app_id.clone(),
-                cluster_id.clone(),
-                record_id.clone(),
-                author,
-                input.retained(),
-                (**envelope).clone(),
+                write.peer,
+                write.app_id,
+                write.cluster_id,
+                write.record_id,
+                write.author,
+                write.replayed,
+                write.envelope,
             );
         }
     }

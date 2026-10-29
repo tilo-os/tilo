@@ -740,15 +740,20 @@ pub enum PeerDepartureCause {
 }
 
 enum InternalEvent {
+    /// A room's hold reached a host: the session runs until the actor lets
+    /// go of `held`.
     NativeHostConnected {
         ws: u64,
-        serial: u64,
-        hint: Box<tilo_peer_state::join::TransportHint>,
-        /// The host dialled: the governor `hint` names, or a host of the
-        /// room while the governor is out of reach.
+        session: Box<RelayCoeditSession>,
+        scope: Arc<native_ingress::Scope>,
+        held: tokio::sync::oneshot::Sender<()>,
+    },
+    /// A room's hold failed to dial `via`, its `governor` or another host.
+    NativeDialFailed {
+        ws: u64,
         via: Box<tilo_peer_state::join::TransportHint>,
-        certificate: DeviceCert,
-        result: Box<Result<RelayCoeditSession, tilo_peer_state::owner::session::DialError>>,
+        governor: bool,
+        error: tilo_peer_state::owner::session::DialError,
     },
     ActionClosed {
         ws: WorkspaceId,
@@ -948,6 +953,8 @@ impl HostedTopic {
 
 struct HostRuntime {
     native_scope: Option<Arc<native_ingress::Scope>>,
+    /// Held while a room's hold runs this session; let go with it.
+    native_held: Option<tokio::sync::oneshot::Sender<()>>,
     /// The session goes to this device's own host, in this process: no
     /// remote party, nothing to keep up.
     local: bool,
@@ -1564,6 +1571,8 @@ impl Drop for HostRuntime {
         if let Some(scope) = &self.native_scope {
             scope.close();
         }
+        // The room's hold dials again once its session is let go.
+        drop(self.native_held.take());
         self.pump.abort();
         if let Some(task) = &self.actions {
             task.abort();
@@ -2919,12 +2928,16 @@ impl ActorState {
             }
             Some(InternalEvent::NativeHostConnected {
                 ws,
-                serial,
-                hint,
+                session,
+                scope,
+                held,
+            }) => self.native_host_connected(ws, *session, scope, held),
+            Some(InternalEvent::NativeDialFailed {
+                ws,
                 via,
-                certificate,
-                result,
-            }) => self.native_host_connected(ws, serial, (*hint, *via), certificate, result),
+                governor,
+                error,
+            }) => self.native_dial_failed(ws, &via, governor, error),
             Some(InternalEvent::Host {
                 ws,
                 peer,
@@ -3253,6 +3266,7 @@ impl ActorState {
                     HostRuntime {
                         replaying,
                         native_scope: None,
+                        native_held: None,
                         local: false,
                         governor: None,
                         actions,
@@ -3421,13 +3435,15 @@ impl ActorState {
         tracing::info!(ws, host = %peer, "workspace host session ended; the next heartbeat dials it again");
         if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
             runtime.pump.abort();
-            if let Some(scope) = runtime.native_scope.clone() {
-                self.native_session_closed(ws, &scope);
+            if runtime.native_scope.is_some() {
+                drop(runtime);
+                // The room's hold dials again at once: no heartbeat runs
+                // for a room this device's own host serves.
+                self.native_routes.retry(ws);
                 // What this device holds for the room is not on its way now.
                 self.tell_unsynced(ws);
-            }
-            // This device's own host is no peer of it.
-            if runtime.local && runtime.native_scope.is_none() {
+            } else if runtime.local {
+                // This device's own host is no peer of it.
                 return None;
             }
         }
