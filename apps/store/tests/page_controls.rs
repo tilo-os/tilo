@@ -24,8 +24,8 @@ fn lay_out(app: StoreApp) -> Framed<StoreApp> {
 }
 
 fn staged(scenario: &str) -> StoreApp {
-    let mut app = store::fixture::seeded_app();
-    app.stage_scene(Some(scenario));
+    let app = store::fixture::seeded_app();
+    app.state().stage_scene(Some(scenario));
     app
 }
 
@@ -118,8 +118,8 @@ fn a_remote_rows_persistent_toggle_invokes_its_own_disable_action() {
 /// A search that finds nothing offers one way back, bound to the browse action.
 #[test]
 fn an_empty_search_offers_to_clear_it() {
-    let mut store = store::fixture::seeded_app();
-    store.set_query("zzzz-nothing-matches".into());
+    let store = store::fixture::seeded_app();
+    store.state().set_query("zzzz-nothing-matches".into());
     let mut app = lay_out(store);
     // The empty state carries the action's id; its button is the part a
     // pointer presses.
@@ -153,7 +153,7 @@ fn the_window_bars_search_searches_the_catalogue() {
         store.set_query_text("Notes");
     }));
     assert_eq!(
-        app.query(),
+        app.state().query(),
         "Notes",
         "typing in the bar searches the catalogue"
     );
@@ -162,5 +162,9 @@ fn the_window_bars_search_searches_the_catalogue() {
         "the Store draws no search field of its own"
     );
     ui::widget::with_queryable(&mut *app, &mut |store| store.query_closed());
-    assert_eq!(app.query(), "", "closing the bar's search clears it");
+    assert_eq!(
+        app.state().query(),
+        "",
+        "closing the bar's search clears it"
+    );
 }

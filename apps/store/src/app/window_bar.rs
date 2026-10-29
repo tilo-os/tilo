@@ -15,7 +15,7 @@ use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
 };
 
-use super::{StoreApp, VIEWS, View};
+use super::{StoreApp, StoreState, VIEWS, View};
 use crate::bindings;
 use crate::resource::StoreEffect;
 use ui::widget::Widget as _;
@@ -23,7 +23,7 @@ use ui::widget::Widget as _;
 /// A view's slot id: `view:` and its name in [`VIEWS`].
 const VIEW_PREFIX: &str = "view:";
 
-impl StoreApp {
+impl StoreState {
     /// Whether the window shows the catalogue (no page or list over it).
     pub(super) fn shows_catalogue(&self) -> bool {
         !self.safety_open && !self.remotes_open && self.focused_detail.is_none()
@@ -113,39 +113,6 @@ impl StoreApp {
         base
     }
 
-    /// Declare the window bar's slots and queue what the person did there
-    /// as the controls bound to the same actions queue it. Returns whether
-    /// anything was queued.
-    pub(super) fn sync_window_toolbar(&mut self) -> bool {
-        let mut acted = false;
-        for event in ui::window_toolbar::take_events() {
-            if let Some(root) = self.root.as_mut()
-                && root.window_toolbar_event(&event)
-            {
-                acted = true;
-                continue;
-            }
-            if self.bar.as_ref().is_some_and(|bar| bar.press(&event)) {
-                acted = true;
-                continue;
-            }
-            let ToolbarEvent::Action { id } = event else {
-                continue;
-            };
-            if let Some(invocation) = Self::view_invocation(&id) {
-                self.bar_controls.push_back(invocation);
-                acted = true;
-            }
-        }
-        let base = self
-            .root
-            .as_ref()
-            .map(|root| root.window_toolbar())
-            .unwrap_or_default();
-        ui::window_toolbar::declare(Some(self.window_toolbar(base)));
-        acted
-    }
-
     /// The invocation of the view action the view slot `id` stands for.
     fn view_invocation(id: &str) -> Option<ControlInvocation> {
         let view = id.strip_prefix(VIEW_PREFIX)?;
@@ -154,9 +121,46 @@ impl StoreApp {
     }
 }
 
+impl StoreApp {
+    /// Declare the window bar's slots and queue what the person did there
+    /// as the controls bound to the same actions queue it. Returns whether
+    /// anything was queued.
+    pub(super) fn sync_window_toolbar(&mut self) -> bool {
+        let mut store = self.state.borrow_mut();
+        let mut acted = false;
+        for event in ui::window_toolbar::take_events() {
+            if let Some(root) = self.root.as_mut()
+                && root.window_toolbar_event(&event)
+            {
+                acted = true;
+                continue;
+            }
+            if store.bar.as_ref().is_some_and(|bar| bar.press(&event)) {
+                acted = true;
+                continue;
+            }
+            let ToolbarEvent::Action { id } = event else {
+                continue;
+            };
+            if let Some(invocation) = StoreState::view_invocation(&id) {
+                store.bar_controls.push_back(invocation);
+                acted = true;
+            }
+        }
+        let base = self
+            .root
+            .as_ref()
+            .map(|root| root.window_toolbar())
+            .unwrap_or_default();
+        ui::window_toolbar::declare(Some(store.window_toolbar(base)));
+        acted
+    }
+}
+
 impl ui::widget::controls::ActionControls for StoreApp {
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.bar_controls.pop_front().or_else(|| {
+        let queued = self.state().bar_controls.pop_front();
+        queued.or_else(|| {
             self.children_mut()
                 .into_iter()
                 .find_map(ui::widget::controls::take_control_invocation)
@@ -164,7 +168,7 @@ impl ui::widget::controls::ActionControls for StoreApp {
     }
 
     fn has_pending_control_invocation(&self) -> bool {
-        !self.bar_controls.is_empty()
+        !self.state.borrow().bar_controls.is_empty()
             || self
                 .children()
                 .into_iter()

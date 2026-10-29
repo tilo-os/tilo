@@ -71,16 +71,16 @@ fn close(a: f64, b: f64, what: &str) {
 }
 
 fn staged(scenario: &str) -> StoreApp {
-    let mut app = store::fixture::seeded_app();
-    app.stage_scene(Some(scenario));
+    let app = store::fixture::seeded_app();
+    app.state().stage_scene(Some(scenario));
     app
 }
 
 #[test]
 fn catalogue_toolbar_is_the_window_bars_and_sections_share_one_column() {
     let theme = ui::Theme::dark();
-    let mut store = store::fixture::seeded_app();
-    store.set_items(store::fixture::fixture_catalog());
+    let store = store::fixture::seeded_app();
+    store.state().set_items(store::fixture::fixture_catalog());
     let app = lay_out(store, (1200.0, 800.0));
     let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
     let views = toolbar
@@ -231,8 +231,10 @@ fn publisher_presentation_precedes_package_facts() {
         ui::Theme::high_contrast(),
     ] {
         for width in [480.0, 1200.0] {
-            let mut store = staged("detail");
-            store.set_image_store(Some(store::fixture::artwork_store()));
+            let store = staged("detail");
+            store
+                .state()
+                .set_image_store(Some(store::fixture::artwork_store()));
             let app = Framed::new(
                 ui::State::new(),
                 store,

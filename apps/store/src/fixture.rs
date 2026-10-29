@@ -324,9 +324,12 @@ pub(crate) fn capture_catalog(_scenario: Option<&str>) -> Vec<StoreItem> {
 }
 
 pub fn seeded_app() -> StoreApp {
-    let mut app = StoreApp::new();
-    app.set_flatpak_available(true);
-    app.set_items(fixture_catalog());
+    let app = StoreApp::new();
+    {
+        let mut state = app.state();
+        state.set_flatpak_available(true);
+        state.set_items(fixture_catalog());
+    }
     app
 }
 
@@ -392,7 +395,7 @@ mod tests {
 
     #[test]
     fn seeded_app_lists_the_fixture_catalogue() {
-        assert_eq!(seeded_app().items().len(), fixture_catalog().len());
+        assert_eq!(seeded_app().state().items().len(), fixture_catalog().len());
     }
 
     /// The bundled artwork serves every icon and preview the fixture names,

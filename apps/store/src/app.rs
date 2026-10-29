@@ -1,4 +1,6 @@
-//! `StoreApp` — the root widget.
+//! The App Store's window: [`StoreState`] holds what it shows and the view
+//! shares it with its effect handler; [`StoreApp`] composes it into the
+//! window's shell.
 //!
 //! The Store's screens are composed in `view` from the toolkit's content
 //! widgets, one column on the window ground each:
@@ -20,20 +22,15 @@
 //! what they show in place as it lands. Every change (a package job, a view,
 //! a block, a report edit) goes through the Store's published actions.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use ui::widget::{AppModel, ModelPath};
 
-use taffy::{NodeId, Size, Style, TaffyTree};
-use ui::a11y::{AccessNode, Politeness, Role};
+use taffy::{NodeId, Style, TaffyTree};
+use ui::Theme;
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_actions::{ActionSpec, ResourcePresentation};
 use ui::tilo_resource::Effect as _;
-use ui::widget::Widget;
-use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
 
 use crate::catalogue::{AppDetails, BlockList, Home, SearchResults, Unblocked as _};
 use crate::model::{ActionKind, StoreItem, StoreSource};
@@ -41,7 +38,11 @@ use crate::reports::{Reports as Store, reports as verbs};
 use crate::resource::{ReportProjection, StoreEffect};
 use crate::worker::{Outcome, Request, StoreWorker};
 mod view;
+mod window;
 mod window_bar;
+
+pub use window::StoreApp;
+pub(crate) use window::window;
 
 /// Build a taffy node from `children` already built in the same tree.
 /// `new_with_children` only fails when a child id does not resolve in this
@@ -114,7 +115,7 @@ const UNKNOWN_OPERATION_STATUS: &str = "No additional details were provided.";
 /// catalogue description is malformed or unexpectedly huge.
 const MAX_RESOURCE_DETAIL_BYTES: usize = 140;
 /// The published page of catalogue rows stays small. Every app beyond it
-/// still resolves by id ([`StoreApp::live_row`]) and through the Store's
+/// still resolves by id ([`StoreState::live_row`]) and through the Store's
 /// search, so this never hides a catalogue entry from agents or Ctrl+K.
 const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 /// How many remote and moderation jobs may wait on the worker at once.
@@ -455,9 +456,11 @@ fn store_owner() -> ui::attention::Owner {
               between them and would touch sync/draw/handle_event call sites \
               across this file"
 )]
-pub struct StoreApp {
-    /// Where report edits go; `None` until the framework attaches the
-    /// surface.
+/// What the window shows and the view's effect handler answers with: the
+/// catalogue, where the person is, the reports, the worker and the jobs it
+/// runs.
+pub struct StoreState {
+    /// Where report edits go; `None` until the view attaches the window.
     dispatcher: Option<Dispatcher<Store>>,
     /// The serialized package and catalogue worker of a live window.
     worker: Option<StoreWorker>,
@@ -555,12 +558,6 @@ pub struct StoreApp {
     composition_dirty: bool,
     /// Composition captures page measures and eager localized labels.
     composition_context: Option<(Theme, String, ui::i18n::PseudoLocale)>,
-    /// The rect the toplevel container resolves into during
-    /// `apply_layout` — needed for `get_rect`.
-    rect: Rect,
-    /// Root of the built layout so events can be routed to the
-    /// composed sub-tree.
-    root: Option<Box<ui::widget::NavShell>>,
     /// Whether the open page has somewhere to go back to; the window's Back reads it.
     can_go_back: Rc<Cell<bool>>,
     /// The window's Back was pressed; the next event or sync returns to the catalogue.
@@ -589,13 +586,7 @@ pub struct StoreApp {
     images: Option<ui::ImageStore>,
 }
 
-impl Default for StoreApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl StoreApp {
+impl StoreState {
     pub fn new() -> Self {
         crate::resource::STORE_CATALOG.ensure();
         Self {
@@ -641,8 +632,6 @@ impl StoreApp {
             structure_dirty: true,
             composition_dirty: true,
             composition_context: None,
-            rect: Rect::ZERO,
-            root: None,
             can_go_back: Rc::new(Cell::new(false)),
             back_requested: Rc::new(Cell::new(false)),
             bar_controls: std::collections::VecDeque::new(),
@@ -724,7 +713,7 @@ impl StoreApp {
         let current = self
             .worker
             .take()
-            .ok_or_else(|| "the live surface must already have its mounted worker".to_owned())?;
+            .ok_or_else(|| "the live window must already have its mounted worker".to_owned())?;
         self.worker = Some(current.with_connected_host(self.directory.clone(), fd));
         self.set_worker_busy(true);
         Ok(())
@@ -1404,7 +1393,7 @@ impl StoreApp {
     }
 }
 
-impl ui::widget::Collaborative for StoreApp {
+impl ui::widget::Collaborative for StoreState {
     fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         std::mem::take(&mut self.launch_requests)
     }
@@ -1438,7 +1427,7 @@ impl ui::widget::Collaborative for StoreApp {
 
 /// The window bar's search is the Store's: what is typed searches the
 /// catalogue in place, and closing the search clears it.
-impl ui::widget::Queryable for StoreApp {
+impl ui::widget::Queryable for StoreState {
     fn set_query_text(&mut self, text: &str) {
         self.set_query(text.to_owned());
     }
@@ -1453,214 +1442,12 @@ impl ui::widget::Queryable for StoreApp {
     }
 }
 
-impl Widget for StoreApp {
-    ui::provides!(
-        dyn ui::widget::Collaborative,
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::widget::Queryable
-    );
+/// The state as the window and the view's effect handler share it.
+type Shared = Rc<RefCell<StoreState>>;
 
-    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.answer_presses();
-        let changed = self
-            .root
-            .as_mut()
-            .is_some_and(|root| root.update(state, path))
-            | self.sync_window_toolbar();
-        if self.back_requested.take() {
-            self.show_catalogue();
-            self.structure_dirty = true;
-            true
-        } else {
-            changed
-        }
-    }
-
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.answer_presses();
-        self.drain_worker();
-        self.sync_window_toolbar();
-        if let Some(root) = self.root.as_mut() {
-            root.sync(state, path);
-        }
-        self.request_from_worker();
-        self.publish_status();
-    }
-
-    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        self.root
-            .as_ref()
-            .and_then(|root| root.next_wake_deadline())
-            .into_iter()
-            .min()
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let locale = ui::i18n::I18nManager::current_locale();
-        let pseudo = ui::i18n::I18nManager::pseudo_locale();
-        let recompose = self.structure_dirty
-            || self.composition_dirty
-            || self.root.is_none()
-            || self.composition_context.as_ref().is_none_or(
-                |(previous_theme, previous_locale, previous_pseudo)| {
-                    previous_theme != theme
-                        || previous_locale != &locale
-                        || *previous_pseudo != pseudo
-                },
-            );
-        self.structure_dirty = false;
-        let jobs = self.jobs.clone();
-        let mut root = self.root.take().unwrap_or_else(|| {
-            let can = Rc::clone(&self.can_go_back);
-            let requested = Rc::clone(&self.back_requested);
-            Box::new(
-                ui::widget::NavShell::new()
-                    .content_kind(ui::widget::ContentKind::Grid)
-                    .with_page_column(f32::from(view::Measure::CATALOGUE_LINES))
-                    .with_id("store.shell")
-                    .with_window_toolbar()
-                    .bottom_band(Box::new(ui::jobs::Band::with_presses(jobs.clone())))
-                    .on_back(move || can.get(), move || requested.set(true)),
-            )
-        });
-        if recompose {
-            // A resize only reflows retained controls. Replacing them here
-            // discards input state and their text/layout caches.
-            self.can_go_back
-                .set(self.safety_open || self.remotes_open || self.focused_detail.is_some());
-            root.set_content(self.compose(theme));
-            self.composition_context = Some((theme.clone(), locale, pseudo));
-            self.composition_dirty = false;
-        }
-        let child = root.build_layout(taffy, theme, node_map);
-        self.root = Some(root);
-        // A column, so the page's scroller can absorb the window's height.
-        let node = parent_node(
-            taffy,
-            Style {
-                flex_direction: taffy::FlexDirection::Column,
-                flex_grow: 1.0,
-                size: Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            },
-            &[child],
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
-        if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node))
-            && let Some(&child_node) = children.first()
-        {
-            root.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(root) = self.root.as_mut() {
-            root.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(root) = self.root.as_mut() {
-            root.draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
-            && let Some(&child_node) = children.first()
-        {
-            root.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-        }
-        if self.back_requested.take() {
-            self.show_catalogue();
-            self.structure_dirty = true;
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.root
-            .as_ref()
-            .map(|r| r.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.root
-            .as_mut()
-            .map(|r| r.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
-
-    fn name(&self) -> &'static str {
-        "StoreApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// The composed child tree supplies individual control semantics; the
-    /// canvas-free root still names the application for assistive technology.
-    fn accessibility(&self) -> Option<AccessNode> {
-        let mut root = AccessNode::new(Role::Window)
-            .with_name("App Store")
-            .with_bounds(self.rect);
-        if !self.status_line.is_empty() {
-            root.children.push(
-                AccessNode::new(Role::Group)
-                    .with_name(self.status_line.clone())
-                    .with_live(Politeness::Polite),
-            );
-        }
-        Some(root)
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        self.composition_dirty |= own;
-        let child = self.root.as_mut().is_some_and(|r| r.take_structure_dirty());
-        own || child
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        self.root
-            .as_ref()
-            .is_some_and(|r| r.needs_animation_frame())
-            || self
-                .images
-                .as_ref()
-                .is_some_and(|images| images.pending() > 0)
-            || self.worker.as_ref().is_some_and(StoreWorker::has_pending)
+impl Default for StoreState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1701,7 +1488,7 @@ impl Job {
     }
 }
 
-impl StoreApp {
+impl StoreState {
     /// Take what the worker finished: the catalogue, a detail page, the
     /// remotes, the status line.
     fn drain_worker(&mut self) {
@@ -1926,11 +1713,13 @@ impl StoreApp {
     }
 
     /// Answer `effect`: move around the window, or start the job it asks
-    /// for.
+    /// for. `shared` is this state as the view shares it, for the jobs that
+    /// finish after the answer.
     pub(crate) fn answer(
         &mut self,
         effect: StoreEffect,
-        cx: &mut EffectCx<Store, Self>,
+        cx: &mut EffectCx<Store>,
+        shared: &Shared,
     ) -> EffectAnswer {
         if let StoreEffect::PrepareModeration { app, appeal } = &effect {
             return self
@@ -1958,27 +1747,32 @@ impl StoreApp {
                     ui::portal::FileFilter::new(&ui::i18n!("store-package-file-type"))
                         .glob("*.tapp"),
                 ),
-                |app, chosen, cx| {
-                    let Some(chosen) = chosen else {
-                        return Ok(Effected::done());
-                    };
-                    app.imported_review = None;
-                    app.start_job(
-                        Job {
-                            request: Request::ImportPackage(crate::package_import::Input::Bytes(
-                                chosen.bytes,
-                            )),
-                            finish: Finish::Status,
-                        },
-                        cx,
-                    )
+                {
+                    let shared = Rc::clone(shared);
+                    move |&mut (), chosen, cx| {
+                        let Some(chosen) = chosen else {
+                            return Ok(Effected::done());
+                        };
+                        let mut app = shared.borrow_mut();
+                        app.imported_review = None;
+                        app.start_job(
+                            Job {
+                                request: Request::ImportPackage(
+                                    crate::package_import::Input::Bytes(chosen.bytes),
+                                ),
+                                finish: Finish::Status,
+                            },
+                            cx,
+                            &shared,
+                        )
+                    }
                 },
             ));
         }
         match self.admit(effect)? {
             Admitted::Done => Ok(Effected::done()),
-            Admitted::Job(job) => self.start_job(job, cx),
-            Admitted::Export(envelope) => self.export(&envelope, cx),
+            Admitted::Job(job) => self.start_job(job, cx, shared),
+            Admitted::Export(envelope) => self.export(&envelope, cx, shared),
         }
     }
 
@@ -2464,7 +2258,7 @@ impl StoreApp {
         Ok((item.clone(), registry_name.clone()))
     }
 
-    fn start_job(&mut self, job: Job, cx: &mut EffectCx<Store, Self>) -> EffectAnswer {
+    fn start_job(&mut self, job: Job, cx: &mut EffectCx<Store>, shared: &Shared) -> EffectAnswer {
         let parent = ui::invocation_scope::current_invoker().and_then(|_| cx.invocation());
         let Job { request, finish } = job;
         // The app the operation is about, so its own job ends with it even
@@ -2480,9 +2274,10 @@ impl StoreApp {
             );
             let work = cx.external_moderation(operation)?;
             self.pending_jobs += 1;
+            let shared = Rc::clone(shared);
             return Ok(cx.spawn(
                 move |_| work,
-                move |app: &mut Self, result, cx| {
+                move |&mut (), result, cx| {
                     let outcome = result.map(|case| crate::worker::Finished {
                         status: if appeal {
                             "Appeal submitted. Refresh to verify its status.".into()
@@ -2492,7 +2287,14 @@ impl StoreApp {
                         case: Some(case),
                         ..Default::default()
                     });
-                    app.finish_job(&finish, operating.clone(), outcome, parent, cx)
+                    shared.borrow_mut().finish_job(
+                        &finish,
+                        operating.clone(),
+                        outcome,
+                        parent,
+                        cx,
+                        &shared,
+                    )
                 },
             ));
         }
@@ -2512,14 +2314,17 @@ impl StoreApp {
             self.pending_jobs += 1;
         }
         self.set_worker_busy(true);
+        let shared = Rc::clone(shared);
         Ok(cx.thread(
             move |_| {
                 outcome
                     .recv()
                     .unwrap_or_else(|_| Err("the Store worker stopped".into()))
             },
-            move |app: &mut Self, outcome: Outcome, cx| {
-                app.finish_job(&finish, operating, outcome, parent, cx)
+            move |&mut (), outcome: Outcome, cx| {
+                shared
+                    .borrow_mut()
+                    .finish_job(&finish, operating, outcome, parent, cx, &shared)
             },
         ))
     }
@@ -2530,12 +2335,13 @@ impl StoreApp {
         operating: Option<String>,
         outcome: Outcome,
         parent: Option<ui::tilo_actions::InvocationId>,
-        cx: &mut EffectCx<Store, Self>,
+        cx: &mut EffectCx<Store>,
+        shared: &Shared,
     ) -> EffectAnswer {
         if let Ok(finished) = &outcome
             && let Some(launch) = &finished.launch
         {
-            return self.start_application_launch(launch.clone(), parent, cx);
+            return self.start_application_launch(launch.clone(), parent, cx, shared);
         }
         if *finish == Finish::Package {
             self.active_operation = None;
@@ -2582,7 +2388,8 @@ impl StoreApp {
         &mut self,
         launch: crate::actions::ApplicationLaunch,
         parent: Option<ui::tilo_actions::InvocationId>,
-        cx: &mut EffectCx<Store, Self>,
+        cx: &mut EffectCx<Store>,
+        shared: &Shared,
     ) -> EffectAnswer {
         let Some(request_id) = self.next_launch_request.take() else {
             self.active_operation = None;
@@ -2610,6 +2417,7 @@ impl StoreApp {
                 on_behalf_of: parent,
             },
         );
+        let shared = Rc::clone(shared);
         Ok(cx.thread(
             move |_| {
                 result
@@ -2618,7 +2426,8 @@ impl StoreApp {
                         Err("the workspace host did not answer the application launch".into())
                     })
             },
-            move |app: &mut Self, result, _| {
+            move |&mut (), result, _| {
+                let mut app = shared.borrow_mut();
                 app.pending_launches.remove(&request_id);
                 app.active_operation = None;
                 app.structure_dirty = true;
@@ -2648,7 +2457,7 @@ impl StoreApp {
         package_id: &str,
         case_id: &str,
         status: &str,
-        cx: &EffectCx<Store, Self>,
+        cx: &EffectCx<Store>,
     ) -> Result<(), String> {
         match case_record(app_id, package_id, case_id, status) {
             Ok(record) => {
@@ -2667,7 +2476,8 @@ impl StoreApp {
     fn export(
         &mut self,
         envelope: &ReportEnvelope,
-        cx: &mut EffectCx<Store, Self>,
+        cx: &mut EffectCx<Store>,
+        shared: &Shared,
     ) -> EffectAnswer {
         let bytes = serde_json::to_vec_pretty(envelope).map_err(|e| e.to_string())?;
         let suggested = format!(
@@ -2683,6 +2493,7 @@ impl StoreApp {
             .send();
         self.status_line = "Choose where to export the report evidence…".into();
         self.structure_dirty = true;
+        let shared = Rc::clone(shared);
         Ok(cx.thread(
             move |_| match picked.recv() {
                 Ok(ui::portal::PortalOutcome::Opened(path)) => {
@@ -2694,7 +2505,8 @@ impl StoreApp {
                 Ok(ui::portal::PortalOutcome::Failed(message)) => Err(message),
                 Err(_) => Err("the file picker closed without an answer".into()),
             },
-            |app: &mut Self, exported: Result<Option<std::path::PathBuf>, String>, _| {
+            move |&mut (), exported: Result<Option<std::path::PathBuf>, String>, _| {
+                let mut app = shared.borrow_mut();
                 app.structure_dirty = true;
                 match exported {
                     Ok(Some(path)) => {
@@ -2981,7 +2793,7 @@ fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
     })
 }
 
-impl StoreApp {
+impl StoreState {
     fn admit_update_all(&mut self) -> Result<Admitted, String> {
         let updatable = self.updatable();
         let Some(&(first, action)) = updatable.first() else {
@@ -3113,6 +2925,10 @@ fn ask_who_works_here() -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::bindings;
+    use ui::a11y::{AccessNode, Politeness, Role};
+    use ui::text_render::TextRenderer;
+    use ui::widget::Widget;
+    use vello::kurbo::{Point, Rect};
 
     #[test]
     fn runtime_install_action_is_bound_to_the_reviewed_root() {
@@ -3121,7 +2937,7 @@ mod tests {
         item.versions[0].root_hash_hex = Some("11".repeat(32));
         item.versions[0].runtime = Some("tilo-runtime/2026.10.4-chromium".into());
         let action = StoreEffect::package(ActionKind::RuntimeInstall, &item).unwrap();
-        let mut app = StoreApp::new();
+        let mut app = StoreState::new();
         app.set_items(vec![item.clone()]);
         assert_eq!(
             app.inspect_catalogue(Some(&item.id)).unwrap()["detail"]["runtime"],
@@ -3411,9 +3227,11 @@ mod tests {
     fn completed_empty_search_offers_the_declared_filter_reset() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.show_capture_catalogue(crate::fixture::fixture_catalog());
-            store.set_worker_busy(false);
+            store.state().worker = None;
+            store
+                .state()
+                .show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.state().set_worker_busy(false);
         })
         .unwrap();
         app.effect(&StoreEffect::SetSearch {
@@ -3421,20 +3239,22 @@ mod tests {
         })
         .unwrap();
         app.with_surface(|store: &mut StoreApp| {
-            store.apply_worker_snapshot(crate::worker::Snapshot {
-                items: Vec::new(),
-                status_line: "0 search results".into(),
-                query: Some("no-matching-app".into()),
-                detail: None,
-                remotes: Vec::new(),
-                flatpak_available: true,
-                flatpak_error: None,
-                operation_error: None,
-                unanswered_repositories: Vec::new(),
-                expired_repositories: Vec::new(),
-                blocks: BlockList::empty(),
-                updating: None,
-            });
+            store
+                .state()
+                .apply_worker_snapshot(crate::worker::Snapshot {
+                    items: Vec::new(),
+                    status_line: "0 search results".into(),
+                    query: Some("no-matching-app".into()),
+                    detail: None,
+                    remotes: Vec::new(),
+                    flatpak_available: true,
+                    flatpak_error: None,
+                    operation_error: None,
+                    unanswered_repositories: Vec::new(),
+                    expired_repositories: Vec::new(),
+                    blocks: BlockList::empty(),
+                    updating: None,
+                });
         })
         .unwrap();
         for role in [ui::permissions::Role::Owner, ui::permissions::Role::Viewer] {
@@ -3469,8 +3289,8 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot["query"], "");
         app.with_surface(|store: &mut StoreApp| {
-            assert_eq!(store.query(), "");
-            assert!(store.results.is_empty());
+            assert_eq!(store.state().query(), "");
+            assert!(store.state().results.is_empty());
         })
         .unwrap();
     }
@@ -3503,9 +3323,9 @@ mod tests {
         });
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.set_items(vec![bot]);
-            store.focus_detail("so.tilo.bots.bridge");
+            store.state().worker = None;
+            store.state().set_items(vec![bot]);
+            store.state().focus_detail("so.tilo.bots.bridge");
         })
         .unwrap();
         let visible = app.harness().inspection_json().unwrap();
@@ -3533,22 +3353,24 @@ mod tests {
         })
         .unwrap();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.apply_worker_snapshot(crate::worker::Snapshot {
-                items: Vec::new(),
-                status_line: String::new(),
-                query: Some("no-matching-app".into()),
-                detail: None,
-                remotes: Vec::new(),
-                flatpak_available: true,
-                flatpak_error: None,
-                operation_error: None,
-                unanswered_repositories: Vec::new(),
-                expired_repositories: Vec::new(),
-                blocks: BlockList::empty(),
-                updating: None,
-            });
-            store.set_worker_busy(true);
+            store.state().worker = None;
+            store
+                .state()
+                .apply_worker_snapshot(crate::worker::Snapshot {
+                    items: Vec::new(),
+                    status_line: String::new(),
+                    query: Some("no-matching-app".into()),
+                    detail: None,
+                    remotes: Vec::new(),
+                    flatpak_available: true,
+                    flatpak_error: None,
+                    operation_error: None,
+                    unanswered_repositories: Vec::new(),
+                    expired_repositories: Vec::new(),
+                    blocks: BlockList::empty(),
+                    updating: None,
+                });
+            store.state().set_worker_busy(true);
         })
         .unwrap();
         let visible = app.harness().inspection_json().unwrap();
@@ -3558,15 +3380,17 @@ mod tests {
         );
         assert!(!visible.contains("No apps found"));
         app.with_surface(|store: &mut StoreApp| {
-            store.set_worker_busy(false);
-            store.set_operation_error(Some("Repository unavailable".into()));
+            store.state().set_worker_busy(false);
+            store
+                .state()
+                .set_operation_error(Some("Repository unavailable".into()));
         })
         .unwrap();
         let visible = app.harness().inspection_json().unwrap();
         assert!(visible.contains("Can't reach the app catalogue"));
         assert!(visible.contains("Repository unavailable"));
         assert!(!visible.contains("No apps found"));
-        app.with_surface(|store: &mut StoreApp| store.set_operation_error(None))
+        app.with_surface(|store: &mut StoreApp| store.state().set_operation_error(None))
             .unwrap();
         app.effect(&StoreEffect::ClearFilters).unwrap();
         let visible = app.harness().inspection_json().unwrap();
@@ -3581,25 +3405,27 @@ mod tests {
         // expired and installed apps keep working.
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.apply_worker_snapshot(crate::worker::Snapshot {
-                items: Vec::new(),
-                status_line: String::new(),
-                query: None,
-                detail: None,
-                remotes: Vec::new(),
-                flatpak_available: true,
-                flatpak_error: None,
-                operation_error: Some(
-                    "The app catalogue from Tilo main has expired. Apps you have keep working."
-                        .into(),
-                ),
-                unanswered_repositories: Vec::new(),
-                expired_repositories: vec!["Tilo main".into()],
-                blocks: BlockList::empty(),
-                updating: None,
-            });
-            store.set_worker_busy(false);
+            store.state().worker = None;
+            store
+                .state()
+                .apply_worker_snapshot(crate::worker::Snapshot {
+                    items: Vec::new(),
+                    status_line: String::new(),
+                    query: None,
+                    detail: None,
+                    remotes: Vec::new(),
+                    flatpak_available: true,
+                    flatpak_error: None,
+                    operation_error: Some(
+                        "The app catalogue from Tilo main has expired. Apps you have keep working."
+                            .into(),
+                    ),
+                    unanswered_repositories: Vec::new(),
+                    expired_repositories: vec!["Tilo main".into()],
+                    blocks: BlockList::empty(),
+                    updating: None,
+                });
+            store.state().set_worker_busy(false);
         })
         .unwrap();
         let visible = app.harness().inspection_json().unwrap();
@@ -3633,9 +3459,12 @@ mod tests {
         }
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.stage_scene(Some("remotes"));
-            store.remote_name_state.set("fedora-origin".to_owned());
+            store.state().worker = None;
+            store.state().stage_scene(Some("remotes"));
+            store
+                .state()
+                .remote_name_state
+                .set("fedora-origin".to_owned());
         })
         .unwrap();
         app.harness().resize((1472, 920)).unwrap();
@@ -3669,8 +3498,8 @@ mod tests {
     fn retained_store_repaints_each_theme_and_reflows_larger_text() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.stage_scene(Some("remotes"));
+            store.state().worker = None;
+            store.state().stage_scene(Some("remotes"));
         })
         .unwrap();
         app.harness().resize((520, 820)).unwrap();
@@ -3743,21 +3572,23 @@ mod tests {
     fn independent_repository_warning_stays_visible_and_other_actions_enabled() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.set_operation_error(None);
-            store.set_items(crate::fixture::fixture_catalog());
-            store.set_flatpak_available(true);
-            store.set_worker_busy(false);
-            store.set_remotes(vec![crate::flathub_client::Remote {
-                name: "fedora".into(),
-                url: "https://example.invalid/fedora".into(),
-                title: "Fedora Flatpaks".into(),
-                disabled: false,
-                user_managed: false,
-                catalogue_error: Some(
-                    "Could not read Fedora Flatpaks: Unable to load summary".into(),
-                ),
-            }]);
+            store.state().worker = None;
+            store.state().set_operation_error(None);
+            store.state().set_items(crate::fixture::fixture_catalog());
+            store.state().set_flatpak_available(true);
+            store.state().set_worker_busy(false);
+            store
+                .state()
+                .set_remotes(vec![crate::flathub_client::Remote {
+                    name: "fedora".into(),
+                    url: "https://example.invalid/fedora".into(),
+                    title: "Fedora Flatpaks".into(),
+                    disabled: false,
+                    user_managed: false,
+                    catalogue_error: Some(
+                        "Could not read Fedora Flatpaks: Unable to load summary".into(),
+                    ),
+                }]);
         })
         .unwrap();
         for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
@@ -3780,7 +3611,7 @@ mod tests {
                             && !control.disabled)
                 );
                 app.with_surface(|store: &mut StoreApp| {
-                    assert!(store.inspect_catalogue(None).unwrap()["error"].is_null());
+                    assert!(store.state().inspect_catalogue(None).unwrap()["error"].is_null());
                 })
                 .unwrap();
             }
@@ -3793,7 +3624,7 @@ mod tests {
             std::env::var_os("TILO_STORE_PRESENTATION_REVIEW_DIR").map(std::path::PathBuf::from);
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
+            store.state().worker = None;
             let mut items = crate::fixture::fixture_catalog();
             let native = items
                 .iter_mut()
@@ -3801,7 +3632,7 @@ mod tests {
                 .unwrap();
             native.versions[0].version =
                 "0.1.79285+g4b07574f432de8ca4fc7f108e07c0237b75b4b05".into();
-            store.set_items(items);
+            store.state().set_items(items);
             let remote = crate::flathub_client::Remote {
                 name: "fedora".into(),
                 url: "https://example.invalid/fedora".into(),
@@ -3810,14 +3641,16 @@ mod tests {
                 user_managed: false,
                 catalogue_error: None,
             };
-            store.set_worker_busy(false);
-            store.set_operation_error(Some(crate::flathub_client::remote_error(
-                &remote,
-                &app_host::client::CatalogueError::Refused {
-                    refusal: app_host::client::Refusal::TimedOut,
-                    detail: "command timed out after 8000 ms".into(),
-                },
-            )));
+            store.state().set_worker_busy(false);
+            store
+                .state()
+                .set_operation_error(Some(crate::flathub_client::remote_error(
+                    &remote,
+                    &app_host::client::CatalogueError::Refused {
+                        refusal: app_host::client::Refusal::TimedOut,
+                        detail: "command timed out after 8000 ms".into(),
+                    },
+                )));
         })
         .unwrap();
         for (name, theme) in [
@@ -3901,11 +3734,13 @@ mod tests {
         for &(scenario, action) in OWNER_CASES.iter().skip(share).step_by(OWNER_SHARES) {
             let (_environment, _directory, mut app) = inspected_store();
             app.with_surface(|store: &mut StoreApp| {
-                store.worker = None;
-                store.set_operation_error(None);
-                store.set_worker_busy(false);
-                store.show_capture_catalogue(crate::fixture::capture_catalog(Some(scenario)));
-                store.stage_scene(Some(scenario));
+                store.state().worker = None;
+                store.state().set_operation_error(None);
+                store.state().set_worker_busy(false);
+                store
+                    .state()
+                    .show_capture_catalogue(crate::fixture::capture_catalog(Some(scenario)));
+                store.state().stage_scene(Some(scenario));
             })
             .unwrap();
             for theme in ["light", "dark", "high-contrast"] {
@@ -4057,9 +3892,11 @@ mod tests {
     fn account_source_controls_preserve_viewer_admin_denial() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.show_capture_catalogue(crate::fixture::fixture_catalog());
-            store.stage_scene(Some("remotes-disabled"));
+            store.state().worker = None;
+            store
+                .state()
+                .show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.state().stage_scene(Some("remotes-disabled"));
         })
         .unwrap();
         app.set_role(ui::permissions::Role::Viewer);
@@ -4099,9 +3936,11 @@ mod tests {
     fn technical_package_details_use_the_declared_read_action_for_owner_and_viewer() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.show_capture_catalogue(crate::fixture::fixture_catalog());
-            store.focus_detail("so.tilo.notes");
+            store.state().worker = None;
+            store
+                .state()
+                .show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.state().focus_detail("so.tilo.notes");
         })
         .unwrap();
         for role in [ui::permissions::Role::Owner, ui::permissions::Role::Viewer] {
@@ -4158,17 +3997,21 @@ mod tests {
         ] {
             let (_environment, _directory, mut app) = inspected_store();
             app.with_surface(|store: &mut StoreApp| {
-                store.worker = None;
-                store.show_capture_catalogue(crate::fixture::fixture_catalog());
-                store.set_flatpak_available(true);
-                store.set_remotes(vec![crate::flathub_client::Remote {
-                    name: "flathub".into(),
-                    title: "Flathub".into(),
-                    url: "https://dl.flathub.org/repo/".into(),
-                    disabled: false,
-                    user_managed: false,
-                    catalogue_error: None,
-                }]);
+                store.state().worker = None;
+                store
+                    .state()
+                    .show_capture_catalogue(crate::fixture::fixture_catalog());
+                store.state().set_flatpak_available(true);
+                store
+                    .state()
+                    .set_remotes(vec![crate::flathub_client::Remote {
+                        name: "flathub".into(),
+                        title: "Flathub".into(),
+                        url: "https://dl.flathub.org/repo/".into(),
+                        disabled: false,
+                        user_managed: false,
+                        catalogue_error: None,
+                    }]);
             })
             .unwrap();
             app.set_role(role);
@@ -4208,17 +4051,21 @@ mod tests {
         ] {
             let (_environment, _directory, mut app) = inspected_store();
             app.with_surface(|store: &mut StoreApp| {
-                store.worker = None;
-                store.show_capture_catalogue(crate::fixture::fixture_catalog());
-                store.set_flatpak_available(true);
-                store.set_remotes(vec![crate::flathub_client::Remote {
-                    name: "flathub".into(),
-                    title: "Flathub".into(),
-                    url: "https://dl.flathub.org/repo/".into(),
-                    disabled: false,
-                    user_managed: false,
-                    catalogue_error: None,
-                }]);
+                store.state().worker = None;
+                store
+                    .state()
+                    .show_capture_catalogue(crate::fixture::fixture_catalog());
+                store.state().set_flatpak_available(true);
+                store
+                    .state()
+                    .set_remotes(vec![crate::flathub_client::Remote {
+                        name: "flathub".into(),
+                        title: "Flathub".into(),
+                        url: "https://dl.flathub.org/repo/".into(),
+                        disabled: false,
+                        user_managed: false,
+                        catalogue_error: None,
+                    }]);
             })
             .unwrap();
             app.set_role(role);
@@ -4246,18 +4093,22 @@ mod tests {
     fn flatpak_observation_errors_are_truthful_on_the_live_owner_surface() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.show_capture_catalogue(crate::fixture::fixture_catalog());
-            store.set_remotes(vec![crate::flathub_client::Remote {
-                name: "flathub".into(),
-                title: "Flathub".into(),
-                url: "https://dl.flathub.org/repo/".into(),
-                disabled: false,
-                user_managed: false,
-                catalogue_error: None,
-            }]);
-            store.set_flatpak_available(false);
-            store.flatpak_error = Some("The app service is unavailable.".into());
+            store.state().worker = None;
+            store
+                .state()
+                .show_capture_catalogue(crate::fixture::fixture_catalog());
+            store
+                .state()
+                .set_remotes(vec![crate::flathub_client::Remote {
+                    name: "flathub".into(),
+                    title: "Flathub".into(),
+                    url: "https://dl.flathub.org/repo/".into(),
+                    disabled: false,
+                    user_managed: false,
+                    catalogue_error: None,
+                }]);
+            store.state().set_flatpak_available(false);
+            store.state().flatpak_error = Some("The app service is unavailable.".into());
         })
         .unwrap();
         assert!(
@@ -4291,16 +4142,20 @@ mod tests {
     fn catalogue_inspection_uses_the_published_effect_without_navigation_or_document_edits() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.show_capture_catalogue(crate::fixture::fixture_catalog());
-            store.set_remotes(vec![crate::flathub_client::Remote {
-                name: "flathub".into(),
-                title: "Flathub".into(),
-                url: "https://dl.flathub.org/repo/".into(),
-                disabled: false,
-                user_managed: true,
-                catalogue_error: None,
-            }]);
+            store.state().worker = None;
+            store
+                .state()
+                .show_capture_catalogue(crate::fixture::fixture_catalog());
+            store
+                .state()
+                .set_remotes(vec![crate::flathub_client::Remote {
+                    name: "flathub".into(),
+                    title: "Flathub".into(),
+                    url: "https://dl.flathub.org/repo/".into(),
+                    disabled: false,
+                    user_managed: true,
+                    catalogue_error: None,
+                }]);
         })
         .unwrap();
         let versions = app.versions().len();
@@ -4356,7 +4211,7 @@ mod tests {
     fn catalogue_inspection_bounds_pages_and_untrusted_copy_through_the_surface() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
+            store.state().worker = None;
             let mut items = crate::fixture::fixture_catalog();
             let template = items.remove(0);
             let items = (0..200)
@@ -4367,7 +4222,7 @@ mod tests {
                     item
                 })
                 .collect();
-            store.set_items(items);
+            store.state().set_items(items);
         })
         .unwrap();
         let first = app
@@ -4449,8 +4304,8 @@ mod tests {
         .unwrap()
     }
 
-    fn seeded_app() -> StoreApp {
-        let mut app = StoreApp::new();
+    fn seeded_app() -> StoreState {
+        let mut app = StoreState::new();
         app.set_flatpak_available(true);
         app.set_items(vec![
             item(
@@ -4578,17 +4433,21 @@ mod tests {
     fn account_remote_enabled_controls_are_accessible_on_the_owner_surface() {
         let (_environment, _directory, mut app) = inspected_store();
         app.with_surface(|store: &mut StoreApp| {
-            store.worker = None;
-            store.show_capture_catalogue(crate::fixture::fixture_catalog());
-            store.set_remotes(vec![crate::flathub_client::Remote {
-                name: "custom-tools".into(),
-                title: "Custom tools".into(),
-                url: "https://tools.example.test/repo/".into(),
-                disabled: true,
-                user_managed: true,
-                catalogue_error: None,
-            }]);
-            store.show_remotes();
+            store.state().worker = None;
+            store
+                .state()
+                .show_capture_catalogue(crate::fixture::fixture_catalog());
+            store
+                .state()
+                .set_remotes(vec![crate::flathub_client::Remote {
+                    name: "custom-tools".into(),
+                    title: "Custom tools".into(),
+                    url: "https://tools.example.test/repo/".into(),
+                    disabled: true,
+                    user_managed: true,
+                    catalogue_error: None,
+                }]);
+            store.state().show_remotes();
         })
         .unwrap();
         let control = app
@@ -4601,8 +4460,8 @@ mod tests {
             .unwrap();
         assert!(!control.disabled);
         app.with_surface(|store: &mut StoreApp| {
-            store.remotes[0].disabled = false;
-            store.structure_dirty = true;
+            store.state().remotes[0].disabled = false;
+            store.state().structure_dirty = true;
         })
         .unwrap();
         let control = app
@@ -5042,7 +4901,7 @@ mod tests {
     fn resource_snapshots_are_bounded_and_resolve_canonically() {
         {
             let directory = crate::search::StoreDirectory::default();
-            let mut app = StoreApp::new().with_directory(directory.clone());
+            let mut app = StoreState::new().with_directory(directory.clone());
             let indexed = item(
                 "Indexed catalogue row",
                 StoreSource::Flathub,
@@ -5079,7 +4938,7 @@ mod tests {
         }
 
         {
-            let mut app = StoreApp::new();
+            let mut app = StoreState::new();
             let mut items = Vec::new();
             for index in 0..(RESOURCE_SNAPSHOT_LIMIT + 17) {
                 let mut entry = item(
@@ -5194,11 +5053,13 @@ mod tests {
         }
 
         {
-            let mut app = seeded_app();
+            let store = seeded_app();
             let doc = AutoCommit::new();
-            app.remote_name_state.set("studio-tools".into());
-            app.remote_url_state
+            store.remote_name_state.set("studio-tools".into());
+            store
+                .remote_url_state
                 .set("https://apps.tilo.so/artifacts/repo".into());
+            let mut app = StoreApp::showing(store);
             app.sync(&doc, &automerge::ROOT);
             assert!(doc.keys(&automerge::ROOT).all(|key| {
                 !key.starts_with("store.remote_name") && !key.starts_with("store.remote_url")
@@ -5295,7 +5156,7 @@ mod tests {
         }
 
         {
-            let mut app = StoreApp::new();
+            let mut app = StoreState::new();
             app.set_worker_busy(true);
             let tree = app.compose(&Theme::dark());
             assert_eq!(
@@ -5335,7 +5196,7 @@ mod tests {
     /// A category longer than a page offers Show more only while there is more.
     #[test]
     fn a_long_category_shows_more_on_request() {
-        let mut app = StoreApp::new();
+        let mut app = StoreState::new();
         let items = (0..(view::PAGE * 2 + 5))
             .map(|index| {
                 let mut entry = item(
@@ -5351,7 +5212,7 @@ mod tests {
             .collect();
         app.set_items(items);
         app.show_view(View::Category("Utilities".into()));
-        let has = |app: &StoreApp, id: &str| {
+        let has = |app: &StoreState, id: &str| {
             let frame = frame_composition(app.compose(&Theme::dark()), 800.0);
             has_test_id(frame.root_widget(), id)
         };
@@ -5696,7 +5557,7 @@ mod tests {
         }
 
         {
-            let mut app = seeded_app();
+            let mut app = StoreApp::showing(seeded_app());
             app.rect = Rect::new(0.0, 0.0, 640.0, 480.0);
             let node = app.accessibility().expect("store exports a root node");
             assert_eq!(node.role, Role::Window);
@@ -5745,8 +5606,8 @@ mod tests {
         }
 
         {
-            let mut app = seeded_app();
-            app.set_status_line("Installing Notes…");
+            let app = StoreApp::showing(seeded_app());
+            app.state().set_status_line("Installing Notes…");
             let node = app.accessibility().expect("store exports a root node");
             let status = node.children.first().expect("status live region");
             assert_eq!(status.name.as_deref(), Some("Installing Notes…"));
@@ -5754,7 +5615,7 @@ mod tests {
         }
     }
 
-    fn admitted_job(app: &mut StoreApp, effect: StoreEffect) -> Job {
+    fn admitted_job(app: &mut StoreState, effect: StoreEffect) -> Job {
         match app.admit(effect) {
             Ok(Admitted::Job(job)) => job,
             Ok(_) => panic!("a job"),
@@ -5762,7 +5623,7 @@ mod tests {
         }
     }
 
-    fn draft(app: &mut StoreApp, note: &str) {
+    fn draft(app: &mut StoreState, note: &str) {
         app.present_reports(&[ReportProjection {
             id: "report:id.notes".into(),
             app_id: "id.notes".into(),
@@ -5934,17 +5795,18 @@ mod tests {
         {
             // The live app must show a real (empty) catalog until the
             // refresh worker streams one — never a fabricated one.
-            let app = StoreApp::new();
+            let app = StoreState::new();
             assert!(app.items().is_empty());
             assert_eq!(app.view(), &View::Home);
             assert!(app.query().is_empty());
         }
 
         {
-            let mut app = seeded_app();
+            let mut app = StoreApp::showing(seeded_app());
             let doc = AutoCommit::new();
-            app.set_query("Term".into());
+            app.state().set_query("Term".into());
             app.sync(&doc, &automerge::ROOT);
+            let app = app.state();
             assert_eq!(app.query(), "Term");
             let names: Vec<&str> = app
                 .visible_items()
@@ -5955,15 +5817,15 @@ mod tests {
         }
 
         {
-            let mut first = seeded_app();
-            let mut second = seeded_app();
+            let mut first = StoreApp::showing(seeded_app());
+            let mut second = StoreApp::showing(seeded_app());
             let mut doc = AutoCommit::new();
             let heads = doc.get_heads();
-            first.show_view(View::Category("Games".into()));
+            first.state().show_view(View::Category("Games".into()));
             first.sync(&doc, &automerge::ROOT);
             second.sync(&doc, &automerge::ROOT);
-            assert_eq!(first.view(), &View::Category("Games".into()));
-            assert_eq!(second.view(), &View::Home);
+            assert_eq!(first.state().view(), &View::Category("Games".into()));
+            assert_eq!(second.state().view(), &View::Home);
             assert_eq!(doc.get_heads(), heads, "browsing writes nothing");
         }
 
