@@ -2,26 +2,33 @@
 //! a name it never registers is never listed, and a walk waiting for it
 //! runs out its timeout.
 
-/// A checkbox is named by its row (`with_id`); the first argument of
-/// `Checkbox::new` names nothing.
+/// The setup app draws onboarding's controls. A checkbox is named by the
+/// acknowledgement it is built as (`acknowledgement(id, ..)` names its row
+/// with `with_id`); any other control by its id.
 #[test]
 fn the_walk_presses_the_sessions_own_controls() {
-    // The view and the page modules beside it.
-    let shell = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../shell/src");
-    let mut view = std::fs::read_to_string(shell.join("onboarding_view.rs")).unwrap();
-    for entry in std::fs::read_dir(shell.join("onboarding_view")).unwrap() {
+    let app = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../onboarding/src");
+    let mut view = String::new();
+    for entry in std::fs::read_dir(app).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|ext| ext == "rs") {
             view.push_str(&std::fs::read_to_string(path).unwrap());
         }
     }
+    let acknowledgements: Vec<&str> = view
+        .match_indices("acknowledgement(")
+        .map(|(at, _)| {
+            let rest = &view[at..];
+            &rest[..rest.find(')').unwrap_or(rest.len())]
+        })
+        .collect();
     for press in onboarding_walk::PRESSES {
-        let name = press.name;
+        let quoted = format!("\"{}\"", press.name);
         let named = if press.checkbox {
-            view.contains(&format!(".with_id(\"{name}\")"))
+            acknowledgements.iter().any(|call| call.contains(&quoted))
         } else {
-            view.contains(&format!("\"{name}\""))
+            view.contains(&quoted)
         };
-        assert!(named, "the onboarding view names no control {name}");
+        assert!(named, "the onboarding app names no control {}", press.name);
     }
 }

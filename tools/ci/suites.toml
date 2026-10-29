@@ -799,8 +799,8 @@ readers = [
 
 [[cargo]]
 package = "onboarding-walk"
-# The names test reads the shell's onboarding view it walks.
-inputs = ["crates/session/shell/src/onboarding_view.rs", "crates/session/shell/src/onboarding_view/"]
+# The names test reads the setup app whose controls it walks.
+inputs = ["crates/session/onboarding/src/"]
 readers = ["crates/session/onboarding-walk/tests/names.rs"]
 
 [[cargo]]

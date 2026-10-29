@@ -32,6 +32,8 @@ class ThinAppCompilerCacheTests(unittest.TestCase):
             (root / "bin/cargo").write_text(
                 f"#!{sys.executable}\n"
                 "import json, os, pathlib, sys\n"
+                "if sys.argv[1:2] == ['metadata']:\n"
+                "    print(json.dumps({'packages': []})); sys.exit(0)\n"
                 "pathlib.Path('invocation.json').write_text(json.dumps({'compiler': os.environ.get('RUSTC'), 'cargo_compiler': os.environ.get('CARGO_BUILD_RUSTC'), 'wrapper': os.environ.get('RUSTC_WRAPPER'), 'cache': os.environ.get('TILO_THIN_SCCACHE'), 'args': sys.argv[1:]}))\n"
                 "out = pathlib.Path('target/thin-app'); out.mkdir(parents=True)\n"
                 "(out / 'libruntime_dylib.so').touch()\n"
