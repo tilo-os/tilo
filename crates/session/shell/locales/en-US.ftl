@@ -949,6 +949,7 @@ launch-error-shell-owned-intent = Open this destination from the desktop control
 launch-error-identity-unavailable = The workspace identity could not be loaded. Try again.
 launch-error-app-not-in-workspace = This workspace doesn't include { $app }. An administrator can add it.
 launch-error-device-not-admitted = This device is no longer in this workspace. Join it again from the invitation.
+launch-error-room-not-enrolled = This device holds no enrollment in the workspace's room, and is not placing, joining or enrolling into it.
 launch-error-app-authorship-refused = This workspace's host did not let you add { $app }.
 launch-error-registry-unreadable = The app list could not be read. Try again.
 launch-error-sandbox-supervision = The app's file permissions could not be supervised. Try again.

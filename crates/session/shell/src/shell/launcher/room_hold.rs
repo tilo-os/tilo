@@ -325,9 +325,7 @@ pub(super) fn committed_device(
             }
             RoomStatus::Ready if !owner.contains_room(room) => {
                 return Err(LaunchError::DeviceNotAdmitted {
-                    detail: "this device holds no enrollment in the workspace's room, and is \
-                             not placing, joining or enrolling into it"
-                        .into(),
+                    detail: crate::shell::i18n::t("launch-error-room-not-enrolled"),
                 });
             }
             RoomStatus::Ready | RoomStatus::Waiting { .. } => {}

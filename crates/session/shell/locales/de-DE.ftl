@@ -946,6 +946,7 @@ launch-error-shell-owned-intent = Öffne dieses Ziel über die Desktop-Steuerele
 launch-error-identity-unavailable = Die Identität des Arbeitsbereichs konnte nicht geladen werden. Versuche es erneut.
 launch-error-app-not-in-workspace = Dieser Arbeitsbereich enthält { $app } nicht. Eine verwaltende Person kann sie hinzufügen.
 launch-error-device-not-admitted = Dieses Gerät ist nicht mehr in diesem Arbeitsbereich. Tritt ihm mit einer Einladung erneut bei.
+launch-error-room-not-enrolled = Dieses Gerät ist im Raum des Arbeitsbereichs nicht eingetragen und platziert, betritt oder trägt sich dort auch nicht ein.
 launch-error-app-authorship-refused = Der Host dieses Arbeitsbereichs hat dir nicht erlaubt, { $app } hinzuzufügen.
 launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Versuche es erneut.
 launch-error-sandbox-supervision = Die Dateiberechtigungen der App konnten nicht überwacht werden. Versuche es erneut.
