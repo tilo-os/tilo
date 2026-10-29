@@ -25,6 +25,7 @@ mod expr;
 mod holder;
 mod native;
 mod optional;
+mod order;
 mod outcomes;
 mod platform;
 mod pred;

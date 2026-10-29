@@ -41,6 +41,7 @@ pub mod derive;
 pub mod lists;
 pub mod merged;
 pub mod overlay;
+pub mod reflect;
 pub mod select;
 pub mod view;
 
@@ -59,7 +60,7 @@ use self::codec::Corrupt;
 use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 3;
+pub const FORMAT: u32 = 4;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.
@@ -755,7 +756,7 @@ impl Snapshot {
         for entry in self.fields.iter()? {
             let (key, value) = entry?;
             let (resource, field) = key.value();
-            let shown = if field.starts_with('$') {
+            let shown = if field.starts_with('$') && !reflect::is_reflected(field) {
                 codec::get_text(value.value())?
             } else {
                 format!("{:?}", codec::get_value(value.value())?)
@@ -845,11 +846,10 @@ impl<'t> Writer<'t> {
         let (dirs, pages) = std::mem::take(&mut self.lists).finish();
         for ((list, seq), entries) in pages {
             match entries {
-                Some(entries) => {
-                    self.tables.pages.insert(
-                        (list.as_str(), seq),
-                        lists::encode_page(&entries).as_slice(),
-                    )?;
+                Some(page) => {
+                    self.tables
+                        .pages
+                        .insert((list.as_str(), seq), page.sealed().as_slice())?;
                 }
                 None => {
                     self.tables.pages.remove((list.as_str(), seq))?;

@@ -151,6 +151,9 @@ imports! {
     Lenses = "lenses" ([H] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);
+    VersionEnd = "version_end" ([H, I32] -> [H]);
+    CollOrdered = "coll_ordered" ([H, H] -> [H]);
+    CollWhereWith = "coll_where_with" ([H, H, H] -> [H]);
     Query = "query" ([H, H, H, H] -> [H]);
     Filters = "filters" ([H] -> [H]);
     IdentPart = "ident_part" ([H, I32] -> [H]);

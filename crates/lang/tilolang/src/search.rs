@@ -200,6 +200,8 @@ impl Ctx<'_> {
             info: self.info,
             env: self.env,
             fields: Fields::Own,
+            outer: None,
+            captured: std::cell::RefCell::default(),
         };
         match lower.pred(expr) {
             Ok(pred) => Some(FilterMeta {
@@ -444,9 +446,17 @@ struct Lower<'a> {
     info: &'a TypeInfo,
     env: &'a Env,
     fields: Fields<'a>,
+    /// The type of a name the asking code holds (a local, a parameter), which a lambda's
+    /// predicate may compare a field with: `None` for none.
+    outer: Option<&'a Outer<'a>>,
+    /// The names it compares, in the order of their [`Operand::Arg`]s.
+    captured: std::cell::RefCell<Vec<String>>,
 }
 
 type Lowered<T> = Result<T, (Span, String)>;
+
+/// The type of a name the code asking a predicate holds, `None` for one it does not.
+type Outer<'a> = dyn Fn(&str) -> Option<Ty> + 'a;
 
 /// `param -> body` as a predicate over the fields of `info`, when it is one the store can
 /// answer: it reads only the item's fields and literals.
@@ -456,9 +466,33 @@ pub fn lambda_pred(info: &TypeInfo, env: &Env, param: &str, body: &Expr) -> Opti
         info,
         env,
         fields: Fields::Param(param),
+        outer: None,
+        captured: std::cell::RefCell::default(),
     }
     .pred(body)
     .ok()
+}
+
+/// As [`lambda_pred`], the predicate also comparing fields with names the asking code holds
+/// (`c -> c.column == col`), each of the type `outer` gives: the predicate and the names, in
+/// the order of its [`Operand::Arg`]s, whose values are bound when it is asked.
+#[must_use]
+pub fn lambda_pred_with(
+    info: &TypeInfo,
+    env: &Env,
+    param: &str,
+    body: &Expr,
+    outer: &dyn Fn(&str) -> Option<Ty>,
+) -> Option<(Pred<String>, Vec<String>)> {
+    let lower = Lower {
+        info,
+        env,
+        fields: Fields::Param(param),
+        outer: Some(outer),
+        captured: std::cell::RefCell::default(),
+    };
+    let pred = lower.pred(body).ok()?;
+    Some((pred, lower.captured.into_inner()))
 }
 
 impl Lower<'_> {
@@ -631,6 +665,33 @@ impl Lower<'_> {
             && matches!(field.ty, Ty::Set(_) | Ty::Collection(_) | Ty::Text)
         {
             return Ok((Operand::Len(field.id.clone()), Ty::Int));
+        }
+        // A value the asking code holds, compared as it is when the predicate is asked.
+        if let (ExprKind::Ident(name), Fields::Param(param), Some(outer)) =
+            (&e.kind, self.fields, self.outer)
+            && name != param
+            && let Some(ty) = outer(name)
+            && matches!(
+                held(&ty),
+                Ty::Int
+                    | Ty::Float
+                    | Ty::Bool
+                    | Ty::Text
+                    | Ty::Date
+                    | Ty::Time
+                    | Ty::Identifier
+                    | Ty::Record(_)
+            )
+        {
+            let mut captured = self.captured.borrow_mut();
+            let at = match captured.iter().position(|held| held == name) {
+                Some(at) => at,
+                None => {
+                    captured.push(name.clone());
+                    captured.len().saturating_sub(1)
+                }
+            };
+            return Ok((Operand::Arg(u32::try_from(at).unwrap_or(u32::MAX)), ty));
         }
         let (lit, ty) = self.literal(e, want)?;
         Ok((Operand::Lit(lit), ty))

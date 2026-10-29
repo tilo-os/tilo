@@ -1305,6 +1305,17 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
+        // `desc` after the key: the latest or largest first.
+        let (args, descending) = match args {
+            [key, order]
+                if order.name.is_none()
+                    && matches!(&order.value.kind, ExprKind::Ident(w) if w == "desc" || w == "asc") =>
+            {
+                let desc = matches!(&order.value.kind, ExprKind::Ident(w) if w == "desc");
+                (std::slice::from_ref(key), desc)
+            }
+            _ => (args, false),
+        };
         let lambda = match args {
             [a] if a.name.is_none() => super::optional::lambda_of(&a.value),
             _ => None,
@@ -1313,14 +1324,34 @@ impl Checker<'_> {
             self.err(
                 "E051",
                 span,
-                "`.sort_by` takes one lambda such as `.sort_by(x -> x.title)`, or a key path such as `.sort_by(.title)`",
+                "`.sort_by` takes one lambda such as `.sort_by(x -> x.title)`, or a key path such as `.sort_by(.title)`, and `desc` for the latest or largest first",
             );
             return Ex::error();
+        };
+        // Over a collection, a key the store can order by is asked of it first; the collection
+        // is held in a local for that, which the loop reads too.
+        let native = match &list.ty {
+            Ty::Collection(_) => self.sort_key(elem, &param.name, &body),
+            _ => None,
+        };
+        let (list, held) = match native {
+            Some(_) => {
+                let ty = list.ty.clone();
+                let local = self.fresh(ty.clone());
+                (Ex::local(local, ty), Some((local, list)))
+            }
+            None => (list, None),
         };
         let mut fl = self.new_for(list, elem);
         self.push_sink();
         self.bind_local(&param.name, fl.item_local);
-        let key = self.expr(&body, None);
+        let key = match &native {
+            // A version sorts by its time; none comes first.
+            Some(super::order::SortKey::Version { last }) => {
+                self.version_time(Ex::local(fl.item_local, elem.clone()), *last)
+            }
+            _ => self.expr(&body, None),
+        };
         if !matches!(
             key.ty,
             Ty::Int | Ty::Float | Ty::Text | Ty::Bool | Ty::Error
@@ -1351,7 +1382,14 @@ impl Checker<'_> {
             vec![Ex::local(list_local, Ty::Text), Ex::local(keys, keys_ty)],
             out_ty.clone(),
         );
-        Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty)
+        let looped = Ex::new(Ek::Seq(stmts, Box::new(sorted)), out_ty);
+        let looped = self.maybe_reversed(looped, elem, descending);
+        match (native, held) {
+            (Some(key), Some((local, held))) => {
+                self.ordered_or_loop(local, held, &key, descending, looped)
+            }
+            _ => looped,
+        }
     }
 
     /// The body of `filter`, `any`, `all`, `find` and `count`: tests the lambda on the item.
