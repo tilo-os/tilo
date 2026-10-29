@@ -36,9 +36,6 @@ pub fn mute_shown(english: &str) -> String {
 /// unwinding from a failed assertion. `HOME` and the cache directory stay put
 /// so the text stack keeps its font cache instead of rebuilding it per test.
 pub mod test_env {
-    use crate::settings_app::SettingsApp;
-    use crate::window::SettingsWindow;
-
     /// Holds the redirected environment for a test's duration.
     pub struct ConfigGuard {
         // Field order is drop order: restore the environment before the
@@ -63,34 +60,6 @@ pub mod test_env {
                 _env: env,
                 _dir: dir,
             }
-        }
-    }
-
-    /// A private config root handed to the app explicitly, leaving the
-    /// environment alone: for tests that construct and lay out the app but
-    /// persist nothing through the per-user settings file, so they run in
-    /// parallel with each other and with [`ConfigGuard`] tests.
-    pub struct ScratchConfig {
-        dir: tempfile::TempDir,
-    }
-
-    #[expect(
-        clippy::new_without_default,
-        reason = "making one creates a directory, which a default must not"
-    )]
-    impl ScratchConfig {
-        pub fn new() -> Self {
-            Self {
-                dir: tempfile::Builder::new()
-                    .prefix("tilo-settings-config-")
-                    .tempdir()
-                    .expect("create test config dir"),
-            }
-        }
-
-        /// The app over this scratch config root.
-        pub fn app(&self) -> SettingsWindow {
-            SettingsWindow::detached(SettingsApp::with_config_root(self.dir.path().join("tilo")))
         }
     }
 }

@@ -14,34 +14,28 @@
 
 use settings::categories::Category;
 use settings::widgets::spacing;
-use ui::headless::{FrameHarness, Framed};
+use ui::headless::FrameHarness;
 use ui::widget::Widget;
 use vello::kurbo::Rect;
 
-use crate::composition_balance::lay_out_at;
-
-/// The production layout cycle under a large-text preference: the theme
-/// carries `text_scale` and the renderer is told the same scale, exactly as
-/// the live host, the shared launcher and the headless harness do.
-fn lay_out_scaled<T: Widget + 'static>(
-    widget: T,
-    (w, h): (f32, f32),
+/// Settings on `category` under a large-text preference: the theme carries
+/// `text_scale` and the renderer is told the same scale, exactly as the live
+/// host, the shared launcher and the headless harness do. Not on Appearance,
+/// whose page shows the window in the person's own look.
+fn window_scaled(
+    category: Category,
+    viewport: (f32, f32),
     text_scale: f32,
-) -> Framed<T> {
-    Framed::new(
-        ui::State::new(),
-        widget,
-        ui::headless::viewport((w, h)),
+) -> crate::support::Window {
+    crate::support::window_themed(
+        category,
+        viewport,
         ui::Theme::dark().with_text_scale(text_scale),
     )
 }
 
 const WIDE: (f32, f32) = (1200.0, 760.0);
 const NARROW: (f32, f32) = (440.0, 820.0);
-
-fn lay_out<T: Widget + 'static>(widget: T, (w, h): (f32, f32)) -> Framed<T> {
-    lay_out_at(widget, w, h)
-}
 
 fn walk(w: &dyn Widget, f: &mut dyn FnMut(&dyn Widget)) {
     f(w);
@@ -135,11 +129,9 @@ fn same_centre_line(a: f64, b: f64, what: &str) {
 #[test]
 fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
     // Case `rows_share_one_leading_edge_and_one_height_at_1x`.
-    let config = crate::support::ScratchConfig::new();
     let metrics = ui::tokens::Metrics::default();
-    let app = config.app().with_category(Category::Appearance);
-    let app = lay_out(app, WIDE);
-    let rows: Vec<_> = crate::support::nav_rows(&*app)
+    let mut app = crate::support::window_on(Category::Appearance, WIDE);
+    let rows: Vec<_> = crate::support::nav_rows(app.harness().root_widget())
         .into_iter()
         .filter(|row| Category::ALL.iter().any(|c| c.label() == row.label))
         .collect();
@@ -162,9 +154,8 @@ fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
 
     // Case `rows_grow_with_large_text`.
     // 1800 px is above the scaled breakpoint, so the sidebar stays docked.
-    let large = config.app().with_category(Category::Appearance);
-    let large = lay_out_scaled(large, (1800.0, 900.0), 2.0);
-    let rows: Vec<_> = crate::support::nav_rows(&*large)
+    let mut large = window_scaled(Category::About, (1800.0, 900.0), 2.0);
+    let rows: Vec<_> = crate::support::nav_rows(large.harness().root_widget())
         .into_iter()
         .filter(|row| Category::ALL.iter().any(|c| c.label() == row.label))
         .collect();
@@ -356,19 +347,19 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
     // the sidebar at 1× and collapses to the single content screen at 200 %,
     // where the breakpoint and the sidebar width have grown with the type.
     {
-        let config = crate::support::ScratchConfig::new();
-        let one_x = config.app().with_category(Category::Appearance);
-        let one_x = lay_out(one_x, (900.0, 900.0));
-        assert!(!one_x.is_narrow(), "900 px docks the sidebar at 1×");
+        let mut one_x = crate::support::window_on(Category::About, (900.0, 900.0));
         assert!(
-            !crate::support::nav_rows(&*one_x).is_empty(),
+            !crate::support::shell(&mut one_x).narrow,
+            "900 px docks the sidebar at 1×"
+        );
+        assert!(
+            !crate::support::nav_rows(one_x.harness().root_widget()).is_empty(),
             "1×: the docked sidebar lists its categories"
         );
 
-        let two_x = config.app().with_category(Category::Appearance);
-        let two_x = lay_out_scaled(two_x, (900.0, 900.0), 2.0);
+        let mut two_x = window_scaled(Category::About, (900.0, 900.0), 2.0);
         assert!(
-            two_x.is_narrow(),
+            crate::support::shell(&mut two_x).narrow,
             "900 px is below the 200 % breakpoint, so the shell shows one screen"
         );
     }

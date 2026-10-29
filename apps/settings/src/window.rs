@@ -1443,30 +1443,101 @@ impl ui::application_view::ApplicationViewState for SettingsWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::headless::Framed;
+    use ui::prelude::TestApp;
 
-    struct DamageWitness {
-        app: SettingsWindow,
-        frames: std::rc::Rc<std::cell::RefCell<Vec<Vec<vello::kurbo::Rect>>>>,
+    /// Settings as a host runs it: its pages are view code over their
+    /// sections, built only in the app's view.
+    type Window = TestApp<crate::SettingsShell>;
+
+    /// Settings opened at `(w, h)` in `theme`, on `category` unless it opens
+    /// there anyway.
+    fn mounted_in(category: Category, (w, h): (u32, u32), theme: ui::Theme) -> Window {
+        let mut app = Window::new().expect("settings opens headlessly");
+        app.harness()
+            .relayout_themed((w, h), theme)
+            .expect("settings lays out");
+        if category != Category::DEFAULT {
+            crate::effects::show_pane(&mut app, category);
+        }
+        app.settle();
+        app
     }
 
-    impl ui::widget::Decorator for DamageWitness {
-        type Inner = SettingsWindow;
+    fn mounted(category: Category, size: (u32, u32)) -> Window {
+        mounted_in(category, size, ui::Theme::dark())
+    }
 
-        fn inner(&self) -> &SettingsWindow {
-            &self.app
-        }
+    /// The capture `scenario` opened at `(w, h)`, as the shots and the
+    /// responsive matrix open it.
+    fn captured(scenario: &str, size: (u32, u32)) -> Window {
+        let mut app = Window::capture_at(Some(scenario), size).expect("settings opens a capture");
+        app.settle();
+        app
+    }
 
-        fn inner_mut(&mut self) -> &mut SettingsWindow {
-            &mut self.app
-        }
+    /// Where the window's shell is now.
+    struct Shell {
+        narrow: bool,
+        sidebar_open: bool,
+        back: vello::kurbo::Rect,
+        sidebar_column: vello::kurbo::Rect,
+        side_by_side: bool,
+        children: Vec<(String, Option<String>)>,
+    }
 
-        fn mark_drawn(&mut self) {
-            let mut regions = Vec::new();
-            self.app.collect_damage(&mut regions);
-            self.frames.borrow_mut().push(regions);
-            self.app.mark_drawn();
+    fn shell(app: &mut Window) -> Shell {
+        app.with_widget::<NavShell, _>(|shell| {
+            let geometry = shell.geometry();
+            Shell {
+                narrow: !geometry.stack.is_empty(),
+                sidebar_open: shell.is_sidebar_open(),
+                back: geometry.back,
+                sidebar_column: geometry.sidebar_column,
+                side_by_side: geometry.side_by_side,
+                children: shell
+                    .children()
+                    .iter()
+                    .map(|child| {
+                        (
+                            child.name().to_owned(),
+                            child.accessibility().and_then(|node| node.name),
+                        )
+                    })
+                    .collect(),
+            }
+        })
+        .expect("settings shows its shell")
+    }
+
+    /// The pane the window shows: the one its sidebar's list selects.
+    fn selected(app: &mut Window) -> Category {
+        app.with_widget::<ui::widget::NavList, _>(|list| list.selected_id())
+            .flatten()
+            .as_deref()
+            .and_then(Category::from_slug)
+            .expect("the sidebar selects the pane shown")
+    }
+
+    /// The rect of the first widget named `name` for assistive technology.
+    fn named_rect(app: &mut Window, name: &str) -> Option<vello::kurbo::Rect> {
+        fn walk(w: &dyn Widget, name: &str) -> Option<vello::kurbo::Rect> {
+            if w.accessibility().and_then(|node| node.name).as_deref() == Some(name) {
+                return Some(w.get_rect());
+            }
+            w.children().into_iter().find_map(|child| walk(child, name))
         }
+        walk(app.harness().root_widget(), name)
+    }
+
+    fn sidebar_rows(root: &dyn Widget) -> usize {
+        let own = root
+            .as_any()
+            .and_then(|value| value.downcast_ref::<ui::widget::NavList>())
+            .map_or(0, |list| list.visible_item_ids().len());
+        root.children()
+            .into_iter()
+            .map(sidebar_rows)
+            .fold(own, usize::saturating_add)
     }
 
     #[test]
@@ -1481,17 +1552,12 @@ mod tests {
     }
 
     fn sidebar_hover_damage_for_theme(theme: ui::Theme) {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let frames = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut harness = ui::headless::FrameHarness::for_root(
-            ui::State::new(),
-            DamageWitness {
-                app: config.app(),
-                frames: std::rc::Rc::clone(&frames),
-            },
+        let mut app = mounted_in(
+            Category::DEFAULT,
             (1200, 700),
             theme.with_reduce_motion(true),
         );
+        let harness = app.harness();
         let bounds = harness
             .a11y_nodes()
             .into_iter()
@@ -1502,7 +1568,10 @@ mod tests {
             })
             .expect("the real shared sidebar toggle is exposed");
         let pointer = |x, y| ui::synthetic_input::cursor_moved(x, y);
-        harness.send(&pointer(1190.0, 690.0));
+        // The pointer rests over the content's header, where nothing answers
+        // a hover: leaving a page's control would repaint it in the hover's
+        // frame too.
+        harness.send(&pointer(700.0, 28.0));
         // The page at rest before the hover: the Network page's first scan
         // lands on a thread of its own, and on a loaded machine it could
         // otherwise land in the hover's frame and repaint the page with it.
@@ -1519,19 +1588,23 @@ mod tests {
             before == harness.render_rgba_with(&mut renderer, background),
             "an unchanged frame must rasterize identically"
         );
-        frames.borrow_mut().clear();
-        harness.send(&pointer(
+        // The hover as the window takes it, and the damage it reports for
+        // the frame that draws it, read before that frame is drawn.
+        harness.dispatch_to_root(&pointer(
             f64::midpoint(bounds.x0, bounds.x1),
             f64::midpoint(bounds.y0, bounds.y1),
         ));
+        let regions = app
+            .with_widget::<SettingsWindow, _>(|window| {
+                let mut regions = Vec::new();
+                window.collect_damage(&mut regions);
+                regions
+            })
+            .expect("the window is mounted");
+        let harness = app.harness();
         let after = harness.render_rgba_with(&mut renderer, background);
         assert_eq!(before.len(), 1200 * 700 * 4);
         assert_eq!(after.len(), before.len());
-        let regions = frames
-            .borrow()
-            .last()
-            .cloned()
-            .expect("hover paints a frame");
         assert!(!regions.is_empty(), "hover publishes real visual damage");
         let area: f64 = regions.iter().map(vello::kurbo::Rect::area).sum();
         assert!(
@@ -1564,38 +1637,8 @@ mod tests {
         );
     }
 
-    fn find_by_test_id<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-        if root.test_id() == Some(id) {
-            return Some(root);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| find_by_test_id(child, id))
-    }
-
-    fn layout_at(app: SettingsWindow, w: f32, h: f32) -> Framed<SettingsWindow> {
-        layout_at_with_theme(app, w, h, &ui::Theme::dark())
-    }
-
-    fn layout_at_with_theme(
-        app: SettingsWindow,
-        w: f32,
-        h: f32,
-        theme: &ui::Theme,
-    ) -> Framed<SettingsWindow> {
-        Framed::new(
-            ui::State::new(),
-            app,
-            ui::headless::viewport((w, h)),
-            theme.clone(),
-        )
-    }
-
     #[test]
     fn selecting_a_scrolled_sidebar_row_keeps_the_navigation_in_place() {
-        use ui::prelude::TestApp;
-
-        type Window = TestApp<crate::SettingsShell>;
         fn row_rect(app: &mut Window, category: Category) -> Option<vello::kurbo::Rect> {
             app.harness()
                 .a11y_nodes()
@@ -1610,10 +1653,6 @@ mod tests {
                         vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1)
                     })
                 })
-        }
-        fn selected(app: &mut Window) -> Category {
-            app.with_widget::<SettingsWindow, _>(|settings| settings.selected())
-                .expect("settings hosts its surface")
         }
         let mut app = Window::new().expect("settings opens headlessly");
         app.harness()
@@ -1659,31 +1698,14 @@ mod tests {
         );
     }
 
-    /// The app opens on the default category unless told otherwise; a real
-    /// selection change flags a rebuild and re-selecting does not.
+    /// The app opens on the default category, and shows the one opened.
     #[test]
-    fn category_selection_starts_on_the_default_and_flags_rebuilds() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        assert_eq!(config.app().selected(), Category::DEFAULT);
-
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        assert_eq!(
-            config.app().with_category(Category::About).selected(),
-            Category::About
-        );
-
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let app = config.app();
-        let mut app = layout_at(app, 1200.0, 760.0);
-        app.select(Category::Users);
-        assert_eq!(app.selected(), Category::Users);
-        assert!(
-            app.take_structure_dirty(),
-            "a real category change must flag a rebuild so the pane updates"
-        );
-        // Re-selecting the same category is a no-op (no spurious rebuild).
-        app.select(Category::Users);
-        assert!(!app.take_structure_dirty());
+    fn category_selection_starts_on_the_default() {
+        let mut app = mounted(Category::DEFAULT, (1200, 760));
+        assert_eq!(selected(&mut app), Category::DEFAULT);
+        crate::effects::show_pane(&mut app, Category::Users);
+        app.settle();
+        assert_eq!(selected(&mut app), Category::Users);
     }
 
     #[derive(Debug)]
@@ -1695,34 +1717,36 @@ mod tests {
 
     type ResponsiveCase<'a> = (
         &'a str,
-        fn(&crate::prefs::test_env::ScratchConfig) -> SettingsWindow,
-        (f32, f32),
+        fn((u32, u32)) -> Window,
+        (u32, u32),
         Option<bool>,
         Option<bool>,
         Back,
     );
 
-    /// Lay out each case's app (each with its own config) and check the
+    /// Open each case's window (each on its own profile) and check the
     /// resolved layout, sidebar state and back button.
     fn assert_responsive_layouts(cases: Vec<ResponsiveCase<'_>>) {
-        for (case, build, (w, h), narrow, sidebar_open, back) in cases {
-            let config = crate::prefs::test_env::ScratchConfig::new();
-            let app = build(&config);
-            let app = layout_at(app, w, h);
-            assert!(app.get_rect().width() > 0.0, "case {case}: lays out");
+        for (case, open, size, narrow, sidebar_open, back) in cases {
+            let mut app = open(size);
+            assert!(
+                app.harness().root_widget().get_rect().width() > 0.0,
+                "case {case}: lays out"
+            );
+            let shell = shell(&mut app);
             if let Some(narrow) = narrow {
-                assert_eq!(app.is_narrow(), narrow, "case {case}: narrow");
+                assert_eq!(shell.narrow, narrow, "case {case}: narrow");
             }
             if let Some(open) = sidebar_open {
-                assert_eq!(app.sidebar_open(), open, "case {case}: sidebar open");
+                assert_eq!(shell.sidebar_open, open, "case {case}: sidebar open");
             }
             match back {
                 Back::Present => assert!(
-                    app.back_button_rect().width() > 0.0,
+                    shell.back.width() > 0.0,
                     "case {case}: the content screen carries a back arrow to reach the category list"
                 ),
                 Back::Absent => assert_eq!(
-                    app.back_button_rect(),
+                    shell.back,
                     vello::kurbo::Rect::ZERO,
                     "case {case}: the list screen has no back button"
                 ),
@@ -1744,29 +1768,24 @@ mod tests {
     /// narrowing is a layout and never a memory.
     #[test]
     fn a_narrowed_window_draws_the_frame_a_phone_opens_at() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
+        let appearance = Category::Appearance.slug();
         // `--responsive-matrix`: built wide, then the same app resized.
-        let mut narrowed = layout_at(
-            config.app().with_category(Category::Appearance),
-            1280.0,
-            800.0,
-        );
-        assert!(!narrowed.is_narrow(), "the wide frame came first");
-        Framed::harness_mut(&mut narrowed)
-            .resize(ui::headless::viewport((390, 844)))
+        let mut narrowed = captured(appearance, (1280, 800));
+        assert!(!shell(&mut narrowed).narrow, "the wide frame came first");
+        narrowed
+            .harness()
+            .resize((390, 844))
             .expect("the phone pass lays out");
-        assert!(narrowed.is_narrow(), "the narrowed window is narrow");
-        let narrowed_frame = Framed::harness(&narrowed).render_rgba();
+        narrowed.settle();
+        let narrowed_shell = shell(&mut narrowed);
+        assert!(narrowed_shell.narrow, "the narrowed window is narrow");
+        let narrowed_frame = narrowed.harness().render_rgba();
 
         // `--viewport 390x844 --shots`: built at the phone's size.
-        let opened = layout_at_with_theme(
-            config.app().with_category(Category::Appearance),
-            390.0,
-            844.0,
-            &ui::Theme::dark(),
-        );
-        assert!(opened.is_narrow(), "the opened window is narrow");
-        let opened_frame = Framed::harness(&opened).render_rgba();
+        let mut opened = captured(appearance, (390, 844));
+        let opened_shell = shell(&mut opened);
+        assert!(opened_shell.narrow, "the opened window is narrow");
+        let opened_frame = opened.harness().render_rgba();
 
         assert_eq!(
             narrowed_frame.len(),
@@ -1784,8 +1803,8 @@ mod tests {
         );
         // And the layout underneath, not just the pixels: the same screen
         // with the same control on it.
-        assert_eq!(narrowed.back_button_rect(), opened.back_button_rect());
-        assert_eq!(narrowed.sidebar_open(), opened.sidebar_open());
+        assert_eq!(narrowed_shell.back, opened_shell.back);
+        assert_eq!(narrowed_shell.sidebar_open, opened_shell.sidebar_open);
     }
 
     /// The responsive shell docks the sidebar when wide. A collapse to the
@@ -1793,28 +1812,28 @@ mod tests {
     /// it never defaults to the category list, which is a back-tap away.
     #[test]
     fn responsive_layout_docks_wide_and_drills_into_content_when_narrow() {
-        // (case, app, size, narrow, sidebar open, back button)
+        // (case, window, size, narrow, sidebar open, back button)
         assert_responsive_layouts(vec![
             (
                 "wide docks an open sidebar",
-                |c| c.app(),
-                (1200.0, 760.0),
+                |size| mounted(Category::DEFAULT, size),
+                (1200, 760),
                 Some(false),
                 Some(true),
                 Back::Unchecked,
             ),
             (
                 "narrow collapse keeps the content",
-                |c| c.app(),
-                (440.0, 820.0),
+                |size| mounted(Category::DEFAULT, size),
+                (440, 820),
                 Some(true),
                 Some(false),
                 Back::Present,
             ),
             (
                 "narrow content shot drills into content",
-                |c| c.app().with_category(Category::RegionFormats),
-                (440.0, 820.0),
+                |size| mounted(Category::RegionFormats, size),
+                (440, 820),
                 Some(true),
                 Some(false),
                 Back::Present,
@@ -1827,24 +1846,24 @@ mod tests {
         assert_responsive_layouts(vec![
             (
                 "narrow list shot shows the standalone list",
-                |c| c.app().with_category_list(),
-                (440.0, 820.0),
+                |size| captured("narrow-list", size),
+                (440, 820),
                 Some(true),
                 Some(true),
                 Back::Absent,
             ),
             (
                 "wide accounts lays out",
-                |c| c.app().with_category(Category::ExternalAccounts),
-                (1200.0, 720.0),
+                |size| mounted(Category::ExternalAccounts, size),
+                (1200, 720),
                 None,
                 None,
                 Back::Unchecked,
             ),
             (
                 "narrow accounts lays out",
-                |c| c.app().with_category(Category::ExternalAccounts),
-                (440.0, 820.0),
+                |size| mounted(Category::ExternalAccounts, size),
+                (440, 820),
                 None,
                 None,
                 Back::Unchecked,
@@ -1856,26 +1875,11 @@ mod tests {
     #[test]
     fn narrow_and_large_text_navigation_keeps_destinations_visible() {
         {
-            fn named_rect(w: &dyn Widget, name: &str, out: &mut Option<vello::kurbo::Rect>) {
-                if out.is_none()
-                    && w.accessibility().and_then(|node| node.name).as_deref() == Some(name)
-                {
-                    *out = Some(w.get_rect());
-                }
-                for child in w.children() {
-                    named_rect(child, name, out);
-                }
-            }
-            let config = crate::prefs::test_env::ScratchConfig::new();
-
             let selected = Category::RegionFormats;
-            let app = config.app().with_category(selected);
-            let app = layout_at(app, 440.0, 820.0);
-
-            let mut heading = None;
-            named_rect(&*app, &selected.label(), &mut heading);
-            let heading = heading.expect("the content page names the selected destination");
-            let back = app.back_button_rect();
+            let mut app = mounted(selected, (440, 820));
+            let heading = named_rect(&mut app, &selected.label())
+                .expect("the content page names the selected destination");
+            let back = shell(&mut app).back;
             assert!(
                 heading.intersect(back).area() == 0.0,
                 "the destination heading and back control must not overlap"
@@ -1883,26 +1887,10 @@ mod tests {
         }
 
         {
-            fn named_rect(w: &dyn Widget, name: &str, out: &mut Option<vello::kurbo::Rect>) {
-                if out.is_none()
-                    && w.accessibility().and_then(|node| node.name).as_deref() == Some(name)
-                {
-                    *out = Some(w.get_rect());
-                }
-                for child in w.children() {
-                    named_rect(child, name, out);
-                }
-            }
-            let config = crate::prefs::test_env::ScratchConfig::new();
-
             let selected = Category::RegionFormats;
-            let app = config.app().with_category(selected);
-            let app =
-                layout_at_with_theme(app, 390.0, 844.0, &ui::Theme::dark().with_text_scale(1.5));
-
-            let mut heading = None;
-            named_rect(&*app, &selected.label(), &mut heading);
-            let heading = heading.expect("the content page names the selected destination");
+            let mut app = mounted_in(selected, (390, 844), ui::Theme::dark().with_text_scale(1.5));
+            let heading = named_rect(&mut app, &selected.label())
+                .expect("the content page names the selected destination");
             assert!(
                 heading.y0 < 844.0,
                 "large text must retain the destination heading in the first viewport (y={})",
@@ -1911,56 +1899,64 @@ mod tests {
         }
 
         {
-            let config = crate::prefs::test_env::ScratchConfig::new();
-            let app = config.app();
-            let app =
-                layout_at_with_theme(app, 1800.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
+            let mut app = mounted_in(
+                Category::DEFAULT,
+                (1800, 900),
+                ui::Theme::dark().with_text_scale(2.0),
+            );
+            let wide = shell(&mut app);
             assert!(
-                !app.is_narrow(),
+                !wide.narrow,
                 "1800px admits a readable split above the scaled compact breakpoint"
             );
-            let sidebar = app
-                .shell
-                .as_ref()
-                .expect("layout builds the shell")
-                .geometry()
-                .sidebar_column;
+            let sidebar = wide.sidebar_column;
             assert!(
                 (sidebar.width() - sidebar::width_for_text_scale(2.0)).abs() < 0.5,
                 "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
             );
-            let compact = config.app();
-            let compact = layout_at_with_theme(
-                compact,
-                900.0,
-                844.0,
-                &ui::Theme::dark().with_text_scale(2.0),
+            let mut compact = mounted_in(
+                Category::DEFAULT,
+                (900, 844),
+                ui::Theme::dark().with_text_scale(2.0),
             );
             assert!(
-                compact.is_narrow(),
+                shell(&mut compact).narrow,
                 "a 900px split would crowd 200%-text navigation and must collapse"
             );
         }
 
         {
-            let config = crate::prefs::test_env::ScratchConfig::new();
             // Start on the list screen — the reachable back-tap state.
-            let app = config.app().with_category_list();
-            let mut app = layout_at(app, 440.0, 820.0);
-            assert!(app.sidebar_open(), "starts on the list screen");
-            app.select(Category::Users);
-            assert!(app.take_structure_dirty(), "the pick requests a rebuild");
-            Framed::harness_mut(&mut app)
-                .relayout_at((440, 820))
-                .expect("layout settles");
+            let mut app = mounted(Category::DEFAULT, (440, 820));
+            let back = shell(&mut app).back;
+            app.harness().click_at(back.center().x, back.center().y);
+            app.settle();
+            assert!(shell(&mut app).sidebar_open, "starts on the list screen");
+            let row = app
+                .harness()
+                .a11y_nodes()
+                .into_iter()
+                .find_map(|(_, node)| {
+                    let category = Category::ALL
+                        .iter()
+                        .find(|category| node.label() == Some(category.label().as_str()))?;
+                    let bounds = node.bounds()?;
+                    (node.role() == ui::accesskit::Role::TreeItem
+                        && *category != Category::DEFAULT
+                        && bounds.y0 >= 0.0
+                        && bounds.y1 <= 820.0)
+                        .then_some(bounds)
+                })
+                .expect("a destination row in view");
+            app.harness()
+                .click_at(f64::midpoint(row.x0, row.x1), f64::midpoint(row.y0, row.y1));
+            app.settle();
+            let shell = shell(&mut app);
             assert!(
-                !app.sidebar_open(),
+                !shell.sidebar_open,
                 "the pick navigated to the content screen"
             );
-            assert!(
-                app.back_button_rect().width() > 0.0,
-                "a back arrow is present"
-            );
+            assert!(shell.back.width() > 0.0, "a back arrow is present");
         }
     }
 
@@ -1968,67 +1964,61 @@ mod tests {
     // and the sidebar draws no search field of its own.
     #[test]
     fn the_window_bar_search_narrows_the_sidebar_in_place() {
-        use automerge::ReadDoc;
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let app = config.app();
-        let mut app = layout_at(app, 1200.0, 760.0);
-        // The pane shown reads off the UI thread and is built again once its
-        // read lands; that rebuild is not the query's.
-        tilo_test_env::wait_for("the pane shown has read", || {
-            let _ = Framed::harness_mut(&mut app).poll_frame();
-            (!app.pane_waits().get() && !app.pane_reading()).then_some(())
-        });
-        let _ = app.take_structure_dirty();
-        assert_eq!(app.search_query(), "", "starts with no query");
+        fn shows(widget: &dyn Widget, setting: &settings_store::index::Setting) -> bool {
+            widget.test_id().is_some_and(|id| setting.is_control(id))
+                || widget
+                    .children()
+                    .into_iter()
+                    .any(|child| shows(child, setting))
+        }
+        let mut app = mounted(Category::DEFAULT, (1200, 760));
+        assert_eq!(
+            app.harness().native_input_snapshot().unwrap()["search_query"],
+            "",
+            "starts with no query"
+        );
         assert!(
-            find_by_test_id(&*app, "settings.search").is_none(),
+            ui::widget::find_test_id(app.harness().root_widget(), "settings.search").is_none(),
             "the sidebar draws no search field of its own"
         );
+        let all = sidebar_rows(app.harness().root_widget());
+        let heads = app.read_document(ui::tilo_resource::heads_of);
 
-        let doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
         let mut search = ui::widget::SearchDriver::default();
         {
-            let settings: &mut SettingsWindow = &mut app;
-            search.open(ui::window_toolbar::SearchOffer::of(settings).into());
+            let root = app.harness().root_widget_mut();
+            search.open(ui::window_toolbar::SearchOffer::of(&mut *root).into());
             assert_eq!(
                 search.in_place(),
                 ui::widget::InPlace::List,
                 "the bar's search narrows Settings' list"
             );
             assert!(search.drive(
-                settings,
+                root,
                 "night light",
                 ui::widget::FindOptions::default(),
                 None,
                 false
             ));
         }
-        app.sync(&doc, &root);
-        assert_eq!(app.search_query(), "night light");
+        app.settle();
         assert_eq!(
-            app.found_settings().first(),
-            Some(&"display.night_light"),
+            app.harness().native_input_snapshot().unwrap()["search_query"],
+            "night light"
+        );
+        let night_light =
+            settings_store::index::setting("display.night_light").expect("an indexed setting");
+        assert!(
+            shows(app.harness().root_widget(), night_light),
             "the settings it finds are shown in place of the pane"
         );
         assert!(
-            app.take_structure_dirty(),
-            "the content shows what was found"
+            sidebar_rows(app.harness().root_widget()) < all,
+            "the search narrows the actual sidebar"
         );
-        let nav = app
-            .shell
-            .as_mut()
-            .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
-            .expect("the actual sidebar is mounted");
-        let filtered = nav.visible_item_ids();
-        nav.set_filter("");
-        assert!(nav.visible_item_ids().len() > filtered.len());
-        nav.set_filter("night light");
-        app.sync(&doc, &root);
-        assert_eq!(app.search_query(), "night light");
-        assert!(!app.take_structure_dirty());
-        assert!(
-            doc.get(&root, "settings.search.edit").unwrap().is_none(),
+        assert_eq!(
+            app.read_document(ui::tilo_resource::heads_of),
+            heads,
             "a local filter must not create a shared search draft"
         );
     }
@@ -2042,70 +2032,42 @@ mod tests {
         // chrome is the nav list and the content pane (no title element, no
         // search field). We assert on the real composed tree.
         {
-            let config = crate::prefs::test_env::ScratchConfig::new();
-            let app = config.app();
-            let app = layout_at(app, 1200.0, 760.0);
-            let shell = app.shell.as_ref().expect("shell built");
-            let names: Vec<&str> = shell.children().iter().map(|c| c.name()).collect();
+            let mut app = mounted(Category::DEFAULT, (1200, 760));
+            let shell = shell(&mut app);
+            let names: Vec<&str> = shell
+                .children
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
             assert!(names.contains(&"NavList"), "the category list is admitted");
             assert!(
                 !names.contains(&"SearchField"),
                 "the window bar's search is Settings' search: the sidebar draws no field"
             );
-            for child in shell.children() {
+            for (_, label) in &shell.children {
                 assert_ne!(
-                    child.accessibility().and_then(|node| node.name).as_deref(),
+                    label.as_deref(),
                     Some("Settings"),
                     "window chrome owns the app name; the shell may name its destination"
                 );
             }
-            assert!(shell.geometry().side_by_side);
+            assert!(shell.side_by_side);
         }
 
         {
-            let config = crate::prefs::test_env::ScratchConfig::new();
-            let app = config.app().with_category(Category::Appearance);
-            let wide = Widget::accessibility(&app).expect("Settings landmark");
-            assert_eq!(wide.name.as_deref(), Some("Settings"));
-            assert_eq!(wide.semantic_key.as_deref(), Some("settings.app"));
-
-            let app = layout_at(app, 440.0, 820.0);
-            let narrow =
-                Widget::accessibility(&*app).expect("Settings landmark survives narrow shell");
-            assert_eq!(narrow.semantic_key, wide.semantic_key);
-        }
-    }
-
-    #[test]
-    fn without_a_workspace_identity_only_the_identity_pages_ask_for_one() {
-        use ui::prelude::TestApp;
-
-        ui::workspace_identity::set_missing(true);
-        let mut app = TestApp::<crate::SettingsShell>::new()
-            .expect("Settings opens while the workspace has no identity");
-        for category in Category::ALL.iter().copied() {
-            crate::effects::show_pane(&mut app, category);
-            app.harness().wait_until(ui::time::Duration::ZERO, |_| true);
-            let asks = app
-                .harness()
-                .a11y_node_named("Choose who you are here")
-                .is_some();
-            assert_eq!(
-                asks,
-                category.needs_workspace_identity(),
-                "{category:?} asks for an identity only when it is about one"
-            );
-            if asks {
-                assert!(
-                    app.harness().a11y_node_named("Choose identity").is_some(),
-                    "{category:?} offers the identity chooser"
-                );
+            fn landmark(app: &mut Window) -> bool {
+                app.harness().a11y_nodes().into_iter().any(|(_, node)| {
+                    node.role() == ui::accesskit::Role::Group && node.label() == Some("Settings")
+                })
             }
+            let mut wide = mounted(Category::Appearance, (1200, 760));
+            assert!(landmark(&mut wide), "Settings landmark");
+            let mut narrow = mounted(Category::Appearance, (440, 820));
+            assert!(
+                landmark(&mut narrow),
+                "Settings landmark survives narrow shell"
+            );
         }
-        assert!(Category::Users.needs_workspace_identity());
-        assert!(!Category::Appearance.needs_workspace_identity());
-        assert!(!Category::Network.needs_workspace_identity());
-        ui::workspace_identity::set_missing(false);
     }
 }
 

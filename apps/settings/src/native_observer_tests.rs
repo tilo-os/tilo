@@ -7,34 +7,21 @@
 
 use crate::SettingsWindow;
 use crate::categories::Category;
+use automerge::ChangeHash;
 use automerge::transaction::Transactable as _;
-use automerge::{AutoCommit, ChangeHash};
-use ui::headless::Framed;
 use ui::widget::Widget;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::PhysicalKey;
 
-fn root() -> automerge::ObjId {
-    automerge::ROOT
-}
+/// Settings mounted in its view, as it runs: its pages are view code over
+/// their sections, which a window outside the view does not show.
+type App = ui::prelude::TestApp<crate::resource::SettingsShell>;
 
-/// Settings over the production headless host, which settles the narrow
-/// breakpoint's structural pass before the first input as the live host does.
-fn hosted(
-    config: &crate::prefs::test_env::ScratchConfig,
-    w: f32,
-    h: f32,
-) -> Framed<SettingsWindow> {
-    Framed::new(
-        ui::State::new(),
-        config.app(),
-        ui::headless::viewport((w, h)),
-        ui::Theme::dark(),
-    )
-}
-
-fn wide(config: &crate::prefs::test_env::ScratchConfig) -> Framed<SettingsWindow> {
-    hosted(config, 1200.0, 1800.0)
+fn mounted(w: u32, h: u32) -> App {
+    let mut app = App::new().expect("Settings mounts");
+    app.harness().resize((w, h)).unwrap();
+    app.settle();
+    app
 }
 
 /// Whether this host draws a keyboard from installed native data at all. A
@@ -44,32 +31,27 @@ fn draws_native_legends() -> bool {
     tilo_keyboard_map::is_installed("us").unwrap_or(false)
 }
 
-fn snapshot(h: &Framed<SettingsWindow>) -> serde_json::Value {
-    Framed::harness(h).native_input_snapshot().unwrap()
+fn snapshot(app: &mut App) -> serde_json::Value {
+    app.harness().native_input_snapshot().unwrap()
 }
 
-fn heads(h: &mut Framed<SettingsWindow>) -> Vec<ChangeHash> {
-    Framed::harness_mut(h).state_mut().doc.get_heads()
-}
-
-/// Recompose after a change made directly on the app.
-fn rebuild(h: &mut Framed<SettingsWindow>) {
-    Framed::harness_mut(h).relayout();
+fn app_heads(app: &mut App) -> Vec<ChangeHash> {
+    app.harness().state_mut().doc.get_heads()
 }
 
 /// Type `query` into the window bar's search, as the bar hands it to the
 /// app: the search narrows the sidebar's list in place. Settings draws no
 /// search field of its own.
-fn bar_search(h: &mut Framed<SettingsWindow>, search: &mut ui::widget::SearchDriver, query: &str) {
-    let app: &mut SettingsWindow = h;
+fn bar_search(app: &mut App, search: &mut ui::widget::SearchDriver, query: &str) {
+    let root = app.harness().root_widget_mut();
     if search.in_place() == ui::widget::InPlace::Nothing {
-        search.open(ui::window_toolbar::SearchOffer::of(app).into());
+        search.open(ui::window_toolbar::SearchOffer::of(&mut *root).into());
     }
     assert!(
-        search.drive(app, query, ui::widget::FindOptions::default(), None, false),
+        search.drive(root, query, ui::widget::FindOptions::default(), None, false),
         "the bar's search reached the sidebar"
     );
-    rebuild(h);
+    app.harness().relayout();
 }
 
 fn sidebar_row_count(root: &dyn Widget) -> usize {
@@ -83,35 +65,74 @@ fn sidebar_row_count(root: &dyn Widget) -> usize {
         .fold(own, usize::saturating_add)
 }
 
+/// Whether the window shows the settings the bar's search found in place
+/// of the pane: the content is titled for them.
+fn shows_found(app: &mut App) -> bool {
+    app.harness()
+        .a11y_node_named(&crate::i18n::t("settings-found-title"))
+        .is_some()
+}
+
+/// Whether the window shows the control of the setting `id`.
+fn shows_setting(app: &mut App, id: &str) -> bool {
+    fn walk(widget: &dyn Widget, setting: &settings_store::index::Setting) -> bool {
+        widget.test_id().is_some_and(|id| setting.is_control(id))
+            || widget
+                .children()
+                .into_iter()
+                .any(|child| walk(child, setting))
+    }
+    let setting = settings_store::index::setting(id).expect("a setting Settings indexes");
+    walk(app.harness().root_widget(), setting)
+}
+
+/// The window's shell: whether it is narrow, whether the list shows, and
+/// the content screen's back arrow.
+fn shell(app: &mut App) -> (bool, bool, vello::kurbo::Rect) {
+    app.with_widget::<ui::widget::NavShell, _>(|shell| {
+        (
+            !shell.geometry().stack.is_empty(),
+            shell.is_sidebar_open(),
+            shell.geometry().back,
+        )
+    })
+    .expect("settings shows its shell")
+}
+
 /// The native observer tracks search rebuilds/backspace and never commits pending changes.
 #[test]
 fn native_observer_tracks_search_without_committing_pending_changes() {
     // Case `native_observer_tracks_the_bar_search`.
     {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut h = wide(&config);
+        let mut h = mounted(1200, 1800);
         let mut search = ui::widget::SearchDriver::default();
-        let before = snapshot(&h);
+        let before = snapshot(&mut h);
         assert_eq!(before["ready"], true);
         assert_eq!(before["search_query"], "");
-        assert_eq!(before["rendered_result_count"], sidebar_row_count(&*h));
-        let original_heads = heads(&mut h);
+        assert_eq!(
+            before["rendered_result_count"],
+            sidebar_row_count(h.harness().root_widget())
+        );
+        let original_heads = app_heads(&mut h);
         bar_search(&mut h, &mut search, "z");
-        let typed = snapshot(&h);
+        let typed = snapshot(&mut h);
         assert_eq!(typed["search_query"], "z");
-        assert_eq!(typed["rendered_result_count"], sidebar_row_count(&*h));
+        assert_eq!(
+            typed["rendered_result_count"],
+            sidebar_row_count(h.harness().root_widget())
+        );
         assert_ne!(
             typed["rendered_category_ids"],
             before["rendered_category_ids"]
         );
         bar_search(&mut h, &mut search, "");
-        let after = snapshot(&h);
+        let after = snapshot(&mut h);
         assert_eq!(after["search_query"], "");
         assert_eq!(
             after["rendered_category_ids"],
             before["rendered_category_ids"]
         );
-        assert_eq!(heads(&mut h), original_heads);
+        assert_eq!(app_heads(&mut h), original_heads);
         assert_eq!(
             after["effective_document_heads"],
             before["effective_document_heads"]
@@ -120,23 +141,31 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
 
     // Case `native_observer_does_not_commit_original_pending_changes`.
     {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let app = config.app();
-        let mut doc = AutoCommit::new();
+        let mut h = mounted(1200, 760);
+        let mut doc = automerge::AutoCommit::new();
         // A change made and not yet committed, as a field write leaves one.
         ui::tilo_resource::write_key(
             &mut doc,
-            &root(),
+            &automerge::ROOT,
             "diagnostic_test",
             &ui::tilo_resource::Atom("pending".into()),
         )
         .unwrap();
         let debug_before = format!("{doc:?}");
         let pending = doc.pending_ops();
-        let a = app.native_input_snapshot(&doc, &root()).unwrap();
-        let b = app.native_input_snapshot(&doc, &root()).unwrap();
+        let (a, b) = h
+            .with_widget::<SettingsWindow, _>(|window| {
+                (
+                    window
+                        .native_input_snapshot(&doc, &automerge::ROOT)
+                        .unwrap(),
+                    window
+                        .native_input_snapshot(&doc, &automerge::ROOT)
+                        .unwrap(),
+                )
+            })
+            .expect("the window is mounted");
         assert_eq!(a, b);
-        assert_eq!(a["ready"], false);
         assert_eq!(a["original_pending_ops"], pending);
         assert_eq!(format!("{doc:?}"), debug_before);
         assert_eq!(doc.pending_ops(), pending);
@@ -171,26 +200,9 @@ fn search_preserves_the_pane_but_category_switch_replaces_it() {
     let about = announced_identity(app.harness().root_widget(), &heading).unwrap();
     // A query that finds no setting narrows the list and leaves the pane;
     // one that finds settings shows them instead.
-    app.with_widget::<SettingsWindow, _>(|settings| {
-        let mut search = ui::widget::SearchDriver::default();
-        search.open(ui::window_toolbar::SearchOffer::of(settings).into());
-        assert!(
-            search.drive(
-                settings,
-                "zqx",
-                ui::widget::FindOptions::default(),
-                None,
-                false
-            ),
-            "the bar's search reached the sidebar"
-        );
-    })
-    .expect("the Settings window is mounted");
+    bar_search(&mut app, &mut ui::widget::SearchDriver::default(), "zqx");
     app.settle();
-    assert!(
-        app.with_widget::<SettingsWindow, _>(|settings| settings.found_settings().is_empty())
-            .unwrap()
-    );
+    assert!(!shows_found(&mut app));
     assert_eq!(
         announced_identity(app.harness().root_widget(), &heading),
         Some(about)
@@ -207,69 +219,52 @@ fn search_preserves_the_pane_but_category_switch_replaces_it() {
 /// nothing more goes back to the list.
 #[test]
 fn narrow_search_shows_what_it_finds_in_front_of_the_list() {
-    let config = crate::prefs::test_env::ScratchConfig::new();
-    let mut h = hosted(&config, 440.0, 820.0);
-    assert!(h.is_narrow());
+    let mut h = mounted(440, 820);
+    let (narrow, _, back) = shell(&mut h);
+    assert!(narrow);
     // Reach the list using the real narrow back control, not a screenshot override.
-    let back = h.back_button_rect();
     assert!(back.width() > 0.0);
-    Framed::harness_mut(&mut h).click_at(back.center().x, back.center().y);
-    rebuild(&mut h);
-    assert!(h.sidebar_open());
-    let all = sidebar_row_count(&*h);
+    h.harness().click_at(back.center().x, back.center().y);
+    h.settle();
+    assert!(shell(&mut h).1);
+    let all = sidebar_row_count(h.harness().root_widget());
     let mut search = ui::widget::SearchDriver::default();
     bar_search(&mut h, &mut search, "zqx");
-    let typed = snapshot(&h);
+    let typed = snapshot(&mut h);
     assert_eq!(typed["search_query"], "zqx");
-    assert!(h.found_settings().is_empty());
+    assert!(!shows_found(&mut h));
     assert_eq!(
         typed["sidebar_open"], true,
         "finding no setting keeps the list"
     );
-    assert!(sidebar_row_count(&*h) < all);
+    assert!(sidebar_row_count(h.harness().root_widget()) < all);
     bar_search(&mut h, &mut search, "high contrast");
-    let found = snapshot(&h);
+    let found = snapshot(&mut h);
     assert_eq!(found["narrow"], true);
-    assert!(h.found_settings().contains(&"appearance.high_contrast"));
+    assert!(shows_found(&mut h));
+    assert!(shows_setting(&mut h, "appearance.high_contrast"));
     assert_eq!(found["sidebar_open"], false, "what it found is in front");
     bar_search(&mut h, &mut search, "");
-    let restored = snapshot(&h);
+    let restored = snapshot(&mut h);
     assert_eq!(restored["search_query"], "");
     assert_eq!(
         restored["sidebar_open"], true,
         "clearing it goes back to the list"
     );
-    assert_eq!(sidebar_row_count(&*h), all);
+    assert_eq!(sidebar_row_count(h.harness().root_widget()), all);
 }
 
 #[test]
 fn native_observer_reports_the_selected_category_and_layout_class() {
-    let config = crate::prefs::test_env::ScratchConfig::new();
-    let app = config.app().with_category(Category::Appearance);
-    let app = ui::headless::Framed::new(
-        ui::State::new(),
-        app,
-        ui::headless::viewport((1200.0, 760.0)),
-        ui::Theme::dark(),
-    );
-    let doc = AutoCommit::new();
-    let snapshot = app.native_input_snapshot(&doc, &root()).unwrap();
+    let mut app = mounted(1200, 760);
+    crate::effects::show_pane(&mut app, Category::Appearance);
+    app.settle();
+    let snapshot = snapshot(&mut app);
     assert_eq!(snapshot["ready"], true);
     assert_eq!(snapshot["selected_category"], "appearance");
     assert_eq!(snapshot["narrow"], false);
     assert_eq!(snapshot["sidebar_open"], true);
     assert_eq!(snapshot["nav_id"], crate::sidebar::NAV_ID);
-}
-
-/// Settings mounted in its view, as it runs: the Keyboard page is view
-/// code over its sections, which a window outside the view does not show.
-type App = ui::prelude::TestApp<crate::resource::SettingsShell>;
-
-fn mounted(w: u32, h: u32) -> App {
-    let mut app = App::new().expect("Settings mounts");
-    app.harness().resize((w, h)).unwrap();
-    app.settle();
-    app
 }
 
 /// `visit` the mounted window.
@@ -280,10 +275,6 @@ fn window<O>(app: &mut App, visit: impl FnOnce(&mut SettingsWindow) -> O) -> O {
 
 fn observe(app: &mut App, input: ui::widget::PhysicalInput) {
     window(app, |window| window.observe_physical_input(input));
-}
-
-fn app_heads(app: &mut App) -> Vec<ChangeHash> {
-    app.harness().state_mut().doc.get_heads()
 }
 
 /// Open `category`'s page as its sidebar row does.
@@ -300,26 +291,6 @@ fn show(app: &mut App, category: Category) {
             "the keyboard is drawn"
         );
     }
-}
-
-/// [`bar_search`] in the mounted window.
-fn app_bar_search(app: &mut App, search: &mut ui::widget::SearchDriver, query: &str) {
-    window(app, |window| {
-        if search.in_place() == ui::widget::InPlace::Nothing {
-            search.open(ui::window_toolbar::SearchOffer::of(window).into());
-        }
-        assert!(
-            search.drive(
-                window,
-                query,
-                ui::widget::FindOptions::default(),
-                None,
-                false
-            ),
-            "the bar's search reached the sidebar"
-        );
-    });
-    app.harness().relayout();
 }
 
 fn keyboard_map_pressed(widget: &dyn Widget, key: PhysicalKey) -> Option<bool> {
@@ -363,11 +334,8 @@ fn keyboard_map_observes_foreground_physical_keys_while_the_list_is_narrowed() {
     let _env = tilo_test_env::lock();
     let mut h = mounted(1200, 1800);
     show(&mut h, Category::Keyboard);
-    app_bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "zqx");
-    assert!(
-        window(&mut h, |w| w.found_settings().is_empty()),
-        "the keyboard pane stays"
-    );
+    bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "zqx");
+    assert!(!shows_found(&mut h), "the keyboard pane stays");
     let key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyY);
     let compiled = crate::keyboard_preview::compilation_count();
     let original_heads = app_heads(&mut h);

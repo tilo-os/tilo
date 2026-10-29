@@ -103,8 +103,8 @@ mod tests {
     /// a removed pane names nothing.
     #[test]
     fn every_search_anchor_names_its_panes_row() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let app = config.app();
+        let profile = tempfile::tempdir().expect("a private profile");
+        let app = crate::SettingsApp::with_config_root(profile.path().join("tilo"));
         let hits = source().search("");
         assert_eq!(hits.len(), Category::ALL.len());
         for (category, hit) in Category::ALL.iter().copied().zip(hits) {

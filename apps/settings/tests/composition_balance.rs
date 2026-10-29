@@ -1,23 +1,10 @@
 use settings::categories::Category;
-use ui::headless::Framed;
 use ui::widget::Widget;
 
 use vello::kurbo::Rect;
 
 const W: f32 = 1200.0;
 const H: f32 = 760.0;
-
-/// Run the production frame — sync, layout, draw — on any widget at an
-/// explicit viewport. Shared with the sibling
-/// geometry modules in this test binary (`alignment_review`).
-pub(crate) fn lay_out_at<T: Widget + 'static>(widget: T, w: f32, h: f32) -> Framed<T> {
-    Framed::new(
-        ui::State::new(),
-        widget,
-        ui::headless::viewport((w, h)),
-        ui::Theme::dark(),
-    )
-}
 
 fn named(widget: &dyn Widget, label: &str, out: &mut Vec<Rect>) {
     if widget.accessibility().and_then(|n| n.name).as_deref() == Some(label) {
