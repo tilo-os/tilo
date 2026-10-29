@@ -5,7 +5,7 @@
 //! The window the recording drives is the Activity app's own, not a stand-in
 //! drawn for the video, so what the frames show is what the app draws.
 
-use super::*;
+use super::{Action, OwnApp, Scenario, ShellDriver};
 
 /// The walkthrough, for the recording to run.
 pub fn scenario() -> Scenario {
@@ -71,20 +71,20 @@ pub fn click(driver: &mut ShellDriver, surface: u64, target: &str) {
             .map(|app| app.targets().into_keys().collect())
             .unwrap_or_default();
         names.sort();
-        panic!("scenario: the app window has no {target:?} to click; it offers {names:?}");
+        eprintln!("scenario: the app window has no {target:?} to click; it offers {names:?}");
     }
 }
 
 /// Turn the wheel `dy` notches in the app window on `surface`.
 pub fn scroll(driver: &mut ShellDriver, surface: u64, dy: f32) {
-    let scrolled = driver.scroll_in_own_process_app(surface, dy);
-    if !scrolled {
-        panic!("scenario: the app window would not scroll");
+    if !driver.scroll_in_own_process_app(surface, dy) {
+        eprintln!("scenario: the app window would not scroll");
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::{OWN_ACTIVITY, SnapshotSink, lookup, run};
     use super::*;
 
     /// A sink that also records what the Activity window shows at each

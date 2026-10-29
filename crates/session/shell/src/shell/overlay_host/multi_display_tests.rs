@@ -1319,15 +1319,18 @@ impl Desk {
     /// Three fingers swiping up on the touchpad: toward the strip below.
     fn swipe_to_strip_below(&mut self) {
         let t0 = ui::time::now();
-        let ms = |n: u64| std::time::Duration::from_millis(n);
+        let ms = |n: u64| {
+            t0.checked_add(std::time::Duration::from_millis(n))
+                .expect("a swipe a few milliseconds long stays in range")
+        };
         let host = self.fb.host_mut();
         for (step, (travel, at)) in [(200.0, 8), (400.0, 16), (600.0, 24), (800.0, 32)]
             .into_iter()
             .enumerate()
         {
-            let _ = host.update_strip_deck_drag(travel, step == 0, t0 + ms(at));
+            let _ = host.update_strip_deck_drag(travel, step == 0, ms(at));
         }
-        assert!(host.end_strip_deck_drag(t0 + ms(40), false));
+        assert!(host.end_strip_deck_drag(ms(40), false));
         self.settle();
     }
 }
