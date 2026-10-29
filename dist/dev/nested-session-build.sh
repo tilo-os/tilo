@@ -10,15 +10,9 @@
 # env-runtime image Terminal's environments start from, and a dbus-daemon for
 # hosts that have none.
 #
-# It runs where the builds are warm, never on the machine that runs the
-# session: nested-session.sh has t.toml's `nested-session` check run it on a t
-# node and downloads its output with `t outputs nested-session`, or has a
-# remote cargo drop-in run it on its builder (`$TILO_REMOTE_CARGO --fetch
-# nested-session exec`) and fetch the target directory's nested-session. The
-# thin apps and libruntime_dylib.so must come from one Cargo graph (a Rust
-# dylib's symbols carry crate hashes), so they travel together as one build's
-# output rather than through `t cargo build` or a remote `cargo build`, which
-# copy back programs only.
+# The thin apps and libruntime_dylib.so must come from one Cargo graph (a
+# Rust dylib's symbols carry crate hashes), so one run of this script builds
+# them together.
 #
 # Usage:
 #   dist/dev/nested-session-build.sh [OUT]      build into OUT (replaced), by

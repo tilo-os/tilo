@@ -42,91 +42,13 @@ const RUNTIME_SOURCES: [&str; 4] = [
 
 /// The build of the tilolang runtime binary alone, thin, against the runtime library a nested
 /// session runs, for this machine's architecture: a binary of a few megabytes, as the session's
-/// own runtime bundle carries. A remote cargo drop-in runs it on its builder; t runs it as a
-/// check.
+/// own runtime bundle carries.
 const RUNTIME_SCRIPT: &str = "dist/dev/tilolang-runtime-build.sh";
 
-/// t's check that runs [`RUNTIME_SCRIPT`] on a node of this machine's architecture.
-const RUNTIME_CHECK: &str = if cfg!(target_arch = "aarch64") {
-    "tilolang-runtime-arm64"
-} else {
-    "tilolang-runtime"
-};
-
-/// Where the build lands in the checkout's target directory, where the remote cargo drop-in
-/// fetches it and `t outputs` leaves it: the binary and the runtime library it links.
-const RUNTIME_OUT: &str = "tilolang-runtime";
+/// Where the build lands in the checkout's target directory: the binary and the runtime library
+/// it links.
 const RUNTIME_BINARY: &str = "target/tilolang-runtime/tilolang-app";
 const RUNTIME_LIBRARY: &str = "target/tilolang-runtime/libruntime_dylib.so";
-
-/// The environment variable that picks the builder, as it does for `nested-session.sh`.
-const BUILDER_ENV: &str = "TILO_NESTED_BUILDER";
-
-/// The environment variable naming the remote cargo drop-in, as it does for
-/// `nested-session.sh`: a cargo replacement that builds on another machine and also runs
-/// `PROGRAM --fetch DIR exec SCRIPT` there, copying DIR of the target directory back.
-const REMOTE_CARGO_ENV: &str = "TILO_REMOTE_CARGO";
-
-/// Where `--build-runtime` builds the runtime: on the builder of the remote cargo drop-in that
-/// [`REMOTE_CARGO_ENV`] names (`PROGRAM --fetch DIR exec SCRIPT`), or on t (`t outputs`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Builder {
-    Remote(String),
-    T,
-}
-
-impl Builder {
-    /// The builder `name` names: `remote` (the drop-in `remote_cargo` names) or `t`.
-    fn parse(name: &str, remote_cargo: Option<&str>) -> Result<Self, String> {
-        match name {
-            "remote" => remote_cargo
-                .map(|program| Self::Remote(program.to_owned()))
-                .ok_or_else(|| format!("the remote builder needs {REMOTE_CARGO_ENV}")),
-            "t" => Ok(Self::T),
-            other => Err(format!("unknown builder {other} (remote or t)")),
-        }
-    }
-
-    fn program(&self) -> &str {
-        match self {
-            Self::Remote(program) => program,
-            Self::T => "t",
-        }
-    }
-
-    /// The builder asked for (`--builder`, else [`BUILDER_ENV`]), by default the remote cargo
-    /// drop-in when [`REMOTE_CARGO_ENV`] names one on PATH and t otherwise; it must be on PATH.
-    fn choose(asked: Option<&str>) -> Result<Self, String> {
-        let env = |name| std::env::var(name).ok().filter(|value| !value.is_empty());
-        let from_env = env(BUILDER_ENV);
-        let remote_cargo = env(REMOTE_CARGO_ENV);
-        let builder = match asked.or(from_env.as_deref()) {
-            Some(name) => Self::parse(name, remote_cargo.as_deref())?,
-            None => match remote_cargo {
-                Some(program) if on_path(&program) => Self::Remote(program),
-                _ => Self::T,
-            },
-        };
-        if !on_path(builder.program()) {
-            return Err(format!(
-                "{} is required on PATH to build the runtime",
-                builder.program()
-            ));
-        }
-        Ok(builder)
-    }
-}
-
-/// Whether an executable `program` is on PATH.
-fn on_path(program: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            std::fs::metadata(dir.join(program))
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        })
-    })
-}
 
 /// The ELF machine of this machine's architecture, as an ELF header names it (`e_machine`).
 const fn elf_machine() -> Option<u16> {
@@ -176,8 +98,6 @@ pub struct DevOptions {
     pub runtime: Option<PathBuf>,
     /// Build the runtime from the checkout and rebuild it on every change of its sources.
     pub build_runtime: bool,
-    /// Where to build it (`--builder`); by default as [`Builder::choose`] picks.
-    pub builder: Option<String>,
     /// The key the runtime bundle is signed with (default: the session's runtime publisher).
     pub runtime_identity: Option<PathBuf>,
     /// The Tilo checkout whose nested-session build has the session's tools.
@@ -211,9 +131,9 @@ const DEV_RUNTIME_PACKAGE: &str = "so.tilo.runtime.tilolang.dev";
 /// A tilolang runtime binary the apps run on, baked and installed as a runtime package.
 struct DevRuntime {
     binary: PathBuf,
-    /// The checkout the tool builds `binary` in, on every change of its sources, and where it
-    /// builds it; without one the tool follows a binary built by hand.
-    built_in: Option<(PathBuf, Builder)>,
+    /// The checkout the tool builds `binary` in, on every change of its sources; without one
+    /// the tool follows a binary built by hand.
+    built_in: Option<PathBuf>,
     /// The key its bundle is signed with: one the launcher trusts for runtime bundles.
     identity_file: PathBuf,
     version: String,
@@ -435,7 +355,7 @@ impl Dev {
             .collect();
         match self.runtime.as_ref() {
             Some(DevRuntime {
-                built_in: Some((repo, _)),
+                built_in: Some(repo),
                 ..
             }) => dirs.extend(RUNTIME_SOURCES.iter().map(|dir| (repo.join(dir), true))),
             Some(runtime) => dirs.extend(
@@ -461,13 +381,12 @@ impl Dev {
         Ok(())
     }
 
-    /// Build the runtime binary in its checkout, thin, on the remote cargo drop-in's builder (one
-    /// `exec` whose output is fetched) or on t (`t outputs`). A thin binary runs only on the runtime
+    /// Build the runtime binary in its checkout, thin. A thin binary runs only on the runtime
     /// library of its build graph, so the library it was built with must be the one the session
     /// runs.
     fn build_runtime(&self) -> Result<(), String> {
         let Some(DevRuntime {
-            built_in: Some((repo, builder)),
+            built_in: Some(repo),
             binary,
             ..
         }) = &self.runtime
@@ -475,19 +394,8 @@ impl Dev {
             return Ok(());
         };
         let started = Instant::now();
-        let mut command = Command::new(builder.program());
+        let mut command = Command::new(repo.join(RUNTIME_SCRIPT));
         command.current_dir(repo);
-        match builder {
-            Builder::Remote(_) => {
-                // Its output passes through: the build's progress and errors.
-                command.args(["--fetch", RUNTIME_OUT, "exec", RUNTIME_SCRIPT]);
-            }
-            Builder::T => {
-                command
-                    .args(["outputs", RUNTIME_CHECK, "--human"])
-                    .stdout(std::process::Stdio::null());
-            }
-        }
         session::status(&mut command, "building the runtime")?;
         check_architecture(binary)?;
         let built = repo.join(RUNTIME_LIBRARY);
@@ -588,7 +496,6 @@ impl Dev {
             .runtime
             .as_ref()
             .and_then(|runtime| runtime.built_in.as_ref())
-            .map(|(repo, _)| repo)
         else {
             return false;
         };
@@ -688,14 +595,14 @@ pub fn dev(options: &DevOptions) -> Result<(), String> {
     let peer = Peer::attach(&options.session, &repo)?;
     let (tilo_runtime, tilolang_runtime) = peer.runtimes_baked()?;
     let built_in = if options.build_runtime {
-        Some((repo, Builder::choose(options.builder.as_deref())?))
+        Some(repo)
     } else {
         None
     };
     let binary = options
         .runtime
         .clone()
-        .or_else(|| built_in.as_ref().map(|(repo, _)| repo.join(RUNTIME_BINARY)));
+        .or_else(|| built_in.as_ref().map(|repo| repo.join(RUNTIME_BINARY)));
     let runtime = binary.as_ref().map(|binary| DevRuntime {
         binary: std::path::absolute(binary).unwrap_or_else(|_| binary.clone()),
         built_in: built_in.clone(),
@@ -769,16 +676,5 @@ mod tests {
         assert!(error.contains("is not built for"), "{error}");
         std::fs::write(&path, b"#!/bin/sh\nexit 0\n# not an ELF file at all").unwrap();
         assert!(check_architecture(&path).is_err());
-    }
-
-    #[test]
-    fn builders_are_named_remote_or_t() {
-        assert_eq!(
-            Builder::parse("remote", Some("remote-cargo")),
-            Ok(Builder::Remote("remote-cargo".to_owned()))
-        );
-        assert!(Builder::parse("remote", None).is_err());
-        assert_eq!(Builder::parse("t", None), Ok(Builder::T));
-        assert!(Builder::parse("cargo", Some("remote-cargo")).is_err());
     }
 }

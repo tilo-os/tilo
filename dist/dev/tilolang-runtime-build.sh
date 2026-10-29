@@ -3,11 +3,7 @@
 # against the shared runtime library of the default collection's runtime, the one a nested
 # session already runs, so `tilolang dev --build-runtime` swaps in a binary of a few megabytes.
 #
-# It runs where the builds are warm: the tool has a remote cargo drop-in run it on its builder
-# (`$TILO_REMOTE_CARGO --fetch tilolang-runtime exec`) and fetch the target directory's
-# tilolang-runtime, or has t.toml's `tilolang-runtime` check run it and downloads its output with
-# `t outputs tilolang-runtime`. A thin binary is of use only with the exact libruntime_dylib.so
-# of its build graph, which `t cargo build` and a remote `cargo build` do not copy back. That library
+# A thin binary is of use only with the exact libruntime_dylib.so of its build graph. That library
 # travels beside the binary, so the tool can check it is the one the session runs.
 #
 # Usage:

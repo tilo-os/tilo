@@ -71,7 +71,7 @@ python3 os/dev/probe-kvm.py "$arch" || {
 rm -rf "$work" "$reports"
 mkdir -p "$work" "$reports"
 
-# A run off t (tools/ci/builder-vm.sh) has no git checkout, and names its commit.
+# A run without a git checkout names its commit.
 target=${TILO_ACCEPTANCE_COMMIT:-$(git rev-parse HEAD)}
 disk=$gate/disk.qcow2
 [[ -s $disk && -s $gate/image-digest ]] \
