@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["maps-samples"]
+
 [lib]
 name = "maps"
 path = "src/lib.rs"
@@ -39,7 +43,10 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 chrono = { workspace = true, default-features = true }
 
 [dev-dependencies]
-maps = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `maps` claims `--features maps/thin` in the
+# collection build, and the app then links the whole runtime statically.
+maps-samples = { package = "maps", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

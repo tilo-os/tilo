@@ -1,6 +1,6 @@
 //! Recovery operations retain their exact reviewed grants through write admission.
-use super::{RecoveryCopy, destination};
-use crate::setup::{migration, windows_inventory::Inventory};
+use super::RecoveryCopy;
+use imager_backend::{migration, windows_inventory::Inventory};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -117,7 +117,7 @@ impl Flow {
         source_id: &str,
         directory: &Path,
     ) -> Result<(), String> {
-        crate::setup::migration_worker::durable_copy_available()?;
+        imager_backend::migration_worker::durable_copy_available()?;
         if self.busy() {
             return Err("Recovery copy is running".into());
         }
@@ -133,10 +133,10 @@ impl Flow {
         let records = parent
             .create_child(std::ffi::OsStr::new(&name))
             .map_err(|e| e.to_string())?;
-        crate::setup::migration_durability::readable_directory(&records.file)
+        imager_backend::migration_durability::readable_directory(&records.file)
             .and_then(|file| file.sync_all())
             .map_err(|e| e.to_string())?;
-        crate::setup::migration_durability::readable_directory(&parent.file)
+        imager_backend::migration_durability::readable_directory(&parent.file)
             .and_then(|file| file.sync_all())
             .map_err(|e| e.to_string())?;
         self.review(
@@ -213,8 +213,8 @@ impl Flow {
             return Err("Windows source changed; select the exact source again".into());
         }
         let copy = RecoveryCopy::review(&source.path, output, journal)?;
-        let independent = destination::physical(&source.path)
-            .zip(destination::physical(directory))
+        let independent = imager_backend::recovery::hardware::physical(&source.path)
+            .zip(imager_backend::recovery::hardware::physical(directory))
             .is_some_and(|(source, output)| source.independent_of(&output));
         self.verified.remove(source_id);
         self.reviewed = Some(Arc::new(Evidence {
@@ -331,7 +331,7 @@ impl Flow {
     /// Return device-local review state, including the explicitly granted paths.
     /// This report is not a public log or destructive-write authorization.
     pub fn report(&self) -> Value {
-        json!({"durable_copy_available":crate::setup::migration_worker::durable_copy_available().is_ok(),"state":if self.state.is_empty() { "not-selected" } else {self.state},"busy":self.busy(),"error":self.error,
+        json!({"durable_copy_available":imager_backend::migration_worker::durable_copy_available().is_ok(),"state":if self.state.is_empty() { "not-selected" } else {self.state},"busy":self.busy(),"error":self.error,
             "reviewed":self.reviewed.as_ref().map(|e| e.report()),"verified":self.verified.values().map(|e| e.report()).collect::<Vec<_>>(),
             "source_must_remain":true,"remote_content":"unverified","replacement_authorized":false})
     }

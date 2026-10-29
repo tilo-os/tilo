@@ -1,8 +1,8 @@
 //! Explicit portal/semantic grant, followed by private source-bound preparation.
-use super::super::{flatpak_transfer::InstalledRef, migration_intent::MigrationIntent};
 use imager_backend::setup::live_selection::ReviewFailure;
 #[cfg(all(test, target_os = "linux"))]
 use imager_backend::setup::live_selection::native::{reattest_grant, validate_home_grant};
+use imager_backend::setup::{flatpak_transfer::InstalledRef, migration_intent::MigrationIntent};
 use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
@@ -21,7 +21,7 @@ pub(super) struct Selection {
     intent: Option<MigrationIntent>,
     state: &'static str,
     #[cfg(test)]
-    pub(super) capture: Option<super::super::migration_intent::Capture>,
+    pub(super) capture: Option<imager_backend::setup::migration_intent::Capture>,
     #[cfg(test)]
     pub(super) permission_reply: Option<ui::PortalChannel>,
 }
@@ -152,7 +152,7 @@ impl Selection {
     pub fn projection(&self) -> serde_json::Value {
         serde_json::json!({"state": if self.state.is_empty() {"idle"} else {self.state},
             "prepared": self.intent.is_some(),
-            "private_plans": self.intent.as_ref().map(|intent| super::super::migration_store::NativePath::encode(intent.directory())),
+            "private_plans": self.intent.as_ref().map(|intent| imager_backend::migration_store::NativePath::encode(intent.directory())),
             "operation": self.intent.as_ref().map(|intent| intent.source_plan().operation_id)})
     }
     /// Retire permission only; an active review worker must finish before navigation.

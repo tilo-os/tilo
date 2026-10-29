@@ -1,6 +1,6 @@
 //! Real disposable mount qualification, never a fake inventory or skipped test.
 use super::*;
-use crate::setup::migration::PinnedDirectory;
+use imager_backend::migration::PinnedDirectory;
 use std::{
     ffi::CString,
     os::unix::{
@@ -266,7 +266,7 @@ fn actual_same_filesystem_directory_and_file_binds_refuse_home_review() {
             locations.display_names()
         );
         let preparation_error =
-            match super::super::portable_home_media::HomeSource::review_for_media_preparation(
+            match imager_backend::setup::portable_home_media::HomeSource::review_for_media_preparation(
                 &home, &cancel,
             ) {
                 Ok(_) => panic!(
@@ -284,10 +284,11 @@ fn actual_same_filesystem_directory_and_file_binds_refuse_home_review() {
             reviewed.validate(&pin).is_err(),
             "previous review must reject a newly bound entry"
         );
-        let admission_error = match super::super::portable_home_media::HomeSource::review(&home) {
-            Ok(_) => panic!("production Home exporter must refuse before export"),
-            Err(error) => error,
-        };
+        let admission_error =
+            match imager_backend::setup::portable_home_media::HomeSource::review(&home) {
+                Ok(_) => panic!("production Home exporter must refuse before export"),
+                Err(error) => error,
+            };
         assert!(
             nested_home_mount(&admission_error),
             "actual exporter refusal must retain the mount-specific review category"

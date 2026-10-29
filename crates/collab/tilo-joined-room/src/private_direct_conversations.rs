@@ -1314,7 +1314,6 @@ mod tests {
                         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                         cert: Box::new(publisher.clone()),
                         revocations: vec![entry],
-                        successions: Vec::new(),
                     },
                     fixture.now,
                 )

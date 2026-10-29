@@ -2161,19 +2161,11 @@ impl RootPublishes for ResourceRoot {
             .map(ui_core::invocation_scope::ViewerScope::enter);
         let mut resource = self.current_publication(doc);
         // The content may add live external entities beside the resource,
-        // never a document action: those are the resource's own. A hosted
-        // surface has already admitted what it adds. One naming the resource
-        // joins it rather than publishing it twice.
-        let surface =
-            ui_core::widget::capability::capability::<dyn SurfacePublication>(self.app_view())
-                .is_some_and(|surface| surface.resource() == self.resource.id);
+        // never a document action: those are the resource's own. One naming
+        // the resource joins it rather than publishing it twice.
         let mut extras = Vec::new();
         for extra in ui_core::resources::resources_for(self.app_view(), participant, doc) {
-            let extra = if surface {
-                extra
-            } else {
-                outside_document(extra)
-            };
+            let extra = outside_document(extra);
             if extra.id == resource.id {
                 join(&mut resource, extra);
             } else {

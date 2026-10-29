@@ -40,7 +40,6 @@
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
 //! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
-//! - [`SUCCESSION_PREIMAGE_TAG`] — `tilo-governor-succession-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -84,7 +83,6 @@ pub mod persist;
 pub mod projection;
 pub mod revocation;
 pub mod root_envelope;
-pub mod succession;
 #[cfg(unix)]
 pub mod update_lock;
 
@@ -138,9 +136,6 @@ pub use projection::{
 pub use revocation::{
     REVOCATION_PREIMAGE_TAG, RevocationEntry, RevocationError, RevocationList, RevocationReason,
     revocation_signing_digest, sign_revocation_entry, verify_revocation_entry,
-};
-pub use succession::{
-    GovernorSuccession, MAX_SUCCESSIONS, SUCCESSION_PREIMAGE_TAG, SuccessionError, current_governor,
 };
 
 use serde::{Deserialize, Serialize};

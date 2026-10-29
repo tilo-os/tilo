@@ -6,6 +6,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["remote-samples"]
+
 [lib]
 name = "remote"
 path = "src/lib.rs"
@@ -51,7 +55,10 @@ des = "0.9"
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-remote = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `remote` claims `--features remote/thin` in the
+# collection build, and the app then links the whole runtime statically.
+remote-samples = { package = "remote", path = ".", features = ["samples"] }
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }

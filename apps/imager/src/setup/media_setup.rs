@@ -19,7 +19,7 @@ pub mod writer {
     pub fn payload_capacity(free: u64) -> io::Result<u64> {
         #[cfg(feature = "installation")]
         {
-            crate::setup::portable_home_media::payload_capacity_for_free_bytes(free)
+            imager_backend::setup::portable_home_media::payload_capacity_for_free_bytes(free)
         }
         #[cfg(not(feature = "installation"))]
         {
@@ -77,7 +77,7 @@ pub mod writer {
                 target,
                 layout.target_number,
                 |number| {
-                    crate::setup::migration_handoff::validate_offline_source_disks(
+                    imager_backend::setup::migration_handoff::validate_offline_source_disks(
                         &layout.source_plans,
                         number,
                     )
@@ -108,7 +108,7 @@ pub mod writer {
                 device,
                 layout.target_number,
                 |number| {
-                    crate::setup::migration_handoff::validate_offline_source_disks(
+                    imager_backend::setup::migration_handoff::validate_offline_source_disks(
                         &layout.source_plans,
                         number,
                     )

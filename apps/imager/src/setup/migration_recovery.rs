@@ -7,7 +7,7 @@ mod write_guard;
 pub(crate) use flow::Evidence;
 pub use flow::Flow;
 
-use super::windows_inventory::{Availability, Inventory};
+use imager_backend::windows_inventory::{Availability, Inventory};
 use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
@@ -67,26 +67,26 @@ pub struct RecoveryCopy {
     source: PathBuf,
     destination: PathBuf,
     journal: PathBuf,
-    root: Arc<super::migration::PinnedDirectory>,
+    root: Arc<imager_backend::migration::PinnedDirectory>,
     inventory: super::migration_review::SourceInventory,
     reviewed: (
-        super::migration_durability::Identity,
-        super::migration_durability::Identity,
+        imager_backend::migration_durability::Identity,
+        imager_backend::migration_durability::Identity,
         [u8; 32],
     ),
 }
 impl RecoveryCopy {
     pub fn review(source: &Path, destination: &Path, journal: &Path) -> Result<Self, String> {
-        super::migration_worker::durable_copy_available()?;
+        imager_backend::migration_worker::durable_copy_available()?;
         let review = || -> std::io::Result<Self> {
-            let root = super::migration::PinnedDirectory::open_absolute(source)?;
-            let parent = super::migration::PinnedDirectory::open_absolute(
+            let root = imager_backend::migration::PinnedDirectory::open_absolute(source)?;
+            let parent = imager_backend::migration::PinnedDirectory::open_absolute(
                 destination
                     .parent()
                     .ok_or_else(|| std::io::Error::other("Select a destination folder"))?,
             )?;
             parent.validate_destination()?;
-            let (records, _) = super::migration_journal_log::parent(journal)?;
+            let (records, _) = imager_backend::migration_journal_log::parent(journal)?;
             if records.contains_identity(&root.identity)
                 || root.contains_identity(&records.identity)
                 || destination.starts_with(
@@ -116,11 +116,11 @@ impl RecoveryCopy {
             };
             destination::capacity(&parent, needed)?;
             let reviewed = (
-                super::migration_durability::identity(
-                    &super::migration_durability::readable_directory(&root.file)?,
+                imager_backend::migration_durability::identity(
+                    &imager_backend::migration_durability::readable_directory(&root.file)?,
                 )?,
-                super::migration_durability::identity(
-                    &super::migration_durability::readable_directory(&parent.file)?,
+                imager_backend::migration_durability::identity(
+                    &imager_backend::migration_durability::readable_directory(&parent.file)?,
                 )?,
                 inventory.revision()?,
             );
@@ -149,13 +149,13 @@ impl RecoveryCopy {
         &self,
         resume: bool,
         cancelled: &AtomicBool,
-        progress: impl FnMut(super::migration::CopyProgress),
-    ) -> Result<super::migration::CopyReport, String> {
-        super::migration::check_cancel(cancelled).map_err(|error| error.to_string())?;
+        progress: impl FnMut(imager_backend::migration::CopyProgress),
+    ) -> Result<imager_backend::migration::CopyReport, String> {
+        imager_backend::migration::check_cancel(cancelled).map_err(|error| error.to_string())?;
         self.inventory
             .validate_with_cancel(&self.root, cancelled)
             .map_err(|error| error.to_string())?;
-        super::migration_journal::copy_reviewed(
+        imager_backend::migration_journal::copy_reviewed(
             &self.source,
             &self.destination,
             &self.journal,
@@ -169,8 +169,8 @@ impl RecoveryCopy {
 
 #[cfg(test)]
 mod tests {
-    use super::super::windows_inventory::{RootRole, SelectedRoot};
     use super::*;
+    use imager_backend::windows_inventory::{RootRole, SelectedRoot};
 
     #[test]
     fn cloud_membership_and_exclusion_never_reduce_local_recovery_budget() {
@@ -193,7 +193,7 @@ mod tests {
         inventory
             .select(
                 &id,
-                super::super::windows_inventory::Decision::Exclude,
+                imager_backend::windows_inventory::Decision::Exclude,
                 Some("not importing".into()),
             )
             .unwrap();

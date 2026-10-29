@@ -199,7 +199,7 @@ fn current_personal_and_review_raster_matrix() {
 #[test]
 #[cfg(unix)]
 fn current_belongings_71_rows_raster_matrix() {
-    use super::super::flatpak_transfer::{Installation, InstalledRef, Inventory};
+    use imager_backend::setup::flatpak_transfer::{Installation, InstalledRef, Inventory};
     let private = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
     for key in [

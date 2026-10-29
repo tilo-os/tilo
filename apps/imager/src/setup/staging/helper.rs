@@ -12,15 +12,15 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use super::bundle::BundleFacts;
-use super::efi;
-use super::fat::{self, Range};
 use super::handoff;
 use super::plan::{Basis, Plan};
-use super::platform::{Disk, NewPartition, Partition, Platform};
 use super::record::{
     OriginalFirmware, OwnedBootEntry, Record, RecordStatus, RecordStore, RecordedBundle,
     RecordedComponent, ReleaseRef, Step, StepState,
 };
+use imager_backend::efi;
+use imager_backend::platform::{Disk, NewPartition, Partition, Platform};
+use imager_backend::staging::fat::{self, Range};
 
 pub use imager_backend::staging::protocol::{REQUEST_SCHEMA, STAGING_HELPER_ARG};
 const MAX_MANIFEST_BYTES: u64 = crate::setup::internal_bundle::MAX_MANIFEST_BYTES as u64;
@@ -211,7 +211,7 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
         {
             let bytes = serde_json::to_vec(raw)
                 .map_err(|e| Refusal::new(codes::REQUEST_INVALID, e.to_string()))?;
-            let migration = crate::setup::migration_handoff::Plan::parse(&bytes)
+            let migration = imager_backend::setup::migration_handoff::Plan::parse(&bytes)
                 .map_err(|e| Refusal::new(codes::REQUEST_INVALID, e.to_string()))?;
             if migration.operation_id != request.operation_id {
                 return bad("migration belongs to a different installation operation");
@@ -244,7 +244,7 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
 
 pub use imager_backend::firmware::read_firmware;
 
-pub fn read_basis(platform: &dyn Platform) -> super::platform::IoResult<Basis> {
+pub fn read_basis(platform: &dyn Platform) -> imager_backend::platform::IoResult<Basis> {
     Ok(Basis {
         disk: platform.system_disk()?,
         system_volume: platform.system_volume()?,
@@ -332,8 +332,10 @@ struct Engine<'a> {
     written: Vec<Step>,
 }
 
-fn linux_binding(volume: &super::platform::LinuxBtrfsVolume) -> super::btrfs_resize::Binding {
-    super::btrfs_resize::Binding {
+fn linux_binding(
+    volume: &imager_backend::platform::LinuxBtrfsVolume,
+) -> imager_backend::staging::btrfs_resize::Binding {
+    imager_backend::staging::btrfs_resize::Binding {
         partition_guid: volume.partition_guid.clone(),
         filesystem_uuid: volume.filesystem_uuid.clone(),
         device_id: volume.device_id,
@@ -347,8 +349,8 @@ fn linux_binding(volume: &super::platform::LinuxBtrfsVolume) -> super::btrfs_res
 /// adapter pins the newly admitted mount/namespace for this invocation; only
 /// stable physical/filesystem facts compare against the protected old plan.
 fn same_linux_volume(
-    a: &super::platform::LinuxBtrfsVolume,
-    b: &super::platform::LinuxBtrfsVolume,
+    a: &imager_backend::platform::LinuxBtrfsVolume,
+    b: &imager_backend::platform::LinuxBtrfsVolume,
 ) -> bool {
     a.partition_guid == b.partition_guid
         && a.filesystem_uuid == b.filesystem_uuid
@@ -367,15 +369,17 @@ enum MigrationHandoffPurpose {
 struct JournaledBtrfsVolume<'a, 'b> {
     engine: &'a mut Engine<'b>,
 }
-impl super::btrfs_resize::Volume for JournaledBtrfsVolume<'_, '_> {
-    fn observe(&mut self) -> super::platform::IoResult<super::btrfs_resize::Facts> {
+impl imager_backend::staging::btrfs_resize::Volume for JournaledBtrfsVolume<'_, '_> {
+    fn observe(
+        &mut self,
+    ) -> imager_backend::platform::IoResult<imager_backend::staging::btrfs_resize::Facts> {
         let facts = self
             .engine
             .linux_volume()
             .map_err(|error| error.to_string())?;
         let minimum_bytes = super::plan::minimum_linux_btrfs_bytes(&facts)
             .map_err(|error| format!("Btrfs shrink bound changed: {error:?}"))?;
-        Ok(super::btrfs_resize::Facts {
+        Ok(imager_backend::staging::btrfs_resize::Facts {
             binding: linux_binding(&facts),
             partition_bytes: facts.size_bytes,
             kernel_partition_bytes: facts.kernel_partition_bytes,
@@ -389,10 +393,10 @@ impl super::btrfs_resize::Volume for JournaledBtrfsVolume<'_, '_> {
     }
     fn record_intent(
         &mut self,
-        phase: super::btrfs_resize::Phase,
+        phase: imager_backend::staging::btrfs_resize::Phase,
         bytes: u64,
-    ) -> super::platform::IoResult<()> {
-        use super::btrfs_resize::Phase;
+    ) -> imager_backend::platform::IoResult<()> {
+        use imager_backend::staging::btrfs_resize::Phase;
         let predecessor = match phase {
             Phase::ShrinkPartition => Some(Phase::ShrinkFilesystem),
             Phase::GrowFilesystem => Some(Phase::GrowPartition),
@@ -448,13 +452,13 @@ impl super::btrfs_resize::Volume for JournaledBtrfsVolume<'_, '_> {
     }
     fn record_done(
         &mut self,
-        phase: super::btrfs_resize::Phase,
+        phase: imager_backend::staging::btrfs_resize::Phase,
         bytes: u64,
-    ) -> super::platform::IoResult<()> {
+    ) -> imager_backend::platform::IoResult<()> {
         self.engine.record_mut().resize_done(phase, bytes)?;
         self.engine.save().map_err(|error| error.to_string())
     }
-    fn resize_filesystem(&mut self, bytes: u64) -> super::platform::IoResult<()> {
+    fn resize_filesystem(&mut self, bytes: u64) -> imager_backend::platform::IoResult<()> {
         let guid = self
             .engine
             .plan()
@@ -467,7 +471,7 @@ impl super::btrfs_resize::Volume for JournaledBtrfsVolume<'_, '_> {
             .platform
             .resize_linux_btrfs_filesystem(&guid, bytes)
     }
-    fn resize_partition(&mut self, bytes: u64) -> super::platform::IoResult<()> {
+    fn resize_partition(&mut self, bytes: u64) -> imager_backend::platform::IoResult<()> {
         let guid = self
             .engine
             .plan()
@@ -1290,7 +1294,7 @@ impl Engine<'_> {
         self.platform.sync_disk(&disk).map_err(io_refusal)
     }
 
-    fn linux_volume(&self) -> Result<super::platform::LinuxBtrfsVolume, Refusal> {
+    fn linux_volume(&self) -> Result<imager_backend::platform::LinuxBtrfsVolume, Refusal> {
         let expected = self
             .plan()
             .basis
@@ -1337,7 +1341,10 @@ impl Engine<'_> {
         Ok(actual)
     }
 
-    fn resize_authorized(&self, phase: super::btrfs_resize::Phase) -> Result<bool, Refusal> {
+    fn resize_authorized(
+        &self,
+        phase: imager_backend::staging::btrfs_resize::Phase,
+    ) -> Result<bool, Refusal> {
         self.record
             .as_ref()
             .map(|record| {
@@ -1352,7 +1359,7 @@ impl Engine<'_> {
 
     /// Normalize only exact journaled resize effects, never an arbitrary map.
     fn normalize_linux_btrfs_basis(&self, current: &mut Basis) -> Result<(), Refusal> {
-        use super::btrfs_resize::Phase;
+        use imager_backend::staging::btrfs_resize::Phase;
         let Some(expected) = self.plan().basis.linux_btrfs_volume.as_ref() else {
             return Ok(());
         };
@@ -1424,7 +1431,7 @@ impl Engine<'_> {
     }
 
     fn check_linux_btrfs_resize(&mut self, restoring: bool) -> Result<Actual, Refusal> {
-        use super::btrfs_resize::Phase;
+        use imager_backend::staging::btrfs_resize::Phase;
         let shrink = self.plan().shrink.clone().expect("reviewed shrink");
         let volume = self.linux_volume()?;
         let (from, to) = (shrink.from_bytes, shrink.to_bytes);
@@ -1514,7 +1521,7 @@ impl Engine<'_> {
 
     fn finish_resize_phase(
         &mut self,
-        phase: super::btrfs_resize::Phase,
+        phase: imager_backend::staging::btrfs_resize::Phase,
         bytes: u64,
     ) -> Result<(), Refusal> {
         if self
@@ -1539,9 +1546,14 @@ impl Engine<'_> {
         let shrink = self.plan().shrink.clone().expect("reviewed shrink");
         let mut volume = JournaledBtrfsVolume { engine: self };
         if restoring {
-            super::btrfs_resize::restore(&mut volume, &binding, shrink.from_bytes, shrink.to_bytes)
+            imager_backend::staging::btrfs_resize::restore(
+                &mut volume,
+                &binding,
+                shrink.from_bytes,
+                shrink.to_bytes,
+            )
         } else {
-            super::btrfs_resize::shrink(
+            imager_backend::staging::btrfs_resize::shrink(
                 &mut volume,
                 &binding,
                 shrink.from_bytes,
@@ -1749,7 +1761,7 @@ impl Engine<'_> {
                         "Migration geometry cannot be delivered before verified Btrfs shrink",
                     ));
                 }
-                let original = crate::setup::migration_handoff::Plan::parse(
+                let original = imager_backend::setup::migration_handoff::Plan::parse(
                     &serde_json::to_vec(&raw).map_err(io_refusal)?,
                 )
                 .map_err(io_refusal)?;
@@ -1805,8 +1817,8 @@ impl Engine<'_> {
         let package_len = fat::ranges_len(&slots.prepared);
         let receipt_len = fat::ranges_len(&slots.receipt);
         if package_len < expected.sealed_bytes
-            || package_len > super::prepared_setup::SLOT_BYTES
-            || receipt_len != super::prepared_setup::RECEIPT_BYTES
+            || package_len > imager_backend::staging::prepared_setup::SLOT_BYTES
+            || receipt_len != imager_backend::staging::prepared_setup::RECEIPT_BYTES
         {
             return Err(Refusal::new(
                 codes::ESP_PLACEHOLDER,
@@ -1815,7 +1827,7 @@ impl Engine<'_> {
         }
         if let Some(artifact) = &self.request.prepared_setup {
             let bytes = artifact
-                .read(super::prepared_setup::caller_uid().map_err(io_refusal)?)
+                .read(imager_backend::staging::prepared_setup::caller_uid().map_err(io_refusal)?)
                 .map_err(io_refusal)?;
             self.store
                 .retain_prepared(&self.request.operation_id, &bytes, expected)
@@ -1841,8 +1853,9 @@ impl Engine<'_> {
             .map_err(io_refusal)?;
         let package_len = fat::ranges_len(&slots.prepared);
         if package_len < expected.sealed_bytes
-            || package_len > super::prepared_setup::SLOT_BYTES
-            || fat::ranges_len(&slots.receipt) != super::prepared_setup::RECEIPT_BYTES
+            || package_len > imager_backend::staging::prepared_setup::SLOT_BYTES
+            || fat::ranges_len(&slots.receipt)
+                != imager_backend::staging::prepared_setup::RECEIPT_BYTES
         {
             return Err(Refusal::new(
                 codes::ESP_PLACEHOLDER,
@@ -1852,7 +1865,7 @@ impl Engine<'_> {
         bytes.resize(usize::try_from(package_len).map_err(io_refusal)?, b' ');
         let receipt = handoff::pad_json(
             &serde_json::to_vec(expected).map_err(io_refusal)?,
-            super::prepared_setup::RECEIPT_BYTES,
+            imager_backend::staging::prepared_setup::RECEIPT_BYTES,
         )
         .map_err(io_refusal)?;
         Ok(Some((bytes, receipt)))
@@ -2377,10 +2390,18 @@ fn find_placeholders(
         .map_err(placeholder)?;
     let record = fat::file_ranges(read, size, &format!("{dir}/{}", super::ESP_RECORD_FILE))
         .map_err(placeholder)?;
-    let prepared =
-        fat::file_ranges(read, size, super::prepared_setup::PACKAGE_PATH).unwrap_or_default();
-    let receipt =
-        fat::file_ranges(read, size, super::prepared_setup::RECEIPT_PATH).unwrap_or_default();
+    let prepared = fat::file_ranges(
+        read,
+        size,
+        imager_backend::staging::prepared_setup::PACKAGE_PATH,
+    )
+    .unwrap_or_default();
+    let receipt = fat::file_ranges(
+        read,
+        size,
+        imager_backend::staging::prepared_setup::RECEIPT_PATH,
+    )
+    .unwrap_or_default();
     Ok(Placeholders {
         handoff,
         record,
@@ -2423,11 +2444,13 @@ fn system_store() -> Result<RecordStore, String> {
 fn open_platform() -> Result<Box<dyn Platform>, String> {
     #[cfg(target_os = "linux")]
     {
-        Ok(Box::new(super::linux::LinuxPlatform::open()?))
+        Ok(Box::new(imager_backend::linux::LinuxPlatform::open()?))
     }
     #[cfg(windows)]
     {
-        Ok(Box::new(super::windows::WindowsPlatform::elevated()?))
+        Ok(Box::new(
+            imager_backend::staging::windows::WindowsPlatform::elevated()?,
+        ))
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {
@@ -2513,7 +2536,7 @@ pub fn pending_records() -> Vec<super::record::Record> {
 mod tests {
     #[test]
     fn durable_btrfs_recovery_readmits_mount_but_keeps_stable_identity() {
-        let original = super::super::platform::LinuxBtrfsVolume {
+        let original = imager_backend::platform::LinuxBtrfsVolume {
             partition_guid: "11111111-2222-3333-4444-555555555555".into(),
             filesystem_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
             device_id: 1,

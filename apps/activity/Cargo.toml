@@ -6,6 +6,10 @@ publish = false
 license.workspace = true
 description = "What changed in a workspace: what is new since you were last here, its history, and a replay of its layout"
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["activity-samples"]
+
 [lib]
 name = "activity"
 path = "src/lib.rs"
@@ -28,7 +32,10 @@ serde_json.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [dev-dependencies]
-activity = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `activity` claims `--features activity/thin` in the
+# collection build, and the app then links the whole runtime statically.
+activity-samples = { package = "activity", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

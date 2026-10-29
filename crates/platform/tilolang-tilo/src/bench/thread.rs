@@ -3,7 +3,7 @@
 //! page of rows, the rest rendered as they scroll into view.
 //!
 //! * `thread_open`: opening the item's window and rendering its last page of rows;
-//! * `thread_keystroke`: one character typed into the window's first text input (the draft);
+//! * `thread_keystroke`: one character typed into the window's first text input (the composer);
 //! * `thread_post`: another replica appends a row (a message), which the transcript shows;
 //! * `thread_scroll`: the transcript shows the page of rows before the one it shows.
 
@@ -18,8 +18,8 @@ use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Principal, ViewInstance};
 
 use super::{
-    Changes, Doc, List, Nested, PAGE, Record, Room, SCROLL_STEP, Shape, Sized, Work, execute,
-    frame_list, item_id, ms, root_id, text_input, with_work,
+    Changes, Doc, List, Nested, PAGE, Record, Room, SCROLL_STEP, Shape, Sized, Work,
+    composer_input, execute, frame_list, item_id, ms, root_id, text_input, with_work,
 };
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::record::{DynRecord, DynValue};
@@ -214,8 +214,9 @@ fn open(sized: &Sized<'_>, item: &ResourceRef) -> Result<Record, String> {
 
 /// Typing into the window's first text input, one letter a frame.
 fn keystroke(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<Record, String> {
-    let (input, mut text) =
-        text_input(&room.host, thread.view.tree()).ok_or("the item's window has no text input")?;
+    let (input, mut text) = text_input(&room.host, thread.view.tree())
+        .or_else(|| composer_input(&thread.view, thread.view.tree()))
+        .ok_or("the item's window has no text input")?;
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         text.push('x');

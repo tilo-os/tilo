@@ -177,13 +177,13 @@ pub struct TiloRelease {
     pub image_sha256: String,
     /// Exact target consumer proof authenticated with the media catalog's image digest.
     #[serde(default)]
-    pub account_custody: Option<crate::setup::account_admission::ConsumerCapability>,
+    pub account_custody: Option<imager_backend::account_admission::ConsumerCapability>,
     /// Home archive consumers authenticated with the selected image digest.
     #[serde(default)]
-    pub home_archive: Option<crate::setup::home_admission::ConsumerCapability>,
+    pub home_archive: Option<imager_backend::home_admission::ConsumerCapability>,
     /// Selected app-state consumers authenticated with the exact image digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub applications: Option<crate::setup::applications_admission::ConsumerCapability>,
+    pub applications: Option<imager_backend::applications_admission::ConsumerCapability>,
     /// Original-source consumer proof authenticated with the selected image.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_source: Option<crate::setup::original_admission::ConsumerCapability>,

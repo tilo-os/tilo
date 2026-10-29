@@ -702,15 +702,6 @@ impl<R: Resource> SurfaceCx<R> {
     pub fn files(&self) -> ui_core::storage::AppFiles {
         self.storage.storage().files()
     }
-
-    /// Wakes the app from another thread — a worker's result, a socket's
-    /// message — so the surface syncs and draws it without waiting for
-    /// input.
-    pub fn waker(&self) -> WakeHandle {
-        self.effects
-            .env()
-            .map_or_else(WakeHandle::new, |env| env.wake.clone())
-    }
 }
 
 /// Where a participant is inside a resource, in the resource's own terms, so

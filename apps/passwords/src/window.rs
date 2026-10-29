@@ -24,7 +24,6 @@ use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::actions::PasswordsEffect;
 use crate::list_pane::ListPane;
 use crate::vault::{Core, Dialog, Request, Requests, Screen, Shared, VaultFilter};
 
@@ -49,6 +48,10 @@ pub const SCENARIOS: &[&str] = &[
 
 /// Layouts at one window size before a capture stages shell state.
 const SETTLED_LAYOUTS: u32 = 3;
+
+/// The shell state a capture stages once the window has its size: shared by
+/// the window and the view's staging.
+type Pending = Rc<RefCell<Option<String>>>;
 
 fn filter_icon(filter: VaultFilter) -> Icon {
     match filter {
@@ -113,7 +116,7 @@ fn sidebar(core: &Shared, requests: &Requests) -> NavList {
         })
 }
 
-pub struct PasswordsSurface {
+pub struct PasswordsWindow {
     core: Shared,
     requests: Requests,
     shell: NavShell,
@@ -137,7 +140,7 @@ pub struct PasswordsSurface {
     /// ([`NavShell::nothing_listed`]).
     nothing_listed: bool,
     /// Shell state a capture stages once the window has its size.
-    pending: Option<String>,
+    pending: Pending,
     settled_layouts: u32,
     last_window: vello::kurbo::Rect,
     acknowledger: ui::widget::acknowledgement::Acknowledger,
@@ -150,7 +153,7 @@ const COPY_SECRET: &str = "copy-secret";
 const EDIT_ITEM: &str = "edit-item";
 const FAVORITE: &str = "favorite";
 
-impl PasswordsSurface {
+impl PasswordsWindow {
     /// The overview header's actions: search and New item.
     fn overview_actions(requests: &Requests) -> Vec<Element> {
         let new_item = {
@@ -271,7 +274,7 @@ impl PasswordsSurface {
             declared_bar: None,
             shows_list: true,
             nothing_listed: false,
-            pending: None,
+            pending: Pending::default(),
             settled_layouts: 0,
             last_window: vello::kurbo::Rect::ZERO,
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
@@ -425,99 +428,20 @@ impl PasswordsSurface {
         self.sync_window_toolbar();
     }
 
-    /// Answer an effect invoked by the palette, an agent, a script or a
-    /// search hit, and bring the window in step.
-    pub(crate) fn perform_effect(&mut self, effect: PasswordsEffect) -> Result<(), String> {
-        let answer = self.core.borrow_mut().perform(effect);
-        self.settle();
-        answer
+    /// The vault the window shows, for the view that publishes its items
+    /// and answers its effects beside it.
+    pub(crate) fn vault(&self) -> Shared {
+        Rc::clone(&self.core)
     }
 
-    /// Whether a draft is open in the editor.
-    pub(crate) fn is_editing(&self) -> bool {
-        self.core.borrow().is_editing()
-    }
-
-    /// Live vault rows, one per item.
-    pub(crate) fn item_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.core.borrow().item_rows()
-    }
-
-    /// Non-secret metadata handed to the framework's one search index.
-    pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        crate::search::entries(&self.core.borrow().items)
-    }
-
-    /// Whether the vault behind the secret-bearing search entries is
-    /// unlocked, as the system's search index needs to know.
-    pub(crate) fn secrets_unlocked(&self) -> Option<bool> {
-        self.core.borrow().secrets_unlocked()
-    }
-
-    /// The live row `id`, whether or not the list shows it now.
-    pub(crate) fn item_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
-        self.core.borrow().item_row(id)
-    }
-
-    /// Stage a capture on the fixture vault: `None` is the default frame.
-    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        {
-            let mut core = self.core.borrow_mut();
-            core.load_demo();
-            match scenario {
-                Some("editor") => core.begin_edit(),
-                Some("api-key") => {
-                    core.open(&SecretId("demo-console".into()));
-                }
-                Some("new-item") => core.begin_add(),
-                Some("favorites") => core.select_filter(VaultFilter::Favorites),
-                Some("review") => core.navigate("review"),
-                Some("app-access") => core.navigate("app-access"),
-                Some("transfer") => core.navigate("transfer"),
-                Some("import") => {
-                    core.navigate("transfer");
-                    let rows = crate::demo::import_rows();
-                    let skipped = core.import_skips(&rows);
-                    core.dialog = Some(Dialog::ImportPreview { rows, skipped });
-                }
-                Some("export") => {
-                    core.navigate("transfer");
-                    core.dialog = Some(Dialog::ExportPlaintext {
-                        acknowledged: false,
-                        reminded: false,
-                    });
-                }
-                Some("backup") => {
-                    core.navigate("transfer");
-                    core.dialog = Some(Dialog::Backup { error: None });
-                }
-                Some("delete") => {
-                    core.begin_edit();
-                    core.request_delete();
-                }
-                Some("long-list") => core.extend_demo_for_scrolling(),
-                Some("empty") => {
-                    core.items.clear();
-                    core.selected = None;
-                    core.app_grants.clear();
-                    core.app_proposals.clear();
-                }
-                _ => {}
-            }
-            core.touch();
-            core.show_pane = None;
-        }
-        self.pending = match scenario {
-            Some(name @ ("detail" | "api-key" | "sidebar" | "editor" | "new-item")) => {
-                Some(name.to_owned())
-            }
-            _ => None,
-        };
-        self.settle();
+    /// What stages a capture on this window's vault.
+    pub(crate) fn stager(&self) -> impl FnMut(Option<&str>) + 'static {
+        let (core, pending) = (Rc::clone(&self.core), Rc::clone(&self.pending));
+        move |scenario| stage(&core, &pending, scenario)
     }
 
     fn stage_pending(&mut self) {
-        let Some(scenario) = self.pending.take() else {
+        let Some(scenario) = self.pending.borrow_mut().take() else {
             return;
         };
         match scenario.as_str() {
@@ -565,7 +489,64 @@ impl PasswordsSurface {
     }
 }
 
-impl ui::widget::Decorator for PasswordsSurface {
+/// Stage a capture on the fixture vault: `None` is the default frame. The
+/// window brings itself in step on its next sync.
+fn stage(core: &Shared, pending: &Pending, scenario: Option<&str>) {
+    {
+        let mut core = core.borrow_mut();
+        core.load_demo();
+        match scenario {
+            Some("editor") => core.begin_edit(),
+            Some("api-key") => {
+                core.open(&SecretId("demo-console".into()));
+            }
+            Some("new-item") => core.begin_add(),
+            Some("favorites") => core.select_filter(VaultFilter::Favorites),
+            Some("review") => core.navigate("review"),
+            Some("app-access") => core.navigate("app-access"),
+            Some("transfer") => core.navigate("transfer"),
+            Some("import") => {
+                core.navigate("transfer");
+                let rows = crate::demo::import_rows();
+                let skipped = core.import_skips(&rows);
+                core.dialog = Some(Dialog::ImportPreview { rows, skipped });
+            }
+            Some("export") => {
+                core.navigate("transfer");
+                core.dialog = Some(Dialog::ExportPlaintext {
+                    acknowledged: false,
+                    reminded: false,
+                });
+            }
+            Some("backup") => {
+                core.navigate("transfer");
+                core.dialog = Some(Dialog::Backup { error: None });
+            }
+            Some("delete") => {
+                core.begin_edit();
+                core.request_delete();
+            }
+            Some("long-list") => core.extend_demo_for_scrolling(),
+            Some("empty") => {
+                core.items.clear();
+                core.selected = None;
+                core.app_grants.clear();
+                core.app_proposals.clear();
+            }
+            _ => {}
+        }
+        core.touch();
+        core.show_pane = None;
+    }
+    *pending.borrow_mut() = match scenario {
+        Some(name @ ("detail" | "api-key" | "sidebar" | "editor" | "new-item")) => {
+            Some(name.to_owned())
+        }
+        _ => None,
+    };
+}
+
+impl ui::widget::Decorator for PasswordsWindow {
     type Inner = NavShell;
 
     fn inner(&self) -> &NavShell {
@@ -645,7 +626,7 @@ impl ui::widget::Decorator for PasswordsSurface {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.pending.is_some()
+        self.pending.borrow().is_some()
             || self.acknowledger.current(ui::time::now()).is_some()
             || Widget::needs_animation_frame(&self.shell)
     }

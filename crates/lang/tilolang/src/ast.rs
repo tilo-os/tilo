@@ -294,9 +294,40 @@ impl ActionDecl {
         !self.requires.is_empty()
             || self.opts.iter().any(|o| match o.name.name.as_str() {
                 "on" => true,
-                "label" | "icon" => matches!(o.value.kind, ExprKind::If { .. }),
+                "label" => {
+                    matches!(o.value.kind, ExprKind::If { .. })
+                        || self.label_reads_subject(&o.value)
+                }
+                "icon" => matches!(o.value.kind, ExprKind::If { .. }),
                 _ => false,
             })
+    }
+
+    /// Whether `label` is text that interpolates the subject, and nothing else: it follows the
+    /// subject wherever the action is offered on it.
+    pub fn label_reads_subject(&self, label: &Expr) -> bool {
+        let ExprKind::Str(parts) = &label.kind else {
+            return false;
+        };
+        let Some(subject) = self.params.first() else {
+            return false;
+        };
+        let mut any = false;
+        for part in parts {
+            if let StrPart::Interp(e) = part {
+                let mut root = &**e;
+                while let ExprKind::Field { base, .. } | ExprKind::Call { callee: base, .. } =
+                    &root.kind
+                {
+                    root = base;
+                }
+                match &root.kind {
+                    ExprKind::Ident(n) if *n == subject.name.name => any = true,
+                    _ => return false,
+                }
+            }
+        }
+        any
     }
 }
 

@@ -156,7 +156,7 @@ pub(crate) fn refresh_for_write(
 pub(crate) fn source_review_reason(error: &std::io::Error) -> Option<ReturnReason> {
     #[cfg(target_os = "linux")]
     {
-        let key = crate::setup::portable_home_media::source_review_error(error)?;
+        let key = imager_backend::setup::portable_home_media::source_review_error(error)?;
         Some(if key == "installer-source-changed" {
             ReturnReason::ReviewedHomeChanged
         } else {

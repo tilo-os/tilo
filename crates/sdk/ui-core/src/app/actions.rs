@@ -3314,10 +3314,7 @@ impl App {
     /// an input method all take their keys first, and without a desktop
     /// agent nothing happens.
     #[cfg(feature = "native")]
-    pub(crate) fn handle_unconsumed_typed_key(
-        &mut self,
-        event: &winit::event::WindowEvent,
-    ) -> bool {
+    pub(crate) fn handle_unconsumed_typed_key(&self, event: &winit::event::WindowEvent) -> bool {
         let winit::event::WindowEvent::KeyboardInput {
             event:
                 winit::event::KeyEvent {

@@ -111,6 +111,15 @@ impl Shared {
 }
 
 impl<R: Resource> RecordEnv<R> {
+    /// Wakes the app from another thread — a worker's result, a socket's
+    /// message — so the window syncs and draws it without waiting for
+    /// input.
+    pub fn waker(&self) -> ui_core::WakeHandle {
+        self.effects
+            .env()
+            .map_or_else(ui_core::WakeHandle::new, |env| env.wake.clone())
+    }
+
     /// The same environment for a scope that lives as long as `alive`.
     pub(crate) fn living(&self, alive: &Rc<()>) -> Self {
         Self {

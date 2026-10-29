@@ -1084,6 +1084,15 @@ impl ResourceSurface<RichText> for RichTextSurface {
     }
 
     fn attach(&mut self, cx: SurfaceCx<RichText>) {
+        let dispatch = cx.dispatcher();
+        // A reference in shown text opens where it lives, as the person under their grants.
+        self.editor.on_open_reference(move |reference| {
+            if let Some(ui::tilo_reference::Embed::Resource(at)) =
+                ui::tilo_reference::Embed::of_mark(reference)
+            {
+                dispatch.open_reference(&at.app, at.record.as_deref(), &at.reference);
+            }
+        });
         self.source.attach(cx.live(), cx.dispatcher());
         self.revision = None;
         self.cursor = None;

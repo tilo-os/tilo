@@ -542,6 +542,19 @@ pub trait Store {
     /// A [`StoreError`] when the document cannot be created.
     fn create(&mut self, record: &NewRecord) -> Result<ResourceRef, StoreError>;
 
+    /// Create a document under the id `id` and commit it as one change: a package's per-room
+    /// root, `root-<type id>`, which code names as `root T` or by the root's name.
+    ///
+    /// # Errors
+    ///
+    /// A [`StoreError`] when the document exists or cannot be created.
+    fn create_with_id(&mut self, record: &NewRecord, id: &str) -> Result<ResourceRef, StoreError> {
+        let _ = (record, id);
+        Err(StoreError::Invalid(
+            "this store makes documents under ids of its own".into(),
+        ))
+    }
+
     /// The type id stored at this resource.
     ///
     /// # Errors

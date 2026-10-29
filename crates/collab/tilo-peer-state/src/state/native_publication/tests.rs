@@ -112,7 +112,7 @@ fn native_publication_preserves_original_member_author_and_exact_retry() {
     assert!(receiver.receive_from_report(origin, altered, now).is_err());
 }
 #[test]
-fn native_publication_rechecks_pinned_publisher_and_original_author_revocations() {
+fn native_publication_rechecks_publisher_and_original_author_revocations() {
     let (mut host, _, member, member_cert, now) = crate::admission_tests::seeded();
     let baseline = host.clone();
     let mut doc = AutoCommit::load(&host.document("test.app", "tab:1").unwrap()).unwrap();
@@ -125,18 +125,6 @@ fn native_publication_rechecks_pinned_publisher_and_original_author_revocations(
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let origin = native(&baseline);
-    assert!(
-        baseline
-            .clone()
-            .receive_from(
-                TransportOrigin::RetainedNativePublication {
-                    publisher: member_cert.device_public_key
-                },
-                message.clone(),
-                now
-            )
-            .is_err()
-    );
     // A genuine same-root signed revocation is independently received from an
     // active other device, then the retained packet is rechecked against it.
     for target in [
@@ -159,7 +147,6 @@ fn native_publication_rechecks_pinned_publisher_and_original_author_revocations(
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(cert),
                     revocations: vec![revocation(target)],
-                    successions: Vec::new(),
                 },
                 now,
             )
@@ -201,7 +188,6 @@ fn native_publication_identity_keeps_original_certificate_signature_checks() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(cert.clone()),
             revocations: vec![revocation([99; 32])],
-            successions: Vec::new(),
         },
         now,
     )
@@ -220,7 +206,6 @@ fn native_publication_identity_keeps_original_certificate_signature_checks() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(bad),
                 revocations: vec![],
-                successions: Vec::new()
             },
             now
         )
@@ -307,7 +292,6 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(member_cert.clone()),
                     revocations: vec![revocation(receiver.authority().device_public_key)],
-                    successions: Vec::new(),
                 },
                 now,
             )
@@ -394,7 +378,6 @@ fn native_publication_streaming_cut_rolls_back_on_governor_revocation() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(member_cert),
                 revocations: vec![revocation(publisher)],
-                successions: Vec::new()
             },
             now
         )
@@ -422,7 +405,6 @@ fn native_publication_streaming_cut_checks_expiry_at_push_and_finish() {
         protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
         cert: Box::new(other),
         revocations: vec![],
-        successions: Vec::new(),
     };
     let expired = now + Duration::from_secs(2);
     let cut = short
@@ -473,7 +455,6 @@ fn native_publication_streaming_cut_preserves_preexisting_relay_pending() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(cert),
                 revocations: vec![],
-                successions: Vec::new(),
             },
             now,
         )
@@ -527,7 +508,6 @@ fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(receiver.core.authority.clone()),
                 revocations: vec![revocation(cert.device_public_key)],
-                successions: Vec::new(),
             },
             now,
         )

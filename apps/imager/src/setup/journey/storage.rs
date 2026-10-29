@@ -167,7 +167,7 @@ impl Storage {
 
     /// Captures use a partitioned disk and the production planner, never host I/O.
     pub fn stage(&mut self) {
-        use staging::platform::{Disk, Partition};
+        use imager_backend::platform::{Disk, Partition};
         self.accept(probe::HostFacts {
             basis: Some(plan::Basis {
                 linux_btrfs_volume: None,

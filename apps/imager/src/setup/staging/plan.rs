@@ -7,14 +7,14 @@ pub use imager_backend::plan::{
 };
 
 #[cfg(test)]
-use super::platform::Disk;
+use imager_backend::platform::Disk;
 #[cfg(all(test, feature = "installation"))]
-use super::platform::SystemVolume;
+use imager_backend::platform::SystemVolume;
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::super::platform::Partition;
     use super::*;
+    use imager_backend::platform::Partition;
 
     #[cfg(feature = "installation")]
     const MIB: u64 = 1 << 20;

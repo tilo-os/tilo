@@ -46,7 +46,7 @@ impl Access {
         let digest = hex::encode(Sha256::digest(plan.bytes()?));
         Ok(
             serde_json::json!({"event":"existing-files-available","plan_sha256":digest,"operation":self.grants.operation,"read_only":self.source.mode()==migration_handoff::AccessMode::ReadOnly,"access_mode":self.source.mode(),
-            "source":super::super::migration_store::NativePath::encode(self.source.path()),"source_display":self.source.path().to_string_lossy(),"copied_bytes":0}),
+            "source":imager_backend::migration_store::NativePath::encode(self.source.path()),"source_display":self.source.path().to_string_lossy(),"copied_bytes":0}),
         )
     }
 }

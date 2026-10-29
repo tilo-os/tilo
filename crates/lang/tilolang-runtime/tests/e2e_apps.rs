@@ -167,7 +167,7 @@ mod cases {
     }
 
     fn start_chat(w: &World, apps: &Apps) -> (ResourceRef, ResourceRef) {
-        let chat = w.create("Chat");
+        let chat = w.create("Conversations");
         let conv =
             returned_ref(w.call(&apps.chat, "start", vec![res(&chat), Value::text("Plans")]));
         (chat, conv)
@@ -381,11 +381,17 @@ mod cases {
             view.edit(&draft, &Value::text("hello")).unwrap(),
             EditOutcome::Applied
         );
+        // The draft is the person's own state; the Send it shows carries what they typed.
+        view.poll_patches().unwrap();
         let send = button_labelled(view.tree(), "Send").key.clone();
         assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
         assert_eq!(thread(&w, &conv).len(), 1);
-        assert_eq!(text_of(&w, &conv, "draft"), "");
         view.poll_patches().unwrap();
+        assert_eq!(
+            view.bound_value(&draft),
+            Some(Value::text("")),
+            "the entry is cleared once the message went"
+        );
         assert_eq!(
             authors_of(view.tree()),
             ["me"],
@@ -398,7 +404,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let notebook = w.create("Notebook");
+        let notebook = w.create("Notes");
         let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&notebook)]));
         w.call(
             &apps.notes,
@@ -898,11 +904,12 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
         let ada = Principal::new("person:ada");
-        let view =
+        let mut view =
             w.rt.open_view(&ada, &apps.chat.view("thread"), vec![res(&conv)])
                 .unwrap();
         let draft = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
         view.edit(&draft, &Value::text("hello")).unwrap();
+        view.poll_patches().unwrap();
         let send = button_labelled(view.tree(), "Send").key.clone();
         assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
         assert_eq!(thread(&w, &conv)[0].0, "person:ada");
@@ -918,7 +925,7 @@ mod cases {
     fn a_notebook_row_opens_its_note_in_a_window_of_its_own() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notebook");
+        let nb = w.create("Notes");
         let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
         w.call(
             &apps.notes,
@@ -960,7 +967,7 @@ mod cases {
     fn two_people_in_one_window_share_its_window_state() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notebook");
+        let nb = w.create("Notes");
         for title in ["b", "a"] {
             let n = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
             w.call(&apps.notes, "retitle", vec![res(&n), Value::text(title)]);
@@ -1082,15 +1089,11 @@ mod cases {
 
     fn morning(apps: &Apps) -> Morning {
         let w = world(apps, &AmStore::new());
+        // Today reads the other apps' roots: the workspace's one of each.
         let today = w.create("Today");
-        let notebook = w.create("Notebook");
-        let list = w.create("TodoList");
-        let chat = w.create("Chat");
-        w.call(
-            &apps.today,
-            "attach",
-            vec![res(&today), res(&notebook), res(&list), res(&chat)],
-        );
+        let notebook = w.rt.create_root("Notes").unwrap();
+        let list = w.rt.create_root("TodoList").unwrap();
+        let chat = w.rt.create_root("Conversations").unwrap();
         Morning {
             w,
             today,
@@ -1195,7 +1198,7 @@ mod cases {
             "one question per foreign action, in flow order"
         );
         assert_eq!(items(&m.w, &m.list, "items").len(), 1);
-        let notes = items(&m.w, &m.notebook, "notes");
+        let notes = items(&m.w, &m.notebook, "items");
         assert_eq!(notes.len(), 1, "replays did not file a second note");
         assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 2 done");
         assert_eq!(
@@ -1374,7 +1377,7 @@ mod cases {
     fn notes_list_rows_carry_the_title_and_a_preview() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notebook");
+        let nb = w.create("Notes");
         w.call(&apps.notes, "new_note", vec![res(&nb)]);
         let mut v = w.view(&apps.notes, "notebook", vec![res(&nb)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));

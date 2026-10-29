@@ -2,8 +2,8 @@ use super::*;
 use crate::resource::ImagerShell;
 use ui::framework::testing::TestApp;
 
-fn inventory() -> super::super::flatpak_transfer::Inventory {
-    use super::super::flatpak_transfer::{Installation, InstalledRef, Inventory};
+fn inventory() -> imager_backend::setup::flatpak_transfer::Inventory {
+    use imager_backend::setup::flatpak_transfer::{Installation, InstalledRef, Inventory};
     Inventory {
         refs: (0..71)
             .map(|index| InstalledRef {
@@ -24,8 +24,8 @@ fn expanded_belongings_wheel_retains_rows_and_footer() {
     // dispatch, counters and assertions, never the person's running desktop.
     let inventory = if let Some(home) = std::env::var_os("TILO_IMAGER_SCROLL_INVENTORY_HOME") {
         eprintln!("scroll inventory: native Flatpak discovery");
-        super::super::flatpak_transfer::discover(
-            &super::super::flatpak_transfer::NativeRunner,
+        imager_backend::setup::flatpak_transfer::discover(
+            &imager_backend::setup::flatpak_transfer::NativeRunner,
             std::path::Path::new(&home),
         )
         .unwrap()
@@ -55,7 +55,10 @@ impl JourneyHarness {
     }
 }
 
-fn prepare(preview: &mut InstallerPreview, inventory: super::super::flatpak_transfer::Inventory) {
+fn prepare(
+    preview: &mut InstallerPreview,
+    inventory: imager_backend::setup::flatpak_transfer::Inventory,
+) {
     preview.live = true;
     preview.restart = restart_controller::Restart::default();
     preview.journey.page = Page::Belongings;
@@ -67,7 +70,7 @@ fn prepare(preview: &mut InstallerPreview, inventory: super::super::flatpak_tran
     preview.dirty = true;
 }
 
-fn exercise_inventory(inventory: super::super::flatpak_transfer::Inventory) {
+fn exercise_inventory(inventory: imager_backend::setup::flatpak_transfer::Inventory) {
     let private = tempfile::tempdir().unwrap();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("HOME", private.path());

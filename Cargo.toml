@@ -392,6 +392,7 @@ members = [
     "crates/runtime/environment",
     "crates/runtime/egress",
     "crates/runtime/ush",
+    "crates/runtime/ush-shell",
     "crates/runtime/env-tools",
 
     # Session

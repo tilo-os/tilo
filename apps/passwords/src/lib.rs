@@ -21,7 +21,7 @@ mod window;
 pub use crate::vault::Screen;
 pub use actions::PasswordsEffect;
 pub use resource::{Passwords, PasswordsShell};
-pub use window::PasswordsSurface;
+pub use window::PasswordsWindow;
 
 /// The items of this device's vault, or none for a window that must not
 /// open it (a past version: the vault keeps no history).

@@ -1354,7 +1354,7 @@ fn account_field_pages_advance_through_public_continue_and_preserve_keyboard_foc
 #[cfg(all(target_os = "linux", feature = "native-capture-qualification"))]
 pub(super) fn paint_native_flatpak_inventory(
     home: &std::path::Path,
-    inventory: &super::super::flatpak_transfer::Inventory,
+    inventory: &imager_backend::setup::flatpak_transfer::Inventory,
 ) {
     assert!(inventory.refs.iter().any(|item| item.app_id().is_some()));
     for destination in [Destination::Computer, Destination::Another] {
@@ -1615,7 +1615,7 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
                     .candidates
                     .iter()
                     .any(|account| {
-                        account.provider == super::super::account_transfer::Provider::Nextcloud
+                        account.provider == imager_backend::account_transfer::Provider::Nextcloud
                     })
         });
         app.with_widget::<InstallerPreview, _>(|preview| {
@@ -1628,7 +1628,7 @@ fn belongings_entry_discovers_real_metadata_after_profile_and_review_edit() {
                     .candidates
                     .iter()
                     .any(|account| {
-                        account.provider == super::super::account_transfer::Provider::Nextcloud
+                        account.provider == imager_backend::account_transfer::Provider::Nextcloud
                     })
             );
         })

@@ -5,6 +5,10 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
+# The renamed self dev-dependency only turns on `samples` for tests.
+[package.metadata.cargo-machete]
+ignored = ["feeds-samples"]
+
 [lib]
 name = "feeds"
 path = "src/lib.rs"
@@ -46,7 +50,10 @@ tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "socke
 chrono = { workspace = true, features = ["clock", "std", "alloc"] }
 
 [dev-dependencies]
-feeds = { path = ".", features = ["samples"] }
+# Tests see this package's samples. The key must not be the package name:
+# a dependency named `feeds` claims `--features feeds/thin` in the
+# collection build, and the app then links the whole runtime statically.
+feeds-samples = { package = "feeds", path = ".", features = ["samples"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-history = { path = "../../crates/sdk/tilo-history" }
 

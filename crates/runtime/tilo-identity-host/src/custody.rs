@@ -132,7 +132,7 @@ impl HostIdentity {
         )
     }
 
-    /// The directories [`Self::material_for`] and [`Self::successions_for`]
+    /// The directories [`Self::material_for`]
     /// read: what this device announces changes only with them. None for an
     /// identity kept in memory.
     #[must_use]
@@ -159,15 +159,6 @@ impl HostIdentity {
             directories.push(store.identity_dir().to_path_buf());
         }
         directories
-    }
-
-    /// The root's governor successions of the identity selected for `ws`,
-    /// announced beside its revocations.
-    pub fn successions_for(&self, ws: WorkspaceId) -> Vec<tilo_user_identity::GovernorSuccession> {
-        self.selected(ws)
-            .and_then(|(_, fleet)| fleet)
-            .map(|fleet| fleet.successions)
-            .unwrap_or_default()
     }
 
     /// This device's certificate for the identity selected for `ws`, and that

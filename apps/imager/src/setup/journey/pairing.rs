@@ -1,5 +1,6 @@
 //! Existing-device pairing presentation; custody and helper execution stay in the backend.
-use super::super::{prepared_identity::PreparedIdentity, strings::t};
+use super::super::strings::t;
+use imager_backend::prepared_identity::PreparedIdentity;
 use std::sync::Arc;
 use ui::{
     TextRole,

@@ -1,6 +1,6 @@
 //! Separate fixed browser slots on the reviewed staging ESP.
 use super::*;
-use crate::setup::staging::browser;
+use imager_backend::staging::browser;
 struct Payloads {
     package: Vec<u8>,
     receipt: Vec<u8>,
@@ -10,7 +10,7 @@ impl Engine<'_> {
     fn browser_slots(
         &self,
         slots: &Placeholders,
-        expected: &crate::setup::browser_transfer::Expectation,
+        expected: &imager_backend::setup::browser_transfer::Expectation,
     ) -> Result<(), Refusal> {
         let package = fat::ranges_len(&slots.browser);
         if package < expected.sealed_bytes
@@ -47,7 +47,7 @@ impl Engine<'_> {
                 ));
             }
             let bytes = artifact
-                .read(super::super::prepared_setup::caller_uid().map_err(io_refusal)?)
+                .read(imager_backend::staging::prepared_setup::caller_uid().map_err(io_refusal)?)
                 .map_err(io_refusal)?;
             self.store
                 .retain_browser(&self.request.operation_id, &bytes, expected)

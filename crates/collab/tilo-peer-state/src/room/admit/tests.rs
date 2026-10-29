@@ -54,7 +54,8 @@ fn governed() -> AutoCommit {
 
 /// The changes `edit` makes on top of `before`.
 fn changes_after(before: &AutoCommit, edit: impl FnOnce(&mut AutoCommit)) -> Vec<Vec<u8>> {
-    let mut after = before.clone();
+    // Its own writer: two batches made on one room are concurrent changes.
+    let mut after = before.clone().with_actor(automerge::ActorId::random());
     let heads = after.get_heads();
     edit(&mut after);
     after.commit();
@@ -86,7 +87,7 @@ fn member(writer_key: &str, root: [u8; 32]) -> Writer<'_> {
 fn admit(
     before: Option<&AutoCommit>,
     source: Writer<'_>,
-    authority: AuthorityPin<'_>,
+    owner: &[u8; 32],
     changes: &[Vec<u8>],
 ) -> Result<AdmittedRoom, RoomRefusal> {
     admit_room_changes(
@@ -94,7 +95,7 @@ fn admit(
             before,
             room: ROOM,
             source,
-            authority,
+            owner,
             now_ns: crate::room::saved_shortcut::ns_at(NOW),
         },
         changes,
@@ -118,26 +119,15 @@ fn take_ownership(doc: &mut AutoCommit, root: [u8; 32]) {
 fn authority_bootstrap_needs_no_roster_and_others_need_held_governance() {
     let authority = key(0xA0);
     let snapshot = all_changes(&governed());
-    let admitted = admit(
-        None,
-        member(&authority, OWNER),
-        AuthorityPin::Device(&authority),
-        &snapshot,
-    )
-    .expect("the invite's authority supplies the first governance");
+    let admitted = admit(None, member(&authority, OWNER), &OWNER, &snapshot)
+        .expect("the invite's authority supplies the first governance");
     assert_eq!(
         super::super::governance_of(Some(&admitted.candidate)).owner,
         Some(person_id(OWNER))
     );
     let stranger = key(0xB0);
     assert_eq!(
-        admit(
-            None,
-            member(&stranger, EDITOR),
-            AuthorityPin::Device(&authority),
-            &snapshot,
-        )
-        .unwrap_err(),
+        admit(None, member(&stranger, EDITOR), &OWNER, &snapshot,).unwrap_err(),
         RoomRefusal::GovernanceMissing
     );
 }
@@ -154,18 +144,9 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
         tilo_desktop_model::projection::room_policy_of(&based, ROOM),
         tilo_desktop_model::projection::room_policy_of(&room, ROOM)
     );
-    let authority = key(0xA0);
     let writer = key(0x02);
     let edit = changes_after(&based, |doc| hold_record(doc, "file:/plan.md"));
-    assert!(
-        admit(
-            Some(&based),
-            member(&writer, EDITOR),
-            AuthorityPin::Device(&authority),
-            &edit,
-        )
-        .is_ok()
-    );
+    assert!(admit(Some(&based), member(&writer, EDITOR), &OWNER, &edit,).is_ok());
 
     let mut ungranted = room;
     ungranted.delete(ROOT, "grants").unwrap();
@@ -174,13 +155,7 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
     assert_eq!(policy.active_role(&person_id(EDITOR)), Some(Role::Editor));
     let edit = changes_after(&ungranted, |doc| hold_record(doc, "file:/plan.md"));
     assert_eq!(
-        admit(
-            Some(&ungranted),
-            member(&writer, EDITOR),
-            AuthorityPin::Device(&authority),
-            &edit,
-        )
-        .unwrap_err(),
+        admit(Some(&ungranted), member(&writer, EDITOR), &OWNER, &edit,).unwrap_err(),
         RoomRefusal::WriteForbidden
     );
 }
@@ -189,39 +164,18 @@ fn a_base_keeps_the_room_s_authority_and_an_editor_writes_on_it() {
 fn sender_needs_write_on_the_room_it_already_governs() {
     let before = governed();
     let edit = changes_after(&before, |doc| hold_record(doc, "file:/plan.md"));
-    let authority = key(0xA0);
     let writer = key(0x02);
     assert_eq!(
-        admit(
-            Some(&before),
-            member(&writer, VIEWER),
-            AuthorityPin::Device(&authority),
-            &edit,
-        )
-        .unwrap_err(),
+        admit(Some(&before), member(&writer, VIEWER), &OWNER, &edit,).unwrap_err(),
         RoomRefusal::WriteForbidden,
         "a viewer cannot rewrite room contents"
     );
     assert_eq!(
-        admit(
-            Some(&before),
-            member(&writer, [0x44; 32]),
-            AuthorityPin::Device(&authority),
-            &edit,
-        )
-        .unwrap_err(),
+        admit(Some(&before), member(&writer, [0x44; 32]), &OWNER, &edit,).unwrap_err(),
         RoomRefusal::WriteForbidden,
         "nor can someone who is not a member"
     );
-    assert!(
-        admit(
-            Some(&before),
-            member(&writer, EDITOR),
-            AuthorityPin::Device(&authority),
-            &edit,
-        )
-        .is_ok()
-    );
+    assert!(admit(Some(&before), member(&writer, EDITOR), &OWNER, &edit,).is_ok());
     let added = changes_after(&before, |doc| hold_record(doc, "file:/notes.md"));
     assert!(
         admit(
@@ -230,7 +184,7 @@ fn sender_needs_write_on_the_room_it_already_governs() {
                 key: &writer,
                 standing: Standing::TransportAuthorized,
             },
-            AuthorityPin::Device(&authority),
+            &OWNER,
             &added,
         )
         .is_ok(),
@@ -246,7 +200,7 @@ fn malformed_batch_and_foreign_room_are_refused() {
         admit(
             Some(&before),
             member(&authority, OWNER),
-            AuthorityPin::Device(&authority),
+            &OWNER,
             &[vec![0x85, 0x6f, 0x4a, 0x83, 0xff]],
         ),
         Err(RoomRefusal::Malformed(_))
@@ -256,65 +210,37 @@ fn malformed_batch_and_foreign_room_are_refused() {
             .unwrap();
     });
     assert_eq!(
-        admit(
-            Some(&before),
-            member(&authority, OWNER),
-            AuthorityPin::Device(&authority),
-            &moved,
-        )
-        .unwrap_err(),
+        admit(Some(&before), member(&authority, OWNER), &OWNER, &moved,).unwrap_err(),
         RoomRefusal::DeclaredRoomMismatch
     );
 }
 
 #[test]
-fn governance_changes_only_from_the_pinned_writer() {
+fn governance_changes_only_from_the_owners_devices() {
     let before = governed();
     let seize = changes_after(&before, |doc| take_ownership(doc, EDITOR));
-    let authority = key(0xA0);
     let editor = key(0x02);
     let as_editor = member(&editor, EDITOR);
-    for pin in [
-        AuthorityPin::Device(&authority),
-        AuthorityPin::Person(&OWNER),
-        AuthorityPin::Local,
-        AuthorityPin::Unpinned,
-    ] {
-        assert_eq!(
-            admit(Some(&before), as_editor, pin, &seize).unwrap_err(),
-            RoomRefusal::GovernanceWriter,
-            "{pin:?} must refuse an editor's governance change"
+    assert_eq!(
+        admit(Some(&before), as_editor, &OWNER, &seize).unwrap_err(),
+        RoomRefusal::GovernanceWriter,
+        "an editor's governance change is refused"
+    );
+    for device in [0xA0, 0x05] {
+        assert!(
+            admit(Some(&before), member(&key(device), OWNER), &OWNER, &seize).is_ok(),
+            "any device of the owner may change governance"
         );
     }
-    assert!(
-        admit(
-            Some(&before),
-            member(&authority, OWNER),
-            AuthorityPin::Device(&authority),
-            &seize,
-        )
-        .is_ok(),
-        "the pinned device may change governance"
-    );
-    assert!(
-        admit(
-            Some(&before),
-            member(&key(0x05), OWNER),
-            AuthorityPin::Person(&OWNER),
-            &seize,
-        )
-        .is_ok(),
-        "any device of the pinned person may"
-    );
     // An echo re-states held governance under the sender's own actor.
     let echo = changes_after(&before, |doc| {
         doc.put(ROOT, "owner", person_id(OWNER)).unwrap();
     });
-    assert!(admit(Some(&before), as_editor, AuthorityPin::Unpinned, &echo).is_ok());
+    assert!(admit(Some(&before), as_editor, &OWNER, &echo).is_ok());
 }
 
 #[test]
-fn unpinned_room_refuses_the_first_governance_from_anyone() {
+fn a_first_answer_from_someone_not_the_owner_is_refused() {
     let snapshot = all_changes(&governed());
     let first = key(0xB0);
     assert_eq!(
@@ -324,7 +250,7 @@ fn unpinned_room_refuses_the_first_governance_from_anyone() {
                 key: &first,
                 standing: Standing::TransportAuthorized,
             },
-            AuthorityPin::Unpinned,
+            &OWNER,
             &snapshot,
         )
         .unwrap_err(),
@@ -348,13 +274,7 @@ fn durable_and_import_governance_count_as_governance() {
     });
     let editor = key(0x02);
     assert_eq!(
-        admit(
-            Some(&before),
-            member(&editor, EDITOR),
-            AuthorityPin::Local,
-            &receipts,
-        )
-        .unwrap_err(),
+        admit(Some(&before), member(&editor, EDITOR), &OWNER, &receipts,).unwrap_err(),
         RoomRefusal::GovernanceWriter
     );
 }
@@ -384,13 +304,7 @@ fn effect_receipts_are_immutable_even_for_the_governor() {
     });
     let authority = key(0xA0);
     assert_eq!(
-        admit(
-            Some(&before),
-            member(&authority, OWNER),
-            AuthorityPin::Device(&authority),
-            &rewrite,
-        )
-        .unwrap_err(),
+        admit(Some(&before), member(&authority, OWNER), &OWNER, &rewrite,).unwrap_err(),
         RoomRefusal::ReceiptImmutable
     );
 }
@@ -422,12 +336,7 @@ fn coverage_never_rewinds_even_from_the_governor() {
     });
     let authority = key(0xA0);
     assert!(matches!(
-        admit(
-            Some(&before),
-            member(&authority, OWNER),
-            AuthorityPin::Device(&authority),
-            &rewind,
-        ),
+        admit(Some(&before), member(&authority, OWNER), &OWNER, &rewind,),
         Err(RoomRefusal::Coverage(_))
     ));
 }
@@ -447,12 +356,7 @@ fn durability_never_rewinds_even_from_the_governor() {
     });
     let authority = key(0xA0);
     assert!(matches!(
-        admit(
-            Some(&before),
-            member(&authority, OWNER),
-            AuthorityPin::Device(&authority),
-            &rewind,
-        ),
+        admit(Some(&before), member(&authority, OWNER), &OWNER, &rewind,),
         Err(RoomRefusal::Durability(_))
     ));
 }
@@ -465,12 +369,7 @@ fn malformed_media_policy_is_refused_even_from_the_governor() {
     });
     let authority = key(0xA0);
     assert!(matches!(
-        admit(
-            Some(&before),
-            member(&authority, OWNER),
-            AuthorityPin::Device(&authority),
-            &malformed,
-        ),
+        admit(Some(&before), member(&authority, OWNER), &OWNER, &malformed,),
         Err(RoomRefusal::Media(_))
     ));
 }
@@ -483,7 +382,7 @@ fn refusals_keep_the_peer_state_messages() {
         (RoomRefusal::DeclaredRoomMismatch, "declared room mismatch"),
         (
             RoomRefusal::GovernanceWriter,
-            "governance writer is not pinned authority",
+            "governance writer is not the owner's device",
         ),
         (RoomRefusal::ReceiptImmutable, "effect receipt is immutable"),
     ] {
@@ -509,7 +408,6 @@ fn saving(before: &AutoCommit, shortcut: &tilo_automation::Shortcut) -> Vec<Vec<
 fn a_shortcut_saved_with_a_certificate_issued_this_second_is_proven() {
     use crate::room::saved_shortcut::tests::{NOW_NS, device, shortcut};
     let before = governed();
-    let authority = key(0xA0);
     let writer = key(0x02);
     let mut editor = device(0x22, 0x02);
     editor.cert.issued_at_ns = NOW_NS + 400_000_000;
@@ -520,7 +418,7 @@ fn a_shortcut_saved_with_a_certificate_issued_this_second_is_proven() {
             before: Some(&before),
             room: ROOM,
             source: member(&writer, EDITOR),
-            authority: AuthorityPin::Device(&authority),
+            owner: &OWNER,
             now_ns: NOW_NS + 700_000_000,
         },
         &batch,
@@ -540,7 +438,7 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
     let writer = key(0x02);
     let owner = device(0x11, 0xA0);
     let editor = device(0x22, 0x02);
-    let governor = AuthorityPin::Device(&authority);
+    let governor = &OWNER;
     let as_editor = || member(&writer, EDITOR);
     let as_governor = || member(&authority, OWNER);
 
@@ -619,4 +517,116 @@ fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
         admit(Some(&held), as_editor(), governor, &edit).is_ok(),
         "a shortcut held unchanged is not a write"
     );
+}
+
+const ADMIN: [u8; 32] = [0x55; 32];
+const NEWCOMER: [u8; 32] = [0x66; 32];
+
+fn put_role(doc: &mut AutoCommit, person: [u8; 32], role: Role) {
+    let (_, members) = doc.get(ROOT, "members").unwrap().unwrap();
+    doc.put(
+        &members,
+        person_id(person),
+        ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
+    )
+    .unwrap();
+}
+
+fn put_grant(doc: &mut AutoCommit, grant: &tilo_action_policy::Grant) {
+    let (_, grants) = doc.get(ROOT, "grants").unwrap().unwrap();
+    doc.put(
+        &grants,
+        grant.id.as_str(),
+        ScalarValue::Bytes(serde_json::to_vec(grant).unwrap()),
+    )
+    .unwrap();
+}
+
+fn drop_grant(doc: &mut AutoCommit, id: &str) {
+    let (_, grants) = doc.get(ROOT, "grants").unwrap().unwrap();
+    doc.delete(&grants, id).unwrap();
+}
+
+/// [`governed`] with an editor the owner made an administrator.
+fn with_administrator() -> AutoCommit {
+    let mut doc = governed();
+    put_role(&mut doc, ADMIN, Role::Editor);
+    put_grant(
+        &mut doc,
+        &roles::administrator_grant(ROOM, &person_id(ADMIN), Subject::Person(person_id(OWNER))),
+    );
+    doc.commit();
+    doc
+}
+
+#[test]
+fn an_administrator_admits_a_member_and_an_editor_cannot() {
+    let before = with_administrator();
+    let admit_newcomer = changes_after(&before, |doc| put_role(doc, NEWCOMER, Role::Commenter));
+    let admitted = admit(
+        Some(&before),
+        member(&key(0x05), ADMIN),
+        &OWNER,
+        &admit_newcomer,
+    )
+    .expect("an administrator admits a member");
+    assert_eq!(
+        tilo_desktop_model::projection::room_policy_of(&admitted.candidate, ROOM)
+            .role_of(&person_id(NEWCOMER)),
+        Some(Role::Commenter)
+    );
+    assert!(matches!(
+        admit(
+            Some(&before),
+            member(&key(0x02), EDITOR),
+            &OWNER,
+            &admit_newcomer
+        ),
+        Err(RoomRefusal::Membership(_))
+    ));
+}
+
+#[test]
+fn an_administrator_writes_membership_only() {
+    let before = with_administrator();
+    let rename = changes_after(&before, |doc| take_ownership(doc, ADMIN));
+    assert_eq!(
+        admit(Some(&before), member(&key(0x05), ADMIN), &OWNER, &rename).unwrap_err(),
+        RoomRefusal::GovernanceWriter
+    );
+    let above = changes_after(&before, |doc| put_role(doc, NEWCOMER, Role::Owner));
+    assert!(admit(Some(&before), member(&key(0x05), ADMIN), &OWNER, &above).is_err());
+}
+
+/// A change is judged where its writer made it: one made before the
+/// writer's grant was taken back stands wherever it arrives, one made after
+/// does not.
+#[test]
+fn a_membership_change_is_judged_where_its_writer_made_it() {
+    let base = with_administrator();
+    let admin_id = roles::administrator_grant_id(&person_id(ADMIN));
+    let revoked = {
+        let mut doc = base.clone();
+        drop_grant(&mut doc, admin_id.as_str());
+        doc.commit();
+        doc
+    };
+    // Made on the room before the revocation, received after it.
+    let concurrent = changes_after(&base, |doc| put_role(doc, NEWCOMER, Role::Viewer));
+    assert!(
+        admit(
+            Some(&revoked),
+            member(&key(0x05), ADMIN),
+            &OWNER,
+            &concurrent
+        )
+        .is_ok(),
+        "made while the writer held the grant"
+    );
+    // Made after the revocation reached the writer.
+    let later = changes_after(&revoked, |doc| put_role(doc, NEWCOMER, Role::Viewer));
+    assert!(matches!(
+        admit(Some(&revoked), member(&key(0x05), ADMIN), &OWNER, &later),
+        Err(RoomRefusal::Membership(_))
+    ));
 }

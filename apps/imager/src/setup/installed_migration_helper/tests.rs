@@ -1,5 +1,5 @@
 use super::*;
-use crate::setup::{
+use imager_backend::setup::{
     flatpak_transfer::Runner,
     user_transfer::{self, TransferRequest},
 };

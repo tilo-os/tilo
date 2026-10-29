@@ -64,6 +64,17 @@ impl Core {
         }
     }
 
+    /// A list in another order: sorted by the keys beside it, or reversed (`sort_by(k, desc)`).
+    fn ordered(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let mut items = self.list_items(a.h(0)?)?;
+        if imp == Imp::ListReverse {
+            items.reverse();
+            return self.ret_h(Value::List(items));
+        }
+        let keys = self.list_items(a.h(1)?)?;
+        self.ret_h(Value::List(sorted_by_keys(&items, &keys)?))
+    }
+
     pub(crate) fn aggregate_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ListNew => self.ret_h(Value::List(Vec::new())),
@@ -113,11 +124,7 @@ impl Core {
                 };
                 self.ret_h(end)
             }
-            Imp::ListSortByKey => {
-                let items = self.list_items(a.h(0)?)?;
-                let keys = self.list_items(a.h(1)?)?;
-                self.ret_h(Value::List(sorted_by_keys(&items, &keys)?))
-            }
+            Imp::ListReverse | Imp::ListSortByKey => self.ordered(imp, a),
             Imp::TupleNew => {
                 let n = index(i64::from(a.h(0)?), "tuple size")?;
                 self.ret_h(Value::Tuple(vec![Value::Unit; n]))

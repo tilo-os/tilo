@@ -229,10 +229,11 @@ fn native_selected_encrypted_slack_discovery_capture_seals_and_reopens_isolated_
     assert!(facts.is_file() && facts.uid() == 0 && facts.mode() & 0o022 == 0);
     assert_ne!(unsafe { libc::getuid() }, 0);
     assert_eq!(unsafe { libc::getuid() }, unsafe { libc::geteuid() });
-    let package = crate::setup::service_sessions::source::slack_linux::SlackApplication::at(
-        Path::new("/fixture/slack"),
-    )
-    .expect("exact publicly pinned Slack package is mandatory");
+    let package =
+        imager_backend::setup::service_sessions::source::slack_linux::SlackApplication::at(
+            Path::new("/fixture/slack"),
+        )
+        .expect("exact publicly pinned Slack package is mandatory");
     for case in [Case::Present, Case::Missing] {
         let bus = Bus::start();
         let evidence = Arc::new(Mutex::new(Evidence::default()));
@@ -254,8 +255,8 @@ fn native_selected_encrypted_slack_discovery_capture_seals_and_reopens_isolated_
         database.execute("INSERT INTO cookies VALUES(1,'.slack.com','selected','', '/',0,1,1,-1,0,?1,'',2,443)",rusqlite::params![encrypted]).unwrap();
         drop(database);
         let original = std::fs::read(profile.join("Cookies")).unwrap();
-        let inventory = crate::setup::account_transfer::discover(
-            &crate::setup::account_transfer::SourceRoots {
+        let inventory = imager_backend::account_transfer::discover(
+            &imager_backend::account_transfer::SourceRoots {
                 home: home.path().to_owned(),
                 config: home.path().join(".config"),
             },
@@ -264,7 +265,7 @@ fn native_selected_encrypted_slack_discovery_capture_seals_and_reopens_isolated_
             home.path(),
             &inventory.candidates,
             &|candidate| {
-                if candidate.provider == crate::setup::account_transfer::Provider::Slack {
+                if candidate.provider == imager_backend::account_transfer::Provider::Slack {
                     Some(Arc::clone(&package))
                 } else {
                     None
@@ -296,7 +297,7 @@ fn native_selected_encrypted_slack_discovery_capture_seals_and_reopens_isolated_
                 .unwrap();
             let destination = target.path().join("custody");
             assert!(
-                crate::setup::service_sessions::import(
+                imager_backend::setup::service_sessions::import(
                     &artifact,
                     &declaration,
                     b"synthetic transfer password",
@@ -307,7 +308,7 @@ fn native_selected_encrypted_slack_discovery_capture_seals_and_reopens_isolated_
                 .is_err()
             );
             assert!(!destination.exists());
-            crate::setup::service_sessions::import(
+            imager_backend::setup::service_sessions::import(
                 &artifact,
                 &declaration,
                 b"synthetic transfer password",

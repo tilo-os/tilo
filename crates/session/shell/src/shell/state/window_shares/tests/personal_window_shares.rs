@@ -20,13 +20,15 @@ use tilo_desktop_model::projection::{
     ROOM_LAYOUT_KEY, RoomLayout, project_room_policy, room_policy_of,
 };
 use tilo_desktop_model::window_share::{window_node, window_share_id};
-use tilo_peer_state::room::{AuthorityPin, RoomAdmission, Standing, Writer, admit_room_changes};
+use tilo_peer_state::room::{RoomAdmission, Standing, Writer, admit_room_changes};
 use tilo_test_env::{FakeDocumentNet, Peer};
 
 pub(super) const ROOM: &str = "2c4e6a8b-1d3f-4a5b-8c7d-9e0f1a2b3c4d";
 pub(super) const CHAT: &str = "so.tilo.chat";
 pub(super) const NOTES: &str = "so.tilo.notes";
 const NOW_NS: u64 = 1_000_000_000_000;
+/// The owner `governed_room` makes its rooms with.
+const ROOM_OWNER: [u8; 32] = [0x11; 32];
 
 /// The changes one message of the room's sync carries.
 pub(super) fn changes_in(bytes: &[u8]) -> Vec<Vec<u8>> {
@@ -69,11 +71,15 @@ impl Member {
             RoomAdmission {
                 before: self.admitted.as_ref(),
                 room: ROOM,
+                // The governor is a device of the room's owner.
                 source: Writer {
                     key: host_key,
-                    standing: Standing::TransportAuthorized,
+                    standing: Standing::Member {
+                        person: ROOM_OWNER,
+                        foreign: false,
+                    },
                 },
-                authority: AuthorityPin::Device(host_key),
+                owner: &ROOM_OWNER,
                 now_ns: NOW_NS,
             },
             &arrived,

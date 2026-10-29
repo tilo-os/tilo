@@ -889,6 +889,8 @@ pub struct UpdatesModel {
     /// Raised by the status-file watcher; the next sync re-reads the status,
     /// so progress written by the helper appears while it runs.
     codec_status_changed: Arc<AtomicBool>,
+    /// The watch on the helper's status file; dropping the pane ends it.
+    _codec_status_watch: Option<tilo_files::native::ChangeWatch>,
     wake: WakeHandle,
     /// Set once the person has asked to roll back and been shown what it does
     /// not undo; cleared when they leave the pane's structure alone long
@@ -972,6 +974,7 @@ impl UpdatesModel {
             codec_pending: None,
             codec_events: None,
             codec_status_changed: Arc::new(AtomicBool::new(false)),
+            _codec_status_watch: None,
             wake: WakeHandle::new(),
             rollback_armed: false,
             notice: None,
@@ -1121,18 +1124,15 @@ impl UpdatesModel {
     /// Follow the helper's status file, so the card shows its progress and
     /// background results (an install that finished once the device came
     /// online) while the pane is open. Stops when the pane is dropped.
-    fn watch_codec_status(&self) {
-        let changed = Arc::downgrade(&self.codec_status_changed);
+    fn watch_codec_status(&mut self) {
+        let changed = Arc::clone(&self.codec_status_changed);
         let wake = self.wake.clone();
-        if let Err(error) = crate::codec_pack::watch(move || {
-            let Some(changed) = changed.upgrade() else {
-                return false;
-            };
+        match crate::codec_pack::watch(move || {
             changed.store(true, Ordering::Release);
             wake.wake();
-            true
         }) {
-            tracing::debug!(%error, "codec pack status is not watched");
+            Ok(watch) => self._codec_status_watch = Some(watch),
+            Err(error) => tracing::debug!(%error, "codec pack status is not watched"),
         }
     }
 

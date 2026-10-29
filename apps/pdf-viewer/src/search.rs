@@ -8,7 +8,6 @@ use ui::tilo_resource::SearchEntry;
 use crate::actions::{
     PdfEffect, PdfResourceCtx, SEARCH_RESULT_RESOURCE_LIMIT, outline_resource_id,
 };
-use crate::model::Page;
 
 pub const PDF_SEARCH_KIND: &str = "PDF Viewer";
 
@@ -27,10 +26,11 @@ fn entry(
         .subtitled(subtitle)
 }
 
-/// The search entries of the document `ctx` shows, its pages' text read from
-/// `source_pages`. Every hit invokes the canonical action of the resource it
-/// names, the same address the published tree carries.
-pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<SearchEntry> {
+/// The search entries of the document `ctx` shows, each displayed page's
+/// text as the engine's text layer read it, in `page_text`.
+/// Every hit invokes the canonical action of the resource it names, the same
+/// address the published tree carries.
+pub fn surface_entries(ctx: &PdfResourceCtx, page_text: &[&str]) -> Vec<SearchEntry> {
     let mut entries = Vec::new();
     let document_id = <crate::PdfMarkup as ui::tilo_resource::Resource>::KIND.to_string();
     entries.push(entry(
@@ -46,16 +46,9 @@ pub fn surface_entries(ctx: &PdfResourceCtx, source_pages: &[Page]) -> Vec<Searc
             "pages",
             &ui::tilo_resource::Id::from_raw(page_id.as_str()),
         );
-        let source_page = ctx.page_sources.get(index).copied().unwrap_or(page);
-        let text = source_pages
-            .get(source_page.saturating_sub(1))
-            .map(|page| {
-                page.blocks
-                    .iter()
-                    .filter_map(crate::model::Block::search_text)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
+        let text = page_text
+            .get(index)
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
             .unwrap_or_default();
         let subtitle = text.chars().take(120).collect::<String>();
         // A page opens as the page it is.

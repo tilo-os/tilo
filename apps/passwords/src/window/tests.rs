@@ -14,11 +14,11 @@ fn temp_root(name: &str) -> std::path::PathBuf {
 }
 
 /// Run `event` through the window as the host would.
-fn send(app: &mut PasswordsSurface, doc: &mut AutoCommit, event: &WindowEvent) {
+fn send(app: &mut PasswordsWindow, doc: &mut AutoCommit, event: &WindowEvent) {
     ui::testing::Dispatch::new().doc(doc).send(app, event);
 }
 
-fn request(app: &mut PasswordsSurface, request: Request) {
+fn request(app: &mut PasswordsWindow, request: Request) {
     app.requests.borrow_mut().push(request);
     app.settle();
 }
@@ -100,7 +100,7 @@ fn clipboard_fixture(accepts: bool) -> ui::host::HostScope {
 
 #[test]
 fn the_window_is_the_shared_shell_and_follows_the_chosen_place() {
-    let mut app = PasswordsSurface::demo();
+    let mut app = PasswordsWindow::demo();
     assert!(app.shell().has_sidebar());
     assert!(app.shell().has_overview(), "the vault shows its item list");
 
@@ -142,13 +142,13 @@ fn list_rows_open_items_and_toggle_favorites_through_the_list() {
         ui::framework::testing::TestApp::<crate::resource::PasswordsShell>::drive("detail")
             .unwrap();
     let selected = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
-        app.surface::<PasswordsSurface, _>(|surface| {
+        app.surface::<PasswordsWindow, _>(|surface| {
             surface.core().selected.as_ref().map(|id| id.0.clone())
         })
         .flatten()
     };
     let favorites = |app: &mut ui::framework::testing::TestApp<crate::resource::PasswordsShell>| {
-        app.surface::<PasswordsSurface, _>(|surface| surface.core().count(VaultFilter::Favorites))
+        app.surface::<PasswordsWindow, _>(|surface| surface.core().count(VaultFilter::Favorites))
             .unwrap()
     };
 
@@ -192,22 +192,23 @@ fn list_rows_open_items_and_toggle_favorites_through_the_list() {
     assert_eq!(favorites(&mut app), before + 1);
 
     // The arrow keys step through the list.
-    app.surface::<PasswordsSurface, _>(|surface| surface.core_mut().step(false));
+    app.surface::<PasswordsWindow, _>(|surface| surface.core_mut().step(false));
     assert_eq!(selected(&mut app).as_deref(), Some("demo-mail"));
 }
 
 #[test]
 fn nothing_the_window_publishes_or_reads_out_holds_a_secret() {
-    let app = PasswordsSurface::demo();
+    let app = PasswordsWindow::demo();
     let secrets = ["Harbor-Lights-2019", "harbourlights", "4821-7730", "tv1234"];
 
     let rows: Vec<_> = app
+        .core()
         .item_rows()
         .into_iter()
         .map(ui::framework::LiveRow::into_resource)
         .collect();
     let resources = public_text(&rows);
-    let hits = format!("{:?}", app.search_entries());
+    let hits = format!("{:?}", crate::search::entries(&app.core().items));
     for secret in secrets {
         assert!(!resources.contains(secret), "resources leak {secret}");
         assert!(!hits.contains(secret), "search leaks {secret}");
@@ -237,7 +238,7 @@ fn nothing_the_window_publishes_or_reads_out_holds_a_secret() {
 #[test]
 fn a_revealed_value_expires_and_locks_when_the_window_loses_focus() {
     let mut doc = AutoCommit::new();
-    let mut app = PasswordsSurface::demo();
+    let mut app = PasswordsWindow::demo();
     let at = ui::time::now();
     let until = at + std::time::Duration::from_secs(10);
     ui::time::testing::with_monotonic_time(at, || {
@@ -269,7 +270,7 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
     eprintln!("phase a pending transfer keeps the host polling on a fixed deadline");
     {
         let doc = AutoCommit::new();
-        let mut app = PasswordsSurface::demo();
+        let mut app = PasswordsWindow::demo();
         let (tx, rx) = std::sync::mpsc::channel();
         app.core_mut().export_portal = Some(crate::transfer::Saving::Path(rx));
         let at = ui::time::now();
@@ -292,7 +293,7 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
         let mut item = SecretItem::login("Account", "ada", "private-value");
         item.add_origin("https://example.invalid").unwrap();
         model.save_item(&mut item).unwrap();
-        let mut app = PasswordsSurface::new(model);
+        let mut app = PasswordsWindow::new(model);
 
         request(&mut app, Request::CopySecret);
         assert_eq!(ui::clipboard_paste().as_deref(), Some("private-value"));
@@ -327,7 +328,7 @@ fn reveal_and_copy_are_temporary_and_honest_about_the_clipboard() {
         let mut item = SecretItem::login("Account", "ada", "private-value");
         item.add_origin("https://example.invalid").unwrap();
         model.save_item(&mut item).unwrap();
-        let mut app = PasswordsSurface::new(model);
+        let mut app = PasswordsWindow::new(model);
         for copy in [
             Request::CopySecret,
             Request::CopyIdentity,
@@ -353,7 +354,7 @@ fn filters_favorites_and_confirmed_deletes_are_real_vault_state() {
     let mut gone = SecretItem::login("Removed", "ada", "removed-secret-1A");
     model.save_item(&mut kept).unwrap();
     model.save_item(&mut gone).unwrap();
-    let mut app = PasswordsSurface::new(model);
+    let mut app = PasswordsWindow::new(model);
 
     request(&mut app, Request::Open(gone.id.clone()));
     request(&mut app, Request::ToggleFavorite(gone.id.clone()));
@@ -390,7 +391,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
     {
         let _clipboard = clipboard_fixture(true);
         let root = temp_root("editor");
-        let mut app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
+        let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
         request(&mut app, Request::NewItem);
         assert_eq!(app.core().screen, Screen::Editor);
         {
@@ -445,7 +446,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
 
     eprintln!("phase a draft names what is missing next to the field");
     {
-        let mut app = PasswordsSurface::demo();
+        let mut app = PasswordsWindow::demo();
         request(&mut app, Request::NewItem);
         request(&mut app, Request::Save);
         assert!(matches!(
@@ -466,7 +467,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
 
     eprintln!("phase cancelling discards the sensitive draft");
     {
-        let mut app = PasswordsSurface::demo();
+        let mut app = PasswordsWindow::demo();
         request(&mut app, Request::NewItem);
         app.core_mut()
             .set_draft(DraftField::Password, "unsaved password");
@@ -491,7 +492,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
         item.tags.extend(["favorite".into(), "work".into()]);
         let id = model.save_item(&mut item).unwrap();
 
-        let mut app = PasswordsSurface::new(model);
+        let mut app = PasswordsWindow::new(model);
         request(&mut app, Request::Edit);
         assert!(
             app.core()
@@ -553,7 +554,7 @@ fn editor_saves_edits_and_discards_drafts_against_the_real_store() {
 #[test]
 fn an_empty_vault_review_says_there_is_nothing_to_check() {
     let root = temp_root("empty-review");
-    let app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
+    let app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
     let shared = Rc::clone(&app.core);
     shared.borrow_mut().screen = Screen::Review;
     let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
@@ -568,7 +569,7 @@ fn an_empty_vault_review_says_there_is_nothing_to_check() {
 /// wherever the vault is kept, not as a device or a browser.
 #[test]
 fn the_review_says_it_checked_this_vault() {
-    let app = PasswordsSurface::demo();
+    let app = PasswordsWindow::demo();
     let shared = Rc::clone(&app.core);
     shared.borrow_mut().screen = Screen::Review;
     let page = crate::pages::content(&shared.borrow(), &shared, &app.requests, false);
@@ -581,7 +582,7 @@ fn the_review_says_it_checked_this_vault() {
 /// narrow editor pane never cuts the kinds' names short.
 #[test]
 fn the_editor_names_each_kind_in_full() {
-    let mut app = PasswordsSurface::demo();
+    let mut app = PasswordsWindow::demo();
     request(&mut app, Request::NewItem);
     request(&mut app, Request::SetKind(SecretItemKind::SecureNote));
     let shared = Rc::clone(&app.core);
@@ -608,7 +609,7 @@ fn the_wheel_scrolls_the_editor_to_its_save_button() {
     for width in [960.0, 460.0] {
         let mut framed = ui::headless::Framed::new(
             ui::State::new(),
-            PasswordsSurface::demo(),
+            PasswordsWindow::demo(),
             ui::headless::viewport((width, 560.0)),
             ui::Theme::dark(),
         );
@@ -640,7 +641,7 @@ fn the_wheel_scrolls_the_editor_to_its_save_button() {
 #[test]
 fn a_bare_host_saves_as_its_https_site_and_an_edit_clears_the_complaint() {
     let root = temp_root("bare-host");
-    let mut app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
+    let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
     request(&mut app, Request::NewItem);
     {
         let mut core = app.core_mut();
@@ -689,7 +690,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
             )
             .unwrap();
         drop(selected);
-        let mut app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
+        let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
         let (services, recorder) = ui::host::HostServices::recording();
         for expected_conflicts in [0, 1] {
             recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
@@ -725,7 +726,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
         let mut login = accounts::SecretItem::login("Example", "ada", "export-secret");
         login.add_origin("https://example.com").unwrap();
         model.save_item(&mut login).unwrap();
-        let mut app = PasswordsSurface::new(model);
+        let mut app = PasswordsWindow::new(model);
         request(&mut app, Request::Export);
         request(&mut app, Request::ConfirmExport);
         assert!(app.core().export_portal.is_none());
@@ -764,7 +765,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
         item.tags.extend(["work".into(), "favorite".into()]);
         source.save_item(&mut item).unwrap();
 
-        let mut app = PasswordsSurface::new(source);
+        let mut app = PasswordsWindow::new(source);
         request(&mut app, Request::Backup);
         app.core_mut().backup_password = Zeroizing::new("a memorable backup password".into());
         app.core_mut().backup_confirmation = Zeroizing::new("a different password!".into());
@@ -801,7 +802,7 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
         assert!(app.core().backup_password.is_empty());
 
         let mut restored =
-            PasswordsSurface::new(crate::PasswordsModel::open_in(&base.join("restored")));
+            PasswordsWindow::new(crate::PasswordsModel::open_in(&base.join("restored")));
         recorder.respond_to_open_file(ui::portal::OpenFileOutcome::Opened(
             ui::portal::OpenedFile::new(
                 std::fs::File::open(&backup_path).unwrap(),
@@ -838,8 +839,9 @@ fn import_export_and_backup_flows_round_trip_through_portals() {
 fn every_capture_scenario_stages_on_the_fixture_vault() {
     for scenario in SCENARIOS.iter().copied().map(Some).chain([None]) {
         let root = temp_root("capture");
-        let mut app = PasswordsSurface::new(crate::PasswordsModel::open_in(&root));
-        app.stage_scenario(scenario);
+        let mut app = PasswordsWindow::new(crate::PasswordsModel::open_in(&root));
+        app.stager()(scenario);
+        app.settle();
         let core = app.core();
         assert!(
             core.model.is_none(),
@@ -861,7 +863,7 @@ fn every_capture_scenario_stages_on_the_fixture_vault() {
 #[test]
 fn hosted_by_the_window_bar_the_items_actions_are_the_bars() {
     ui::window_toolbar::set_hosted(true);
-    let mut app = PasswordsSurface::demo();
+    let mut app = PasswordsWindow::demo();
     app.settle();
     let favorite = {
         let core = app.core.borrow();

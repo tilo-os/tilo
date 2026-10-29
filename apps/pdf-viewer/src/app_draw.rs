@@ -182,9 +182,6 @@ impl PdfApp {
         // A key (a tool's hotkey, B, Ctrl+plus) changes what the window bar
         // shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
-        if self.shots_selection {
-            self.stage_shots_selection(tr);
-        }
 
         // No window fill: the framework painted the content ground already.
 
@@ -196,17 +193,11 @@ impl PdfApp {
         // document semantics; zoom remains the explicit visual magnifier.
         let chrome_text_scale = tr.text_scale();
         tr.set_text_scale(1.0);
-        // In text mode, refresh the page-point text-line cache for visible
-        // pages so the smart highlight tool can snap to exactly the glyphs
-        // being drawn. (Raster pages carry no toolkit text geometry.)
+        // Refresh the engine's text layer and links for the visible pages so
+        // selection + search overlays line up with the glyphs.
         if self.raster_active() {
-            self.text_lines.clear();
-            // Raster backend: refresh the real `PDFium` text layer for the
-            // visible pages so selection + search overlays line up with glyphs.
             self.refresh_raster_text();
             self.refresh_raster_links();
-        } else {
-            self.refresh_text_lines(tr);
         }
         tr.set_text_scale(chrome_text_scale);
 
@@ -771,25 +762,6 @@ impl PdfApp {
         }
     }
 
-    /// Populate `self.text_lines` for the pages currently in view. Cheap: the
-    /// measurer caches per (text,size,width) so repeated frames hit the cache.
-    fn refresh_text_lines(&mut self, tr: &mut TextRenderer) {
-        let pageh = self.ph() * self.zoom();
-        let canvas = self.canvas_rect;
-        let origins = self.page_origins();
-        self.text_lines.clear();
-        for (i, origin) in origins.iter().enumerate() {
-            if origin.y > canvas.y1 || origin.y + pageh < canvas.y0 {
-                continue;
-            }
-            let page_num = i + 1;
-            if let Some(page) = self.doc.page(page_num) {
-                let lines = render::collect_text_lines(tr, page);
-                self.text_lines.insert(page_num, lines);
-            }
-        }
-    }
-
     // ---- canvas -----------------------------------------------------
 
     /// The no-document surface: the library empty state, with the one action
@@ -890,18 +862,6 @@ impl PdfApp {
             let Some(page) = self.doc.page(page_num) else {
                 continue;
             };
-            let found: Vec<render::FoundSpan> = self
-                .matches
-                .iter()
-                .enumerate()
-                .filter(|(_, m)| m.page == page_num)
-                .map(|(index, m)| render::FoundSpan {
-                    block: m.block,
-                    start: m.start,
-                    len: m.len,
-                    current: index == self.active_match,
-                })
-                .collect();
             render::draw_page(
                 &mut PaintCtx::new(scene, base, tr, theme),
                 page,
@@ -915,7 +875,6 @@ impl PdfApp {
                     image: page_imgs.get(&page_num),
                     tiles: page_tiles.get(&page_num),
                 },
-                &found,
                 render::Markup {
                     annotations: &self.annotations,
                     signatures: &self.signatures,
@@ -926,11 +885,9 @@ impl PdfApp {
             self.draw_import_placeholder(scene, base, tr, theme, *origin, i);
             self.draw_form_fields(scene, base, tr, theme, page_num, *origin);
 
-            // Raster backend: draw search-hit + selection bands over the page
-            // image, using the real glyph geometry so they land on the text.
-            if self.raster_active() {
-                self.draw_text_overlays(scene, base, theme, page_num, *origin);
-            }
+            // Search-hit + selection bands over the page image, from the
+            // real glyph geometry so they land on the text.
+            self.draw_text_overlays(scene, base, theme, page_num, *origin);
         }
 
         // Drag preview.
@@ -1232,13 +1189,6 @@ impl PdfApp {
         let Some(bounds_rect) = self.selection_screen_bounds() else {
             return;
         };
-        // The selection band is normally painted by `draw_text_overlays` (raster
-        // backend). The block-model sample isn't drawn there, so paint it here
-        // for the seeded screenshot path — with no PDF open there is no raster
-        // text layer, so this only fires for a staged selection.
-        if !self.raster_active() {
-            render::draw_selection_bands(scene, base, theme, &self.selection_screen_bands());
-        }
         // Anchor above the top edge of the selection, horizontally centred on it.
         let anchor = Point::new(
             f64::midpoint(bounds_rect.x0, bounds_rect.x1),

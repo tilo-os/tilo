@@ -19,6 +19,7 @@ adblock = { version = "0.12", default-features = false, features = ["content-blo
 aead-3b31131e45eafb45 = { package = "aead", version = "0.6", default-features = false, features = ["alloc", "rand_core"] }
 aead-d8f496e17d97b5cb = { package = "aead", version = "0.5", default-features = false, features = ["alloc", "getrandom"] }
 aes-gcm = { version = "0.10" }
+ahash = { version = "0.8" }
 aho-corasick = { version = "1" }
 anstream = { version = "1" }
 anyhow = { version = "1" }
@@ -148,6 +149,7 @@ p384-582f2526e08bb6a0 = { package = "p384", version = "0.14", features = ["ecdh"
 p384-594e8ee84c453af0 = { package = "p384", version = "0.13" }
 parking_lot = { version = "0.12" }
 pbkdf2 = { version = "0.12" }
+peg-runtime = { version = "0.8", default-features = false, features = ["std"] }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
@@ -199,6 +201,7 @@ sha3 = { version = "0.12" }
 signature = { version = "3", default-features = false, features = ["alloc", "digest", "rand_core"] }
 simd-adler32 = { version = "0.3" }
 simdutf8 = { version = "0.1", default-features = false, features = ["aarch64_neon", "std"] }
+similar = { version = "2", features = ["inline"] }
 siphasher = { version = "1" }
 skrifa = { version = "0.44" }
 slab = { version = "0.4" }
@@ -263,6 +266,7 @@ adblock = { version = "0.12", default-features = false, features = ["content-blo
 aead-3b31131e45eafb45 = { package = "aead", version = "0.6", default-features = false, features = ["alloc", "rand_core"] }
 aead-d8f496e17d97b5cb = { package = "aead", version = "0.5", default-features = false, features = ["alloc", "getrandom"] }
 aes-gcm = { version = "0.10" }
+ahash = { version = "0.8" }
 aho-corasick = { version = "1" }
 anstream = { version = "1" }
 anyhow = { version = "1" }
@@ -395,6 +399,7 @@ p384-582f2526e08bb6a0 = { package = "p384", version = "0.14", features = ["ecdh"
 p384-594e8ee84c453af0 = { package = "p384", version = "0.13" }
 parking_lot = { version = "0.12" }
 pbkdf2 = { version = "0.12" }
+peg-runtime = { version = "0.8", default-features = false, features = ["std"] }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
@@ -446,6 +451,7 @@ sha3 = { version = "0.12" }
 signature = { version = "3", default-features = false, features = ["alloc", "digest", "rand_core"] }
 simd-adler32 = { version = "0.3" }
 simdutf8 = { version = "0.1", default-features = false, features = ["aarch64_neon", "std"] }
+similar = { version = "2", features = ["inline"] }
 siphasher = { version = "1" }
 skrifa = { version = "0.44" }
 slab = { version = "0.4" }
@@ -509,6 +515,7 @@ zerovec = { version = "0.11", default-features = false, features = ["alloc", "de
 zune-jpeg = { version = "0.5" }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
+ahash = { version = "0.8", default-features = false, features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
@@ -543,6 +550,7 @@ x11rb = { version = "0.13", default-features = false, features = ["res"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
+ahash = { version = "0.8", default-features = false, features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
@@ -577,6 +585,7 @@ x11rb = { version = "0.13", default-features = false, features = ["res"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std"] }
 
 [target.aarch64-unknown-linux-gnu.dependencies]
+ahash = { version = "0.8", default-features = false, features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }
@@ -611,6 +620,7 @@ x11rb = { version = "0.13", default-features = false, features = ["res"] }
 x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std"] }
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
+ahash = { version = "0.8", default-features = false, features = ["no-rng"] }
 ash = { version = "0.38" }
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "open_uri", "screencast", "tokio", "wallpaper"] }
 brotli = { version = "8" }

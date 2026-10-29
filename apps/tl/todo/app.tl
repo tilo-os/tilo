@@ -16,15 +16,14 @@ type Todo {
     }
 }
 
-/// A list of things to do, with the text of the item being typed.
+/// A list of things to do.
 type TodoList {
     name: Text (title)
     items: Collection<Todo>
     tags: Set<Text>
-    draft: Text
 }
 
-root TodoList
+root todos: TodoList
 
 default view todo_list for TodoList
 
@@ -42,14 +41,6 @@ primary action new_item(list: TodoList) -> Todo (icon: .plus) {
     list.items.insert(Todo(title: ""))
 }
 
-/// Adds the typed item and clears the entry.
-action add_draft(list: TodoList) {
-    if list.draft != "" {
-        list.items.insert(Todo(title: list.draft))
-        list.draft = ""
-    }
-}
-
 /// Checks or unchecks an item.
 action check(item: Todo, done: Bool = not item.done) (label: if done { "Check" } else { "Uncheck" }, icon: .check, on: item.done) {
     item.done = done
@@ -62,20 +53,13 @@ destructive action remove(list: TodoList, item: Todo) (icon: .trash) {
 
 /// Removes every item that is done.
 destructive action clear_done(list: TodoList) -> Int (icon: .circle_check, label: "Clear done") {
-    require list.items.any(item -> item.done) "Nothing is done yet"
-    let n = 0
-    for item in list.items {
-        if item.done {
-            list.items.remove(item)
-            n += 1
-        }
-    }
-    n
+    require list.items.any(.done) "Nothing is done yet"
+    list.items.remove_where(.done)
 }
 
-/// Moves an item to a place in the list.
-action move_to(list: TodoList, item: Todo, index: Int) {
-    list.items.move(item, index)
+/// Moves an item to just after another.
+action move(list: TodoList, item: Todo, after: Todo) {
+    list.items.move(item, after: after)
 }
 
 /// Renames the list.
@@ -109,30 +93,28 @@ view item_editor(item: Todo) {
 
 /// A household list on a Saturday morning: enough to scroll, some of it done.
 scenario "a saturday list" -> Todo {
-    let list = root TodoList
-    list.name = "Saturday"
-    list.items.insert(Todo(title: "Take the bins out", done: true))
-    list.items.insert(Todo(title: "Buy oat milk and eggs", due: Date("2026-10-24")))
-    let call = list.items.insert(Todo(title: "Call the landlord about the boiler", notes: "Ask whether Tuesday morning works for the engineer.", due: Date("2026-10-27")))
-    list.items.insert(Todo(title: "Water the plants", done: true))
-    list.items.insert(Todo(title: "Return the library books"))
-    list.items.insert(Todo(title: "Book a haircut"))
-    list.items.insert(Todo(title: "Pay the electricity bill", done: true, due: Date("2026-10-20")))
-    list.items.insert(Todo(title: "Fix the bike's back brake"))
-    list.items.insert(Todo(title: "Reply to Mia about Sunday lunch"))
-    list.items.insert(Todo(title: "Clean the oven"))
-    list.items.insert(Todo(title: "Pick up the parcel from the post office", notes: "Bring an ID; it closes at one."))
-    list.items.insert(Todo(title: "Change the bed sheets", done: true))
-    list.items.insert(Todo(title: "Order a birthday present for Sam", due: Date("2026-11-02")))
-    list.items.insert(Todo(title: "Back up the laptop"))
+    todos.name = "Saturday"
+    todos.items.insert(Todo(title: "Take the bins out", done: true))
+    todos.items.insert(Todo(title: "Buy oat milk and eggs", due: 2026-10-24))
+    let call = todos.items.insert(Todo(title: "Call the landlord about the boiler", notes: "Ask whether Tuesday morning works for the engineer.", due: 2026-10-27))
+    todos.items.insert(Todo(title: "Water the plants", done: true))
+    todos.items.insert(Todo(title: "Return the library books"))
+    todos.items.insert(Todo(title: "Book a haircut"))
+    todos.items.insert(Todo(title: "Pay the electricity bill", done: true, due: 2026-10-20))
+    todos.items.insert(Todo(title: "Fix the bike's back brake"))
+    todos.items.insert(Todo(title: "Reply to Mia about Sunday lunch"))
+    todos.items.insert(Todo(title: "Clean the oven"))
+    todos.items.insert(Todo(title: "Pick up the parcel from the post office", notes: "Bring an ID; it closes at one."))
+    todos.items.insert(Todo(title: "Change the bed sheets", done: true))
+    todos.items.insert(Todo(title: "Order a birthday present for Sam", due: 2026-11-02))
+    todos.items.insert(Todo(title: "Back up the laptop"))
     call
 }
 
 /// A list everyone has finished.
 scenario "all done" {
-    let list = root TodoList
-    list.name = "Packing"
-    list.items.insert(Todo(title: "Passports", done: true))
-    list.items.insert(Todo(title: "Chargers", done: true))
-    list.items.insert(Todo(title: "Sun cream", done: true))
+    todos.name = "Packing"
+    todos.items.insert(Todo(title: "Passports", done: true))
+    todos.items.insert(Todo(title: "Chargers", done: true))
+    todos.items.insert(Todo(title: "Sun cream", done: true))
 }

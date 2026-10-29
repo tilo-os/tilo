@@ -13,7 +13,7 @@ impl PreparedMedia {
         self: &Arc<Self>,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         if self.browser.is_none() || self.browser_frozen {
             self.validate_for_write(cancel)?;
             return Ok(Arc::clone(self));
@@ -47,7 +47,7 @@ impl PreparedMedia {
         password: &[u8],
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         let browser = self
             .browser
             .as_ref()
@@ -129,7 +129,7 @@ impl PreparedMedia {
                 .ok_or_else(|| io::Error::other("Prepared media capacity overflows"))
         })?;
         std::fs::remove_dir_all(&quarantine)?;
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         for (source, _) in refreshed.source.profiles() {
             source.validate()?;
         }
@@ -171,10 +171,8 @@ impl PreparedMedia {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup::{
-        account_transfer,
-        journey::{browser::SelectedSources, prepared_media::MediaSelections},
-    };
+    use crate::setup::journey::{browser::SelectedSources, prepared_media::MediaSelections};
+    use imager_backend::account_transfer;
     use imager_backend::setup::browser_profiles;
     use std::{fs, path::PathBuf};
     const PASSWORD: &str = "a sufficiently long transport password";
@@ -324,7 +322,7 @@ mod tests {
         .unwrap();
         assert_eq!(authenticated.manifest(), &selected.manifest);
         let browser = selected.browser.as_ref().unwrap();
-        let projection = crate::setup::browser_transfer::extract(
+        let projection = imager_backend::setup::browser_transfer::extract(
             &browser.expectation,
             &browser.plan,
             &selected._custody.path().join(&browser.expectation.filename),
@@ -382,7 +380,7 @@ mod tests {
             browser.expectation
         );
         assert!(!browser.plan.profiles[0].history);
-        let projection = crate::setup::browser_transfer::extract(
+        let projection = imager_backend::setup::browser_transfer::extract(
             &browser.expectation,
             &browser.plan,
             &fresh._custody.path().join(&browser.expectation.filename),

@@ -114,11 +114,11 @@ struct MediaRelease {
     image_sha256: String,
     image_size: u64,
     #[serde(default)]
-    account_custody: Option<crate::setup::account_admission::ConsumerCapability>,
+    account_custody: Option<imager_backend::account_admission::ConsumerCapability>,
     #[serde(default)]
-    home_archive: Option<crate::setup::home_admission::ConsumerCapability>,
+    home_archive: Option<imager_backend::home_admission::ConsumerCapability>,
     #[serde(default)]
-    applications: Option<crate::setup::applications_admission::ConsumerCapability>,
+    applications: Option<imager_backend::applications_admission::ConsumerCapability>,
     #[serde(default)]
     original_source: Option<crate::setup::original_admission::ConsumerCapability>,
 }
@@ -2163,10 +2163,10 @@ mod internal_catalog_tests {
         let mut value = media();
         let legacy = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
         assert!(
-            crate::setup::home_admission::require(legacy[0].home_archive.as_ref(), None).is_ok()
+            imager_backend::home_admission::require(legacy[0].home_archive.as_ref(), None).is_ok()
         );
         assert!(
-            crate::setup::home_admission::require(legacy[0].home_archive.as_ref(), Some(2))
+            imager_backend::home_admission::require(legacy[0].home_archive.as_ref(), Some(2))
                 .is_err()
         );
         value["home_archive"] = json!({"schema":1,"archive_protocol":2,"seed_protocol":1,
@@ -2178,7 +2178,7 @@ mod internal_catalog_tests {
             value["image_sha256"].as_str().unwrap()
         );
         assert!(
-            crate::setup::home_admission::require(selected[0].home_archive.as_ref(), Some(2))
+            imager_backend::home_admission::require(selected[0].home_archive.as_ref(), Some(2))
                 .is_ok()
         );
         for bad in [
@@ -2215,17 +2215,20 @@ mod internal_catalog_tests {
         let mut value = media();
         let legacy = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
         assert!(
-            crate::setup::applications_admission::require(legacy[0].applications.as_ref(), None)
+            imager_backend::applications_admission::require(legacy[0].applications.as_ref(), None)
                 .is_ok()
         );
         assert!(
-            crate::setup::applications_admission::require(legacy[0].applications.as_ref(), Some(2))
-                .is_err()
+            imager_backend::applications_admission::require(
+                legacy[0].applications.as_ref(),
+                Some(2)
+            )
+            .is_err()
         );
         value["applications"] = json!({"schema":1,"subset_protocol":2,"prepared_helper_sha256":"a".repeat(64),"qualification_script_sha256":"b".repeat(64),"native_qualification_sha256":"c".repeat(64)});
         let selected = media_releases(parse_catalog(&catalog(value.clone())).unwrap(), "x86_64");
         assert!(
-            crate::setup::applications_admission::require(
+            imager_backend::applications_admission::require(
                 selected[0].applications.as_ref(),
                 Some(2)
             )

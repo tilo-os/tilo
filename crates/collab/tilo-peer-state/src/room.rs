@@ -5,13 +5,13 @@ pub mod base;
 pub(crate) mod delivery_policy;
 pub(crate) mod key_hex;
 pub mod media;
+pub mod membership;
 pub(crate) mod policy;
 pub(crate) mod private_policy;
 pub(crate) mod read;
 pub mod saved_shortcut;
 pub use admit::{
-    AdmittedRoom, AuthorityPin, RoomAdmission, RoomRefusal, Standing, Writer, admit_room_changes,
-    check_candidate,
+    AdmittedRoom, RoomAdmission, RoomRefusal, Standing, Writer, admit_room_changes, check_candidate,
 };
 pub use adopt::adopt_room;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};

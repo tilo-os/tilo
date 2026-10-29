@@ -7,29 +7,16 @@
 
 #[cfg(target_os = "linux")]
 pub mod browser;
-// Pure journal/ordering contract is shared with cross-platform records.
-pub(super) mod btrfs_resize;
 pub mod bundle;
 #[cfg(feature = "installation")]
 pub(crate) mod capacity_probe;
 pub mod cli;
-pub mod efi;
-pub mod fat;
-pub mod final_bootnext;
 pub mod handoff;
 pub mod helper;
-#[cfg(target_os = "linux")]
-pub mod linux;
-// Pure parsers shared by the Linux adapter; compiled everywhere so their
-// tests run on every development host.
-pub mod linux_parse;
 pub mod plan;
-pub mod platform;
 pub mod prepared_setup;
 pub mod probe;
 pub mod record;
-#[cfg(any(windows, test))]
-pub mod windows;
 
 #[cfg(all(test, feature = "installation"))]
 pub(crate) mod fake;

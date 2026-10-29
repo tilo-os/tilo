@@ -1,6 +1,6 @@
 //! Presentation for independent, consented browser domains.
 //! Backend discovery admits sources or reports unsupported custody on every host.
-use crate::setup::account_transfer::Candidate;
+use imager_backend::account_transfer::Candidate;
 pub(super) use imager_backend::browser_selection::Domain;
 pub(crate) use imager_backend::browser_selection::SelectedSources;
 use std::{io, path::Path};
