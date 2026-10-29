@@ -8125,17 +8125,18 @@ mod tests {
         assert!(fb.focused_ime_field(None).is_none());
     }
 
+    /// The launcher takes what the shell asks of it, and answers, as
+    /// frames run.
+    fn run_frames(fb: &mut FrameBuilder, doc: &mut AutoCommit) {
+        for _ in 0..3 {
+            fb.pump_apps(doc, &automerge::ROOT);
+            fb.relayout();
+        }
+        let _ = fb.paint_settled();
+    }
+
     #[test]
     fn search_field_target_is_the_launchers_editable_row_and_disappears_on_close() {
-        // The launcher takes what the shell asks of it, and answers, as
-        // frames run.
-        fn run_frames(fb: &mut FrameBuilder, doc: &mut AutoCommit) {
-            for _ in 0..3 {
-                fb.pump_apps(doc, &automerge::ROOT);
-                fb.relayout();
-            }
-            let _ = fb.paint_settled();
-        }
         let mut fb = FrameBuilder::new((1920, 1080));
         let mut doc = AutoCommit::new();
         let mut focus = None;
@@ -8696,10 +8697,10 @@ mod tests {
         // search is exported a second time, or a screen reader sees two
         // palettes and may type into the hidden one.
         let mut fb = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
         fb.host_mut().set_palette_visible(true);
         fb.host_mut().force_palette_settled();
-        let _ = fb.paint_settled();
-        fb.relayout();
+        run_frames(&mut fb, &mut doc);
         let update = fb.build_a11y_tree_update(None, 1.0);
         let named = |name: &str| {
             update
@@ -8726,10 +8727,10 @@ mod tests {
         // query from outside reaches the host first; it must still be typed,
         // and search runs it.
         let mut fb = FrameBuilder::new((1280, 800));
+        let mut doc = AutoCommit::new();
         fb.host_mut().set_palette_visible(true);
         fb.host_mut().force_palette_settled();
-        let _ = fb.paint_settled();
-        fb.relayout();
+        run_frames(&mut fb, &mut doc);
         let update = fb.build_a11y_tree_update(None, 1.0);
         let (query_id, _) = update
             .nodes
@@ -8740,7 +8741,6 @@ mod tests {
             })
             .cloned()
             .expect("the open palette publishes its query");
-        let mut doc = AutoCommit::new();
         let mut focus = None;
         assert!(fb.dispatch_a11y_action(
             query_id,
@@ -8749,7 +8749,7 @@ mod tests {
             &automerge::ROOT,
             &mut focus,
         ));
-        let _ = fb.paint_settled();
+        run_frames(&mut fb, &mut doc);
         assert_eq!(fb.host().palette_query(), "photos");
     }
 
