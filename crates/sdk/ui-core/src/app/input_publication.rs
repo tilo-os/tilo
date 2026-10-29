@@ -59,16 +59,23 @@ impl super::App {
                 self.input.pointer_at = Some(logical(position.x, position.y));
             }
             WindowEvent::CursorLeft { .. } => self.input.pointer_at = None,
+            // The person acts again: what stood at their last control is
+            // done with.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 ..
-            } => self.input.pressed_at = self.input.pointer_at,
+            } => {
+                self.dismiss_control_notice();
+                self.input.pressed_at = self.input.pointer_at;
+            }
             WindowEvent::Touch(touch) if touch.phase == winit::event::TouchPhase::Started => {
+                self.dismiss_control_notice();
                 let at = logical(touch.location.x, touch.location.y);
                 self.input.pointer_at = Some(at);
                 self.input.pressed_at = Some(at);
             }
             WindowEvent::KeyboardInput { event: key, .. } if key.state == ElementState::Pressed => {
+                self.dismiss_control_notice();
                 self.input.pressed_at = None;
             }
             _ => {}

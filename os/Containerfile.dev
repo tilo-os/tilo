@@ -95,7 +95,8 @@ COPY os/scripts/unseal-rootfs.py os/scripts/check-dev-kernel.sh os/scripts/build
      os/scripts/clean-dnf-layer-state.sh \
      os/scripts/install-components.py os/scripts/finalize-dev-image.py \
      os/scripts/verify-boot-ordering.sh os/scripts/install-dev-toolchain.sh \
-     os/scripts/install-env-runtime.sh os/scripts/ensure-dev-env-runtime.sh /tilo/os/scripts/
+     os/scripts/install-env-runtime.sh os/scripts/ensure-dev-env-runtime.sh \
+     os/scripts/signed-records.py /tilo/os/scripts/
 COPY Cargo.lock rust-toolchain.toml /tilo/
 
 # ---- The base, unsealed, with the builder's toolchain -------------------------
@@ -198,6 +199,19 @@ RUN --network=none \
       --manifest /run/tilo-dev/os/components.toml \
       --from /out --build-root / --dest /image --dev
 
+# ---- The env-runtime ----------------------------------------------------------
+# The production image ships the published runtime of its definition, and none while stable has not
+# published this tree's: then the runtime this build is given (`dev-env-runtime`, sealed in the
+# same t run with a throwaway key, or an empty directory) goes into the system store, its
+# publisher trusted by this dev image alone. With neither the build fails. What the dev image
+# copies in is left in /out (os/scripts/ensure-dev-env-runtime.sh).
+FROM dev-toolchain AS dev-env-runtime-store
+RUN --network=none \
+    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
+    --mount=type=bind,from=dev-env-runtime,source=/,target=/run/tilo-dev-env-runtime,ro \
+    bash /run/tilo-dev/os/scripts/ensure-dev-env-runtime.sh /run/tilo-dev-env-runtime \
+      /usr/libexec/tilo/tilo-install /out
+
 # ---- The dev image ------------------------------------------------------------
 FROM dev-toolchain AS dev
 
@@ -241,16 +255,11 @@ COPY os/dev-image/ /
 # it, from main only, and the update policy below takes them only with that signature.
 COPY keys/cosign-dev.pub /usr/share/tilo/cosign-dev.pub
 
-# An env-runtime, so environments (Terminal's shell among them) start in the tree under test.
-# The image below ships the published runtime of its definition, and none while stable has not
-# published this tree's: then the runtime this build is given (`dev-env-runtime`, sealed in the
-# same t run with a throwaway key, or an empty directory) goes into the system store, its
-# publisher trusted by this dev image alone. With neither the build fails.
-RUN --network=none \
-    --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
-    --mount=type=bind,from=dev-env-runtime,source=/,target=/run/tilo-dev-env-runtime,ro \
-    bash /run/tilo-dev/os/scripts/ensure-dev-env-runtime.sh /run/tilo-dev-env-runtime \
-      /usr/libexec/tilo/tilo-install
+# An env-runtime, so environments (Terminal's shell among them) start in the tree under test
+# (dev-env-runtime-store above): its tree, the same layer whenever the runtime is, then the
+# record that names it by this build's key.
+COPY --from=dev-env-runtime-store /out/tree/ /
+COPY --from=dev-env-runtime-store /out/record/ /
 
 # The local model catalog of this tree (`dev-model-catalog`: t's model-catalog-dev-<arch>, which
 # names the runtimes this tree builds, signed with a throwaway key this image's own signature

@@ -1,8 +1,9 @@
 //! What search finds of a room: the text of every record and item of every package.
 //!
-//! Every `Text` and `RichText` field of a type is searchable by default (a rich text by its text,
-//! where a reference reads as its run: the referenced resource's title, the person's name); a hit is the record or item that holds
-//! it, found by its text, and it opens the host at that resource (its `open` view action, see
+//! Every `Text` and `RichText` field of a type is searchable by default (a rich text by its text
+//! as the person searching reads it: a reference to a resource they hold by what it is called
+//! now, one they do not hold as not shared, never by the title it was written with,
+//! [`crate::reading`]); a hit is the record or item that holds it, found by its text, and it opens the host at that resource (its `open` view action, see
 //! [`crate::effects::OpenEffect`]). A package will be able to say which fields to index; until
 //! then all of them are, the most useful default for a notes app and a chat alike.
 //!
@@ -37,15 +38,27 @@ pub struct Hit {
 }
 
 /// The searchable resources of the record `doc` and the items below it, read from the record
-/// whole: what the index's hits are held to.
+/// whole, each text as the person `reader` holds resources for reads it: what the index's hits
+/// are held to.
 #[must_use]
-pub fn hits(meta: &Meta, record: &DynRecord, doc: &str) -> Vec<Hit> {
+pub fn hits(
+    meta: &Meta,
+    record: &DynRecord,
+    doc: &str,
+    reader: &dyn crate::reading::Holdings,
+) -> Vec<Hit> {
     let mut out = Vec::new();
-    collect(meta, record, doc, &mut out);
+    collect(meta, record, doc, reader, &mut out);
     out
 }
 
-fn collect(meta: &Meta, record: &DynRecord, path: &str, out: &mut Vec<Hit>) {
+fn collect(
+    meta: &Meta,
+    record: &DynRecord,
+    path: &str,
+    reader: &dyn crate::reading::Holdings,
+    out: &mut Vec<Hit>,
+) {
     let mut texts = Vec::new();
     let mut references: Vec<String> = Vec::new();
     for field in &record.schema().fields {
@@ -71,7 +84,12 @@ fn collect(meta: &Meta, record: &DynRecord, path: &str, out: &mut Vec<Hit>) {
                         references.push(mark);
                     }
                 }
-                rich.text()
+                crate::reading::said(
+                    reader,
+                    path,
+                    tilolang_runtime::store::FieldValue::Rich(value),
+                )
+                .unwrap_or_default()
             }
             _ => continue,
         };
@@ -96,6 +114,7 @@ fn collect(meta: &Meta, record: &DynRecord, path: &str, out: &mut Vec<Hit>) {
                     meta,
                     item,
                     &crate::index::derive::item_path(path, item_id.as_str()),
+                    reader,
                     out,
                 );
             }
@@ -111,10 +130,12 @@ pub fn group_of(meta: &Meta) -> String {
 
 /// Every hit of the room, by package and path, read from the indexes now: what a window
 /// publishes to the session's search index, which is what search finds things through. One pass
-/// over each package's index.
+/// over each package's index. Each text is as the window's person reads it: the index matches a
+/// query against what they read, never against the title of a resource they do not hold.
 #[must_use]
 pub fn every_hit(host: &Host) -> Vec<Hit> {
     let snapshot = host.store().snapshot();
+    let reader: &crate::store::Snapshot = &snapshot;
     let mut out = Vec::new();
     for package in host.packages() {
         let Some(view) = snapshot.view(&package.meta.app) else {
@@ -124,12 +145,17 @@ pub fn every_hit(host: &Host) -> Vec<Hit> {
             continue;
         };
         out.extend(texted.into_iter().filter_map(|held| {
+            let texts: Vec<String> = held
+                .texts
+                .into_iter()
+                .filter_map(|text| reader.said(&held.path, text))
+                .collect();
             Some(Hit {
                 resource: resource_id(&package.meta.app, &held.path),
                 app_title: package.meta.title.clone(),
                 type_name: held.schema.name.clone(),
-                title: held.texts.first()?.clone(),
-                texts: held.texts,
+                title: texts.first()?.clone(),
+                texts,
                 references: held.references,
             })
         }));

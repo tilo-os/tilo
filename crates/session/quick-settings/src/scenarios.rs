@@ -135,7 +135,7 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
         HostedRow {
             key: "phone".into(),
             title: "Phone".into(),
-            detail: "Online · next to you".into(),
+            detail: "Next to you".into(),
             icon: Icon::Phone,
             selected: false,
             enabled: true,

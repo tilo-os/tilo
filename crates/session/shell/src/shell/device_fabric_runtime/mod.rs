@@ -8041,8 +8041,22 @@ fn roaming_setting_values() -> BTreeMap<String, Value> {
     roaming_setting_values_from(&settings_store::load())
 }
 
+/// Every leaf of the sections the person holds, by its fabric key
+/// (`tilo.<section>.<leaf>`). An object below a leaf travels as one value.
 fn roaming_setting_values_from(document: &Map<String, Value>) -> BTreeMap<String, Value> {
-    settings_store::continuity::personal_values(document)
+    let mut projected = BTreeMap::new();
+    for (section, leaves) in document {
+        if settings_store::placement::holder(section) != settings_store::placement::Holder::Person {
+            continue;
+        }
+        let Value::Object(leaves) = leaves else {
+            continue;
+        };
+        for (leaf, value) in leaves {
+            projected.insert(format!("tilo.{section}.{leaf}"), value.clone());
+        }
+    }
+    projected
 }
 
 fn permitted_roaming_setting_values(
@@ -8091,7 +8105,8 @@ fn roaming_provenance(
         .values()
         .flat_map(|snapshot| &snapshot.settings)
         .filter(|setting| {
-            settings_store::continuity::is_personal(&setting.key)
+            settings_store::placement::holder_of_key(&setting.key)
+                == Some(settings_store::placement::Holder::Person)
                 && permits_roaming_setting(policy, &setting.key)
         })
     {
@@ -9213,11 +9228,19 @@ mod tests {
         )]));
         assert_eq!(settings_store::load_section("appearance")["mode"], "light");
 
-        // An edit the person makes is published, and a device-local leaf
+        // An edit the person makes is published, and the device's section
         // beside it stays out.
         settings_store::update_section(
             "appearance",
-            serde_json::json!({"mode": "dark", "wallpaper_path": "/home/ada/sea.png"})
+            serde_json::json!({"mode": "dark"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+        .unwrap();
+        settings_store::update_section(
+            "appearance_device",
+            serde_json::json!({"wallpaper_path": "/home/ada/sea.png"})
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -9235,12 +9258,10 @@ mod tests {
         let _settings = crate::shell::test_support::install_settings(
             settings_store::Store::open(dir.path()).unwrap(),
         );
+        assert_eq!(settings_store::load_section("appearance")["mode"], "dark");
         assert_eq!(
-            settings_store::load_section("appearance"),
-            serde_json::json!({"mode": "dark", "wallpaper_path": "/home/ada/sea.png"})
-                .as_object()
-                .unwrap()
-                .clone()
+            settings_store::load_section("appearance_device")["wallpaper_path"],
+            "/home/ada/sea.png"
         );
     }
 
@@ -10310,26 +10331,22 @@ mod tests {
         fn roaming_projection_includes_personal_preferences_and_excludes_hardware_state() {
             let document = serde_json::json!({
                 "locale": {"currency": "EUR", "time_format": "H24"},
-                "appearance": {
-                    "mode": "light",
-                    "studio": {"id": "aurora"},
-                    "wallpaper_path": "/home/person/private.png"
-                },
-                "input": {
-                    "keyboard_layouts": ["us", "de"],
+                "appearance": {"mode": "light", "studio": {"id": "aurora"}},
+                "appearance_device": {"wallpaper_path": "/home/person/private.png"},
+                "input": {"keyboard_layouts": ["us", "de"]},
+                "input_device": {
                     "tablets": {"056a:0374:Wacom Intuos S Pen": {"output": "DP-2"}}
                 },
-                "audio": {"mono_output": true, "output_device": "USB DAC"},
-                "display": {
-                    "night_light_temperature": 3700,
-                    "scale": 1.5,
-                    "auto_brightness": true
-                },
+                "audio": {"mono_output": true},
+                "audio_device": {"output_device": "USB DAC"},
+                "display_person": {"night_light_temperature": 3700},
+                "display": {"scale": 1.5, "auto_brightness": true},
                 "shortcuts": {"bindings": {"search": {"key": "k"}}},
                 "quick_settings": {"controls": ["wifi", "bluetooth"]},
                 "text_assistance": {"auto_correct": false},
                 "power": {"auto_suspend": false},
-                "agent_providers": {"api_key": "must-not-roam"}
+                "agent_providers": {"config": {}},
+                "so.tilo.unknown": {"x": 1}
             });
             let projected = roaming_setting_values_from(document.as_object().unwrap());
 
@@ -10340,7 +10357,7 @@ mod tests {
                 "tilo.appearance.studio",
                 "tilo.input.keyboard_layouts",
                 "tilo.audio.mono_output",
-                "tilo.display.night_light_temperature",
+                "tilo.display_person.night_light_temperature",
                 "tilo.shortcuts.bindings",
                 "tilo.quick_settings.controls",
                 "tilo.text_assistance.auto_correct",
@@ -10348,13 +10365,14 @@ mod tests {
                 assert!(projected.contains_key(key), "missing roaming key {key}");
             }
             for key in [
-                "tilo.appearance.wallpaper_path",
-                "tilo.input.tablets",
-                "tilo.audio.output_device",
+                "tilo.appearance_device.wallpaper_path",
+                "tilo.input_device.tablets",
+                "tilo.audio_device.output_device",
                 "tilo.display.scale",
                 "tilo.display.auto_brightness",
                 "tilo.power.auto_suspend",
-                "tilo.agent_providers.api_key",
+                "tilo.agent_providers.config",
+                "tilo.so.tilo.unknown.x",
             ] {
                 assert!(!projected.contains_key(key), "leaked local key {key}");
             }

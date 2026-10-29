@@ -153,6 +153,12 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Where the last frame painted each identify card, in desktop
+    /// coordinates.
+    pub fn display_identify_cards(&self) -> Vec<Rect> {
+        self.display_identify.cards()
+    }
+
     /// The identify cards on screen right now, one per display.
     pub fn display_identify_labels(&self) -> Vec<crate::shell::display_identify::IdentifyLabel> {
         self.display_identify.labels(Instant::now()).to_vec()

@@ -32,7 +32,10 @@ fn persons() -> (SignInComforts, bool) {
     }
     .with_keyboard_source(&settings_store::hardware::RichInputConfig::load().keyboard_layout)
     .clamped();
-    (comforts, access.apply_to_sign_in)
+    (
+        comforts,
+        settings_store::sign_in_comforts::APPLY_TO_SIGN_IN.get(),
+    )
 }
 
 #[derive(Default)]

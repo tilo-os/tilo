@@ -38,8 +38,9 @@ pub struct View<'a> {
 pub struct Texts {
     pub path: String,
     pub schema: &'static TypeSchema,
-    /// Its texts that are not blank, in field order.
-    pub texts: Vec<String>,
+    /// Its texts that are not blank, in field order, as stored: texts and rich texts, read for
+    /// a reader by whoever shows them ([`crate::reading::said`]).
+    pub texts: Vec<FieldValue>,
     /// The resources its rich text refers to, in the one form (`tilo_reference::embed`).
     pub references: Vec<String>,
 }
@@ -284,8 +285,9 @@ impl View<'_> {
     }
 
     /// The first non-empty text of the resource at `path` (of `schema`, unless the index holds
-    /// another type for it), and the path of the resource holding it: fields by id, a
-    /// collection's items in order ([`crate::reads::first_text`]).
+    /// another type for it), as stored (a text or rich text, [`crate::reads::text_value`]), and
+    /// the path of the resource holding it: fields by id, a collection's items in order
+    /// ([`crate::reads::first_text`]).
     ///
     /// # Errors
     /// The index cannot be read or is corrupt.
@@ -293,15 +295,17 @@ impl View<'_> {
         &self,
         path: &str,
         schema: &TypeSchema,
-    ) -> Result<Option<(String, String)>, IndexError> {
+    ) -> Result<Option<(FieldValue, String)>, IndexError> {
         let schema = self.schema_of(path, &schema.id).unwrap_or(schema);
         let mut fields: Vec<&FieldSchema> = schema.fields.iter().collect();
         fields.sort_by(|a, b| a.id.cmp(&b.id));
         for field in fields {
             match field.kind {
                 MergeKind::Text | MergeKind::RichText => {
-                    if let Some(text) = self.field(path, &field.id)?.and_then(crate::reads::text_of)
-                        && !text.is_empty()
+                    if let Some(text) = self
+                        .field(path, &field.id)?
+                        .and_then(crate::reads::text_value)
+                        && !crate::reads::is_empty(&text)
                     {
                         return Ok(Some((text, path.to_owned())));
                     }
@@ -352,12 +356,12 @@ impl View<'_> {
             let Some(schema) = held.ty.as_deref().and_then(lookup) else {
                 continue;
             };
-            let texts: Vec<String> = schema
+            let texts: Vec<FieldValue> = schema
                 .fields
                 .iter()
                 .filter(|f| f.kind.holds_text())
                 .filter_map(|f| held.texts.get(&f.id))
-                .filter(|text| !text.trim().is_empty())
+                .filter(|text| !crate::reads::is_blank(text))
                 .cloned()
                 .collect();
             if !texts.is_empty() {
@@ -433,15 +437,17 @@ impl View<'_> {
     }
 
     /// The texts of the resource at `path`, in field order, that are not blank: what search
-    /// finds it by.
+    /// finds it by, as stored (read for a reader by whoever shows them).
     ///
     /// # Errors
     /// The index cannot be read or is corrupt.
-    pub fn texts(&self, path: &str, schema: &TypeSchema) -> Result<Vec<String>, IndexError> {
+    pub fn texts(&self, path: &str, schema: &TypeSchema) -> Result<Vec<FieldValue>, IndexError> {
         let mut out = Vec::new();
         for field in schema.fields.iter().filter(|f| f.kind.holds_text()) {
-            if let Some(text) = self.field(path, &field.id)?.and_then(crate::reads::text_of)
-                && !text.trim().is_empty()
+            if let Some(text) = self
+                .field(path, &field.id)?
+                .and_then(crate::reads::text_value)
+                && !crate::reads::is_blank(&text)
             {
                 out.push(text);
             }

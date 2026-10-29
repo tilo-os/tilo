@@ -25,6 +25,7 @@ pub mod instance;
 pub mod items;
 pub mod meta;
 pub mod publish;
+pub mod reading;
 pub mod reads;
 pub mod record;
 pub mod schema;

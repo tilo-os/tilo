@@ -127,6 +127,8 @@ tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] 
 bounded-command = { path = "../../system/bounded-command" }
 # The wire format of the network-answers helper search runs (exchange rates).
 tilo-net-answers = { path = "../../system/net-answers", default-features = false }
+# The line format of the session audio helper it starts (src/shell/audio_service.rs).
+tilo-audio-service = { path = "../audio-service", default-features = false }
 # The MLS vault's master and signer keys: Secret Service or Keychain.
 tilo-secrets.workspace = true
 tempfile.workspace = true

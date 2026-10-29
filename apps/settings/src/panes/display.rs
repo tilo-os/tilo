@@ -34,7 +34,7 @@ use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Shared};
-use crate::prefs::DisplayPrefs;
+use crate::prefs::{DisplayPrefs, NightLightPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
@@ -67,10 +67,10 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DisplayArea> {
 pub(crate) mod values;
 
 /// The Night Light switch, a comfort of every display.
-pub(crate) fn night_light(cx: &PaneCx, prefs: &Followed<DisplayPrefs>) -> Item {
+pub(crate) fn night_light(cx: &PaneCx, prefs: &Followed<NightLightPrefs>) -> Item {
     cx.row(t("display-night-light"))
         .id("display.night_light")
-        .of(prefs, DisplayPrefs::paths().night_light)
+        .of(prefs, NightLightPrefs::paths().night_light)
         .toggle()
 }
 
@@ -1013,6 +1013,8 @@ pub struct DisplayModel {
     ambient_sensor_available: bool,
     brightness: f32,
     prefs: Followed<DisplayPrefs>,
+    /// The person's night light, over every display.
+    night_light: Followed<NightLightPrefs>,
     output_config: DisplayConfig,
     /// External monitors whose brightness is set over DDC/CI, by output key,
     /// with their last known level. The built-in panel's backlight is the
@@ -1057,11 +1059,6 @@ pub struct DisplayModel {
     selected: LocalState<String>,
     /// The revision of [`Self::selected`] the page shows.
     selected_seen: u64,
-    /// The display under the pointer on the canvas.
-    pointed: LocalState<Option<String>>,
-    pointed_seen: u64,
-    /// The display whose number was last flashed on it.
-    last_flash: Option<String>,
     /// While Identify shows the numbers: when it showed and goes.
     identify_window: Option<(Instant, Instant)>,
     /// What the capture shows of the canvas, for screenshots.
@@ -1213,6 +1210,7 @@ impl DisplayModel {
             automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
             pending_change: cx.follow::<PendingDisplayChange>(),
             prefs: cx.follow::<DisplayPrefs>(),
+            night_light: cx.follow::<NightLightPrefs>(),
             cx,
             of_device: true,
             brightness_control: control,
@@ -1252,9 +1250,6 @@ impl DisplayModel {
             ),
             selected: LocalState::new(String::new()),
             selected_seen: 0,
-            pointed: LocalState::new(None),
-            pointed_seen: 0,
-            last_flash: None,
             identify_window: None,
             sample: None,
             person_devices: settings_store::person_displays::PersonDisplays::load()
@@ -1372,6 +1367,7 @@ impl DisplayModel {
             automatic_display_prefs: cx.follow::<shared_displays::AutomaticDisplayPrefs>(),
             pending_change: cx.follow::<PendingDisplayChange>(),
             prefs: cx.follow::<DisplayPrefs>(),
+            night_light: cx.follow::<NightLightPrefs>(),
             cx,
             of_device: false,
             brightness_control: Arc::new(NoBrightness),
@@ -1410,9 +1406,6 @@ impl DisplayModel {
             ),
             selected: LocalState::new(String::new()),
             selected_seen: 0,
-            pointed: LocalState::new(None),
-            pointed_seen: 0,
-            last_flash: None,
             identify_window: None,
             sample: None,
             device_displays: Vec::new(),
@@ -1451,8 +1444,7 @@ impl DisplayModel {
     }
 
     /// Keep the shared selection on a connected display: one that went away
-    /// hands it to [`Self::selected_output`]'s choice, quietly (nothing is
-    /// flashed for a choice the person did not make).
+    /// hands it to [`Self::selected_output`]'s choice.
     fn normalize_selection(&mut self) {
         let effective = self
             .selected_output()
@@ -1464,26 +1456,15 @@ impl DisplayModel {
         }
     }
 
-    /// Take in a choice made on the canvas, and the
-    /// display the pointer came to rest on: the page shows the chosen
-    /// display's settings, and each such display flashes its number on
-    /// itself, so the person always knows which screen is which.
+    /// Take in a choice made on the canvas: the page shows the chosen
+    /// display's settings. Nothing shows on the displays themselves for it:
+    /// the canvas tiles carry the numbers, and the cards on the screens come
+    /// only when the person presses Identify.
     fn poll_selection(&mut self) {
         let revision = self.selected.revision();
         if revision != self.selected_seen {
             self.selected_seen = revision;
             self.changed = true;
-            let chosen = self.selected.with(Clone::clone);
-            if !chosen.is_empty() {
-                self.flash(&chosen);
-            }
-        }
-        let revision = self.pointed.revision();
-        if revision != self.pointed_seen {
-            self.pointed_seen = revision;
-            if let Some(pointed) = self.pointed.with(Clone::clone) {
-                self.flash(&pointed);
-            }
         }
         self.normalize_selection();
     }
@@ -1497,32 +1478,6 @@ impl DisplayModel {
             now + Duration::from_millis(settings_store::display_identify::IDENTIFY_MS),
         ));
         self.changed = true;
-    }
-
-    /// Briefly show `display`'s number on that display alone.
-    fn flash(&mut self, display: &str) {
-        if !self
-            .connected_outputs()
-            .iter()
-            .any(|output| output.connector == display)
-        {
-            return;
-        }
-        self.last_flash = Some(display.to_owned());
-        if !self.of_device {
-            return;
-        }
-        let command = settings_store::display_control::DisplayCommand::IdentifyDisplay {
-            display: display.to_owned(),
-        };
-        // A glance, not a transaction: what the host answers changes
-        // nothing here, and a refused flash costs nothing.
-        let _ = crate::device_read::thread(
-            "settings-display-flash",
-            Box::new(move || {
-                let _ = request_host_display(&command, ui::collaboration::DisplayOrigin::LocalHost);
-            }),
-        );
     }
 
     /// The outputs the arrangement card lists as rows: only the connected
@@ -1635,11 +1590,7 @@ impl DisplayModel {
         if let Some(transaction) = &reply.transaction {
             self.settle(transaction);
         }
-        if reply
-            .identify
-            .as_ref()
-            .is_some_and(|request| request.display.is_none())
-        {
+        if reply.identify.is_some() {
             self.identify_shown();
         }
         self.outputs = outputs_from_snapshot(&reply.observed);
@@ -2665,7 +2616,6 @@ impl DisplayModel {
             self.arrangement_drag.clone(),
         )
         .with_selection(self.selected.clone())
-        .with_pointed(self.pointed.clone())
         .identifying(self.identify_window)
     }
 
@@ -2752,12 +2702,14 @@ impl DisplayModel {
     /// Night light: its switch heads the group; when it comes on and how
     /// warm it makes the screen, as pictures of the screen at each warmth.
     fn build_night_light_card(&self) -> SettingsSection {
-        let prefs = *self.prefs.get();
-        let paths = crate::prefs::DisplayPrefs::paths();
+        let prefs = *self.night_light.get();
+        let paths = NightLightPrefs::paths();
         let switch = self.cx.bind_field(
-            ui::widget::Toggle::from_state(&self.prefs.shown(&paths.night_light, bool::clone))
-                .with_id("display.night_light")
-                .with_accessible_name(&t("display-night-light")),
+            ui::widget::Toggle::from_state(
+                &self.night_light.shown(&paths.night_light, bool::clone),
+            )
+            .with_id("display.night_light")
+            .with_accessible_name(&t("display-night-light")),
             paths.night_light,
         );
         crate::widgets::section_with(
@@ -2775,7 +2727,7 @@ impl DisplayModel {
                 self.cx
                     .row(t("display-night-light-warmth"))
                     .id("display.night_light_temperature")
-                    .of(&self.prefs, paths.night_light_temperature)
+                    .of(&self.night_light, paths.night_light_temperature)
                     .pictures(
                         NIGHT_LIGHT_TEMPERATURES.iter().map(|(_, kelvin)| *kelvin),
                         |kelvin: &u32| temperature_label(*kelvin),
@@ -3248,6 +3200,9 @@ impl PaneModel for DisplayModel {
             self.changed = true;
         }
         if self.prefs.refresh() {
+            self.changed = true;
+        }
+        if self.night_light.refresh() {
             self.changed = true;
         }
         std::mem::take(&mut self.changed)

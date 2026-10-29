@@ -146,7 +146,7 @@ pub enum ImagerEffect {
     },
     /// Erase drive and write image. Offered on each drive it may write,
     /// where the host asks for the drive's name before it runs.
-    #[effect(job, cancellable, row)]
+    #[effect(job, cancellable, row, destructive, phrase = "Self::drive_name")]
     Write {
         #[param("Device path of the reviewed target drive, e.g. /dev/sdb")]
         device: String,
@@ -219,6 +219,16 @@ pub enum ImagerEffect {
     },
     /// Cancel prepared setup delivery and wait for cleanup.
     CancelPreparedDelivery,
+}
+
+impl ImagerEffect {
+    /// What erasing a drive asks its caller to type: the drive's name.
+    fn drive_name(&self) -> String {
+        match self {
+            Self::Write { confirmation, .. } => confirmation.clone(),
+            _ => String::new(),
+        }
+    }
 }
 
 /// The imager: one binary, three flows over the one resource. A plain

@@ -727,12 +727,14 @@ pub fn session_handle(peer: u64) -> String {
     format!("p{peer:016x}")
 }
 
-/// A change to a room's governance made at this device, for the room's
-/// governor to decide ([`WorkspaceTree::request_governance`]).
+/// A change to a room's governance made at this device
+/// ([`WorkspaceTree::request_governance`]): its membership this device
+/// writes itself, the rest the room's governor decides.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GovernanceRequest {
-    /// A change to the room's members, roles or grants.
+    /// A change to the room's members, roles or grants, which this device
+    /// writes into its replica of the room as its own.
     Policy(tilo_action_policy::Change),
     /// A sandbox capability for the room's apps.
     GrantSandbox(CapOverride),
@@ -2851,8 +2853,11 @@ impl WorkspaceTree {
         owned
     }
 
-    /// Ask `room`'s governor for `request`. Nothing changes here until the
-    /// room's admitted document carries it, but for what is taken back: a
+    /// Make `request` in `room`: a membership change this device writes
+    /// into its replica of the room, anything else asked of the room's
+    /// governor, both from the outbox ([`room_outbox`]). Nothing changes
+    /// here until the room's admitted document carries it, but for what is
+    /// taken back: a
     /// sandbox capability ([`Self::narrow_sandbox`]), which stays taken
     /// back, and a grant revoked, which ends here at once, so no call this
     /// device admits after the revocation, and no job it admitted before

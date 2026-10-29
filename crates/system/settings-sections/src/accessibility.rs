@@ -36,7 +36,12 @@ impl ui::storage::SettingsSchema for AccessibilitySettings {
 }
 
 /// The section as a record the person edits by path.
-#[tilo_resource::resource(kind = "settings.accessibility", label = "Accessibility")]
+#[tilo_resource::resource(
+    kind = "settings.accessibility",
+    label = "Accessibility",
+    version = 2,
+    migrate = crate::leaves_moved_out
+)]
 impl AccessibilitySettings {
     /// Turn the magnifier on at the zoom last in use, or off; or magnify a
     /// level more or less. The desktop's magnifier shortcuts run this.
@@ -54,6 +59,41 @@ impl AccessibilitySettings {
         Ok(())
     }
 }
+
+/// This device's accessibility choices.
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::Model,
+)]
+#[model(defaults)]
+pub struct AccessibilityDevicePrefs {
+    /// The screen reader, text size, contrast, language and keyboard layout
+    /// the person turns on apply to this device's login screens too.
+    #[serde(default = "apply_to_sign_in")]
+    pub apply_to_sign_in: bool,
+}
+
+fn apply_to_sign_in() -> bool {
+    settings_store::sign_in_comforts::APPLY_TO_SIGN_IN.default_value()
+}
+
+impl Default for AccessibilityDevicePrefs {
+    fn default() -> Self {
+        Self {
+            apply_to_sign_in: apply_to_sign_in(),
+        }
+    }
+}
+
+impl ui::storage::SettingsSchema for AccessibilityDevicePrefs {
+    const SCOPE: ui::storage::Scope =
+        ui::storage::Scope::Shared(settings_store::accessibility::DEVICE_SECTION);
+}
+
+#[tilo_resource::resource(
+    kind = "settings.accessibility-device",
+    label = "Accessibility on this device"
+)]
+impl AccessibilityDevicePrefs {}
 
 #[cfg(test)]
 mod tests {

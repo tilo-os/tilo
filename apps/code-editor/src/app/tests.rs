@@ -388,7 +388,7 @@ fn a_window_shows_one_file_and_asks_before_dropping_unsaved_work() {
     opening_another_file_over_unsaved_edits_asks_first();
     the_window_bar_names_the_shown_file_and_marks_unsaved_edits();
     the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop();
-    quick_open_and_go_to_line_open_the_host_palette();
+    quick_open_and_go_to_line_open_search();
 }
 
 fn sample_node(app: &CodeApp, name: &str) -> crate::model::NodeId {
@@ -511,9 +511,8 @@ fn the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop() {
     );
 }
 
-fn quick_open_and_go_to_line_open_the_host_palette() {
+fn quick_open_and_go_to_line_open_search() {
     let mut sample = synced_sample();
-    let _ = ui::host_palette::take();
     sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
     sample.app.harness().key("p");
     assert_eq!(
@@ -535,14 +534,11 @@ fn quick_open_and_go_to_line_open_the_host_palette() {
     sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
     sample.app.harness().key("g");
     sample.app.harness().set_modifiers(&[]);
-    assert_eq!(
-        ui::host_palette::take(),
-        Some(ui::host_palette::PaletteRequest::Action(
-            crate::effects::CodeEditorEffect::GO_TO_LINE
-                .on(<crate::project::Project as ui::tilo_resource::Resource>::KIND)
-        )),
-        "go to line asks for its line on the published effect"
+    assert!(
+        sample.app.harness().palette_shown(),
+        "go to line opens search on the published effect, asking for its line"
     );
+    sample.app.harness().key("Escape");
     let entries =
         <crate::project::Project as ui::tilo_resource::Resource>::search(&sample.app.state());
     assert!(

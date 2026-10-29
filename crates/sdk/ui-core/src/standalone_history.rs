@@ -36,6 +36,23 @@ pub(crate) struct HistoryReadContext<'a> {
     pub permissions: &'a PermissionContext,
 }
 
+impl<'a> HistoryReadContext<'a> {
+    /// What History reads of a host: its live document, the record that is
+    /// open, and who may read it.
+    pub(crate) fn of(
+        state: &'a crate::State,
+        records: Option<&'a crate::record::RecordSet>,
+        permissions: &'a PermissionContext,
+    ) -> Self {
+        Self {
+            document: &state.doc,
+            active_record: records.and_then(crate::record::RecordSet::active),
+            document_identity: state.document_identity(),
+            permissions,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HistoryError {
     Denied,

@@ -40,6 +40,7 @@ use crate::accesskit_bridge::{
     build_presentation_tree_bound, build_presentation_with_resources_bound,
     build_tree_update_bound, resolve_node_id_bound,
 };
+use crate::host_core::HostCore as _;
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
@@ -361,6 +362,12 @@ pub struct FrameHarness {
     pending_history: Option<crate::history_mode::HistoryRegistration>,
     action_palette: Option<crate::action_palette::ActionPaletteBox>,
     palette_waiting: Box<lazy_palette::Waiting>,
+    /// Why the person's last invocation did not run, at the control they
+    /// used, until their next press or key ([`crate::control_notice`]).
+    control_notice: Option<crate::control_notice::ControlNotice>,
+    /// The last refusal said in the window's bar, for one with no control
+    /// on screen.
+    window_refusal: Option<String>,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     /// The window the open palette was asked for from, when the root lays
     /// several out (the desktop's strip of app tiles): the palette stands
@@ -1749,6 +1756,8 @@ impl FrameHarness {
             pending_history: None,
             action_palette: None,
             palette_waiting: Box::default(),
+            control_notice: None,
+            window_refusal: None,
             ordinary_palette_return_focus: None,
             palette_window: None,
             pointer_at: None,
@@ -4210,12 +4219,11 @@ impl FrameHarness {
                 });
         }
         if self.history_chrome_enabled {
-            let context = crate::standalone_history::HistoryReadContext {
-                document: &self.state.doc,
-                active_record: self.records.as_ref().and_then(|records| records.active()),
-                document_identity: self.state.document_identity(),
-                permissions: &self.permissions,
-            };
+            let context = crate::standalone_history::HistoryReadContext::of(
+                &self.state,
+                self.records.as_ref(),
+                &self.permissions,
+            );
             let drawn = self
                 .document_history
                 .draw(
@@ -4334,6 +4342,21 @@ impl FrameHarness {
                 viewport,
                 "retained-primary",
                 interaction_now,
+            );
+        }
+        if let Some(notice) = &self.control_notice {
+            let viewport = Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.viewport.0),
+                f64::from(self.viewport.1),
+            );
+            notice.draw(
+                &mut self.scene,
+                transform,
+                &mut self.text,
+                &self.theme,
+                viewport,
             );
         }
         self.draw_tooltip(transform);
@@ -7880,11 +7903,17 @@ impl FrameHarness {
                 self.pointer_at = Some(logical(position.x, position.y));
             }
             WindowEvent::CursorLeft { .. } => self.pointer_at = None,
+            // The person acts again: what stood at their last control is
+            // done with.
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
                 ..
-            } => self.pressed_at = self.pointer_at,
+            } => {
+                self.control_notice = None;
+                self.pressed_at = self.pointer_at;
+            }
             WindowEvent::Touch(touch) if touch.phase == winit::event::TouchPhase::Started => {
+                self.control_notice = None;
                 let at = logical(touch.location.x, touch.location.y);
                 self.pointer_at = Some(at);
                 self.pressed_at = Some(at);
@@ -7892,6 +7921,7 @@ impl FrameHarness {
             WindowEvent::KeyboardInput { event: key, .. }
                 if key.state == winit::event::ElementState::Pressed =>
             {
+                self.control_notice = None;
                 self.pressed_at = None;
             }
             _ => {}
@@ -7957,21 +7987,74 @@ impl FrameHarness {
         self.present_ordinary(request);
     }
 
-    /// Keep why an invocation the person made did not run, and say it over
-    /// the window, as the host's palette does: a click is never dropped
-    /// unseen.
+    /// Keep why an invocation the person made did not run, and say it at
+    /// the control they used, as the window's host does: a click is never
+    /// dropped unseen, and never opens search. With no control to stand at,
+    /// it is said in the window's bar.
     fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
         self.control_failures.push(error.to_string());
-        self.present_refusal(crate::bound_dispatch::refusal_reason(error));
+        let reason = crate::bound_dispatch::refusal_reason(error);
+        if let Some(anchor) = self.acting_control_rect() {
+            self.control_notice = Some(crate::control_notice::ControlNotice {
+                text: reason,
+                anchor,
+            });
+        } else {
+            crate::control_notice::say_in_window(&reason);
+            self.window_refusal = Some(reason);
+        }
+        self.invalidate_local();
     }
 
-    /// The refusal the window is saying over itself, if any: an invocation
-    /// the person made that did not run, and why.
-    pub fn refusal_shown(&self) -> Option<&str> {
+    /// The control the person acted on last: under their last press, else
+    /// the one holding the keyboard.
+    fn acting_control_rect(&self) -> Option<Rect> {
+        crate::control_notice::acting_control(
+            &self.taffy,
+            self.layout_built.then_some(self.root_node),
+            self.pressed_at,
+            self.focused,
+            |node| {
+                self.inspect_node(node, |widget| {
+                    Some((widget.get_rect(), widget.is_focusable()))
+                })
+                .ok()
+                .flatten()
+            },
+        )
+    }
+
+    /// What stands at the control the person last used: why what they did
+    /// did not run, until their next press or key.
+    pub fn control_notice(&self) -> Option<&crate::control_notice::ControlNotice> {
+        self.control_notice.as_ref()
+    }
+
+    /// Why an invocation the person made did not run, wherever it is said:
+    /// at their control, else in the window's bar.
+    pub fn refusal_said(&self) -> Option<&str> {
+        self.control_notice
+            .as_ref()
+            .map(|notice| notice.text.as_str())
+            .or(self.window_refusal.as_deref())
+    }
+
+    /// Whether the window's own search is showing. A confirmation standing
+    /// at a control is not search ([`Self::asking_at`]).
+    pub fn palette_shown(&self) -> bool {
         self.action_palette
             .as_deref()
-            .and_then(|palette| palette.refusal())
+            .is_some_and(|palette| palette.is_presented() && palette.asking().is_none())
     }
+
+    /// The control the open confirmation stands beside, as a popover,
+    /// while it asks about what the person pressed there.
+    pub fn asking_at(&self) -> Option<Rect> {
+        self.action_palette
+            .as_deref()
+            .and_then(|palette| palette.confirmation_anchor())
+    }
+
     fn finish_action_palette_input(&mut self) {
         let pending = self
             .action_palette
@@ -8423,100 +8506,8 @@ impl FrameHarness {
         }
         let embedded = crate::history_mode::embedded::drain_pending_commands(self.root.as_mut());
         serviced |= !embedded.is_empty();
-        for pending in embedded {
-            let (token, confirmation) = match pending.command {
-                crate::history_mode::pending_controls::ContinuationCommand::Review(token) => {
-                    (token, None)
-                }
-                crate::history_mode::pending_controls::ContinuationCommand::Confirm(
-                    token,
-                    value,
-                ) => (token, Some(value)),
-                crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
-                    crate::history_mode::embedded::cancel_pending_command(
-                        self.root.as_mut(),
-                        pending.surface,
-                        &token,
-                    );
-                    continue;
-                }
-            };
-            let prepared = match confirmation.as_deref() {
-                Some(value) => crate::history_mode::embedded::prepare_pending_command_typed(
-                    self.root.as_mut(),
-                    pending.surface,
-                    &token,
-                    value,
-                ),
-                None => crate::history_mode::embedded::prepare_pending_command(
-                    self.root.as_mut(),
-                    pending.surface,
-                    &token,
-                    false,
-                ),
-            };
-            let Some(prepared) = prepared else {
-                continue;
-            };
-            let confirmed = confirmation.is_some();
-            let id = prepared.id;
-            let result = self.dispatch_prepared_history_control(prepared);
-            let outcome = match result {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                    crate::history_mode::embedded::PendingCommandOutcome::NeedsConfirmation
-                }
-                Ok(_) => crate::history_mode::embedded::PendingCommandOutcome::Consumed,
-                Err(error) => {
-                    crate::history_mode::embedded::PendingCommandOutcome::Refused(error.to_string())
-                }
-            };
-            crate::history_mode::embedded::finish_pending_command(
-                self.root.as_mut(),
-                pending.surface,
-                id,
-                &outcome,
-            );
-        }
+        self.service_embedded_history_commands(embedded);
         serviced
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exact continuation door keeps component, legacy and outer lifecycle bookkeeping together"
-    )]
-    fn dispatch_prepared_history_control(
-        &mut self,
-        prepared: crate::history_mode::pending_controls::PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        let captured =
-            prepared
-                .witness
-                .as_ref()
-                .map_err(|reason| tilo_actions::DoorError::Unavailable {
-                    code: "stale_pending_control".into(),
-                    reason: reason.clone(),
-                })?;
-        let current = crate::bound_dispatch::control_witness(
-            self.root.as_ref(),
-            &self.state.doc,
-            &prepared.target,
-            &prepared.invocation,
-        )?;
-        if &current != captured {
-            return Err(tilo_actions::DoorError::Unavailable {
-                code: "stale_pending_control".into(),
-                reason: "The action meaning or confirmation policy changed while History was open"
-                    .into(),
-            });
-        }
-        self.dispatch_local_control(
-            prepared.target,
-            &prepared.invocation.address,
-            &crate::bound_dispatch::ControlContinuationArguments::Json(
-                prepared.invocation.arguments,
-            ),
-            prepared.confirmed,
-        )
     }
 
     fn dispatch_local_control(
@@ -10182,6 +10173,62 @@ fn session_door(
 ) -> Option<&mut dyn crate::session_door::SessionDoor> {
     door.as_mut()
         .map(|door| door as &mut dyn crate::session_door::SessionDoor)
+}
+
+impl crate::host_core::HostCore for FrameHarness {
+    fn tree(&self) -> crate::host_core::HostTree<'_> {
+        crate::host_core::HostTree {
+            state: &self.state,
+            root: self.root.as_ref(),
+            bindings: &self.bindings,
+            node_map: &self.node_map,
+            taffy: &self.taffy,
+            records: self.records.as_ref(),
+            permissions: &self.permissions,
+            focused: self.focused,
+            history_layout: self.history_layout,
+        }
+    }
+
+    fn document_history_with_tree(
+        &mut self,
+    ) -> (
+        &mut crate::standalone_history_host::StandaloneHistoryHost,
+        crate::host_core::HostTree<'_>,
+    ) {
+        (
+            &mut self.document_history,
+            crate::host_core::HostTree {
+                state: &self.state,
+                root: self.root.as_ref(),
+                bindings: &self.bindings,
+                node_map: &self.node_map,
+                taffy: &self.taffy,
+                records: self.records.as_ref(),
+                permissions: &self.permissions,
+                focused: self.focused,
+                history_layout: self.history_layout,
+            },
+        )
+    }
+
+    fn host_root_mut(&mut self) -> &mut dyn Widget {
+        self.root.as_mut()
+    }
+
+    fn dispatch_current_history_control(
+        &mut self,
+        prepared: crate::history_mode::pending_controls::PreparedContinuation,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.dispatch_local_control(
+            prepared.target,
+            &prepared.invocation.address,
+            &crate::bound_dispatch::ControlContinuationArguments::Json(
+                prepared.invocation.arguments,
+            ),
+            prepared.confirmed,
+        )
+    }
 }
 
 #[cfg(test)]

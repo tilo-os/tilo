@@ -101,7 +101,7 @@ fn room_with_ids() -> (Replica, tilolang_runtime::Meta, String, String) {
 /// Everything search would find, indexed anew.
 fn all_hits(replica: &Replica, meta: &tilolang_runtime::Meta, root: &str) -> Vec<String> {
     let record = replica.host.store().record(root).unwrap();
-    let mut out: Vec<String> = hits(meta, &record, root)
+    let mut out: Vec<String> = hits(meta, &record, root, replica.host.store())
         .into_iter()
         .map(|hit| format!("{} {:?}", hit.resource, hit.texts))
         .collect();

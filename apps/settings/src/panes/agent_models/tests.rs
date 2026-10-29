@@ -299,7 +299,7 @@ fn a_hosted_provider_without_a_key_here_asks_for_one() {
         preset: "anthropic".into(),
     })
     .unwrap();
-    let profile = pane.providers.get().config.profiles[0].clone();
+    let profile = pane.providers.config().profiles[0].clone();
     pane.keys
         .insert(profile.id.clone(), Ok(CredentialStatus::Missing));
     assert!(pane.needs_key(&profile));
@@ -327,7 +327,7 @@ fn a_legacy_key_requires_an_explicit_endpoint_and_offers_removal() {
         preset: "anthropic".into(),
     })
     .unwrap();
-    let profile = pane.providers.get().config.profiles[0].clone();
+    let profile = pane.providers.config().profiles[0].clone();
     pane.keys
         .insert(profile.id.clone(), Ok(CredentialStatus::MigrationRequired));
     assert!(pane.needs_key(&profile));
@@ -408,11 +408,11 @@ fn a_vertex_provider_signs_in_and_forgets_only_its_own_grant() {
         pane.change_providers(add("Not A Project")),
         Err(t("agent-vertex-project-invalid"))
     );
-    assert!(pane.providers.get().config.profiles.is_empty());
+    assert!(pane.providers.config().profiles.is_empty());
 
     pane.change_providers(add("tilo-509618")).unwrap();
     assert!(pane.vertex.is_none(), "the setup ends once saved");
-    let stored = pane.cx.settings::<AgentProviders>().get().config;
+    let stored = pane.providers.config();
     let profile = &stored.profiles[0];
     assert_eq!(profile.id, id, "the grant was sealed for this provider");
     assert!(profile.signs_in_with_google());
@@ -460,7 +460,7 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
         model: Some("gemini-2.5-pro".into()),
     })
     .unwrap();
-    let profile = pane.cx.settings::<AgentProviders>().get().config.profiles[0].clone();
+    let profile = pane.providers.config().profiles[0].clone();
     assert_eq!(
         profile.endpoint,
         "https://europe-west4-aiplatform.googleapis.com/v1/projects/other-project/locations/europe-west4/endpoints/openapi"
@@ -478,7 +478,7 @@ fn shows_its_sign_in_and_forgets_only_its_grant(
         provider: id.clone(),
     })
     .unwrap();
-    assert!(pane.providers.get().config.profiles.is_empty());
+    assert!(pane.providers.config().profiles.is_empty());
     forgotten(pane);
     assert_eq!(
         pane.custodian
@@ -822,7 +822,7 @@ fn providers_are_the_persons_settings() {
         preset: "anthropic".into(),
     })
     .unwrap();
-    let id = pane.providers.get().config.profiles[0].id.clone();
+    let id = pane.providers.config().profiles[0].id.clone();
     pane.change_providers(AgentModelsEffect::SetProviderDetails {
         provider: id.clone(),
         label: "Work".into(),
@@ -834,7 +834,7 @@ fn providers_are_the_persons_settings() {
         provider: id.clone(),
     })
     .unwrap();
-    let stored = pane.cx.settings::<AgentProviders>().get().config;
+    let stored = pane.providers.config();
     assert_eq!(stored.default_profile.as_deref(), Some(id.as_str()));
     assert_eq!(stored.profiles[0].label, "Work");
     assert!(

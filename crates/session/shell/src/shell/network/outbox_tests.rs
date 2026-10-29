@@ -404,9 +404,7 @@ fn a_revoked_grant_ends_here_at_once_and_stays_ended_until_the_room_carries_it()
         Answer::Deny,
         "the revocation ends the grant here before the room's governor commits it"
     );
-    // The governor is out of reach, and the room commits on.
-    let (network, _commands) = super::shell_network_for_test(handle.clone(), 1);
-    network.send_outbox_off_loop();
+    // Not written yet, and the room commits on.
     for name in ["Plans", "Plans again"] {
         handle
             .write()
@@ -417,20 +415,6 @@ fn a_revoked_grant_ends_here_at_once_and_stays_ended_until_the_room_carries_it()
             "a commit of the room made before the revocation reached it does not grant it again"
         );
     }
-
-    network.install_local_governor(Arc::new(Taking { room }));
-    network.send_outbox_off_loop();
-    assert!(
-        matches!(
-            handle.read().room_outbox.as_slice(),
-            [entry] if entry.standing == Standing::Accepted
-        ),
-        "the accepted revocation waits for the room's document"
-    );
-    handle
-        .write()
-        .admit_room_document_for_test(room, &after_another_commit(&granted, "Late"));
-    assert_eq!(agent_writes_notes(&handle, room), Answer::Deny);
 
     // The revocation lands.
     let revoked = document_of(&workspace_of(&handle, room), &[], &[]);
@@ -450,8 +434,10 @@ fn a_revoked_grant_ends_here_at_once_and_stays_ended_until_the_room_carries_it()
     assert_eq!(agent_writes_notes(&handle, room), Answer::Allow);
 }
 
+/// A revocation this device cannot write (here: it holds no custody of the
+/// room to sign it with) is refused, and the grant is the room's again.
 #[test]
-fn a_grant_whose_revocation_the_governor_refuses_is_the_rooms_again() {
+fn a_grant_whose_revocation_is_refused_here_is_the_rooms_again() {
     use tilo_action_policy::Answer;
     let (chrome, _guard) = crate::shell::native_workspace_owner::test_chrome_governing_its_room();
     let governor = chrome.borrow().active_local_user();
@@ -474,12 +460,11 @@ fn a_grant_whose_revocation_the_governor_refuses_is_the_rooms_again() {
     revoke(&handle, room);
     assert_eq!(agent_writes_notes(&handle, room), Answer::Deny);
     let (network, _commands) = super::shell_network_for_test(handle.clone(), 1);
-    network.install_local_governor(Arc::new(Refusing { room }));
     network.send_outbox_off_loop();
     assert!(handle.read().room_outbox.is_empty());
     assert_eq!(
         agent_writes_notes(&handle, room),
         Answer::Allow,
-        "only the room's governor decides its grants"
+        "the room's grants stand until a revocation is written"
     );
 }

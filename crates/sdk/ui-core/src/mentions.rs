@@ -9,6 +9,9 @@
 //! holds the record — the person's desktop, on any device, whether or not
 //! the app is open — derives the same facts from what it was sent. Only
 //! the record's readers are sent it, so only they learn of a mention in it.
+//! A notice's excerpt reads each reference to a resource as it reads for
+//! the person told ([`Look::read`]): never the title it was written with
+//! when they cannot read what it refers to.
 //!
 //! Where a mention is is the item of the record it was written in, as the
 //! app publishes it (`<kind>/<field>/<id>`, `tilo_resource::items`): a
@@ -75,16 +78,45 @@ pub struct Mention {
     /// The channel the item was said in, by id, for an item of a chat.
     pub channel: Option<String>,
     /// The text around it.
+    /// The text around it, as the person reading reads it ([`Reader`]): a reference to a
+    /// resource they cannot read says only that something is there, never the title it was
+    /// written with.
     pub excerpt: String,
 }
 
-/// Every mention in `doc`, in document order.
+/// How a reference in the text reads for the person told
+/// ([`tilo_reference::embed::Reading`]): a resource they hold by what it is called now, one
+/// they cannot read as not shared.
+pub type Reader<'a> = &'a dyn Fn(&tilo_reference::Embed) -> tilo_reference::embed::Reading;
+
+/// What reads a reference for someone whose holdings nobody here can tell: a person as the
+/// text names them, every resource as not shared. A reference never grants a read.
+#[must_use]
+pub fn reading_nothing(reference: &tilo_reference::Embed) -> tilo_reference::embed::Reading {
+    if reference.as_person().is_some() {
+        tilo_reference::embed::Reading::AsWritten
+    } else {
+        tilo_reference::embed::Reading::Unshared
+    }
+}
+
+/// Every mention in `doc`, in document order, each excerpt read for someone whose holdings
+/// nobody here can tell ([`reading_nothing`]).
 #[must_use]
 pub fn in_record(doc: &AutoCommit) -> Vec<Mention> {
+    in_record_for(doc, &reading_nothing)
+}
+
+/// Every mention in `doc`, in document order, each excerpt as `read` reads the references in
+/// it.
+#[must_use]
+pub fn in_record_for(doc: &AutoCommit, read: Reader<'_>) -> Vec<Mention> {
     let mut walk = Walk {
         doc,
         found: Vec::new(),
         budget: MAX_OBJECTS,
+        read,
+        unshared: crate::i18n::I18nManager::lookup(tilo_reference::embed::UNSHARED_PHRASE, None),
     };
     walk.object(&ROOT, ObjType::Map, &mut Vec::new(), &Context::default());
     walk.found
@@ -101,6 +133,9 @@ struct Walk<'a> {
     doc: &'a AutoCommit,
     found: Vec<Mention>,
     budget: usize,
+    read: Reader<'a>,
+    /// What a reference to a resource the reader cannot read says, in their language.
+    unshared: String,
 }
 
 impl Walk<'_> {
@@ -157,6 +192,15 @@ impl Walk<'_> {
             return;
         }
         let text = self.doc.text(obj).unwrap_or_default();
+        let references: Vec<(usize, usize, String)> = marks
+            .iter()
+            .filter_map(|mark| match (mark.name(), mark.value()) {
+                (MARK, ScalarValue::Str(value)) if names_resource(value) => {
+                    Some((mark.start, mark.end, value.to_string()))
+                }
+                _ => None,
+            })
+            .collect();
         for mark in &marks {
             let (MARK, ScalarValue::Str(person)) = (mark.name(), mark.value()) else {
                 continue;
@@ -176,14 +220,28 @@ impl Walk<'_> {
                 .last()
                 .filter(|key| key.parse::<usize>().is_err())
                 .cloned();
-            self.push(
-                person.to_string(),
-                by,
-                block,
-                excerpt(&text, mark.start),
-                cx,
-            );
+            let excerpt = self.read_around(&text, &references, mark.start);
+            self.push(person.to_string(), by, block, excerpt, cx);
         }
+    }
+
+    /// The excerpt of `text` around character `at`, each of its `references` (a resource's
+    /// run: start, end and the mark's value) read for the person told.
+    fn read_around(&self, text: &str, references: &[(usize, usize, String)], at: usize) -> String {
+        let runs = |until: usize| {
+            references
+                .iter()
+                .filter(move |(_, end, _)| *end <= until)
+                .map(|(start, end, value)| (*start, *end, value.as_str()))
+        };
+        let mut read = |reference: &tilo_reference::Embed| (self.read)(reference);
+        let before: String = text.chars().take(at).collect();
+        let at = tilo_reference::embed::read_text(&before, runs(at), &mut read, &self.unshared)
+            .chars()
+            .count();
+        let read_text =
+            tilo_reference::embed::read_text(text, runs(usize::MAX), &mut read, &self.unshared);
+        excerpt(&read_text, at)
     }
 
     /// A mark span stored as a value (`{start, end, name, value}`), as a
@@ -200,17 +258,41 @@ impl Walk<'_> {
             return;
         };
         let start = self.int(obj, "start").unwrap_or(0);
-        // `…/<block>/marks/<n>`: the paragraph is two up.
+        // `…/<block>/marks/<n>`: the paragraph is two up, its marks one up.
         let text = (path.len() >= 2)
             .then(|| self.object_at(&path[..path.len() - 2]))
             .flatten()
             .and_then(|block| self.string(&block, "text"))
             .unwrap_or_default();
+        let references = path
+            .split_last()
+            .and_then(|(_, up)| self.object_at(up))
+            .map(|marks| self.stored_references(&marks))
+            .unwrap_or_default();
         let by = cx
             .item_obj
             .as_ref()
             .and_then(|item| self.string(item, "author"));
-        self.push(person, by, None, excerpt(&text, start), cx);
+        let excerpt = self.read_around(&text, &references, start);
+        self.push(person, by, None, excerpt, cx);
+    }
+
+    /// The references to resources among the stored mark spans of the list `marks`: each
+    /// run's start, end and the mark's value.
+    fn stored_references(&self, marks: &ObjId) -> Vec<(usize, usize, String)> {
+        (0..self.doc.length(marks))
+            .filter_map(|index| match self.doc.get(marks, index) {
+                Ok(Some((Value::Object(ObjType::Map), mark))) => Some(mark),
+                _ => None,
+            })
+            .filter(|mark| self.string(mark, "name").as_deref() == Some(MARK))
+            .filter_map(|mark| {
+                let value = self
+                    .mark_value(&mark)
+                    .filter(|value| names_resource(value))?;
+                Some((self.int(&mark, "start")?, self.int(&mark, "end")?, value))
+            })
+            .collect()
     }
 
     fn push(
@@ -459,6 +541,9 @@ pub struct Look<'a> {
     /// Take what it holds as seen: the person is looking at it, or it is
     /// what the room held before this device first followed it.
     pub quiet: bool,
+    /// How a reference in its text reads for the person told: what a notice's excerpt says of
+    /// it ([`reading_nothing`] where nobody here can tell what they hold).
+    pub read: Reader<'a>,
 }
 
 /// The notices of one person's mentions, on one device: what was told is
@@ -493,7 +578,7 @@ impl MentionInbox {
         let (record, kind) = place_record(look);
         let route = look.record.to_owned();
         let mut standing: BTreeMap<String, Notice> = BTreeMap::new();
-        for mention in in_record(look.doc) {
+        for mention in in_record_for(look.doc, look.read) {
             if !self.me.contains(&mention.person)
                 || mention.by.as_ref().is_some_and(|by| self.me.contains(by))
             {
@@ -628,6 +713,8 @@ fn channel_name(tree: &AutoCommit, id: &str) -> Option<String> {
         doc: tree,
         found: Vec::new(),
         budget: 0,
+        read: &reading_nothing,
+        unshared: String::new(),
     };
     let channel = walk.object_at(&["channels".to_owned(), id.to_owned(), ITEM_VALUE.to_owned()])?;
     walk.string(&channel, "name")

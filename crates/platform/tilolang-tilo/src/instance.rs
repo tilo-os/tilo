@@ -537,8 +537,7 @@ impl Instance {
         let platform = Rc::clone(&self.platform);
         host.set_clock(move || platform.now());
         let platform = Rc::clone(&self.platform);
-        host.runtime()
-            .set_phrases(move |id, args| platform.phrase(id, args));
+        host.set_phrases(move |id, args| platform.phrase(id, args));
         if let Some(sink) = self.sink.take() {
             host.runtime().set_sink(BoxedSink(sink));
         }

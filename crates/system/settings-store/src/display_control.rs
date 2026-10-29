@@ -14,11 +14,6 @@ pub const MAX_DISPLAY_CONTROL_BYTES: usize = 64 * 1024;
 pub enum DisplayCommand {
     Inspect,
     Identify,
-    /// Flash one display's number on that display alone, as when a person
-    /// points at it or picks it in Settings.
-    IdentifyDisplay {
-        display: String,
-    },
     Apply {
         observed_set: DisplaySet,
         candidate: DisplayConfig,
@@ -199,27 +194,11 @@ pub fn execute(
     let identify = match &command {
         DisplayCommand::Identify => Some(crate::display_identify::IdentifyRequest {
             requested_unix_ms: tilo_clock::unix_now_ms(),
-            display: None,
         }),
-        DisplayCommand::IdentifyDisplay { display } => {
-            if !observed
-                .outputs
-                .iter()
-                .any(|output| output.descriptor.connector == *display)
-            {
-                return Err("That display is not connected.".into());
-            }
-            Some(crate::display_identify::IdentifyRequest {
-                requested_unix_ms: tilo_clock::unix_now_ms(),
-                display: Some(display.clone()),
-            })
-        }
         _ => None,
     };
     match command {
-        DisplayCommand::Inspect
-        | DisplayCommand::Identify
-        | DisplayCommand::IdentifyDisplay { .. } => {}
+        DisplayCommand::Inspect | DisplayCommand::Identify => {}
         DisplayCommand::Apply {
             observed_set,
             candidate,
@@ -363,41 +342,6 @@ mod tests {
             assert_eq!(source.load()["unrelated"]["keep"], true);
             assert!(source.load().get("display_transaction").is_none());
             assert!(reply.transaction.is_none());
-        });
-    }
-
-    #[test]
-    fn identifying_one_display_flashes_it_alone_and_refuses_an_unknown_one() {
-        tilo_clock::testing::with_wall(tilo_clock::wall(), || {
-            let source = HostDocument::new(serde_json::Map::new(), |_| Ok(()));
-            let reply = execute(
-                &source,
-                observed(),
-                DisplayCommand::IdentifyDisplay {
-                    display: "eDP-1".into(),
-                },
-            )
-            .unwrap();
-            let request = reply.identify.expect("the flash is stamped");
-            assert_eq!(request.display.as_deref(), Some("eDP-1"));
-            assert_eq!(source.load()["display_identify"]["display"], "eDP-1");
-            assert!(reply.transaction.is_none(), "a flash is no preview");
-            let every = execute(&source, observed(), DisplayCommand::Identify).unwrap();
-            assert_eq!(every.identify.and_then(|request| request.display), None);
-            assert!(
-                source.load()["display_identify"]["display"].is_null(),
-                "the next request for every display is not narrowed by the last flash"
-            );
-            assert!(
-                execute(
-                    &source,
-                    observed(),
-                    DisplayCommand::IdentifyDisplay {
-                        display: "Virtual-1".into(),
-                    },
-                )
-                .is_err()
-            );
         });
     }
 

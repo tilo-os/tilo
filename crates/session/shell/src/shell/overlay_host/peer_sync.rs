@@ -13,7 +13,7 @@ impl ShellOverlayHost {
     #[cfg(test)]
     pub(crate) fn enable_persisted_launch_drain_for_test(&mut self) {
         self.desktop_controls = DesktopControlsSource::Persisted(
-            settings_store::hardware::DesktopControlsConfig::default(),
+            settings_store::desktop_controls::DesktopControlsConfig::default(),
         );
     }
 

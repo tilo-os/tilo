@@ -41,7 +41,7 @@ use crate::effects::effect;
 use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
 use crate::input_sources::CatalogEntry;
-use crate::prefs::InputPrefs;
+use crate::prefs::{InputDevicePrefs, InputPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
@@ -54,6 +54,51 @@ use tablet::{
 };
 
 crate::effects::effect_family!(InputEffect => answer);
+
+/// The input settings the page edits as one: the person's choices, which it
+/// reads as, and this device's keyboards, tablets and touchpads.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Input {
+    pub(crate) person: InputPrefs,
+    pub(crate) device: InputDevicePrefs,
+}
+
+impl std::ops::Deref for Input {
+    type Target = InputPrefs;
+    fn deref(&self) -> &InputPrefs {
+        &self.person
+    }
+}
+
+impl std::ops::DerefMut for Input {
+    fn deref_mut(&mut self) -> &mut InputPrefs {
+        &mut self.person
+    }
+}
+
+impl Input {
+    /// The input settings `cx` holds.
+    pub(crate) fn load(cx: &PaneCx) -> Self {
+        Self {
+            person: cx.settings::<InputPrefs>().get(),
+            device: cx.settings::<InputDevicePrefs>().get(),
+        }
+    }
+
+    /// Store both: the person's in their section, this device's in its.
+    ///
+    /// # Errors
+    /// As `ui::storage::Settings::set`.
+    pub(crate) fn store(&self, cx: &PaneCx) -> std::io::Result<()> {
+        cx.settings::<InputPrefs>().set(&self.person)?;
+        cx.settings::<InputDevicePrefs>().set(&self.device)
+    }
+
+    /// The choices as the compositor reads them on this device.
+    pub(crate) fn rich_input(&self) -> settings_store::hardware::RichInputConfig {
+        self.person.rich_input(&self.device)
+    }
+}
 
 crate::area::pane_area! {
     InputArea;
@@ -96,24 +141,29 @@ pub(crate) mod values;
 /// A switch of the stored input section, as the page and search show it:
 /// labelled `$label`, explained by its description.
 macro_rules! input_switches {
-    ($($name:ident => $field:ident, $label:literal, $id:literal;)*) => {$(
-        pub(crate) fn $name(cx: &PaneCx, input: &Followed<InputPrefs>) -> Item {
+    ($section:ident: $($name:ident => $field:ident, $label:literal, $id:literal;)*) => {$(
+        pub(crate) fn $name(cx: &PaneCx, input: &Followed<$section>) -> Item {
             cx.row(t($label))
                 .described(t(concat!($label, "-description")))
                 .id($id)
-                .of(input, InputPrefs::paths().$field)
+                .of(input, $section::paths().$field)
                 .toggle()
         }
     )*};
 }
 
 input_switches! {
+    InputPrefs:
     disable_while_typing => disable_while_typing, "input-disable-while-typing", "input.disable_while_typing";
-    disable_with_mouse => touchpad_disabled_on_external_mouse, "input-touchpad-disable-with-mouse", "input.touchpad_disabled_on_external_mouse";
     gestures => touchpad_gestures, "input-touchpad-gestures", "input.touchpad_gestures";
     left_handed => left_handed, "input-left-handed", "input.left_handed";
     middle_click => middle_emulation, "input-middle-emulation", "input.middle_emulation";
     tap_to_click => tap_to_click, "input-tap-to-click", "input.tap_click";
+}
+
+input_switches! {
+    InputDevicePrefs:
+    disable_with_mouse => touchpad_disabled_on_external_mouse, "input-touchpad-disable-with-mouse", "input.touchpad_disabled_on_external_mouse";
     touchpad => touchpad_enabled, "input-touchpad-enabled", "input.touchpad_enabled";
 }
 
@@ -686,14 +736,11 @@ fn fraction(value: f64) -> Result<f64, String> {
 /// The saved settings of the tablet or pad `device`, created on first use.
 /// Keys are device identities from the compositor's snapshot, so anything
 /// else is refused rather than stored.
-fn tablet_entry<'a>(
-    input: &'a mut InputPrefs,
-    device: &str,
-) -> Result<&'a mut TabletConfig, String> {
+fn tablet_entry<'a>(input: &'a mut Input, device: &str) -> Result<&'a mut TabletConfig, String> {
     if device.is_empty() || device.len() > 512 || device.chars().any(char::is_control) {
         return Err("unknown tablet".into());
     }
-    Ok(input.tablets.entry(device.to_string()).or_default())
+    Ok(input.device.tablets.entry(device.to_string()).or_default())
 }
 
 /// Apply `effect` to `input`, refusing what it cannot be.
@@ -701,11 +748,7 @@ fn tablet_entry<'a>(
     clippy::too_many_lines,
     reason = "one arm per input choice keeps every validation in one place"
 )]
-fn apply(
-    input: &mut InputPrefs,
-    effect: InputEffect,
-    catalog: &[CatalogEntry],
-) -> Result<(), String> {
+fn apply(input: &mut Input, effect: InputEffect, catalog: &[CatalogEntry]) -> Result<(), String> {
     use InputEffect as E;
     let installed = |source: &str| catalog.iter().any(|entry| entry.id == source);
     match effect {
@@ -729,21 +772,20 @@ fn apply(
             {
                 return Err("the source is not an installed XKB layout".into());
             }
-            input.keyboard_preview = Some(source);
-            input.keyboard_preview_level = 0;
-            input.keyboard_preview_extra_levels = false;
+            input.device.keyboard_preview = Some(source);
+            input.device.keyboard_preview_level = 0;
+            input.device.keyboard_preview_extra_levels = false;
         }
         E::ShowLiveKeyboardMap => {
-            input.keyboard_preview = None;
-            input.keyboard_preview_level = 0;
-            input.keyboard_preview_extra_levels = false;
+            input.device.keyboard_preview = None;
+            input.device.keyboard_preview_level = 0;
+            input.device.keyboard_preview_extra_levels = false;
         }
         E::SetPreviewExtraLevels { on } => {
-            input
-                .keyboard_preview
-                .get_or_insert_with(|| input.keyboard_layout.clone());
-            input.keyboard_preview_extra_levels = on;
-            input.keyboard_preview_level = 0;
+            let layout = input.keyboard_layout.clone();
+            input.device.keyboard_preview.get_or_insert(layout);
+            input.device.keyboard_preview_extra_levels = on;
+            input.device.keyboard_preview_level = 0;
         }
         E::SetPreviewLevel { level } => {
             let level = level
@@ -752,12 +794,13 @@ fn apply(
                 .filter(|level| *level < 32)
                 .ok_or("invalid keyboard preview level")?;
             let source = input
+                .device
                 .keyboard_preview
-                .as_deref()
-                .unwrap_or(&input.keyboard_layout);
+                .clone()
+                .unwrap_or_else(|| input.keyboard_layout.clone());
             let map = crate::keyboard_preview::Preview::new(
-                source,
-                &input.keyboard_model,
+                &source,
+                &input.device.keyboard_model,
                 Some(""),
                 false,
             )
@@ -765,18 +808,19 @@ fn apply(
             if level >= map.level_count() {
                 return Err("the layout does not supply this level".into());
             }
-            input.keyboard_preview = Some(source.to_owned());
-            input.keyboard_preview_level = level;
-            input.keyboard_preview_extra_levels = false;
+            input.device.keyboard_preview = Some(source);
+            input.device.keyboard_preview_level = level;
+            input.device.keyboard_preview_extra_levels = false;
         }
         E::InspectKeyboardKey { key } => {
             let source = input
+                .device
                 .keyboard_preview
                 .as_deref()
-                .unwrap_or(&input.keyboard_layout);
+                .unwrap_or(&input.person.keyboard_layout);
             let map = crate::keyboard_preview::Preview::new(
                 source,
-                &input.keyboard_model,
+                &input.device.keyboard_model,
                 Some(""),
                 false,
             )
@@ -784,19 +828,20 @@ fn apply(
             if map.inspection_values(&key).is_none() {
                 return Err("the physical model does not supply this key".into());
             }
-            input.keyboard_inspected_key = key;
+            input.device.keyboard_inspected_key = key;
         }
         E::SetKeyboardModel { model } => {
             if !crate::keyboard_preview::valid_model(&model) {
                 return Err("unknown physical keyboard model".into());
             }
-            input.keyboard_model = model;
-            input.keyboard_inspected_key = "AD01".into();
-            input.keyboard_preview_level = 0;
-            input.keyboard_preview_extra_levels = false;
+            input.device.keyboard_model = model;
+            input.device.keyboard_inspected_key = "AD01".into();
+            input.device.keyboard_preview_level = 0;
+            input.device.keyboard_preview_extra_levels = false;
         }
         E::ApplyPreview => {
             let source = input
+                .device
                 .keyboard_preview
                 .clone()
                 .unwrap_or_else(|| input.keyboard_layout.clone());
@@ -806,9 +851,9 @@ fn apply(
                 E::AddSource { source }
             };
             apply(input, next, catalog)?;
-            input.keyboard_preview = None;
-            input.keyboard_preview_level = 0;
-            input.keyboard_preview_extra_levels = false;
+            input.device.keyboard_preview = None;
+            input.device.keyboard_preview_level = 0;
+            input.device.keyboard_preview_extra_levels = false;
             return Ok(());
         }
         E::AddSource { source } => {
@@ -937,7 +982,7 @@ fn apply(
     Ok(())
 }
 
-fn position(input: &InputPrefs, source: &str) -> Result<usize, String> {
+fn position(input: &Input, source: &str) -> Result<usize, String> {
     input
         .keyboard_layouts
         .iter()
@@ -1081,8 +1126,7 @@ fn answer_read(app: &SettingsApp, effect: InputEffect) -> EffectAnswer {
     if let Some(result) = keyboard_editor::answer_editor(app, &effect) {
         return result;
     }
-    let settings = host.settings::<InputPrefs>();
-    let mut input = settings.get();
+    let mut input = Input::load(host);
     input.normalise_keyboard_sources();
     keyboard_editor::apply_scoped(
         &mut input,
@@ -1090,8 +1134,8 @@ fn answer_read(app: &SettingsApp, effect: InputEffect) -> EffectAnswer {
         crate::panes::mouse_keyboard::area(app).ok_or_else(crate::area::missing)?,
     )?;
     input.normalise_keyboard_sources();
-    settings
-        .set(&input)
+    input
+        .store(host)
         .map(|()| Effected::done())
         .map_err(|error| format!("the input settings could not be saved: {error}"))
 }
@@ -1440,14 +1484,16 @@ pub struct MouseKeyboardPane {
     page: InputPage,
     cx: PaneCx,
     input: Followed<InputPrefs>,
+    /// This device's keyboards, tablets and touchpads.
+    device: Followed<InputDevicePrefs>,
     text: Followed<TextAssistancePrefs>,
     dictionary: Option<ui::personal_dictionary::Snapshot>,
     dictionary_identity: Option<[u8; 32]>,
     dictionary_word: ui::LocalState<String>,
     dictionary_language: ui::LocalState<String>,
     dictionary_edits: RefCell<HashMap<DictionaryKey, DictionaryFields>>,
-    /// The input section as shown: normalised.
-    last: InputPrefs,
+    /// The input settings as shown: normalised.
+    last: Input,
     catalog: Vec<CatalogEntry>,
     /// Why the device's layout list could not be read; `catalog` is then a
     /// short built-in list and says so.
@@ -1485,13 +1531,18 @@ impl MouseKeyboardPane {
     /// The pane over `cx`'s input settings and `area`'s sources and devices.
     pub fn new(cx: PaneCx, area: &InputArea) -> Self {
         let input = cx.follow::<InputPrefs>();
+        let device = cx.follow::<InputDevicePrefs>();
         let text = cx.follow::<TextAssistancePrefs>();
-        let mut last = input.get().clone();
+        let mut last = Input {
+            person: input.get().clone(),
+            device: device.get().clone(),
+        };
         last.normalise_keyboard_sources();
         let mut pane = Self {
             page: InputPage::default(),
             cx,
             input,
+            device,
             text,
             dictionary: ui::personal_dictionary::snapshot().ok(),
             dictionary_identity: ui::local_identity::bound()
@@ -1562,7 +1613,7 @@ impl MouseKeyboardPane {
         .join(",");
         let preview = crate::keyboard_preview::Preview::new(
             source,
-            &input.keyboard_model,
+            &input.device.keyboard_model,
             Some(&options),
             crate::keyboard_preview::device_keyboard_is_compact(),
         );
@@ -1592,7 +1643,7 @@ impl MouseKeyboardPane {
                 if self.sections.touchpad {
                     cards.push(self.touchpad_card());
                     // Everything else a touchpad does is moot while it is off.
-                    if self.last.touchpad_enabled {
+                    if self.last.device.touchpad_enabled {
                         cards.push(self.touchpad_click_scroll_card());
                     }
                 }
@@ -1758,8 +1809,8 @@ impl MouseKeyboardPane {
     /// shows.
     fn touchpad_card(&self) -> crate::widgets::SettingsSection {
         let last = &self.last;
-        let mut content = vec![touchpad(&self.cx, &self.input)];
-        if last.touchpad_enabled {
+        let mut content = vec![touchpad(&self.cx, &self.device)];
+        if last.device.touchpad_enabled {
             content.extend([
                 self.cx
                     .row(t("input-touchpad-disable-with-mouse"))
@@ -1767,8 +1818,8 @@ impl MouseKeyboardPane {
                     .id("input.touchpad_disabled_on_external_mouse")
                     .nested()
                     .of(
-                        &self.input,
-                        InputPrefs::paths().touchpad_disabled_on_external_mouse,
+                        &self.device,
+                        InputDevicePrefs::paths().touchpad_disabled_on_external_mouse,
                     )
                     .toggle(),
                 self.cx
@@ -2171,8 +2222,12 @@ impl Widget for MouseKeyboardPane {
             self.composed.clear();
         }
         // The controls are built from the values: a change rebuilds them.
-        if self.input.refresh() {
-            let mut last = self.input.get().clone();
+        let person = self.input.refresh();
+        if self.device.refresh() || person {
+            let mut last = Input {
+                person: self.input.get().clone(),
+                device: self.device.get().clone(),
+            };
             last.normalise_keyboard_sources();
             self.last = last;
             self.composed.invalidate();

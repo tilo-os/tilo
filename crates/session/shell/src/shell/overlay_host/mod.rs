@@ -994,7 +994,7 @@ pub struct ShellOverlayHost {
     status_copied: std::cell::RefCell<tilo_quick_settings::SystemStatus>,
     /// Single session-lifetime owner for persistent balance/mono transforms.
     /// Present only in compositor sessions; omitted from shots and unit tests.
-    session_audio_policy: Option<crate::shell::session_audio_policy::SessionAudioPolicyOwner>,
+    audio_service: Option<crate::shell::audio_service::AudioService>,
     /// Room-activity sheet. Held as a `Widget` with its own hover, scroll, and
     /// filter state, placed by hand like the notification stack.
     room_activity: Box<crate::shell::room_activity::RoomActivityPane>,

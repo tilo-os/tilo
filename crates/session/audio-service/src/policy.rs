@@ -1,7 +1,7 @@
 //! One session-lifetime owner for persistent audio transforms.
 //!
 //! Settings writes intent to the shared settings store. This worker reads it,
-//! observes `PipeWire` off the render thread, and owns any virtual mono node
+//! observes `PipeWire` in its own process, and owns any virtual mono node
 //! and the echo-cancelled microphone until the desktop session ends. It is
 //! intentionally not a `DBus` service: neither operation is privileged, and
 //! one owner per graphical session is the security/correctness boundary we
@@ -28,15 +28,14 @@
 //! for its socket to appear.
 
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::thread::JoinHandle;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use media::audio::{AudioDevice, AudioGraph, GraphDelta};
 use media::audio_runtime::{PersistentAudioPolicy, PersistentAudioPreferences, RealAudioRuntime};
 use media::audio_watch::{AudioGraphWatch, GraphWatchEvent};
-use settings_store::system_sounds::SystemSoundEvent;
+
+use crate::DeviceEvent;
 
 /// Fallback only, while `PipeWire` cannot be watched: how often to shell
 /// `pw-dump` while the graph is still settling.
@@ -86,7 +85,7 @@ fn topology_unchanged(previous: Option<&str>, graph: &AudioGraph) -> bool {
 /// What wakes the policy worker. While `PipeWire` can be watched nothing
 /// else does: there is no timer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PolicyEvent {
+pub enum PolicyEvent {
     /// The device graph changed, or the watch just started (the baseline).
     GraphChanged,
     /// The watch lost `PipeWire`: poll until it can watch again.
@@ -123,7 +122,7 @@ trait PolicyEnv {
     ) -> Result<(), String>;
     /// When the policy must reconcile again although nothing changed.
     fn next_retry(&self) -> Option<Instant>;
-    fn device_sound(&mut self, event: SystemSoundEvent);
+    fn device_event(&mut self, event: DeviceEvent);
     /// (Re)start the native graph watch; `false` when `PipeWire` cannot be
     /// watched.
     fn watch_graph(&mut self) -> bool;
@@ -281,7 +280,7 @@ impl PolicyWorker {
             };
         }
         for event in self.devices.observe(&graph) {
-            env.device_sound(event);
+            env.device_event(event);
         }
         // Both readings must have seen the graph: after a reading that did
         // not (`PipeWire` restarting, or `pw-dump` failing once), every
@@ -366,7 +365,7 @@ struct LiveEnv {
     settings_watch: Option<settings_store::watch::SettingsWatch>,
     daemon_watch: Option<settings_store::watch::SettingsWatch>,
     events: Sender<PolicyEvent>,
-    device_sounds: Sender<SystemSoundEvent>,
+    device_events: Box<dyn FnMut(DeviceEvent)>,
     policy: PersistentAudioPolicy,
 }
 
@@ -380,7 +379,9 @@ impl PolicyEnv for LiveEnv {
     }
 
     fn pause_playing_players(&mut self) -> bool {
-        crate::shell::mpris::pause_playing_players()
+        crate::mpris::pause_playing_players()
+            .inspect_err(|error| tracing::debug!(target: "tilo::audio_policy", %error, "MPRIS"))
+            .is_ok()
     }
 
     fn set_default_sink(&mut self, node_id: u32) -> Result<(), String> {
@@ -399,8 +400,8 @@ impl PolicyEnv for LiveEnv {
         self.policy.next_retry()
     }
 
-    fn device_sound(&mut self, event: SystemSoundEvent) {
-        let _ = self.device_sounds.send(event);
+    fn device_event(&mut self, event: DeviceEvent) {
+        (self.device_events)(event);
     }
 
     fn watch_graph(&mut self) -> bool {
@@ -424,7 +425,7 @@ impl PolicyEnv for LiveEnv {
         if self.daemon_watch.is_some() {
             return true;
         }
-        let Some(socket) = pipewire_socket() else {
+        let Some(socket) = media::audio_watch::pipewire_socket() else {
             return false;
         };
         let events = self.events.clone();
@@ -441,7 +442,7 @@ impl PolicyEnv for LiveEnv {
     }
 
     fn daemon_running(&mut self) -> bool {
-        pipewire_socket().is_some_and(|socket| socket.exists())
+        media::audio_watch::pipewire_socket().is_some_and(|socket| socket.exists())
     }
 
     fn watch_settings(&mut self) -> bool {
@@ -461,67 +462,23 @@ impl PolicyEnv for LiveEnv {
     }
 }
 
-/// Where a `PipeWire` client connects: `PIPEWIRE_REMOTE` (`pipewire-0`
-/// unless set), in `PIPEWIRE_RUNTIME_DIR` or else `XDG_RUNTIME_DIR` unless
-/// it is a path of its own.
-pub(crate) fn pipewire_socket() -> Option<std::path::PathBuf> {
-    let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
-    let remote =
-        std::path::PathBuf::from(set("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into()));
-    if remote.is_absolute() {
-        return Some(remote);
-    }
-    let directory = set("PIPEWIRE_RUNTIME_DIR").or_else(|| set("XDG_RUNTIME_DIR"))?;
-    Some(std::path::PathBuf::from(directory).join(remote))
-}
-
-#[derive(Debug)]
-pub struct SessionAudioPolicyOwner {
+/// Run the policy until [`PolicyEvent::Stop`] arrives on `received` (the
+/// other end of `events`, which the watches send on), telling `device_events` each
+/// device that arrives or leaves.
+pub fn serve(
+    device_events: impl FnMut(DeviceEvent) + 'static,
     events: Sender<PolicyEvent>,
-    worker: Option<JoinHandle<()>>,
-    device_sounds: Mutex<Receiver<SystemSoundEvent>>,
-}
-
-impl SessionAudioPolicyOwner {
-    /// Spawns the worker thread.
-    ///
-    /// # Errors
-    ///
-    /// Returns the OS error if the thread could not be spawned (resource
-    /// exhaustion) — the caller runs the session without persistent audio
-    /// transforms rather than tearing the whole desktop down over it.
-    pub fn spawn() -> std::io::Result<Self> {
-        let (events, rx) = mpsc::channel();
-        let (device_tx, device_sounds) = mpsc::channel();
-        let worker_events = events.clone();
-        let worker = std::thread::Builder::new()
-            .name("tilo-session-audio-policy".into())
-            .spawn(move || {
-                let mut env = LiveEnv {
-                    graph_watch: None,
-                    settings_watch: None,
-                    daemon_watch: None,
-                    events: worker_events,
-                    device_sounds: device_tx,
-                    policy: PersistentAudioPolicy::new(Arc::new(RealAudioRuntime)),
-                };
-                run(&mut env, &rx);
-            })?;
-        Ok(Self {
-            events,
-            worker: Some(worker),
-            device_sounds: Mutex::new(device_sounds),
-        })
-    }
-
-    /// Audio devices that arrived or left since the last call, as the
-    /// system sounds they stand for.
-    pub fn drain_device_sounds(&self) -> Vec<SystemSoundEvent> {
-        self.device_sounds
-            .lock()
-            .map(|events| events.try_iter().collect())
-            .unwrap_or_default()
-    }
+    received: &Receiver<PolicyEvent>,
+) {
+    let mut env = LiveEnv {
+        graph_watch: None,
+        settings_watch: None,
+        daemon_watch: None,
+        events,
+        device_events: Box::new(device_events),
+        policy: PersistentAudioPolicy::new(Arc::new(RealAudioRuntime)),
+    };
+    run(&mut env, received);
 }
 
 /// The audio hardware present at the last observation, by description.
@@ -537,7 +494,7 @@ struct DeviceRoster {
 }
 
 impl DeviceRoster {
-    fn observe(&mut self, graph: &media::audio::AudioGraph) -> Vec<SystemSoundEvent> {
+    fn observe(&mut self, graph: &media::audio::AudioGraph) -> Vec<DeviceEvent> {
         if graph.hardware.is_empty() {
             return Vec::new();
         }
@@ -552,10 +509,10 @@ impl DeviceRoster {
         };
         let mut events = Vec::new();
         if multiset_difference(&now, &before) {
-            events.push(SystemSoundEvent::DeviceConnected);
+            events.push(DeviceEvent::Connected);
         }
         if multiset_difference(&before, &now) {
-            events.push(SystemSoundEvent::DeviceDisconnected);
+            events.push(DeviceEvent::Disconnected);
         }
         events
     }
@@ -577,15 +534,6 @@ fn multiset_difference(a: &[String], b: &[String]) -> bool {
     false
 }
 
-impl Drop for SessionAudioPolicyOwner {
-    fn drop(&mut self) {
-        let _ = self.events.send(PolicyEvent::Stop);
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
-}
-
 /// Whether an enumeration actually saw the graph. `pw-dump` failing reads as
 /// an empty graph, which must not look like every device being unplugged.
 fn enumerated(graph: &AudioGraph) -> bool {
@@ -595,7 +543,7 @@ fn enumerated(graph: &AudioGraph) -> bool {
 /// Sound on this output reaches only the person wearing or holding it: a
 /// Bluetooth sink, a headset or headphones. Losing it while playing means
 /// the next output is likely a room's speakers.
-pub(crate) fn private_output(device: &AudioDevice) -> bool {
+pub fn private_output(device: &AudioDevice) -> bool {
     let name = device.name.to_ascii_lowercase();
     let description = device.description.to_ascii_lowercase();
     device.codec.is_some()
@@ -610,7 +558,7 @@ pub(crate) fn private_output(device: &AudioDevice) -> bool {
 /// default is gone and it was a private one. A removed speaker, a removed
 /// non-default device and a device appearing never pause — and nothing here
 /// ever resumes.
-pub(crate) fn pause_on_removal(previous: &AudioGraph, delta: &GraphDelta) -> bool {
+pub fn pause_on_removal(previous: &AudioGraph, delta: &GraphDelta) -> bool {
     let Some(default) = previous.default_sink() else {
         return false;
     };
@@ -627,7 +575,7 @@ pub(crate) fn pause_on_removal(previous: &AudioGraph, delta: &GraphDelta) -> boo
 /// Bluetooth headset changing profile) is not an arrival. A speaker set in
 /// use keeps the sound: earbuds connecting on their own as they leave their
 /// case must not silence the rooms.
-pub(crate) fn follow_on_arrival(previous: &AudioGraph, delta: &GraphDelta) -> Option<u32> {
+pub fn follow_on_arrival(previous: &AudioGraph, delta: &GraphDelta) -> Option<u32> {
     if previous
         .default_sink()
         .is_some_and(|sink| sink.name == media::audio::SPEAKER_GROUP_SINK)
@@ -681,6 +629,7 @@ fn preferences_from(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::mpsc;
 
     fn sink(name: &str, description: &str, is_default: bool) -> AudioDevice {
         AudioDevice {
@@ -944,7 +893,7 @@ mod tests {
         preference_loads: usize,
         pauses: usize,
         reconciles: usize,
-        sounds: Vec<SystemSoundEvent>,
+        sounds: Vec<DeviceEvent>,
         defaults: Vec<u32>,
     }
 
@@ -998,7 +947,7 @@ mod tests {
         fn next_retry(&self) -> Option<Instant> {
             None
         }
-        fn device_sound(&mut self, event: SystemSoundEvent) {
+        fn device_event(&mut self, event: DeviceEvent) {
             self.sounds.push(event);
         }
         fn watch_graph(&mut self) -> bool {
@@ -1064,7 +1013,7 @@ mod tests {
             env.pauses, 1,
             "unplugging the headset after the graph settled must pause playback"
         );
-        assert_eq!(env.sounds, [SystemSoundEvent::DeviceDisconnected]);
+        assert_eq!(env.sounds, [DeviceEvent::Disconnected]);
     }
 
     #[test]
@@ -1160,7 +1109,7 @@ mod tests {
         env.graphs.push_back(laptop(false));
         worker.handle(Wake::Timeout, &mut env);
         assert_eq!(env.pauses, 1, "hotplug lands within one idle poll");
-        assert_eq!(env.sounds, [SystemSoundEvent::DeviceDisconnected]);
+        assert_eq!(env.sounds, [DeviceEvent::Disconnected]);
 
         env.graph_watchable = true;
         let before = env.enumerations;
@@ -1349,11 +1298,11 @@ mod tests {
         assert!(roster.observe(&graph(&["Built-in Audio"])).is_empty());
         assert_eq!(
             roster.observe(&graph(&["Built-in Audio", "Headset"])),
-            [SystemSoundEvent::DeviceConnected]
+            [DeviceEvent::Connected]
         );
         assert_eq!(
             roster.observe(&graph(&["Built-in Audio", "Headset", "Headset"])),
-            [SystemSoundEvent::DeviceConnected],
+            [DeviceEvent::Connected],
             "a second identical headset is a new device"
         );
         assert!(
@@ -1362,14 +1311,11 @@ mod tests {
         );
         assert_eq!(
             roster.observe(&graph(&["Built-in Audio"])),
-            [SystemSoundEvent::DeviceDisconnected]
+            [DeviceEvent::Disconnected]
         );
         assert_eq!(
             roster.observe(&graph(&["Dock", "Headset"])),
-            [
-                SystemSoundEvent::DeviceConnected,
-                SystemSoundEvent::DeviceDisconnected
-            ]
+            [DeviceEvent::Connected, DeviceEvent::Disconnected]
         );
     }
 

@@ -71,6 +71,8 @@ pub(crate) use clock::forget_frames_for_tests;
 #[cfg(feature = "native")]
 pub(crate) use clock::laying_out_frame;
 pub(crate) use clock::pin_frame;
+#[cfg(test)]
+pub(crate) use clock::pin_frame_at;
 pub use clock::{
     frame_drawn, frame_laying_out, frame_now, frames_until, frames_wanted, frames_wanted_by,
     testing, want_frames_until,

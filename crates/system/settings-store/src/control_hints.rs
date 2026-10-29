@@ -100,12 +100,4 @@ mod tests {
         assert_eq!(here.showings("open"), 2);
         assert!(!here.enabled);
     }
-
-    #[test]
-    fn the_record_is_classified_personal() {
-        assert_eq!(
-            crate::continuity::classify("tilo.control_hints.learned"),
-            Some(crate::continuity::SettingScope::Personal)
-        );
-    }
 }

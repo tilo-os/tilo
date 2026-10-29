@@ -74,12 +74,12 @@ pub mod accessibility;
 pub mod app_scope;
 pub mod appearance;
 pub mod clock;
-pub mod continuity;
 pub mod continuity_privacy;
 pub mod control_hints;
 pub mod day_schedule;
 pub mod desk_widgets;
 pub mod desktop_control;
+pub mod desktop_controls;
 pub mod device_class;
 pub mod device_displays;
 pub mod device_vpn;
@@ -104,6 +104,7 @@ pub mod notification_policy;
 pub mod paste_shortcut;
 pub mod person_displays;
 pub mod personal_dictionary;
+pub mod placement;
 pub mod power;
 pub mod published;
 pub mod roaming_provenance;
@@ -217,6 +218,29 @@ pub fn section(text: &str, name: &str) -> Map<String, Value> {
 /// object, yields an empty map.
 pub fn load_section(name: &str) -> Map<String, Value> {
     object_section(load(), name)
+}
+
+/// Sections `names` of this process's settings read as one: the leaves of
+/// each, a later section's over an earlier's. A setting whose leaves the
+/// person and the device hold apart (`input` and `input_device`) reads
+/// through it.
+pub fn load_sections(names: &[&str]) -> Map<String, Value> {
+    merged_sections(&load(), names)
+}
+
+/// Sections `names` of `document` read as one, as [`load_sections`] does.
+pub fn merged_sections(document: &Map<String, Value>, names: &[&str]) -> Map<String, Value> {
+    let mut merged = Map::new();
+    for name in names {
+        if let Some(Value::Object(leaves)) = document.get(*name) {
+            merged.extend(
+                leaves
+                    .iter()
+                    .map(|(leaf, value)| (leaf.clone(), value.clone())),
+            );
+        }
+    }
+    merged
 }
 
 /// Section `name` of `source`'s document.

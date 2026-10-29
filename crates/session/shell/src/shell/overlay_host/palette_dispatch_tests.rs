@@ -34,14 +34,14 @@ fn host_governing_its_room() -> (
 fn host_with_launch_polling() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
     let (mut host, chrome) = host_with_chrome();
     host.desktop_controls = DesktopControlsSource::Persisted(
-        settings_store::hardware::DesktopControlsConfig::default(),
+        settings_store::desktop_controls::DesktopControlsConfig::default(),
     );
     (host, chrome)
 }
 
 #[test]
 fn desktop_controls_refresh_only_replaces_a_persisted_snapshot() {
-    let enabled = settings_store::hardware::DesktopControlsConfig {
+    let enabled = settings_store::desktop_controls::DesktopControlsConfig {
         vim_mode: true,
         ..Default::default()
     };

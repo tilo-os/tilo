@@ -176,16 +176,11 @@ fn draw_frame_content_with(
         crate::scene_parts::begin(scene, crate::scene_parts::PartKey::new("ui.layers", ()));
     }
     if app.history_chrome_enabled {
-        let context = crate::standalone_history::HistoryReadContext {
-            document: &app.state.doc,
-            active_record: app
-                .persistence
-                .records
-                .as_ref()
-                .and_then(|records| records.active()),
-            document_identity: app.state.document_identity(),
-            permissions: &app.permission_ctx,
-        };
+        let context = crate::standalone_history::HistoryReadContext::of(
+            &app.state,
+            app.persistence.records.as_ref(),
+            &app.permission_ctx,
+        );
         if let Err(error) = app.document_history.draw(
             &context,
             scene,
@@ -292,6 +287,22 @@ fn draw_frame_content_with(
         );
     }
     painted(scene, "the action palette", &mut drawn);
+    if let Some(notice) = &app.actions.control_notice {
+        let viewport = KurboRect::new(
+            0.0,
+            0.0,
+            f64::from(width) / f64::from(scale_factor),
+            f64::from(height) / f64::from(scale_factor),
+        );
+        notice.draw(
+            scene,
+            transform,
+            &mut app.text_renderer,
+            &app.theme,
+            viewport,
+        );
+    }
+    painted(scene, "what a control says about its refusal", &mut drawn);
     // The content zoom's level, in the window's bar after it changed.
     app.accessibility.zoom.publish();
     if tracked {

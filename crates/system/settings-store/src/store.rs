@@ -1,8 +1,8 @@
 //! One profile's settings, kept as two Automerge documents.
 //!
-//! A [`Store`] holds the person's document (the leaves
-//! [`crate::continuity::classify`] calls personal) and this device's
-//! document (every other leaf), in `<root>/records/person.automerge` and
+//! A [`Store`] holds the person's document (the sections
+//! [`crate::placement`] gives the person) and this device's document (every
+//! other section), in `<root>/records/person.automerge` and
 //! `<root>/records/device.automerge`. Each section is a map at the document's
 //! root and each leaf a key in it; a value is stored as what it is (an object
 //! a map, an array a list, a string, number, boolean or `null` a scalar), the
@@ -37,7 +37,7 @@ use tilo_lock::MutexRecover as _;
 
 use tilo_settings_records::{Door, Hold, Holding, Records, Stamp, Watch};
 
-use crate::continuity::{SettingScope, classify};
+use crate::placement::{self, Holder};
 use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, merge_section};
 
 pub use tilo_settings_records::RECORDS_DIR;
@@ -54,21 +54,6 @@ type Decide<'a> = dyn FnMut(&Map<String, Value>) -> Option<Map<String, Value>> +
 /// `None` when the writer's intent was superseded.
 type DecideSections<'a> =
     dyn FnMut(&Map<String, Value>) -> Option<Vec<(String, Map<String, Value>)>> + 'a;
-
-/// Which of the two documents a leaf lives in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Holder {
-    Person,
-    Device,
-}
-
-fn holder_of(section: &str, leaf: &str) -> Holder {
-    if classify(&format!("tilo.{section}.{leaf}")) == Some(SettingScope::Personal) {
-        Holder::Person
-    } else {
-        Holder::Device
-    }
-}
 
 struct Docs {
     person: AutoCommit,
@@ -391,7 +376,7 @@ impl Store {
                 if current.and_then(|section| section.get(&leaf)) == Some(&value) {
                     continue;
                 }
-                let holder = holder_of(&name, &leaf);
+                let holder = placement::holder(&name);
                 let doc = docs.doc(holder);
                 let section = map_at(doc, &ROOT, &name).map_err(std::io::Error::other)?;
                 write_value(doc, &section, &leaf, &value).map_err(std::io::Error::other)?;
@@ -676,11 +661,10 @@ impl SettingsSource for Store {
         update: crate::DisplayUpdate,
     ) -> std::io::Result<ConditionalUpdate> {
         let sections = update.clone().sections();
-        if sections.iter().any(|(section, values)| {
-            values
-                .keys()
-                .any(|leaf| holder_of(section, leaf) == Holder::Person)
-        }) {
+        if sections
+            .iter()
+            .any(|(section, _)| placement::holder(section) == Holder::Person)
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "display intent must stay in one device record",
@@ -1034,14 +1018,14 @@ mod tests {
     }
 
     #[test]
-    fn personal_and_device_leaves_go_to_their_documents() {
+    fn the_persons_and_the_devices_sections_go_to_their_documents() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         store
-            .update_section(
-                "appearance",
-                object(json!({"text_scale": 1.5, "not_a_reviewed_leaf": true})),
-            )
+            .update_section("appearance", object(json!({"text_scale": 1.5})))
+            .unwrap();
+        store
+            .update_section("so.tilo.unknown", object(json!({"x": true})))
             .unwrap();
         let (person, device) = {
             let docs = store.docs.lock_recover();
@@ -1053,7 +1037,7 @@ mod tests {
         );
         assert_eq!(
             Value::Object(device),
-            json!({"appearance": {"not_a_reviewed_leaf": true}})
+            json!({"so.tilo.unknown": {"x": true}})
         );
     }
 

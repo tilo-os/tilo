@@ -339,15 +339,6 @@ impl PlayerTable {
             .map(|(bus_name, entry)| (bus_name.clone(), entry.is_playing()))
     }
 
-    /// Every player playing right now.
-    pub(super) fn playing(&self) -> Vec<String> {
-        self.players
-            .iter()
-            .filter(|(_, entry)| entry.is_playing())
-            .map(|(bus_name, _)| bus_name.clone())
-            .collect()
-    }
-
     /// The players verified to belong to `package_id`, each with the source
     /// it reports (`xesam:url`).
     pub(super) fn players_of(&self, package_id: &str) -> Vec<(String, Option<String>)> {
@@ -621,7 +612,6 @@ mod tests {
             table.active_player(),
             Some(("org.mpris.MediaPlayer2.b".to_string(), true))
         );
-        assert_eq!(table.playing(), ["org.mpris.MediaPlayer2.b".to_string()]);
     }
 
     #[test]

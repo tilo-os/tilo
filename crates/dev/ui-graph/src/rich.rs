@@ -99,16 +99,6 @@ impl RichText {
             .map(|embed| &embed.view)
     }
 
-    /// The text, a line per paragraph.
-    #[must_use]
-    pub fn plain_text(&self) -> String {
-        self.blocks
-            .iter()
-            .map(|block| block.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
     /// Every string it holds, for a receiver that bounds what it is sent.
     pub fn strings(&self) -> impl Iterator<Item = &str> {
         self.blocks

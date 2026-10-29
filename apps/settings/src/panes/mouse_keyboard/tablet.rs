@@ -424,6 +424,7 @@ impl MouseKeyboardPane {
         device: &InputDeviceSnapshot,
     ) -> settings_store::hardware::TabletConfig {
         self.last
+            .device
             .tablets
             .get(&device.key)
             .cloned()

@@ -6,11 +6,12 @@
 //! on this device — it is a fact about here, not about the document.
 
 use std::path::Path;
+use std::rc::Rc;
 
 use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::portal::PickRequest;
 
-use crate::app::DiffMergeApp;
+use super::effects::{Asked, Shared};
 use crate::doc::Session;
 use crate::i18n::{t, t_args, text};
 
@@ -33,77 +34,87 @@ fn write_text(path: &Path, bytes: &[u8]) -> Result<String, String> {
     Ok(name)
 }
 
-impl DiffMergeApp {
-    /// Write the merged result: to `path` when the caller names one, else
-    /// where it was last written, asking for a place when there is none (or
-    /// when `ask` is set, as Save as… does).
-    pub(super) fn answer_save(
-        &self,
-        cx: &mut EffectCx<Session, Self>,
-        path: Option<ui::tilo_resource::AbsolutePath>,
-        ask: bool,
-    ) -> EffectAnswer {
-        let Some(merged) = &self.merged else {
-            return Err("no merge is open, so there is no merged result to save".into());
-        };
-        let bytes = merged.clone().into_bytes();
-        if let Some(path) = path {
-            return Ok(cx.thread(
-                move |_progress| write_text(&path, &bytes),
-                |app: &mut Self, written, _| app.finish_save(written),
-            ));
-        }
-        if !ask && let Some(place) = self.saved_place.clone() {
+/// Write the merged result: to `path` when the caller names one, else where
+/// it was last written, asking for a place when there is none (or when `ask`
+/// is set, as Save as… does).
+pub(super) fn answer_save(
+    store: &Shared,
+    cx: &mut EffectCx<Session>,
+    path: Option<ui::tilo_resource::AbsolutePath>,
+    ask: bool,
+) -> EffectAnswer {
+    let Some(merged) = store.borrow().merged() else {
+        return Err("no merge is open, so there is no merged result to save".into());
+    };
+    let bytes = merged.clone().into_bytes();
+    let written = Rc::clone(store);
+    if let Some(path) = path {
+        return Ok(cx.thread(
+            move |_progress| write_text(&path, &bytes),
+            move |(), result, _| finish_save(&written, result, merged),
+        ));
+    }
+    let saved_place = store.borrow().saved_place.clone();
+    if !ask && let Some(place) = saved_place {
+        let name = place.name().to_owned();
+        return Ok(cx.write_destination(&place, bytes, move |(), result, _| {
+            finish_save(&written, result.map(|()| name), merged)
+        }));
+    }
+    let suggested = suggested_save_name(store);
+    Ok(
+        cx.choose_destination(save_request(&suggested), move |(), place, cx| {
+            let Some(place) = place else {
+                // Asking and being answered with "no" is not a failure of the
+                // tool; the result simply stays unsaved.
+                written.borrow_mut().ask(Asked::Notice(t("save-cancelled")));
+                return Err("saving the merged result was cancelled".into());
+            };
             let name = place.name().to_owned();
-            return Ok(cx.write_destination(&place, bytes, move |app, written, _| {
-                app.finish_save(written.map(|()| name))
-            }));
+            written.borrow_mut().saved_place = Some(place.clone());
+            Ok(cx.write_destination(&place, bytes, move |(), result, _| {
+                finish_save(&written, result.map(|()| name), merged)
+            }))
+        }),
+    )
+}
+
+/// The name a save suggests: the file that was merged, whose result this is,
+/// or a plain merged result name.
+fn suggested_save_name(store: &Shared) -> String {
+    store
+        .borrow()
+        .live
+        .as_ref()
+        .and_then(|live| {
+            live.get()
+                .merge
+                .as_ref()
+                .map(|merge| merge.ours_label.0.clone())
+        })
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| "merged.txt".to_owned())
+}
+
+/// The save of `merged` finished: `Ok(name)` when the result was written, the
+/// reason it was not otherwise. Says so in the status bar either way.
+fn finish_save(store: &Shared, result: Result<String, String>, merged: String) -> EffectAnswer {
+    let mut store = store.borrow_mut();
+    match result {
+        Ok(name) => {
+            store.saved_text = Some(merged);
+            store.ask(Asked::Notice(t_args(
+                "save-saved",
+                &[("name", text(&name))],
+            )));
+            Ok(Effected::done())
         }
-        let suggested = self.suggested_save_name();
-        Ok(cx.choose_destination(
-            save_request(&suggested),
-            move |app: &mut Self, place, cx| {
-                let Some(place) = place else {
-                    // Asking and being answered with "no" is not a failure
-                    // of the tool; the result simply stays unsaved.
-                    app.notice = Some(t("save-cancelled"));
-                    app.invalidation.paint = true;
-                    return Err("saving the merged result was cancelled".into());
-                };
-                let name = place.name().to_owned();
-                app.saved_place = Some(place.clone());
-                Ok(cx.write_destination(&place, bytes, move |app, written, _| {
-                    app.finish_save(written.map(|()| name))
-                }))
-            },
-        ))
-    }
-
-    /// The name a save suggests: the file that was merged, whose result this
-    /// is, or a plain merged result name.
-    fn suggested_save_name(&self) -> String {
-        self.presented
-            .as_ref()
-            .and_then(|(_, merge)| merge.as_ref())
-            .map(|merge| merge.ours_label.0.clone())
-            .filter(|label| !label.is_empty())
-            .unwrap_or_else(|| "merged.txt".to_owned())
-    }
-
-    /// The save finished: `Ok(name)` when the result was written, the reason
-    /// it was not otherwise. Says so in the status bar either way.
-    fn finish_save(&mut self, result: Result<String, String>) -> EffectAnswer {
-        self.invalidation.paint = true;
-        match result {
-            Ok(name) => {
-                self.saved_text.clone_from(&self.merged);
-                self.notice = Some(t_args("save-saved", &[("name", text(&name))]));
-                Ok(Effected::done())
-            }
-            Err(reason) => {
-                self.notice = Some(t_args("save-failed", &[("reason", text(&reason))]));
-                Err(reason)
-            }
+        Err(reason) => {
+            store.ask(Asked::Notice(t_args(
+                "save-failed",
+                &[("reason", text(&reason))],
+            )));
+            Err(reason)
         }
     }
 }

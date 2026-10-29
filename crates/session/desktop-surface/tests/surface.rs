@@ -2454,7 +2454,7 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
         &snapshot.entries[1].route,
         "the opened app is in front"
     );
-    assert_eq!(driver.refusal_shown(), None);
+    assert_eq!(driver.refusal_said(), None);
 
     let (mut driver, handle, openings) = serving_desk("room");
     driver
@@ -2466,7 +2466,7 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
     driver.idle();
     assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
     assert!(
-        driver.refusal_shown().is_some(),
+        driver.refusal_said().is_some(),
         "the refusal is said over the window that asked"
     );
 }

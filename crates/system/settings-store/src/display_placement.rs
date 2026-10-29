@@ -78,25 +78,47 @@ fn lines(start: i32, length: i32) -> [i32; 3] {
     ]
 }
 
+/// Whether line `edge` of one display (0 its start edge, 1 its centre, 2
+/// its end edge) may line up with line `target` of another: an edge with an
+/// edge (side by side or flush), a centre with a centre. An edge never pulls
+/// to a centre: those pairs only made the held display stick at places no
+/// one arranges a monitor at, all along the way.
+const fn lines_meet(edge: usize, target: usize) -> bool {
+    (edge == 1) == (target == 1)
+}
+
 /// The closest offset within `threshold` that lines one of `edges` up with
-/// one of `targets`.
+/// a line of `targets` it may meet ([`lines_meet`]).
 fn nearest_offset(
     edges: [i32; 3],
-    targets: impl Iterator<Item = i32>,
+    targets: impl Iterator<Item = [i32; 3]>,
     threshold: i32,
 ) -> Option<i32> {
     let mut best: Option<i32> = None;
-    for target in targets {
-        for edge in edges {
-            let offset = target.saturating_sub(edge);
-            if offset.saturating_abs() <= threshold
-                && best.is_none_or(|best| offset.saturating_abs() < best.saturating_abs())
-            {
-                best = Some(offset);
+    for target_lines in targets {
+        for (target_index, target) in target_lines.into_iter().enumerate() {
+            for (edge_index, edge) in edges.into_iter().enumerate() {
+                if !lines_meet(edge_index, target_index) {
+                    continue;
+                }
+                let offset = target.saturating_sub(edge);
+                if offset.saturating_abs() <= threshold
+                    && best.is_none_or(|best| offset.saturating_abs() < best.saturating_abs())
+                {
+                    best = Some(offset);
+                }
             }
         }
     }
     best
+}
+
+/// Whether line `index` of a display, at `at`, meets one of `theirs` there.
+fn shares(at: i32, index: usize, theirs: [i32; 3]) -> bool {
+    theirs
+        .into_iter()
+        .enumerate()
+        .any(|(other, line)| lines_meet(index, other) && line == at)
 }
 
 /// A line a dragged display lines up with: where it runs and how far, in
@@ -120,10 +142,11 @@ pub struct Snapped {
     pub guides: Vec<Guide>,
 }
 
-/// Pull `moving` magnetically onto nearby lines of `others`: any of its
-/// left edge, centre and right edge onto any of theirs, and likewise top,
-/// middle and bottom. Each axis snaps on its own to the closest line within
-/// `threshold`; beyond it the display stays exactly where it was put.
+/// Pull `moving` magnetically onto nearby lines of `others`: its left or
+/// right edge onto either of their edges, its centre onto their centre, and
+/// likewise top, middle and bottom. Each axis snaps on its own to the
+/// closest line within `threshold`; beyond it the display stays exactly
+/// where it was put.
 pub fn snap(moving: Placement, others: &[Placement], threshold: i32) -> Placement {
     snap_with_guides(moving, others, threshold).placement
 }
@@ -133,12 +156,12 @@ pub fn snap(moving: Placement, others: &[Placement], threshold: i32) -> Placemen
 pub fn snap_with_guides(moving: Placement, others: &[Placement], threshold: i32) -> Snapped {
     let dx = nearest_offset(
         lines(moving.x, moving.width),
-        others.iter().flat_map(|other| lines(other.x, other.width)),
+        others.iter().map(|other| lines(other.x, other.width)),
         threshold,
     );
     let dy = nearest_offset(
         lines(moving.y, moving.height),
-        others.iter().flat_map(|other| lines(other.y, other.height)),
+        others.iter().map(|other| lines(other.y, other.height)),
         threshold,
     );
     let placement = moving.at(
@@ -157,29 +180,25 @@ pub fn snap_with_guides(moving: Placement, others: &[Placement], threshold: i32)
             guides.push(guide);
         }
     };
+    let columns = lines(placement.x, placement.width);
+    let rows = lines(placement.y, placement.height);
     for other in others {
-        if dx.is_some() {
-            for line in lines(placement.x, placement.width) {
-                if lines(other.x, other.width).contains(&line) {
-                    add(Guide {
-                        vertical: true,
-                        at: line,
-                        from: placement.y.min(other.y),
-                        to: placement.bottom().max(other.bottom()),
-                    });
-                }
+        for (index, (column, row)) in columns.into_iter().zip(rows).enumerate() {
+            if dx.is_some() && shares(column, index, lines(other.x, other.width)) {
+                add(Guide {
+                    vertical: true,
+                    at: column,
+                    from: placement.y.min(other.y),
+                    to: placement.bottom().max(other.bottom()),
+                });
             }
-        }
-        if dy.is_some() {
-            for line in lines(placement.y, placement.height) {
-                if lines(other.y, other.height).contains(&line) {
-                    add(Guide {
-                        vertical: false,
-                        at: line,
-                        from: placement.x.min(other.x),
-                        to: placement.right().max(other.right()),
-                    });
-                }
+            if dy.is_some() && shares(row, index, lines(other.y, other.height)) {
+                add(Guide {
+                    vertical: false,
+                    at: row,
+                    from: placement.x.min(other.x),
+                    to: placement.right().max(other.right()),
+                });
             }
         }
     }
@@ -545,5 +564,16 @@ mod tests {
                 assert_eq!((settled.width, settled.height), size);
             }
         }
+    }
+
+    #[test]
+    fn an_edge_never_pulls_to_a_centre() {
+        // The monitor's top 10 px below the panel's middle line: no pull,
+        // a top edge lines up with edges only.
+        let monitor = Placement::new(1920, 550, 2560, 1440);
+        assert_eq!(snap(monitor, &[PANEL], 24), monitor);
+        // Its middle 10 px off the panel's middle: centred.
+        let monitor = Placement::new(1920, -170, 2560, 1440);
+        assert_eq!(snap(monitor, &[PANEL], 24).y, -180);
     }
 }

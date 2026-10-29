@@ -83,6 +83,30 @@ class SignedRecordsTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             records.name_trees(store)
 
+    def test_an_image_tree_is_named_by_its_payload_whatever_the_key(self):
+        trees = []
+        for build, key in (("one", b"\5" * 32), ("two", b"\6" * 32)):
+            store = self.base / build / "usr/share/tilo-apps"
+            self.install(store, key)
+            image = bytes(a ^ b for a, b in zip(b"\7" * 32, key)).hex()
+            write(store / f"pkgs/{image}/usr/bin/bash", b"bash")
+            (store / f"pkgs/{image}/usr/bin/sh").symlink_to("bash")
+            write(store / f"pkgs/{image}.pkg/signed-root", signed_root(b"\7" * 32, key))
+            out = self.base / build / "out"
+            records.image(store, image, out)
+            named = store / "trees" / ("07" * 32)
+            self.assertEqual((store / f"pkgs/{image}").readlink(), Path("../trees") / named.name)
+            self.assertEqual((store / f"pkgs/{image}/usr/bin/bash").read_bytes(), b"bash")
+            tree = out / "tree" / named.relative_to(named.anchor)
+            self.assertEqual((tree / "usr/bin/sh").readlink(), Path("bash"))
+            self.assertEqual(sorted(self.tree(out / "tree")), sorted(
+                (tree / name).relative_to(out / "tree").as_posix() for name in ("usr/bin/bash", "usr/bin/sh")))
+            trees.append(self.tree(tree))
+            record = out / "record" / store.relative_to(store.anchor)
+            self.assertEqual(sorted(self.tree(record)), ["image-publishers", f"pkgs/{image}.pkg/signed-root"])
+            self.assertEqual((record / f"pkgs/{image}").readlink(), Path("../trees") / named.name)
+        self.assertEqual(trees[0], trees[1], "the image's tree differs with the key")
+
     def test_runtime_manifests_and_publishers_leave_the_image(self):
         image, out = self.base / "image", self.base / "signatures"
         for runtime in ("2026.07+native.0123", "146.0"):

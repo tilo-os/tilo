@@ -130,6 +130,7 @@ pub mod keyed;
 pub mod kind;
 mod map;
 pub mod model;
+mod non_blank;
 pub mod order;
 pub mod ordered;
 pub mod path;
@@ -155,8 +156,8 @@ pub mod vocabulary;
 pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
-    Outcome, Params, Refusal, Reverting, Stamped, Undoing, fresh_uuid, minted_ids, minted_keys,
-    reverting_type, take_minted,
+    Outcome, Params, Refusal, Reverting, Stamped, TryMapped, Undoing, fresh_uuid, minted_ids,
+    minted_keys, reverting_type, take_minted,
 };
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;
@@ -177,6 +178,7 @@ pub use model::{
     Atom, Doc, Fields, LocatedAt, MapSlot, Model, ModelError, Slot, VARIANT_KEY, edit_whole,
     load_slot, read_key, read_slots, refresh_key, take_slot, write_key, write_key_changed,
 };
+pub use non_blank::{Blank, NonBlank};
 pub use ordered::{Arranged, Ordered};
 pub use path::{At, Edit, EditOp, Operations, Path, Segment, Settable, outbox_settle_arguments};
 pub use reactions::{

@@ -73,7 +73,7 @@ mod owner;
 use super::authority::RoomOp;
 use super::{
     CancelInvitationRequest, CollaborationError, GovernedRoom, IssueInvitationRequest,
-    RemoveMemberRequest, Rooms, SetMemberRoleRequest,
+    RemoveMemberRequest, Rooms,
 };
 use crate::app_serving::AppServingPlane;
 use tilo_lock::MutexRecover as _;
@@ -105,10 +105,6 @@ pub(crate) const WITHDRAW_BOT_REQUEST: &str = "withdraw-bot-request";
 pub(crate) const UNINSTALL_APP: &str = "uninstall-app";
 /// Hand the room's host a piece of an app version's package file.
 pub(crate) const UPLOAD_APP_FILE: &str = "upload-app-file";
-/// Adding an agent to the room, with its preset's grants.
-pub(crate) const ADD_AGENT: &str = "add-agent";
-/// Removing an agent from the room, and every grant it held there.
-pub(crate) const REMOVE_AGENT: &str = "remove-agent";
 /// Giving the host a secret a requested bot's connector needs (a Discord
 /// bot token): kept in the host's secret store for that connector, never in
 /// the room's governance, a record or a log.
@@ -123,19 +119,14 @@ const DOOR_ROLES: [&str; 3] = ["viewer", "commenter", "editor"];
 
 /// How long an invitation stays redeemable when the caller does not say.
 const DEFAULT_INVITATION_HOURS: u64 = 7 * 24;
-/// How long a restriction lasts when the caller does not say.
-const DEFAULT_RESTRICTION_MINUTES: u64 = 60;
 const HOUR_NS: u64 = 3_600 * 1_000_000_000;
 const SECOND_NS: u64 = 1_000_000_000;
-const MINUTE_MS: u64 = 60 * 1_000;
 
 /// Derives each invocation's idempotency key, so a retry of one invocation
 /// is the same request to the room's request records.
 const REQUEST_ID_CONTEXT: &str = "tilo-relay room governance action request v1";
 
 const ROLES: [&str; 4] = ["viewer", "commenter", "editor", "moderator"];
-/// The presets an agent added to a room holds.
-const AGENT_PRESETS: [&str; 4] = ["observer", "contributor", "operator", "custom"];
 const CALL_OPERATIONS: [&str; 4] = ["start", "restart", "set-directions", "set-denial"];
 /// The call operation that is destructive, and so not served yet.
 const END_CALL: &str = "end";
@@ -152,7 +143,7 @@ struct Verb {
 }
 
 /// What the rooms serve, in catalogue order.
-const VERBS: [Verb; 22] = [
+const VERBS: [Verb; 17] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -194,41 +185,6 @@ const VERBS: [Verb; 22] = [
         gate: governance::INVITE,
         kind: roles::GOVERNANCE_KIND,
         params: join_request_params,
-    },
-    Verb {
-        id: governance::SET_ROLE,
-        label: "Set role",
-        gate: governance::SET_ROLE,
-        kind: roles::GOVERNANCE_KIND,
-        params: set_role_params,
-    },
-    Verb {
-        id: ADD_AGENT,
-        label: "Add agent",
-        gate: governance::GRANT,
-        kind: roles::GOVERNANCE_KIND,
-        params: add_agent_params,
-    },
-    Verb {
-        id: REMOVE_AGENT,
-        label: "Remove agent",
-        gate: governance::REVOKE,
-        kind: roles::GOVERNANCE_KIND,
-        params: agent_params,
-    },
-    Verb {
-        id: governance::RESTRICT,
-        label: "Restrict",
-        gate: governance::RESTRICT,
-        kind: roles::GOVERNANCE_KIND,
-        params: restrict_params,
-    },
-    Verb {
-        id: governance::UNRESTRICT,
-        label: "Lift restriction",
-        gate: governance::UNRESTRICT,
-        kind: roles::GOVERNANCE_KIND,
-        params: person_params,
     },
     Verb {
         id: governance::UNBAN,
@@ -337,10 +293,6 @@ fn person_param() -> ActionParam {
     )
 }
 
-fn role_param() -> ActionParam {
-    ActionParam::required("role", ParamType::Text, "The role.").with_choices(ROLES)
-}
-
 fn invite_params() -> Vec<ActionParam> {
     vec![
         ActionParam::required(
@@ -393,43 +345,8 @@ fn join_request_params() -> Vec<ActionParam> {
     )]
 }
 
-fn set_role_params() -> Vec<ActionParam> {
-    vec![person_param(), role_param()]
-}
-
-fn add_agent_params() -> Vec<ActionParam> {
-    vec![
-        ActionParam::required(
-            "agent",
-            ParamType::Text,
-            "The agent's stable id, as the room's agents name it.",
-        ),
-        ActionParam::required("preset", ParamType::Text, "What the agent may do here.")
-            .with_choices(AGENT_PRESETS),
-    ]
-}
-
-fn agent_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "agent",
-        ParamType::Text,
-        "The agent's stable id, as the room's agents name it.",
-    )]
-}
-
 fn person_params() -> Vec<ActionParam> {
     vec![person_param()]
-}
-
-fn restrict_params() -> Vec<ActionParam> {
-    vec![
-        person_param(),
-        ActionParam::optional(
-            "minutes",
-            ParamType::Integer,
-            "How long they may change nothing; 60 minutes when omitted. They keep reading.",
-        ),
-    ]
 }
 
 fn bot_entry_param() -> ActionParam {
@@ -1383,7 +1300,7 @@ impl Rooms {
         }
     }
 
-    /// Who holds which role, and the room's calls.
+    /// Removing, banning and unbanning members, and the room's calls.
     async fn governance_members(
         &self,
         action: &str,
@@ -1404,34 +1321,6 @@ impl Rooms {
                 .map_err(|error| refused(&error))
         };
         match action {
-            governance::SET_ROLE => {
-                let request = SetMemberRoleRequest {
-                    request_id,
-                    user_public_key: args.required_key("person")?,
-                    role: args.role()?,
-                };
-                generation(self.set_member_role(room, device, request).await)
-            }
-            ADD_AGENT | REMOVE_AGENT => {
-                let command = membership_command(action, args)?;
-                generation(
-                    self.govern_room_membership(room, device, request_id, command)
-                        .await,
-                )
-            }
-            governance::RESTRICT => {
-                let minutes = args
-                    .integer("minutes")?
-                    .unwrap_or(DEFAULT_RESTRICTION_MINUTES);
-                let until_ms =
-                    tilo_clock::unix_now_ms().saturating_add(minutes.saturating_mul(MINUTE_MS));
-                let person = member(args.required_key("person")?);
-                generation(self.restrict_member(room, device, person, until_ms).await)
-            }
-            governance::UNRESTRICT => {
-                let person = member(args.required_key("person")?);
-                generation(self.unrestrict_member(room, device, person).await)
-            }
             governance::UNBAN => {
                 let person = member(args.required_key("person")?);
                 generation(self.unban_member(room, device, person).await)
@@ -1460,25 +1349,6 @@ impl Rooms {
             _ => Err(ActionHostError::UnknownAction),
         }
     }
-}
-
-/// The membership command governance `action` carries with `args`.
-fn membership_command(
-    action: &str,
-    args: &Args,
-) -> Result<tilo_peer_state::workspace_membership::WorkspaceMembershipCommand, ActionHostError> {
-    use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-    Ok(match action {
-        ADD_AGENT => Command::AddAgent {
-            agent: args.required_text("agent")?.trim().to_lowercase(),
-            preset: tilo_action_policy::roles::AgentPreset::parse(args.required_text("preset")?)
-                .ok_or_else(|| invalid("no such agent preset"))?,
-        },
-        REMOVE_AGENT => Command::RemoveAgent {
-            agent: args.required_text("agent")?.trim().to_lowercase(),
-        },
-        other => return Err(invalid(format!("`{other}` is no membership command"))),
-    })
 }
 
 /// One governance invocation, as its room method takes it.
