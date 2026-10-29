@@ -430,6 +430,18 @@ fn an_older_boards_cards_move_into_their_columns_by_its_migration_keeping_their_
         .find(|a| a.name == "place_cards")
         .unwrap();
     assert_eq!(committed[0].action.action_id, place_cards.id);
+    // It is the package version's change, not the viewer's: history names Board updating.
+    let authorship = &committed[0].action.authorship;
+    assert_eq!(
+        authorship.invoker,
+        tilolang_tilo::authority::migration_principal(app, &meta.module_hash).0
+    );
+    assert!(
+        tilolang_tilo::names::unnamed(&authorship.invoker)
+            .starts_with("Board, updating to version "),
+        "{}",
+        tilolang_tilo::names::unnamed(&authorship.invoker)
+    );
     for done in &committed {
         replica.apply(&done.action);
     }

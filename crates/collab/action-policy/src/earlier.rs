@@ -11,6 +11,8 @@
 //! the packages it loaded.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{PoisonError, RwLock};
 
 use crate::{Level, Segment, Subject, TreePath};
 
@@ -160,6 +162,62 @@ impl EarlierIds {
     }
 }
 
+/// What this process was told of renamed apps: the table a decision made without one of its own
+/// (`Context::with_earlier_ids`) reads, so every door, validator and host honours a grant
+/// written under an app's earlier id once whoever loads apps here registered them.
+static HELD: RwLock<EarlierIds> = RwLock::new(EarlierIds {
+    by_app: BTreeMap::new(),
+});
+/// Whether anything was registered: until then a decision never takes the lock.
+static ANY: AtomicBool = AtomicBool::new(false);
+
+/// Record, for this process, that `app` was published as each of `before` earlier (replacing what
+/// was recorded for it). The caller decides whom to believe: an installed catalogue only the same
+/// publisher's claim, a host the packages it loaded.
+pub fn register<I, S>(app: &str, before: I)
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut held = HELD.write().unwrap_or_else(PoisonError::into_inner);
+    held.remove(app);
+    held.insert(app, before);
+    ANY.store(!held.is_empty(), Ordering::Release);
+}
+
+/// Record every app `ids` names, as [`register`] does one.
+pub fn register_all(ids: &EarlierIds) {
+    for (app, before) in &ids.by_app {
+        register(app, before.iter().cloned());
+    }
+}
+
+/// What this process was told of renamed apps ([`register`]).
+#[must_use]
+pub fn held() -> EarlierIds {
+    HELD.read().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// The ids this process was told `app` had before ([`register`]).
+#[must_use]
+pub fn held_of(app: &str) -> Vec<String> {
+    with_held(|held| held.of(app).to_vec()).unwrap_or_default()
+}
+
+/// The app `id` names now, as this process was told ([`EarlierIds::current`]).
+#[must_use]
+pub fn held_current(id: &str) -> String {
+    with_held(|held| held.current(id).to_owned()).unwrap_or_else(|| id.to_owned())
+}
+
+/// `answer` over what this process was told, or `None` when it was told of no renamed app.
+pub(crate) fn with_held<R>(answer: impl FnOnce(&EarlierIds) -> R) -> Option<R> {
+    if !ANY.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(answer(&HELD.read().unwrap_or_else(PoisonError::into_inner)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,5 +295,30 @@ mod tests {
         );
         assert_eq!(ids.current_resource("tl:so.tilo.lang.notes:abc"), None);
         assert_eq!(ids.current_resource("notes.page"), None);
+    }
+
+    #[test]
+    fn a_decision_without_a_table_reads_what_the_process_registered() {
+        use crate::{ActionKind, Answer, Context, Grant, KindSet, decide};
+        let node = TreePath::room("r")
+            .app("so.tilo.lang.tasks")
+            .kind("tl.so.tilo.lang.tasks.TodoItem")
+            .action("check");
+        let grant = Grant::new(
+            "todo",
+            Subject::person("ada"),
+            TreePath::room("r").app("so.tilo.lang.todo").rest(),
+            KindSet::ALL,
+            Answer::Allow,
+            Subject::person("ada"),
+        );
+        let subjects = [Subject::person("ada")];
+        let cx = Context::at(0);
+        let before = decide([&grant], &subjects, &node, ActionKind::Undoable, &cx);
+        assert_eq!(before.answer, Answer::Deny);
+        register("so.tilo.lang.tasks", ["so.tilo.lang.todo"]);
+        let after = decide([&grant], &subjects, &node, ActionKind::Undoable, &cx);
+        assert_eq!(after.answer, Answer::Allow);
+        assert_eq!(held_current("so.tilo.lang.todo"), "so.tilo.lang.tasks");
     }
 }

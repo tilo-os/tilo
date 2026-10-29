@@ -285,10 +285,13 @@ impl Apps {
 
 impl LauncherServices for Apps {
     fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
-        self.catalog
+        let ids = self
+            .catalog
             .as_ref()
             .and_then(|catalog| tilo_installed_apps::earlier_ids(catalog).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        tilo_action_policy::earlier::register_all(&ids);
+        ids
     }
     fn applications(&self) -> Vec<LaunchableApplication> {
         let mut apps = self.installed();

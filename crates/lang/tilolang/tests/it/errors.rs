@@ -468,3 +468,18 @@ fn only_a_migration_reads_what_a_type_held_previously() {
         ["E114"]
     );
 }
+
+#[test]
+fn nothing_writes_what_a_type_held_previously() {
+    let assigned = "action reshelve(i: Item) {\n    i.shelf = \"top\"\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{MIGRATED}\n{assigned}")),
+        ["E115"]
+    );
+    let created =
+        "action stock(s: Shelf) {\n    s.items.insert(Item(title: \"x\", shelf: \"top\"))\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{MIGRATED}\n{created}")),
+        ["E115"]
+    );
+}

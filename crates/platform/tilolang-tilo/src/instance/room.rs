@@ -88,6 +88,9 @@ pub struct RoomRecord {
     words: HostWords,
     /// The writer of the record's on-disk copy; `None` keeps it in memory only.
     writer: Option<DocWriter>,
+    /// Whether this device governs the room: the record's origin (convergence.md §1), whose
+    /// copy needs no committed read from another host.
+    governs: bool,
 }
 
 impl RoomRecord {
@@ -118,7 +121,16 @@ impl RoomRecord {
             sent,
             words: HostWords::new("en-US"),
             writer,
+            governs: true,
         }
+    }
+
+    /// Whether this device governs the room, as the record's origin: a record another host
+    /// governs is read from it first ([`Self::open`]). What the origin alone does (a package's
+    /// migrations) runs where this holds.
+    #[must_use]
+    pub const fn governs(&self) -> bool {
+        self.governs
     }
 
     /// The record, its history verbs speaking `locale` (`en-US`, `de-DE`).
@@ -200,7 +212,9 @@ impl RoomRecord {
             Read::Here => NativeConstruction::enter(manager),
         }
         .map_err(RoomError::Open)?;
-        let opened = match native_initial::primary(&route.app_id, Some(&room)) {
+        let primary = native_initial::primary(&route.app_id, Some(&room));
+        let governs = primary.is_none();
+        let opened = match primary {
             Some(read) => read.and_then(|(_, read)| open_with_committed_read(store, &read)),
             None => Ok(open_stored(store)),
         };
@@ -216,7 +230,9 @@ impl RoomRecord {
             .ok_or_else(|| RoomError::Open("the connection was not handed back".to_owned()))?;
         drop(construction);
         let person = person.into();
-        Ok(Self::holding(doc, Some(writer), manager, route, person))
+        let mut record = Self::holding(doc, Some(writer), manager, route, person);
+        record.governs = governs;
+        Ok(record)
     }
 
     /// The record as this replica holds it.
