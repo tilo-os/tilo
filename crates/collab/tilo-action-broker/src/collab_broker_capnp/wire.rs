@@ -1683,6 +1683,76 @@ impl CapnpChannelHandle {
         })
     }
 
+    /// Open the installed app `app_id` (from `package_root`, if named) for
+    /// the person's press or the invocation `on_behalf_of` (UUID bytes),
+    /// answered once it started or failed to.
+    pub(super) fn launch(
+        self: &Rc<Self>,
+        app_id: &str,
+        package_root: &str,
+        on_behalf_of: &[u8],
+    ) -> Answer<Reply> {
+        let refuse =
+            |error: capnp::Error| -> Answer<Reply> { Box::pin(std::future::ready(Err(error))) };
+        let parent = match observed_launch::launch_parent(on_behalf_of) {
+            Ok(parent) => parent,
+            Err(error) => return refuse(error),
+        };
+        let app_id = app_id.to_owned();
+        let package_root = match observed_launch::package_root(package_root) {
+            Ok(root) => root,
+            Err(error) => return refuse(error),
+        };
+        // An app opens another only for the person's press in it or an
+        // invocation delivered to it ([`app_open_door`]); an agent's own
+        // connection, by its own grants.
+        if self.verified_identity.agent_id.is_none()
+            && self
+                .state
+                .app_open_authority(self.peer_id, &self.route().app_id, parent)
+                .is_none()
+        {
+            return refuse(capnp::Error::failed(
+                "nothing the person or an invocation asked for is behind this launch".into(),
+            ));
+        }
+        if let Err(error) = self.current_launch_authority(&app_id, parent) {
+            return refuse(capnp::Error::failed(error));
+        }
+
+        let admitted = match self.admit_observed_launch(&app_id, package_root.as_deref(), parent) {
+            Ok(admitted) => admitted,
+            Err(error) => return refuse(capnp::Error::failed(error)),
+        };
+        #[cfg(test)]
+        self.observed_launch_effect_barrier();
+        // Admission may block on durable storage. Discard the earlier policy
+        // snapshot and judge both launch and authorship again at the effect.
+        let started =
+            self.current_launch_authority(&app_id, parent)
+                .and_then(|(workspace, actor, now)| {
+                    let author = observed_launch::launch_author(&actor, &workspace, now);
+                    self.begin_original_launch(
+                        &app_id,
+                        package_root.as_deref(),
+                        &workspace,
+                        author.as_deref(),
+                        parent,
+                    )
+                });
+        let channel = Rc::clone(self);
+        Box::pin(async move {
+            let outcome = observed_launch::wait_for_startup(started).await;
+            let update = channel.finish_observed_launch(&app_id, parent, &admitted, outcome)?;
+            let update = serde_json::to_string(&update)
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            Ok(Reply::Invoked {
+                id: admitted.id,
+                update,
+            })
+        })
+    }
+
     /// News of the record's content from now on.
     pub(super) fn subscribe_content(
         &self,
@@ -2072,6 +2142,19 @@ impl WireConnection {
                 Ok(session) => session.command(service, &body, &on_behalf_of),
                 Err(error) => Box::pin(std::future::ready(Err(error))),
             },
+            Request::Launch {
+                channel,
+                app_id,
+                package_root,
+                on_behalf_of,
+            } => {
+                let answer = self.channel(channel).map(|session| {
+                    session
+                        .channel
+                        .launch(&app_id, &package_root, &on_behalf_of)
+                });
+                Box::pin(async move { answer?.await.map_err(|error| error.to_string()) })
+            }
             Request::Invocation {
                 channel,
                 id: invocation,
@@ -2130,7 +2213,8 @@ impl WireConnection {
             | Request::Command { .. }
             | Request::Changed { .. }
             | Request::Task { .. }
-            | Request::Invocation { .. } => Err("answered when done".into()),
+            | Request::Invocation { .. }
+            | Request::Launch { .. } => Err("answered when done".into()),
             Request::Publish {
                 channel,
                 publication: Publication::Report(report),

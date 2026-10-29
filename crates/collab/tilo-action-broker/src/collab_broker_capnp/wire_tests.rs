@@ -691,6 +691,18 @@ async fn an_app_takes_its_invocations_and_the_catalogue_and_answers_only_its_own
                     "{call:?}: an invocation the app was never handed"
                 );
             }
+            assert!(
+                endpoint
+                    .call(Request::Launch {
+                        channel,
+                        app_id: "so.tilo.notes".into(),
+                        package_root: String::new(),
+                        on_behalf_of: Vec::new(),
+                    })
+                    .await
+                    .is_err(),
+                "nothing the person or an invocation asked for is behind the launch"
+            );
             assert_eq!(
                 endpoint
                     .call(Request::Subscribe {

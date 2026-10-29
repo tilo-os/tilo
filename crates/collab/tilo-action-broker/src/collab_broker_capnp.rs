@@ -10460,77 +10460,20 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::LaunchPublishedApplicationParams,
         mut results: channel_handle::LaunchPublishedApplicationResults,
     ) -> Promise<(), capnp::Error> {
-        let request = match params.get() {
-            Ok(request) => request,
-            Err(error) => return Promise::err(error),
-        };
-        let parent = match request
-            .get_on_behalf_of()
-            .and_then(observed_launch::launch_parent)
-        {
-            Ok(parent) => parent,
-            Err(error) => return Promise::err(error),
-        };
-        let app_id = match request.get_app_id() {
-            Ok(value) => match value.to_str() {
-                Ok(value) => value.to_owned(),
-                Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
-            },
-            Err(error) => return Promise::err(error),
-        };
-        let package_root = match request.get_package_root().and_then(|root| {
-            root.to_str()
-                .map_err(|error| capnp::Error::failed(error.to_string()))
-                .and_then(observed_launch::package_root)
-        }) {
-            Ok(root) => root,
-            Err(error) => return Promise::err(error),
-        };
-        // An app opens another only for the person's press in it or an
-        // invocation delivered to it ([`app_open_door`]); an agent's own
-        // connection, by its own grants.
-        if self.verified_identity.agent_id.is_none()
-            && self
-                .state
-                .app_open_authority(self.peer_id, &self.route().app_id, parent)
-                .is_none()
-        {
-            return Promise::err(capnp::Error::failed(
-                "nothing the person or an invocation asked for is behind this launch".into(),
-            ));
-        }
-        if let Err(error) = self.current_launch_authority(&app_id, parent) {
-            return Promise::err(capnp::Error::failed(error));
-        }
-
-        let admitted = match self.admit_observed_launch(&app_id, package_root.as_deref(), parent) {
-            Ok(admitted) => admitted,
-            Err(error) => return Promise::err(capnp::Error::failed(error)),
-        };
-        #[cfg(test)]
-        self.observed_launch_effect_barrier();
-        // Admission may block on durable storage. Discard the earlier policy
-        // snapshot and judge both launch and authorship again at the effect.
-        let started =
-            self.current_launch_authority(&app_id, parent)
-                .and_then(|(workspace, actor, now)| {
-                    let author = observed_launch::launch_author(&actor, &workspace, now);
-                    self.begin_original_launch(
-                        &app_id,
-                        package_root.as_deref(),
-                        &workspace,
-                        author.as_deref(),
-                        parent,
-                    )
-                });
+        let answer = (|| {
+            let request = params.get()?;
+            Ok::<_, capnp::Error>(self.launch(
+                request.get_app_id()?.to_str()?,
+                request.get_package_root()?.to_str()?,
+                request.get_on_behalf_of()?,
+            ))
+        })();
         Promise::from_future(async move {
-            let outcome = observed_launch::wait_for_startup(started).await;
-            let update = self.finish_observed_launch(&app_id, parent, &admitted, outcome)?;
-            let id = admitted.id;
-            let json = serde_json::to_string(&update)
-                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            let Reply::Invoked { id, update } = answer?.await? else {
+                return Err(capnp::Error::failed("unexpected launch answer".into()));
+            };
             results.get().set_id(id);
-            results.get().set_update_json(&json);
+            results.get().set_update_json(&update);
             Ok(())
         })
     }

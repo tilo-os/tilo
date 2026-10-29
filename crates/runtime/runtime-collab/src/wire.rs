@@ -81,6 +81,16 @@ pub enum Request {
         of: Changes,
         after: u64,
     },
+    /// Open the installed app `app_id`, from `package_root` (`tapp:<hex>`)
+    /// if not empty, for the invocation `on_behalf_of` (UUID bytes, or none
+    /// for the person's press); answered as [`Reply::Invoked`] once it
+    /// started or failed to.
+    Launch {
+        channel: Handle,
+        app_id: String,
+        package_root: String,
+        on_behalf_of: Vec<u8>,
+    },
     /// What the app says, or asks, of an invocation it was handed.
     Invocation {
         channel: Handle,
@@ -335,7 +345,7 @@ pub enum Reply {
         cancelled: bool,
         control: Option<String>,
     },
-    /// The invocation a task step started, and its state now as
+    /// The invocation a task step or launch started, and its state now as
     /// `InvocationUpdate` JSON.
     Invoked {
         id: u64,
