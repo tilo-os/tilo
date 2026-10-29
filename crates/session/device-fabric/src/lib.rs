@@ -9,6 +9,7 @@ pub mod clock;
 mod i18n {
     ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 }
+pub mod link;
 pub mod notification;
 pub mod random;
 pub mod realtime_session;
@@ -29,6 +30,15 @@ use tilo_network_actor::fabric::{
     DeviceId, DisplayConnectorPlacement, DisplayOutputObservation, DisplayRect, FabricStamp,
     MAX_FABRIC_ACTION_BYTES, MAX_FABRIC_CHECKPOINT_BYTES,
 };
+
+/// Locally derived focus identity of a physical gamepad's target. None of
+/// these fields are accepted from a remote peer or an untrusted application.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PhysicalGamepadBinding {
+    pub app_id: String,
+    pub workspace_id: String,
+    pub session_id: String,
+}
 
 pub const FABRIC_SCHEMA_VERSION: u16 = 7;
 pub const MAX_DEVICES: usize = 64;

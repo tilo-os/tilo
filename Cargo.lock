@@ -15706,6 +15706,7 @@ dependencies = [
  "tilo-secret-service",
  "tilo-secrets",
  "tilo-sheets",
+ "tilo-speaker-service",
  "tilo-startup-metrics",
  "tilo-system-stats",
  "tilo-test-env",
@@ -21349,6 +21350,27 @@ dependencies = [
 [[package]]
 name = "tilo-sort"
 version = "0.1.0"
+
+[[package]]
+name = "tilo-speaker-service"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "getrandom 0.4.3",
+ "postcard",
+ "rand_core 0.10.0",
+ "runtime-collab",
+ "serde_json",
+ "tilo-device-fabric",
+ "tilo-lock",
+ "tilo-media",
+ "tilo-network-actor",
+ "tilo-test-env",
+ "tilo-ui",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+]
 
 [[package]]
 name = "tilo-spellcheck"

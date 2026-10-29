@@ -22,14 +22,14 @@ use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
 
 #[derive(Clone, Debug)]
-pub(super) struct PendingListen {
+pub struct PendingListen {
     leader: DeviceId,
     microphone: EndpointSelector,
     received: Instant,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct ListenInvite {
+pub struct ListenInvite {
     microphone: EndpointSelector,
     sent: Instant,
     answer: Option<bool>,
@@ -176,16 +176,16 @@ impl SpeakerGroupCore {
         let pending = self
             .listen_consents
             .remove(&group_id)
-            .ok_or_else(|| crate::shell::i18n::t("speaker-error-request-expired"))?;
+            .ok_or_else(|| crate::i18n::t("speaker-error-request-expired"))?;
         if approved {
             if !listen_matches(fabric, local, group_id, &pending) {
-                return Err(crate::shell::i18n::t("speaker-error-group-changed"));
+                return Err(crate::i18n::t("speaker-error-group-changed"));
             }
             let listeners = self.listeners_mut();
             listeners.retain(|listener| listener.group != group_id);
             if listeners.len() >= MAX_SPEAKER_LISTENERS {
                 self.listen_consents.insert(group_id, pending);
-                return Err(crate::shell::i18n::t("speaker-error-too-many-memberships"));
+                return Err(crate::i18n::t("speaker-error-too-many-memberships"));
             }
             listeners.push(SpeakerListener {
                 group: group_id,
@@ -209,7 +209,7 @@ impl SpeakerGroupCore {
         let index = listeners
             .iter()
             .position(|listener| listener.group == group_id)
-            .ok_or_else(|| crate::shell::i18n::t("speaker-error-not-a-member"))?;
+            .ok_or_else(|| crate::i18n::t("speaker-error-not-a-member"))?;
         let listener = listeners.remove(index);
         Ok(vec![egress(
             &listener.leader,
@@ -245,7 +245,7 @@ impl SpeakerGroupCore {
 
     /// The leader removed the group, or this device left: drop any
     /// microphone consent and prompt for it.
-    pub(super) fn forget_listening(&mut self, group: SpeakerGroupId, source: &DeviceId) {
+    pub fn forget_listening(&mut self, group: SpeakerGroupId, source: &DeviceId) {
         if let Some(listeners) = self.listeners.as_mut() {
             listeners.retain(|listener| listener.group != group || &listener.leader != source);
         }
@@ -259,7 +259,7 @@ impl SpeakerGroupCore {
         self.listen_invites.remove(&(group, source.clone()));
     }
 
-    pub(super) fn handle_listen_action(
+    pub fn handle_listen_action(
         &mut self,
         source: &DeviceId,
         action: &PersonalFabricAction,
@@ -311,7 +311,7 @@ impl SpeakerGroupCore {
     /// Maintenance for microphone consent: everything is withdrawn while
     /// media continuity is off; otherwise consent for a group its leader no
     /// longer publishes is void and stale prompts expire.
-    pub(super) fn pump_listening(
+    pub fn pump_listening(
         &mut self,
         fabric: &DeviceFabric,
         local: &DeviceId,
@@ -363,7 +363,7 @@ impl SpeakerGroupCore {
         Vec::new()
     }
 
-    pub(super) fn listen_consent_views(
+    pub fn listen_consent_views(
         &self,
         fabric: &DeviceFabric,
         local: &DeviceId,
@@ -392,10 +392,7 @@ impl SpeakerGroupCore {
             .collect()
     }
 
-    pub(super) fn listener_views(
-        &self,
-        fabric: &DeviceFabric,
-    ) -> Vec<super::SpeakerMembershipView> {
+    pub fn listener_views(&self, fabric: &DeviceFabric) -> Vec<super::SpeakerMembershipView> {
         self.listeners
             .iter()
             .flatten()

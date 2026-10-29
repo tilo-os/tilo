@@ -94,8 +94,8 @@ pub struct DeviceFabricView {
     pub local_outputs: Vec<LocalMediaOutputView>,
     pub local_inputs: Vec<LocalMediaInputView>,
     pub transfers: Vec<FabricTransferView>,
-    pub remote_audio: crate::shell::remote_audio::RemoteAudioView,
-    pub speaker_groups: crate::shell::speaker_group_runtime::SpeakerGroupsView,
+    pub remote_audio: tilo_speaker_service::remote_audio::RemoteAudioView,
+    pub speaker_groups: tilo_speaker_service::groups::SpeakerGroupsView,
     pub device_health: Vec<tilo_device_fabric::spatial_calibration::DeviceHealthView>,
     pub calibration_proposals: Vec<tilo_device_fabric::spatial_calibration::CalibrationProposal>,
     pub revertible_calibrations: Vec<tilo_network_actor::fabric::DeviceId>,
@@ -188,14 +188,14 @@ pub enum DeviceFabricUiAction {
     /// on this device.
     ResolveSpeakerGroupConsent {
         group: tilo_device_fabric::speaker_group::SpeakerGroupId,
-        kind: crate::shell::speaker_group_runtime::SpeakerConsentKind,
+        kind: tilo_speaker_service::groups::SpeakerConsentKind,
         approved: bool,
     },
     /// Withdraw this device from a group led by another device, or stop
     /// letting it listen with this device's microphone.
     LeaveSpeakerGroup {
         group: tilo_device_fabric::speaker_group::SpeakerGroupId,
-        kind: crate::shell::speaker_group_runtime::SpeakerConsentKind,
+        kind: tilo_speaker_service::groups::SpeakerConsentKind,
     },
     StartSpeakerGroupAudio {
         source_token: u64,
@@ -304,13 +304,13 @@ pub type RealtimeContinuityBridge = std::rc::Rc<
 pub(super) enum DeviceFabricPaneRow {
     CalibrationProposal(tilo_device_fabric::spatial_calibration::CalibrationProposal),
     CalibrationRevert(tilo_network_actor::fabric::DeviceId),
-    RemoteAudioConsent(crate::shell::remote_audio::RemoteAudioConsentView),
-    RemoteAudioSource(crate::shell::remote_audio::RemoteAudioSourceView),
-    RemoteAudioRoute(crate::shell::remote_audio::RemoteAudioRouteView),
-    SpeakerConsent(crate::shell::speaker_group_runtime::SpeakerConsentView),
-    SpeakerSession(crate::shell::speaker_group_runtime::SpeakerSessionView),
-    SpeakerGroup(crate::shell::speaker_group_runtime::SpeakerGroupView),
-    SpeakerMembership(crate::shell::speaker_group_runtime::SpeakerMembershipView),
+    RemoteAudioConsent(tilo_speaker_service::remote_audio::RemoteAudioConsentView),
+    RemoteAudioSource(tilo_speaker_service::remote_audio::RemoteAudioSourceView),
+    RemoteAudioRoute(tilo_speaker_service::remote_audio::RemoteAudioRouteView),
+    SpeakerConsent(tilo_speaker_service::groups::SpeakerConsentView),
+    SpeakerSession(tilo_speaker_service::groups::SpeakerSessionView),
+    SpeakerGroup(tilo_speaker_service::groups::SpeakerGroupView),
+    SpeakerMembership(tilo_speaker_service::groups::SpeakerMembershipView),
     /// Opens Settings → Speakers to make a new set.
     SpeakerSetup,
     RemoteCaptureSource(tilo_device_fabric::remote_capture::RemoteCaptureKind),
@@ -337,8 +337,8 @@ impl DeviceFabricPaneRow {
     pub(super) fn select_action_key(&self) -> Option<&'static str> {
         use crate::shell::device_fabric_runtime::{BluetoothHandoffPhaseView, MediaHandoffPhase};
         use crate::shell::personal_tethering_runtime::TetheringPhase;
-        use crate::shell::remote_audio::RemoteAudioPhase;
         use crate::shell::remote_capture::runtime::RemoteCaptureSessionPhase;
+        use tilo_speaker_service::remote_audio::RemoteAudioPhase;
         match self {
             Self::SpeakerSession(_) => Some("qs-devices-action-stop"),
             Self::SpeakerMembership(membership) => Some(membership.action_key()),
@@ -573,7 +573,7 @@ pub(super) fn device_fabric_pane_rows(
 
 /// "2 of 2 speakers ready" and the like.
 pub(super) fn speaker_group_summary(
-    group: &crate::shell::speaker_group_runtime::SpeakerGroupView,
+    group: &tilo_speaker_service::groups::SpeakerGroupView,
 ) -> String {
     let total = group.members.len();
     let ready = group.ready_members();

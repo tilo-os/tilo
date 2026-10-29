@@ -14,12 +14,6 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use shell::shell::speaker_calibration::{
-    CalibrationPhase, CalibrationRun, HearingFailure, MeasurementSource, MemberProgress,
-    MicrophoneConsent, MicrophoneHearing, MicrophoneProgress, SpeakerHearing, SweepRequest,
-};
-use shell::shell::speaker_group_runtime::{Egress, ListenerState, MemberSpec, SpeakerGroupCore};
-use shell::shell::speaker_settings::plan_microphones;
 use tilo_device_fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerGroupId, SpeakerRole, StereoSide,
 };
@@ -29,6 +23,12 @@ use tilo_device_fabric::{
 };
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
+use tilo_speaker_service::calibration::{
+    CalibrationPhase, CalibrationRun, HearingFailure, MeasurementSource, MemberProgress,
+    MicrophoneConsent, MicrophoneHearing, MicrophoneProgress, SpeakerHearing, SweepRequest,
+};
+use tilo_speaker_service::groups::{Egress, ListenerState, MemberSpec, SpeakerGroupCore};
+use tilo_speaker_service::settings::plan_microphones;
 
 const SPEED_OF_SOUND_M_PER_S: f64 = 343.0;
 

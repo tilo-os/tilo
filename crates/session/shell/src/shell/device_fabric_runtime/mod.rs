@@ -136,7 +136,7 @@ struct PendingGamepadAuthorization {
 impl PendingGamepadAuthorization {
     fn matches_local_focus(
         &self,
-        focus: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+        focus: Option<&tilo_device_fabric::PhysicalGamepadBinding>,
     ) -> bool {
         focus.is_some_and(|focus| {
             self.app_id == focus.app_id
@@ -148,7 +148,7 @@ impl PendingGamepadAuthorization {
 
 fn identity_matches_local_focus(
     identity: &os_actions::ForwardedPeripheralIdentity,
-    focus: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+    focus: Option<&tilo_device_fabric::PhysicalGamepadBinding>,
 ) -> bool {
     focus.is_some_and(|focus| {
         identity.app_id() == focus.app_id
@@ -687,6 +687,44 @@ pub(crate) fn handle_nearby_transfer_frame(
 
 /// The kind of the receive admitted for this exact sender and request, while
 /// the continuity switch for that kind is on: bytes land in nothing else.
+/// The services on the person's devices reach them through this session's
+/// network.
+impl tilo_device_fabric::link::FabricLink for ShellNetwork {
+    fn device_fabric(&self) -> DeviceFabric {
+        Self::device_fabric(self)
+    }
+
+    fn online_device_ids(&self) -> BTreeSet<tilo_network_actor::fabric::DeviceId> {
+        Self::online_device_ids(self)
+    }
+
+    fn local_device_fabric_identity(
+        &self,
+    ) -> Option<(tilo_network_actor::fabric::DeviceId, String)> {
+        Self::local_device_fabric_identity(self)
+    }
+
+    fn send_personal_fabric_action(
+        &self,
+        target: &tilo_network_actor::fabric::DeviceId,
+        action: PersonalFabricAction,
+    ) -> Result<[u8; 16], String> {
+        Self::send_personal_fabric_action(self, target, action)
+    }
+
+    fn try_send_personal_fabric_action(
+        &self,
+        target: &tilo_network_actor::fabric::DeviceId,
+        action: PersonalFabricAction,
+    ) -> Result<[u8; 16], tilo_device_fabric::link::PersonalFabricSendError> {
+        Self::try_send_personal_fabric_action(self, target, action)
+    }
+
+    fn require_media(&self) -> Result<(), String> {
+        require_speaker_groups()
+    }
+}
+
 /// The continuity switch that governs transfers of `kind`.
 const fn transfer_capability(kind: tilo_nearby_service::TransferKind) -> ContinuityCapability {
     match kind {
@@ -1678,7 +1716,7 @@ pub struct LocalFabricCapabilities {
 pub(crate) struct FabricTurn {
     pub selection: SharedSelection,
     pub local: LocalFabricCapabilities,
-    pub app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+    pub app_focus: Option<tilo_device_fabric::PhysicalGamepadBinding>,
     pub realtime_adapter: Option<tilo_device_fabric::realtime_session::SharedRealtimeFabricAdapter>,
     pub remote_capture: Option<crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime>,
 }
@@ -1767,7 +1805,7 @@ pub struct DeviceFabricRuntime {
     tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
     gamepad_broker: ProductionGamepadBroker,
     inbound_gamepads: BTreeMap<[u8; 16], InboundGamepadForwarding>,
-    local_app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+    local_app_focus: Option<tilo_device_fabric::PhysicalGamepadBinding>,
     policy: Option<ContinuityPolicySnapshot>,
     /// The policy in the settings `display_refresh` follows, parsed once per
     /// settings generation: the pump runs on the compositor's loop and must
@@ -1880,7 +1918,7 @@ impl DeviceFabricRuntime {
     /// claims are never allowed to establish this authority.
     pub fn set_local_app_focus(
         &mut self,
-        focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
+        focus: Option<tilo_device_fabric::PhysicalGamepadBinding>,
     ) {
         self.remote_capture
             .note_focus_change(self.local_app_focus.as_ref(), focus.as_ref());
@@ -1940,15 +1978,12 @@ impl DeviceFabricRuntime {
         if policy.permits(ContinuityCapability::Media) {
             self.remote_capture.pump(network, policy);
         }
-        crate::shell::remote_audio::pump(
+        tilo_speaker_service::remote_audio::pump(
             network,
             policy.permits(ContinuityCapability::Media),
             self.local_app_focus.as_ref(),
         );
-        crate::shell::speaker_group_runtime::pump(
-            network,
-            policy.permits(ContinuityCapability::Media),
-        );
+        tilo_speaker_service::groups::pump(network, policy.permits(ContinuityCapability::Media));
         self.pump_realtime_continuity(network, policy);
         self.pump_notification_continuity(network, policy);
         resume_nearby_transfers(network, policy);
@@ -1956,7 +1991,7 @@ impl DeviceFabricRuntime {
         // would see now, announced only when it moved.
         observe_nearby_view(network, policy);
         // And what Settings' Speakers would see, while it waits to hear.
-        crate::shell::speaker_settings::observe(network);
+        tilo_speaker_service::settings::observe(network);
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
         }
@@ -2261,10 +2296,10 @@ impl DeviceFabricRuntime {
             {
                 continue;
             }
-            if crate::shell::remote_audio::handle_action(network, &envelope) {
+            if tilo_speaker_service::remote_audio::handle_action(network, &envelope) {
                 continue;
             }
-            if crate::shell::speaker_group_runtime::handle_action(network, &envelope) {
+            if tilo_speaker_service::groups::handle_action(network, &envelope) {
                 continue;
             }
             if handle_device_health_action(network, &envelope) {
@@ -5482,7 +5517,7 @@ pub(crate) fn retry_media_handoff(
 }
 
 /// Start a shell-owned live audio route using one opaque source-picker token.
-/// `PipeWire` node ids are resolved only inside [`crate::shell::remote_audio`].
+/// `PipeWire` node ids are resolved only inside [`tilo_speaker_service::remote_audio`].
 ///
 /// # Errors
 ///
@@ -5494,7 +5529,7 @@ pub fn request_remote_audio(
     target: &tilo_network_actor::fabric::DeviceId,
 ) -> Result<[u8; 16], String> {
     require_continuity(ContinuityCapability::Media)?;
-    crate::shell::remote_audio::request(network, source_token, target)
+    tilo_speaker_service::remote_audio::request(network, source_token, target)
 }
 
 /// Resolve a target-local remote-audio consent prompt.
@@ -5509,7 +5544,7 @@ pub fn authorize_remote_audio(
     approved: bool,
 ) -> Result<(), String> {
     require_continuity(ContinuityCapability::Media)?;
-    crate::shell::remote_audio::authorize(network, session_id, approved)
+    tilo_speaker_service::remote_audio::authorize(network, session_id, approved)
 }
 
 /// Stop an active remote-audio route and revoke its target-issued capability.
@@ -5519,14 +5554,14 @@ pub fn authorize_remote_audio(
 /// Returns an error when the route is stale or its exact peer cannot be
 /// notified.
 pub fn stop_remote_audio(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> {
-    crate::shell::remote_audio::stop(network, session_id)
+    tilo_speaker_service::remote_audio::stop(network, session_id)
 }
 
 #[must_use]
 pub fn remote_audio_view(
-    focus: Option<&crate::shell::physical_gamepad::PhysicalGamepadBinding>,
-) -> crate::shell::remote_audio::RemoteAudioView {
-    crate::shell::remote_audio::snapshot(focus)
+    focus: Option<&tilo_device_fabric::PhysicalGamepadBinding>,
+) -> tilo_speaker_service::remote_audio::RemoteAudioView {
+    tilo_speaker_service::remote_audio::snapshot(focus)
 }
 
 /// Route one live-audio picker source to a speaker group instead of a
@@ -5542,10 +5577,10 @@ pub fn request_speaker_group_audio(
     group: tilo_device_fabric::speaker_group::SpeakerGroupId,
 ) -> Result<[u8; 16], String> {
     require_continuity(ContinuityCapability::Media)?;
-    crate::shell::speaker_group_runtime::start_session(
+    tilo_speaker_service::groups::start_session(
         network,
         group,
-        crate::shell::speaker_group_runtime::GroupAudioSource::PickerToken(source_token),
+        tilo_speaker_service::groups::GroupAudioSource::PickerToken(source_token),
     )
 }
 
@@ -5570,10 +5605,10 @@ pub fn play_media_on_speaker_group(
             "device-fabric-error-media-session-gone",
         ));
     }
-    crate::shell::speaker_group_runtime::start_session(
+    tilo_speaker_service::groups::start_session(
         network,
         group,
-        crate::shell::speaker_group_runtime::GroupAudioSource::MediaSession(session_id.into()),
+        tilo_speaker_service::groups::GroupAudioSource::MediaSession(session_id.into()),
     )
 }
 
@@ -6680,7 +6715,7 @@ pub fn device_fabric_view(
             }
         }
         if policy.permits(ContinuityCapability::Media) {
-            for route in crate::shell::remote_audio::active_routes() {
+            for route in tilo_speaker_service::remote_audio::active_routes() {
                 let count = route_counts.entry(route.peer).or_default();
                 *count = count.saturating_add(1);
             }
@@ -6738,11 +6773,11 @@ pub fn device_fabric_view(
         local_outputs,
         local_inputs,
         transfers,
-        remote_audio: crate::shell::remote_audio::RemoteAudioView::default(),
+        remote_audio: tilo_speaker_service::remote_audio::RemoteAudioView::default(),
         speaker_groups: if policy.permits(ContinuityCapability::Media) {
-            crate::shell::speaker_group_runtime::view(network)
+            tilo_speaker_service::groups::view(network)
         } else {
-            crate::shell::speaker_group_runtime::SpeakerGroupsView::default()
+            tilo_speaker_service::groups::SpeakerGroupsView::default()
         },
         device_health,
         calibration_proposals,
@@ -7816,7 +7851,7 @@ fn build_local_snapshot(
         display,
         // Enrolments are authored once, by `device_unlock_runtime`, and kept.
         unlock: previous.map_or_else(Default::default, |state| state.unlock.clone()),
-        speakers: crate::shell::speaker_group_runtime::authored_state(
+        speakers: tilo_speaker_service::groups::authored_state(
             device,
             previous.map(|state| &state.speakers),
             stamp,
@@ -10750,7 +10785,7 @@ mod tests {
 
         fn gamepad_approval_requires_exact_compositor_local_focus() {
             let pending = pending_gamepad("source");
-            let exact = crate::shell::physical_gamepad::PhysicalGamepadBinding {
+            let exact = tilo_device_fabric::PhysicalGamepadBinding {
                 app_id: "so.tilo.game".into(),
                 workspace_id: "workspace".into(),
                 session_id: "session".into(),
@@ -10758,15 +10793,15 @@ mod tests {
             assert!(pending.matches_local_focus(Some(&exact)));
             assert!(!pending.matches_local_focus(None));
             for mismatch in [
-                crate::shell::physical_gamepad::PhysicalGamepadBinding {
+                tilo_device_fabric::PhysicalGamepadBinding {
                     app_id: "so.tilo.other".into(),
                     ..exact.clone()
                 },
-                crate::shell::physical_gamepad::PhysicalGamepadBinding {
+                tilo_device_fabric::PhysicalGamepadBinding {
                     workspace_id: "other-workspace".into(),
                     ..exact.clone()
                 },
-                crate::shell::physical_gamepad::PhysicalGamepadBinding {
+                tilo_device_fabric::PhysicalGamepadBinding {
                     session_id: "other-session".into(),
                     ..exact
                 },
@@ -10784,7 +10819,7 @@ mod tests {
                 "session",
             )
             .unwrap();
-            let exact = crate::shell::physical_gamepad::PhysicalGamepadBinding {
+            let exact = tilo_device_fabric::PhysicalGamepadBinding {
                 app_id: "so.tilo.game".into(),
                 workspace_id: "workspace".into(),
                 session_id: "session".into(),
@@ -10793,7 +10828,7 @@ mod tests {
             assert!(!identity_matches_local_focus(&identity, None));
             assert!(!identity_matches_local_focus(
                 &identity,
-                Some(&crate::shell::physical_gamepad::PhysicalGamepadBinding {
+                Some(&tilo_device_fabric::PhysicalGamepadBinding {
                     session_id: "new-tab".into(),
                     ..exact
                 })

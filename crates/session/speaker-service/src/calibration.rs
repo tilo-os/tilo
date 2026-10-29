@@ -71,7 +71,6 @@ const MAX_LISTEN_LEAD_NS: i64 = 10_000_000_000;
 /// How long a run waits for devices to answer the microphone prompt before
 /// measuring without the ones that did not.
 pub const MICROPHONE_CONSENT_WAIT: Duration = Duration::from_secs(60);
-/// Largest arrival a listening device may report.
 
 /// The sweep every device plays and measures against.
 pub fn sweep() -> Result<media::calibration::LogSweep, String> {
@@ -238,7 +237,7 @@ fn answer(leader: &DeviceId, group: SpeakerGroupId, sweep: [u8; 16], hearing: Sp
 }
 
 /// Answers finished since the last call.
-pub(crate) fn drain_answers() -> Vec<(DeviceId, PersonalFabricAction)> {
+pub fn drain_answers() -> Vec<(DeviceId, PersonalFabricAction)> {
     outbox()
         .lock()
         .map(|mut outbox| std::mem::take(&mut *outbox))
@@ -246,7 +245,7 @@ pub(crate) fn drain_answers() -> Vec<(DeviceId, PersonalFabricAction)> {
 }
 
 /// One listening request, already admitted by consent.
-pub(crate) struct ListenRequest {
+pub struct ListenRequest {
     pub leader: DeviceId,
     pub group: SpeakerGroupId,
     pub sweep: [u8; 16],
@@ -257,7 +256,7 @@ pub(crate) struct ListenRequest {
 
 /// Record around a leader's sweep with one of this device's microphones and
 /// answer with what it heard. Refusals answer at once.
-pub(crate) fn listen_for_leader(local: &DeviceId, allowed: bool, request: ListenRequest) {
+pub fn listen_for_leader(local: &DeviceId, allowed: bool, request: ListenRequest) {
     static LISTENING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let refuse = |failure| {
         answer(
@@ -276,8 +275,7 @@ pub(crate) fn listen_for_leader(local: &DeviceId, allowed: bool, request: Listen
     if !(CAPTURE_PREROLL_NS..=MAX_LISTEN_LEAD_NS).contains(&lead) {
         return refuse(HearingFailure::OutOfWindow);
     }
-    let Some(microphone) =
-        crate::shell::speaker_group_runtime::resolve_local_microphone(local, request.microphone)
+    let Some(microphone) = crate::groups::resolve_local_microphone(local, request.microphone)
     else {
         return refuse(HearingFailure::MicrophoneGone);
     };
@@ -321,7 +319,7 @@ fn pending_sweeps() -> &'static Mutex<BTreeMap<[u8; 16], PendingSweep>> {
 /// Record one device's answer for a sweep this device asked it to hear.
 /// Answers from devices that were not asked, for another group, or twice,
 /// are dropped.
-pub(crate) fn deliver_hearing(
+pub fn deliver_hearing(
     source: &DeviceId,
     group: SpeakerGroupId,
     sweep: [u8; 16],
@@ -457,9 +455,8 @@ impl TimedMeasurement {
     }
 
     fn play_locally(&self, output: EndpointSelector, play_at: i64) -> Result<(), String> {
-        let sink =
-            crate::shell::speaker_group_runtime::resolve_local_output(&self.local, output)
-                .ok_or_else(|| crate::shell::i18n::t("speaker-calibration-reason-output-gone"))?;
+        let sink = crate::groups::resolve_local_output(&self.local, output)
+            .ok_or_else(|| crate::i18n::t("speaker-calibration-reason-output-gone"))?;
         let signal = sweep()?.signal().to_vec();
         std::thread::Builder::new()
             .name("calibration-play".into())
@@ -474,7 +471,7 @@ impl TimedMeasurement {
             })
             .map(|_| ())
             .map_err(|error| {
-                crate::shell::i18n::t_args(
+                crate::i18n::t_args(
                     "speaker-calibration-reason-play-failed",
                     &[("error", error.to_string().into())],
                 )
@@ -487,9 +484,8 @@ impl TimedMeasurement {
         microphone: EndpointSelector,
         play_at: i64,
     ) -> Result<(), HearingFailure> {
-        let microphone =
-            crate::shell::speaker_group_runtime::resolve_local_microphone(&self.local, microphone)
-                .ok_or(HearingFailure::MicrophoneGone)?;
+        let microphone = crate::groups::resolve_local_microphone(&self.local, microphone)
+            .ok_or(HearingFailure::MicrophoneGone)?;
         let (local, group, sweep) = (self.local.clone(), request.group, request.sweep);
         std::thread::Builder::new()
             .name("calibration-listen".into())
@@ -503,9 +499,9 @@ impl TimedMeasurement {
 }
 
 fn clock_reason(reason: tilo_device_fabric::clock::ClockSyncFailure) -> String {
-    crate::shell::i18n::t_args(
+    crate::i18n::t_args(
         "speaker-calibration-reason-clock",
-        &[("reason", crate::shell::i18n::t(reason.message_key()).into())],
+        &[("reason", crate::i18n::t(reason.message_key()).into())],
     )
 }
 
@@ -801,7 +797,7 @@ impl CalibrationRun {
             .get(listening)
             .is_none_or(|microphone| microphone.consent == MicrophoneConsent::Refused)
         {
-            return Err(crate::shell::i18n::t("speaker-error-listening-unavailable"));
+            return Err(crate::i18n::t("speaker-error-listening-unavailable"));
         }
         let members = group
             .members
@@ -965,7 +961,7 @@ impl CalibrationRun {
                 .microphones
                 .get(self.listening)
                 .map_or_else(String::new, |microphone| microphone.label.clone());
-            self.message = Some(crate::shell::i18n::t_args(
+            self.message = Some(crate::i18n::t_args(
                 "speaker-calibration-listening-refused",
                 &[("microphone", label.into())],
             ));
@@ -1134,7 +1130,7 @@ impl CalibrationRun {
             });
         if let Some((label, reason)) = failed {
             self.phase = CalibrationPhase::Failed;
-            self.message = Some(crate::shell::i18n::t_args(
+            self.message = Some(crate::i18n::t_args(
                 "speaker-calibration-failed",
                 &[("speaker", label.into()), ("reason", reason.into())],
             ));
@@ -1149,7 +1145,7 @@ impl CalibrationRun {
             .collect::<Vec<_>>();
         let Some(listening) = listened.iter().position(|index| *index == self.listening) else {
             self.phase = CalibrationPhase::Failed;
-            self.message = Some(crate::shell::i18n::t("speaker-error-listening-unavailable"));
+            self.message = Some(crate::i18n::t("speaker-error-listening-unavailable"));
             return;
         };
         let own_microphone = self
@@ -1179,13 +1175,13 @@ impl CalibrationRun {
                 .map_or_else(String::new, |member| member.label.clone());
             let Some(fused) = fused else {
                 self.phase = CalibrationPhase::Failed;
-                self.message = Some(crate::shell::i18n::t_args(
+                self.message = Some(crate::i18n::t_args(
                     "speaker-calibration-failed",
                     &[
                         ("speaker", label.into()),
                         (
                             "reason",
-                            crate::shell::i18n::t("speaker-calibration-reason-not-at-seat").into(),
+                            crate::i18n::t("speaker-calibration-reason-not-at-seat").into(),
                         ),
                     ],
                 ));
@@ -1298,7 +1294,7 @@ impl CalibrationRun {
         ) {
             self.source.cancel();
             self.phase = CalibrationPhase::Failed;
-            self.message = Some(crate::shell::i18n::t("speaker-calibration-cancelled"));
+            self.message = Some(crate::i18n::t("speaker-calibration-cancelled"));
         }
     }
 

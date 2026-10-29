@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use std::hash::{Hash as _, Hasher as _};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tilo_device_fabric::link::FabricLink;
 
 use tokio::sync::watch;
 
@@ -27,11 +28,11 @@ use runtime_collab::{
     SpeakerSnapshot, SpeakerTrimInfo,
 };
 
-use crate::shell::speaker_calibration::{
+use crate::calibration::{
     CalibrationPhase, CalibrationRun, MemberProgress, MicrophoneConsent, MicrophoneProgress,
     RunMicrophone,
 };
-use crate::shell::speaker_group_runtime::{
+use crate::groups::{
     ListenerCandidate, ListenerState, MemberSpec, SpeakerGroupsView, SpeakerSessionStatus,
 };
 use tilo_device_fabric::DeviceFabric;
@@ -94,9 +95,9 @@ fn parse_members(members: &[SpeakerMemberSpec]) -> Result<Vec<MemberSpec>, Strin
         .map(|member| {
             Ok(MemberSpec {
                 device: DeviceId::new(member.device.clone())
-                    .map_err(|_| crate::shell::i18n::t("speaker-error-device-invalid"))?,
+                    .map_err(|_| crate::i18n::t("speaker-error-device-invalid"))?,
                 output: EndpointSelector::from_hex(&member.output)
-                    .ok_or_else(|| crate::shell::i18n::t("speaker-error-output-invalid"))?,
+                    .ok_or_else(|| crate::i18n::t("speaker-error-output-invalid"))?,
                 role: role_from_spec(member.role),
             })
         })
@@ -104,8 +105,7 @@ fn parse_members(members: &[SpeakerMemberSpec]) -> Result<Vec<MemberSpec>, Strin
 }
 
 fn parse_group(value: &str) -> Result<SpeakerGroupId, String> {
-    SpeakerGroupId::from_hex(value)
-        .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-invalid"))
+    SpeakerGroupId::from_hex(value).ok_or_else(|| crate::i18n::t("speaker-error-group-invalid"))
 }
 
 /// The most urgent state of any session on `group`, as Settings shows it.
@@ -124,14 +124,14 @@ pub fn playback_info(
         .sessions
         .iter()
         .filter(|session| session.group == group)
-        .map(crate::shell::speaker_group_runtime::SpeakerSessionView::status)
+        .map(crate::groups::SpeakerSessionView::status)
         .min_by_key(|status| urgency(*status))?;
     Some(match status {
         SpeakerSessionStatus::Playing => SpeakerPlaybackInfo::Playing,
         SpeakerSessionStatus::Connecting => SpeakerPlaybackInfo::Connecting,
         SpeakerSessionStatus::SyncingClocks => SpeakerPlaybackInfo::SyncingClocks,
         SpeakerSessionStatus::ClockFailed(reason) => SpeakerPlaybackInfo::ClockFailed {
-            reason: bounded_reason(crate::shell::i18n::t(reason.message_key())),
+            reason: bounded_reason(crate::i18n::t(reason.message_key())),
         },
     })
 }
@@ -364,7 +364,7 @@ fn state() -> &'static Mutex<State> {
 }
 
 /// Whether an identify sound may play now, recording it if so.
-pub(crate) fn admit_identify(now: Instant) -> bool {
+pub fn admit_identify(now: Instant) -> bool {
     let Ok(mut state) = state().lock() else {
         return false;
     };
@@ -379,7 +379,7 @@ pub(crate) fn admit_identify(now: Instant) -> bool {
 }
 
 /// Advance calibration runs; called from the fabric runtime's pump.
-pub(crate) fn pump(network: &crate::shell::network::ShellNetwork) {
+pub fn pump(network: &dyn FabricLink) {
     let fabric = network.device_fabric();
     let waiting = state()
         .lock()
@@ -391,7 +391,7 @@ pub(crate) fn pump(network: &crate::shell::network::ShellNetwork) {
             let published = fabric.speaker_group(group)?;
             Some((
                 group,
-                crate::shell::speaker_group_runtime::listener_candidates(network, published),
+                crate::groups::listener_candidates(network, published),
             ))
         })
         .collect::<BTreeMap<_, _>>();
@@ -400,8 +400,8 @@ pub(crate) fn pump(network: &crate::shell::network::ShellNetwork) {
     }
 }
 
-fn snapshot(network: &crate::shell::network::ShellNetwork) -> SpeakerSnapshot {
-    let media_enabled = crate::shell::device_fabric_runtime::require_speaker_groups().is_ok();
+fn snapshot(network: &dyn FabricLink) -> SpeakerSnapshot {
+    let media_enabled = network.require_media().is_ok();
     let Some((local, _)) = network.local_device_fabric_identity() else {
         return SpeakerSnapshot {
             media_enabled,
@@ -412,7 +412,7 @@ fn snapshot(network: &crate::shell::network::ShellNetwork) -> SpeakerSnapshot {
         return SpeakerSnapshot::default();
     }
     let fabric = network.device_fabric();
-    let view = crate::shell::speaker_group_runtime::view(network);
+    let view = crate::groups::view(network);
     let output = output_group(&view);
     let groups = view
         .groups
@@ -441,9 +441,7 @@ fn snapshot(network: &crate::shell::network::ShellNetwork) -> SpeakerSnapshot {
             microphones: fabric
                 .speaker_group(group.id)
                 .filter(|_| group.led_locally)
-                .map(|published| {
-                    crate::shell::speaker_group_runtime::listener_candidates(network, published)
-                })
+                .map(|published| crate::groups::listener_candidates(network, published))
                 .unwrap_or_default()
                 .iter()
                 .take(runtime_collab::MAX_SPEAKER_DEVICES)
@@ -550,7 +548,7 @@ fn view_digest(snapshot: &SpeakerSnapshot) -> u64 {
 /// announce a change when it differs. Only while Settings waits: with no
 /// wait pending nobody would hear, and the snapshot is not built at all.
 /// Called from each fabric pump run and after each speaker command.
-pub(crate) fn observe(network: &crate::shell::network::ShellNetwork) {
+pub fn observe(network: &dyn FabricLink) {
     if revision().waited() {
         revision().note(&snapshot(network));
     }
@@ -559,8 +557,8 @@ pub(crate) fn observe(network: &crate::shell::network::ShellNetwork) {
 /// Resolves once what a snapshot would show may have changed since `after`,
 /// with the revision to wait from next. With speaker groups off and no
 /// device changing it stays pending and costs no wakeup.
-pub(crate) fn changed(
-    network: &crate::shell::network::ShellNetwork,
+pub fn changed(
+    network: &dyn FabricLink,
     after: u64,
 ) -> impl std::future::Future<Output = u64> + Send + 'static {
     let wait = revision().wait(after);
@@ -571,7 +569,7 @@ pub(crate) fn changed(
 
 #[must_use]
 pub fn handle(
-    network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
+    network: &tilo_device_fabric::link::SharedLink,
     command: SpeakerCommand,
 ) -> SpeakerReply {
     let result = match command {
@@ -583,8 +581,9 @@ pub fn handle(
             return SpeakerReply::Snapshot { snapshot };
         }
         command => {
-            let result = crate::shell::device_fabric_runtime::require_speaker_groups()
-                .map_err(|_| crate::shell::i18n::t("speaker-error-media-off"))
+            let result = network
+                .require_media()
+                .map_err(|_| crate::i18n::t("speaker-error-media-off"))
                 .and_then(|()| run_command(network, command));
             // A create, edit, calibration step or output change moves the
             // view now, without waiting for a compositor turn.
@@ -602,7 +601,7 @@ pub fn handle(
 
 fn bounded_reason(mut reason: String) -> String {
     if reason.is_empty() {
-        reason = crate::shell::i18n::t("speaker-error-request-failed");
+        reason = crate::i18n::t("speaker-error-request-failed");
     }
     while reason.len() > runtime_collab::MAX_SPEAKER_LABEL_BYTES {
         reason.pop();
@@ -611,10 +610,10 @@ fn bounded_reason(mut reason: String) -> String {
 }
 
 fn run_command(
-    network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
+    network: &tilo_device_fabric::link::SharedLink,
     command: SpeakerCommand,
 ) -> Result<Option<String>, String> {
-    use crate::shell::speaker_group_runtime as groups;
+    use crate::groups;
     match command {
         SpeakerCommand::Snapshot => Ok(None),
         SpeakerCommand::Create { name, members } => {
@@ -639,9 +638,9 @@ fn run_command(
         }
         SpeakerCommand::Identify { device, output } => {
             let device = DeviceId::new(device)
-                .map_err(|_| crate::shell::i18n::t("speaker-error-device-invalid"))?;
+                .map_err(|_| crate::i18n::t("speaker-error-device-invalid"))?;
             let output = EndpointSelector::from_hex(&output)
-                .ok_or_else(|| crate::shell::i18n::t("speaker-error-output-invalid"))?;
+                .ok_or_else(|| crate::i18n::t("speaker-error-output-invalid"))?;
             groups::identify(network, &device, output).map(|()| None)
         }
         SpeakerCommand::StartCalibration {
@@ -662,7 +661,7 @@ fn run_command(
             let id = parse_group(&group)?;
             let trims = with_run(id, |run| {
                 run.proposed_trims()
-                    .ok_or_else(|| crate::shell::i18n::t("speaker-error-no-calibration"))
+                    .ok_or_else(|| crate::i18n::t("speaker-error-no-calibration"))
             })?;
             groups::set_trims(network, id, &trims)?;
             with_run(id, |run| {
@@ -675,7 +674,7 @@ fn run_command(
             let id = parse_group(&group)?;
             let trims = with_run(id, |run| {
                 run.previous_trims()
-                    .ok_or_else(|| crate::shell::i18n::t("speaker-error-no-applied-calibration"))
+                    .ok_or_else(|| crate::i18n::t("speaker-error-no-applied-calibration"))
             })?;
             groups::set_trims(network, id, &trims)?;
             if let Ok(mut state) = state().lock() {
@@ -722,10 +721,10 @@ fn output_group(view: &SpeakerGroupsView) -> Option<SpeakerGroupId> {
 /// Play everything this device plays on `group`, as an output chosen in
 /// Sound: one such group at a time, so choosing another ends the first.
 fn use_as_output(
-    network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
+    network: &tilo_device_fabric::link::SharedLink,
     group: SpeakerGroupId,
 ) -> Result<(), String> {
-    use crate::shell::speaker_group_runtime as groups;
+    use crate::groups;
     let view = groups::view(network);
     if output_group(&view) == Some(group) {
         return Ok(());
@@ -739,14 +738,14 @@ fn use_as_output(
 }
 
 /// End the session playing everything here on a group, if there is one.
-fn stop_output(network: &crate::shell::network::ShellNetwork) {
+fn stop_output(network: &dyn FabricLink) {
     let previous = state()
         .lock()
         .ok()
         .and_then(|mut state| state.output.take());
     if let Some((_, session)) = previous {
         // Already ended is as good as stopped.
-        let _ = crate::shell::speaker_group_runtime::stop_session(network, session);
+        let _ = crate::groups::stop_session(network, session);
     }
 }
 
@@ -756,11 +755,11 @@ fn with_run<T>(
 ) -> Result<T, String> {
     let mut state = state()
         .lock()
-        .map_err(|_| crate::shell::i18n::t("speaker-error-calibration-unavailable"))?;
+        .map_err(|_| crate::i18n::t("speaker-error-calibration-unavailable"))?;
     let result = state
         .calibrations
         .get_mut(group)
-        .ok_or_else(|| crate::shell::i18n::t("speaker-error-calibration-gone"))
+        .ok_or_else(|| crate::i18n::t("speaker-error-calibration-gone"))
         .and_then(apply);
     drop(state);
     result
@@ -769,17 +768,17 @@ fn with_run<T>(
 /// Measure with the timed audio path; remote members and listening devices
 /// are asked over the fabric.
 fn timed_source(
-    network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
+    network: &tilo_device_fabric::link::SharedLink,
     local: DeviceId,
     peers: &[DeviceId],
-) -> Box<dyn crate::shell::speaker_calibration::MeasurementSource> {
+) -> Box<dyn crate::calibration::MeasurementSource> {
     let network = std::sync::Arc::downgrade(network);
-    Box::new(crate::shell::speaker_calibration::TimedMeasurement::new(
+    Box::new(crate::calibration::TimedMeasurement::new(
         local,
         Box::new(move |target, action| {
             let network = network
                 .upgrade()
-                .ok_or_else(|| crate::shell::i18n::t("speaker-error-network-unavailable"))?;
+                .ok_or_else(|| crate::i18n::t("speaker-error-network-unavailable"))?;
             network
                 .send_personal_fabric_action(target, action)
                 .map(|_| ())
@@ -837,17 +836,16 @@ pub fn plan_microphones(
                 .iter()
                 .position(|microphone| microphone.device == device)
         })
-        .ok_or_else(|| crate::shell::i18n::t("speaker-error-listening-unavailable"))?;
+        .ok_or_else(|| crate::i18n::t("speaker-error-listening-unavailable"))?;
     Ok((microphones, index))
 }
 
 fn parse_device(value: &str) -> Result<DeviceId, String> {
-    DeviceId::new(value.to_string())
-        .map_err(|_| crate::shell::i18n::t("speaker-error-device-invalid"))
+    DeviceId::new(value.to_string()).map_err(|_| crate::i18n::t("speaker-error-device-invalid"))
 }
 
 fn start_calibration(
-    network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
+    network: &tilo_device_fabric::link::SharedLink,
     group: &str,
     excluded: &[String],
     listening: Option<&str>,
@@ -860,29 +858,29 @@ fn start_calibration(
     let listening = listening.map(parse_device).transpose()?;
     let (local, _) = network
         .local_device_fabric_identity()
-        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
+        .ok_or_else(|| crate::i18n::t("device-fabric-error-no-identity"))?;
     let fabric = network.device_fabric();
     let published = fabric
         .speaker_group(id)
-        .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-unavailable"))?;
+        .ok_or_else(|| crate::i18n::t("speaker-error-group-unavailable"))?;
     if published.leader != local {
-        return Err(crate::shell::i18n::t("speaker-error-calibrate-on-leader"));
+        return Err(crate::i18n::t("speaker-error-calibrate-on-leader"));
     }
     if fabric
         .speaker_member_states(published)
         .iter()
         .any(|state| *state != SpeakerMemberStatus::Ready)
     {
-        return Err(crate::shell::i18n::t("speaker-error-not-all-ready"));
+        return Err(crate::i18n::t("speaker-error-not-all-ready"));
     }
-    let candidates = crate::shell::speaker_group_runtime::listener_candidates(network, published);
+    let candidates = crate::groups::listener_candidates(network, published);
     let (microphones, listening) = plan_microphones(&candidates, &excluded, listening.as_ref())?;
     let ask = microphones
         .iter()
         .filter(|microphone| microphone.consent == MicrophoneConsent::Asked)
         .map(|microphone| (microphone.device.clone(), microphone.microphone))
         .collect::<Vec<_>>();
-    crate::shell::speaker_group_runtime::invite_listeners(network, published, &ask)?;
+    crate::groups::invite_listeners(network, published, &ask)?;
     let labels = published
         .members
         .iter()
@@ -909,12 +907,12 @@ fn start_calibration(
         microphones,
         listening,
         timed_source(network, local, &peers),
-        Box::new(crate::random::nonzero::<16>),
+        Box::new(tilo_device_fabric::random::nonzero::<16>),
         Instant::now(),
     )?;
     state()
         .lock()
-        .map_err(|_| crate::shell::i18n::t("speaker-error-calibration-unavailable"))?
+        .map_err(|_| crate::i18n::t("speaker-error-calibration-unavailable"))?
         .calibrations
         .insert(run);
     Ok(())

@@ -40,7 +40,7 @@ type Notify = Box<dyn Fn(GraphWatchEvent) + Send>;
 
 /// The device graph as last read, and whether something keeps it current.
 #[derive(Debug, Default)]
-pub(super) struct GraphCache {
+pub struct GraphCache {
     graph: Option<AudioGraph>,
     /// A thread is following the graph, or starting to.
     following: bool,
@@ -65,7 +65,7 @@ fn graph_cache() -> &'static Mutex<GraphCache> {
 
 /// The endpoints of the graph last read, for `local`. Starts following the
 /// graph when nothing does; never waits for it.
-pub(super) fn local_endpoints(local: &DeviceId, now: Instant) -> Vec<AudioEndpoint> {
+pub fn local_endpoints(local: &DeviceId, now: Instant) -> Vec<AudioEndpoint> {
     let cache = graph_cache();
     let graph = {
         let mut state = cache.lock_recover();
@@ -95,7 +95,7 @@ pub(super) fn local_endpoints(local: &DeviceId, now: Instant) -> Vec<AudioEndpoi
 /// `read` on each change `watch` reports, and again `retry` after a read
 /// that failed (doubling while they keep failing). A watch that cannot
 /// start leaves no graph, since `read` could not reach `PipeWire` either.
-pub(super) fn follow<W>(
+pub fn follow<W>(
     cache: &Mutex<GraphCache>,
     watch: impl FnOnce(Notify) -> Result<W, String>,
     mut read: impl FnMut() -> Result<AudioGraph, String>,

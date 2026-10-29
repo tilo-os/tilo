@@ -25,10 +25,10 @@ use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
-use crate::shell::speaker_group_runtime::SpeakerConsentKind;
 use tilo_device_fabric::remote_capture::RemoteCaptureKind;
 use tilo_device_fabric::{DeviceKind, DisplayEdge};
 use tilo_network_actor::fabric::DeviceId;
+use tilo_speaker_service::groups::SpeakerConsentKind;
 
 pub const DEVICE_PROVIDER_ID: &str = "continuity.devices";
 pub const CALL_PROVIDER_ID: &str = "continuity.calls";
@@ -1742,20 +1742,20 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn speaker_groups_project_consent_play_and_leave_without_disclosing_ids() {
-        use crate::shell::speaker_group_runtime::{
-            SpeakerConsentKind, SpeakerConsentScope, SpeakerConsentView, SpeakerGroupView,
-            SpeakerMemberView, SpeakerMembershipView,
-        };
         use tilo_device_fabric::speaker_group::{
             EndpointSelector, SpeakerGroupId, SpeakerMemberStatus, SpeakerRole, SpeakerTrim,
             StereoSide,
+        };
+        use tilo_speaker_service::groups::{
+            SpeakerConsentKind, SpeakerConsentScope, SpeakerConsentView, SpeakerGroupView,
+            SpeakerMemberView, SpeakerMembershipView,
         };
         let mut view = fixture();
         let group = SpeakerGroupId([0x51; 16]);
         let right = SpeakerRole::Stereo(StereoSide::Right);
         view.remote_audio
             .sources
-            .push(crate::shell::remote_audio::RemoteAudioSourceView {
+            .push(tilo_speaker_service::remote_audio::RemoteAudioSourceView {
                 token: 77,
                 label: "All system audio".into(),
                 application: false,

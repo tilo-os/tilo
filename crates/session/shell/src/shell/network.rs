@@ -154,25 +154,7 @@ const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
 /// producer is faster than the runtime can consume media frames.
 const PERSONAL_FABRIC_DATA_QUEUE_CAPACITY: usize = 192;
 
-/// Why a personal fabric action did not reach the transport.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PersonalFabricSendError {
-    /// The transport command queue is momentarily full. The action was not
-    /// sent, but the same call can succeed once the actor drains the queue.
-    Backpressure,
-    /// Identity, enrollment, wire validation or a closed transport refused
-    /// the action; retrying it unchanged cannot succeed.
-    Rejected(String),
-}
-
-impl std::fmt::Display for PersonalFabricSendError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Backpressure => formatter.write_str("personal fabric transport is busy"),
-            Self::Rejected(reason) => formatter.write_str(reason),
-        }
-    }
-}
+pub use tilo_device_fabric::link::PersonalFabricSendError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersonalFabricQueueOutcome {
@@ -1299,10 +1281,6 @@ pub struct ShellNetwork {
     /// Convergent same-person device state, persisted separately from app
     /// continuation so transport upgrades cannot regress existing handoff.
     device_fabric: Mutex<tilo_device_fabric::DeviceFabric>,
-    /// How often [`Self::device_fabric`] cloned and [`Self::with_device_fabric`]
-    /// borrowed the fabric, so tests can hold per-frame paths to borrowing.
-    #[cfg(test)]
-    device_fabric_reads: DeviceFabricReads,
     device_fabric_path: Option<PathBuf>,
     /// Validated, ephemeral exact-target actions awaiting the shell runtime.
     personal_fabric_actions: Mutex<VecDeque<ReceivedPersonalFabricAction>>,
@@ -2052,8 +2030,6 @@ impl ShellNetwork {
             #[cfg(test)]
             held_personal_rooms_override: None,
             device_fabric: Mutex::new(device_fabric),
-            #[cfg(test)]
-            device_fabric_reads: DeviceFabricReads::default(),
             device_fabric_path: Some(device_fabric_path),
             personal_fabric_actions: Mutex::new(VecDeque::new()),
             authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),
@@ -5026,10 +5002,6 @@ impl ShellNetwork {
     /// A deep clone, clipboard histories included: per-frame readers use
     /// [`Self::with_device_fabric`] or [`Self::online_device_ids`] instead.
     pub fn device_fabric(&self) -> tilo_device_fabric::DeviceFabric {
-        #[cfg(test)]
-        self.device_fabric_reads
-            .cloned
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.device_fabric.lock().map_or_else(
             |_| tilo_device_fabric::DeviceFabric::default(),
             |state| state.clone(),
@@ -5042,10 +5014,6 @@ impl ShellNetwork {
         &self,
         f: impl FnOnce(&tilo_device_fabric::DeviceFabric) -> R,
     ) -> Option<R> {
-        #[cfg(test)]
-        self.device_fabric_reads
-            .borrowed
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.device_fabric.lock().ok().map(|state| f(&state))
     }
 
@@ -5060,16 +5028,6 @@ impl ShellNetwork {
                 .collect()
         })
         .unwrap_or_default()
-    }
-
-    /// `(clones, borrows)` of the device fabric so far.
-    #[cfg(test)]
-    pub(crate) fn device_fabric_reads(&self) -> (usize, usize) {
-        use std::sync::atomic::Ordering::Relaxed;
-        (
-            self.device_fabric_reads.cloned.load(Relaxed),
-            self.device_fabric_reads.borrowed.load(Relaxed),
-        )
     }
 
     /// Stop only the outgoing transfer stream bound to this exact certified
@@ -7473,14 +7431,6 @@ fn load_identity_revocations(
     Ok(entries)
 }
 
-/// See [`ShellNetwork::device_fabric_reads`].
-#[cfg(test)]
-#[derive(Default)]
-struct DeviceFabricReads {
-    cloned: std::sync::atomic::AtomicUsize,
-    borrowed: std::sync::atomic::AtomicUsize,
-}
-
 impl Drop for ShellNetwork {
     fn drop(&mut self) {
         // `take` + explicit shutdown avoids the noisy "runtime dropped
@@ -7586,7 +7536,6 @@ pub(crate) fn shell_network_for_test(
             ),
         ),
         device_fabric: Mutex::new(tilo_device_fabric::DeviceFabric::default()),
-        device_fabric_reads: DeviceFabricReads::default(),
         device_fabric_path: None,
         personal_fabric_actions: Mutex::new(VecDeque::new()),
         authenticated_personal_routes: Mutex::new(std::collections::HashMap::new()),

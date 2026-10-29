@@ -2148,14 +2148,14 @@ use std::rc::Rc;
 use tilo_lock::MutexRecover as _;
 use tokio::sync::Mutex as AsyncMutex;
 /// Speaker groups over the certified personal-device network.
-pub struct NativeSpeakers(pub Arc<super::network::ShellNetwork>);
+pub struct NativeSpeakers(pub tilo_device_fabric::link::SharedLink);
 impl tilo_action_broker::services::SpeakerServices for NativeSpeakers {
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
-        crate::shell::speaker_settings::handle(&self.0, command)
+        tilo_speaker_service::settings::handle(&self.0, command)
     }
 
     fn changed(&self, after: u64) -> Option<tilo_action_broker::services::SpeakerChange> {
-        Some(Box::pin(crate::shell::speaker_settings::changed(
+        Some(Box::pin(tilo_speaker_service::settings::changed(
             &self.0, after,
         )))
     }

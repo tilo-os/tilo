@@ -120,8 +120,10 @@ fn start_group(
         .members
         .iter()
         .map(|member| {
-            let name = member.device.as_str();
-            name[..1].to_uppercase() + &name[1..]
+            let mut name = member.device.as_str().chars();
+            name.next()
+                .map(|first| first.to_uppercase().collect::<String>() + name.as_str())
+                .unwrap_or_default()
         })
         .collect::<Vec<_>>();
     let requests = Arc::new(Mutex::new(Vec::new()));

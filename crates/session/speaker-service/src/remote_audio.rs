@@ -36,10 +36,10 @@ use media::sync_playout::{
 };
 use rand_core::Rng;
 
-use crate::shell::network::{PersonalFabricSendError, ShellNetwork};
-use crate::shell::physical_gamepad::PhysicalGamepadBinding;
+use tilo_device_fabric::PhysicalGamepadBinding;
 use tilo_device_fabric::clock::{ClockSyncFailure, ClockSyncState, PeerPlayoutClock};
 use tilo_device_fabric::clock::{FabricClockSync, fabric_peer_clock, hold_fabric_clock_sync};
+use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError};
 use tilo_device_fabric::{
     MAX_REMOTE_AUDIO_FRAME_BYTES, MAX_REMOTE_AUDIO_SESSIONS, PersonalFabricAction,
     PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
@@ -963,10 +963,9 @@ fn reconcile_source_tokens(
                     token
                 });
             let (label, application) = match selection {
-                LocalAudioSelection::System => (
-                    crate::shell::i18n::t("remote-audio-all-system-audio"),
-                    false,
-                ),
+                LocalAudioSelection::System => {
+                    (crate::i18n::t("remote-audio-all-system-audio"), false)
+                }
                 LocalAudioSelection::Application { label, .. } => (label, true),
             };
             RemoteAudioSourceView {
@@ -1133,29 +1132,27 @@ pub fn snapshot(focus: Option<&PhysicalGamepadBinding>) -> RemoteAudioView {
 /// source picker entry expired, the service is unavailable, or the offer
 /// cannot be sent.
 pub fn request(
-    network: &ShellNetwork,
+    network: &dyn FabricLink,
     source_token: u64,
     target: &DeviceId,
 ) -> Result<[u8; 16], String> {
     let local = network
         .local_device_fabric_identity()
         .map(|(device, _)| device)
-        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
+        .ok_or_else(|| crate::i18n::t("device-fabric-error-no-identity"))?;
     let fabric = network.device_fabric();
     let snapshot = fabric
         .snapshots()
         .get(target)
-        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-target-not-enrolled"))?;
+        .ok_or_else(|| crate::i18n::t("device-fabric-error-target-not-enrolled"))?;
     if target == &local || !snapshot.presence.online || !snapshot.presence.capabilities.audio_output
     {
-        return Err(crate::shell::i18n::t(
-            "remote-audio-error-target-not-output",
-        ));
+        return Err(crate::i18n::t("remote-audio-error-target-not-output"));
     }
     let (session_id, selection, label) = {
         let mut state = state()
             .lock()
-            .map_err(|_| crate::shell::i18n::t("remote-audio-error-unavailable"))?;
+            .map_err(|_| crate::i18n::t("remote-audio-error-unavailable"))?;
         if state
             .outbound
             .len()
@@ -1163,17 +1160,17 @@ pub fn request(
             .saturating_add(state.pending.len())
             >= MAX_REMOTE_AUDIO_SESSIONS
         {
-            return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
+            return Err(crate::i18n::t("remote-audio-error-too-many"));
         }
         let selection = state
             .source_tokens
             .remove(&source_token)
-            .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-source-expired"))?;
+            .ok_or_else(|| crate::i18n::t("remote-audio-error-source-expired"))?;
         let label = match &selection {
-            LocalAudioSelection::System => crate::shell::i18n::t("remote-audio-all-system-audio"),
+            LocalAudioSelection::System => crate::i18n::t("remote-audio-all-system-audio"),
             LocalAudioSelection::Application { label, .. } => label.clone(),
         };
-        let session_id = crate::random::nonzero::<16>();
+        let session_id = tilo_device_fabric::random::nonzero::<16>();
         let now = Instant::now();
         state.outbound.insert(
             session_id,
@@ -1223,17 +1220,17 @@ pub fn request(
 /// the local sink cannot start, too many routes are active, or the decision
 /// cannot be sent.
 pub fn authorize(
-    network: &ShellNetwork,
+    network: &dyn FabricLink,
     session_id: [u8; 16],
     approved: bool,
 ) -> Result<(), String> {
     let pending = state()
         .lock()
-        .map_err(|_| crate::shell::i18n::t("remote-audio-error-unavailable"))?
+        .map_err(|_| crate::i18n::t("remote-audio-error-unavailable"))?
         .pending
         .remove(&session_id)
-        .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-request-expired"))?;
-    let authorization = approved.then(crate::random::nonzero::<16>);
+        .ok_or_else(|| crate::i18n::t("remote-audio-error-request-expired"))?;
+    let authorization = approved.then(tilo_device_fabric::random::nonzero::<16>);
     if let Some(authorization) = authorization {
         let playback = match start_playback(
             media::pw_stream::native_streams(),
@@ -1250,10 +1247,10 @@ pub fn authorize(
         };
         let mut state = state()
             .lock()
-            .map_err(|_| crate::shell::i18n::t("remote-audio-error-unavailable"))?;
+            .map_err(|_| crate::i18n::t("remote-audio-error-unavailable"))?;
         if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
             state.pending.insert(session_id, pending);
-            return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
+            return Err(crate::i18n::t("remote-audio-error-too-many"));
         }
         let now = Instant::now();
         state.inbound.insert(
@@ -1312,7 +1309,7 @@ fn set_role_with(
     session_id: [u8; 16],
     role: ChannelRole,
 ) -> Result<(), String> {
-    let inactive = || crate::shell::i18n::t("remote-audio-error-route-inactive");
+    let inactive = || crate::i18n::t("remote-audio-error-route-inactive");
     let current = state.lock_recover();
     let route = current.inbound.get(&session_id).map(|route| {
         (
@@ -1351,7 +1348,7 @@ fn tap_for(
                 .source_tokens
                 .get(&token)
                 .cloned()
-                .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-source-expired"))?;
+                .ok_or_else(|| crate::i18n::t("remote-audio-error-source-expired"))?;
             match chosen {
                 LocalAudioSelection::System => TapSelection::System,
                 LocalAudioSelection::Application { serial, .. } => {
@@ -1362,9 +1359,9 @@ fn tap_for(
     };
     acquire(selection).map_err(|error| match error {
         TapError::Graph(message) => message,
-        TapError::AppStopped => crate::shell::i18n::t("speaker-error-app-stopped"),
-        TapError::OtherSession => crate::shell::i18n::t("speaker-error-other-session"),
-        TapError::Unavailable => crate::shell::i18n::t("speaker-error-audio-unavailable"),
+        TapError::AppStopped => crate::i18n::t("speaker-error-app-stopped"),
+        TapError::OtherSession => crate::i18n::t("speaker-error-other-session"),
+        TapError::Unavailable => crate::i18n::t("speaker-error-audio-unavailable"),
     })
 }
 
@@ -1385,14 +1382,14 @@ pub fn start_group_send(
     let capture = PcmCapture::group_sink(tap.serial())?;
     let mut state = state().lock_recover();
     if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
-        return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
+        return Err(crate::i18n::t("remote-audio-error-too-many"));
     }
     let now = Instant::now();
     state.outbound.insert(
         route,
         OutboundRoute {
             target: target.clone(),
-            label: crate::shell::i18n::t("remote-audio-speaker-group"),
+            label: crate::i18n::t("remote-audio-speaker-group"),
             selection: LocalAudioSelection::System,
             authorization: Some(authorization),
             sequence: 0,
@@ -1463,7 +1460,7 @@ pub fn start_group_receive(
     )?;
     let mut state = state().lock_recover();
     if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
-        return Err(crate::shell::i18n::t("remote-audio-error-too-many"));
+        return Err(crate::i18n::t("remote-audio-error-too-many"));
     }
     let now = Instant::now();
     state.inbound.insert(
@@ -1471,7 +1468,7 @@ pub fn start_group_receive(
         InboundRoute {
             source: source.clone(),
             target: local.clone(),
-            label: crate::shell::i18n::t("remote-audio-speaker-group"),
+            label: crate::i18n::t("remote-audio-speaker-group"),
             authorization,
             last_audio: now,
             last_heard: now,
@@ -1608,11 +1605,11 @@ fn pump_local_group_routes(state: &mut RemoteAudioState) {
 /// Returns a message when the service is unavailable, the route is no longer
 /// active, or the peer cannot be notified. Stopping an interrupted route only
 /// dismisses its notice; its peer was already told when it ended.
-pub fn stop(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> {
+pub fn stop(network: &dyn FabricLink, session_id: [u8; 16]) -> Result<(), String> {
     let stopped = {
         let mut state = state()
             .lock()
-            .map_err(|_| crate::shell::i18n::t("remote-audio-error-unavailable"))?;
+            .map_err(|_| crate::i18n::t("remote-audio-error-unavailable"))?;
         if state.interrupted.remove(&session_id).is_some() {
             return Ok(());
         }
@@ -1638,7 +1635,7 @@ pub fn stop(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> 
         }
     };
     let Some((peer, action)) = stopped else {
-        return Err(crate::shell::i18n::t("remote-audio-error-route-inactive"));
+        return Err(crate::i18n::t("remote-audio-error-route-inactive"));
     };
     network
         .send_personal_fabric_action(&peer, action)
@@ -1651,7 +1648,7 @@ pub fn stop(network: &ShellNetwork, session_id: [u8; 16]) -> Result<(), String> 
     clippy::too_many_lines,
     reason = "one exhaustive handler validates each remote-audio action beside its state change"
 )]
-pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnvelope) -> bool {
+pub fn handle_action(network: &dyn FabricLink, envelope: &PersonalFabricActionEnvelope) -> bool {
     match &envelope.action {
         PersonalFabricAction::RemoteAudioOffer {
             session_id, label, ..
@@ -1752,11 +1749,7 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
             let mut failed = false;
             if let Ok(mut state) = state().lock() {
                 if let Some(route) = state.inbound.get_mut(session_id)
-                    && (!route.group
-                        || crate::shell::speaker_group_runtime::admits_route(
-                            *session_id,
-                            &envelope.source,
-                        ))
+                    && (!route.group || crate::groups::admits_route(*session_id, &envelope.source))
                     && frame_matches(
                         &route.source,
                         &route.target,
@@ -1889,7 +1882,7 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
 }
 
 /// Drive capture, bounded frame transmission, and all lifecycle revocations.
-pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepadBinding>) {
+pub fn pump(network: &dyn FabricLink, enabled: bool, focus: Option<&PhysicalGamepadBinding>) {
     pump_state(state(), network, enabled, focus);
 }
 
@@ -1898,7 +1891,7 @@ pub fn pump(network: &ShellNetwork, enabled: bool, focus: Option<&PhysicalGamepa
 /// otherwise reads the fabric in place rather than cloning it.
 fn pump_state(
     state: &Mutex<RemoteAudioState>,
-    network: &ShellNetwork,
+    network: &dyn FabricLink,
     enabled: bool,
     focus: Option<&PhysicalGamepadBinding>,
 ) {
@@ -1993,14 +1986,14 @@ impl PcmCapture {
                     serial: sink.serial,
                     monitor_sink: true,
                 })
-                .ok_or_else(|| crate::shell::i18n::t("remote-audio-error-no-output"))?,
+                .ok_or_else(|| crate::i18n::t("remote-audio-error-no-output"))?,
             LocalAudioSelection::Application { serial, .. } => {
                 let current = media::audio::enumerate()
                     .playback_streams
                     .into_iter()
                     .any(|stream| stream.serial == *serial);
                 if !current {
-                    return Err(crate::shell::i18n::t("remote-audio-error-stream-ended"));
+                    return Err(crate::i18n::t("remote-audio-error-stream-ended"));
                 }
                 media::pw_stream::CaptureTarget {
                     serial: *serial,
@@ -2109,22 +2102,66 @@ mod tests {
         now.checked_sub(elapsed).unwrap()
     }
 
+    /// A link that counts how often the fabric is read and sends nothing.
+    #[derive(Default)]
+    struct CountingLink {
+        cloned: std::cell::Cell<usize>,
+        borrowed: std::cell::Cell<usize>,
+        sent: std::cell::Cell<usize>,
+    }
+
+    impl CountingLink {
+        fn reads(&self) -> (usize, usize) {
+            (self.cloned.get(), self.borrowed.get())
+        }
+    }
+
+    impl FabricLink for CountingLink {
+        fn device_fabric(&self) -> tilo_device_fabric::DeviceFabric {
+            self.cloned.set(self.cloned.get() + 1);
+            tilo_device_fabric::DeviceFabric::default()
+        }
+        fn online_device_ids(&self) -> BTreeSet<DeviceId> {
+            self.borrowed.set(self.borrowed.get() + 1);
+            BTreeSet::new()
+        }
+        fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)> {
+            None
+        }
+        fn send_personal_fabric_action(
+            &self,
+            _: &DeviceId,
+            _: tilo_device_fabric::PersonalFabricAction,
+        ) -> Result<[u8; 16], String> {
+            self.sent.set(self.sent.get() + 1);
+            Err("offline".into())
+        }
+        fn try_send_personal_fabric_action(
+            &self,
+            _: &DeviceId,
+            _: tilo_device_fabric::PersonalFabricAction,
+        ) -> Result<[u8; 16], PersonalFabricSendError> {
+            self.sent.set(self.sent.get() + 1);
+            Err(PersonalFabricSendError::Rejected("offline".into()))
+        }
+        fn require_media(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn pump_does_not_clone_fabric_when_idle() {
-        let (network, mut commands) = crate::shell::network::shell_network_for_test(
-            crate::shell::state::WorkspaceTree::default().shared(),
-            0xA0D1,
-        );
+        let network = CountingLink::default();
         let state = Mutex::new(RemoteAudioState::default());
         for _ in 0..100 {
             pump_state(&state, &network, true, None);
         }
         assert_eq!(
-            network.device_fabric_reads(),
+            network.reads(),
             (0, 0),
             "an idle pump does not look at the fabric"
         );
-        assert!(commands.try_recv().is_err(), "an idle pump sends nothing");
+        assert_eq!(network.sent.get(), 0, "an idle pump sends nothing");
 
         // A live notice needs the online set, read in place.
         state.lock().unwrap().interrupted.insert(
@@ -2137,11 +2174,7 @@ mod tests {
             },
         );
         pump_state(&state, &network, true, None);
-        assert_eq!(
-            network.device_fabric_reads(),
-            (0, 1),
-            "borrowed, never cloned"
-        );
+        assert_eq!(network.reads(), (0, 1), "borrowed, never cloned");
         assert_eq!(state.lock().unwrap().interrupted.len(), 1);
     }
 

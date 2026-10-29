@@ -442,7 +442,7 @@ pub fn resolve_output(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpeakerPlayback {
     pub group: String,
-    pub status: crate::shell::speaker_group_runtime::SpeakerSessionStatus,
+    pub status: tilo_speaker_service::groups::SpeakerSessionStatus,
 }
 
 impl SpeakerPlayback {
@@ -450,7 +450,7 @@ impl SpeakerPlayback {
     /// member that cannot play in time outranks one still syncing.
     #[must_use]
     pub fn from_view(view: &DeviceFabricView) -> Option<Self> {
-        use crate::shell::speaker_group_runtime::SpeakerSessionStatus;
+        use tilo_speaker_service::groups::SpeakerSessionStatus;
         let urgency = |status: SpeakerSessionStatus| match status {
             SpeakerSessionStatus::ClockFailed(_) => 0,
             SpeakerSessionStatus::SyncingClocks => 1,
@@ -473,7 +473,7 @@ impl SpeakerPlayback {
     pub const fn failed(&self) -> bool {
         matches!(
             self.status,
-            crate::shell::speaker_group_runtime::SpeakerSessionStatus::ClockFailed(_)
+            tilo_speaker_service::groups::SpeakerSessionStatus::ClockFailed(_)
         )
     }
 
@@ -481,7 +481,7 @@ impl SpeakerPlayback {
     #[must_use]
     pub fn text(&self) -> String {
         use crate::shell::i18n::{t, t_args};
-        use crate::shell::speaker_group_runtime::SpeakerSessionStatus;
+        use tilo_speaker_service::groups::SpeakerSessionStatus;
         let group = || ("group", self.group.as_str().into());
         match self.status {
             SpeakerSessionStatus::Playing => t_args("now-playing-speakers-playing", &[group()]),
@@ -740,17 +740,17 @@ pub(crate) mod tests {
         seed: u8,
         name: &str,
         state: tilo_device_fabric::speaker_group::SpeakerMemberStatus,
-    ) -> crate::shell::speaker_group_runtime::SpeakerGroupView {
+    ) -> tilo_speaker_service::groups::SpeakerGroupView {
         use tilo_device_fabric::speaker_group::{
             EndpointSelector, SpeakerGroupId, SpeakerRole, SpeakerTrim, StereoSide,
         };
-        crate::shell::speaker_group_runtime::SpeakerGroupView {
+        tilo_speaker_service::groups::SpeakerGroupView {
             id: SpeakerGroupId([seed; 16]),
             name: name.into(),
             leader: DeviceId::new("desk").expect("device id"),
             leader_label: "Desk speakers".into(),
             led_locally: true,
-            members: vec![crate::shell::speaker_group_runtime::SpeakerMemberView {
+            members: vec![tilo_speaker_service::groups::SpeakerMemberView {
                 device: DeviceId::new("desk").expect("device id"),
                 device_label: "Desk speakers".into(),
                 output: EndpointSelector([seed.wrapping_add(1); 16]),

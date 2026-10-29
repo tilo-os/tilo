@@ -25,6 +25,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tilo_device_fabric::link::FabricLink;
 
 use tilo_device_fabric::clock::{ClockSyncFailure, ClockSyncState};
 use tilo_device_fabric::speaker_group::{
@@ -242,10 +243,10 @@ impl SpeakerGroupCore {
         if self.groups.iter().flatten().count()
             >= tilo_device_fabric::speaker_group::MAX_SPEAKER_GROUPS
         {
-            return Err(crate::shell::i18n::t("speaker-error-too-many-groups"));
+            return Err(crate::i18n::t("speaker-error-too-many-groups"));
         }
         if self.led_group(id).is_some() {
-            return Err(crate::shell::i18n::t("speaker-error-group-exists"));
+            return Err(crate::i18n::t("speaker-error-group-exists"));
         }
         let group = build_group(id, name, local, members, &BTreeMap::new())?;
         fabric
@@ -271,7 +272,7 @@ impl SpeakerGroupCore {
         let previous = self
             .led_group(id)
             .cloned()
-            .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-gone"))?;
+            .ok_or_else(|| crate::i18n::t("speaker-error-group-gone"))?;
         let trims = previous
             .members
             .iter()
@@ -316,19 +317,19 @@ impl SpeakerGroupCore {
             .groups_mut()
             .iter_mut()
             .find(|group| group.id == id)
-            .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-gone"))?;
+            .ok_or_else(|| crate::i18n::t("speaker-error-group-gone"))?;
         let mut updated = group.clone();
         for (device, output, trim) in trims {
             let member = updated
                 .members
                 .iter_mut()
                 .find(|member| &member.device == device && member.output == *output)
-                .ok_or_else(|| crate::shell::i18n::t("speaker-error-not-in-group"))?;
+                .ok_or_else(|| crate::i18n::t("speaker-error-not-in-group"))?;
             member.trim = trim.clone();
         }
         updated
             .validate(&updated.leader.clone())
-            .map_err(|_| crate::shell::i18n::t("speaker-error-calibration-range"))?;
+            .map_err(|_| crate::i18n::t("speaker-error-calibration-range"))?;
         *group = updated;
         Ok(())
     }
@@ -339,7 +340,7 @@ impl SpeakerGroupCore {
         let index = groups
             .iter()
             .position(|group| group.id == id)
-            .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-gone"))?;
+            .ok_or_else(|| crate::i18n::t("speaker-error-group-gone"))?;
         let group = groups.remove(index);
         self.invites.retain(|(group_id, _), _| *group_id != id);
         let listening = self
@@ -423,16 +424,16 @@ impl SpeakerGroupCore {
         let pending = self
             .consents
             .remove(&group_id)
-            .ok_or_else(|| crate::shell::i18n::t("speaker-error-request-expired"))?;
+            .ok_or_else(|| crate::i18n::t("speaker-error-request-expired"))?;
         if approved {
             if !consent_matches(fabric, local, group_id, &pending) {
-                return Err(crate::shell::i18n::t("speaker-error-group-changed"));
+                return Err(crate::i18n::t("speaker-error-group-changed"));
             }
             if self.memberships.iter().flatten().count()
                 >= tilo_device_fabric::speaker_group::MAX_SPEAKER_MEMBERSHIPS
             {
                 self.consents.insert(group_id, pending);
-                return Err(crate::shell::i18n::t("speaker-error-too-many-memberships"));
+                return Err(crate::i18n::t("speaker-error-too-many-memberships"));
             }
             let memberships = self.memberships_mut();
             memberships.retain(|membership| membership.group != group_id);
@@ -459,7 +460,7 @@ impl SpeakerGroupCore {
         let index = memberships
             .iter()
             .position(|membership| membership.group == group_id)
-            .ok_or_else(|| crate::shell::i18n::t("speaker-error-not-a-member"))?;
+            .ok_or_else(|| crate::i18n::t("speaker-error-not-a-member"))?;
         let membership = memberships.remove(index);
         let mut out = vec![egress(
             &membership.leader,
@@ -480,14 +481,14 @@ impl SpeakerGroupCore {
         now: Instant,
     ) -> Result<Vec<Egress>, String> {
         if self.media_off {
-            return Err(crate::shell::i18n::t("speaker-error-media-off"));
+            return Err(crate::i18n::t("speaker-error-media-off"));
         }
         if self.outbound.len().saturating_add(self.inbound.len()) >= MAX_SPEAKER_SESSIONS {
-            return Err(crate::shell::i18n::t("speaker-error-too-many-sessions"));
+            return Err(crate::i18n::t("speaker-error-too-many-sessions"));
         }
         let group = fabric
             .speaker_group(group_id)
-            .ok_or_else(|| crate::shell::i18n::t("speaker-error-group-unavailable"))?;
+            .ok_or_else(|| crate::i18n::t("speaker-error-group-unavailable"))?;
         let states = fabric.speaker_member_states(group);
         let channels = group.channel_roles();
         let members = group
@@ -511,7 +512,7 @@ impl SpeakerGroupCore {
             })
             .collect::<Vec<_>>();
         if members.is_empty() {
-            return Err(crate::shell::i18n::t("speaker-error-none-ready"));
+            return Err(crate::i18n::t("speaker-error-none-ready"));
         }
         let offers = members
             .iter()
@@ -552,7 +553,7 @@ impl SpeakerGroupCore {
                 },
             )]);
         }
-        Err(crate::shell::i18n::t("speaker-error-session-gone"))
+        Err(crate::i18n::t("speaker-error-session-gone"))
     }
 
     /// Consume one authenticated speaker-group action. Returns `None` for
@@ -957,7 +958,7 @@ impl SpeakerGroupCore {
 
     /// Presentation rows for the Devices surface and Settings. `playout`
     /// answers, per member route, whether that member can play in time (see
-    /// [`crate::shell::remote_audio::group_route_playout`]).
+    /// [`crate::remote_audio::group_route_playout`]).
     #[must_use]
     #[expect(
         clippy::too_many_lines,
@@ -1264,11 +1265,11 @@ fn build_group(
         },
     };
     if !tilo_device_fabric::speaker_group::valid_group_name(&group.name) {
-        return Err(crate::shell::i18n::t("speaker-error-name"));
+        return Err(crate::i18n::t("speaker-error-name"));
     }
     group
         .validate(local)
-        .map_err(|_| crate::shell::i18n::t("speaker-error-roles"))?;
+        .map_err(|_| crate::i18n::t("speaker-error-roles"))?;
     Ok(group)
 }
 
@@ -1437,7 +1438,7 @@ impl SpeakerConsentView {
     /// The question, as the Devices surface asks it.
     #[must_use]
     pub fn prompt(&self) -> String {
-        crate::shell::i18n::t_args(
+        crate::i18n::t_args(
             self.key("qs-devices-speaker-join", "qs-devices-speaker-listen"),
             &self.args(),
         )
@@ -1459,12 +1460,12 @@ impl SpeakerConsentView {
                 "qs-devices-speaker-listen-note-microphone"
             }
         };
-        crate::shell::i18n::t_args(key, &args)
+        crate::i18n::t_args(key, &args)
     }
 
     #[must_use]
     pub fn accessible_name(&self) -> String {
-        crate::shell::i18n::t_args(
+        crate::i18n::t_args(
             self.key("a11y-speaker-join", "a11y-speaker-listen"),
             &self.args(),
         )
@@ -1472,7 +1473,7 @@ impl SpeakerConsentView {
 
     #[must_use]
     pub fn accessible_description(&self) -> String {
-        crate::shell::i18n::t_args(
+        crate::i18n::t_args(
             self.key(
                 "a11y-speaker-join-description",
                 "a11y-speaker-listen-description",
@@ -1483,12 +1484,12 @@ impl SpeakerConsentView {
 
     #[must_use]
     pub fn allow_label(&self) -> String {
-        crate::shell::i18n::t(self.key("a11y-speaker-join-allow", "a11y-speaker-listen-allow"))
+        crate::i18n::t(self.key("a11y-speaker-join-allow", "a11y-speaker-listen-allow"))
     }
 
     #[must_use]
     pub fn decline_label(&self) -> String {
-        crate::shell::i18n::t(self.key("a11y-speaker-join-decline", "a11y-speaker-listen-decline"))
+        crate::i18n::t(self.key("a11y-speaker-join-decline", "a11y-speaker-listen-decline"))
     }
 
     /// Title of the allow or decline action search offers.
@@ -1500,12 +1501,12 @@ impl SpeakerConsentView {
             (SpeakerConsentScope::Listen, true) => "search-continuity-speaker-listen-allow",
             (SpeakerConsentScope::Listen, false) => "search-continuity-speaker-listen-decline",
         };
-        crate::shell::i18n::t_args(key, &self.args())
+        crate::i18n::t_args(key, &self.args())
     }
 
     #[must_use]
     pub fn action_subtitle(&self) -> String {
-        crate::shell::i18n::t_args(
+        crate::i18n::t_args(
             self.key(
                 "search-continuity-speaker-consent-subtitle",
                 "search-continuity-speaker-listen-subtitle",
@@ -1543,7 +1544,7 @@ impl SpeakerMembershipView {
     /// The row's title; `sentence` capitalises a role that starts it.
     #[must_use]
     pub fn title(&self, sentence: impl Fn(&str) -> String) -> String {
-        crate::shell::i18n::t_args(
+        crate::i18n::t_args(
             self.key("a11y-speaker-membership", "a11y-speaker-listener"),
             &self.args(sentence),
         )
@@ -1551,7 +1552,7 @@ impl SpeakerMembershipView {
 
     #[must_use]
     pub fn note(&self) -> String {
-        crate::shell::i18n::t_args(
+        crate::i18n::t_args(
             self.key(
                 "qs-devices-speaker-membership-note",
                 "qs-devices-speaker-listener-note",
@@ -1562,7 +1563,7 @@ impl SpeakerMembershipView {
 
     #[must_use]
     pub fn accessible_description(&self) -> String {
-        crate::shell::i18n::t(self.key(
+        crate::i18n::t(self.key(
             "a11y-speaker-membership-description",
             "a11y-speaker-listener-description",
         ))
@@ -1570,7 +1571,7 @@ impl SpeakerMembershipView {
 
     #[must_use]
     pub fn leave_title(&self) -> String {
-        crate::shell::i18n::t_args(
+        crate::i18n::t_args(
             self.key(
                 "search-continuity-speaker-leave",
                 "search-continuity-speaker-listen-stop",
@@ -1581,7 +1582,7 @@ impl SpeakerMembershipView {
 
     #[must_use]
     pub fn leave_subtitle(&self) -> String {
-        crate::shell::i18n::t_args(
+        crate::i18n::t_args(
             self.key(
                 "search-continuity-speaker-leave-subtitle",
                 "search-continuity-speaker-listen-stop-subtitle",
@@ -1779,10 +1780,10 @@ fn core() -> &'static Mutex<SpeakerGroupCore> {
 }
 
 fn unavailable() -> String {
-    crate::shell::i18n::t("speaker-error-unavailable")
+    crate::i18n::t("speaker-error-unavailable")
 }
 
-fn send_all(network: &crate::shell::network::ShellNetwork, out: Vec<Egress>) -> Result<(), String> {
+fn send_all(network: &dyn FabricLink, out: Vec<Egress>) -> Result<(), String> {
     let mut first_error = None;
     for item in out {
         if let Err(error) = network.send_personal_fabric_action(&item.target, item.action) {
@@ -1792,16 +1793,16 @@ fn send_all(network: &crate::shell::network::ShellNetwork, out: Vec<Egress>) -> 
     first_error.map_or(Ok(()), Err)
 }
 
-fn local_device(network: &crate::shell::network::ShellNetwork) -> Result<DeviceId, String> {
+fn local_device(network: &dyn FabricLink) -> Result<DeviceId, String> {
     network
         .local_device_fabric_identity()
         .map(|(device, _)| device)
-        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))
+        .ok_or_else(|| crate::i18n::t("device-fabric-error-no-identity"))
 }
 
 /// The speaker records for this device's next snapshot. Called by the
 /// snapshot builder; publishes nothing while media continuity is off.
-pub(crate) fn authored_state(
+pub fn authored_state(
     device: &DeviceId,
     previous: Option<&SpeakerFabricState>,
     stamp: &FabricStamp,
@@ -1822,8 +1823,8 @@ pub(crate) fn authored_state(
 
 /// Handle one authenticated action. Returns true when it was a
 /// speaker-group action, including a rejected one.
-pub(crate) fn handle_action(
-    network: &crate::shell::network::ShellNetwork,
+pub fn handle_action(
+    network: &dyn FabricLink,
     envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
 ) -> bool {
     let Ok(local) = local_device(network) else {
@@ -1855,10 +1856,10 @@ pub(crate) fn handle_action(
         let allowed = core().lock().is_ok_and(|core| {
             core.may_listen(&fabric, &local, &envelope.source, group, microphone)
         });
-        crate::shell::speaker_calibration::listen_for_leader(
+        crate::calibration::listen_for_leader(
             &local,
             allowed,
-            crate::shell::speaker_calibration::ListenRequest {
+            crate::calibration::ListenRequest {
                 leader: envelope.source.clone(),
                 group,
                 sweep,
@@ -1874,12 +1875,7 @@ pub(crate) fn handle_action(
         hearing,
     } = &envelope.action
     {
-        crate::shell::speaker_calibration::deliver_hearing(
-            &envelope.source,
-            *group,
-            *sweep,
-            hearing.clone(),
-        );
+        crate::calibration::deliver_hearing(&envelope.source, *group, *sweep, hearing.clone());
         return true;
     }
     let fabric = network.device_fabric();
@@ -1899,7 +1895,7 @@ pub(crate) fn handle_action(
             &envelope.source,
             &envelope.action,
             Instant::now(),
-            &mut crate::random::nonzero::<16>,
+            &mut tilo_device_fabric::random::nonzero::<16>,
         )
     };
     match out {
@@ -1919,7 +1915,7 @@ pub(crate) fn handle_action(
 /// Returns a message when the device or output is unavailable, a sound
 /// played too recently, or the request cannot be delivered.
 pub fn identify(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     device: &DeviceId,
     output: EndpointSelector,
 ) -> Result<(), String> {
@@ -1932,7 +1928,7 @@ pub fn identify(
         snapshot.presence.online && snapshot.speakers.output(output).is_some()
     });
     if !offered {
-        return Err(crate::shell::i18n::t("speaker-error-speaker-unavailable"));
+        return Err(crate::i18n::t("speaker-error-speaker-unavailable"));
     }
     network
         .send_personal_fabric_action(device, PersonalFabricAction::SpeakerIdentify { output })
@@ -1941,16 +1937,16 @@ pub fn identify(
 
 fn play_identify_locally(local: &DeviceId, output: EndpointSelector) -> Result<(), String> {
     let sink = resolve_local_output(local, output)
-        .ok_or_else(|| crate::shell::i18n::t("speaker-error-output-disconnected"))?;
-    if !crate::shell::speaker_settings::admit_identify(Instant::now()) {
-        return Err(crate::shell::i18n::t("speaker-error-already-playing"));
+        .ok_or_else(|| crate::i18n::t("speaker-error-output-disconnected"))?;
+    if !crate::settings::admit_identify(Instant::now()) {
+        return Err(crate::i18n::t("speaker-error-already-playing"));
     }
     std::thread::Builder::new()
         .name("speaker-identify".into())
         .spawn(move || media::audio::group_tap::play_mono(&sink.name, &identify_chirp()))
         .map(|_| ())
         .map_err(|error| {
-            crate::shell::i18n::t_args(
+            crate::i18n::t_args(
                 "speaker-error-play-failed",
                 &[("error", error.to_string().into())],
             )
@@ -1976,10 +1972,10 @@ fn play_sweep_at(local: &DeviceId, output: EndpointSelector, start_ns: i64) {
     let spawned = std::thread::Builder::new()
         .name("speaker-sweep".into())
         .spawn(move || {
-            if let Ok(sweep) = crate::shell::speaker_calibration::sweep() {
+            if let Ok(sweep) = crate::calibration::sweep() {
                 let _ = media::pw_stream::TimedAudio::native().play_at(
                     sink.serial,
-                    crate::shell::speaker_calibration::SWEEP_RATE,
+                    crate::calibration::SWEEP_RATE,
                     1,
                     sweep.signal().to_vec(),
                     start_ns,
@@ -2015,7 +2011,7 @@ pub fn identify_chirp() -> Vec<i16> {
 }
 
 /// Periodic maintenance from the fabric runtime's pump.
-pub(crate) fn pump(network: &crate::shell::network::ShellNetwork, media_enabled: bool) {
+pub fn pump(network: &dyn FabricLink, media_enabled: bool) {
     let Ok(local) = local_device(network) else {
         return;
     };
@@ -2035,14 +2031,14 @@ pub(crate) fn pump(network: &crate::shell::network::ShellNetwork, media_enabled:
         },
     );
     let _ = send_all(network, out);
-    let answers = crate::shell::speaker_calibration::drain_answers();
+    let answers = crate::calibration::drain_answers();
     if media_enabled {
         for (leader, action) in answers {
             let _ = network.send_personal_fabric_action(&leader, action);
         }
     }
     reconcile_routes(network, &fabric, &local, media_enabled);
-    crate::shell::speaker_settings::pump(network);
+    crate::settings::pump(network);
 }
 
 /// Routes this process started, routes starting on a worker, and routes
@@ -2065,7 +2061,7 @@ fn running_routes() -> &'static Mutex<RunningRoutes> {
 /// admitted members, end routes whose session or consent ended, and end the
 /// session of a route the audio path dropped on its own.
 fn reconcile_routes(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     fabric: &DeviceFabric,
     local: &DeviceId,
     media_enabled: bool,
@@ -2084,7 +2080,7 @@ fn reconcile_routes(
         .running
         .keys()
         .copied()
-        .filter(|route| !crate::shell::remote_audio::has_group_route(*route))
+        .filter(|route| !crate::remote_audio::has_group_route(*route))
         .collect::<Vec<_>>();
     for route in &lost {
         routes.running.remove(route);
@@ -2092,7 +2088,7 @@ fn reconcile_routes(
     let (end, start) = route_changes(&routes.running, &desired);
     for route in end {
         routes.running.remove(&route);
-        crate::shell::remote_audio::end_group_route(route);
+        crate::remote_audio::end_group_route(route);
     }
     let now = Instant::now();
     routes.retry_after.retain(|_, until| *until > now);
@@ -2148,15 +2144,15 @@ fn reconcile_routes(
     }
 }
 
-fn audio_source(source: &GroupAudioSource) -> crate::shell::remote_audio::GroupRouteSource {
+fn audio_source(source: &GroupAudioSource) -> crate::remote_audio::GroupRouteSource {
     match source {
         GroupAudioSource::PickerToken(token) => {
-            crate::shell::remote_audio::GroupRouteSource::Picker(*token)
+            crate::remote_audio::GroupRouteSource::Picker(*token)
         }
         // The media keeps decoding here, so everything this device plays is
         // what the group should hear.
         GroupAudioSource::MediaSession(_) | GroupAudioSource::System => {
-            crate::shell::remote_audio::GroupRouteSource::System
+            crate::remote_audio::GroupRouteSource::System
         }
     }
 }
@@ -2164,11 +2160,11 @@ fn audio_source(source: &GroupAudioSource) -> crate::shell::remote_audio::GroupR
 fn member_output(local: &DeviceId, output: EndpointSelector) -> Result<u32, String> {
     resolve_local_output(local, output)
         .map(|sink| sink.serial)
-        .ok_or_else(|| crate::shell::i18n::t("speaker-error-speaker-output-gone"))
+        .ok_or_else(|| crate::i18n::t("speaker-error-speaker-output-gone"))
 }
 
 fn start_route(local: &DeviceId, spec: &RouteSpec) -> Result<(), String> {
-    use crate::shell::remote_audio::{
+    use crate::remote_audio::{
         GroupPlayback, start_group_local, start_group_receive, start_group_send,
     };
     match spec {
@@ -2214,7 +2210,7 @@ pub fn admits_route(route: [u8; 16], source: &DeviceId) -> bool {
 }
 
 fn with_core<T>(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     apply: impl FnOnce(
         &mut SpeakerGroupCore,
         &DeviceFabric,
@@ -2241,12 +2237,12 @@ fn with_core<T>(
 
 /// Create a group led by this device.
 pub fn create_group(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     name: &str,
     members: &[MemberSpec],
 ) -> Result<SpeakerGroupId, String> {
     with_core(network, |core, fabric, local| {
-        let id = SpeakerGroupId(crate::random::nonzero::<16>());
+        let id = SpeakerGroupId(tilo_device_fabric::random::nonzero::<16>());
         let out = core.create_group(fabric, local, id, name, members, Instant::now())?;
         Ok((id, out))
     })
@@ -2254,7 +2250,7 @@ pub fn create_group(
 
 /// Rename or re-member a group led by this device.
 pub fn update_group(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     id: SpeakerGroupId,
     name: &str,
     members: &[MemberSpec],
@@ -2267,7 +2263,7 @@ pub fn update_group(
 
 /// Store calibration trims on a group led by this device.
 pub fn set_trims(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     id: SpeakerGroupId,
     trims: &[(DeviceId, EndpointSelector, SpeakerTrim)],
 ) -> Result<(), String> {
@@ -2278,16 +2274,13 @@ pub fn set_trims(
 }
 
 /// Delete a group led by this device.
-pub fn delete_group(
-    network: &crate::shell::network::ShellNetwork,
-    id: SpeakerGroupId,
-) -> Result<(), String> {
+pub fn delete_group(network: &dyn FabricLink, id: SpeakerGroupId) -> Result<(), String> {
     with_core(network, |core, _, _| Ok(((), core.delete_group(id)?)))
 }
 
 /// Answer a join or microphone prompt on this device.
 pub fn resolve_consent(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     group: SpeakerGroupId,
     kind: SpeakerConsentKind,
     approved: bool,
@@ -2312,7 +2305,7 @@ pub fn resolve_consent(
 /// Leave a group led by another device, or stop letting it listen with
 /// this device's microphone.
 pub fn leave_group(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     group: SpeakerGroupId,
     kind: SpeakerConsentKind,
 ) -> Result<(), String> {
@@ -2329,7 +2322,7 @@ pub fn leave_group(
 /// this device leads.
 #[must_use]
 pub fn listener_candidates(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     group: &SpeakerGroup,
 ) -> Vec<ListenerCandidate> {
     let Ok(local) = local_device(network) else {
@@ -2345,7 +2338,7 @@ pub fn listener_candidates(
 /// Ask the devices of `microphones` that have not answered yet to let this
 /// device listen while calibrating `group`.
 pub fn invite_listeners(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     group: &SpeakerGroup,
     microphones: &[(DeviceId, EndpointSelector)],
 ) -> Result<(), String> {
@@ -2359,36 +2352,33 @@ pub fn invite_listeners(
 
 /// Play `source` from this device to a group.
 pub fn start_session(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     group: SpeakerGroupId,
     source: GroupAudioSource,
 ) -> Result<[u8; 16], String> {
     with_core(network, |core, fabric, local| {
-        let session_id = crate::random::nonzero::<16>();
+        let session_id = tilo_device_fabric::random::nonzero::<16>();
         let out = core.start_session(fabric, local, group, source, session_id, Instant::now())?;
         Ok((session_id, out))
     })
 }
 
 /// Stop one session in either direction.
-pub fn stop_session(
-    network: &crate::shell::network::ShellNetwork,
-    session_id: [u8; 16],
-) -> Result<(), String> {
+pub fn stop_session(network: &dyn FabricLink, session_id: [u8; 16]) -> Result<(), String> {
     with_core(network, |core, _, _| {
         Ok(((), core.stop_session(session_id)?))
     })
 }
 
 #[must_use]
-pub fn view(network: &crate::shell::network::ShellNetwork) -> SpeakerGroupsView {
+pub fn view(network: &dyn FabricLink) -> SpeakerGroupsView {
     let Ok(local) = local_device(network) else {
         return SpeakerGroupsView::default();
     };
     let fabric = network.device_fabric();
     // Read before taking the core: the audio path takes the core while it
     // holds its own state.
-    let playouts = crate::shell::remote_audio::group_route_playouts();
+    let playouts = crate::remote_audio::group_route_playouts();
     core().lock().map_or_else(
         |_| SpeakerGroupsView::default(),
         |core| core.view(&fabric, &local, &|route| playouts.get(&route).copied()),
@@ -2408,7 +2398,7 @@ pub fn outbound_playback_plans() -> Vec<GroupPlaybackPlan> {
 /// has not admitted that exact session.
 #[must_use]
 pub fn member_grant(
-    network: &crate::shell::network::ShellNetwork,
+    network: &dyn FabricLink,
     session_id: [u8; 16],
     source: &DeviceId,
 ) -> Option<MemberPlaybackGrant> {

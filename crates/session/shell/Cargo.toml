@@ -310,6 +310,7 @@ tilo-output-passes = { path = "../output-passes" }
 tilo-network-actor = { path = "../network-actor" }
 tilo-device-fabric = { path = "../device-fabric" }
 tilo-nearby-service = { path = "../nearby-service" }
+tilo-speaker-service = { path = "../speaker-service" }
 # The Quick Settings panel, its sections and state, and the status line
 # the top bar shares.
 tilo-quick-settings = { path = "../quick-settings" }

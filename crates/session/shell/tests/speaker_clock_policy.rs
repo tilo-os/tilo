@@ -7,9 +7,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use shell::shell::continuity_policy::ContinuityPolicySnapshot;
-use shell::shell::speaker_group_runtime::{
-    Egress, GroupAudioSource, MemberSpec, SpeakerGroupCore, SpeakerSessionStatus, member_route_id,
-};
 use tilo_device_fabric::clock::{
     CLOCK_SYNC_DEADLINE, ClockSyncFailure, ClockSyncState, FabricClockCore,
 };
@@ -22,6 +19,9 @@ use tilo_device_fabric::{
 };
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
+use tilo_speaker_service::groups::{
+    Egress, GroupAudioSource, MemberSpec, SpeakerGroupCore, SpeakerSessionStatus, member_route_id,
+};
 
 const SESSION: [u8; 16] = [8; 16];
 

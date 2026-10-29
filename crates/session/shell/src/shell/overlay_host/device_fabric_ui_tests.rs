@@ -47,8 +47,8 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
             }],
             local_inputs: Vec::new(),
             transfers: Vec::new(),
-            remote_audio: crate::shell::remote_audio::RemoteAudioView::default(),
-            speaker_groups: crate::shell::speaker_group_runtime::SpeakerGroupsView::default(),
+            remote_audio: tilo_speaker_service::remote_audio::RemoteAudioView::default(),
+            speaker_groups: tilo_speaker_service::groups::SpeakerGroupsView::default(),
             device_health: Vec::new(),
             calibration_proposals: Vec::new(),
             revertible_calibrations: Vec::new(),
@@ -347,14 +347,14 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         let (mut view, remote) = fixture();
         view.local_media.clear();
         view.local_outputs.clear();
-        view.remote_audio = crate::shell::remote_audio::RemoteAudioView {
-            sources: vec![crate::shell::remote_audio::RemoteAudioSourceView {
+        view.remote_audio = tilo_speaker_service::remote_audio::RemoteAudioView {
+            sources: vec![tilo_speaker_service::remote_audio::RemoteAudioSourceView {
                 token: 77,
                 label: "All system audio".into(),
                 application: false,
             }],
             routes: Vec::new(),
-            consents: vec![crate::shell::remote_audio::RemoteAudioConsentView {
+            consents: vec![tilo_speaker_service::remote_audio::RemoteAudioConsentView {
                 session_id: [8; 16],
                 source: remote.clone(),
                 label: "All system audio".into(),
