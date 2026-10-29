@@ -20,10 +20,12 @@ use std::rc::Rc;
 mod host;
 mod open_file;
 pub mod registry;
+mod surface;
 pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
 #[cfg(test)]
 pub(crate) use host::{follow_host_authority, manual_authority_watch};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
+pub use surface::prepare_private_surface;
 
 pub use collaboration::state::InstanceId;
 pub type ComponentFactory =

@@ -2,12 +2,8 @@
 
 use std::rc::Rc;
 
-use ui::application::{AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput};
-use ui::application_view::InstanceViewStore;
-use ui::framework::ResourceApp;
+use ui::application::{AppComponent, prepare_private_surface};
 use ui::launch::LaunchError;
-use ui::permissions::{PermissionContext, Role, SharedPermissions, UserId};
-use ui::record::RecordOwners;
 
 use crate::host::{Lent, PanelHost};
 use crate::resource::QuickSettingsApp;
@@ -25,31 +21,12 @@ pub fn prepare(
     person: &str,
     instance: u64,
 ) -> Result<AppComponent, LaunchError> {
-    let definition = ui::framework::definition::<QuickSettingsApp>();
-    let store = Rc::new(durable_store::MemoryStore::new());
-    let room = "quick-settings";
-    let records = RecordOwners::with_store(store.clone())
-        .open(QuickSettingsApp::ID, room)
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    let views = Rc::new(
-        InstanceViewStore::with_store(store, device, room)
-            .map_err(|error| LaunchError::Operation(error.to_string()))?,
-    );
-    let target = LaunchTarget::New;
-    let mut context = HostContext::prepare(
-        definition,
-        HostContextInputs {
-            records,
-            views,
-            device_id: device.to_owned(),
-            instance_id: instance,
-            permissions: SharedPermissions::new(PermissionContext::member(person, Role::Owner)),
-            author: UserId(person.to_owned()),
-            action_context: ui::tilo_actions::ActionContext::default(),
-        },
-        &target,
-    )?;
-    context.provide_private();
-    context.lend(Lent(host));
-    definition.instantiate(context, target, RestoreInput::None)
+    prepare_private_surface(
+        ui::framework::definition::<QuickSettingsApp>(),
+        device,
+        person,
+        "quick-settings",
+        instance,
+        |context| context.lend(Lent(host)),
+    )
 }
