@@ -142,18 +142,7 @@ impl App {
         // A tooltip goes when the person acts, or when the pointer or the
         // keyboard leaves the window, whatever then takes the event: History's
         // controls and the close dialog take some before the widgets do.
-        if matches!(
-            &event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } | WindowEvent::MouseWheel { .. }
-                | WindowEvent::KeyboardInput { .. }
-                | WindowEvent::Touch(_)
-                | WindowEvent::CursorLeft { .. }
-                | WindowEvent::Focused(false)
-        ) && self.input.tooltip_host.dismiss()
-        {
+        if crate::widget::TooltipHost::dismissed_by(&event) && self.input.tooltip_host.dismiss() {
             window.request_redraw();
         }
         if matches!(
@@ -733,7 +722,9 @@ impl App {
             let logical = Point::new(position.x / scale, position.y / scale);
             let hit_test = phases.start();
             let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
-            let target = app.tooltip_target_at(logical);
+            let target = app
+                .tooltip_placed_at(logical)
+                .map(|(rect, label, _)| (rect, label));
             phases.finish(InputPhase::HitTest, hit_test);
             if app.input.current_cursor != desired {
                 app.input.current_cursor = desired;

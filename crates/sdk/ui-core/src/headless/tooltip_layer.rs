@@ -5,7 +5,7 @@
 
 use crate::host_core::HostCore as _;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, WindowEvent};
+use winit::event::WindowEvent;
 
 use super::FrameHarness;
 use crate::widget::Widget;
@@ -62,15 +62,7 @@ impl FrameHarness {
                 self.tooltips.host.on_pointer(target, crate::time::now());
                 was != self.tooltips.host.visible().is_some()
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            }
-            | WindowEvent::MouseWheel { .. }
-            | WindowEvent::KeyboardInput { .. }
-            | WindowEvent::Touch(_)
-            | WindowEvent::CursorLeft { .. }
-            | WindowEvent::Focused(false) => {
+            event if crate::widget::TooltipHost::dismissed_by(event) => {
                 let was = self.tooltips.host.visible().is_some();
                 self.tooltips.host.dismiss();
                 was
@@ -89,17 +81,7 @@ impl FrameHarness {
         if !self.interaction.supports_hover() {
             return None;
         }
-        let mut targets: Vec<_> = self
-            .node_map
-            .keys()
-            .filter_map(|&node| {
-                self.inspect_node(node, |widget| {
-                    crate::widget::tooltip::placed_target_at(widget, point)
-                })
-                .ok()
-                .flatten()
-            })
-            .collect();
+        let mut targets = self.tree().tooltips_at(point);
         for root in self.presentation_roots() {
             targets_under(root, point, &mut targets);
         }
@@ -112,43 +94,27 @@ impl FrameHarness {
         self.tooltips.redraw = false;
         self.tooltips.drawn = None;
         self.tooltips.host.tick(crate::time::now());
-        let mut side = TooltipSide::Below;
-        if let Some((_, anchor)) = self.tooltips.host.visible() {
-            let current = self.tooltip_target_at(anchor.center());
-            if let Some((_, _, placed)) = &current {
-                side = *placed;
-            }
-            self.tooltips
-                .host
-                .refresh(current.map(|(rect, label, _)| (rect, label)));
-        }
-        let Some((label, anchor)) = self.tooltips.host.visible() else {
-            return;
-        };
-        let text = crate::i18n::I18nManager::lookup(label, None);
+        let current = self
+            .tooltips
+            .host
+            .visible()
+            .and_then(|(_, anchor)| self.tooltip_target_at(anchor.center()));
         let viewport = Rect::new(
             0.0,
             0.0,
             f64::from(self.viewport.0),
             f64::from(self.viewport.1),
         );
-        let chip = crate::widget::tooltip::hover_chip_rect_on(
+        let painted = self.tooltips.host.paint_shown(
+            current,
             &mut self.text,
             &self.theme,
-            (anchor, side),
-            &text,
+            &mut self.scene,
+            transform,
             viewport,
         );
-        // It arrives from its control (`motion::Appear`).
-        let pose = self.tooltips.host.pose(chip, self.theme.motion());
-        let bounds = crate::widget::tooltip::chip_paint_bounds(chip, &self.theme);
-        let (scene, text_renderer, theme) = (&mut self.scene, &mut self.text, &self.theme);
-        pose.paint(scene, transform, bounds, |scene, transform| {
-            crate::widget::tooltip::draw_chip(scene, transform, text_renderer, theme, chip, &text);
-        });
-        // Only what this frame put on screen: an arrival's first frame
-        // draws nothing yet.
-        if pose.is_visible() {
+        // Only what this frame put on screen.
+        if let Some((text, chip, _, true)) = painted {
             self.tooltips.drawn = Some((text, chip));
         }
     }

@@ -176,6 +176,10 @@ impl crate::host_core::KeyHost for App {
             .within_keyboard_scope(self.focusable_order.clone())
     }
 
+    fn keyboard_entry_order(&self) -> Vec<taffy::NodeId> {
+        self.focusable_order.clone()
+    }
+
     fn move_focus(&mut self, node: Option<taffy::NodeId>) {
         self.set_focused_node(node);
     }

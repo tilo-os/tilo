@@ -3320,47 +3320,22 @@ impl crate::host_core::ControlHost for App {
         self.invoke_unbound_resource_action(request)
     }
 
-    /// A control in the app's tree bound to the window's History door (the
-    /// History control in the app's header row) runs there, as the History
-    /// shortcut does, never as an app action. An app `owner` hosted in a tile
-    /// opens that tile's History. Returns whether it was one.
-    fn take_history_invocation(
+    fn is_host_action_resource(&self, resource: &str) -> bool {
+        resource == local_input_capture::UNSAVED_RESOURCE
+    }
+
+    fn run_local_history_address(
         &mut self,
-        intent: &tilo_actions::ControlInvocation,
-        owner: Option<crate::history_mode::HistoryOwner>,
-    ) -> bool {
-        // The window's Retry for unsaved changes (its header button) is the
-        // host's own action, like History.
-        let unsaved = intent.address.resource == local_input_capture::UNSAVED_RESOURCE;
-        if intent.address.resource != crate::history_mode::door::HISTORY_RESOURCE && !unsaved {
-            return false;
-        }
-        let embedded = owner.filter(|_| !unsaved).and_then(|owner| {
-            crate::history_mode::embedded::invoke_door(self.root_widget.as_mut(), &owner, intent)
-        });
-        let result = if let Some(result) = embedded {
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-            result.map(|()| {
-                crate::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )
-            })
-        } else {
-            let argument = format!(
-                "{}{}",
-                tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(intent.arguments.clone())
-            );
-            self.invoke_history_address_local(&intent.address, Some(&argument))
-                .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())))
-        };
-        crate::widget::controls::on_control_invocation_result(
-            self.root_widget.as_mut(),
-            &intent.address,
-            &result,
-        );
-        true
+        address: &tilo_actions::ActionAddress,
+        argument: &str,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invoke_history_address_local(address, Some(argument))
+            .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(address.clone())))
+    }
+
+    fn embedded_history_acted(&mut self) {
+        self.needs_sync = true;
+        self.layout.layout_dirty = true;
     }
 
     fn take_search_invocation(

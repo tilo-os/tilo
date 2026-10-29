@@ -83,6 +83,97 @@ impl HostTree<'_> {
         }
     }
 
+    /// The focus order under `root` read off the layout maps, as History
+    /// and embedded History surfaces need it, and whether a trap holds it.
+    pub(crate) fn layout_map_focus_order(
+        &self,
+        root: NodeId,
+        restrictions: &crate::history_mode::embedded::FocusRestrictions,
+    ) -> (Vec<NodeId>, bool) {
+        // One sweep asks every mapped node, entering each component's scope
+        // once rather than once a node.
+        let sweep = std::cell::RefCell::new(crate::bound_dispatch::NodeSweep::new(
+            self.bindings,
+            self.node_map,
+        ));
+        crate::focus_navigation::layout_map_order(
+            root,
+            self.taffy,
+            restrictions,
+            self.history,
+            |node| {
+                // SAFETY: the host owns this stable tree; no target reference
+                // escapes.
+                unsafe {
+                    sweep
+                        .borrow_mut()
+                        .inspect(node, crate::focus_navigation::probe)
+                }
+                .ok()
+            },
+        )
+    }
+
+    /// The control of `order` that takes focus when content resets it: the
+    /// one the content marks as its default (so Enter takes the encouraged
+    /// action), else the first.
+    pub(crate) fn default_focus(&self, order: &[NodeId]) -> Option<NodeId> {
+        order
+            .iter()
+            .copied()
+            .find(|&node| {
+                self.inspect_node(node, |widget| widget.is_default_keyboard_focus())
+                    .unwrap_or(false)
+            })
+            .or_else(|| order.first().copied())
+    }
+
+    /// Whether the app's registered History is still valid over its root.
+    pub(crate) fn validate_history_registration(
+        &self,
+    ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
+        let history = self
+            .history
+            .ok_or(crate::history_mode::HistoryRegistrationError::Missing)?;
+        history.validate()?;
+        history.validate_root(self.root)
+    }
+
+    /// What the laid-out widgets offer at `point` (logical coords) for the
+    /// pointer's shape ([`crate::widget::cursor`]).
+    pub(crate) fn cursor_pick_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> crate::widget::cursor::CursorPick {
+        let mut pick = crate::widget::cursor::CursorPick::default();
+        for &node in self.node_map.keys() {
+            let _ = self.inspect_node(node, |widget| pick.offer(widget, point));
+        }
+        pick
+    }
+
+    /// Every tooltip a laid-out widget offers at `point` (logical coords),
+    /// with the side of its control it prefers.
+    pub(crate) fn tooltips_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Vec<(
+        vello::kurbo::Rect,
+        String,
+        crate::widget::tooltip::TooltipSide,
+    )> {
+        self.node_map
+            .keys()
+            .filter_map(|&node| {
+                self.inspect_node(node, |widget| {
+                    crate::widget::tooltip::placed_target_at(widget, point)
+                })
+                .ok()
+                .flatten()
+            })
+            .collect()
+    }
+
     /// Whether a laid-out widget claims raw per-finger touch at `point`
     /// (logical coords); see [`Widget::claims_raw_touch`].
     pub(crate) fn claims_raw_touch_at(&self, point: vello::kurbo::Point) -> bool {

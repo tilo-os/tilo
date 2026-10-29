@@ -364,44 +364,25 @@ fn draw_visible_tooltip(
     scale_factor: f32,
 ) -> Option<KurboRect> {
     app.input.tooltip_host.tick(crate::time::now());
-    // The widget under a shown tooltip may have been rebuilt since the
-    // pointer settled (a toggle that now reads "Show" instead of "Hide"):
-    // read its tooltip again rather than showing the old one.
-    let mut side = crate::widget::tooltip::TooltipSide::Below;
-    if let Some((_, anchor)) = app.input.tooltip_host.visible() {
-        let current = app.tooltip_placed_at(anchor.center());
-        if let Some((_, _, placed)) = &current {
-            side = *placed;
-        }
-        app.input
-            .tooltip_host
-            .refresh(current.map(|(rect, label, _)| (rect, label)));
-    }
-    let (text, anchor) = app
+    let current = app
         .input
         .tooltip_host
         .visible()
-        .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))?;
+        .and_then(|(_, anchor)| app.tooltip_placed_at(anchor.center()));
     let viewport = KurboRect::new(
         0.0,
         0.0,
         f64::from(width) / f64::from(scale_factor),
         f64::from(height) / f64::from(scale_factor),
     );
-    let chip = crate::widget::tooltip::hover_chip_rect_on(
+    let (_, _, bounds, _) = app.input.tooltip_host.paint_shown(
+        current,
         &mut app.text_renderer,
         &app.theme,
-        (anchor, side),
-        &text,
+        scene,
+        transform,
         viewport,
-    );
-    // It arrives from its control (`motion::Appear`).
-    let pose = app.input.tooltip_host.pose(chip, app.theme.motion());
-    let bounds = crate::widget::tooltip::chip_paint_bounds(chip, &app.theme);
-    let (text_renderer, theme) = (&mut app.text_renderer, &app.theme);
-    pose.paint(scene, transform, bounds, |scene, transform| {
-        crate::widget::tooltip::draw_chip(scene, transform, text_renderer, theme, chip, &text);
-    });
+    )?;
     Some(transform.transform_rect_bbox(bounds))
 }
 

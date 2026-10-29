@@ -92,6 +92,9 @@ pub(crate) trait KeyHost: HostCore {
         false
     }
 
+    /// The controls that may take the keyboard when the window takes it.
+    fn keyboard_entry_order(&self) -> Vec<NodeId>;
+
     /// Keys the host answers itself, after Enter and Space and before the
     /// desktop's tab chords. Whether it took `event`.
     fn handle_unconsumed_host_key(&mut self, _event: &WindowEvent) -> bool {
@@ -311,5 +314,36 @@ pub(crate) trait KeyHost: HostCore {
         }
         self.handle_unconsumed_range_key(event, handled);
         self.handle_unconsumed_directional_key(event, navigation, false, handled);
+    }
+
+    /// The control of `order` that takes the keyboard when its app does
+    /// without one of its own choosing ([`crate::widget::keyboard_entry_rank`]).
+    fn keyboard_entry(&self, order: &[NodeId]) -> Option<NodeId> {
+        order
+            .iter()
+            .copied()
+            .filter_map(|node| {
+                let rank = self
+                    .inspect_node(node, crate::widget::keyboard_entry_rank)
+                    .ok()
+                    .flatten()?;
+                Some((rank, node))
+            })
+            .min_by_key(|(rank, _)| *rank)
+            .map(|(_, node)| node)
+    }
+
+    /// The window took the keyboard (it opened, was brought forward, or the
+    /// person pressed one of the app's slots in its bar): when nothing in it
+    /// holds the keyboard, the app's keyboard entry takes it, so what is
+    /// typed next reaches the app. Never a button merely for being first.
+    fn hand_keyboard_to_app(&mut self) {
+        if self.tree().focused.is_some() {
+            return;
+        }
+        let order = self.keyboard_entry_order();
+        if let Some(target) = self.keyboard_entry(&order) {
+            self.move_focus(Some(target));
+        }
     }
 }

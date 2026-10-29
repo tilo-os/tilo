@@ -1025,20 +1025,6 @@ impl App {
         std::mem::take(&mut self.component_close_reports)
     }
 
-    /// Where a [`Widget::take_focus_reset`] puts focus: the control the new
-    /// content marks as its default (so Enter takes the encouraged action),
-    /// otherwise the first focusable.
-    fn reset_focus_target(&self) -> Option<taffy::NodeId> {
-        self.focusable_order
-            .iter()
-            .copied()
-            .find(|&id| {
-                self.inspect_node(id, |widget| widget.is_default_keyboard_focus())
-                    .unwrap_or(false)
-            })
-            .or_else(|| self.focusable_order.first().copied())
-    }
-
     /// Where focus starts in a live window: a terminal, else the first
     /// control.
     fn initial_live_focus_target(&self) -> Option<taffy::NodeId> {
@@ -2076,24 +2062,12 @@ impl App {
     /// widgets nested under containers with private child storage.
     #[cfg(feature = "native")]
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
-        let mut pick = crate::widget::cursor::CursorPick::default();
-        for &node in self.layout.node_map.keys() {
-            let _ = self.inspect_node(node, |widget| pick.offer(widget, point));
-        }
-        pick.icon()
+        self.tree().cursor_pick_at(point).icon()
     }
 
-    /// Mirrors [`Self::resolve_cursor`]: smallest-area widget under `point`
-    /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
-    /// beats its enclosing toolbar.
-    #[cfg(feature = "native")]
-    fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
-        self.tooltip_placed_at(point)
-            .map(|(rect, label, _)| (rect, label))
-    }
-
-    /// [`Self::tooltip_target_at`] with the side of its control the
-    /// tooltip prefers.
+    /// The smallest-area widget under `point` exposing a non-empty
+    /// [`Widget::tooltip`], so a nested icon button beats its enclosing
+    /// toolbar, with the side of its control the tooltip prefers.
     #[cfg(feature = "native")]
     pub(crate) fn tooltip_placed_at(
         &self,
@@ -2106,13 +2080,7 @@ impl App {
         if !self.input.interaction.supports_hover() {
             return None;
         }
-        crate::widget::tooltip::smallest_target(self.layout.node_map.keys().filter_map(|&node| {
-            self.inspect_node(node, |widget| {
-                crate::widget::tooltip::placed_target_at(widget, point)
-            })
-            .ok()
-            .flatten()
-        }))
+        crate::widget::tooltip::smallest_target(self.tree().tooltips_at(point))
     }
 }
 
@@ -2492,7 +2460,7 @@ impl App {
                 self.focused_node = Some(node);
             } else if focus_reset {
                 clear_stray_focus(self.root_widget.as_mut());
-                if let Some(target) = self.reset_focus_target() {
+                if let Some(target) = self.tree().default_focus(&self.focusable_order) {
                     self.set_focused_node(Some(target));
                 }
             } else if let Some(idx) = prev_focus_idx {

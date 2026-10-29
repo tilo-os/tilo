@@ -18,12 +18,7 @@ impl App {
     pub fn validate_history_registration(
         &self,
     ) -> Result<(), crate::history_mode::HistoryRegistrationError> {
-        let history = self
-            .history
-            .as_ref()
-            .ok_or(crate::history_mode::HistoryRegistrationError::Missing)?;
-        history.validate()?;
-        history.validate_root(self.root_widget.as_ref())
+        self.tree().validate_history_registration()
     }
     pub(super) fn history_presentation_roots(&self) -> Vec<&dyn Widget> {
         let mut roots = Vec::new();
@@ -320,29 +315,7 @@ impl App {
             .or(self.layout.root_node);
         let (order, trap_active) = root.map_or_else(
             || (Vec::new(), false),
-            |root| {
-                // One sweep asks every mapped node, entering each
-                // component's scope once rather than once a node.
-                let sweep = std::cell::RefCell::new(crate::bound_dispatch::NodeSweep::new(
-                    &self.bindings,
-                    &self.layout.node_map,
-                ));
-                crate::focus_navigation::layout_map_order(
-                    root,
-                    &self.layout.taffy,
-                    restrictions,
-                    self.history.as_deref(),
-                    |node| {
-                        // SAFETY: App owns this stable tree and no target reference escapes.
-                        unsafe {
-                            sweep
-                                .borrow_mut()
-                                .inspect(node, crate::focus_navigation::probe)
-                        }
-                        .ok()
-                    },
-                )
-            },
+            |root| self.tree().layout_map_focus_order(root, restrictions),
         );
         self.focusable_order = order;
         if let Some(next) = crate::focus_navigation::reconcile_trap(

@@ -133,29 +133,6 @@ impl super::App {
         }).collect()
     }
 
-    /// Ask every document route's reader for its whole committed read again,
-    /// as an owner being rebuilt does. How many routes took the ask.
-    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
-    pub fn controlled_request_committed_reads_for_test(&self) -> usize {
-        self.document_routes
-            .owners
-            .iter()
-            .filter(|entry| {
-                self.collaboration
-                    .manager
-                    .controlled_request_whole_read_for_test(&entry.route)
-            })
-            .count()
-    }
-
-    /// Observe the production guard for acknowledged private continuity.
-    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
-    pub fn controlled_private_continuity_route_for_test(
-        &mut self,
-    ) -> Option<crate::collaboration::RouteSpec> {
-        self.private_continuity_route()
-    }
-
     /// `always_refresh` is the previous behaviour: synchronize, invalidate and
     /// republish unconditionally. Otherwise the pump is dirty-tracked like the
     /// window runner, whose redraw syncs only on `needs_sync`: a pass with no
