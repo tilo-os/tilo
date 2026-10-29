@@ -18250,6 +18250,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-connectivity-service"
+version = "0.1.0"
+dependencies = [
+ "os-actions",
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-resource",
+ "tilo-service",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-connector"
 version = "0.1.0"
 dependencies = [
@@ -21184,6 +21198,18 @@ name = "tilo-selector"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-service"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-actions",
+ "tilo-resource",
+ "tracing",
  "workspace-hack",
 ]
 
