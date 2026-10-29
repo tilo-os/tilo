@@ -70,6 +70,8 @@ pub mod input_method;
 pub mod input_method_service;
 pub mod key_latency;
 #[cfg(target_os = "linux")]
+pub mod keymap_typing;
+#[cfg(target_os = "linux")]
 pub mod launch_permissions;
 pub(crate) mod listing_snapshots;
 pub(crate) mod lock_actions;

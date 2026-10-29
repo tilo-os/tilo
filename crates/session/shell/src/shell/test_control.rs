@@ -1624,52 +1624,25 @@ fn key_down_or_up(key: &str, pressed: bool) -> (Response, Vec<PlannedAction>) {
     }
 }
 
-/// [`Command::Type`]: a press+release pair per character, bracketed with Shift for characters that need it.
+/// [`Command::Type`]: a press+release pair per character.
 fn type_text(text: &str) -> (Response, Vec<PlannedAction>) {
-    // A `KeyTag::Char` reaches a Wayland client as a bare evdev keycode with no case (35 is `h` or `H` purely by whether Shift is held), so Shift must bracket it like real hardware. Chrome's own widgets read the synthesised `text` field and show the capital regardless, so this bug is invisible there — a focused client gets the lowercase letter, and typing "Hello" lands as "hello".
+    // Each character is planned as its own key, by character: the executor
+    // presses the key the seat's keymap puts it on, with Shift or AltGr held
+    // as that keymap needs (`compositor::keymap_typing`), so a client reading
+    // the keycode through its keymap types exactly this text on any layout.
     let mut actions = Vec::with_capacity(text.chars().count().saturating_mul(2));
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         // A line break or tab in typed text is the key that makes one, as a
         // person typing it would press; `\r\n` is one line break.
-        let control = match c {
+        let key = match c {
             '\r' if chars.peek() == Some(&'\n') => continue,
-            '\n' | '\r' => Some(NamedKeyTag::Enter),
-            '\t' => Some(NamedKeyTag::Tab),
-            _ => None,
+            '\n' | '\r' => KeyTag::Named(NamedKeyTag::Enter),
+            '\t' => KeyTag::Named(NamedKeyTag::Tab),
+            _ => KeyTag::Char(c),
         };
-        if let Some(named) = control {
-            for pressed in [true, false] {
-                actions.push(PlannedAction::KeyboardKey {
-                    key: KeyTag::Named(named),
-                    pressed,
-                });
-            }
-            continue;
-        }
-        let tag = KeyTag::Char(c);
-        let shift = KeyTag::Named(NamedKeyTag::Shift);
-        // Shifted punctuation needs the same bracket as letters — both reach the client as a keyboard position, not a character. See `client_input::unshifted`.
-        let (_, shifted) = crate::shell::input_policy::unshifted(c);
-        if shifted {
-            actions.push(PlannedAction::KeyboardKey {
-                key: shift,
-                pressed: true,
-            });
-        }
-        actions.push(PlannedAction::KeyboardKey {
-            key: tag,
-            pressed: true,
-        });
-        actions.push(PlannedAction::KeyboardKey {
-            key: tag,
-            pressed: false,
-        });
-        if shifted {
-            actions.push(PlannedAction::KeyboardKey {
-                key: shift,
-                pressed: false,
-            });
+        for pressed in [true, false] {
+            actions.push(PlannedAction::KeyboardKey { key, pressed });
         }
     }
     (Response::Ok { frame: 0 }, actions)
