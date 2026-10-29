@@ -1,16 +1,19 @@
 [package]
 name = "tilo-sheets"
-description = "The sheets the desktop shows over everything, as ordinary apps the shell hosts: the power menu, the question about a display change, the Super+P display sheet, the shortcut guide, the public workspace directory, workspace settings and the questions the shell asks on an app's or a service's behalf (portal, authentication and network-secret sheets)."
+description = "The sheets the desktop shows over everything, as ordinary apps the shell hosts: the power menu, the question about a display change, the Super+P display sheet, the shortcut guide, the public workspace directory, workspace settings, the file chooser and the questions the shell asks on an app's or a service's behalf (portal, authentication and network-secret sheets)."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
 
 [dependencies]
+serde = { workspace = true }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
+tilo-test-env = { path = "../../dev/test-env" }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 
 [lints]
