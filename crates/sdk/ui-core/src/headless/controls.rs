@@ -15,6 +15,7 @@ use crate::a11y::Action;
 use crate::a11y_tree::{
     SEMANTIC_OPERATION_TYPE, SemanticActionKind, SemanticId, SemanticNode, SemanticTree,
 };
+use crate::host_core::HostCore as _;
 use accesskit::{Action as AkAction, Role};
 
 /// Resource id prefix of a projected control (`ui:<percent-encoded node>`).

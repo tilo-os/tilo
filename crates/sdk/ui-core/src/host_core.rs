@@ -50,11 +50,125 @@ impl<'a> HostTree<'a> {
         self.history_layout
             .is_some_and(|layout| layout.contains(self.taffy, node))
     }
+
+    /// Read the widget laid out at `node`, through its component binding.
+    pub(crate) fn inspect_node<R>(
+        &self,
+        node: NodeId,
+        callback: impl FnOnce(&dyn Widget) -> R,
+    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        // SAFETY: the host owns this stable tree; no target reference escapes.
+        unsafe {
+            crate::bound_dispatch::inspect_bound_node(self.bindings, self.node_map, node, callback)
+        }
+    }
+
+    /// Whether a laid-out widget claims raw per-finger touch at `point`
+    /// (logical coords); see [`Widget::claims_raw_touch`].
+    pub(crate) fn claims_raw_touch_at(&self, point: vello::kurbo::Point) -> bool {
+        self.node_map.keys().any(|&node| {
+            self.inspect_node(node, |widget| {
+                widget.get_rect().contains(point) && widget.claims_raw_touch(point)
+            })
+            .unwrap_or(false)
+        })
+    }
+
+    /// What a contact beginning at `point` (logical coords) means: raw for a
+    /// widget that reads fingers itself, else what the widget under it
+    /// claims ([`crate::widget::Widget::touch_claim`]), else ordinary pointer
+    /// emulation.
+    pub(crate) fn touch_claim_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> crate::interaction::TouchClaim {
+        use crate::interaction::TouchClaim;
+        if self.claims_raw_touch_at(point) {
+            return TouchClaim::Raw;
+        }
+        self.node_map
+            .keys()
+            .find_map(|&node| {
+                self.inspect_node(node, |widget| {
+                    if widget.get_rect().contains(point) {
+                        widget.touch_claim(point)
+                    } else {
+                        TouchClaim::Pointer
+                    }
+                })
+                .ok()
+                .filter(|claim| *claim != TouchClaim::Pointer)
+            })
+            .unwrap_or(TouchClaim::Pointer)
+    }
+
+    /// Tab normally belongs to the host's focus order. A focused editor-like
+    /// widget may explicitly claim it first (for indentation or completion),
+    /// without broadening that exception to arbitrary widgets or escaping an
+    /// active focus trap.
+    pub(crate) fn focused_widget_wants_tab_input(&self) -> bool {
+        self.focused.is_some_and(|node| {
+            self.inspect_node(node, |widget| widget.wants_tab_input())
+                .unwrap_or(false)
+        })
+    }
+
+    /// `order` kept inside the keyboard scope: the focused desktop window's
+    /// content ([`crate::widget::Widget::scopes_keyboard_focus`]).
+    pub(crate) fn within_keyboard_scope(&self, order: Vec<NodeId>) -> Vec<NodeId> {
+        let scopes: Vec<NodeId> = self
+            .node_map
+            .keys()
+            .copied()
+            .filter(|&node| {
+                self.inspect_node(node, |widget| widget.scopes_keyboard_focus())
+                    .unwrap_or(false)
+            })
+            .collect();
+        crate::focus_navigation::within_keyboard_scope(order, &scopes, self.taffy)
+    }
+
+    /// Where focus lands when History opens: its timeline, else the first
+    /// focusable History control in `order`.
+    pub(crate) fn history_focus_target(&self, order: &[NodeId]) -> Option<NodeId> {
+        order
+            .iter()
+            .copied()
+            .find(|&node| {
+                self.is_history_node(node)
+                    && self
+                        .inspect_node(node, |widget| widget.name() == "ActivityTimeline")
+                        .unwrap_or(false)
+            })
+            .or_else(|| {
+                order
+                    .iter()
+                    .copied()
+                    .find(|&node| self.is_history_node(node))
+            })
+    }
+}
+
+/// A host's document beside its bindings, borrowed for one write through a
+/// laid-out widget.
+pub(crate) struct HostDocument<'a> {
+    pub(crate) state: &'a mut crate::State,
+    pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
+    pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
+    pub(crate) permissions: &'a crate::permissions::PermissionContext,
+    pub(crate) author: &'a crate::permissions::UserId,
 }
 
 pub(crate) trait HostCore {
     /// The host's document and laid-out tree.
     fn tree(&self) -> HostTree<'_>;
+
+    /// The host's document, writable, beside its bindings.
+    fn document(&mut self) -> HostDocument<'_>;
+
+    /// Something is about to reach a laid-out widget, which may change what
+    /// the host presents next.
+    fn widget_reached(&mut self);
 
     /// The standalone History host beside the tree it presents.
     fn document_history_with_tree(&mut self) -> (&mut StandaloneHistoryHost, HostTree<'_>);
@@ -75,6 +189,85 @@ pub(crate) trait HostCore {
     ) -> R {
         let (host, tree) = self.document_history_with_tree();
         visit(host, &tree.history_context())
+    }
+
+    fn inspect_node<R>(
+        &self,
+        node: NodeId,
+        callback: impl FnOnce(&dyn Widget) -> R,
+    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        self.tree().inspect_node(node, callback)
+    }
+
+    fn mutate_node<R>(
+        &mut self,
+        node: NodeId,
+        callback: impl FnOnce(&mut dyn Widget) -> R,
+    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        self.widget_reached();
+        let document = self.document();
+        // SAFETY: exclusive host access prevents overlapping target references.
+        unsafe {
+            crate::bound_dispatch::mutate_bound_node(
+                document.bindings,
+                document.node_map,
+                node,
+                callback,
+            )
+        }
+    }
+
+    fn dispatch_node<R>(
+        &mut self,
+        node: NodeId,
+        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
+    ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
+        self.widget_reached();
+        let document = self.document();
+        // SAFETY: the exclusive host owns both maps and the stable live tree.
+        unsafe {
+            crate::bound_dispatch::invoke_bound_node(
+                document.bindings,
+                document.node_map,
+                node,
+                &mut document.state.doc,
+                &document.state.root,
+                callback,
+            )
+        }
+    }
+
+    fn dispatch_semantic_node<R>(
+        &mut self,
+        node: NodeId,
+        action: &crate::a11y::Action,
+        callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
+    ) -> Result<R, String> {
+        self.widget_reached();
+        let document = self.document();
+        // SAFETY: the host exclusively owns the unchanged admitted tree.
+        unsafe {
+            crate::bound_dispatch::invoke_bound_semantic_node(
+                document.bindings,
+                document.node_map,
+                node,
+                action,
+                document.state,
+                crate::bound_dispatch::SemanticCaller {
+                    authority: document.permissions,
+                    author: document.author,
+                },
+                callback,
+            )
+        }
+    }
+
+    fn touch_claim_at(&self, point: vello::kurbo::Point) -> crate::interaction::TouchClaim {
+        self.tree().touch_claim_at(point)
+    }
+
+    fn focused_widget_wants_tab_input(&self) -> bool {
+        self.tree().focused_widget_wants_tab_input()
     }
 
     fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {

@@ -17,6 +17,7 @@
 //! History draws no toggle of its own.
 
 #[cfg(feature = "native")]
+use crate::host_core::HostCore as _;
 use crate::widget::InPlace;
 use crate::widget::SearchDriver;
 #[cfg(feature = "native")]

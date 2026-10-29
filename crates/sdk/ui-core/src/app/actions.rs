@@ -4224,6 +4224,20 @@ impl crate::host_core::HostCore for App {
         )
     }
 
+    fn document(&mut self) -> crate::host_core::HostDocument<'_> {
+        crate::host_core::HostDocument {
+            state: &mut self.state,
+            bindings: &self.bindings,
+            node_map: &self.layout.node_map,
+            permissions: &self.permission_ctx,
+            author: &self.collaboration.local_author,
+        }
+    }
+
+    fn widget_reached(&mut self) {
+        self.mark_semantic_tree_stale();
+    }
+
     fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
     }

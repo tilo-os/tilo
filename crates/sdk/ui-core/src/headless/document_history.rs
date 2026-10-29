@@ -538,21 +538,7 @@ impl FrameHarness {
         let order = self.focus_order();
         if self.history_focus_pending {
             self.history_focus_pending = false;
-            let target = order
-                .iter()
-                .copied()
-                .find(|node| {
-                    self.is_history_node(*node)
-                        && self
-                            .inspect_node(*node, |widget| widget.name() == "ActivityTimeline")
-                            .unwrap_or(false)
-                })
-                .or_else(|| {
-                    order
-                        .iter()
-                        .copied()
-                        .find(|node| self.is_history_node(*node))
-                });
+            let target = self.tree().history_focus_target(&order);
             self.set_focused(target);
         } else if let Some(focus) = self.with_history(
             super::super::standalone_history_host::StandaloneHistoryHost::take_restore_focus,
