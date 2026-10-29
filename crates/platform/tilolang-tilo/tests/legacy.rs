@@ -281,7 +281,7 @@ fn field(replica: &Replica, app: &str, ty: &str, name: &str) -> (String, String)
 fn items_of_an_older_record_move_change_and_go_keeping_their_ids() {
     let packages = vec![app!("tasks")];
     let mut replica = open(include_str!("legacy/todo.hex"), &packages);
-    let app = "so.tilo.lang.todo";
+    let app = "so.tilo.lang.tasks";
     let list = root(&replica, app);
     let (items_field, item_ty) = field(&replica, app, "Tasks", "items");
     let before = listed(&replica, &list, &items_field);
@@ -578,16 +578,17 @@ fn an_older_entry_that_does_not_read_is_set_aside_and_kept() {
     let _ = id;
 }
 
-/// Todo's package, published as Tasks: the same declarations and ids lock, under the id
-/// `so.tilo.lang.tasks`, declaring it was `so.tilo.lang.todo` before.
+/// Tasks, published as `so.tilo.lang.tasks`, declaring it was `so.tilo.lang.todo` before: the
+/// id Todo's records were written under.
 fn todo_as_tasks() -> (String, &'static str) {
     let (source, ids) = app!("tasks");
-    let (header, rest) = source.split_once('\n').unwrap();
-    assert!(header.starts_with("app so.tilo.lang.todo "), "{header}");
-    let renamed = format!(
-        "app so.tilo.lang.tasks \"Tasks\" (icon: .list_checks, category: .office, previously: so.tilo.lang.todo)\n{rest}"
+    let header = source.lines().next().unwrap();
+    assert!(
+        header.starts_with("app so.tilo.lang.tasks ")
+            && header.contains("previously: so.tilo.lang.todo"),
+        "{header}"
     );
-    (renamed, ids)
+    (source.to_owned(), ids)
 }
 
 #[test]
@@ -656,4 +657,35 @@ fn a_renamed_app_opens_the_records_of_its_earlier_id_where_they_are() {
         listed(&fresh, &root(&fresh, app), &items_field),
         listed(&replica, &list, &items_field)
     );
+}
+
+#[test]
+fn mail_holds_the_records_letters_wrote_where_they_are() {
+    let packages = vec![app!("mail")];
+    let mut replica = open(include_str!("legacy/letters.hex"), &packages);
+    let heads = replica.doc.get_heads();
+    let stored = |replica: &Replica| -> Vec<(String, String)> {
+        records(&replica.doc)
+            .into_iter()
+            .map(|(app, id, _)| (app, id))
+            .collect()
+    };
+    let before = stored(&replica);
+    assert!(
+        !before.is_empty()
+            && before
+                .iter()
+                .all(|(held, _)| held == "so.tilo.lang.letters"),
+        "{before:?}"
+    );
+    // Mail reads them as its own, under the ids they have, and writes nothing to do so.
+    let app = "so.tilo.lang.mail";
+    assert!(replica.host.store().index_contents(app).is_some());
+    for (_, id) in &before {
+        assert!(replica.host.store().contains(id), "{id} is Mail's now");
+    }
+    assert_eq!(replica.doc.get_heads(), heads);
+    assert!(replica.host.take_committed().is_empty());
+    assert_eq!(stored(&replica), before);
+    check_index(&replica, &packages, app);
 }

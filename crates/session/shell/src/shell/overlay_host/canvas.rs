@@ -31,7 +31,7 @@ use ui::query_text::{QueryComposition, QueryInk, QueryView};
 use ui::text_selection::Selection;
 use ui::widget::CanvasView;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -51,7 +51,7 @@ const NEARBY: u32 = 900;
 const ZOOM_PER_DETENT: f64 = 1.1;
 
 /// Pixels of a touchpad's scroll that make one wheel detent.
-const PIXELS_PER_DETENT: f64 = 40.0;
+const PIXELS_PER_DETENT: f64 = ui::tokens::Layout::BASE.jump_px_per_detent as f64;
 
 /// One person's lens on a workspace's canvas: the canvas point at the
 /// deck's top-left corner and how many screen pixels a canvas pixel takes.
@@ -1239,24 +1239,9 @@ impl ShellOverlayHost {
         if !self.canvas_shown() {
             return;
         }
-        let colors = &theme.tokens.colors;
-        let line = f64::from(theme.tokens.metrics.drag_line_px).max(1.0);
         if let Some(press) = self.canvas.press.filter(|p| p.dragging && !p.pans) {
             let band = Rect::from_points(press.start, press.now);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                colors.intent.selection_tint,
-                None,
-                &band,
-            );
-            scene.stroke(
-                &Stroke::new(line),
-                transform,
-                colors.intent.accent,
-                None,
-                &band,
-            );
+            ui::chrome::paint_selection_band(scene, transform, band, theme);
         }
         let radius = ui::widget::primitives::SurfaceLevel::Window.radius(theme);
         let selected: Vec<Rect> = self
@@ -1273,14 +1258,7 @@ impl ShellOverlayHost {
             })
             .collect();
         for rect in selected {
-            let ring = rect.inflate(line * 2.0, line * 2.0);
-            scene.stroke(
-                &Stroke::new(line * 2.0),
-                transform,
-                colors.intent.accent,
-                None,
-                &RoundedRect::from_rect(ring, radius + line * 2.0),
-            );
+            ui::chrome::paint_selected_ring(scene, transform, rect, radius, theme);
         }
         let Some(at) = self
             .canvas

@@ -1,4 +1,4 @@
-//! Agents' programs: a session over Notes and Todo that finds, reads, acts, keeps its `let`s
+//! Agents' programs: a session over Notes and Tasks that finds, reads, acts, keeps its `let`s
 //! between programs, asks where the agent's code is not trusted, and teaches on errors.
 
 #[cfg(test)]
@@ -188,7 +188,7 @@ mod cases {
         let reply = session.run(
             &w.rt,
             &agent(),
-            "let all = find(\"launch\")\nprint(all.of(Note).len(), all.of(Todo).len())",
+            "let all = find(\"launch\")\nprint(all.of(Note).len(), all.of(Task).len())",
         );
         assert_eq!(done(&reply), "2 0");
         assert_eq!(w.notes.len(), 3);

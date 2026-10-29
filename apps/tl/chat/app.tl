@@ -206,7 +206,8 @@ view message(m: Message) {
     }
 }
 
-/// A team's chat a morning in: categories of channels, a busy channel with replies and a thread.
+/// A team's chat two mornings in: categories of channels, a busy channel with replies and a
+/// thread, its last messages the next day.
 scenario "a team's channels" -> TextChannel {
     let mia = person("Mia")
     let leo = person("Leo")
@@ -241,10 +242,10 @@ scenario "a team's channels" -> TextChannel {
             send(design, RichText("Agreed. I'll update the flow this afternoon."), ask)
         }
     }
-    as ada at 2026-06-29T08:10Z {
+    as ada at 2026-06-30T08:10Z {
         send(design, RichText("Shots of the new sidebar are in the review folder."))
     }
-    as mia at 2026-06-29T08:12Z {
+    as mia at 2026-06-30T08:12Z {
         send(design, RichText("The spacing above the categories looks right now."))
     }
     as leo at 2026-06-29T08:30Z {

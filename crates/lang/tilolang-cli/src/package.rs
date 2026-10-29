@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_app_package::manifest::Manifest;
 use tilo_app_package::pack::SigningIdentity;
-use tilolang::source::{BuiltPackage, compile_dirs, dependency_order, write_ids};
+use tilolang::source::{compile_dirs, dependency_order, write_ids};
 use tilolang::{OsEntropy, PackageMeta};
 use tilolang_tilo::bundle::{Bundle, ICON_FILE};
 
