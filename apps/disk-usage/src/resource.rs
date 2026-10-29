@@ -1,26 +1,46 @@
 //! Disk Usage as a resource: scans and navigation are the
-//! view's [`DiskUsageEffect`]s. The folders analyzed lately are paths on
-//! this device, so they are a device-local setting ([`RecentFolders`]),
-//! published as live rows beside the resource.
+//! view's [`DiskUsageEffect`]s. The folders analyzed lately are a record
+//! beside it ([`RecentFolders`]), each device's paths its own, published as
+//! live rows beside the resource.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
 use ui::framework::{Fixture, LiveRow, ResourceApp, ViewCx};
-use ui::storage::{Scope, SettingsSchema};
-use ui::tilo_resource::{self, AbsolutePath, Model, resource};
+use ui::tilo_resource::{self, AbsolutePath, Model, Recents, resource};
 use ui::widget::Element;
 
 use crate::scan::ScanResult;
 
-/// The folders analyzed on this device lately, newest first.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The folders one device analyzed lately, newest first.
+pub type Folders = Recents<PathBuf, 5>;
+
+/// The folders analyzed lately, by the device whose disk they are on: a
+/// record Disk Usage keeps beside its own in the workspace, synced with
+/// it, each device reading and writing only its own list.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct RecentFolders {
-    pub folders: ui::tilo_resource::Recents<PathBuf, 5>,
+    pub devices: BTreeMap<String, Folders>,
 }
 
-impl SettingsSchema for RecentFolders {
-    const SCOPE: Scope = Scope::DeviceLocal;
+#[resource(kind = "disk-usage.recent-folders", label = "Recent folders")]
+impl RecentFolders {
+    /// `folder` on `device` was analyzed: it moves to the front.
+    #[action(housekeeping)]
+    pub fn remember(&mut self, device: String, folder: AbsolutePath) {
+        self.devices
+            .entry(device)
+            .or_default()
+            .remember(folder.into_path_buf());
+    }
+}
+
+impl RecentFolders {
+    /// The folders `device` analyzed lately, newest first.
+    #[must_use]
+    pub fn on(&self, device: &str) -> Folders {
+        self.devices.get(device).cloned().unwrap_or_default()
+    }
 }
 
 /// What the analyzer does that changes no document: scanning a folder and
@@ -53,7 +73,8 @@ pub enum DiskUsageEffect {
 
 /// The disk-usage analyzer: the door its effects and live rows are
 /// published on. It keeps no document state: what it scans is this device's
-/// disk, and the folders it remembers are a device-local setting.
+/// disk, and the folders it remembers are a record beside it
+/// ([`RecentFolders`]).
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct DiskUsage {}
 
@@ -142,14 +163,14 @@ impl ResourceApp for DiskUsageShell {
     /// scanned before.
     fn fixture(fixture: &mut Fixture<DiskUsage>) {
         match fixture.scenario() {
-            Some(name) if name.starts_with("home") => fixture.provide(RecentFolders {
-                folders: [
+            Some(name) if name.starts_with("home") => fixture.provide::<Folders>(
+                [
                     PathBuf::from("/home/you/Projects/tilo"),
                     PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
                 ]
                 .into_iter()
                 .collect(),
-            }),
+            ),
             Some(name) if !name.starts_with("analysis") => {}
             _ => fixture.provide(ScanResult::sample()),
         }
@@ -175,9 +196,14 @@ mod tests {
         folder
     }
 
-    /// The folders this device remembers.
-    fn recent(app: &TestApp<DiskUsageShell>) -> Vec<PathBuf> {
-        app.settings::<RecentFolders>().get().folders.to_vec()
+    /// The device every test window runs on.
+    const DEVICE: &str = "test-device";
+
+    /// The folders this device remembers, in the record.
+    fn recent(app: &mut TestApp<DiskUsageShell>) -> Vec<PathBuf> {
+        app.person::<RecentFolders>()
+            .map(|record| record.with(|recent| recent.on(DEVICE).to_vec()))
+            .unwrap_or_default()
     }
 
     /// Run frames until the scan a row started has shown and remembered
@@ -220,7 +246,7 @@ mod tests {
         assert_eq!(answer["path"], folder.to_string_lossy().as_ref());
         assert!(answer["bytes"].as_u64().unwrap() >= 4096, "{answer}");
         app.settle();
-        assert_eq!(recent(&app), std::slice::from_ref(&folder));
+        assert_eq!(recent(&mut app), std::slice::from_ref(&folder));
         assert_eq!(
             app.versions().len(),
             versions,
@@ -272,7 +298,7 @@ mod tests {
             folder.to_string_lossy().as_ref()
         );
         app.settle();
-        assert_eq!(recent(&app), std::slice::from_ref(&folder));
+        assert_eq!(recent(&mut app), std::slice::from_ref(&folder));
         let _ = std::fs::remove_dir_all(&folder);
     }
 
@@ -330,7 +356,7 @@ mod tests {
 
         let mut home = TestApp::<DiskUsageShell>::capture(Some("home-narrow")).unwrap();
         assert_eq!(home.harness().inspection().viewport, [560, 720]);
-        assert!(recent(&home).is_empty(), "a capture remembers nothing");
+        assert!(recent(&mut home).is_empty(), "a capture remembers nothing");
         let frame = home.harness().inspection_json().unwrap();
         assert!(frame.contains("\"tilo\""), "{frame}");
 
@@ -339,7 +365,7 @@ mod tests {
         let frame = analysis.harness().inspection_json().unwrap();
         assert!(frame.contains("Projects"), "{frame}");
         assert!(
-            recent(&analysis).is_empty(),
+            recent(&mut analysis).is_empty(),
             "a staged scan is not one this person made"
         );
 
@@ -392,8 +418,12 @@ mod tests {
             };
             assert_eq!(address.action, "analyze");
         }
-        app.settings::<RecentFolders>()
-            .update(|recent| recent.folders.remember(folder.clone()))
+        app.person::<RecentFolders>()
+            .unwrap()
+            .invoke(
+                &RecentFolders::REMEMBER
+                    .with((DEVICE.to_owned(), AbsolutePath::new(&folder).unwrap())),
+            )
             .unwrap();
         app.settle();
         let id = format!("disk-usage.place:{}", folder.display());

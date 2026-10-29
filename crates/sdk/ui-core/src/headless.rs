@@ -373,11 +373,10 @@ pub struct FrameHarness {
     /// several out (the desktop's strip of app tiles): the palette stands
     /// over it, as an app's own palette stands over its window.
     palette_window: Option<Rect>,
-    /// Where the pointer is, and where the last press landed until a key
-    /// is pressed, in logical pixels: a confirmation a press asked for
+    /// Where the pointer is, which buttons it holds, and where the last
+    /// press landed until a key is pressed: a confirmation a press asked for
     /// stands over the window pressed in.
-    pointer_at: Option<Point>,
-    pressed_at: Option<Point>,
+    pointer: crate::host_core::PointerPlace,
     /// The open search palette has provider pages left to read.
     search_pending: bool,
     root_lifetime: uuid::Uuid,
@@ -572,9 +571,6 @@ pub struct FrameHarness {
     /// Opt-in: the frame an input event asks for is left to the host's next
     /// frame ([`Self::set_coalesce_input_frames`]).
     coalesce_input_frames: bool,
-    /// The pointer buttons held, one bit each: motion with one held is a
-    /// drag, never inert ([`Self::is_inert_input`]).
-    pointer_buttons: u32,
     /// A coalesced input event was dispatched since the last frame.
     input_frame_pending: bool,
     /// A save-status-only owner service changed what an owner shows since
@@ -1339,14 +1335,7 @@ impl FrameHarness {
             return;
         };
         let activated = self
-            .dispatch_node(focused, |widget, doc, root| {
-                widget.perform_action(
-                    &crate::a11y::Action::Activate,
-                    &[],
-                    &mut crate::widget::Edits::lend(doc),
-                    root,
-                )
-            })
+            .perform_node_action(focused, &crate::a11y::Action::Activate)
             .unwrap_or(false);
         if activated {
             *handled = true;
@@ -1689,8 +1678,7 @@ impl FrameHarness {
             window_refusal: None,
             ordinary_palette_return_focus: None,
             palette_window: None,
-            pointer_at: None,
-            pressed_at: None,
+            pointer: crate::host_core::PointerPlace::default(),
             search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -1771,7 +1759,6 @@ impl FrameHarness {
             last_send_skipped_relayout: false,
             replaying_pointer: false,
             coalesce_input_frames: false,
-            pointer_buttons: 0,
             input_frame_pending: false,
             owner_save_shown: false,
             pointer_redraw_diagnostics: false,
@@ -6580,7 +6567,11 @@ impl FrameHarness {
             self.settle_replayed_draws();
         }
         crate::widget::context_menu::note_input(event);
-        self.track_acting_place(event);
+        if self.pointer.track_place(event, self.input_scale) {
+            // The person acts again: what stood at their last control is
+            // done with.
+            self.control_notice = None;
+        }
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows, as in the App.
         if let Some(moved) = self.pointer_replay.before(event) {
@@ -6665,8 +6656,8 @@ impl FrameHarness {
         // modifier) changes nothing a frame reads unless something took it
         // or it moved what the frame reads; read that before dispatch, as
         // the live App does (`App::resource_input_mark`).
-        self.track_pointer_buttons(event);
-        let inert_before = (!history_input && self.is_inert_input(event)).then(|| {
+        self.pointer.track_buttons(event);
+        let inert_before = (!history_input && self.pointer.is_inert(event)).then(|| {
             (
                 crate::doc::settle_mark(&self.state.doc),
                 crate::widget::resource_presentation_epoch(),
@@ -6963,55 +6954,6 @@ impl FrameHarness {
     /// the wheel does, and no floating surface takes it.
     fn is_view_only_scroll(&self, event: &WindowEvent) -> bool {
         self.may_pan_view_only(event) && self.root.view_only_scroll(event)
-    }
-
-    /// Follow which pointer buttons are down, as the live App does.
-    fn track_pointer_buttons(&mut self, event: &WindowEvent) {
-        if let WindowEvent::MouseInput { state, button, .. } = event {
-            let bit = match button {
-                winit::event::MouseButton::Left => 1,
-                winit::event::MouseButton::Right => 1 << 1,
-                winit::event::MouseButton::Middle => 1 << 2,
-                winit::event::MouseButton::Back => 1 << 3,
-                winit::event::MouseButton::Forward => 1 << 4,
-                winit::event::MouseButton::Other(n) => 1 << (5 + u32::from(*n) % 27),
-            };
-            match state {
-                ElementState::Pressed => self.pointer_buttons |= bit,
-                ElementState::Released => self.pointer_buttons &= !bit,
-            }
-        }
-    }
-
-    /// Input that activates nothing by itself, as the live App reads it
-    /// (`App::is_inert_input`): hover with no button held, a key's release,
-    /// a modifier key's press, a modifier change and a wheel (one nothing
-    /// takes, at the end of a list, moved nothing).
-    fn is_inert_input(&self, event: &WindowEvent) -> bool {
-        use winit::keyboard::{Key, NamedKey};
-        match event {
-            WindowEvent::KeyboardInput { event, .. } => {
-                event.state == ElementState::Released
-                    || matches!(
-                        event.logical_key,
-                        Key::Named(
-                            NamedKey::Shift
-                                | NamedKey::Control
-                                | NamedKey::Alt
-                                | NamedKey::AltGraph
-                                | NamedKey::Super
-                                | NamedKey::Meta
-                                | NamedKey::Hyper
-                        )
-                    )
-            }
-            WindowEvent::ModifiersChanged(_)
-            | WindowEvent::CursorEntered { .. }
-            | WindowEvent::CursorLeft { .. }
-            | WindowEvent::MouseWheel { .. } => true,
-            WindowEvent::CursorMoved { .. } => self.pointer_buttons == 0,
-            _ => false,
-        }
     }
 
     /// Whether a wheel `event` arrives where the live App lets it prove
@@ -7804,59 +7746,6 @@ impl FrameHarness {
         Ok(started)
     }
 
-    /// Follow where the person acts, as the App does: the pointer's place,
-    /// and where the last press landed until a key is pressed.
-    fn track_acting_place(&mut self, event: &WindowEvent) {
-        let scale = self.input_scale;
-        let logical = |x: f64, y: f64| Point::new(x / scale, y / scale);
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer_at = Some(logical(position.x, position.y));
-            }
-            WindowEvent::CursorLeft { .. } => self.pointer_at = None,
-            // The person acts again: what stood at their last control is
-            // done with.
-            WindowEvent::MouseInput {
-                state: winit::event::ElementState::Pressed,
-                ..
-            } => {
-                self.control_notice = None;
-                self.pressed_at = self.pointer_at;
-            }
-            WindowEvent::Touch(touch) if touch.phase == winit::event::TouchPhase::Started => {
-                self.control_notice = None;
-                let at = logical(touch.location.x, touch.location.y);
-                self.pointer_at = Some(at);
-                self.pressed_at = Some(at);
-            }
-            WindowEvent::KeyboardInput { event: key, .. }
-                if key.state == winit::event::ElementState::Pressed =>
-            {
-                self.control_notice = None;
-                self.pressed_at = None;
-            }
-            _ => {}
-        }
-    }
-
-    /// The window a palette is asked for from, when the root lays several
-    /// out (the desktop's strip of app tiles): the tile under the pointer
-    /// that pressed, else the one holding keyboard focus. `None` for a lone
-    /// app, whose window is the whole surface.
-    fn invoking_window_rect(&self) -> Option<Rect> {
-        crate::action_palette::invoking_window(
-            &self.taffy,
-            self.layout_built.then_some(self.root_node),
-            self.pressed_at,
-            self.focused,
-            |node| {
-                self.inspect_node(node, crate::action_palette::tile_rect)
-                    .ok()
-                    .flatten()
-            },
-        )
-    }
-
     fn open_ordinary_confirmation(
         &mut self,
         target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
@@ -7905,7 +7794,7 @@ impl FrameHarness {
     fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
         self.control_failures.push(error.to_string());
         let reason = crate::bound_dispatch::refusal_reason(error);
-        if let Some(anchor) = self.acting_control_rect() {
+        if let Some(anchor) = self.tree().acting_control_rect() {
             self.control_notice = Some(crate::control_notice::ControlNotice {
                 text: reason,
                 anchor,
@@ -7915,24 +7804,6 @@ impl FrameHarness {
             self.window_refusal = Some(reason);
         }
         self.invalidate_local();
-    }
-
-    /// The control the person acted on last: under their last press, else
-    /// the one holding the keyboard.
-    fn acting_control_rect(&self) -> Option<Rect> {
-        crate::control_notice::acting_control(
-            &self.taffy,
-            self.layout_built.then_some(self.root_node),
-            self.pressed_at,
-            self.focused,
-            |node| {
-                self.inspect_node(node, |widget| {
-                    Some((widget.get_rect(), widget.is_focusable()))
-                })
-                .ok()
-                .flatten()
-            },
-        )
     }
 
     /// What stands at the control the person last used: why what they did
@@ -8210,23 +8081,6 @@ impl FrameHarness {
                 tracing::warn!(code = error.code(), %error, ?origin, "headless: bound control refused");
                 self.control_failures.push(error.to_string());
             }
-        }
-    }
-
-    /// Keep why an edit the job `on_behalf_of` submitted was refused: the
-    /// job then fails.
-    fn note_continuation(
-        &mut self,
-        on_behalf_of: Option<tilo_actions::InvocationId>,
-        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        let Err(error) = result else {
-            return;
-        };
-        if let Some(continuation) = on_behalf_of.and_then(|id| self.acting_for.get_mut(&id))
-            && continuation.refused.is_none()
-        {
-            continuation.refused = Some(crate::invocation_scope::Continuation::failure(error));
         }
     }
 
@@ -10037,6 +9891,8 @@ impl crate::host_core::HostCore for FrameHarness {
             permissions: &self.permissions,
             focused: self.focused,
             history_layout: self.history_layout,
+            root_node: self.layout_built.then_some(self.root_node),
+            pointer: &self.pointer,
         }
     }
 
@@ -10059,6 +9915,8 @@ impl crate::host_core::HostCore for FrameHarness {
                 permissions: &self.permissions,
                 focused: self.focused,
                 history_layout: self.history_layout,
+                root_node: self.layout_built.then_some(self.root_node),
+                pointer: &self.pointer,
             },
         )
     }
@@ -10083,6 +9941,15 @@ impl crate::host_core::HostCore for FrameHarness {
 
     fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
         self.history.as_mut()
+    }
+
+    fn acting_for_mut(
+        &mut self,
+    ) -> &mut std::collections::HashMap<
+        tilo_actions::InvocationId,
+        crate::invocation_scope::Continuation,
+    > {
+        &mut self.acting_for
     }
 
     fn dispatch_current_history_control(

@@ -12,9 +12,9 @@ use std::rc::Rc;
 use automerge::transaction::Transactable as _;
 use automerge::{ROOT, ReadDoc as _, Value};
 use shell::shell::chrome_state::{Chrome, ChromeState};
+use shell::shell::continuation::AppInstanceId;
+use shell::shell::continuation_registry::global_registry;
 use shell::shell::document_import::{Awaiting, HostedRooms, ProposalStatus};
-use shell::shell::personal_continuity::AppInstanceId;
-use shell::shell::personal_continuity_registry::global_registry;
 use shell::shell::portal_dialog::{PortalDialogController, PortalDialogQueue};
 use shell::shell::record_hydration::{RecordAddress, RecordSource, set_source};
 use shell::shell::state::{

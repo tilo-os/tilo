@@ -70,3 +70,34 @@ params = [
 id = "clear-transit"
 kind = "undoable"
 
+[[resources]]
+kind = "maps.offline-areas"
+label = "Offline areas"
+version = 1
+fields = [
+  { path = "devices", type = "BTreeMap<String, DeviceAreas>" },
+]
+
+[[resources.verbs]]
+id = "record"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "region", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = "string" }, max = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] }, min = { type = "object", additionalProperties = false, properties = { lat = { type = "number" }, lon = { type = "number" } }, required = ["lat", "lon"] }, tiles = { type = "integer", maximum = 4294967295, minimum = 0 }, z0 = { type = "integer", maximum = 255, minimum = 0 }, z1 = { type = "integer", maximum = 255, minimum = 0 } }, required = ["id", "name", "min", "max", "z0", "z1", "tiles"] } },
+]
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+  { name = "area", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "clear"
+kind = "undoable"
+params = [
+  { name = "device", required = true, schema = { type = "string" } },
+]
+

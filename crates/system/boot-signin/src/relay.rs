@@ -22,7 +22,7 @@ use std::time::Duration;
 use tilo_ask_password::{Ask, answer, is_for, live, requests};
 use zeroize::Zeroizing;
 
-use crate::screen::Plymouth;
+use crate::plymouth::Plymouth;
 
 /// How the attempt ended, as far as this agent saw it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

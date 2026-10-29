@@ -2174,7 +2174,6 @@ downloaded-app-move = In „Programme“ verschieben
 downloaded-app-move-detail = Bewahrt sie im Ordner „Programme“ in deinen Dateien auf
 downloaded-app-add-row = { $name } zu den Apps hinzufügen
 search-provider-downloaded-programs = Heruntergeladene Programme
-new-document-unavailable = Neues Dokument nicht verfügbar: { $error }
 collab-unavailable-title = Zusammenarbeit nicht verfügbar
 collab-unavailable-body = Apps in dieser Sitzung können keine Änderungen teilen. { $reason }
 identity-clock-wrong-title = Die Uhr dieses Geräts geht falsch

@@ -968,8 +968,8 @@ pub struct FilesState {
     /// Recently opened or changed files, newest first.
     /// The Recent list of a window no framework hosts.
     recent: crate::recent::RecentFiles,
-    /// This device's Recent list, in a hosted window.
-    recent_setting: Option<ui::framework::Setting<crate::recent::RecentFiles>>,
+    /// Every device's Recent list, in a hosted window.
+    recent_record: Option<ui::framework::PersonRecord<crate::recent::RecentRecord>>,
     /// "Open With" candidates per file type, asked of the host once per
     /// listing rather than once per row.
     open_with_cache: RefCell<HashMap<String, crate::open_with::OpenWithCandidates>>,
@@ -1376,7 +1376,7 @@ impl FileExplorerWidget {
             widths_at_press: None,
             thumbs,
             recent: crate::recent::RecentFiles::default(),
-            recent_setting: None,
+            recent_record: None,
             open_with_cache: RefCell::new(HashMap::new()),
             entry_ids: RefCell::default(),
             entry_rows: RefCell::default(),
@@ -1405,13 +1405,13 @@ impl FilesState {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::FileExplorer>,
         preferences: ui::framework::Setting<crate::resource::FilesPreferences>,
-        recent: ui::framework::Setting<crate::recent::RecentFiles>,
+        recent: Option<ui::framework::PersonRecord<crate::recent::RecentRecord>>,
         device: Option<String>,
         ops_drain: Option<ui::framework::Projection>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.preferences = Some(preferences);
-        self.recent_setting = Some(recent);
+        self.recent_record = recent;
         self.device = device;
         self.ops_drain = ops_drain;
         self.adopt_preferences();

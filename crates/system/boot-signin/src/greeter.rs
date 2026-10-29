@@ -4,8 +4,8 @@
 //! display and input devices this process opens for it, and talks to it over
 //! a socket pair ([`crate::link`]). Everything that decides stays here: the
 //! greeter shows what it is told and answers with the person picked and the
-//! secret typed. When it cannot start, or stops answering, the screen goes
-//! on through Plymouth or the console as before ([`BootScreen`]).
+//! secret typed. When it cannot start, or stops answering, the sign-in goes
+//! on on the console ([`ConsoleScreen`]).
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -22,7 +22,7 @@ use zeroize::Zeroizing;
 use crate::flow::{Entry, Pick, Prompt, Screen};
 use crate::link::{FromGreeter, Link, Power, ToGreeter};
 use crate::people::Person;
-use crate::screen::BootScreen;
+use crate::screen::ConsoleScreen;
 
 /// The uid the greeter runs as: nobody, which owns nothing in the initramfs.
 const NOBODY: u32 = 65534;
@@ -75,8 +75,9 @@ enum Answer {
 
 pub struct GreeterScreen {
     greeter: Option<Running>,
-    /// Plymouth or the console, when the greeter cannot start or goes away.
-    fallback: BootScreen,
+    /// The console, when the greeter goes away. It holds Plymouth, which
+    /// gives the display up to the greeter and takes it back after.
+    fallback: ConsoleScreen,
     /// The people the greeter was shown, whose indices it answers with.
     listed: Vec<Person>,
     answer: Option<Answer>,
@@ -84,15 +85,15 @@ pub struct GreeterScreen {
 }
 
 impl GreeterScreen {
-    /// Start the greeter on the display, or `None` when there is no display
-    /// to show it on or it cannot start; `fallback` then asks.
+    /// Start the greeter on the display, or give `fallback` back when there
+    /// is no display to show it on or it cannot start; the console then asks.
     ///
     /// Plymouth gives up the display while the greeter has it.
     pub fn start(
         launch: &Launch,
-        fallback: BootScreen,
+        fallback: ConsoleScreen,
         systemctl: PathBuf,
-    ) -> Result<Self, BootScreen> {
+    ) -> Result<Self, ConsoleScreen> {
         if let Some(plymouth) = &fallback.plymouth {
             plymouth.deactivate();
         }
@@ -108,7 +109,11 @@ impl GreeterScreen {
                 })
             }
             Err(error) => {
-                eprintln!("tilo-boot-signin: the greeter cannot start ({error}); asking as before");
+                eprintln!(
+                    "tilo-boot-signin: the greeter cannot start ({error}); asking on the console"
+                );
+                // The splash comes back until the console asks, and stays when
+                // nothing is asked here.
                 if let Some(plymouth) = &fallback.plymouth {
                     plymouth.reactivate();
                 }
@@ -117,11 +122,12 @@ impl GreeterScreen {
         }
     }
 
-    /// Hand the screen back to Plymouth or the console.
+    /// Hand the sign-in to the console. The splash comes back until the
+    /// console asks, and stays when nothing more is asked here.
     fn fall_back(&mut self, error: &io::Error) {
         if let Some(greeter) = self.greeter.take() {
             eprintln!(
-                "tilo-boot-signin: the greeter stopped answering ({error}); asking as before"
+                "tilo-boot-signin: the greeter stopped answering ({error}); asking on the console"
             );
             greeter.stop();
             if let Some(plymouth) = &self.fallback.plymouth {
@@ -525,7 +531,6 @@ mod tests {
 
     use super::*;
     use crate::flow::{self, Auth, Exit, Note, Unlock};
-    use crate::glyphs::Glyphs;
     use crate::people::SecretKind;
 
     fn people(count: usize) -> Vec<Person> {
@@ -612,11 +617,10 @@ mod tests {
         })
     }
 
-    fn fallback() -> BootScreen {
-        BootScreen {
+    fn fallback() -> ConsoleScreen {
+        ConsoleScreen {
             ask_password: PathBuf::from("/nonexistent/ask-password"),
             plymouth: None,
-            glyphs: Glyphs::any(),
             volume: "root".into(),
         }
     }

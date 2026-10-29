@@ -337,7 +337,6 @@ impl GenerationGc {
 fn known_record(name: &std::ffi::OsStr) -> bool {
     name == JOURNAL
         || name.to_str().is_some_and(|name| {
-            let name = name.strip_suffix(".continuity-v1").unwrap_or(name);
             name == "checkpoint.delta"
                 || (name.strip_suffix(".delta").is_some_and(|prefix| {
                     matches!(prefix.len(), 8 | 16) && prefix.bytes().all(|b| b.is_ascii_hexdigit())

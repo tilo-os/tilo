@@ -2054,10 +2054,10 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
             .remove_member(guest.user_public_key, &writer_key, SystemTime::now())
             .unwrap();
         let changes = written.room_changes_since(&heads);
-        assert!(
-            layout_scope::leaves_layout(governed.peer().admitted_room().unwrap(), &changes),
-            "a removal is no layout"
-        );
+        let leaves =
+            layout_scope::leaves_layout(governed.peer().admitted_room().unwrap(), &changes);
+        drop(governed);
+        assert!(leaves, "a removal is no layout");
         postcard::to_stdvec(&neighbour_wire::NeighbourMsg::SyncResp {
             room: room.clone(),
             changes,
@@ -2089,10 +2089,10 @@ async fn a_removal_another_device_writes_is_taken_in_with_the_persons_invitation
     {
         let state = rooms.room(&room).await.unwrap();
         let governed = state.lock().await;
-        assert!(!layout_scope::leaves_layout(
-            governed.peer().admitted_room().unwrap(),
-            &changes
-        ));
+        let leaves =
+            layout_scope::leaves_layout(governed.peer().admitted_room().unwrap(), &changes);
+        drop(governed);
+        assert!(!leaves, "opening windows changes the layout");
     }
     drop(rooms);
     relay.shutdown().await;

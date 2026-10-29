@@ -304,11 +304,14 @@ impl MapsApp {
     }
 
     /// Hosted as the resource's surface: edits go through `dispatch`, and the
-    /// offline areas are this device's `offline_areas`.
+    /// offline areas are this device's in the `offline_areas` record.
     pub(crate) fn attach_framework(
         &mut self,
         dispatch: ui::framework::Dispatcher<Workspace>,
-        offline_areas: Option<ui::framework::Setting<crate::offline_areas::OfflineAreas>>,
+        offline_areas: Option<(
+            ui::framework::PersonRecord<crate::offline_areas::OfflineAreas>,
+            String,
+        )>,
     ) {
         self.dispatch = Some(dispatch);
         self.offline_areas = offline_areas;

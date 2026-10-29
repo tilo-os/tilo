@@ -570,11 +570,18 @@ impl ResolvedSource {
         let mut secondary = Vec::new();
         let runner = handoff.resolve(
             &self.home,
-            super::super::flatpak_transfer::NativeRunner,
+            super::super::flatpak_transfer::portable::NativeOfflineRunner,
             |bytes| self.resolve_inventory_root(bytes, &mut secondary),
         )?;
-        let mut review = super::super::user_transfer::review(
+        // The same closed review the first-boot capture runs over its original
+        // projection: exact reviewed deployments, sealed when the transfer runs.
+        let source = super::super::flatpak_transfer::portable::PortableFlatpakSource::review_closed_original(
             &runner,
+            handoff,
+            &self.home,
+            &std::sync::atomic::AtomicBool::new(false),
+        )?;
+        let mut review = super::super::user_transfer::review(
             super::super::user_transfer::TransferRequest {
                 source_home: self.home.clone(),
                 target_home: destination.to_owned(),
@@ -583,9 +590,10 @@ impl ResolvedSource {
                 copy_flatpak: true,
                 system_refs: handoff.selected().to_vec(),
             },
+            Some(super::super::user_transfer::Applications::Original(source)),
         )?;
-        // Both home and every original Flatpak root survive review cloning into
-        // the worker. Target commands still run through the native runner.
+        // Home and every original Flatpak root stay mounted while the review
+        // is cloned into the worker that seals the applications unit.
         review.retain_source_guard(Arc::new((self.mount.clone(), runner)));
         Ok(review)
     }
@@ -718,27 +726,21 @@ impl ResolvedSource {
                 &serde_json::to_vec(raw).map_err(|error| error.to_string())?,
             )?;
             inventory.validate_operation(&self.plan.operation_id)?;
-            let mut secondary = Vec::new();
-            let runner = inventory.resolve(
-                &self.home,
-                super::super::flatpak_transfer::NativeRunner,
-                |bytes| self.resolve_inventory_root(bytes, &mut secondary),
+            let (mut transfer, promotion) = super::super::user_transfer::recover_promotion(
+                super::super::user_transfer::TransferRequest {
+                    source_home: self.home.clone(),
+                    target_home: destination.to_owned(),
+                    private_journals: journals.to_owned(),
+                    copy_home: self.plan.categories.home,
+                    copy_flatpak: true,
+                    system_refs: inventory.selected().to_vec(),
+                },
+                active_home,
+                adoption_journal,
             )?;
-            let (mut transfer, promotion) =
-                super::super::user_transfer::recover_promotion_with_runner(
-                    &runner,
-                    super::super::user_transfer::TransferRequest {
-                        source_home: self.home.clone(),
-                        target_home: destination.to_owned(),
-                        private_journals: journals.to_owned(),
-                        copy_home: self.plan.categories.home,
-                        copy_flatpak: true,
-                        system_refs: inventory.selected().to_vec(),
-                    },
-                    active_home,
-                    adoption_journal,
-                )?;
-            transfer.retain_source_guard(Arc::new((self.mount.clone(), runner)));
+            if let Some(mount) = &self.mount {
+                transfer.retain_source_guard(mount.clone());
+            }
             return Ok((transfer, promotion));
         }
         let (mut transfer, promotion) = super::super::user_transfer::recover_promotion(
@@ -778,7 +780,6 @@ impl ResolvedSource {
             return Err("This plan requests account connections only; use the reviewed account import actions.".into());
         }
         let mut review = super::super::user_transfer::review(
-            &super::super::flatpak_transfer::NativeRunner,
             super::super::user_transfer::TransferRequest {
                 source_home: self.home.clone(),
                 target_home: destination.to_owned(),
@@ -787,6 +788,7 @@ impl ResolvedSource {
                 copy_flatpak: self.plan.categories.flatpak,
                 system_refs: Vec::new(),
             },
+            None,
         )?;
         if let Some(mount) = &self.mount {
             review.retain_source_guard(mount.clone());

@@ -80,3 +80,21 @@ greeter-key-letters = Buchstaben
 greeter-key-space = Leertaste
 greeter-key-delete = Löschen
 greeter-key-enter = Eingabe
+
+# „Anmeldung nicht möglich“ nach dem Start: ein neues Passwort oder eine
+# neue PIN mit dem Wiederherstellungsschlüssel.
+greeter-recovery-intro = Gib deinen Wiederherstellungsschlüssel ein und wähle dann ein neues Passwort oder eine neue PIN.
+greeter-recovery-key = Wiederherstellungsschlüssel
+greeter-recovery-new = Neues Passwort oder neue PIN
+greeter-recovery-confirm = Noch einmal eingeben
+greeter-recovery-save = Speichern
+greeter-recovery-cancel = Abbrechen
+greeter-recovery-saving = Dein neues Passwort oder deine neue PIN wird gespeichert…
+greeter-recovery-hint-key = Gib deinen Wiederherstellungsschlüssel ein.
+greeter-recovery-hint-new = Wähle ein neues Passwort oder eine neue PIN.
+greeter-recovery-mismatch = Die beiden Eingaben stimmen nicht überein. Gib sie noch einmal ein.
+greeter-recovery-wrong = Dieser Wiederherstellungsschlüssel stimmt nicht. Prüf ihn und versuch es noch einmal.
+greeter-recovery-weak = Dieser Computer hat keinen Sicherheitschip und braucht deshalb ein längeres Passwort. Wähle ein längeres.
+greeter-recovery-failed = Dein Passwort oder deine PIN konnte nicht geändert werden. Versuch es noch einmal oder starte den Computer neu.
+greeter-recovery-done-password = Melde dich mit deinem neuen Passwort an.
+greeter-recovery-done-pin = Melde dich mit deiner neuen PIN an.

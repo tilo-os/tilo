@@ -138,6 +138,8 @@ pub mod service_selection;
 pub mod session;
 pub mod setup;
 
+#[cfg(all(feature = "destination", target_os = "linux"))]
+pub mod destination;
 pub mod destination_security;
 pub mod migration;
 pub mod migration_directory;

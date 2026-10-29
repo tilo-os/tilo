@@ -1349,14 +1349,12 @@ impl ActivityTimeline {
         if viewport <= 0.0 {
             return;
         }
-        let scroll = if top < self.scroll_y {
-            top
-        } else if bottom > self.scroll_y + viewport {
-            bottom - viewport
-        } else {
-            self.scroll_y
-        }
-        .clamp(0.0, self.max_scroll());
+        let scroll = crate::widget::scroll_region::reveal_offset(
+            self.scroll_y,
+            viewport,
+            top..bottom,
+            self.max_scroll(),
+        );
         if (scroll - self.scroll_y).abs() > f64::EPSILON {
             self.scroll_y = scroll;
             self.hover_row = self.row_at(self.last_cursor);

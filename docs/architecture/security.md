@@ -555,8 +555,7 @@ a peer in its own right. Under its own device key it originates:
 
 To decide retention, replay and compaction it reads the desktop's peer-sync
 messages inside co-edit bodies: whether a body is a document frame and which
-document it names, whether a checkpoint is governance, a member's own
-continuity checkpoint or complete on its own, and which devices a governance
+document it names, whether a checkpoint is governance or complete on its own, and which devices a governance
 step is addressed to (the `ShellPayloads` adapter its embedder injects,
 `crates/hosting/tilo-relay-shell`), plus the retained-proof
 inputs of native shell replay (that crate's `selection`, which the store

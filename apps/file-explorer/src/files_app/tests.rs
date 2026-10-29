@@ -735,7 +735,10 @@ mod open_with_tests {
             }
         })
         .unwrap();
-        let stored = app.settings::<crate::recent::RecentFiles>().get();
+        let stored = app
+            .person::<crate::recent::RecentRecord>()
+            .unwrap()
+            .with(|recent| recent.on("test-device"));
         assert_eq!(
             stored
                 .items()
