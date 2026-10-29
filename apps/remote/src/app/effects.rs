@@ -2,8 +2,6 @@
 //! open request, a confirmation or a row invokes — connect, forget a
 //! credential, trust a host key — and the outcome reported back for each.
 
-use std::path::PathBuf;
-
 use crate::model::ConnectionId;
 use crate::session::{SessionStatus, TransportReadiness, connection_readiness};
 use crate::ssh::{TransferDirection, transfer_name};
@@ -94,16 +92,13 @@ impl RemoteApp {
                 local_path,
                 remote_path,
             } => {
-                if local_path.trim().is_empty() {
-                    return Err("the local path is empty".into());
-                }
                 if remote_path.trim().is_empty() {
                     return Err("the remote path is empty".into());
                 }
                 self.start_file_transfer(
                     connection,
                     TransferDirection::Put {
-                        local_path: PathBuf::from(local_path),
+                        local_path: local_path.into_path_buf(),
                         remote_path,
                     },
                     cx,
@@ -117,14 +112,11 @@ impl RemoteApp {
                 if remote_path.trim().is_empty() {
                     return Err("the remote path is empty".into());
                 }
-                if local_path.trim().is_empty() {
-                    return Err("the local path is empty".into());
-                }
                 self.start_file_transfer(
                     connection,
                     TransferDirection::Fetch {
                         remote_path,
-                        local_path: PathBuf::from(local_path),
+                        local_path: local_path.into_path_buf(),
                     },
                     cx,
                 )

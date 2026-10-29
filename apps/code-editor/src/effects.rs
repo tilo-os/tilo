@@ -34,7 +34,7 @@ pub enum CodeEditorEffect {
         #[param("The file record's id, when the location is in a project file")]
         file: Option<String>,
         #[param("Absolute path of the file, for a location the tree has not read yet")]
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
         #[param("Zero-based line")]
         line: usize,
         #[param("Zero-based column, in characters")]
@@ -51,7 +51,7 @@ pub enum CodeEditorEffect {
     #[effect(icon = "folder-open")]
     OpenFile {
         #[param("Absolute path of the file; omit to choose one")]
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Open project folder.
     #[effect(job, cancellable)]
@@ -59,7 +59,7 @@ pub enum CodeEditorEffect {
     #[effect(icon = "folder-open")]
     OpenFolder {
         #[param("Absolute path of the folder; omit to choose one")]
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// New untitled file.
     #[effect(icon = "file-plus")]
@@ -71,8 +71,8 @@ pub enum CodeEditorEffect {
     Save {
         #[param("The file record's id; omit for the active file")]
         file: Option<String>,
-        #[param("Where to write it; omit to save in place")]
-        path: Option<String>,
+        #[param("Absolute path to write it to; omit to save in place")]
+        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save as.
     #[effect(attended, job, cancellable)]

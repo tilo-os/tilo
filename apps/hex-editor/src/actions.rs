@@ -34,8 +34,8 @@ pub enum HexEffect {
     /// Open a file.
     #[effect(attended, job, cancellable, label = "Open file")]
     OpenFile {
-        #[param("file to open; omit to use the system file picker")]
-        path: Option<String>,
+        #[param("absolute path of the file to open; omit to use the system file picker")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Save the buffer to the file it was opened from, or choose one.
     #[effect(job, cancellable, label = "Save file")]
@@ -44,7 +44,7 @@ pub enum HexEffect {
     #[effect(destructive, label = "Save as")]
     SaveAs {
         #[param("absolute path of the save destination")]
-        path: String,
+        path: tilo_resource::AbsolutePath,
     },
     /// Find in the bytes, in the window's search.
     #[effect(view, idempotent, label = "Search bytes")]

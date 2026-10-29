@@ -2132,7 +2132,7 @@ impl StoreApp {
                 }
                 self.reserve_job()?;
                 let input = match (path, content) {
-                    (Some(path), None) if path.len() <= 4096 => {
+                    (Some(path), None) if path.as_os_str().len() <= 4096 => {
                         crate::package_import::Input::Path(path.into())
                     }
                     (None, Some(hash)) if ui::framework::content::valid_hash(&hash) => {
@@ -3297,11 +3297,18 @@ mod tests {
     fn a_size_refusal_outlasts_the_workers_background_errors() {
         let mut app = seeded_app();
         let refused = app.admit(StoreEffect::ImportPackage {
-            path: Some("/large.tapp".into()),
+            path: Some("/large.tapp".parse().unwrap()),
             content: None,
             reported_size: Some(crate::package_import::MAX_IMPORT_BYTES as u64 + 1),
         });
         assert!(refused.is_err());
+        // A relative package path is refused before the Store sees it.
+        let arguments =
+            serde_json::Map::from_iter([("path".to_owned(), serde_json::json!("large.tapp"))]);
+        let relative =
+            <StoreEffect as ui::tilo_resource::Effect>::decode("import-package", &arguments)
+                .unwrap_err();
+        assert!(relative.contains("absolute"), "{relative}");
         let size_refused = ui::i18n!("store-package-size-refused");
         app.apply_worker_snapshot(crate::worker::Snapshot {
             items: Vec::new(),

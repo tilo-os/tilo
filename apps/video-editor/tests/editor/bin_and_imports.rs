@@ -46,7 +46,7 @@ fn blank() -> HeadlessApp<VideoEditor> {
 
 fn import(app: &mut HeadlessApp<VideoEditor>, path: &Path) {
     app.effect(&VideoEditorEffect::Import {
-        path: Some(path.to_string_lossy().into_owned()),
+        path: Some(ui::tilo_resource::AbsolutePath::new(path).unwrap()),
     })
     .unwrap();
     app.settle();
@@ -136,7 +136,7 @@ fn a_refused_file_is_named_with_the_probes_reason_as_a_failure() {
     let mut app = blank();
     let refusal = app
         .effect(&VideoEditorEffect::Import {
-            path: Some(bad.to_string_lossy().into_owned()),
+            path: Some(ui::tilo_resource::AbsolutePath::new(&bad).unwrap()),
         })
         .unwrap_err()
         .to_string();

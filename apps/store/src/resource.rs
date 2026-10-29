@@ -12,7 +12,7 @@ use ui::framework::{
     ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
 use ui::tilo_actions::ResourceSpec as PublishedResource;
-use ui::tilo_resource::{self, Effect, Invoke, Resource};
+use ui::tilo_resource::{self, AbsolutePath, Effect, Invoke, Resource};
 use ui::widget::Element;
 
 use crate::app::StoreApp;
@@ -168,8 +168,8 @@ pub enum StoreEffect {
     /// Opening a package installs nothing. Its identity must match a verified repository offer or an existing trusted local attestation.
     #[effect(job)]
     ImportPackage {
-        #[param("Sandbox-readable .tapp path; omit to choose a file")]
-        path: Option<String>,
+        #[param("Absolute, sandbox-readable .tapp path; omit to choose a file")]
+        path: Option<AbsolutePath>,
         #[param("Handed content hash, instead of a path")]
         content: Option<String>,
         #[param("Optional handed file length; bytes are independently bounded and verified")]
@@ -188,8 +188,8 @@ pub enum StoreEffect {
     /// Its app is shown ready to install; installing stays a separate step.
     #[effect(kind = "read")]
     OpenReference {
-        #[param("Path of a .flatpakref file")]
-        path: Option<String>,
+        #[param("Absolute path of a .flatpakref file")]
+        path: Option<AbsolutePath>,
         #[param("The text of a .flatpakref, when there is no file")]
         contents: Option<String>,
     },
@@ -543,19 +543,28 @@ impl ResourceApp for StoreShell {
                         return Vec::new();
                     }
                 }
-            } else if std::path::Path::new(argument)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("tapp"))
-            {
-                StoreEffect::ImportPackage {
-                    path: Some(argument.to_owned()),
-                    content: None,
-                    reported_size: None,
-                }
             } else {
-                StoreEffect::OpenReference {
-                    path: Some(argument.to_owned()),
-                    contents: None,
+                let path = match AbsolutePath::new(argument) {
+                    Ok(path) => path,
+                    Err(error) => {
+                        tracing::warn!(%error, "ignoring the opened file");
+                        return Vec::new();
+                    }
+                };
+                if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tapp"))
+                {
+                    StoreEffect::ImportPackage {
+                        path: Some(path),
+                        content: None,
+                        reported_size: None,
+                    }
+                } else {
+                    StoreEffect::OpenReference {
+                        path: Some(path),
+                        contents: None,
+                    }
                 }
             }
         } else {

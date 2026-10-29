@@ -199,3 +199,13 @@ fn comments_kept_as_json_strings_migrate_to_their_paragraphs() {
         vec![paragraph]
     );
 }
+
+#[test]
+fn a_relative_path_is_refused_for_every_path_action() {
+    for id in ["open-pdf", "save-as"] {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("path".into(), "notes.pdf".into());
+        let error = PdfEffect::decode(id, &arguments).expect_err(id);
+        assert!(error.contains("absolute"), "{id}: {error}");
+    }
+}

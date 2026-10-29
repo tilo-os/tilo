@@ -19,24 +19,24 @@ pub enum SheetsEffect {
     /// Adds a CSV file as a new sheet.
     #[effect(job, cancellable, opens_path = "csv")]
     ImportCsv {
-        #[param("Path of the file; omit to choose one")]
-        path: Option<String>,
+        #[param("Absolute path of the file; omit to choose one")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Import Excel workbook
     ///
     /// Adds every sheet of an `.xlsx` workbook.
     #[effect(job, cancellable, opens_path = "xlsx")]
     ImportXlsx {
-        #[param("Path of the file; omit to choose one")]
-        path: Option<String>,
+        #[param("Absolute path of the file; omit to choose one")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Import Notion export
     ///
     /// Adds every database of a Notion export as a sheet.
     #[effect(job, cancellable, opens_path = "zip", label = "Import Notion export")]
     ImportNotion {
-        #[param("Path of the file; omit to choose one")]
-        path: Option<String>,
+        #[param("Absolute path of the file; omit to choose one")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Adds every sheet of an `.ods` spreadsheet.
     #[effect(
@@ -46,24 +46,24 @@ pub enum SheetsEffect {
         label = "Import OpenDocument spreadsheet"
     )]
     ImportOds {
-        #[param("Path of the file; omit to choose one")]
-        path: Option<String>,
+        #[param("Absolute path of the file; omit to choose one")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Export CSV
     ///
     /// Saves what the active sheet shows as a CSV file.
     #[effect(job, cancellable, risk = "export_risk")]
     ExportCsv {
-        #[param("Where to write it; omit to choose")]
-        path: Option<String>,
+        #[param("Absolute path to write it to; omit to choose")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Export Excel workbook
     ///
     /// Saves every sheet as an `.xlsx` workbook.
     #[effect(job, cancellable, risk = "export_risk")]
     ExportXlsx {
-        #[param("Where to write it; omit to choose")]
-        path: Option<String>,
+        #[param("Absolute path to write it to; omit to choose")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Saves every sheet as an `.ods` spreadsheet.
     #[effect(
@@ -73,8 +73,8 @@ pub enum SheetsEffect {
         label = "Export OpenDocument spreadsheet"
     )]
     ExportOds {
-        #[param("Where to write it; omit to choose")]
-        path: Option<String>,
+        #[param("Absolute path to write it to; omit to choose")]
+        path: Option<tilo_resource::AbsolutePath>,
     },
     /// Import Excel workbook from content
     ///

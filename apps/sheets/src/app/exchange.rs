@@ -2,7 +2,7 @@
 
 use super::{
     CellFormat, Interchange, Invoke, MAX_CSV_MATERIALIZED_SLOTS, MAX_IMPORT_CELLS,
-    MAX_IMPORT_FILE_BYTES, PathBuf, PendingReveal, SheetsApp, Workbook, file_label, import_source,
+    MAX_IMPORT_FILE_BYTES, PendingReveal, SheetsApp, Workbook, file_label, import_source,
     infer_entry, sheet_name_from_path, spreadsheet_export_request, spreadsheet_import_request,
     verbs,
 };
@@ -14,7 +14,7 @@ impl SheetsApp {
     pub(super) fn import(
         &mut self,
         format: Interchange,
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
         cx: &mut ui::framework::EffectCx<Workbook, Self>,
     ) -> ui::framework::Effected {
         let Some(path) = path else {
@@ -52,7 +52,7 @@ impl SheetsApp {
                 },
             );
         };
-        let path = PathBuf::from(path);
+        let path = path.into_path_buf();
         let source = import_source(&path);
         if self.show_imported(&source, &file_label(&path), cx) {
             return ui::framework::Effected::done();
@@ -128,7 +128,7 @@ impl SheetsApp {
     pub(super) fn export(
         &mut self,
         format: Interchange,
-        path: Option<String>,
+        path: Option<ui::tilo_resource::AbsolutePath>,
         cx: &mut ui::framework::EffectCx<Workbook, Self>,
     ) -> ui::framework::EffectAnswer {
         let active = self.active_sheet_id();
@@ -176,7 +176,7 @@ impl SheetsApp {
                 ))
             }));
         };
-        let path = PathBuf::from(path);
+        let path = path.into_path_buf();
         Ok(cx.thread(encode, move |app: &mut Self, bytes, _| {
             let written = bytes.and_then(|bytes| {
                 crate::xlsx::write_file(&path, &bytes).map_err(|error| error.to_string())

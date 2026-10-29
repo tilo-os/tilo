@@ -10,7 +10,6 @@ use crate::num;
 use crate::word_processor::Caret;
 use automerge::AutoCommit;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use tilo_doc::snapshot::{AttrVal, BlockView};
 use ui::ParticipantPresence;
 use ui::tilo_resource::Effect as _;
@@ -1246,7 +1245,7 @@ impl WordProcessorWidget {
         }
         match effect {
             WordProcessorEffect::OpenDocument { path: Some(path) } => {
-                self.open_in_place(cx, std::path::Path::new(&path))?;
+                self.open_in_place(cx, &path)?;
             }
             WordProcessorEffect::OpenDocument { path: None } => {
                 // Where files have paths, the document is worked on where it
@@ -1274,7 +1273,10 @@ impl WordProcessorWidget {
                 );
             }
             WordProcessorEffect::Save { path } => {
-                match path.map(PathBuf::from).or_else(|| self.path.clone()) {
+                match path
+                    .map(ui::tilo_resource::AbsolutePath::into_path_buf)
+                    .or_else(|| self.path.clone())
+                {
                     Some(path) => self.save_now(cx, &path)?,
                     None => match self.kept.clone() {
                         Some((kept, format)) => return self.write_kept(cx, &kept, format),
@@ -1283,7 +1285,7 @@ impl WordProcessorWidget {
                 }
             }
             WordProcessorEffect::SaveAs { path: Some(path) } => {
-                self.save_now(cx, std::path::Path::new(&path))?;
+                self.save_now(cx, &path)?;
             }
             WordProcessorEffect::SaveAs { path: None } => {
                 return Ok(self.choose_where_to_save(cx));

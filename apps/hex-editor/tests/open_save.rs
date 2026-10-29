@@ -19,6 +19,7 @@ use ui::a11y::Action as A11yAction;
 use ui::framework::testing::TestApp;
 use ui::portal::PortalOutcome;
 use ui::record::RecordId;
+use ui::tilo_resource::Effect as _;
 
 fn file(name: &str, bytes: &[u8]) -> (tempfile::TempDir, String) {
     let directory = tempfile::tempdir().unwrap();
@@ -159,7 +160,7 @@ fn agents_edit_the_bytes_through_the_published_actions() {
     // Saving to a path an agent names writes there.
     let (_out, target) = file("copy.bin", &[]);
     app.effect_confirmed(&HexEffect::SaveAs {
-        path: target.clone(),
+        path: target.clone().try_into().unwrap(),
     })
     .unwrap();
     assert_eq!(
@@ -167,14 +168,14 @@ fn agents_edit_the_bytes_through_the_published_actions() {
         [0x7F, 0x00, 0xFF, 0xEE, 0x33]
     );
 
-    // A relative path is refused: it would land wherever the app runs.
-    assert!(
-        app.effect_confirmed(&HexEffect::SaveAs {
-            path: "relative-copy.bin".to_owned(),
-        })
-        .is_err()
-    );
-    assert!(!std::path::Path::new("relative-copy.bin").exists());
+    // A relative path is refused for every effect taking a path: it would
+    // land wherever the app runs.
+    for id in ["open-file", "save-as"] {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("path".into(), "relative-copy.bin".into());
+        let error = HexEffect::decode(id, &arguments).expect_err(id);
+        assert!(error.contains("absolute"), "{id}: {error}");
+    }
 }
 
 #[test]
@@ -185,8 +186,10 @@ fn opening_a_file_replaces_the_buffer_and_the_chooser_answers_the_effect() {
     assert!(app.effect(&HexEffect::Save).is_err(), "nothing to save yet");
 
     let (_directory, path) = file("named.bin", b"HELLO-HEX");
-    app.effect(&HexEffect::OpenFile { path: Some(path) })
-        .unwrap();
+    app.effect(&HexEffect::OpenFile {
+        path: Some(path.try_into().unwrap()),
+    })
+    .unwrap();
     app.settle();
     assert_eq!(app.state().name(), Some("named.bin"));
     assert_eq!(app.state().bytes, b"HELLO-HEX");
@@ -224,8 +227,10 @@ fn a_file_too_large_to_hold_is_refused_and_the_buffer_kept() {
     let mut app = TestApp::<HexEditorShell>::new().unwrap();
     app.harness().relayout();
     let (_directory, small) = file("small.bin", b"KEEP");
-    app.effect(&HexEffect::OpenFile { path: Some(small) })
-        .unwrap();
+    app.effect(&HexEffect::OpenFile {
+        path: Some(small.try_into().unwrap()),
+    })
+    .unwrap();
     app.settle();
 
     // Sparse: its length is past the limit, its blocks are never written.
@@ -237,7 +242,7 @@ fn a_file_too_large_to_hold_is_refused_and_the_buffer_kept() {
         .unwrap();
     let refused = app
         .effect(&HexEffect::OpenFile {
-            path: Some(huge.to_str().unwrap().to_owned()),
+            path: Some(huge.as_path().try_into().unwrap()),
         })
         .expect_err("a file past the limit does not open");
     assert!(
@@ -274,7 +279,7 @@ fn a_file_too_large_to_hold_is_refused_by_its_size_unread() {
 
     let refused = app
         .effect(&HexEffect::OpenFile {
-            path: Some(huge.to_str().unwrap().to_owned()),
+            path: Some(huge.as_path().try_into().unwrap()),
         })
         .expect_err("a file past the limit does not open");
     std::fs::set_permissions(&huge, std::fs::Permissions::from_mode(0o600)).unwrap();

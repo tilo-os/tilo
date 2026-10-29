@@ -156,11 +156,8 @@ impl ResourceApp for WindowsShell {
     fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Windows>> {
         input
             .argument()
-            .map(|path| {
-                Invoke::effect(&WindowsEffect::Install {
-                    path: Some(path.to_owned()),
-                })
-            })
+            .and_then(|path| ui::tilo_resource::AbsolutePath::new(path).ok())
+            .map(|path| Invoke::effect(&WindowsEffect::Install { path: Some(path) }))
             .into_iter()
             .collect()
     }

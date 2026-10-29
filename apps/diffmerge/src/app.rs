@@ -516,8 +516,8 @@ impl DiffMergeApp {
                 right: Some(right),
             } => Ok(cx.thread(
                 move |_| -> Result<session::OpenComparison, String> {
-                    let (left_label, left) = label_and_text(Path::new(&left))?;
-                    let (right_label, right) = label_and_text(Path::new(&right))?;
+                    let (left_label, left) = label_and_text(&left)?;
+                    let (right_label, right) = label_and_text(&right)?;
                     Ok(session::OpenComparison {
                         left_label,
                         left,
@@ -542,7 +542,7 @@ impl DiffMergeApp {
                 Err("left and right paths must be supplied together".into())
             }
             DiffmergeEffect::OpenOne { path, side } => Ok(cx.thread(
-                move |_progress| label_and_text(Path::new(&path)),
+                move |_progress| label_and_text(&path),
                 move |app: &mut Self, opened, cx| {
                     let opened = opened.map(|(label, text)| one_sided(&side, label, text));
                     app.show_opened(opened, cx)
@@ -1838,6 +1838,26 @@ mod tests {
         assert!(message.contains("sample"), "{message}");
     }
 
+    /// A relative path is refused for every effect taking a path, before
+    /// anything is read or written.
+    #[test]
+    fn a_relative_path_is_refused_for_every_path_action() {
+        use ui::tilo_resource::Effect as _;
+        for (id, args) in [
+            ("open-files", &[("left", "a.txt"), ("right", "/b.txt")][..]),
+            ("open-one", &[("path", "a.txt"), ("side", "left")][..]),
+            ("save-merged", &[("path", "merged.txt")][..]),
+            ("compare-folders", &[("left", "/a"), ("right", "b")][..]),
+        ] {
+            let arguments = args
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), serde_json::Value::from(*value)))
+                .collect();
+            let error = DiffmergeEffect::decode(id, &arguments).expect_err(id);
+            assert!(error.contains("absolute"), "{id}: {error}");
+        }
+    }
+
     /// Opening files is one effect, whoever asks: two paths are read and
     /// opened as a comparison; without paths the host's chooser is asked
     /// twice, and a cancelled or failed chooser opens nothing and says why.
@@ -1847,8 +1867,8 @@ mod tests {
         let left = write_temp("Grün links.txt", "Grün\nshared\n");
         let right = write_temp("Blau rechts.txt", "Blau\nshared\nadded\n");
         app.effect(&DiffmergeEffect::OpenFiles {
-            left: Some(left.display().to_string()),
-            right: Some(right.display().to_string()),
+            left: Some(left.as_path().try_into().unwrap()),
+            right: Some(right.as_path().try_into().unwrap()),
         })
         .unwrap();
         app.settle();
@@ -1859,7 +1879,7 @@ mod tests {
         assert_eq!((model.left_lines, model.right_lines), (2, 3));
 
         let half = app.effect(&DiffmergeEffect::OpenFiles {
-            left: Some(left.display().to_string()),
+            left: Some(left.as_path().try_into().unwrap()),
             right: None,
         });
         assert!(half.is_err(), "both paths or neither");
@@ -2026,8 +2046,8 @@ mod tests {
     fn the_folder_listing_opens_the_pair_under_review() {
         let base =
             std::env::temp_dir().join(format!("tilo-diffmerge-listing-{}", std::process::id()));
-        let left = base.join("left");
-        let right = base.join("right");
+        let left = ui::tilo_resource::AbsolutePath::new(base.join("left")).unwrap();
+        let right = ui::tilo_resource::AbsolutePath::new(base.join("right")).unwrap();
         std::fs::create_dir_all(&left).unwrap();
         std::fs::create_dir_all(&right).unwrap();
         std::fs::write(left.join("notes.txt"), "one\n").unwrap();
