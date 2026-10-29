@@ -1631,7 +1631,8 @@ __ENROLL__ approve --identity-root __MACHINE__ \
 """
 
 # As root: once the pairing has finished, the relay starts on the bundle it received, as a
-# transient unit of its account, ready once it has bound its endpoint.
+# transient unit of its account, ready once it has bound its endpoint. The bundle names where
+# the server's full-replica status lives, and the relay refuses a bundle whose path is not its own.
 HOME_RELAY_START = r"""
 exec 2>&1
 set -eu
@@ -1643,10 +1644,11 @@ done
 systemctl show -p Result -p ExecMainStatus __UNIT__-pair.service
 journalctl -u __UNIT__-pair.service --no-pager -o cat | tail -n 40
 grep -q '^ticket' "$d/home-peer.toml" 2>/dev/null || { echo "HOME-RELAY no-bundle"; exit 0; }
+status=$(sed -n 's/^status_file = "\(.*\)"$/\1/p' "$d/home-peer.toml")
 cat > "$d/relay.toml" <<TOML
 identity_root = "$d/identity"
 state_root = "$d/state"
-full_replica_status = "$d/full-replica-status.json"
+full_replica_status = "$status"
 home_peer_bundle = "$d/home-peer.toml"
 iroh_listen = "0.0.0.0:__PORT__"
 TOML
