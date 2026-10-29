@@ -479,3 +479,39 @@ fn each_choice_moves_on_by_the_kind_it_is_for() {
         ]
     );
 }
+
+#[test]
+fn the_emoji_tab_lists_each_emoji_with_who_added_it() {
+    let mut app = staged("emoji");
+    for text in ["2 emoji", ":party-parrot:", "Added by Ada Lovelace-Byron"] {
+        assert!(says(&mut app, text), "{text:?} is shown");
+    }
+    assert!(enabled(&mut app, "Add emoji"));
+    let mut refused = staged("emoji-refused");
+    assert!(says(&mut refused, "cat.png was not added"));
+    assert!(says(&mut refused, "Editors can add emoji."));
+    assert!(!enabled(&mut refused, "Add emoji"));
+}
+
+#[test]
+fn emoji_controls_ask_by_name() {
+    let (mut app, seat) = seated("emoji");
+    press(&mut app, "ws-emoji-add");
+    press(&mut app, "ws-emoji-remove-party-parrot");
+    assert_eq!(
+        seat.take_asked(),
+        [
+            WorkspaceSettingsEffect::AddEmoji,
+            WorkspaceSettingsEffect::RemoveEmoji {
+                name: "party-parrot".to_owned()
+            },
+        ]
+    );
+}
+
+#[test]
+fn only_the_emoji_the_person_may_remove_offer_remove() {
+    let mut app = staged("emoji");
+    assert!(says(&mut app, "Remove :party-parrot:"));
+    assert!(!says(&mut app, "Remove :shipit:"));
+}

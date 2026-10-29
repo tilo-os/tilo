@@ -20,6 +20,7 @@ use crate::presentation::Presentation;
 
 mod agents;
 mod apps;
+mod emoji;
 mod general;
 mod people;
 mod permissions;
@@ -28,6 +29,7 @@ pub use agents::{
     AccessApp, Agent, AgentReview, Agents, Bot, Exception, Intro, KindLine, ModelChoice, Models,
 };
 pub use apps::{AppRow, Apps};
+pub use emoji::{Emoji, EmojiPane, Notice, Picture};
 pub use general::{Archived, Device, General, Group, Public, PublicControls};
 pub use people::{Decision, Offers, People, Person, RoleChoice};
 pub use permissions::{Choice, Composer, Holders, Permission, Permissions};
@@ -214,6 +216,18 @@ pub enum WorkspaceSettingsEffect {
         #[param("The kind of file or link, by its key in the list")]
         resource: String,
     },
+    /// Choose a picture and add it as one of the workspace's emoji
+    #[effect(own_device, attended)]
+    AddEmoji,
+    /// Remove one of the workspace's emoji
+    #[effect(destructive)]
+    RemoveEmoji {
+        #[param("The emoji's name, without colons")]
+        name: String,
+    },
+    /// Put away the note about the last emoji not added or removed
+    #[effect(own_device, kind = "read")]
+    DismissEmojiNotice,
 }
 
 /// A tab of the sheet.
@@ -225,16 +239,18 @@ pub enum Tab {
     Agents,
     Permissions,
     Apps,
+    Emoji,
 }
 
 impl Tab {
     /// Every tab, in the order the strip shows them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::General,
         Self::People,
         Self::Agents,
         Self::Permissions,
         Self::Apps,
+        Self::Emoji,
     ];
 
     /// What the tab is asked for by.
@@ -245,6 +261,7 @@ impl Tab {
             Self::Agents => "agents",
             Self::Permissions => "permissions",
             Self::Apps => "apps",
+            Self::Emoji => "emoji",
         }
     }
 
@@ -281,6 +298,7 @@ pub struct Settings {
     pub agents: Agents,
     pub permissions: Permissions,
     pub apps: Apps,
+    pub emoji: EmojiPane,
 }
 
 /// A change the sheet asks about before asking the shell for it.
@@ -463,6 +481,8 @@ impl ResourceApp for WorkspaceSettingsApp {
             "permissions-revoking",
             "apps",
             "apps-empty",
+            "emoji",
+            "emoji-refused",
         ]
     }
 
@@ -550,6 +570,16 @@ pub fn scenario(name: Option<&str>) -> Settings {
             },
             ..sample()
         },
+        Some("emoji") => Settings {
+            tab: Tab::Emoji,
+            ..sample()
+        },
+        Some("emoji-refused") => Settings {
+            tab: Tab::Emoji,
+            role: "Viewer".to_owned(),
+            emoji: emoji::sample_refused(),
+            ..sample()
+        },
         Some("people-member") => Settings {
             tab: Tab::People,
             role: "Editor".to_owned(),
@@ -578,6 +608,7 @@ fn sample() -> Settings {
             tab(Tab::Agents, "Agents"),
             tab(Tab::Permissions, "Privacy & Security"),
             tab(Tab::Apps, "Apps & Files"),
+            tab(Tab::Emoji, "Emoji"),
         ],
         tab: Tab::General,
         general: general::sample(),
@@ -585,6 +616,7 @@ fn sample() -> Settings {
         agents: agents::sample(),
         permissions: permissions::sample(),
         apps: apps::sample(),
+        emoji: emoji::sample(),
     }
 }
 
@@ -724,6 +756,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
         Tab::Agents => agents::pane(settings, parts),
         Tab::Permissions => permissions::pane(settings, parts),
         Tab::Apps => apps::pane(settings, parts),
+        Tab::Emoji => emoji::pane(settings, parts),
     };
     let body = Column::new()
         .with_no_padding()
