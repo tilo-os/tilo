@@ -95,6 +95,8 @@ pub struct AppWindow {
     focus: Option<String>,
     /// Whether an input method composes in the focused control, as last sent.
     composing: bool,
+    /// How often the app asked for the window to come forward since the window last did.
+    activations: u32,
 }
 
 impl AppWindow {
@@ -150,7 +152,14 @@ impl AppWindow {
             input: false,
             focus: None,
             composing: false,
+            activations: 0,
         }
+    }
+
+    /// Whether the app asked for the window to come forward since this was last asked
+    /// ([`ToUi::Activate`]).
+    pub fn take_activation(&mut self) -> bool {
+        std::mem::take(&mut self.activations) > 0
     }
 
     // ----- what the app sends --------------------------------------------------------------
@@ -202,23 +211,29 @@ impl AppWindow {
         self.failed = Some(why.to_owned());
     }
 
+    /// Whether the window, showing the error state, leaves `message` aside: it takes nothing
+    /// until the app opens its root anew.
+    fn refuses_while_failed(&self, message: &ToUi) -> bool {
+        self.failed.is_some()
+            && !matches!(
+                message,
+                ToUi::Open {
+                    lane: Lane::Root,
+                    ..
+                }
+            )
+    }
+
     fn apply(&mut self, messages: Vec<ToUi>) -> Result<(), String> {
         let mut content = false;
         let mut front = None;
         for message in messages {
-            if self.failed.is_some()
-                && !matches!(
-                    message,
-                    ToUi::Open {
-                        lane: Lane::Root,
-                        ..
-                    }
-                )
-            {
+            if self.refuses_while_failed(&message) {
                 continue;
             }
             match message {
                 ToUi::Loading => self.show_loading(),
+                ToUi::Activate => self.activations = self.activations.saturating_add(1),
                 ToUi::Open {
                     lane,
                     target,

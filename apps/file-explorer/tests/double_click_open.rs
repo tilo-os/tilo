@@ -37,16 +37,20 @@ fn single_click_selects_row_zero_but_does_not_open() {
     let (dir, _folder) = dir_with_folder();
     let p = row_center(dir.path(), 0);
     let mut h = Harness::new(dir.path());
-    let start = h.w.current_path();
+    let start = h.w.state().current_path();
     h.move_cursor(p);
     h.press();
     h.release();
     assert_eq!(
-        h.w.selected_indices(),
+        h.w.state().selected_indices(),
         vec![0],
         "the row under the cursor is selected"
     );
-    assert_eq!(h.w.current_path(), start, "a single click never navigates");
+    assert_eq!(
+        h.w.state().current_path(),
+        start,
+        "a single click never navigates"
+    );
 }
 
 fn double_click_across_a_rebuild_opens_the_folder() {
@@ -61,7 +65,7 @@ fn double_click_across_a_rebuild_opens_the_folder() {
     h.move_cursor(p);
     h.press();
     h.release();
-    assert_eq!(h.w.selected_indices(), vec![0]);
+    assert_eq!(h.w.state().selected_indices(), vec![0]);
 
     // The host rebuilds the tree after the selection change.
     h.layout();
@@ -71,7 +75,7 @@ fn double_click_across_a_rebuild_opens_the_folder() {
     h.release();
 
     assert_eq!(
-        h.w.current_path(),
+        h.w.state().current_path(),
         folder,
         "the still double-click opened the folder despite the intervening rebuild",
     );
@@ -88,7 +92,7 @@ fn fast_double_click_without_a_rebuild_also_opens() {
     h.press();
     h.release();
     assert_eq!(
-        h.w.current_path(),
+        h.w.state().current_path(),
         folder,
         "a fast double-click opens the folder"
     );

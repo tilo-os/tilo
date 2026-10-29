@@ -565,11 +565,12 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert!(
         peer.governance_mut()
             .admit_invited_member(&redemption, &other_owner_device, now)
-            .is_err(),
-        "only the pinned authority device may mutate governance"
+            .unwrap(),
+        "any of the owner's devices admits, not only the one that issued"
     );
     assert!(
-        peer.governance_mut()
+        !peer
+            .governance_mut()
             .admit_invited_member(&redemption, &authority_key, now)
             .unwrap()
     );
@@ -1201,8 +1202,11 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     }
 }
 
+/// Two participants may admit through one invitation at once, each before it
+/// holds the other's receipt: every receiver keeps both, whichever arrives
+/// first, so all replicas agree.
 #[test]
-fn conflicting_crdt_values_for_one_invite_fail_closed() {
+fn concurrent_receipts_for_one_invite_converge_in_either_order() {
     let (base, authority_key, _, _, now) = seeded();
     let NeighbourMsg::SyncResp { changes, room } = base.room_message() else {
         panic!("unexpected fixture shape")
@@ -1219,6 +1223,7 @@ fn conflicting_crdt_values_for_one_invite_fail_closed() {
         device_public_key,
         request_id,
         role: crate::join::MemberRole::Viewer,
+        invitation: None,
     };
     left.set_actor(automerge::ActorId::from(vec![98; 32]));
     left.put(
@@ -1247,26 +1252,23 @@ fn conflicting_crdt_values_for_one_invite_fail_closed() {
             .collect(),
         room: room.clone(),
     };
-    let mut receiver = base;
-    receiver
-        .receive_from(
-            TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
-            message(left),
-            now,
-        )
-        .unwrap();
-    let durable = receiver.durable().unwrap();
-    assert!(
-        receiver
-            .receive_from(
-                TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes()),
-                message(right),
-                now,
-            )
-            .unwrap_err()
-            .contains("conflicting redemption")
-    );
-    assert_eq!(receiver.durable().unwrap(), durable);
+    let from = TransportOrigin::RelayDelta(authority_key.verifying_key().to_bytes());
+    let receive = |first: NeighbourMsg, second: NeighbourMsg| {
+        let mut receiver = base.clone();
+        receiver.receive_from(from, first, now).unwrap();
+        receiver.receive_from(from, second, now).unwrap();
+        receiver.room_message()
+    };
+    let governed = |message: NeighbourMsg| {
+        let NeighbourMsg::SyncResp { changes, .. } = message else {
+            panic!("room message is a SyncResp")
+        };
+        crate::room::governance_of(Some(&crate::room::candidate(None, &changes).unwrap()))
+    };
+    let one = governed(receive(message(left.clone()), message(right.clone())));
+    let other = governed(receive(message(right), message(left)));
+    assert_eq!(one, other);
+    assert_eq!(one.invitation_receipts[&hex::encode(invite_id)].len(), 2);
 }
 
 #[test]

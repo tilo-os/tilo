@@ -2397,19 +2397,7 @@ impl App {
             else {
                 continue;
             };
-            let confirmed = confirmation.is_some();
-            let id = prepared.id;
-            let result = self.dispatch_prepared_history_control(prepared);
-            let Some(history) = self.history.as_mut() else {
-                continue;
-            };
-            match result {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                    history.pending_control_needs_confirmation(id);
-                }
-                Ok(_) => history.pending_control_consumed(id),
-                Err(error) => history.pending_control_refused(id, error.to_string()),
-            }
+            self.settle_history_control(prepared, confirmation.is_some());
         }
         self.service_embedded_history_commands(embedded);
     }
@@ -3506,6 +3494,7 @@ impl App {
 
     /// The person pressed or typed again: what stood at their last control
     /// is done with.
+    #[cfg(feature = "native")]
     pub(super) fn dismiss_control_notice(&mut self) {
         if self.actions.control_notice.take().is_some() {
             self.request_redraw_for_notice();
@@ -3559,6 +3548,7 @@ impl App {
     /// Open search on the app's action `address`, asking for its
     /// arguments: the session's search inside a session, the window's own
     /// outside one. Whether it opened.
+    #[cfg(feature = "native")]
     pub(super) fn open_search_at_action(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         let asked = crate::search::SearchRequest::asking(
             crate::search::ScopeDecl::new(address.resource.clone(), String::new()),
@@ -4192,7 +4182,7 @@ impl crate::host_core::HostCore for App {
         crate::host_core::HostTree {
             state: &self.state,
             root: self.root_widget.as_ref(),
-                history: self.history.as_deref(),
+            history: self.history.as_deref(),
             bindings: &self.bindings,
             node_map: &self.layout.node_map,
             taffy: &self.layout.taffy,
@@ -4242,6 +4232,10 @@ impl crate::host_core::HostCore for App {
 
     fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
+    }
+
+    fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
+        self.history.as_mut()
     }
 
     fn dispatch_current_history_control(

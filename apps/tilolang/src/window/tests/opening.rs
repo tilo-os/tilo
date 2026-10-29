@@ -236,7 +236,7 @@ fn what_is_done_before_the_record_arrives_waits_for_it_and_lands_on_it_in_order(
     );
     room.window = shown.taken_over();
     room.settle();
-    assert_eq!(room.items_of(NOTES, "notes"), 4, "the note was made");
+    assert_eq!(room.items_of(NOTES, "items"), 4, "the note was made");
     let titles: Vec<String> = room.rows().into_iter().map(|(_, title)| title).collect();
     assert!(
         titles.iter().any(|title| title == "Plans"),
@@ -251,7 +251,7 @@ fn what_is_done_before_the_record_arrives_waits_for_it_and_lands_on_it_in_order(
     .unwrap();
     crate::app::load(&committed);
     let notebook = committed.root_of(NOTES).unwrap();
-    let RtValue::List(notes) = committed.runtime().read(&notebook, "notes").unwrap() else {
+    let RtValue::List(notes) = committed.runtime().read(&notebook, "items").unwrap() else {
         panic!("the notebook lists its notes");
     };
     assert_eq!(notes.len(), 4, "the record holds the new note");

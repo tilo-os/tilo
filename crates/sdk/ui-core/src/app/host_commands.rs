@@ -5,6 +5,7 @@ use super::App;
 use crate::host_chrome::edit::{EDIT_OPERATION, EDIT_RESOURCE, edit_resource};
 #[cfg(any(feature = "native", test))]
 use crate::host_chrome::model::{self, HostCommand, RecentChange};
+#[cfg(any(feature = "native", test))]
 use crate::host_core::HostCore as _;
 #[cfg(any(feature = "native", test))]
 use crate::platform::HostShortcut;

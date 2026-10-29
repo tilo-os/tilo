@@ -2,8 +2,8 @@
 
 `ush` is not a shell language. It is a locked-down application runtime that
 *hosts* a shell: it builds a guest from an [environment](environments.md)
-record — a read-only stack of images for `/usr` and `/etc`, the environment's
-own home, the directories it was granted — puts a shell inside it, and brokers
+record — a read-only stack of images for `/usr` and `/etc`, the workspace's
+folder as `~`, the directories it was granted — puts a shell inside it, and brokers
 every request that would reach past it.
 
 Where it is going: [`ush-portable.md`](ush-portable.md), a shell that runs
@@ -35,6 +35,7 @@ pub struct Environment {
     pub tools: Vec<ToolRef>,      // { packages, images: arch -> tapp:<hex> }
     pub grants: Json<Vec<CapOverride>>, // FsPath and NetHost grants, subject so.tilo.ush
     pub home: HomePolicy,         // Persistent (default) | Ephemeral
+    pub home_dir: String,         // what `~` is: the workspace's folder
 }
 ```
 
@@ -46,7 +47,7 @@ the runtime release, and records the id with `add-tool`, so the next session is
 a cache hit.
 
 Its actions are `add-tool`, `remove-tool`, `grant-dir`, `allow-host`,
-`revoke-grant`, `set-runtime` and `rename`. History and undo come from the record layer; there
+`revoke-grant`, `set-runtime`, `set-home` and `rename`. History and undo come from the record layer; there
 is no other package manifest and no other permission file.
 
 The supervisor keeps the records where Terminal keeps its own —
@@ -63,7 +64,7 @@ system store's current `env-runtime`.
                (/etc also carries the session's passwd, group and resolver
                on top); no writable upper anywhere
 /bin /sbin /lib /lib64   links into /usr
-/home/<user>   the environment's home (per environment, in the ush store)
+~              the workspace's folder, through its grant (see "Home")
 <grants>       one bind per FsPath grant, at the same path as on the host
 /tmp /run /proc /dev     fresh
 /var           tmpfs, plus the environment's own /var/lib and /var/cache
@@ -267,6 +268,26 @@ logs: `ush run`'s own log, `bwrap`'s refusals, a library's warning, and the
 guest's first process makes the terminal its standard error just before it
 starts the shell.
 
+## Home
+
+`~` is the workspace's home: the workspace's main folder, the one synced
+between its devices and collaborators (`/var/workspace` on a Tilo Linux
+session). It is not a directory per environment: every environment of the
+workspace sees that same folder at `~`, on the Tilo side and in its guest,
+at its own path, and `$HOME` and the guest's `passwd` say so. Access is the
+grants': the first time a device with the workspace opens an environment
+that has no home, the record's `set-home` makes the folder its home and
+grants it read-write, attributed to `so.tilo.ush` in History; revoking that
+grant later is kept. `cd ~` works, and `~/.ushrc` and other dotfiles live in
+the workspace folder, synced like everything else.
+
+An environment made before this had its home in the ush store
+(`environments/<record>/home`). Nothing there is moved or deleted: when it
+holds anything, the same step grants it read-only, so the shell and the
+guest still read it at that path (`cat ~/.local/share/ush/environments/default/home/.bashrc`).
+Where a device has no workspace (a relay), and for an ephemeral home, the
+guest binds a home of the environment's own at `/home/<user>` as before.
+
 ## The session's shell
 
 A new Terminal session runs ush's own shell on the Tilo side: the
@@ -296,7 +317,10 @@ The host reaches nothing but the environment:
   `> file` is the record's `write`, `>> file` its `append`. Each is checked
   against the grants by the verb, recorded in History attributed to the
   person, and undone from there; the writes of one command line are grouped
-  as its run. They go through the session's broker, the same door a guest's
+  as its run. A write of any size is one action: past 64 KiB, what the
+  command writes (a redirect, `tee`, `sort -o`) is streamed into the
+  environment's content store as it is written, and the action names it by
+  reference (`tilo.content:<hash>`). They go through the session's broker, the same door a guest's
   `cp` uses.
 - **Anything else** is a program, and runs in the session's Linux guest
   (tier 3), exactly that command, on the shell's own streams: the terminal
@@ -316,8 +340,9 @@ The host reaches nothing but the environment:
 The shell's variables are the guest's (`PATH`, `HOME`, `USER`, …), since
 every program it runs runs there. It marks its runs itself, with the marks
 below, so the run records are the same whichever shell a session runs. It
-reads the environment home's `~/.ushrc` when it starts interactively; it
-does not read bash's files. Lines are read as the terminal's line
+starts in `~` when the grants reach it, and reads `~/.ushrc` (through the
+grants, like any file) when it starts interactively; it does not read
+bash's files. Lines are read as the terminal's line
 discipline hands them over. `ush -c SCRIPT` runs a script the same way.
 
 `ush-sh` on a guest's `PATH` (`tilo-ush sh`, with the guest as its host in
@@ -522,7 +547,14 @@ each is one of the environment record's published actions
 `copy`, `move`, `remove`, `make-dir`, `remove-dir`, `link`, `truncate`, `touch`
 and `append`. A shell's redirect is one too: `> file` is `write` (the file's
 whole contents; contents that are not text travel as base64, and `set -C`
-makes it `no_clobber`), `>> file` is `append`. A command line parses into one of them, with its paths made
+makes it `no_clobber`), `>> file` is `append`. Up to 64 KiB travels inside
+the action as `text`; anything larger, of any size, takes `content`, a
+`tilo.content:<hash>` reference to the environment's content store on the
+device (Tilo's content store, in `environments/<record>/content/`, with no
+bound on an item). The device that carries the action out streams it from
+there. Content stays while a task the record keeps names it, and what none
+names is collected, never while a session is still streaming content its
+action has not named yet. A command line parses into one of them, with its paths made
 absolute against the directory it was typed in, and the supervisor invokes it
 on the record through the record's action door, as the person whose session it
 is. It is one History entry of the environment's, attributed like any other,
@@ -659,13 +691,17 @@ as the app is open.
 
 ```
 ~/.local/share/ush/
-  environments/<record>/home/   an environment's home
+  environments/<record>/home/   an environment's home from before `~` was the
+                                workspace's folder, or where there is none
+  environments/<record>/content/ what its writes name by reference
   environments/<record>/var/    its /var/lib and /var/cache
   sessions/<id>/                generated /etc entries, the broker socket,
                                 an ephemeral home
   audit/                        the broker's append-only log, one file per day
 ```
 
+`$TILO_USH_WORKSPACE` names the workspace's folder (the supervisor hands the
+one it found to its sessions; a moved store has none unless it is set).
 `$TILO_USH_HOME` moves the store (and, with it, the records);
 `$TILO_USH_RECORDS` moves the records alone. The supervisor hands both to the
 sessions it starts. Images live in the package store; tests point

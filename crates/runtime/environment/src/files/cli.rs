@@ -227,6 +227,7 @@ fn parse_touch(operands: Vec<PathBuf>) -> Result<FileAction, ParseError> {
     Ok(FileAction::Touch(AppendFileOp {
         files: operands,
         text: String::new(),
+        content: None,
     }))
 }
 
@@ -242,6 +243,7 @@ fn parse_append(mut operands: Vec<PathBuf>) -> Result<FileAction, ParseError> {
     Ok(FileAction::Append(AppendFileOp {
         files: operands,
         text,
+        content: None,
     }))
 }
 

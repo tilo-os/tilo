@@ -356,6 +356,18 @@ impl<R: Resource> RecordEnv<R> {
         &self.run.launched.arguments
     }
 
+    /// The file whose history History shows beside the resource's, for an
+    /// app that declares [`ResourceApp::FILE_HISTORY`](super::ResourceApp::FILE_HISTORY):
+    /// set its target to the file the window shows (the selected one) and
+    /// open it from the window's own History command. `None` for any other
+    /// app, and in a past version.
+    pub fn file_history(&self) -> Option<ui_core::history_mode::checked_files::FileHistorySource> {
+        self.run
+            .file_history
+            .as_ref()
+            .map(|(source, _)| source.clone())
+    }
+
     /// The value of the app's own option `name` (`--purpose`) the window's
     /// launch named; see [`ResourceApp::OPTIONS`](super::ResourceApp::OPTIONS).
     /// `None` for a past version.

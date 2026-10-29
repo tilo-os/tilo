@@ -13,8 +13,8 @@ fn unhosted_cloud_import_without_issuer_settles_without_contacting_source() {
     // Portal services alone are not a checked import issuer.
     let (services, _) = ui::host::HostServices::recording();
     let _host = ui::host::enter(&services);
-    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
-    assert!(!files.cloud_fixture_consent);
+    let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
+    assert!(!files.state().cloud_fixture_consent);
     let folder = root.path().display().to_string();
     let entry = ImportEntry {
         id: "native".into(),
@@ -31,7 +31,7 @@ fn unhosted_cloud_import_without_issuer_settles_without_contacting_source() {
         entries: vec![entry],
         folder,
     };
-    files.queue(
+    files.state().queue(
         op,
         OpFollowUp::Paste {
             count: 1,
@@ -39,17 +39,23 @@ fn unhosted_cloud_import_without_issuer_settles_without_contacting_source() {
         },
     );
     tilo_test_env::wait_until("the cloud transfer to settle", || {
-        files.poll_cloud();
-        files.cloud.transfer.is_none()
+        files.state().poll_cloud();
+        files.state().cloud.transfer.is_none()
     });
-    assert_eq!(files.local_outcomes.len(), 1);
-    let outcome = files.local_outcomes.values().next().unwrap();
+    assert_eq!(files.state().local_outcomes.len(), 1);
+    let outcome = files
+        .state()
+        .local_outcomes
+        .values()
+        .next()
+        .unwrap()
+        .clone();
     assert_eq!(
         outcome.reason(),
         Some("only the host person can approve a personal cloud import")
     );
     assert!(outcome.result().is_empty());
-    assert_eq!(files.cloud.error.as_deref(), outcome.reason());
+    assert_eq!(files.state().cloud.error.as_deref(), outcome.reason());
     assert!(!root.path().join("Copy.docx").exists());
     assert_eq!(
         listener.accept().unwrap_err().kind(),
@@ -60,15 +66,15 @@ fn unhosted_cloud_import_without_issuer_settles_without_contacting_source() {
 #[test]
 fn two_windows_cancel_only_their_queued_attempt_and_keep_its_status() {
     let root = tempfile::tempdir().unwrap();
-    let mut first = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
-    let mut second = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
+    let first = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
+    let second = FileExplorerWidget::with_persistence(None, Some(root.path().to_owned()));
     let first_id = uuid::Uuid::new_v4().to_string();
     let second_id = uuid::Uuid::new_v4().to_string();
-    first.cloud.job_id = Some(first_id.clone());
-    second.cloud.job_id = Some(second_id.clone());
+    first.state().cloud.job_id = Some(first_id.clone());
+    second.state().cloud.job_id = Some(second_id.clone());
     crate::cloud_jobs::register(&first_id);
     crate::cloud_jobs::register(&second_id);
-    first.run_effect(FilesEffect::CancelCloud).unwrap();
+    first.state().run_effect(FilesEffect::CancelCloud).unwrap();
     let folder = root.path().display().to_string();
     let op = crate::file_ops::FileOp::CloudImport {
         job_id: first_id,
@@ -82,17 +88,17 @@ fn two_windows_cancel_only_their_queued_attempt_and_keep_its_status() {
         crate::cloud_jobs::run(&op, crate::cloud_jobs::fixture_consent(&op)).reason(),
         Some("cloud import cancelled")
     );
-    first.poll_cloud();
-    second.poll_cloud();
+    first.state().poll_cloud();
+    second.state().poll_cloud();
     assert!(
-        matches!(first.run_effect(FilesEffect::CloudProgress).unwrap(),
+        matches!(first.state().run_effect(FilesEffect::CloudProgress).unwrap(),
         Ran::Done(Some(value)) if value["phase"] == "cancelled")
     );
     assert!(
-        matches!(second.run_effect(FilesEffect::CloudProgress).unwrap(),
+        matches!(second.state().run_effect(FilesEffect::CloudProgress).unwrap(),
         Ran::Done(Some(value)) if value["phase"] == "")
     );
-    second.run_effect(FilesEffect::CancelCloud).unwrap();
-    assert_eq!(first.cloud.progress.phase, "cancelled");
+    second.state().run_effect(FilesEffect::CancelCloud).unwrap();
+    assert_eq!(first.state().cloud.progress.phase, "cancelled");
     assert!(crate::cloud_jobs::snapshot(&second_id).phase.is_empty());
 }

@@ -69,8 +69,8 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
     let _host = ui::host::enter(&services);
     let mut app = ui::prelude::TestApp::<crate::FileExplorerShell>::new().unwrap();
     app.with_surface(|files: &mut FileExplorerWidget| {
-        files.home_path = Some(mount.clone());
-        files.startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
+        files.state().home_path = Some(mount.clone());
+        files.state().startup_accounts = Some(vec![crate::remote_accounts::RemoteAccount {
             id: "account".into(),
             kind: crate::remote_accounts::RemoteAccountKind::GoogleDrive,
             label: "Drive".into(),
@@ -79,9 +79,10 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
             files_mode: accounts::cloud_types::FilesMode::Sync,
             mount: Some(mount.clone()),
         }]);
-        files.navigate(mount.clone());
-        files.poll_mounted_cloud();
+        files.state().navigate(mount.clone());
+        files.state().poll_mounted_cloud();
         let replies = files
+            .state()
             .mounted_cloud
             .pending
             .take()
@@ -90,16 +91,18 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
             .unwrap();
         let (tx, rx) = channel();
         tx.send(replies).unwrap();
-        files.mounted_cloud.pending = Some(rx);
-        assert!(files.poll_mounted_cloud());
+        files.state().mounted_cloud.pending = Some(rx);
+        assert!(files.state().poll_mounted_cloud());
         server.join().unwrap();
         for (name, _, source) in sources {
             let entry = files
+                .state()
                 .entries
                 .iter()
                 .find(|entry| entry.name == name)
-                .unwrap();
-            let row = files.entry_resource(entry);
+                .unwrap()
+                .clone();
+            let row = files.state().entry_resource(&entry);
             let presentation = row.presentation.unwrap();
             assert!(presentation.detail.unwrap().contains(source));
             assert!(presentation.preview.unwrap().contains("independent"));
@@ -118,13 +121,16 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
             );
         }
         let uploaded = files
+            .state()
             .entries
             .iter()
             .find(|entry| entry.name == "Uploaded.docx")
-            .unwrap();
+            .unwrap()
+            .clone();
         assert!(
             files
-                .entry_resource(uploaded)
+                .state()
+                .entry_resource(&uploaded)
                 .actions
                 .iter()
                 .all(|a| a.id != "import-converted")
@@ -144,8 +150,8 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
         assert!(
             destination.join("Document.docx").exists(),
             "status: {:?}; outcomes: {:?}",
-            files.status,
-            files.local_outcomes
+            files.state().status,
+            files.state().local_outcomes
         );
     })
     .unwrap();

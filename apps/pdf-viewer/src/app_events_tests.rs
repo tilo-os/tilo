@@ -418,7 +418,7 @@ fn sidebar_hits_toggle_delete_clip_to_the_body_and_draw_every_tab() {
             .iter()
             .find(|c| c.id == id)
             .unwrap()
-            .resolved;
+            .comment.resolved;
         assert!(
             rig.app
                 .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
@@ -429,7 +429,7 @@ fn sidebar_hits_toggle_delete_clip_to_the_body_and_draw_every_tab() {
             .iter()
             .find(|c| c.id == id)
             .unwrap()
-            .resolved;
+            .comment.resolved;
         assert_ne!(
             before, after,
             "resolve chip should toggle, not open the card"
@@ -555,7 +555,7 @@ fn a_browser_types_into_a_new_note_through_ime_commits() {
         rig.app
             .comments
             .iter()
-            .any(|comment| comment.body == "Check this figure"),
+            .any(|comment| comment.comment.text == "Check this figure"),
         "the typed comment is kept"
     );
 }
@@ -619,9 +619,9 @@ fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
     );
     let saved = crate::markup::PdfMarkup::of(&rig.st.doc).list_comments();
     assert!(
-        saved.iter().any(|c| c.body == "Relay path"),
+        saved.iter().any(|c| c.comment.text == "Relay path"),
         "the typed comment body landed in the shared document: {:?}",
-        saved.iter().map(|c| c.body.clone()).collect::<Vec<_>>()
+        saved.iter().map(|c| c.comment.text.clone()).collect::<Vec<_>>()
     );
 
     // A Select-tool press-move-release past `PAN_SLOP` pans the canvas and
@@ -721,7 +721,7 @@ fn inline_editor_commits_replies_discards_empty_notes_and_handles_clipboard_chor
 
     let (mut app, _st) = sample_app();
     app.sidebar_tab = SidebarTab::Comments;
-    let body = app.comments[0].body.clone();
+    let body = app.comments[0].comment.text.clone();
     let cid = app.comments[0].id.clone();
     app.begin_edit(EditTarget::CommentBody(cid), &body);
     let theme = ui::theme::Theme::dark();
@@ -743,17 +743,17 @@ fn inline_editor_commits_replies_discards_empty_notes_and_handles_clipboard_chor
     // A reply composed into a seeded comment lands in its thread.
     let (mut app, mut st) = sample_app();
     let cid = app.comments[0].id.clone();
-    let replies_before = app.comments[0].replies.len();
+    let replies_before = app.comments[0].comment.replies.len();
     app.begin_edit(EditTarget::Reply(cid.clone()), "");
     app.editing.as_mut().unwrap().set_text("Looks good");
     app.commit_edit(&mut Edits::lend(&mut st.doc));
     let after = app.comments.iter().find(|c| c.id == cid).unwrap();
     assert_eq!(
-        after.replies.len(),
+        after.comment.replies.len(),
         replies_before + 1,
         "reply landed in the thread"
     );
-    assert_eq!(after.replies.last().unwrap().body, "Looks good");
+    assert_eq!(after.comment.replies.values().last().unwrap().text, "Looks good");
 
     // Select the whole field first (Ctrl+A) so copy/cut act on the text —
     // the shared TextInput has a real selection model. The cut's
@@ -986,7 +986,7 @@ fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
         annotations.into_iter().map(|a| a.id).collect()
     };
     let comment_ids =
-        |comments: Vec<Comment>| -> Vec<String> { comments.into_iter().map(|c| c.id).collect() };
+        |comments: Vec<crate::model::Thread>| -> Vec<String> { comments.into_iter().map(|c| c.id).collect() };
     assert_eq!(
         ids(crate::markup::PdfMarkup::of(&st.doc).list_annotations()),
         ids(crate::markup::PdfMarkup::of(&palette).list_annotations()),

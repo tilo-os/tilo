@@ -106,8 +106,16 @@ build_host() {
         -p runtime-bundle --bin tilo-runtime-bundle \
         -p tilo-model-gateway --bin tilo-model-gateway \
         -p ush --bin tilo-ush \
-        -p tilo-control --bin tilo-control \
-        -p tilolang-host --bin tilolang-host
+        -p tilo-control --bin tilo-control
+}
+# The tilolang host, in a build of its own: built with the shell, the features the shell
+# turns on in the crates both use (media, the toolkit's services) would unify into it, and its
+# binary would link libraries its sandbox, the tilolang runtime on the app runtime alone, does
+# not hold.
+build_tilolang_host() {
+    local args
+    mapfile -t args < <(profile_args "$host_profile")
+    cargo build --locked --timings "${args[@]}" -p tilolang-host --bin tilolang-host
 }
 # The workspace host and the room service in front of it, as the room
 # service's image builds them (tilo-relay with its agents): the local site
@@ -170,6 +178,7 @@ build_host_then_site() {
     local seal
     seal_env_runtime 2>&1 | label seal & seal=$!
     build_site 2>&1 | label site || { wait "$seal"; return 1; }
+    build_tilolang_host 2>&1 | label tilolang-host || { wait "$seal"; return 1; }
     wait "$seal"
 }
 

@@ -50,6 +50,7 @@ pub fn check_program(
         synth: Vec::new(),
         synth_base: 0,
         states: Vec::new(),
+        at_event: Vec::new(),
     };
     c.begin(Ctx::Flow, params, Ty::Unit, export);
     c.st.program = true;
@@ -93,6 +94,7 @@ pub fn check_program(
             funcs: vec![f],
             views: Vec::new(),
             states: Vec::new(),
+            at_event: Vec::new(),
         },
         lets,
     }

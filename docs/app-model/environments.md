@@ -6,7 +6,7 @@ makes that place explicit. Every session is bound to a **target**:
 | Target | What it is | Identity and files | Packages |
 |---|---|---|---|
 | **Host** | The machine's own login shell (desktop installs; the owner's shell on Tilo OS) | The real user, the real home | The host's own (rpm-ostree, Flatpak, …) |
-| **Environment** | A sandbox whose `/usr` is a stack of read-only images, on this device or on a relay | The real uid inside its own namespaces; the environment's home plus directories granted to it | Tool images listed in the environment record |
+| **Environment** | A sandbox whose `/usr` is a stack of read-only images, on this device or on a relay | The real uid inside its own namespaces; the workspace's folder as `~` plus directories granted to it | Tool images listed in the environment record |
 | **Legacy VM** | One VM per user and guest OS, for software that needs a whole system | A normal user account in the guest; granted directories shared in | Whatever the guest installs (Flatpak, its package manager) |
 
 The terminal never receives a namespace or a VM. It receives a pty from a
@@ -115,6 +115,7 @@ pub struct Environment {
     pub tools: Vec<ToolRef>,         // tools built for that release
     pub grants: Vec<CapOverride>,    // FsPath / NetHost grants, Subject::App("so.tilo.ush")
     pub home: HomePolicy,            // Persistent (default) | Ephemeral
+    pub home_dir: String,            // what `~` is: the workspace's folder
 }
 
 pub struct RuntimeRef {
@@ -147,7 +148,7 @@ layer; there is no separate package manifest.
 ```text
 /usr, /etc   overlay (read-only): lowers = [tool images…, env-runtime]
              (--ro-overlay; no writable upper)
-/home/<user> the environment's home (per environment, in the store)
+~            the workspace's folder, through its grant (ush.md, "Home")
 <grants>     one bind per FsPath grant, at the same path as on the host
 /tmp /run /proc /dev   fresh
 /var         tmpfs, plus the environment's own /var/lib and /var/cache
