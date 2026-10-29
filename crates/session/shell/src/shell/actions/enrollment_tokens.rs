@@ -12,8 +12,8 @@ use tilo_identity_host::enrollment::EnrollmentRole;
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 
-pub(super) const DEVICE_ENROLL_ID: &str = "identity.device.enroll";
-pub(super) const HOME_PEER_ENROLL_ID: &str = "identity.home-peer.enroll";
+pub(crate) const DEVICE_ENROLL_ID: &str = "identity.device.enroll";
+pub(crate) const HOME_PEER_ENROLL_ID: &str = "identity.home-peer.enroll";
 
 /// How long a code lives unless the caller asks for less or more.
 const DEFAULT_TTL_SECONDS: i64 = 5 * 60;
@@ -22,7 +22,7 @@ const DEFAULT_TTL_SECONDS: i64 = 5 * 60;
 const MIN_TTL_SECONDS: i64 = 30;
 const MAX_TTL_SECONDS: i64 = 15 * 60;
 
-pub(super) const ENROLL_PARAMS: &[ActionParam] = &[
+pub(crate) const ENROLL_PARAMS: &[ActionParam] = &[
     ActionParam::optional(
         "ttl_seconds",
         ParamType::Integer,
@@ -36,7 +36,7 @@ pub(super) const ENROLL_PARAMS: &[ActionParam] = &[
 ];
 
 /// The role an enroll action's code admits a device as.
-pub(super) fn role_of(id: &str) -> Option<EnrollmentRole> {
+pub(crate) fn role_of(id: &str) -> Option<EnrollmentRole> {
     match id {
         DEVICE_ENROLL_ID => Some(EnrollmentRole::PersonalDevice),
         HOME_PEER_ENROLL_ID => Some(EnrollmentRole::HomePeer),
@@ -46,7 +46,7 @@ pub(super) fn role_of(id: &str) -> Option<EnrollmentRole> {
 
 /// The contract both enroll actions share: they reach outside the document,
 /// hand out a credential, and say what they return.
-pub(super) fn contract() -> tilo_actions::ActionContract {
+pub(crate) fn contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
         kind: tilo_actions::ActionKind::Outside,
         risk: tilo_actions::RiskLevel::Sensitive,
@@ -84,7 +84,7 @@ fn ttl_ns(args: &ActionArgs) -> Result<u64, ActionError> {
 ///
 /// Who may run it is checked first: only someone who administers the active
 /// workspace's identity may admit a device to it.
-pub(super) fn mint(
+pub(crate) fn mint(
     state: &ChromeState,
     args: &ActionArgs,
     role: EnrollmentRole,
@@ -114,7 +114,7 @@ pub(super) fn mint(
 /// [`mint`] for the person who picked the row: the clipboard is out of sight
 /// and search closes on choose, so the shell says in passing that the code is
 /// copied and how long it lasts.
-pub(super) fn mint_for_person(
+pub(crate) fn mint_for_person(
     state: &mut ChromeState,
     args: &ActionArgs,
     role: EnrollmentRole,

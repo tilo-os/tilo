@@ -2197,6 +2197,7 @@ mod tests {
 
     fn descriptor(resource: &str, action: &str) -> ActionDescriptor {
         ActionDescriptor {
+            state: crate::ActionState::default(),
             semantic_identity: None,
             address: ActionAddress::new(resource, action),
             resource_kind: "notes.note".into(),

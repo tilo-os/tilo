@@ -530,6 +530,7 @@ pub fn room_role_grants(room: &str, granted_by: &Subject) -> Vec<Grant> {
                 &Lifetime::UntilRevoked,
             )
         })
+        .chain([session_app(room, granted_by.clone())])
         .collect()
 }
 
@@ -853,6 +854,26 @@ pub fn app_authorship(room: &str, app: &str, granted_by: Subject) -> Grant {
         Subject::App(app.to_owned()),
         TreePath::room(room).app(app),
         KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        granted_by,
+    )
+}
+
+/// The app a person's desktop session publishes its own functions as (the
+/// shell's actions: windows, workspaces, its settings), on their device.
+pub const SESSION_APP: &str = "shell";
+
+/// The grant making the desktop session's own app, [`SESSION_APP`], one of
+/// the person's own apps in `room`: whatever the person may do there, it may
+/// do for them. It never reaches past the person it acts for, whose authority
+/// bounds every delegation.
+#[must_use]
+pub fn session_app(room: &str, granted_by: Subject) -> Grant {
+    Grant::new(
+        "session-app",
+        Subject::App(SESSION_APP.to_owned()),
+        TreePath::room(room),
+        KindSet::ALL,
         Answer::Allow,
         granted_by,
     )

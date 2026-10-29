@@ -13,11 +13,20 @@
 //! - [`lazy`]: search whose code a program may fetch on first use.
 //! - [`answers`]: what a query that is not a name answers: a sum, a unit
 //!   conversion, an address, the web searches it can be.
+//! - `content_index` and `files_index` (feature `indexes`): the session's
+//!   on-disk indexes of what apps publish and of the person's files.
 //! - [`availability`]: what the manifest registry knows of each app: where
 //!   it runs, its category and the words people know it by.
 
 pub mod answers;
 pub mod availability;
+#[cfg(feature = "indexes")]
+pub mod content_index;
+#[cfg(feature = "indexes")]
+pub mod files_index;
+mod i18n;
+#[cfg(feature = "indexes")]
+pub mod indexed;
 pub mod lazy;
 pub mod model;
 pub mod palette;
@@ -28,6 +37,6 @@ pub mod window;
 pub use lazy::{
     DESKTOP_SEARCH, DesktopSearchApi, LazyDesktopSearch, MakeDesktopSearch, builtin_desktop_search,
 };
-pub use model::{ActionTarget, Hit, Source, Target, search};
+pub use model::{ActionTarget, Hit, InvokeTarget, Source, Target, search};
 pub use palette::{DesktopSearch, SearchData};
 pub use ui::search::system::ResourceKind;

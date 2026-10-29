@@ -419,7 +419,7 @@ def main() -> int:
         session.publish_display_to_bus()
         for _ in range(40):
             apps = [a for a in session.actions("")
-                    if a.get("provider") in ("applications", "host-applications")]
+                    if a.get("provider") == "applications"]
             if apps:
                 break
             time.sleep(0.5)

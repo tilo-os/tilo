@@ -1,7 +1,7 @@
 //! What apps hold, found whether or not they run.
 //!
 //! Answers from the session's persistent index of apps' search entries
-//! ([`crate::shell::search::app_content_index`]): a note, a message, a
+//! ([`tilo_desktop_search::content_index`]): a note, a message, a
 //! login, by its title, its secondary line and its short fields. A hit opens
 //! the app at the entry, through the same door a live hit takes: the
 //! entry's published action, or the app's `open` action at the entry's
@@ -17,16 +17,16 @@
 //! search for …", whose Enter opens the app to unlock it.
 //!
 //! Rows are "your content", the third intent tier: ranked as
-//! [`ResourceKind::Record`] on the provider scale ([`MAX_SCORE`]).
+//! [`ResourceKind::Record`] on the provider scale ([`MAX_SCORE`]). They are
+//! desktop search's ([`IndexedContent`]), the same every desktop finds;
+//! this provider opens them through the broker.
 
-use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::cell::Cell;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget};
-use tilo_search::{Document, Matching, Page, SearchIndex};
-use ui::search::index_publication::{IndexEntry, IndexWeight};
+use ui::search::index_publication::IndexEntry;
 
 use crate::shell::certified_action_session::ActionSessionSource;
 use crate::shell::chrome_state::{Chrome, ChromeState};
@@ -34,14 +34,14 @@ use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::collab_broker_capnp::{
     PublishedAction, PublishedInput, PublishedSurface, launchable_provider,
 };
-use crate::shell::i18n::t_args;
 use crate::shell::search::action_api::ActionError;
-use crate::shell::search::app_content_index::{
-    AppContentIndex, Contents, IndexedEntry, SlotKey, record_slot,
-};
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchProximity, SearchResult,
+};
+use tilo_desktop_search::content_index::{AppContentIndex, SlotKey, record_slot};
+use tilo_desktop_search::indexed::{
+    IndexedContent, OPEN_ACTION, OPEN_ANCHOR, parse_entry_id, unlock_app,
 };
 
 /// This provider's id.
@@ -50,92 +50,6 @@ pub const PROVIDER_ID: &str = "app-content";
 /// Top of this provider's scale: a title named exactly. The registry
 /// divides by it to compare providers.
 pub const MAX_SCORE: i32 = ui::search::system::MAX_PROVIDER_SCORE;
-
-/// The action every framework app publishes to show the item at an anchor
-/// (`tilo_app::framework`'s `open`), and its parameter.
-const OPEN_ACTION: &str = "open";
-const OPEN_ANCHOR: &str = "anchor";
-
-/// Separates the parts of a row id; an entry's key, which may hold it, is
-/// last.
-const ID_SEPARATOR: char = '\u{1f}';
-/// The id prefix of an app's unlock row.
-const UNLOCK: &str = "unlock";
-
-/// The index at one generation, ready to search.
-struct Snapshot {
-    generation: u64,
-    visible: Vec<IndexedEntry>,
-    index: SearchIndex,
-    /// Locked secret-bearing entries, matched only to offer unlocking.
-    locked: Vec<IndexedEntry>,
-    locked_index: SearchIndex,
-    /// `(app, room, resource)` of every visible entry.
-    covered: HashSet<(String, String, String)>,
-    /// The boost its app gave each visible entry that has one, by row id.
-    boosts: HashMap<String, i32>,
-}
-
-impl Snapshot {
-    fn new(generation: u64, contents: Contents) -> Self {
-        let Contents { visible, locked } = contents;
-        let covered = visible
-            .iter()
-            .map(|indexed| {
-                (
-                    indexed.slot.app.clone(),
-                    indexed.slot.room.clone(),
-                    indexed.entry.resource.clone(),
-                )
-            })
-            .collect();
-        let boosts = visible
-            .iter()
-            .filter(|indexed| indexed.entry.boost != 0)
-            .map(|indexed| {
-                (
-                    entry_id(&indexed.slot, &indexed.entry.key),
-                    indexed.entry.boost,
-                )
-            })
-            .collect();
-        Self {
-            generation,
-            index: text_index(&visible),
-            locked_index: text_index(&locked),
-            visible,
-            locked,
-            covered,
-            boosts,
-        }
-    }
-}
-
-/// The entries' texts, each found by its position.
-fn text_index(entries: &[IndexedEntry]) -> SearchIndex {
-    // Names a person half remembers: words across fields and typos.
-    let mut index = SearchIndex::new(Matching::LOOSE);
-    index.replace_all(entries.iter().enumerate().map(|(at, indexed)| {
-        // What the entry refers to counts as it is called now, never as the
-        // title written into its text when the reference was made.
-        indexed
-            .entry
-            .searchable()
-            .chain(
-                indexed
-                    .referenced
-                    .iter()
-                    .map(|title| (title.as_str(), IndexWeight::Body)),
-            )
-            .fold(Document::new(at as u64), |document, (text, weight)| {
-                document.field(text, weight.field_weight())
-            })
-    }));
-    if let Err(error) = index.commit() {
-        tracing::error!(%error, "could not index apps' content");
-    }
-    index
-}
 
 /// What opening a hit goes through: the broker's published surfaces, live
 /// and retained, and the session's action door. Absent where no broker is
@@ -193,9 +107,8 @@ pub(crate) fn open_at(
 }
 
 pub struct AppContentProvider {
-    index: Arc<AppContentIndex>,
+    content: IndexedContent,
     door: Option<OpenDoor>,
-    snapshot: RefCell<Option<Rc<Snapshot>>>,
     /// Whether the index wakes the compositor loop on a change yet.
     wakes: Cell<bool>,
 }
@@ -204,9 +117,8 @@ impl AppContentProvider {
     /// A provider over `index` whose hits open through `broker`.
     pub fn new(index: Arc<AppContentIndex>, broker: AppActionBroker) -> Self {
         Self {
-            index,
+            content: IndexedContent::new(index, app_name),
             door: Some(OpenDoor::new(broker)),
-            snapshot: RefCell::new(None),
             wakes: Cell::new(false),
         }
     }
@@ -214,144 +126,40 @@ impl AppContentProvider {
     /// A provider over `index` with no broker: a hit opens its app.
     pub fn without_broker(index: Arc<AppContentIndex>) -> Self {
         Self {
-            index,
+            content: IndexedContent::new(index, app_name),
             door: None,
-            snapshot: RefCell::new(None),
             wakes: Cell::new(false),
         }
     }
 
-    /// The snapshot of the index as it is now, built if it moved.
-    fn current(&self) -> Rc<Snapshot> {
-        let generation = self.index.generation();
-        let mut slot = self.snapshot.borrow_mut();
-        match slot.as_ref() {
-            Some(snapshot) if snapshot.generation == generation => Rc::clone(snapshot),
-            _ => {
-                // Read the generation before the contents: a change landing
-                // between them leaves this snapshot stale, never stamped
-                // current.
-                let snapshot = Rc::new(Snapshot::new(generation, self.index.contents()));
-                *slot = Some(Rc::clone(&snapshot));
-                snapshot
-            }
-        }
-    }
-
-    /// Whether this provider finds `resource` of `app` in `room`, whether or
-    /// not the app runs: every resource the index holds is this provider's
-    /// row, so a window's own row for it gives way and its kind gives way
-    /// with it. One resource is one row.
+    /// Whether this provider finds `resource` of `app` in `room`
+    /// ([`IndexedContent::covers`]).
     pub fn covers(&self, app: &str, room: &str, resource: &str) -> bool {
-        self.current()
-            .covered
-            .contains(&(app.to_owned(), room.to_owned(), resource.to_owned()))
+        self.content.covers(app, room, resource)
     }
 
-    fn row(&self, indexed: &IndexedEntry, score: i32) -> SearchResult {
-        let IndexedEntry { slot, entry, .. } = indexed;
-        let subtitle = entry
-            .subtitle
-            .clone()
-            .or_else(|| entry.group.clone())
-            .unwrap_or_else(|| app_name(&slot.app));
+    /// A desktop-search row as the palette's: an entry opens through the
+    /// broker, an unlock row opens its app.
+    fn row(&self, hit: tilo_desktop_search::Hit) -> SearchResult {
         let door = self.door.clone();
-        let opened_slot = slot.clone();
-        let opened = entry.clone();
+        let opened = self.content.entry(&hit.id);
+        let unlocked = unlock_app(&hit.id).map(str::to_owned);
         SearchResult::nullary_fallible(
-            ResourceKind::Record,
+            hit.kind,
             PROVIDER_ID,
-            entry_id(slot, &entry.key),
-            entry.title.clone(),
-            Some(subtitle),
-            score,
-            move |_doc, _root, chrome| open_entry(door.as_ref(), chrome, &opened_slot, &opened),
-        )
-    }
-
-    /// One row offering to unlock `app`, for the `needle` its locked
-    /// entries match.
-    fn unlock_row(app: &str, needle: &str, score: i32) -> SearchResult {
-        let name = app_name(app);
-        let launched = app.to_owned();
-        let launched_name = name.clone();
-        SearchResult::nullary_fallible(
-            ResourceKind::Record,
-            PROVIDER_ID,
-            format!("{UNLOCK}{ID_SEPARATOR}{app}"),
-            t_args(
-                "search-unlock-app",
-                &[
-                    ("app", name.as_str().into()),
-                    ("query", needle.trim().into()),
-                ],
-            ),
-            Some(t_args(
-                "search-unlock-app-detail",
-                &[("app", name.as_str().into())],
-            )),
-            score,
-            move |_doc, _root, chrome| {
-                super::applications::launch_installed_app(chrome, &launched, &launched_name)
+            hit.id,
+            hit.title,
+            hit.subtitle,
+            hit.score,
+            move |_doc, _root, chrome| match (&opened, &unlocked) {
+                (Some(opened), _) => open_entry(door.as_ref(), chrome, &opened.slot, &opened.entry),
+                (None, Some(app)) => {
+                    super::applications::launch_installed_app(chrome, app, &app_name(app))
+                }
+                (None, None) => Err(ActionError::Refused("that entry is gone".into())),
             },
         )
     }
-
-    /// One unlock row per app whose locked entries match `needle`, scored by
-    /// its best match.
-    fn unlock_rows(snapshot: &Snapshot, needle: &str) -> Vec<SearchResult> {
-        let mut best: Vec<(String, i32)> = Vec::new();
-        for hit in snapshot
-            .locked_index
-            .search(needle, Page::first(SearchBudget::PALETTE.max_work))
-            .hits
-        {
-            let Some(indexed) = usize::try_from(hit.key)
-                .ok()
-                .and_then(|at| snapshot.locked.get(at))
-            else {
-                continue;
-            };
-            let score = crate::shell::search::provider_score(hit.rank.unwrap_or(0));
-            match best.iter_mut().find(|(app, _)| *app == indexed.slot.app) {
-                Some((_, held)) => *held = (*held).max(score),
-                None => best.push((indexed.slot.app.clone(), score)),
-            }
-        }
-        best.into_iter()
-            .map(|(app, score)| Self::unlock_row(&app, needle, score.max(1)))
-            .collect()
-    }
-}
-
-/// A row's id: where its entry was published from, then its key.
-fn entry_id(slot: &SlotKey, key: &str) -> String {
-    format!(
-        "{}{ID_SEPARATOR}{}{ID_SEPARATOR}{}{ID_SEPARATOR}{key}",
-        slot.app, slot.room, slot.record
-    )
-}
-
-/// The app an unlock row's id names.
-fn unlock_app(id: &str) -> Option<&str> {
-    id.strip_prefix(UNLOCK)?.strip_prefix(ID_SEPARATOR)
-}
-
-/// The slot and key a row id names.
-fn parse_entry_id(id: &str) -> Option<(SlotKey, &str)> {
-    let mut parts = id.splitn(4, ID_SEPARATOR);
-    let app = parts.next()?;
-    let room = parts.next()?;
-    let record = parts.next()?;
-    let key = parts.next()?;
-    Some((
-        SlotKey {
-            app: app.to_owned(),
-            room: room.to_owned(),
-            record: record.to_owned(),
-        },
-        key,
-    ))
 }
 
 /// The app's name as the person knows it.
@@ -602,13 +410,8 @@ impl SearchProvider for AppContentProvider {
         if unlock_app(&result.id).is_some() {
             return Some(ui::icons::Icon::Lock);
         }
-        let (slot, key) = parse_entry_id(&result.id)?;
-        let snapshot = self.snapshot.borrow();
-        snapshot
-            .as_ref()?
-            .visible
-            .iter()
-            .find(|indexed| indexed.slot == slot && indexed.entry.key == key)?
+        self.content
+            .entry(&result.id)?
             .entry
             .icon
             .as_deref()
@@ -636,34 +439,24 @@ impl SearchProvider for AppContentProvider {
     /// a search hit does. Scoped to a workspace, only what lives there.
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         if !self.wakes.replace(true) {
-            self.index
+            self.content
+                .index()
                 .set_waker(crate::shell::search::invocation_wake::waker());
         }
-        let _ = self.current();
+        let _ = self.content.current();
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
-        self.index.generation().to_string()
+        self.content.index().generation().to_string()
     }
 
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
         if !ctx.wanted.contains(&ResourceKind::Record) {
             return None;
         }
-        let snapshot = self.current();
-        if let Some(app) = unlock_app(id) {
-            return snapshot
-                .locked
-                .iter()
-                .any(|indexed| indexed.slot.app == app)
-                .then(|| Self::unlock_row(app, ctx.needle, MAX_SCORE));
-        }
-        let (slot, key) = parse_entry_id(id)?;
-        let indexed = snapshot
-            .visible
-            .iter()
-            .find(|indexed| indexed.slot == slot && indexed.entry.key == key)?;
-        Some(self.row(indexed, MAX_SCORE))
+        self.content
+            .resolve(id, ctx.needle)
+            .map(|hit| self.row(hit))
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
@@ -677,7 +470,7 @@ impl SearchProvider for AppContentProvider {
     /// rows over other providers'.
     fn source_order(&self, result: &SearchResult) -> Option<(String, i64)> {
         let (slot, _) = parse_entry_id(&result.id)?;
-        let boost = self.current().boosts.get(&result.id).copied().unwrap_or(0);
+        let boost = self.content.boost(&result.id);
         Some((
             slot.app,
             i64::from(result.score).saturating_add(i64::from(boost)),
@@ -702,7 +495,7 @@ impl SearchProvider for AppContentProvider {
         {
             return SearchPage::exhausted("empty", Vec::new());
         }
-        let snapshot = self.current();
+        let snapshot = self.content.current();
         let revision = snapshot.generation.to_string();
         // Two rooms' copies of one app's entry (a vault opened in each) are
         // one row.
@@ -724,13 +517,18 @@ impl SearchProvider for AppContentProvider {
                 // app's own rows only ([`SearchProvider::source_order`]).
                 let score =
                     crate::shell::search::provider_score(hit.rank.unwrap_or(0)).clamp(1, MAX_SCORE);
-                Some(self.row(indexed, score))
+                Some(self.row(self.content.row(indexed, score)))
             },
         );
         if cursor.is_none() {
             let room = budget.max_results.saturating_sub(page.results.len());
-            page.results
-                .extend(Self::unlock_rows(&snapshot, needle).into_iter().take(room));
+            page.results.extend(
+                self.content
+                    .unlock_rows(needle)
+                    .into_iter()
+                    .take(room)
+                    .map(|hit| self.row(hit)),
+            );
         }
         page
     }

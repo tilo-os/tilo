@@ -944,6 +944,8 @@ window-share-failed = Fenster konnte nicht geteilt werden
 window-unshare-failed = Teilen des Fensters konnte nicht beendet werden
 window-share-end-failed = Ein geschlossenes Fenster wird noch geteilt
 shell-terminal-unavailable = Terminal: { $error }
+shell-action-not-offered = Hier nicht verfügbar
+shell-action-nothing-to-act-on = Gerade gibt es nichts, worauf das wirkt
 shell-app-unavailable = Anwendung nicht verfügbar
 shell-activity-title = Aktivität
 shell-activity-loading = Aktivität im Arbeitsbereich wird geladen …
@@ -1092,13 +1094,10 @@ search-scope-everywhere = Überall
 search-provider-now-playing = Aktuelle Wiedergabe
 search-provider-records = Einträge
 search-provider-app-content = Inhalte deiner Apps
-search-unlock-app = { $app } entsperren, um nach „{ $query }“ zu suchen
-search-unlock-app-detail = { $app } ist gesperrt
 search-provider-session = Sitzung
 search-provider-shortcuts = Kurzbefehle
 search-provider-tray = Statusbereich
 search-provider-files = Dateien
-search-kind-answers = Antworten
 search-kind-people = Personen
 
 # Suche, bevor etwas getippt ist: der Starter
@@ -1131,11 +1130,8 @@ search-launcher-outcome-join = Beitreten
 search-launcher-outcome-answer = Annehmen
 search-provider-quick-answers = Schnelle Antworten
 search-provider-people = Personen
-search-answer-sum = { $expression } =
 search-answer-copied = Kopiert
-search-answer-money-stale = { $amount } = · Kurse { $age }
 search-matches = Passt zu „{ $word }“
-search-answer-open-address = { $address } öffnen
 search-provider-ask-agent = Einen Agenten fragen
 search-kind-agent = Agent
 search-ask-agent = Einen Agenten fragen: { $query }
@@ -1144,11 +1140,6 @@ search-ask-agent-no-agent = In diesem Workspace arbeitet noch kein Agent. Füge 
 search-ask-agent-no-model = Der Agent hat kein KI-Modell. Wähle eines in den Einstellungen.
 search-ask-agent-offline = Du bist offline, und das Modell des Agenten liegt im Internet.
 search-provider-web = Web
-search-kind-web = Web
-search-kind-websites = Websites
-search-web-for = Im Web nach { $query } suchen
-search-web-service-for = { $service } nach { $query } durchsuchen
-search-web-subtitle = Web
 search-answer-no-browser = Keine App auf diesem Desktop öffnet Webadressen.
 search-answer-bad-address = Diese Adresse lässt sich nicht öffnen.
 search-people-invited = Eingeladen

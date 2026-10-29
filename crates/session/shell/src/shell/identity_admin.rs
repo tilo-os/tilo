@@ -511,6 +511,7 @@ fn descriptor(step: &str) -> tilo_actions::ActionDescriptor {
     use crate::shell::i18n::t;
     let (label, description) = copy_keys(step);
     tilo_actions::ActionDescriptor {
+        state: tilo_actions::ActionState::default(),
         semantic_identity: None,
         address: tilo_actions::ActionAddress::new(RESOURCE, step),
         resource_kind: RESOURCE.into(),

@@ -5,7 +5,7 @@ use settings_store::hardware::ShortcutAction;
 /// The shortcut that does what an action does, as the active keyboard
 /// layout spells it, when the desktop has one: the catalogue id in
 /// [`settings_store::keyboard_shortcuts`] and the action it matches.
-pub(super) const ACTION_SHORTCUTS: &[(&str, &str)] = &[
+pub(crate) const ACTION_SHORTCUTS: &[(&str, &str)] = &[
     ("overview.toggle", "workspace-overview"),
     ("quick-settings.open", "quick-settings"),
     ("quick-settings.clipboard", "clipboard-history"),
@@ -115,10 +115,11 @@ mod tests {
     }
     #[test]
     fn every_shortcut_that_names_an_action_names_one_this_desktop_publishes() {
-        use super::super::tests::action_results;
-        use super::super::{Action, ActionsProvider};
+        use super::super::Action;
+        use crate::shell::search::providers::actions::ActionsProvider;
+        use crate::shell::search::providers::actions::tests::action_results;
         let provider = ActionsProvider::new();
-        let chrome = super::super::tests::chrome_with_room();
+        let chrome = crate::shell::search::providers::actions::tests::chrome_with_room();
         let results = action_results(&provider, &chrome);
         let mut chords = 0;
         for shortcut in ShortcutAction::ALL {
@@ -149,7 +150,9 @@ mod tests {
 
     #[test]
     fn magnifier_steps_and_the_maximize_toggle_run_from_the_action_door() {
-        use super::super::tests::{chrome_with_room, invoke_shell_action};
+        use crate::shell::search::providers::actions::tests::{
+            chrome_with_room, invoke_shell_action,
+        };
         let chrome = chrome_with_room();
         for id in [
             "magnifier.toggle",
@@ -168,8 +171,10 @@ mod tests {
 
     #[test]
     fn moving_a_group_to_another_display_refuses_on_a_single_display_desk() {
-        use super::super::tests::{chrome_with_room, invoke_shell_action};
         use crate::shell::search::action_api::ActionError;
+        use crate::shell::search::providers::actions::tests::{
+            chrome_with_room, invoke_shell_action,
+        };
         let chrome = chrome_with_room();
         assert_eq!(chrome.borrow().tree().desktop.outputs.displays.len(), 0);
         for id in [

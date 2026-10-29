@@ -171,7 +171,7 @@ Titles are display text, not identities. For example, two results can both say
 | Provider | ID | Meaning |
 |---|---|---|
 | `applications` | `dev.tilo.calculator` | Native Tilo Calculator |
-| `host-applications` | `org.gnome.Calculator` | Host GNOME Calculator |
+| `applications` | `org.gnome.Calculator` | Host GNOME Calculator |
 
 Inspect `kind`, `subtitle`, and the `(provider, id)` pair before choosing. Keep the
 selected pair and pass both to `actions invoke`; never substitute the first

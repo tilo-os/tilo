@@ -12,12 +12,10 @@
 //! resources from the focused app ahead of equally relevant global results.
 
 pub mod action_api;
-pub mod app_content_index;
 mod app_scope;
 #[cfg(test)]
 mod fallback_tests;
 mod fallbacks;
-pub mod files_index;
 mod held_pages;
 #[cfg(test)]
 mod held_pages_tests;
@@ -524,6 +522,12 @@ pub trait SearchProvider {
     /// the desktop's language.
     fn display_name(&self) -> String {
         self.name().to_string()
+    }
+    /// Further sources within this provider that people switch on and off
+    /// on their own, as `(id, display name)`; the provider leaves out the
+    /// rows of a source switched off ([`SearchPreferences`]).
+    fn sources(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
     }
     /// The set of kinds this provider CAN return; contributes chips to
     /// the palette's filter strip.
@@ -1120,12 +1124,19 @@ impl SearchRegistry {
     /// order only affects which provider's ID wins the de-dup tiebreak.
     pub fn register(&mut self, provider: Rc<dyn SearchProvider>) {
         let provider_id = provider.id().to_string();
-        let descriptor = (provider_id.clone(), provider.display_name());
+        let descriptors = std::iter::once((provider_id.clone(), provider.display_name())).chain(
+            provider
+                .sources()
+                .into_iter()
+                .map(|(id, name)| (id.to_string(), name)),
+        );
         let mut catalog = self.provider_catalog.borrow_mut();
-        if let Some(existing) = catalog.iter_mut().find(|(id, _)| id == &descriptor.0) {
-            *existing = descriptor;
-        } else {
-            catalog.push(descriptor);
+        for descriptor in descriptors {
+            if let Some(existing) = catalog.iter_mut().find(|(id, _)| id == &descriptor.0) {
+                *existing = descriptor;
+            } else {
+                catalog.push(descriptor);
+            }
         }
         drop(catalog);
         if let Some(existing) = self
