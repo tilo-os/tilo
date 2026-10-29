@@ -66,6 +66,9 @@ struct Seen {
     sent: Vec<String>,
     /// What our data source serves.
     payload: Vec<u8>,
+    /// How our data source's drag ended: `action move`, `performed`,
+    /// `finished`, `cancelled`.
+    source_events: Vec<String>,
 }
 
 struct TestClient {
@@ -309,7 +312,7 @@ fn files_dragged_out_of_a_window_drop_on_a_hosted_surface() {
         .create_data_source(&qh, ());
     source.offer(URI_LIST.into());
     source.offer("text/plain;charset=utf-8".into());
-    source.set_actions(DndAction::Copy | DndAction::Move);
+    source.set_actions(DndAction::Move);
     client.seen.payload = FILES.to_vec();
     client.data_device.as_ref().unwrap().start_drag(
         Some(&source),
@@ -340,6 +343,28 @@ fn files_dragged_out_of_a_window_drop_on_a_hosted_surface() {
     assert_eq!(client.seen.sent, vec![URI_LIST.to_owned()]);
     let dropped = log.borrow().dropped.clone();
     assert_eq!(dropped, vec![(URI_LIST.to_owned(), FILES.to_vec())]);
+    pump(&mut compositor, &mut client, |_, client| {
+        client
+            .seen
+            .source_events
+            .iter()
+            .any(|event| event == "finished")
+    });
+    let events = &client.seen.source_events;
+    assert!(
+        !events.iter().any(|event| event == "cancelled"),
+        "the source moves its files, it is not told the drag failed: {events:?}"
+    );
+    let performed = events
+        .iter()
+        .position(|event| event == "performed")
+        .unwrap();
+    assert!(
+        events[..performed]
+            .iter()
+            .any(|event| event.contains("Move")),
+        "{events:?}"
+    );
     assert_eq!(
         log.borrow().buttons,
         Vec::<(u32, bool)>::new(),
@@ -772,9 +797,18 @@ impl Dispatch<WlDataSource, ()> for Seen {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_data_source::Event::Send { mime_type, fd } = event {
-            std::fs::File::from(fd).write_all(&seen.payload).unwrap();
-            seen.sent.push(mime_type);
+        match event {
+            wl_data_source::Event::Send { mime_type, fd } => {
+                std::fs::File::from(fd).write_all(&seen.payload).unwrap();
+                seen.sent.push(mime_type);
+            }
+            wl_data_source::Event::Action { dnd_action } => {
+                seen.source_events.push(format!("action {dnd_action:?}"));
+            }
+            wl_data_source::Event::DndDropPerformed => seen.source_events.push("performed".into()),
+            wl_data_source::Event::DndFinished => seen.source_events.push("finished".into()),
+            wl_data_source::Event::Cancelled => seen.source_events.push("cancelled".into()),
+            _ => {}
         }
     }
 }

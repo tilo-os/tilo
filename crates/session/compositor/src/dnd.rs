@@ -90,6 +90,9 @@ pub(crate) struct Dnd {
     release_x11_source: bool,
     /// What the drag shows under the pointer or finger.
     icon: Option<DragIcon>,
+    /// A Wayland source whose drop a hosted surface or an X11 window took:
+    /// told `dnd_finished` once the target has the data.
+    finishing: Option<WlDataSource>,
     /// Where the drag is, in the logical layout.
     at: Point<f64, Logical>,
 }
@@ -118,6 +121,10 @@ struct Drag {
     /// How the drop went: set by our own drop (hosted and X11 targets) or
     /// by smithay's grab (Wayland targets).
     outcome: Option<bool>,
+    /// The action a hosted or X11 target takes it with: the source's
+    /// preferred one, or what an X11 window accepted (a move deletes the
+    /// item at the source once the target has it).
+    chosen: Action,
 }
 
 /// Where a dragged item comes from.
@@ -252,6 +259,7 @@ impl State {
             actions: DndAction::Copy,
             target: Target::Nothing,
             outcome: None,
+            chosen: Action::Copy,
         });
         self.dnd.icon = icon.map(|(buffer, hotspot)| DragIcon::Image { buffer, hotspot });
         let metadata = SourceMetadata {
@@ -631,6 +639,17 @@ impl State {
         }
     }
 
+    /// The target of a Wayland source's drop has the data: the source may
+    /// finish (and delete the item after a move).
+    fn finish_source(&mut self) {
+        if let Some(source) = self.dnd.finishing.take()
+            && source.is_alive()
+            && source.version() >= 3
+        {
+            source.dnd_finished();
+        }
+    }
+
     /// Route the pointer by what is under it now.
     fn refocus_pointer(&mut self) {
         let time = self.now_ms();
@@ -789,6 +808,7 @@ impl State {
                 if finish_x11 {
                     self.finish_incoming(true);
                 }
+                self.finish_source();
             }
             Delivery::ReadAhead { mime, bytes } => {
                 let Some(served) = self.dnd.x_served.as_mut() else {
@@ -991,6 +1011,9 @@ impl State {
             }
             BridgeEvent::Drop => self.incoming_drop(),
             BridgeEvent::Status { accept, action } => {
+                if accept && let Some(drag) = self.dnd.drag.as_mut() {
+                    drag.chosen = action;
+                }
                 let mime = self
                     .dnd
                     .drag
@@ -998,7 +1021,10 @@ impl State {
                     .and_then(|drag| drag.mimes.first().cloned());
                 self.source_feedback(mime.as_deref().filter(|_| accept), action);
             }
-            BridgeEvent::Finished => self.dnd.x_served = None,
+            BridgeEvent::Finished => {
+                self.dnd.x_served = None;
+                self.finish_source();
+            }
             BridgeEvent::Request(request) => self.answer_x11(request),
         }
     }
@@ -1082,6 +1108,7 @@ impl State {
             actions: DndAction::Copy,
             target: Target::Client,
             outcome: None,
+            chosen: Action::Copy,
         });
         let metadata = SourceMetadata {
             mime_types: mimes,
@@ -1197,8 +1224,24 @@ impl ClientDndGrabHandler for State {
                 actions,
                 target: Target::Nothing,
                 outcome: None,
+                chosen: Action::preferred(actions),
             }
         });
+    }
+
+    /// A hosted surface or an X11 window took the drop (handed it before
+    /// the button reached the grab): the source hears it was performed
+    /// with the action taken, not that it was cancelled.
+    fn drop_target_action(&mut self, _seat: &Seat<Self>) -> Option<DndAction> {
+        let drag = self.dnd.drag.as_ref()?;
+        let Source::Client(source) = &drag.source else {
+            return None;
+        };
+        if drag.outcome != Some(true) || matches!(drag.target, Target::Client | Target::Nothing) {
+            return None;
+        }
+        self.dnd.finishing = Some(source.clone());
+        Some(drag.chosen.dnd())
     }
 
     fn dropped(&mut self, _target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
