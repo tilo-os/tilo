@@ -251,6 +251,17 @@ impl AppHandler {
     }
 }
 
+impl AppHandler {
+    /// Tell the app how far the compositor's input reached it: what the person did in the
+    /// window's bar after that input runs now, in its place among the window's own input.
+    fn follow_handled_input(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(serial) = winit::platform::wayland::delivered_input_serial() {
+            self.app.input_handled(serial);
+        }
+    }
+}
+
 #[cfg(any(target_os = "macos", windows))]
 impl AppHandler {
     /// Hand the host chrome fresh commands when anything they show changed.
@@ -3739,6 +3750,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        // What the person did in the window's bar before this input runs first.
+        self.follow_handled_input();
         // Wheel deltas reported in one wake route as one event; anything
         // else routes the waiting sum first.
         for (window_id, event) in self.wheel_batch.push(window_id, event) {
@@ -3897,6 +3910,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.app.layout.layout_dirty = true;
             request_primary_redraw();
         }
+        // The wake's input is all handled: what the person did in the bar after it runs.
+        self.follow_handled_input();
         if self.apply_floating_host_messages(event_loop) {
             self.app.invalidate_widget_resource_cache();
             request_primary_redraw();

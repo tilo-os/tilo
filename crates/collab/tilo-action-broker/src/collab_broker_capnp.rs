@@ -53,6 +53,9 @@ mod host_workers;
 #[path = "invocation_journal.rs"]
 mod invocation_journal;
 mod invoker;
+mod kept_record;
+mod launcher_handoff;
+use launcher_handoff::{LauncherHandoff, credentialed_peer, read_launcher_handoff};
 mod native_checkout;
 #[cfg(test)]
 #[path = "collab_broker_capnp/native_effect_recovery_tests.rs"]
@@ -115,7 +118,6 @@ use capnp::capability::Promise;
 use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
-use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::{mpsc, watch};
 #[cfg(any(test, feature = "test-support"))]
@@ -232,7 +234,7 @@ fn cap_applies_in(
     device: Option<&[u8; 32]>,
 ) -> bool {
     let governs = authority
-        .zip(uuid::Uuid::parse_str(room).ok())
+        .zip(uuid::Uuid::parse_str(room).ok()) // optional-decode: a non-uuid room is governed by no authority: the stricter bound applies
         .is_some_and(|(authority, room)| authority.governs(room, device));
     // A foreign device is held to the bound only in a room it does not govern.
     foreign && !governs
@@ -6841,7 +6843,7 @@ impl CapnpBrokerState {
         // Task transport carries a JSON argument map directly; the contract
         // evaluator also accepts the action door's prefixed map encoding.
         let contract_argument = argument.and_then(|text| {
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text)
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text) // optional-decode: a JSON-map probe; other text is evaluated as it is
                 .ok()
                 .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
         });
@@ -8333,6 +8335,10 @@ impl collab_service::Server for CapnpCollabService {
                     return Err(capnp::Error::failed(reason));
                 }
             }
+            // A renamed app keeps using the record of an id it had before (`kept_record`).
+            let record_route = route.clone();
+            let (route, as_app) =
+                kept_record::working_route(self.lease.local_media.as_deref(), &record_route);
             // An attested launch joins its own route; another app's only to
             // read a record whose kinds it declared it reads.
             let route_access = match self.lease.local_media.as_ref() {
@@ -8354,7 +8360,7 @@ impl collab_service::Server for CapnpCollabService {
                 None => RouteAccess::Own,
             };
             if let Some(worker) = &self.worker {
-                if route != worker.route
+                if record_route != worker.route
                     || verified_identity.verified.user_public_key != worker.root
                     || verified_identity.verified.device_public_key != worker.device
                 {
@@ -8384,8 +8390,10 @@ impl collab_service::Server for CapnpCollabService {
             let participant_kind = reader.get_participant_kind()?.to_str().map_err(|error| {
                 capnp::Error::failed(format!("participant kind not utf8: {error}"))
             })?;
-            let record_kind =
-                route_record_kind(&route, joined_record_kind(reader.get_record_kind()?)?)?;
+            let record_kind = route_record_kind(
+                &record_route,
+                joined_record_kind(reader.get_record_kind()?)?,
+            )?;
             if (verified_identity.host_scope.is_some()
                 || verified_identity.worker_registration.is_some())
                 && !matches!(participant_kind, "" | "person")
@@ -8508,6 +8516,7 @@ impl collab_service::Server for CapnpCollabService {
                 state: state.clone(),
                 directories: Rc::clone(&self.directories),
                 channel_id,
+                as_app,
                 peer_id: hold_id,
                 connection_id: peer_id,
                 verified_identity,
@@ -8661,6 +8670,8 @@ struct CapnpChannelHandle {
     state: Arc<CapnpBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
     channel_id: String,
+    /// The launched app, when the channel is the record of an id it had before ([`kept_record`]).
+    as_app: Option<String>,
     /// The route hold this channel publishes and works as ([`route_holds`]).
     peer_id: u64,
     /// The connection: its transport identity for document fanout,
@@ -8690,12 +8701,6 @@ impl Drop for CapnpChannelHandle {
 }
 
 impl CapnpChannelHandle {
-    /// A record-scoped connection names its record inside the channel id
-    /// (the SDK joins `<cluster>#record:<id>`), parsed back out here.
-    fn route(&self) -> CrdtRoute {
-        CrdtRoute::from_channel_key(&self.channel_id)
-    }
-
     /// Refuse a change on a channel the app holds only to read: no app
     /// writes on another app's route.
     fn writable(&self) -> Result<(), capnp::Error> {
@@ -9143,7 +9148,7 @@ impl CapnpChannelHandle {
     ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), capnp::Error> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
-        let route = self.route();
+        let route = self.record_route();
         if route.app_id.is_empty() || route.cluster_id.is_empty() {
             return Err(capnp::Error::failed(
                 "record content belongs to a certified app route".into(),
@@ -9203,7 +9208,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         params: channel_handle::ChannelKeysChangedParams,
         mut results: channel_handle::ChannelKeysChangedResults,
     ) -> Promise<(), capnp::Error> {
-        let route = self.route();
+        let route = self.record_route();
         if let Err(error) = self
             .state
             .revalidate_admission(&route, &self.verified_identity)
@@ -10448,7 +10453,8 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
         let state = self.state.clone();
         let peer_id = self.connection_id;
-        let route = self.route();
+        // A change of the record the channel carries, under the id it is kept under.
+        let route = self.record_route();
         let verified_identity = self.verified_identity.clone();
         let record_kind = self.record_kind.clone();
         Promise::from_future(async move {
@@ -10576,7 +10582,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        let route = self.route();
+        let route = self.record_route();
         let native = match self
             .state
             .native_roster_for_subscriber(&route, &self.verified_identity)
@@ -10640,7 +10646,7 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
         let broker_channels = self.state.broker_channels.clone();
         let publisher = Arc::clone(self.state.publisher());
-        let route = self.route();
+        let route = self.record_route();
         Promise::from_future(async move {
             let p = params.get()?;
             let artifact_id_bytes = p.get_artifact_id()?.to_vec();
@@ -10660,7 +10666,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             if exhausted {
                 let peer_bound = ops
                     .iter()
-                    .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok())
+                    .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok()) // optional-decode: read_scrollback encoded these from typed ops just now
                     .map(|op| op.seq)
                     .min()
                     .unwrap_or(before_seq);
@@ -14667,14 +14673,6 @@ fn peek_launch_marker(
     Ok(marker)
 }
 
-/// A launcher's handoff, read whole: the stream is now where the app's
-/// first Cap'n Proto message begins.
-struct LauncherHandoff {
-    handoff: CollabLaunchHandoff,
-    pid: u32,
-    media_process: Option<native_media::PeerProcess>,
-}
-
 /// Why a connection was refused before its first Cap'n Proto call.
 struct LaunchRefusal {
     error: capnp::Error,
@@ -14707,13 +14705,9 @@ async fn authenticate_launcher_handoff(
         Ok(Some(read)) => read,
         Ok(None) => return Ok(AuthenticatedHandoff::default()),
         Err(error) => {
-            let peer = stream.peer_cred().ok().and_then(|c| c.pid()).map_or_else(
-                || "a peer without credentials".to_owned(),
-                |pid| format!("pid {pid}"),
-            );
             return Err(LaunchRefusal {
                 error,
-                peer,
+                peer: credentialed_peer(stream),
                 answerable: false,
             });
         }
@@ -14774,6 +14768,7 @@ async fn authenticate_launcher_handoff(
                 answerable: false,
             });
         }
+        let earlier = kept_record::earlier_ids_of(services, &handoff.app_id);
         let opened = launch
             .launch_ticket
             .map(|ticket| workspace_open::ConnectedLaunch {
@@ -14786,6 +14781,7 @@ async fn authenticate_launcher_handoff(
                 handoff,
                 media_process,
                 launch,
+                earlier,
             ),
             launch: opened,
         });
@@ -14802,77 +14798,6 @@ async fn authenticate_launcher_handoff(
         peer,
         answerable: !handoff.executing_peer,
     })
-}
-
-/// Read the launcher's marker and handoff off `stream`; `None` for a raw
-/// client that sent no marker.
-async fn read_launcher_handoff(
-    stream: &mut tokio::net::UnixStream,
-) -> Result<Option<LauncherHandoff>, capnp::Error> {
-    if !has_collab_launch_marker(stream).await? {
-        return Ok(None);
-    }
-    let credentials = stream.peer_cred().map_err(|error| {
-        capnp::Error::failed(format!(
-            "could not read collaboration peer credentials: {error}"
-        ))
-    })?;
-    // A socket pathname is not authority. The kernel must identify a process
-    // from this user before it can attest the compositor's launch record.
-    if credentials.uid() != rustix::process::geteuid().as_raw() {
-        return Err(capnp::Error::failed(
-            "collaboration service rejected a peer from another user".into(),
-        ));
-    }
-    let pid = credentials
-        .pid()
-        .and_then(|pid| u32::try_from(pid).ok())
-        .filter(|pid| *pid > 0)
-        .ok_or_else(|| capnp::Error::failed("collaboration peer has no usable pid".into()))?;
-    // Retain this exact connected task before consulting the expiring launch
-    // record. Unsupported kernels keep ordinary collaboration available.
-    let media_process = native_media::PeerProcess::from_socket(stream);
-
-    let mut marker = [0_u8; launcher::services::COLLAB_LAUNCH_MAGIC.len()];
-    stream.read_exact(&mut marker).await.map_err(|error| {
-        capnp::Error::failed(format!(
-            "could not read collaboration launch marker: {error}"
-        ))
-    })?;
-    if marker != launcher::services::COLLAB_LAUNCH_MAGIC {
-        return Err(capnp::Error::failed(
-            "collaboration launch marker changed while being read".into(),
-        ));
-    }
-    let bytes = match launcher::services::COLLAB_LAUNCH_FRAMING
-        .read_async(stream)
-        .await
-    {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => {
-            return Err(capnp::Error::failed(
-                "collaboration launch handoff is missing".into(),
-            ));
-        }
-        Err(wire_frame::FrameError::EmptyFrame | wire_frame::FrameError::TooLarge(_)) => {
-            return Err(capnp::Error::failed(
-                "collaboration launch handoff has an invalid length".into(),
-            ));
-        }
-        Err(error) => {
-            return Err(capnp::Error::failed(format!(
-                "could not read collaboration launch handoff: {error}"
-            )));
-        }
-    };
-    let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
-        capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
-    })?;
-    Ok(Some(LauncherHandoff {
-        handoff,
-        pid,
-        media_process,
-    }))
 }
 
 /// Tell a refused app why over the protocol it speaks: every call on the
@@ -16358,6 +16283,7 @@ pub mod tests {
             route: &CrdtRoute,
         ) -> channel_handle::Client {
             capnp_rpc::new_client(CapnpChannelHandle {
+                as_app: None,
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: Arc::clone(&self.state),
@@ -20849,6 +20775,7 @@ pub mod tests {
                     let (fixture, caller, request) = durable_fixture(root.path(), None);
                     let client: channel_handle::Client =
                         capnp_rpc::new_client(CapnpChannelHandle {
+                            as_app: None,
                             person_chat_views: RefCell::default(),
                             committed_read: Rc::new(RefCell::new(
                                 committed_document::Slot::default(),
@@ -20905,6 +20832,7 @@ pub mod tests {
                 let admitted = fixture.state.start_verified_invocation(&caller, &request, None).unwrap();
                 fixture.invocation_rx.try_recv().unwrap();
                 let foreign: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
+                    as_app: None,
                     person_chat_views: RefCell::default(),
                     committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                     state: fixture.state.clone(), directories: fixture.directories.clone(),

@@ -1044,16 +1044,22 @@ impl Checker<'_> {
                 }
             }
         }
-        // Why it is unavailable on the subject now: the reason of its first requirement that
-        // does not hold, which is set last.
+        // Why it is unavailable on the subject now: the reason of its first requirement on the
+        // subject alone that does not hold, which is set last. A requirement that reads what a
+        // caller gives (`to` in `move_to(t, to)`) cannot be decided before it is given: it is
+        // checked when the action runs with it, and a form shows its reason as the refusal.
         for r in requires.iter().rev() {
-            if let Some(other) = mentions(&r.cond, others).or_else(|| mentions(&r.reason, others)) {
-                let subject = params.first().map_or("", |p| p.name.as_str());
-                self.err("E090", r.span, format!("a requirement says whether the action is offered on `{subject}`, before anyone gives `{other}`; it reads only the subject, `{subject}`"));
+            if mentions(&r.cond, others)
+                .or_else(|| mentions(&r.reason, others))
+                .is_some()
+            {
                 continue;
             }
+            // A requirement may read `invoker`: here, the person looking.
+            self.st.invoker = super::Invoker::Viewer;
             let cond = self.expr_as(&r.cond, &Ty::Bool);
             let reason = self.expr_as(&r.reason, &Ty::Text);
+            self.st.invoker = super::Invoker::None;
             self.push_sink();
             self.prop(node.clone(), "unavailable", reason, r.span);
             let unmet = self.pop_sink();

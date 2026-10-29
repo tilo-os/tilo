@@ -118,18 +118,19 @@ class MainIsNotGated(unittest.TestCase):
         # everything" this model exists to avoid.
         self.assertNotIn("--all-suites", script)
 
-    def test_the_queue_has_a_safety_net_that_needs_no_large_runner(self):
-        # The pile can come back if a supersede job dies, so a timer repeats the
-        # cancellation. It must be cheap: a quality slot for a few seconds.
-        text = workflow("main-window.yml")
-        on = block(text, "on")
-        self.assertRegex(on, r'(?m)^  schedule:\n    - cron: "\*/15 \* \* \* \*"$')
-        self.assertRegex(on, r"(?m)^  workflow_dispatch:")
-        self.assertNotIn("push:", on)
-        sweep = block(text, "sweep", 2)
-        self.assertIn("runs-on: runner-quality", sweep)
-        self.assertIn("python3 tools/ci/push_window.py --sweep", sweep)
-        self.assertRegex(sweep, r"(?m)^    timeout-minutes: [1-9]$")
+    def test_the_queue_has_no_timer_workflow(self):
+        # The safety net repeats the cancellation when a supersede job dies, but it cannot be a
+        # workflow: a scheduled run's actor is forgejo-actions, which the hosted-runner admission
+        # patch does not admit, so such a run waits for a runner that never takes it. The CI host
+        # controller sweeps instead (apps/ci-runners/host_controller.py, window_sweep).
+        self.assertFalse((WORKFLOWS / "main-window.yml").exists())
+
+    def test_no_workflow_runs_on_a_timer(self):
+        # Same reason: a schedule's runs can never reach a shared runner. Workflows that need a
+        # timer are dispatched by the CI host controller, as a user admission admits.
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            on = block(path.read_text(), "on")
+            self.assertNotIn("schedule:", on, f"{path.name} schedules runs no runner can take")
 
     def test_nothing_is_packaged_for_a_budget_on_main(self):
         # Release / apps holds the collection to the app size budgets on

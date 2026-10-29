@@ -47,11 +47,17 @@ impl Shell {
         let mut status = self.last_status;
         for ast::CompoundListItem(and_or, separator) in &list.0 {
             if matches!(separator, ast::SeparatorOperator::Async) {
-                return Err(self.unsupported("running a command in the background (`&`)"));
+                status = self.background(and_or);
+                continue;
             }
             status = self.run_and_or(and_or)?;
         }
         Ok(status)
+    }
+
+    /// Run `list` on a job's copy of the shell.
+    pub(crate) fn run_and_or_owned(&mut self, list: &ast::AndOrList) -> Exec {
+        self.run_and_or(list)
     }
 
     fn run_and_or(&mut self, list: &ast::AndOrList) -> Exec {

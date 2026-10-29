@@ -142,7 +142,7 @@ impl ReceiptSurface for KindSurface {
         self.0
             .fields
             .iter()
-            .filter(|field| field.unit && tilo_actions::surface::is_outbox_type(&field.ty))
+            .filter(|field| field.unit && field.ty.is_outbox())
             .map(unit_of)
             .collect()
     }

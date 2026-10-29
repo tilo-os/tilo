@@ -424,6 +424,15 @@ impl ShellOverlayHost {
         if !pointer && !ends_press {
             return false;
         }
+        // A wheel turned elsewhere is not the banners' (Ctrl and the wheel
+        // would zoom them from anywhere): only over what they draw, or while
+        // a press begun on them holds the pointer.
+        if matches!(event, WindowEvent::MouseWheel { .. })
+            && !self.banners.shown.captures_pointer
+            && !self.last_cursor.is_some_and(|p| self.banners_drawn_at(p))
+        {
+            return false;
+        }
         let Some(app) = self.banners.app.as_mut() else {
             return false;
         };
@@ -454,6 +463,18 @@ impl ShellOverlayHost {
     /// Where the banners' stack was last drawn.
     pub(super) fn banner_stack_rect(&self) -> Rect {
         self.banners.shown.stack
+    }
+
+    /// Whether the banners draw anything at `p`: the stack, a machine-wide
+    /// banner or a call's edge.
+    fn banners_drawn_at(&self, p: Point) -> bool {
+        let shown = &self.banners.shown;
+        shown.stack.contains(p)
+            || shown
+                .machine
+                .iter()
+                .chain(shown.call_edges.iter())
+                .any(|rect| rect.contains(p))
     }
 
     /// The notification whose banner is drawn at `p`.

@@ -144,10 +144,10 @@ mod room_record_launch_tests {
     }
 }
 
-const ACTION_DIRECTORY_MAX_RESULTS: usize = 128;
-const ACTION_DIRECTORY_MAX_WORK: usize = 512;
-const ACTION_DIRECTORY_MAX_BYTES: usize = 64 * 1024;
-const ACTION_DIRECTORY_MAX_DEPTH: u16 = 16;
+const ACTION_DIRECTORY_MAX_RESULTS: usize = ::collaboration::action_directory::MAX_RESULTS;
+const ACTION_DIRECTORY_MAX_WORK: usize = ::collaboration::action_directory::MAX_WORK;
+const ACTION_DIRECTORY_MAX_BYTES: usize = ::collaboration::action_directory::MAX_BYTES;
+const ACTION_DIRECTORY_MAX_DEPTH: u16 = ::collaboration::action_directory::MAX_DEPTH;
 const ACTION_DIRECTORY_MAX_CURSORS: usize = 256;
 const MAX_PENDING_APPLICATION_LAUNCHES: usize = 256;
 
@@ -2658,19 +2658,24 @@ impl App {
             self.layout.request_rebuild();
             self.bindings.clear();
             self.layout.node_map.clear();
-        } else if self.focused_node.is_none() {
-            // A retained control can keep focus while a modal temporarily owns
-            // input. Rebuilding invalidates its NodeId, not that live focus.
-            // Recover only the unique current focused path inside the current
-            // allowed order; never transfer focus or state to a replacement.
-            // SAFETY: sync retained this exact exclusively owned topology.
-            self.focused_node = unsafe {
-                crate::widget::layout::CompositionFocus::current(
-                    &self.layout.node_map,
-                    &self.bindings,
-                    Some(&self.focusable_order),
-                )
-            };
+        } else {
+            if self.focused_node.is_none() {
+                // A retained control can keep focus while a modal temporarily
+                // owns input. Rebuilding invalidates its NodeId, not that live
+                // focus. Recover only the unique current focused path inside
+                // the current allowed order; never transfer focus or state to
+                // a replacement.
+                // SAFETY: sync retained this exact exclusively owned topology.
+                self.focused_node = unsafe {
+                    crate::widget::layout::CompositionFocus::current(
+                        &self.layout.node_map,
+                        &self.bindings,
+                        Some(&self.focusable_order),
+                    )
+                };
+            }
+            // The tree this rebuild made is the one a control asked focus in.
+            self.apply_focus_request();
         }
         self.invalidate_widget_resource_cache();
         // What the window's layout needs follows the tree and the theme it

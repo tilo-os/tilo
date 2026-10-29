@@ -647,3 +647,38 @@ fn a_reading_position_records_a_page_fraction_and_zoom() {
     apply(&mut doc, PdfMarkup::START_PAGE_PLAN.with(2));
     assert_eq!(PdfMarkup::of(&doc).reading_position(), unchanged);
 }
+
+#[test]
+fn markup_that_does_not_read_is_not_exported_as_none() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("form.pdf");
+    std::fs::copy(engine_fixture("form.pdf"), &path).expect("copy fixture");
+    let Some(mut app) = tests::open_settled(&path) else {
+        return;
+    };
+    let mut state = crate::scenarios::record_state();
+    tests::settle_record(&mut app, &mut state);
+    app.create_note(&mut Edits::lend(&mut state.doc), 1, (250.0, 30.0));
+    app.editing.as_mut().unwrap().set_text("Please confirm");
+    app.commit_edit(&mut Edits::lend(&mut state.doc));
+    app.reload(&state.doc);
+    let held = app.export_markup().annotations.len();
+    assert!(held > 0, "the note is markup to export");
+
+    let mut broken = state.doc.clone();
+    automerge::transaction::Transactable::put(
+        &mut broken,
+        automerge::ROOT,
+        "annotations",
+        "not a map of annotations",
+    )
+    .expect("the field is written");
+    assert!(<PdfMarkup as ui::tilo_resource::Resource>::read(&broken).is_err());
+    app.reload(&broken);
+
+    assert_eq!(
+        app.export_markup().annotations.len(),
+        held,
+        "what last read whole is what a save writes, not a page without markup"
+    );
+}

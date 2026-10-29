@@ -1,0 +1,18 @@
+# tilolang ids: generated, commit it. Edit only through `tilolang ids --rename`.
+Desk = 3pzaotfy
+Desk.drafts = 3htu2guh
+Draft = ccakdexr
+Draft.body = dohzsyjk
+Draft.sent = xupycx7p
+Draft.subject = iceofqfd
+Draft.to = hqggm34b
+compose = gwf7jwvb
+desk = peiwlaz6
+discard = m3cllcm4
+draft_row = aowfdqmg
+editor = 2hzweabm
+new_draft = r3xp23wc
+scenario "a desk of letters" = 7nrocwqv
+scenario "a first letter" = no2oyofe
+send = fzx7g7lk
+send~present = g75tdwjp

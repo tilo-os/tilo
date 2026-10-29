@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use crate::component::{Component, Described, Event, SlotType, Source};
+use crate::component::{Component, Described, Event, OfferedAction, SlotType, Source};
 use crate::icons::Icon;
 use crate::widget::{ButtonRole, MenuEntry};
 
@@ -71,6 +71,19 @@ impl MenuItemProps {
     }
 }
 
+impl From<OfferedAction> for MenuItemProps {
+    /// An action offered to the person as a command: choosing it runs the action.
+    fn from(action: OfferedAction) -> Self {
+        Self {
+            label: action.label,
+            icon: action.icon,
+            destructive: action.destructive,
+            checked: action.on,
+            choose: action.run,
+        }
+    }
+}
+
 /// The commands of a menu, in order.
 impl SlotType for Vec<MenuItemProps> {
     const MANY: bool = true;
@@ -103,6 +116,8 @@ pub struct MenuButtonProps {
     pub icon_only: bool,
     /// What kind of button it is: `secondary` unless said, `plain` for an icon-only one.
     pub role: Option<ButtonRole>,
+    /// Actions offered on something (`actions(r)`), each a command after `items`.
+    pub actions: Vec<OfferedAction>,
     /// The commands, in order.
     #[component(slot(default))]
     pub items: Vec<MenuItemProps>,
@@ -117,6 +132,7 @@ impl Described for MenuButton {
             icon,
             icon_only,
             role,
+            actions,
             items,
         } = props;
         let button = match icon {
@@ -126,6 +142,12 @@ impl Described for MenuButton {
                 .role(role.unwrap_or_default()),
             None => crate::widget::Button::new(key, &label).role(role.unwrap_or_default()),
         };
-        button.with_menu(items.into_iter().map(MenuItemProps::into_item).collect())
+        button.with_menu(
+            items
+                .into_iter()
+                .chain(actions.into_iter().map(MenuItemProps::from))
+                .map(MenuItemProps::into_item)
+                .collect(),
+        )
     }
 }

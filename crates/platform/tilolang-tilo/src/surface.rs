@@ -9,7 +9,10 @@
 
 use serde::Serialize;
 use serde_json::{Value as Json, json};
-use tilo_actions::surface::{FieldSurface, ParamSurface, Surface, VerbSurface};
+use tilo_actions::surface::{
+    FieldSurface, FieldType, NamedType, ParamSurface, Surface, TypeCase, TypeField, TypeSet,
+    VerbSurface,
+};
 use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilolang_runtime::meta::Ty;
 
@@ -29,6 +32,7 @@ pub const VERSION: u32 = 1;
 /// `meta`'s: a type of a package it uses, written qualified (`so.tilo.lang.notes.Notebook`).
 #[must_use]
 pub fn other_apps_record(meta: &Meta, ty: &str) -> Option<(String, String)> {
+    // optional-decode: a probe: a type that does not parse names no other app's record.
     match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app).ok()? {
         tilolang_runtime::meta::Ty::Record(key) if key.app != meta.app => {
             Some((format!("tl.{}.{}", key.app, key.name), key.name))
@@ -72,11 +76,89 @@ fn plain_cases(
         .collect()
 }
 
+/// The language-neutral type of a value of the tilolang type `ty` (as metadata writes it), the
+/// enums of `meta` it names declared in `types`: what the generated surface publishes of a
+/// field, as a native model's derive publishes its fields.
+#[must_use]
+pub fn field_type_of_type(meta: &Meta, ty: &str, types: &mut TypeSet) -> FieldType {
+    // A loaded package's types all parse (`meta::unreadable_types`, checked where it is
+    // loaded); one that does not is published as any value.
+    // optional-decode: checked where the package is loaded
+    match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app) {
+        Ok(parsed) => field_type_of(meta, &parsed, types),
+        Err(_) => FieldType::Any,
+    }
+}
+
+fn field_type_of(meta: &Meta, ty: &Ty, types: &mut TypeSet) -> FieldType {
+    let boxed = |inner: &Ty, types: &mut TypeSet| Box::new(field_type_of(meta, inner, types));
+    match ty {
+        Ty::Int => FieldType::Int,
+        Ty::Float => FieldType::Float,
+        Ty::Bool => FieldType::Bool,
+        Ty::Text => FieldType::Text,
+        Ty::RichText => FieldType::RichText,
+        Ty::Date => FieldType::Date,
+        Ty::Time => FieldType::Time,
+        Ty::Identifier => FieldType::Identifier,
+        Ty::Principal => FieldType::Principal,
+        Ty::Record(key) => FieldType::Resource(record_kind(key)),
+        Ty::Union(keys) => FieldType::Union(
+            keys.iter()
+                .map(|key| FieldType::Resource(record_kind(key)))
+                .collect(),
+        ),
+        Ty::Enum(key) if key.app == meta.app => {
+            let Some(declared) = meta.enums.iter().find(|declared| declared.name == key.name)
+            else {
+                return FieldType::Any;
+            };
+            types.named(&format!("{}.{}", key.app, key.name), &key.name, |types| {
+                NamedType {
+                    name: declared.name.clone(),
+                    doc: declared.doc.clone(),
+                    fields: Vec::new(),
+                    cases: declared
+                        .variants
+                        .iter()
+                        .map(|variant| TypeCase {
+                            name: variant.name.clone(),
+                            label: if variant.label.is_empty() {
+                                tilo_actions::field_type::label_of(&variant.name)
+                            } else {
+                                variant.label.clone()
+                            },
+                            fields: variant
+                                .fields
+                                .iter()
+                                .map(|field| TypeField {
+                                    name: field.name.clone(),
+                                    ty: field_type_of_type(meta, &field.ty, types),
+                                    title: String::new(),
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                }
+            })
+        }
+        Ty::Option(inner) => FieldType::Option(boxed(inner, types)),
+        Ty::List(inner) => FieldType::List(boxed(inner, types)),
+        Ty::Set(inner) => FieldType::Set(boxed(inner, types)),
+        Ty::Collection(inner) => FieldType::Collection(boxed(inner, types)),
+        Ty::Map(inner) => FieldType::Map(boxed(inner, types)),
+        _ => FieldType::Any,
+    }
+}
+
 /// The JSON Schema of a value of the tilolang type `ty`, as the door takes it: a record as the
 /// catalogue's reference to a resource of its kind ([`tilo_actions::picked_resource_schema`]),
 /// a plain enum as the names of its cases, a principal as the workspace subject it is.
 #[must_use]
 pub fn schema_of_type(meta: &Meta, ty: &str) -> Json {
+    // A loaded package's types all parse (`meta::unreadable_types`, checked where it is
+    // loaded); one that does not takes any value.
+    // optional-decode: checked where the package is loaded
     match tilolang_runtime::meta::parse_ty(ty.trim(), &meta.app) {
         Ok(parsed) => schema_of(meta, &parsed),
         Err(_) => json!({}),
@@ -145,6 +227,7 @@ fn subject_schema() -> Json {
 /// binds, a palette offers and the generated surface describes, one declaration for all three.
 #[must_use]
 pub fn published_param(meta: &Meta, param: &ParamMeta) -> ActionParam {
+    // optional-decode: a loaded package's parameter types all parse (`meta::unreadable_types`).
     let parsed = tilolang_runtime::meta::parse_ty(param.ty.trim(), &meta.app).ok();
     // What the parameter takes when it is given: an `Option` is its value, left out.
     let present = match &parsed {
@@ -207,7 +290,7 @@ pub fn is_destructive(action: &ActionMeta) -> bool {
     action.role.as_deref() == Some("destructive")
 }
 
-fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
+fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
     VerbSurface {
         id: action.id.clone(),
         label: if action.label.is_empty() {
@@ -227,6 +310,7 @@ fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
                     name: param.name.clone(),
                     required: published.required,
                     schema: published.schema.as_deref().cloned().unwrap_or(Json::Null),
+                    ty: field_type_of_type(meta, &param.ty, types),
                 }
             })
             .collect(),
@@ -239,7 +323,7 @@ fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
 pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
 
 fn edit_verbs() -> Vec<VerbSurface> {
-    let verb = |id: &str, label: &str, value: Json| VerbSurface {
+    let verb = |id: &str, label: &str, value: Json, ty: FieldType| VerbSurface {
         id: id.to_owned(),
         label: label.to_owned(),
         description: Some("A bound control changes the field it shows.".to_owned()),
@@ -251,11 +335,13 @@ fn edit_verbs() -> Vec<VerbSurface> {
                 name: "field".to_owned(),
                 required: true,
                 schema: json!({"type": "string"}),
+                ty: FieldType::Text,
             },
             ParamSurface {
                 name: "value".to_owned(),
                 required: true,
                 schema: value,
+                ty,
             },
         ],
         writes: vec![RECORD_UNIT.to_owned()],
@@ -280,11 +366,13 @@ fn edit_verbs() -> Vec<VerbSurface> {
             EDIT_TEXT_ACTION,
             "Edit a text field",
             json!({"type": "string"}),
+            FieldType::Text,
         ),
         verb(
             EDIT_FLAG_ACTION,
             "Set a flag field",
             json!({"type": "boolean"}),
+            FieldType::Bool,
         ),
     ]
 }
@@ -294,6 +382,7 @@ fn field_surfaces(
     ty: &TypeMeta,
     prefix: &str,
     stack: &mut Vec<String>,
+    types: &mut TypeSet,
     out: &mut Vec<FieldSurface>,
 ) {
     if stack.contains(&ty.id) {
@@ -318,7 +407,7 @@ fn field_surfaces(
             owner: ty.name.to_lowercase(),
             title: field.name.clone(),
             stored: stored.to_owned(),
-            ty: field.ty.clone(),
+            ty: field_type_of_type(meta, &field.ty, types),
             readonly: false,
             unit: false,
             label: false,
@@ -330,7 +419,7 @@ fn field_surfaces(
             } else {
                 format!("{path}.")
             };
-            field_surfaces(meta, inner, &below, stack, out);
+            field_surfaces(meta, inner, &below, stack, types, out);
         }
     }
     stack.pop();
@@ -341,6 +430,7 @@ fn field_surfaces(
 pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
     let mut surfaces = Vec::new();
     for ty in &meta.types {
+        let mut types = TypeSet::new();
         let mut verbs = edit_verbs();
         verbs.extend(
             meta.offered_actions()
@@ -348,10 +438,10 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
                     meta.subject_of(&action.params)
                         .is_some_and(|subject| subject.id == ty.id)
                 })
-                .map(|action| verb(meta, action)),
+                .map(|action| verb(meta, action, &mut types)),
         );
         let mut fields = Vec::new();
-        field_surfaces(meta, ty, "", &mut Vec::new(), &mut fields);
+        field_surfaces(meta, ty, "", &mut Vec::new(), &mut types, &mut fields);
         surfaces.push(Surface {
             kind: meta.kind_of(&ty.name),
             label: ty.name.clone(),
@@ -359,12 +449,14 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
             person: false,
             verbs,
             fields,
+            types: types.into_types(),
         });
     }
+    let mut types = TypeSet::new();
     let loose: Vec<VerbSurface> = meta
         .offered_actions()
         .filter(|action| meta.subject_of(&action.params).is_none())
-        .map(|action| verb(meta, action))
+        .map(|action| verb(meta, action, &mut types))
         .collect();
     surfaces.push(Surface {
         kind: meta.package_kind(),
@@ -373,6 +465,7 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
         person: false,
         verbs: loose,
         fields: Vec::new(),
+        types: types.into_types(),
     });
     surfaces
 }
@@ -407,9 +500,11 @@ pub fn host_surface() -> Surface {
                 name: "ticket".to_owned(),
                 required: true,
                 schema: json!({"type": "integer"}),
+                ty: FieldType::Int,
             }],
         )],
         fields: Vec::new(),
+        types: Vec::new(),
     }
 }
 

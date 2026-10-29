@@ -105,20 +105,32 @@ pub enum ModerationConsentPurpose {
 impl ModerationConsentPreview {
     /// Decode the nested operation string in the original invocation. The signing
     /// identity is separate: no field in the operation may select it.
+    ///
+    /// # Errors
+    /// Why the invocation is refused: no argument, arguments or an
+    /// `operation` that do not decode, or an operation other than the action's.
     pub(crate) fn from_argument(
         action: &str,
         argument: &tilo_actions::remote::InvokeArgument,
         signing_root: &[u8; 32],
-    ) -> Option<Self> {
+    ) -> Result<Self, String> {
         use registry_types::ModerationMutation;
-        let slot = argument.to_slot()?;
+        let slot = argument
+            .to_slot()
+            .ok_or("Store disclosure has no arguments")?;
         let json = slot
             .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
             .unwrap_or(&slot);
-        let arguments: serde_json::Value = serde_json::from_str(json).ok()?;
+        let arguments: serde_json::Value = serde_json::from_str(json)
+            .map_err(|error| format!("Store disclosure arguments are not JSON: {error}"))?;
+        let operation = arguments
+            .get("operation")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("Store disclosure arguments name no operation text")?;
         let operation: registry_types::ExternalModerationOperation =
-            serde_json::from_str(arguments.get("operation")?.as_str()?).ok()?;
-        runtime_collab::external_moderation::validate_action(action, json, &operation).ok()?;
+            serde_json::from_str(operation)
+                .map_err(|error| format!("Store disclosure operation is malformed: {error}"))?;
+        runtime_collab::external_moderation::validate_action(action, json, &operation)?;
         let (purpose, target, category, content, evidence_digest) = match operation.mutation {
             ModerationMutation::FileReport {
                 package_id,
@@ -143,9 +155,9 @@ impl ModerationConsentPreview {
                 reason,
                 evidence_digest_hex,
             ),
-            _ => return None,
+            _ => return Err("Store disclosure operation is neither a report nor an appeal".into()),
         };
-        Some(Self {
+        Ok(Self {
             purpose,
             destination: operation.destination.base_url,
             owner_root: operation.destination.owner_pubkey_hex,
@@ -352,9 +364,21 @@ mod tests {
         ] {
             assert!(
                 ModerationConsentPreview::from_argument("submit-report", &argument, &[1; 32])
-                    .is_none()
+                    .is_err()
             );
         }
+        let refused = ModerationConsentPreview::from_argument(
+            "submit-report",
+            &InvokeArgument::Json(
+                serde_json::json!({"app": "org.example.app", "operation": "{}"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            &[1; 32],
+        )
+        .unwrap_err();
+        assert!(refused.contains("operation is malformed"), "{refused}");
         let slot = moderation_argument(false).to_slot().unwrap();
         assert!(
             ModerationConsentPreview::from_argument(
@@ -362,7 +386,7 @@ mod tests {
                 &InvokeArgument::Text(slot),
                 &[2; 32]
             )
-            .is_some()
+            .is_ok()
         );
     }
 

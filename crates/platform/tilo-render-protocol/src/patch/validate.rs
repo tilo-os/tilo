@@ -16,7 +16,7 @@
 
 use tilo_ui_graph::component::{Catalogue, Description, Type};
 
-use super::{Binding, Event, Node, Patch, RowChange, ToApp, ToUi, Value, Words};
+use super::{Binding, Event, Node, Patch, ResourceRef, RowChange, ToApp, ToUi, Value, Words};
 
 /// Why a batch was refused: what was wrong, and where.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -169,9 +169,13 @@ impl<'a> Validator<'a> {
 
     fn message(&self, message: &ToUi) -> Result<(), Refused> {
         match message {
-            ToUi::Loading | ToUi::Close | ToUi::Front(_) | ToUi::Ask(None) | ToUi::Activate => {
-                Ok(())
-            }
+            ToUi::Loading
+            | ToUi::Close
+            | ToUi::Front(_)
+            | ToUi::Ask(None)
+            | ToUi::Form(None)
+            | ToUi::Activate
+            | ToUi::Took { .. } => Ok(()),
             ToUi::Open { target, tree, .. } => {
                 self.key(&target.id)?;
                 self.key(&target.ty)?;
@@ -225,6 +229,27 @@ impl<'a> Validator<'a> {
                 self.string(&ask.action)?;
                 self.string(&ask.invoker)
             }
+            ToUi::Form(Some(form)) => {
+                self.string(&form.title)?;
+                self.string(&form.submit)?;
+                if let Some(error) = &form.error {
+                    self.string(error)?;
+                }
+                if let Some((_, key)) = &form.from {
+                    self.key(key)?;
+                }
+                if form.fields.len() > self.limits.messages as usize {
+                    return Err(Refused::invalid(concat!(
+                        "over the limit of ",
+                        "fields in a form"
+                    )));
+                }
+                form.fields.iter().try_for_each(|(key, text)| {
+                    self.key(key)?;
+                    self.string(text)
+                })?;
+                self.node(&form.tree, 1)
+            }
         }
     }
 
@@ -266,6 +291,21 @@ impl<'a> Validator<'a> {
             Patch::SetAnchor { path, anchor } => {
                 self.path(path)?;
                 anchor.as_ref().map_or(Ok(()), |anchor| self.key(anchor))
+            }
+            Patch::SpliceProp {
+                path, name, insert, ..
+            } => {
+                self.path(path)?;
+                self.key(name)?;
+                if insert.len() > self.limits.rows as usize {
+                    return Err(Refused::invalid(concat!(
+                        "over the limit of ",
+                        "items of a list value"
+                    )));
+                }
+                insert
+                    .iter()
+                    .try_for_each(|item| self.value(item, path.len().saturating_add(1)))
             }
         }
     }
@@ -388,7 +428,10 @@ impl<'a> Validator<'a> {
 
     fn parts(&self, node: &Node, description: &Description) -> Result<(), Refused> {
         for (name, event) in &node.events {
-            if description.event(name).is_none() && description.binding(name).is_none() {
+            if description.event(name).is_none()
+                && description.binding(name).is_none()
+                && !offers(description, name)
+            {
                 return Err(Refused::invalid("an event its component does not declare")
                     .within(format_args!("event `{name}`")));
             }
@@ -459,6 +502,23 @@ impl<'a> Validator<'a> {
                 self.key(&who.id)?;
                 self.string(&who.name)
             }
+            Value::Map(entries) => {
+                if entries.len() > self.limits.rows as usize {
+                    return Err(Refused::invalid(concat!(
+                        "over the limit of ",
+                        "entries of a map value"
+                    )));
+                }
+                entries.iter().try_for_each(|(key, value)| {
+                    self.value(key, depth.saturating_add(1))?;
+                    self.value(value, depth.saturating_add(1))
+                })
+            }
+            Value::Action(offered) => {
+                self.string(&offered.label)?;
+                self.key(&offered.event)?;
+                offered.icon.as_ref().map_or(Ok(()), |icon| self.key(icon))
+            }
             Value::Rich(rich) => {
                 if rich.blocks.len() > self.limits.rows as usize
                     || rich.embeds.len() > self.limits.rows as usize
@@ -512,6 +572,11 @@ impl<'a> Validator<'a> {
         Ok(())
     }
 
+    fn resource(&self, resource: &ResourceRef) -> Result<(), Refused> {
+        self.key(&resource.id)?;
+        self.key(&resource.ty)
+    }
+
     fn string(&self, text: &str) -> Result<(), Refused> {
         if text.len() > self.limits.string_bytes as usize {
             return Err(Refused::invalid(concat!(
@@ -545,23 +610,36 @@ impl<'a> Validator<'a> {
                         self.value(value, 0)?;
                     }
                 }
-                ToApp::Toggle { key, .. } | ToApp::Resolve { key, .. } => self.key(key)?,
-                ToApp::Splice { key, insert, .. } => {
+                ToApp::Toggle { target, key, .. } => {
+                    self.resource(target)?;
+                    self.key(key)?;
+                }
+                ToApp::Resolve { key, .. } => self.key(key)?,
+                ToApp::Splice {
+                    target,
+                    key,
+                    insert,
+                    ..
+                } => {
+                    self.resource(target)?;
                     self.key(key)?;
                     self.string(insert)?;
                 }
-                ToApp::Edit { key, text, .. } => {
+                ToApp::Edit {
+                    target, key, text, ..
+                } => {
+                    self.resource(target)?;
                     self.key(key)?;
                     self.string(text)?;
                 }
-                ToApp::EditRich { key, rich, .. } => {
+                ToApp::EditRich {
+                    target, key, rich, ..
+                } => {
+                    self.resource(target)?;
                     self.key(key)?;
                     self.value(&Value::Rich(rich.clone()), 0)?;
                 }
-                ToApp::Open { resource } => {
-                    self.key(&resource.id)?;
-                    self.key(&resource.ty)?;
-                }
+                ToApp::Open { resource } => self.resource(resource)?,
                 ToApp::OpenReference { reference } => self.string(reference)?,
                 ToApp::Rows {
                     list, start, end, ..
@@ -579,11 +657,64 @@ impl<'a> Validator<'a> {
                         self.key(key)?;
                     }
                 }
-                ToApp::Back | ToApp::Answer(_) | ToApp::Undo | ToApp::Composing(_) => {}
+                ToApp::Names { me, others } => {
+                    self.string(me)?;
+                    if others.len() > self.limits.messages as usize {
+                        return Err(Refused::invalid(concat!(
+                            "over the limit of ",
+                            "names in a message"
+                        )));
+                    }
+                    for (id, name) in others {
+                        self.key(id)?;
+                        self.string(name)?;
+                    }
+                }
+                ToApp::Space { width, height, .. } => {
+                    if !(width.is_finite() && height.is_finite() && *width >= 0.0 && *height >= 0.0)
+                    {
+                        return Err(Refused::invalid("a space is no size"));
+                    }
+                }
+                ToApp::FormEdit { field, text, .. } => {
+                    self.key(field)?;
+                    self.string(text)?;
+                }
+                ToApp::Back
+                | ToApp::Answer(_)
+                | ToApp::Undo
+                | ToApp::Composing(_)
+                | ToApp::FormSubmit { .. }
+                | ToApp::FormCancel { .. } => {}
             }
         }
         Ok(())
     }
+}
+
+/// The event an action offered in the prop `prop` fires: `actions.2` for the third of
+/// `actions`. Its node gives it what the action runs, as it gives its declared events.
+#[must_use]
+pub fn offered_event(prop: &str, index: usize) -> String {
+    format!("{prop}.{index}")
+}
+
+/// Whether `event` is one an action offered in a prop of the component fires
+/// ([`offered_event`]).
+fn offers(description: &Description, event: &str) -> bool {
+    fn holds_actions(ty: &Type) -> bool {
+        match ty {
+            Type::Action => true,
+            Type::Option(inner) | Type::List(inner) | Type::Set(inner) => holds_actions(inner),
+            Type::Map { value, .. } => holds_actions(value),
+            _ => false,
+        }
+    }
+    event
+        .rsplit_once('.')
+        .filter(|(_, index)| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|(prop, _)| description.prop(prop))
+        .is_some_and(|prop| holds_actions(&prop.ty))
 }
 
 /// Whether `name` is a sizing or placement argument every node takes, with its unit
@@ -608,21 +739,30 @@ pub fn fits(value: &Value, ty: &Type) -> bool {
         | (Type::Principal, Value::Principal(_))
         | (Type::Resource, Value::Ref(_))
         | (Type::Icon | Type::Time, Value::Text(_))
-        | (Type::RichText, Value::Rich(_)) => true,
+        | (Type::RichText, Value::Rich(_))
+        | (Type::Action, Value::Action(_)) => true,
         (Type::Option(inner), Value::Opt(Some(held))) => fits(held, inner),
         (Type::Option(inner), other) => fits(other, inner),
         (_, Value::Opt(Some(held))) => fits(held, ty),
-        (Type::Text, Value::List(_) | Value::Ref(_) | Value::Rich(_)) => false,
+        (
+            Type::Text,
+            Value::List(_) | Value::Ref(_) | Value::Rich(_) | Value::Map(_) | Value::Action(_),
+        ) => false,
         (Type::Text, _) => true,
         (Type::Choice { cases, .. }, Value::Text(case) | Value::Enum(case)) => cases.contains(case),
-        (Type::List(inner), Value::List(items)) => items.iter().all(|item| fits(item, inner)),
+        (Type::List(inner) | Type::Set(inner), Value::List(items)) => {
+            items.iter().all(|item| fits(item, inner))
+        }
+        (Type::Map { key, value }, Value::Map(entries)) => {
+            entries.iter().all(|(k, v)| fits(k, key) && fits(v, value))
+        }
         _ => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Lane, ResourceRef};
+    use super::super::Lane;
     use super::*;
 
     fn validator() -> Validator<'static> {

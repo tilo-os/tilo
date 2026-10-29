@@ -42,7 +42,7 @@ required = ["files.paths"]
 optional = ["clipboard", "files.open", "files.save", "app-files", "threads", "processes"]
 
 [resources]
-kinds = ["code_editor.project", "terminal.history", "terminal.session", "terminal.recent-environments"]
+kinds = ["code_editor.project", "terminal.history", "terminal.recent-environments", "terminal.session"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

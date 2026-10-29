@@ -51,9 +51,31 @@ pub fn code_grants(room: &str, author: &Subject, trusted: bool) -> Vec<Grant> {
 /// denial of the author holds over every more specific grant.
 #[must_use]
 pub fn code_party<'g>(author: &Subject, own: &'g [Grant], room: &'g [Grant]) -> Party<'g> {
+    code_party_in(author, own, room, None)
+}
+
+/// [`code_party`], where the apps `earlier` names were renamed: the room's grants to an app under
+/// an id it had before name it too.
+#[must_use]
+pub fn code_party_in<'g>(
+    author: &Subject,
+    own: &'g [Grant],
+    room: &'g [Grant],
+    earlier: Option<&crate::EarlierIds>,
+) -> Party<'g> {
+    let author_alone = std::slice::from_ref(author);
     let named: Vec<&'g Grant> = room
         .iter()
-        .filter(|grant| &grant.subject == author)
+        .filter(|grant| match earlier {
+            Some(earlier) => earlier.subject_matches(&grant.subject, author_alone),
+            None => {
+                &grant.subject == author
+                    || crate::earlier::with_held(|held| {
+                        held.subject_matches(&grant.subject, author_alone)
+                    })
+                    .unwrap_or(false)
+            }
+        })
         .collect();
     Party::new(vec![author.clone()], own)
         .with_grants(named.iter().copied())

@@ -82,6 +82,10 @@ impl Model for Counter {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "integer"})
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Int
+    }
     crate::model::leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -249,6 +253,9 @@ impl<T: Model> FromIterator<T> for Set<T> {
 impl<T: Model> Model for Set<T> {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "array", "items": T::value_schema()})
+    }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Set(Box::new(T::field_type(types)))
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
@@ -1884,6 +1891,9 @@ impl<T: Model, O: Serialize + serde::de::DeserializeOwned + Default + 'static> M
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
     crate::model::leaf_paths!();
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Outbox(Box::new(T::field_type(types)))
+    }
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
         self.entries.to_json()

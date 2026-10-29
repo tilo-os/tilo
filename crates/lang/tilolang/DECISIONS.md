@@ -50,8 +50,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - **`Principal`** is a type whose values come only from the host. It can be a field
   (register), a `fn` or view parameter, and compared with `==`; `.name()` and string
   interpolation give its id as `Text`. There is no constructor and no conversion from `Text`.
-  Actions and flows may not take one as a parameter (E048): they are what callers invoke, and a
-  caller could pass anyone.
+  An action may take one as a parameter: a person it acts on (`share(n, with: Principal)`,
+  `assign(t, to: Principal)`), never who acts, which is always `invoker`; its form asks for one
+  of the workspace's members. Flows may not (E048): they run on their own, and a caller could
+  pass anyone.
 - **`invoker`** (E049 outside actions) reads the principal the runtime authenticated for the
   running invocation: for a person's press, that person; for a call through the door, the
   caller; for an approved suggestion, the principal who first invoked it.
@@ -354,3 +356,13 @@ search.md, "What a type declares" and "Types, references and paths".
   date and lists each change with why it is there; `check --write-ids` and `build` write it,
   drawing new ids at random so packages never share one. `build` writes its module to `--out`
   (default `target/tilolang`), never into the package.
+- **Outside origins are kinds the platform declares.** `type T (origin: imap.message)` names a
+  kind of `crate::origin::KINDS`; each kind lists its fields with their types and whether people
+  change them. A type declares the kind's fields it shows, with the kind's types (E112), and may
+  add its own; a collection field of a kind holds a type of that origin's kind it names
+  (`Collection<imap.thread>`). Writing a field of the kind people do not change is E113 outside a
+  scenario, whose seed data stands in for the service. The metadata carries `origin` per type;
+  fields are matched by name. A named filter may test a set holding a literal
+  (`boxes.contains("inbox")`), the index's run of that value.
+- **`outside` capabilities are a checked list** (`crate::origin::CAPABILITIES`: `post`,
+  `smtp.send`), in the compiler and the runtime alike.

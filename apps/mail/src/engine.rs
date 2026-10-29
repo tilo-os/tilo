@@ -253,6 +253,10 @@ pub enum EngineRequestKind {
     OAuthAuthorize,
 }
 
+/// The context of an [`EngineEvent::Error`] of a send whose SMTP server could not be reached:
+/// the message never got there, so it may be sent again once the network is back.
+pub const SMTP_UNREACHED: &str = "smtp.unreached";
+
 /// An event from the engine worker back to the UI.
 #[derive(Clone, Debug)]
 pub enum EngineEvent {
@@ -558,6 +562,8 @@ pub mod live {
         /// engine that never reaches a server (one confined with no files to
         /// read) does without it.
         tls: std::sync::OnceLock<Arc<rustls::ClientConfig>>,
+        /// Whether SMTP takes a test server's own certificate too (`trusting`).
+        trusts_test_servers: bool,
         /// Where draft attachment bytes are read from when building MIME.
         content: tilo_content::ContentStore,
         /// Holds OAuth grants: seals sign-ins, hands out current access
@@ -602,6 +608,7 @@ pub mod live {
             Ok(Self {
                 rt,
                 tls: std::sync::OnceLock::new(),
+                trusts_test_servers: false,
                 content,
                 custodian: Custodian::live(),
                 sessions: std::collections::HashMap::new(),
@@ -613,14 +620,15 @@ pub mod live {
 
         /// The engine trusting `tls` instead of the system's roots: a test
         /// server's own certificate.
-        #[cfg(test)]
-        pub(crate) fn trusting(
+        #[cfg(any(test, feature = "fake-servers"))]
+        pub fn trusting(
             content: tilo_content::ContentStore,
             wake: super::Wake,
             tls: Arc<rustls::ClientConfig>,
         ) -> Result<Self, String> {
             let mut engine = Self::new(content, wake)?;
             engine.tls = std::sync::OnceLock::from(tls);
+            engine.trusts_test_servers = true;
             Ok(engine)
         }
 
@@ -804,11 +812,31 @@ pub mod live {
             })
         }
 
-        fn handle_send(&self, account: &AccountConfig, draft: &Draft) -> Result<usize, String> {
-            let creds = resolve_auth(&self.custodian, account)?;
+        fn handle_send(
+            &self,
+            account: &AccountConfig,
+            draft: &Draft,
+        ) -> Result<usize, SmtpFailure> {
+            let creds = resolve_auth(&self.custodian, account).map_err(SmtpFailure::Failed)?;
             let from = Addr::new(account.display_name.clone(), account.email.clone());
-            let bytes = build_mime(&self.content, &from, draft)?;
-            self.block_on(smtp_send(account, draft, &creds, &bytes))?;
+            let bytes = build_mime(&self.content, &from, draft).map_err(SmtpFailure::Failed)?;
+            // A test server's own certificate, when the engine was made to trust it.
+            let tls = if self.trusts_test_servers {
+                Some(
+                    lettre::transport::smtp::client::TlsParameters::builder(
+                        account.smtp_host.trim().to_owned(),
+                    )
+                    .dangerous_accept_invalid_certs(true)
+                    .build()
+                    .map_err(|e| SmtpFailure::Failed(e.to_string()))?,
+                )
+            } else {
+                None
+            };
+            self.block_on(async {
+                Ok(smtp_send_with_tls(account, draft, &creds, &bytes, tls).await)
+            })
+            .map_err(SmtpFailure::Failed)??;
             Ok(bytes.len())
         }
 
@@ -863,11 +891,15 @@ pub mod live {
                         wire_bytes,
                     });
                 }
-                Err(message) => {
+                Err(failure) => {
+                    let (context, message) = match failure {
+                        SmtpFailure::Unreached(message) => (super::SMTP_UNREACHED, message),
+                        SmtpFailure::Failed(message) => ("smtp", message),
+                    };
                     let _ = out.send(EngineEvent::Error {
                         request_id,
                         kind,
-                        context: "smtp".into(),
+                        context: context.into(),
                         message,
                     });
                 }
@@ -1576,34 +1608,35 @@ pub mod live {
 
     /// Submit a pre-built MIME message over SMTP (STARTTLS on 587, implicit TLS
     /// on 465), authenticating with a password or `XOAUTH2`.
-    async fn smtp_send(
-        account: &AccountConfig,
-        draft: &Draft,
-        creds: &AuthCreds,
-        mime: &[u8],
-    ) -> Result<(), String> {
-        smtp_send_with_tls(account, draft, creds, mime, None).await
-    }
-
+    ///
     /// The submission path, with the TLS parameters injectable. Production passes
     /// `None`, which resolves to the same implicit-TLS (465) / STARTTLS (else)
     /// setup `lettre`'s `relay`/`starttls_relay` build with the Tilo system
     /// roots. A caller may pass explicit parameters (e.g. a test pinned to a
     /// local server's certificate) so the real submission code is exercised over
     /// a socket without reaching a public server.
+    /// Why a message was not submitted.
+    #[derive(Debug)]
+    pub(crate) enum SmtpFailure {
+        /// The server could not be reached: it never got the message.
+        Unreached(String),
+        /// It failed, or the server refused it.
+        Failed(String),
+    }
+
     async fn smtp_send_with_tls(
         account: &AccountConfig,
         draft: &Draft,
         creds: &AuthCreds,
         mime: &[u8],
         tls_override: Option<lettre::transport::smtp::client::TlsParameters>,
-    ) -> Result<(), String> {
+    ) -> Result<(), SmtpFailure> {
         use lettre::transport::smtp::authentication::{Credentials, Mechanism};
         use lettre::transport::smtp::client::TlsParameters;
 
         let host = account.smtp_host.trim();
         if host.is_empty() {
-            return Err("no SMTP host".into());
+            return Err(SmtpFailure::Failed("no SMTP host".into()));
         }
         let port = if account.smtp_port == 0 {
             465
@@ -1613,7 +1646,7 @@ pub mod live {
         let params = match tls_override {
             Some(p) => p,
             None => TlsParameters::new(host.to_string())
-                .map_err(|e| classify_conn_failure(&e.to_string()))?,
+                .map_err(|e| SmtpFailure::Failed(classify_conn_failure(&e.to_string())))?,
         };
         let (creds_l, mech) = match creds {
             AuthCreds::Password { user, pass } => (
@@ -1625,10 +1658,13 @@ pub mod live {
                 Mechanism::Xoauth2,
             ),
         };
-        let envelope = build_envelope(account, draft)?;
+        let envelope = build_envelope(account, draft).map_err(SmtpFailure::Failed)?;
         // 465 → implicit TLS; anything else (587/25) → a required STARTTLS
         // upgrade. The connection races the host's addresses.
-        let mut connection = crate::connect::smtp(host, port, build_tls_config()?, params).await?;
+        let tls = build_tls_config().map_err(SmtpFailure::Failed)?;
+        let mut connection = crate::connect::smtp(host, port, tls, params)
+            .await
+            .map_err(SmtpFailure::Unreached)?;
         let sent = async {
             connection
                 .auth(&[mech], &creds_l)
@@ -1641,7 +1677,7 @@ pub mod live {
         }
         .await;
         let _ = connection.quit().await;
-        sent.map(drop)
+        sent.map(drop).map_err(SmtpFailure::Failed)
     }
 
     #[test]
@@ -1725,34 +1761,7 @@ pub mod live {
         use crate::model::{AccountConfig, Addr, AuthMethod, Draft, Folder};
         use crate::transport::build_mime;
 
-        /// The mock servers present a fresh self-signed certificate.
-        fn accepting_client_config() -> Arc<rustls::ClientConfig> {
-            Arc::new(tilo_net::pinned_client_config(|_| true).unwrap())
-        }
-
-        /// A fresh self-signed cert + rustls server config for the mock servers.
-        fn server_tls_config() -> Arc<rustls::ServerConfig> {
-            let cert = rcgen::generate_simple_self_signed(vec![
-                "localhost".to_string(),
-                "127.0.0.1".to_string(),
-            ])
-            .unwrap();
-            let cert_der = cert.cert.der().clone();
-            let key_der =
-                rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
-            let cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![cert_der],
-                rustls::pki_types::PrivateKeyDer::Pkcs8(key_der),
-            )
-            .unwrap();
-            Arc::new(cfg)
-        }
+        use crate::fake_servers::{accepting_client_config, serve_smtp, server_tls_config};
 
         /// Bind a loopback listener on an ephemeral port; returns it plus the port.
         async fn bind_local() -> (TcpListener, u16) {
@@ -1827,131 +1836,6 @@ pub mod live {
                 }
                 if wr.write_all(&resp).await.is_err() {
                     break;
-                }
-                let _ = wr.flush().await;
-            }
-        }
-
-        /// A scripted STARTTLS SMTP server — the path the engine drives for the
-        /// non-465 submission port (`Tls::Required`): a plaintext greeting +
-        /// EHLO advertising STARTTLS, the in-band TLS upgrade, then EHLO +
-        /// AUTH LOGIN + MAIL/RCPT/DATA over TLS, capturing the DATA payload.
-        /// The plaintext half of the test SMTP server: greeting, EHLO, and the
-        /// STARTTLS upgrade. Returns the raw socket once the client has been
-        /// told to start TLS, or `None` if the session ended first (QUIT, EOF,
-        /// or a write error).
-        async fn smtp_plaintext_until_starttls(tcp: TcpStream) -> Option<TcpStream> {
-            let mut plain = BufReader::new(tcp);
-            if plain
-                .write_all(b"220 localhost ESMTP test\r\n")
-                .await
-                .is_err()
-            {
-                return None;
-            }
-            let _ = plain.flush().await;
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match plain.read_line(&mut line).await {
-                    Ok(0) | Err(_) => return None,
-                    Ok(_) => {}
-                }
-                let up = line.trim_end().to_ascii_uppercase();
-                if up.starts_with("EHLO") || up.starts_with("HELO") {
-                    let _ = plain
-                        .write_all(b"250-localhost\r\n250-STARTTLS\r\n250 8BITMIME\r\n")
-                        .await;
-                    let _ = plain.flush().await;
-                } else if up.starts_with("STARTTLS") {
-                    let _ = plain.write_all(b"220 2.0.0 Ready to start TLS\r\n").await;
-                    let _ = plain.flush().await;
-                    break;
-                } else if up.starts_with("QUIT") {
-                    let _ = plain.write_all(b"221 2.0.0 Bye\r\n").await;
-                    let _ = plain.flush().await;
-                    return None;
-                } else {
-                    let _ = plain.write_all(b"250 2.0.0 Ok\r\n").await;
-                    let _ = plain.flush().await;
-                }
-            }
-
-            // The client waits for the "220 Ready" before its ClientHello, so no
-            // application bytes are buffered past STARTTLS: the raw socket can be
-            // handed to the TLS acceptor cleanly.
-            Some(plain.into_inner())
-        }
-
-        async fn serve_smtp(
-            tls: Arc<rustls::ServerConfig>,
-            tcp: TcpStream,
-            captured: Arc<Mutex<Vec<u8>>>,
-        ) {
-            let Some(tcp) = smtp_plaintext_until_starttls(tcp).await else {
-                return;
-            };
-            let acceptor = tokio_rustls::TlsAcceptor::from(tls);
-            let Ok(stream) = acceptor.accept(tcp).await else {
-                return;
-            };
-            let (rd, mut wr) = tokio::io::split(stream);
-            let mut reader = BufReader::new(rd);
-
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {}
-                }
-                let up = line.trim_end().to_ascii_uppercase();
-                if up.starts_with("EHLO") || up.starts_with("HELO") {
-                    let _ = wr
-                        .write_all(b"250-localhost\r\n250-AUTH LOGIN\r\n250 8BITMIME\r\n")
-                        .await;
-                } else if up.starts_with("AUTH LOGIN") {
-                    // base64("Username:") then base64("Password:").
-                    let _ = wr.write_all(b"334 VXNlcm5hbWU6\r\n").await;
-                    let _ = wr.flush().await;
-                    line.clear();
-                    let _ = reader.read_line(&mut line).await;
-                    let _ = wr.write_all(b"334 UGFzc3dvcmQ6\r\n").await;
-                    let _ = wr.flush().await;
-                    line.clear();
-                    let _ = reader.read_line(&mut line).await;
-                    let _ = wr
-                        .write_all(b"235 2.7.0 Authentication successful\r\n")
-                        .await;
-                } else if up.starts_with("MAIL FROM") {
-                    let _ = wr.write_all(b"250 2.1.0 Ok\r\n").await;
-                } else if up.starts_with("RCPT TO") {
-                    let _ = wr.write_all(b"250 2.1.5 Ok\r\n").await;
-                } else if up.starts_with("DATA") {
-                    let _ = wr
-                        .write_all(b"354 End data with <CR><LF>.<CR><LF>\r\n")
-                        .await;
-                    let _ = wr.flush().await;
-                    let mut data = Vec::new();
-                    loop {
-                        let mut dline = Vec::new();
-                        match reader.read_until(b'\n', &mut dline).await {
-                            Ok(0) | Err(_) => break,
-                            Ok(_) => {}
-                        }
-                        if dline == b".\r\n" {
-                            break;
-                        }
-                        data.extend_from_slice(&dline);
-                    }
-                    *captured.lock().unwrap() = data;
-                    let _ = wr.write_all(b"250 2.0.0 Ok: queued\r\n").await;
-                } else if up.starts_with("QUIT") {
-                    let _ = wr.write_all(b"221 2.0.0 Bye\r\n").await;
-                    let _ = wr.flush().await;
-                    break;
-                } else {
-                    let _ = wr.write_all(b"250 2.0.0 Ok\r\n").await;
                 }
                 let _ = wr.flush().await;
             }

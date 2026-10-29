@@ -240,9 +240,9 @@ fn a_bad_declaration_is_an_error_that_names_the_type_by_its_doc() {
             "text is found by searching for it",
         ),
         (
-            "        filter \"Late\" = due < now()",
+            "        filter \"Late\" = due < today + 3h",
             "E102",
-            "changes with time",
+            "moves by whole days",
         ),
         (
             "        filter \"Theirs\" = owner.done",
@@ -480,4 +480,90 @@ fn a_query_that_does_not_fit_the_types_filters_is_an_error() {
     );
     let got = first_message("fn f(a: Int) -> Int {\n    return a..3\n}");
     assert!(got.contains("E105") && got.contains("a range"), "{got}");
+}
+
+#[test]
+fn a_named_filter_compares_a_field_with_the_time_it_is_asked_at() {
+    let meta = compile_body(
+        r#"/// Something to do.
+type Todo {
+    title: Text (title)
+    done: Bool = false
+    due: Option<Date>
+    seen: Option<Time>
+
+    search {
+        filter "Today" = not done and due != .none and due <= today (icon: .star)
+        filter "This week" = due > today and due <= today + 7d
+        filter "Seen lately" = seen >= now - 1h
+        filter "Unplanned" = due == .none (icon: .inbox)
+    }
+}
+
+/// A list.
+type Todos {
+    items: Collection<Todo>
+}
+"#,
+    )
+    .meta;
+    let todo = type_meta(&meta, "Todo");
+    let pred = |key: &str| {
+        todo.search
+            .filter(key)
+            .and_then(|f| f.pred.clone())
+            .unwrap_or_else(|| panic!("no filter {key}"))
+    };
+    let due = field_id(todo, "due");
+    let today = Pred::Cmp(
+        CmpOp::Le,
+        Operand::Field(due.clone()),
+        Operand::Clock {
+            day: true,
+            offset: 0,
+        },
+    );
+    let asked = pred("today");
+    assert_eq!(asked.conjuncts().last().copied(), Some(&today), "{asked:?}");
+    assert!(asked.reads_clock());
+    // A case before the options is the case alone, and they are the filter's.
+    assert_eq!(
+        pred("unplanned"),
+        Pred::Not(Box::new(Pred::Present(due.clone())))
+    );
+    assert_eq!(
+        todo.search
+            .filter("unplanned")
+            .and_then(|f| f.icon.as_deref()),
+        Some("inbox")
+    );
+    assert_eq!(
+        todo.search.filter("today").and_then(|f| f.icon.as_deref()),
+        Some("star")
+    );
+    // Read when it is asked: on 2026-10-29 at 10:00, the week ends on 2026-11-05.
+    let at = tilolang::calendar::instant("2026-10-29T10:00:00Z").expect("a time");
+    assert_eq!(
+        pred("this_week").at(at, 0),
+        Pred::And(vec![
+            Pred::Cmp(
+                CmpOp::Gt,
+                Operand::Field(due.clone()),
+                Operand::Lit(Lit::Date("2026-10-29".into()))
+            ),
+            Pred::Cmp(
+                CmpOp::Le,
+                Operand::Field(due),
+                Operand::Lit(Lit::Date("2026-11-05".into()))
+            ),
+        ])
+    );
+    assert_eq!(
+        pred("seen_lately").at(at, 0),
+        Pred::Cmp(
+            CmpOp::Ge,
+            Operand::Field(field_id(todo, "seen")),
+            Operand::Lit(Lit::Time("2026-10-29T09:00:00Z".into()))
+        )
+    );
 }

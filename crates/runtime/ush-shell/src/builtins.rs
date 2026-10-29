@@ -52,10 +52,16 @@ pub(crate) fn regular(name: &str) -> Option<Builtin> {
         "alias" => alias,
         "unalias" => unalias,
         "shopt" => shopt,
-        "wait" | "hash" => |_, _| Ok(0),
+        "hash" => |_, _| Ok(0),
+        "wait" => crate::jobs::wait_builtin,
+        "jobs" => crate::jobs::jobs_builtin,
+        "fg" => crate::jobs::fg_builtin,
+        "bg" => crate::jobs::bg_builtin,
+        "kill" => crate::jobs::kill_builtin,
         "umask" => umask,
         "mapfile" | "readarray" => mapfile,
-        "jobs" | "fg" | "bg" | "disown" | "suspend" => |sh, _| Err(sh.unsupported("job control")),
+        "history" => history,
+        "disown" | "suspend" => |sh, _| Err(sh.unsupported("this job control built-in")),
         "ulimit" => |sh, _| Err(sh.unsupported("`ulimit`")),
         "enable" | "complete" | "compgen" | "bind" => {
             |sh, _| Err(sh.unsupported("this bash built-in"))
@@ -63,6 +69,60 @@ pub(crate) fn regular(name: &str) -> Option<Builtin> {
         _ => return None,
     })
 }
+
+/// Every built-in's name, for Tab completion.
+pub(crate) const NAMES: &[&str] = &[
+    ":",
+    ".",
+    "source",
+    "break",
+    "continue",
+    "eval",
+    "exec",
+    "exit",
+    "return",
+    "set",
+    "shift",
+    "trap",
+    "unset",
+    "true",
+    "false",
+    "echo",
+    "printf",
+    "pwd",
+    "cd",
+    "test",
+    "[",
+    "read",
+    "type",
+    "command",
+    "builtin",
+    "let",
+    "getopts",
+    "alias",
+    "unalias",
+    "shopt",
+    "wait",
+    "hash",
+    "umask",
+    "mapfile",
+    "readarray",
+    "jobs",
+    "fg",
+    "bg",
+    "kill",
+    "history",
+    "declare",
+    "typeset",
+    "local",
+    "export",
+    "readonly",
+];
+
+/// The shell's reserved words that start a command, for Tab completion.
+pub(crate) const KEYWORDS: &[&str] = &[
+    "if", "case", "for", "while", "until", "function", "select", "[[",
+];
 
 /// The built-ins whose `name=value` arguments are assignments.
 pub(crate) fn is_declaration(name: &str) -> bool {
@@ -218,16 +278,19 @@ fn set_option(sh: &mut Shell, name: &str, on: bool) -> Result<(), String> {
         "noclobber" | "C" => o.noclobber = on,
         "allexport" | "a" => o.allexport = on,
         "pipefail" => o.pipefail = on,
-        // Accepted and meaningless here: there is no job control, no
-        // history file and no editor mode to switch.
-        "notify"
+        // The line editor has emacs keys only.
+        "vi" if on => return Err("set -o vi".into()),
+        // Accepted and meaningless here: job control is always on for an
+        // interactive shell, there is no history file, and the editor has
+        // emacs keys only.
+        "vi"
+        | "notify"
         | "b"
         | "monitor"
         | "m"
         | "hashall"
         | "h"
         | "emacs"
-        | "vi"
         | "history"
         | "B"
         | "braceexpand"
@@ -1358,5 +1421,44 @@ fn mapfile(sh: &mut Shell, args: &[String]) -> Exec {
         sh.error(e);
         return Ok(1);
     }
+    Ok(0)
+}
+
+/// `history [N]`: the person's command history, oldest first and numbered,
+/// or its newest `N` lines. It is their own record (`terminal.history`),
+/// shared by every session and device; the shell changes nothing in it.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "a `Builtin`: every built-in returns `Exec`"
+)]
+fn history(sh: &mut Shell, args: &[String]) -> Exec {
+    let mut newest = None;
+    for arg in args {
+        match arg.as_str() {
+            "--" => {}
+            flag if flag.starts_with('-') => {
+                sh.error(format!(
+                    "history: {flag}: the history is the person's own record, kept by \
+                     Terminal; this shell only reads it"
+                ));
+                return Ok(2);
+            }
+            n => {
+                let Ok(n) = n.parse::<usize>() else {
+                    sh.error(format!("history: {n}: numeric argument required"));
+                    return Ok(2);
+                };
+                newest = Some(n);
+            }
+        }
+    }
+    let lines = sh.whole_history();
+    let total = lines.len();
+    let first = total.saturating_sub(newest.unwrap_or(total));
+    let mut out = String::new();
+    for (i, line) in lines.iter().rev().enumerate().skip(first) {
+        let _ = writeln!(out, "{:>5}  {line}", i.saturating_add(1));
+    }
+    sh.out(&out);
     Ok(0)
 }

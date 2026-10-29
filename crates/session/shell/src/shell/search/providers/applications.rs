@@ -696,11 +696,11 @@ pub(crate) fn launch_installed_app(
         return Ok(());
     }
     let app = launcher::installed_apps().and_then(|apps| {
-        apps.into_iter()
-            .find(|app| app.package_id == package_id)
-            .ok_or_else(|| launcher::LaunchError::NotInstalled {
+        launcher::find_installed(&apps, package_id).ok_or_else(|| {
+            launcher::LaunchError::NotInstalled {
                 package_id: package_id.to_string(),
-            })
+            }
+        })
     });
     match app {
         Ok(app) => {

@@ -31,7 +31,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     let scratch = tempfile::tempdir().unwrap();
     // The packages are copied: a build writes new ids into their locks.
     let source = scratch.path().join("tl");
-    for name in ["today", "notes", "todo", "chat"] {
+    for name in ["today", "notes", "tasks", "chat"] {
         copy_package(&packages().join(name), &source.join(name));
     }
     let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
@@ -52,7 +52,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     );
     for used in [
         "so.tilo.lang.notes",
-        "so.tilo.lang.todo",
+        "so.tilo.lang.tasks",
         "so.tilo.lang.chat",
     ] {
         assert!(ids.contains(&used), "{used} is an app of its own: {ids:?}");

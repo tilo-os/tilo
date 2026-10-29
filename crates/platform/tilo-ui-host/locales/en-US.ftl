@@ -25,14 +25,14 @@ tilolang-invocation-denied = Not allowed
 tilolang-embed-error = This block could not run
 tilolang-all = All { $kind }
 tilolang-empty = Nothing here yet
-tilolang-edited = Last edited
-tilolang-edited-by = Edited by
 # A reference in rich text to something the reader cannot read, as its chip says it.
 rich-text-reference-unreadable = Not shared with you
 tilolang-none-selected = No { $kind } selected
 tilolang-sort = Sort
 tilolang-more = More actions
 tilolang-undo = Undo
+# Typed while the window was busy with a press that opened no field, and no field had the keyboard.
+tilolang-typing-unplaced = Nothing took what you typed: “{ $typed }”
 tilolang-did = { $action }: { $title }
 tilolang-replying-to = Replying to
 tilolang-thread-replies = { $count ->
@@ -42,3 +42,4 @@ tilolang-thread-replies = { $count ->
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
+tilolang-form-cancel = Cancel

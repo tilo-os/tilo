@@ -132,7 +132,16 @@ impl Adapter {
                 id: identity.clone(),
                 name: name.clone(),
             }),
-            Prop::None | Prop::List(_) | Prop::Rich(_) => return None,
+            // What a drop carries: the card and its place.
+            Prop::List(items) => Value::List(
+                items
+                    .iter()
+                    .map(|item| self.value_of(item))
+                    .collect::<Option<_>>()?,
+            ),
+            Prop::None | Prop::Rich(_) | Prop::Map(_) | Prop::Action(_) => {
+                return None;
+            }
         })
     }
 
@@ -285,12 +294,19 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
         // person's way: the component decides how to show it.
         (Type::Time, Value::Text(at)) => Prop::Text(at.clone()),
         (Type::Choice { .. }, Value::Text(case)) => Prop::Choice(case.clone()),
-        (Type::List(inner), Value::List(items)) => Prop::List(
+        (Type::List(inner) | Type::Set(inner), Value::List(items)) => Prop::List(
             items
                 .iter()
                 .map(|item| convert(item, inner, reconciler))
                 .collect::<Option<Vec<_>>>()?,
         ),
+        (Type::Map { key, value }, Value::Map(entries)) => Prop::Map(
+            entries
+                .iter()
+                .map(|(k, v)| Some((convert(k, key, reconciler)?, convert(v, value, reconciler)?)))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        (Type::Action, Value::Action(offered)) => Prop::Action(offered.clone()),
         (Type::RichText, Value::Rich(rich)) => Prop::Rich(rich.clone()),
         _ => return None,
     })

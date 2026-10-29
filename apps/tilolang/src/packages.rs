@@ -27,10 +27,16 @@ pub struct Embedded {
 /// toolkit's components, which shows an app can do what the standard library does.
 pub const EMBEDDED: &[Embedded] = &[
     embedded!("counter"),
-    embedded!("todo"),
+    embedded!("tasks"),
     embedded!("notes"),
-    embedded!("letters"),
+    // A desk of letters, the shape the outbox and suggestion tests were written against.
+    Embedded {
+        dir: "letters",
+        source: include_str!("../../../crates/lang/tilolang/tests/fixtures/letters/app.tl"),
+        ids: include_str!("../../../crates/lang/tilolang/tests/fixtures/letters/app.ids"),
+    },
     embedded!("chat"),
+    embedded!("mail"),
     embedded!("today"),
     Embedded {
         dir: "handmade",
@@ -40,8 +46,10 @@ pub const EMBEDDED: &[Embedded] = &[
 ];
 
 /// The surface of a host running every built-in package.
-#[must_use]
-pub fn surface() -> Vec<u8> {
+///
+/// # Errors
+/// A built-in package does not compile, or the surface cannot be written.
+pub fn surface() -> Result<Vec<u8>, String> {
     let sources: Vec<(&str, &str)> = EMBEDDED
         .iter()
         .map(|package| (package.source, package.ids))

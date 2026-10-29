@@ -23,7 +23,7 @@ tilolang app with its first scenario, `tl-<app>-empty-*` the same app with no sc
 |---|---|---|
 | notes | a week of notes | native-notes, native-snippets |
 | todo | a saturday list | native-snippets, native-totp |
-| letters | a desk of letters | native-notes, native-contacts |
+| mail | a busy inbox | native-mail |
 | chat | a busy workspace | native-chat, native-contacts |
 | counter | a busy morning | native-totp |
 | board | a morning board | (no native dashboard) |
@@ -49,9 +49,14 @@ tilolang app with its first scenario, `tl-<app>-empty-*` the same app with no sc
   be empty. The notes field is the block editor.
 - 420 and 1.5: the title wraps and the fields stack.
 
-### letters
-- Unchanged from the last round: Drafts/Sent sidebar with counts, two-line rows, recipient,
-  title, body and Send in the content.
+### mail
+- Three columns: the account's mailboxes with unread counts (none shown at zero), the
+  conversations newest first (senders, subject, time, a flag or unread mark), and the open
+  conversation's messages, each with its sender, recipients and time over its text. The header
+  holds reply all, forward, archive, delete, flag and read as icons and Reply as the primary.
+- 420: one column at a time, the conversation with a back button; More holds what does not fit.
+- Search lists conversations and messages by subject. With no account the window says to add one
+  in Settings and offers no New message.
 
 ### chat
 - Rows show the conversation, the last message as the secondary line, its time as meta, and its

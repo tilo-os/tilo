@@ -92,6 +92,9 @@ pub struct FieldShape {
     pub unit: bool,
     /// `#[model(readonly)]`: published for reading, changed only by verbs.
     pub readonly: bool,
+    /// `#[model(atom)]`: stored whole, last writer wins, so an edit sets
+    /// all of it and never splices characters into it.
+    pub atom: bool,
     /// `#[model(label)]`: the field names the record.
     pub label: bool,
     /// Where the field stands among those whose texts, joined by spaces,
@@ -108,6 +111,9 @@ pub struct FieldShape {
     pub trust: Trust,
     /// The JSON Schema of the field's value ([`Model::value_schema`](crate::Model::value_schema)).
     pub schema: fn() -> serde_json::Value,
+    /// The field's type in the language-neutral vocabulary
+    /// ([`Model::field_type`](crate::Model::field_type)).
+    pub field_type: fn(&mut crate::TypeSet) -> crate::FieldType,
     /// The first line of the field's text as stored ([`stored_text`]): what
     /// a label made of it reads, rich text included.
     pub text: StoredText,
@@ -213,6 +219,7 @@ impl PartialEq for FieldShape {
             && self.shape == other.shape
             && self.unit == other.unit
             && self.readonly == other.readonly
+            && self.atom == other.atom
             && self.label == other.label
             && self.quiet_remove == other.quiet_remove
             && self.trust == other.trust

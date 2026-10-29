@@ -5,7 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use tilo_clock::{SystemTime, UNIX_EPOCH};
 
-use crate::{KindSet, TreePath};
+use crate::{EarlierIds, KindSet, TreePath};
 
 /// The answer a grant gives. Ordered `Deny < Ask < Allow`, so the stricter of
 /// two answers is their minimum.
@@ -338,6 +338,10 @@ pub struct Context<'a> {
     /// session grant then counts as live, and the device that holds the session
     /// is the one that refuses after it ends.
     pub session: Option<&'a str>,
+    /// The ids apps were published under before: a grant written under one decides for the
+    /// renamed app (`crate::earlier`). `None` reads what this process registered
+    /// (`crate::earlier::register`).
+    pub earlier: Option<&'a EarlierIds>,
 }
 
 impl<'a> Context<'a> {
@@ -346,6 +350,7 @@ impl<'a> Context<'a> {
         Self {
             now_unix_ms,
             session: None,
+            earlier: None,
         }
     }
 
@@ -365,6 +370,40 @@ impl<'a> Context<'a> {
                 .try_into()
                 .unwrap_or(u64::MAX),
         )
+    }
+
+    /// Deciding where the apps `earlier` names were renamed: grants under their earlier ids
+    /// are theirs.
+    #[must_use]
+    pub const fn with_earlier_ids(mut self, earlier: &'a EarlierIds) -> Self {
+        self.earlier = Some(earlier);
+        self
+    }
+
+    /// Whether the grant node `pattern` covers `node`, under the ids its app had before too.
+    #[must_use]
+    pub fn covers(&self, pattern: &TreePath, node: &TreePath) -> bool {
+        match self.earlier {
+            Some(earlier) => earlier.covers(pattern, node),
+            None => {
+                pattern.covers(node)
+                    || crate::earlier::with_held(|held| held.covers(pattern, node)).unwrap_or(false)
+            }
+        }
+    }
+
+    /// Whether a grant to `granted` speaks for one of `subjects`, an app's under its earlier ids
+    /// too.
+    #[must_use]
+    pub fn subject_matches(&self, granted: &Subject, subjects: &[Subject]) -> bool {
+        match self.earlier {
+            Some(earlier) => earlier.subject_matches(granted, subjects),
+            None => {
+                subjects.contains(granted)
+                    || crate::earlier::with_held(|held| held.subject_matches(granted, subjects))
+                        .unwrap_or(false)
+            }
+        }
     }
 
     #[must_use]

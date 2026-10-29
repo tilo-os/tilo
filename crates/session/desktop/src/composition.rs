@@ -255,7 +255,7 @@ impl DesktopSurface {
                 )))
                 .push(Box::new(StripView::new(strips, active_strip)));
         }
-        let empty_workspace = tree.active_workspace().is_some_and(|w| !w.has_windows());
+        let empty_workspace = tree.active_workspace().is_some_and(shows_launchpad);
         let empty_workspace_visible = chrome.empty_workspace.as_ref().map(|_| empty_workspace);
         let mut row_offset: usize = if external_navigation { 0 } else { 2 };
         if empty_workspace && let Some(empty) = chrome.empty_workspace {
@@ -734,7 +734,7 @@ impl DesktopSurface {
             return ReconcileOutcome::RebuildRequired;
         }
         self.retire_departed_requested_groups(tree);
-        let empty = !workspace.has_windows();
+        let empty = shows_launchpad(workspace);
         if self
             .empty_workspace_visible
             .is_some_and(|visible| visible != empty)
@@ -1390,6 +1390,13 @@ impl ui::component_lifecycle::ComponentLifecycle for DesktopSurface {
         ));
         out
     }
+}
+
+/// Whether `workspace` shows the empty workspace's launchpad: it holds no
+/// window, and it is not on its canvas, which starts empty with a caret.
+#[must_use]
+pub fn shows_launchpad(workspace: &tilo_desktop_model::Workspace) -> bool {
+    !workspace.has_windows() && !workspace.arrangement.is_canvas()
 }
 
 /// The toolkit's width for a persisted window width.

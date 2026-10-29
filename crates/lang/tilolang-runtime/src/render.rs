@@ -762,14 +762,10 @@ impl RowsOf {
         format!("{}/{item_key}", self.key)
     }
 
-    /// The key of the row of the item `id` of `coll`, without a reference to it.
+    /// The key of the row of the item `id` of `coll`, without a reference to it: the item's
+    /// as its reference writes it.
     pub fn coll_row_key(&self, coll: &crate::value::CollRef, id: &str) -> String {
-        format!(
-            "{}/{}/{}:{id}",
-            self.key,
-            coll.target.id_string(),
-            coll.field
-        )
+        format!("{}/{}/{id}", self.key, coll.target.doc)
     }
 
     /// The key of the row of `item`, the `index`th, and the row view's arguments.

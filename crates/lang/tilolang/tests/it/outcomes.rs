@@ -125,8 +125,14 @@ fn a_call_may_leave_out_a_defaulted_argument() {
         "{CHECK}flow f(item: Todo) {{\n    check(item)\n}}"
     ));
     assert!(codes_of(&flows).is_empty(), "{:?}", codes_of(&flows));
-    let missing = body(&format!(
+    // A control may leave out what a form can ask for: pressing it opens the action's form.
+    let asked = body(&format!(
         "{CHECK}view v(item: Todo) {{\n    button(check())\n}}"
+    ));
+    assert!(codes_of(&asked).is_empty(), "{:?}", codes_of(&asked));
+    // A call that runs at once has nobody to ask: a parameter without a default is required.
+    let missing = body(&format!(
+        "{CHECK}action again(item: Todo) {{\n    check()\n}}"
     ));
     assert_eq!(
         codes_of(&missing),
@@ -158,6 +164,16 @@ fn a_label_reads_a_defaulted_parameter_but_not_one_without_a_default() {
         "action retitle(item: Todo, title: Text) (label: if title == \"\" { \"Clear\" } else { \"Rename\" }) {\n    item.title = title\n}",
     );
     assert_eq!(codes_of(&given), vec!["E090"]);
+}
+
+// A requirement on an argument the caller gives cannot be decided where the action is offered,
+// before it is given: it never hides the action, and is checked when the action runs with it.
+#[test]
+fn a_requirement_may_read_a_given_argument_and_is_checked_when_the_action_runs() {
+    let src = body(
+        "action retitle(item: Todo, title: Text) (label: \"Rename…\") {\n    require not item.done \"It is done\"\n    require title != item.title \"It has that title already\"\n    item.title = title\n}",
+    );
+    assert!(codes_of(&src).is_empty(), "{:#?}", diagnostics(&src));
 }
 
 // A register written from itself means "recompute where it is applied": two people ticking the

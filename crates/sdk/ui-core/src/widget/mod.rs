@@ -1925,6 +1925,17 @@ pub trait Widget {
         defaults::take_app_activation(self.children_mut())
     }
 
+    /// One-shot (reading MUST clear it): the test id of the control this
+    /// subtree asks to take the keyboard once the runner laid it out, such as
+    /// the first field of a view a person's press just opened, so what they
+    /// type next lands there. The runner focuses it as a press focuses a
+    /// control, blurring any other; a control it does not find (or that takes
+    /// no focus) leaves focus where it is. Default forwards the first request
+    /// found among the children.
+    fn take_focus_request(&mut self) -> Option<String> {
+        defaults::take_focus_request(self.children_mut())
+    }
+
     /// Role, name/description/value, and
     /// [`AccessState`](crate::a11y::AccessState). Default `None` means
     /// presentational: the node is skipped and children reparent onto the
@@ -3172,8 +3183,8 @@ pub use window_header::{
 };
 mod nav_list;
 pub use nav_list::{
-    NavAction, NavArt, NavDrop, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
-    NavListProps, NavPerson, NavSearchTerm, NavSection,
+    NavAction, NavArt, NavDrop, NavEntry, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
+    NavListProps, NavPerson, NavSearchTerm, NavSection, NavSectionProps,
 };
 mod document_viewport;
 pub use document_viewport::{
@@ -3349,9 +3360,9 @@ mod overflow_door;
 pub use overflow_door::{DoorPlan, OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
-    CrossStripDetach, GroupRow, GroupTopology, HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan,
-    STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, StripLane, TabDropTarget, WheelJumpAccum,
-    pan_within_canvas, wheel_jump_detents,
+    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, GroupRow, GroupTopology,
+    HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX,
+    StripLane, TabDropTarget, WheelJumpAccum, pan_within_canvas, wheel_jump_detents,
 };
 mod finger_path;
 mod strip_deck;
@@ -3375,6 +3386,8 @@ pub mod page_preview;
 pub use page_preview::PagePreview;
 pub mod spinner;
 pub use spinner::Spinner;
+pub mod program_step;
+pub use program_step::ProgramStepView;
 pub mod date_field;
 pub mod date_picker;
 pub use date_field::DateField;
@@ -3593,7 +3606,7 @@ mod disclosure_band;
 pub use disclosure_band::DisclosureBand;
 pub mod chip;
 mod chip_component;
-pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
+pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle, REFERENCE_LEAD};
 pub use chip_component::ChipProps;
 pub mod conversation;
 pub use conversation::{

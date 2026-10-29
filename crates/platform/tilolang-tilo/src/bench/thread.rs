@@ -5,6 +5,8 @@
 //! * `thread_open`: opening the item's window and rendering its last page of rows;
 //! * `thread_keystroke`: one character typed into the window's first text input (the composer);
 //! * `thread_post`: another replica appends a row (a message), which the transcript shows;
+//! * `thread_send`: a message typed into the composer is sent with the button beside it, and
+//!   the transcript shows it;
 //! * `thread_scroll`: the transcript shows the page of rows before the one it shows.
 
 use std::collections::HashSet;
@@ -12,18 +14,23 @@ use std::time::Instant;
 
 use serde_json::{Value as Json, json};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_resource::{Collection, Edit, EditOp, Id, Segment};
+use tilo_resource::{Collection, Id};
 use tilolang::Compiled;
 use tilolang_runtime::value::{ResourceRef, Value};
-use tilolang_runtime::{Principal, ViewInstance};
+use tilolang_runtime::{Principal, UiNode, ViewInstance};
 
 use super::{
     Changes, Doc, List, Nested, PAGE, Record, Room, SCROLL_STEP, Shape, Sized, Work,
-    composer_input, execute, frame_list, item_id, ms, root_id, text_input, with_work,
+    composer_input, execute, frame_list, item_id, ms, root_id, text_input, typed, with_work,
 };
 use crate::action::{Authorship, DynAction, DynEdit};
 use crate::record::{DynRecord, DynValue};
 use crate::schema::{MergeKind, lookup};
+
+/// The id of the one item of the root's list: the thread whose transcript the scenarios show.
+fn thread_id() -> String {
+    "thread".to_owned()
+}
 
 /// The fields of the packages' types that hold a principal (a message's author), by type and
 /// field id: a register a seeded record has no default for.
@@ -42,11 +49,11 @@ pub(super) fn principals(packages: &[Compiled]) -> Principals {
         .collect()
 }
 
-/// A record of type `ty` with `label` in every text field, a principal of its own in every
+/// A record of type `ty` with `label` in every text and rich text field, a principal of its own in every
 /// field that holds one, and, `depth` collections down, one item in each collection (a
-/// message's text part).
+/// message's text part, when it has no rich text), whose id is the record's `id` and `-part`.
 pub(super) fn filled(
-    ty: &str,
+    (id, ty): (&str, &str),
     label: &str,
     depth: usize,
     principals: &Principals,
@@ -54,19 +61,26 @@ pub(super) fn filled(
     let schema = lookup(ty).ok_or_else(|| format!("unregistered type {ty}"))?;
     let mut record = DynRecord::empty(schema).map_err(|e| e.to_string())?;
     let author = tilolang_runtime::value::to_json(&Value::Principal(Principal::new("bench")))?;
+    // What a record says in rich text it says there alone: a message with a rich text body
+    // has no parts.
+    let rich = schema.fields.iter().any(|f| f.kind == MergeKind::RichText);
     for field in &schema.fields {
         let principal = principals.contains(&(ty.to_owned(), field.id.clone()));
         match (field.kind, record.get_mut(&field.id)) {
             (MergeKind::Text, Some(DynValue::Text(text))) => label.clone_into(text),
+            (MergeKind::RichText, Some(DynValue::RichText(rich))) => {
+                **rich = tilo_document::RichText::from_markdown(label);
+            }
             (MergeKind::Register, Some(DynValue::Register(slot))) if principal => {
                 slot.clone_from(&author);
             }
-            (MergeKind::Collection, Some(DynValue::Collection(slot))) if depth > 0 => {
+            (MergeKind::Collection, Some(DynValue::Collection(slot))) if depth > 0 && !rich => {
                 if let Some(inner) = field.record.as_deref() {
                     let mut items = Collection::default();
+                    let part = format!("{id}-part");
                     items.push(
-                        Id::from_raw("part-0"),
-                        filled(inner, label, depth.saturating_sub(1), principals)?,
+                        Id::from_raw(&part),
+                        filled((&part, inner), label, depth.saturating_sub(1), principals)?,
                     );
                     *slot = items;
                 }
@@ -91,12 +105,17 @@ pub(super) fn seeded(
     let principals = principals(packages);
     let root_schema = lookup(&shape.root_ty).ok_or("unregistered root type")?;
     let mut root = DynRecord::empty(root_schema).map_err(|e| e.to_string())?;
-    let mut item = filled(&list.item_ty, "Item 0", 0, &principals)?;
+    let mut item = filled((&thread_id(), &list.item_ty), "Item 0", 0, &principals)?;
     let mut inner = Collection::default();
     for i in 0..n {
         inner.push(
             Id::from_raw(item_id(i)),
-            filled(&nested.item_ty, &format!("Message {i}"), 1, &principals)?,
+            filled(
+                (&item_id(i), &nested.item_ty),
+                &format!("Message {i}"),
+                1,
+                &principals,
+            )?,
         );
     }
     match item.get_mut(&nested.field) {
@@ -104,7 +123,7 @@ pub(super) fn seeded(
         _ => return Err("the item's collection is not one".into()),
     }
     let mut items = Collection::default();
-    items.push(Id::from_raw(item_id(0)), item);
+    items.push(Id::from_raw(thread_id()), item);
     match root.get_mut(&list.field) {
         Some(DynValue::Collection(slot)) => *slot = items,
         _ => return Err("the list field is not a collection".into()),
@@ -166,11 +185,8 @@ impl Thread {
 /// A scenario fails.
 pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec<Record>, String> {
     let shape = sized.shape;
-    let item = ResourceRef::root(root_id(shape), shape.root_ty.clone()).item(
-        &list.field,
-        &item_id(0),
-        list.item_ty.clone(),
-    );
+    let item = ResourceRef::root(root_id(shape), shape.root_ty.clone())
+        .item(&thread_id(), list.item_ty.clone());
     let mut out = vec![open(sized, &item)?];
     if sized.config.open_only {
         return Ok(out);
@@ -181,8 +197,9 @@ pub(super) fn run(sized: &Sized<'_>, list: &List, nested: &Nested) -> Result<Vec
     room.frame(&mut [&mut thread.view])?;
     room.phases.take();
     out.push(keystroke(sized, &mut room, &mut thread)?);
-    out.push(post(sized, (list, nested), &mut room, &mut thread)?);
-    out.push(scroll(sized, &mut thread)?);
+    out.push(post(sized, nested, &mut room, &mut thread)?);
+    out.extend(send(sized, &mut room, &mut thread)?);
+    out.push(scroll(sized, &room, &mut thread)?);
     Ok(out)
 }
 
@@ -220,11 +237,12 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         text.push('x');
+        let value = typed(&thread.view, &input, &text);
         let before = Work::of(room, &[&thread.view]);
         let start = Instant::now();
         thread
             .view
-            .edit(&input, &Value::text(text.clone()))
+            .edit(&input, &value)
             .map_err(|e| e.to_string())?;
         let patches = room.frame(&mut [&mut thread.view])?;
         let took = ms(start.elapsed());
@@ -239,7 +257,7 @@ fn keystroke(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<
 /// Another replica appending a row, which the transcript, following its end, shows.
 fn post(
     sized: &Sized<'_>,
-    (list, nested): (&List, &Nested),
+    nested: &Nested,
     room: &mut Room,
     thread: &mut Thread,
 ) -> Result<Record, String> {
@@ -248,32 +266,36 @@ fn post(
     let mut peer = room.doc.fork();
     let mut changes = Changes::default();
     for sample in 0..sized.config.samples {
+        let id = format!("peer-{sample:06}");
         let message = filled(
-            &nested.item_ty,
+            (&id, &nested.item_ty),
             &format!("Peer message {sample}"),
             1,
             &principals,
         )?;
+        // After the seeded messages and the peer's earlier ones.
+        let key = crate::action::keys_in_order(sized.n.saturating_add(sample).saturating_add(1))
+            .pop()
+            .unwrap_or_default();
+        let at = tilolang_runtime::place::Placement::At {
+            place: tilolang_runtime::place::Place {
+                parent: Some(thread_id()),
+                field: nested.field.clone(),
+                key,
+            },
+            was: None,
+        };
         let action = DynAction {
             app: shape.app.clone(),
             kind: format!("tl.{}.edit", shape.app),
             action_id: "$edit".into(),
             args: Json::Null,
             authorship: Authorship::default(),
-            edits: vec![DynEdit::Edit {
+            edits: vec![DynEdit::Insert {
                 id: root_id(shape),
-                edit: Edit::new(
-                    vec![
-                        Segment::Field(list.field.clone()),
-                        Segment::Item(Id::from_raw(item_id(0))),
-                        Segment::Field(nested.field.clone()),
-                    ],
-                    EditOp::InsertItem {
-                        id: Some(Id::from_raw(format!("peer-{sample:06}"))),
-                        at: tilo_resource::At::End,
-                        value: tilo_resource::Model::to_json(&message),
-                    },
-                ),
+                item: id,
+                record: tilo_resource::Model::to_json(&message),
+                at: at.encode(),
             }],
         };
         execute(&mut peer, &action, "peer")?;
@@ -295,22 +317,68 @@ fn post(
     Ok(sized.record("thread_post", "ms", samples, extra))
 }
 
+/// The key of the button beside the input `input` in `node`: what sends what the composer
+/// holds.
+fn button_beside(node: &UiNode, input: &str) -> Option<String> {
+    if let Some(at) = node.children.iter().position(|c| c.key == input) {
+        return node
+            .children
+            .iter()
+            .skip(at)
+            .find(|c| c.kind == "ui.Button")
+            .map(|c| c.key.clone());
+    }
+    node.children.iter().find_map(|c| button_beside(c, input))
+}
+
+/// Typing a message into the composer and sending it with the button beside it: the message
+/// is posted, and the transcript, following its end, shows it. Only for a window whose composer
+/// has a send button.
+fn send(sized: &Sized<'_>, room: &mut Room, thread: &mut Thread) -> Result<Option<Record>, String> {
+    let Some((input, _)) = composer_input(&thread.view, thread.view.tree()) else {
+        return Ok(None);
+    };
+    let Some(button) = button_beside(thread.view.tree(), &input) else {
+        return Ok(None);
+    };
+    let mut changes = Changes::default();
+    for sample in 0..sized.config.samples {
+        let value = typed(&thread.view, &input, &format!("Sent message {sample}"));
+        thread
+            .view
+            .edit(&input, &value)
+            .map_err(|e| e.to_string())?;
+        room.frame(&mut [&mut thread.view])?;
+        let before = Work::of(room, &[&thread.view]);
+        let start = Instant::now();
+        thread.view.press(&button).map_err(|e| e.to_string())?;
+        let patches = room.frame(&mut [&mut thread.view])?;
+        let len = thread.view.list_len(&thread.list).unwrap_or(0);
+        thread.show(len.saturating_sub(PAGE)..len)?;
+        let took = ms(start.elapsed());
+        let mut done = Work::of(room, &[&thread.view]).since(before);
+        done.patches = patches as u64;
+        changes.push(took, done);
+    }
+    let (samples, extra) = changes.into_record(room.phases.take());
+    Ok(Some(sized.record("thread_send", "ms", samples, extra)))
+}
+
 /// The transcript scrolled back a few rows a frame.
-fn scroll(sized: &Sized<'_>, thread: &mut Thread) -> Result<Record, String> {
+fn scroll(sized: &Sized<'_>, room: &Room, thread: &mut Thread) -> Result<Record, String> {
     let mut samples = Vec::new();
+    let mut work = Work::default();
     for _ in 0..sized.config.samples {
         let end = match thread.shown.start.checked_sub(SCROLL_STEP) {
             Some(start) if start > 0 => thread.shown.end.saturating_sub(SCROLL_STEP),
             _ => thread.view.list_len(&thread.list).unwrap_or(0),
         };
+        let before = Work::of(room, &[&thread.view]);
         let start = Instant::now();
         thread.show(end.saturating_sub(PAGE)..end)?;
         samples.push(ms(start.elapsed()));
+        work = work.max(Work::of(room, &[&thread.view]).since(before));
     }
-    Ok(sized.record(
-        "thread_scroll",
-        "ms",
-        samples,
-        json!({"rows_per_frame": SCROLL_STEP, "shown": PAGE}),
-    ))
+    let extra = json!({"rows_per_frame": SCROLL_STEP, "shown": PAGE});
+    Ok(sized.record("thread_scroll", "ms", samples, with_work(extra, work)))
 }

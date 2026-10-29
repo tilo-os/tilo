@@ -182,10 +182,16 @@ static INSTALLED_SURFACES: LazyLock<Mutex<InstalledSurfaces>> = LazyLock::new(Mu
 /// started with it. Signed by the package's publisher, as the surface the
 /// app runs with is ([`ui::app_surface::register_package`]).
 pub(crate) fn installed_surface(package_id: &str, hash: &str) -> Option<Vec<u8>> {
-    let Installed::Ships(Some((installed, bytes))) = installed_package_surface(package_id) else {
-        return None;
+    let ships = |id: &str| {
+        let Installed::Ships(Some((installed, bytes))) = installed_package_surface(id) else {
+            return None;
+        };
+        (hex::encode(installed) == hash).then(|| bytes.to_vec())
     };
-    (hex::encode(installed) == hash).then(|| bytes.to_vec())
+    // A record kept under an id its app had before is that app's: the app that took the id's
+    // place decides its changes with the surface it ships.
+    ships(package_id)
+        .or_else(|| ships(crate::shell::launcher::installed_earlier_ids().successor(package_id)?))
 }
 
 fn installed_package_surface(package_id: &str) -> Installed {

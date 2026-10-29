@@ -92,6 +92,7 @@ impl ResourceApp for CodeEditorShell {
                     request: id.clone(),
                     command: request.command.0,
                     requested_by: request.requested_by.0,
+                    agent: request.agent,
                     reply: cx.reply(),
                 });
                 Ok(ui::framework::Effected::Pending)
@@ -638,6 +639,25 @@ mod tests {
             "metadata must not read buffer bodies"
         );
     }
+    #[test]
+    fn ctrl_end_and_ctrl_home_move_to_the_ends_of_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("ends.rs");
+        std::fs::write(&file, "fn a() {}\n\nfn last() {}").unwrap();
+        let mut app = TestApp::<CodeEditorShell>::launched(&[file.to_str().unwrap()]).unwrap();
+        app.harness().click_named("editor_view").unwrap();
+        let caret = |app: &mut TestApp<CodeEditorShell>| {
+            let observed = app.harness().native_input_snapshot().unwrap();
+            let at = |key: &str| observed.get(key).and_then(serde_json::Value::as_u64);
+            (at("caret_line"), at("caret_column"))
+        };
+        app.harness().set_modifiers(&["ctrl".to_owned()]);
+        app.harness().key("End");
+        assert_eq!(caret(&mut app), (Some(2), Some(12)));
+        app.harness().key("Home");
+        assert_eq!(caret(&mut app), (Some(0), Some(0)));
+    }
+
     #[test]
     fn hosted_tab_and_shift_tab_indent_through_the_document_door_without_leaving_focus() {
         let directory = tempfile::tempdir().unwrap();

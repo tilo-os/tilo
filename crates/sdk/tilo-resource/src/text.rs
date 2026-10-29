@@ -121,6 +121,33 @@ pub fn common_ends<T: PartialEq>(a: &[T], b: &[T]) -> (usize, usize) {
     (prefix, suffix)
 }
 
+/// [`common_ends`] of two texts, in bytes, on character boundaries: the
+/// texts are compared byte by byte, never decoded into characters.
+#[must_use]
+pub fn common_text_ends(a: &str, b: &str) -> (usize, usize) {
+    let mut prefix = a
+        .bytes()
+        .zip(b.bytes())
+        .take_while(|(left, right)| left == right)
+        .count();
+    while !(a.is_char_boundary(prefix) && b.is_char_boundary(prefix)) {
+        prefix = prefix.saturating_sub(1);
+    }
+    let ((_, a), (_, b)) = (a.split_at(prefix), b.split_at(prefix));
+    let mut suffix = a
+        .bytes()
+        .rev()
+        .zip(b.bytes().rev())
+        .take_while(|(left, right)| left == right)
+        .count();
+    while !(a.is_char_boundary(a.len().saturating_sub(suffix))
+        && b.is_char_boundary(b.len().saturating_sub(suffix)))
+    {
+        suffix = suffix.saturating_sub(1);
+    }
+    (prefix, suffix)
+}
+
 /// The smallest splice, in characters, that turns `before` into `after`:
 /// what the two share at their start and end is kept.
 #[must_use]
@@ -128,17 +155,15 @@ pub fn splice_between(before: &str, after: &str) -> Option<TextEdit> {
     if before == after {
         return None;
     }
-    let before: Vec<char> = before.chars().collect();
-    let after: Vec<char> = after.chars().collect();
-    let (start, end) = common_ends(&before, &after);
+    let (start, end) = common_text_ends(before, after);
+    let (kept, deleted) = before.split_at(start);
+    let (deleted, _) = deleted.split_at(deleted.len().saturating_sub(end));
+    let (_, inserted) = after.split_at(start);
+    let (inserted, _) = inserted.split_at(inserted.len().saturating_sub(end));
     Some(TextEdit::Splice {
-        at: start,
-        delete: before.len().saturating_sub(start).saturating_sub(end),
-        insert: after
-            .get(start..after.len().saturating_sub(end))
-            .unwrap_or_default()
-            .iter()
-            .collect(),
+        at: kept.chars().count(),
+        delete: deleted.chars().count(),
+        insert: inserted.to_owned(),
     })
 }
 
@@ -152,9 +177,18 @@ impl TextEdit {
         let current = doc
             .text(obj)
             .map_err(|_| ActionError::Refused("the text is gone".into()))?;
+        self.apply_to(doc, obj, &current)
+    }
+
+    /// [`Self::apply_under`] when the caller already read `current`, the
+    /// text `obj` holds now: a large text is not read a second time.
+    ///
+    /// # Errors
+    /// As [`Self::apply_under`].
+    pub fn apply_to(&self, doc: &mut Doc, obj: &ObjId, current: &str) -> Result<(), ActionError> {
         let (at, delete, insert) = match self {
             Self::Splice { at, delete, insert } => (*at, *delete, insert.clone()),
-            Self::ReplaceText { text } => match splice_between(&current, text) {
+            Self::ReplaceText { text } => match splice_between(current, text) {
                 Some(Self::Splice { at, delete, insert }) => (at, delete, insert),
                 _ => return Ok(()),
             },
@@ -165,8 +199,8 @@ impl TextEdit {
                 "the text has {length} characters; the edit reaches past its end"
             )));
         }
-        let start = index(doc, &current, at);
-        let end = index(doc, &current, at.saturating_add(delete));
+        let start = index(doc, current, at);
+        let end = index(doc, current, at.saturating_add(delete));
         let removed = isize::try_from(end.saturating_sub(start))
             .map_err(|_| ActionError::Refused("the edit is too large".into()))?;
         doc.splice_text(obj, start, removed, &insert)?;
@@ -437,6 +471,32 @@ mod tests {
             })
         );
         assert_eq!(splice_between("same", "same"), None);
+    }
+
+    #[test]
+    fn byte_ends_land_where_character_ends_do() {
+        let atoms = [
+            "", "a", "é", "e\u{301}", "😀", "😁", "\u{100}", "\u{101}", "\n",
+        ];
+        for a in atoms {
+            for b in atoms {
+                for c in atoms {
+                    for d in atoms {
+                        let (left, right) = (format!("{a}{b}{c}"), format!("{a}{d}{c}"));
+                        let chars = |text: &str| text.chars().collect::<Vec<_>>();
+                        let (prefix, suffix) = common_ends(&chars(&left), &chars(&right));
+                        let (start, end) = common_text_ends(&left, &right);
+                        let (head, _) = left.split_at(start);
+                        let (_, tail) = left.split_at(left.len().saturating_sub(end));
+                        assert_eq!(
+                            (head.chars().count(), tail.chars().count()),
+                            (prefix, suffix),
+                            "{left:?} -> {right:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

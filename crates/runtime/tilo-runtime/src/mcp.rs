@@ -87,7 +87,17 @@ pub struct McpServer<H> {
     /// The content uploads this session has open; dropped with it, they
     /// store nothing.
     uploads: std::sync::Mutex<put::Uploads>,
+    /// The `tilo` tool's session: the references its answers showed, and the steps its
+    /// programs made, for `undo` and `history task`.
+    programs: std::sync::Mutex<agent::Programs>,
+    /// Where this door starts its task's tilolang host; `None` for a door that runs no
+    /// programs (one outside a desktop session).
+    task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
+    /// The program connection to the task's host, once its first program started it.
+    task: tokio::sync::Mutex<Option<agent::TaskLink>>,
 }
+
+pub use agent::{TaskHosts, TaskProgram};
 
 /// The tools a session offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -564,15 +574,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     /// One session of agent `agent_id`, which the host admitted itself into
-    /// `room` (a desktop's agent door, after the person said so). It acts as
-    /// that agent and nobody else: an agent holds no role of its own, so the
-    /// host's gate offers and runs only what the workspace grants it, and a
-    /// revoked membership ends both at once. Each session is its own fresh
-    /// execution, retired when the session drops.
+    /// `room` (a desktop's agent door, after `person` said so). It acts as
+    /// that agent, for the person who admitted it: the agent stays the
+    /// principal, and what it may do is the lesser of what the workspace
+    /// grants it and what the person may do, so a revoked membership ends
+    /// both at once. Each session is its own fresh execution, retired when
+    /// the session drops.
     #[must_use]
-    pub fn for_agent(host: H, room: String, agent_id: &str) -> Self {
+    pub fn for_agent(host: H, room: String, agent_id: &str, person: &str) -> Self {
         let caller = Caller::local_agent(agent_id)
             .in_room(room.clone())
+            .acting_for(person)
             .in_new_execution();
         Self::from_caller(host, room, format!("agent:{agent_id}"), caller)
             .with_surface(Surface::Agent)
@@ -627,7 +639,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
             surface: Surface::Classic,
             uploads: std::sync::Mutex::default(),
+            programs: std::sync::Mutex::default(),
+            task_hosts: None,
+            task: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Run the `tilo` tool's programs in task hosts `hosts` starts.
+    #[must_use]
+    pub fn with_task_hosts(mut self, hosts: Option<std::sync::Arc<dyn TaskHosts>>) -> Self {
+        self.task_hosts = hosts;
+        self
     }
     /// Offer the tools `surface` names.
     #[must_use]

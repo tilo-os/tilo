@@ -320,6 +320,15 @@ pub trait Model: Sized + 'static {
         serde_json::json!({})
     }
 
+    /// This value's type in the language-neutral vocabulary a surface
+    /// publishes ([`FieldType`](crate::FieldType)), declaring the records
+    /// and enums it names in `types`. The default describes no type: any
+    /// value.
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Any
+    }
+
     /// Read everything this value holds, for a field marked
     /// `#[model(whole)]`: a value read lazily (rich text reads its
     /// paragraphs as views ask for them) reads all of it, so every reader of
@@ -1085,6 +1094,46 @@ pub fn write_variant_field<T: Model>(
     value.store(doc, Slot::Key(obj, storage)).located(key)
 }
 
+/// [`read_variant_field`] of a field stored whole (`#[model(atom)]`).
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+#[doc(hidden)]
+pub fn read_variant_atom<T: crate::table::Atomic>(
+    doc: &Doc,
+    obj: &ObjId,
+    storage: &str,
+    key: &str,
+) -> Result<T, ModelError> {
+    let slot = match get_slot(doc, obj, storage)? {
+        Some(slot) => Some(slot),
+        None => get_slot(doc, obj, key)?,
+    };
+    let atom = crate::table::Run(T::ATOM);
+    match slot {
+        Some((value, id)) => atom.load(doc, &value, &id),
+        None => atom.missing(),
+    }
+    .located(key)
+}
+
+/// [`write_variant_field`] of a field stored whole (`#[model(atom)]`).
+///
+/// # Errors
+/// Returns [`ModelError`] located at `key`.
+#[doc(hidden)]
+pub fn write_variant_atom<T: crate::table::Atomic>(
+    doc: &mut Doc,
+    obj: &ObjId,
+    storage: &str,
+    key: &str,
+    value: &T,
+) -> Result<(), ModelError> {
+    crate::table::Run(T::ATOM)
+        .store(value, doc, Slot::Key(obj, storage))
+        .located(key)
+}
+
 /// The variant a data enum stored at `value` (the object `id`) names.
 ///
 /// # Errors
@@ -1185,6 +1234,10 @@ impl Model for bool {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "boolean"})
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Bool
+    }
     leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1227,6 +1280,10 @@ macro_rules! integer_model {
             crate::__own_table!($ty);
             fn value_schema() -> serde_json::Value {
                 serde_json::json!({"type": "integer"})
+            }
+            fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+                let _ = types;
+                crate::FieldType::Int
             }
             leaf_paths!();
             fn to_json(&self) -> serde_json::Value {
@@ -1280,6 +1337,10 @@ impl Model for f64 {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "number"})
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Float
+    }
     leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1330,6 +1391,10 @@ impl Model for f32 {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "number"})
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Float
+    }
     leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1373,6 +1438,10 @@ impl Model for String {
     crate::__own_table!(String);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "string"})
+    }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Text
     }
     leaf_paths!();
     #[inline(never)]
@@ -1532,6 +1601,10 @@ impl Model for Atom {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "string"})
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Text
+    }
     leaf_paths!();
     #[inline(never)]
     fn to_json(&self) -> serde_json::Value {
@@ -1568,6 +1641,10 @@ impl Model for uuid::Uuid {
     crate::__own_table!(uuid::Uuid);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "string", "format": "uuid"})
+    }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        let _ = types;
+        crate::FieldType::Text
     }
     leaf_paths!();
     #[inline(never)]
@@ -1608,6 +1685,9 @@ impl<T: Model> Model for Option<T> {
     fn value_schema() -> serde_json::Value {
         crate::schema::nullable(T::value_schema())
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Option(Box::new(T::field_type(types)))
+    }
     const SHAPE: crate::Shape = T::SHAPE;
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
@@ -1628,6 +1708,9 @@ impl<T: Model> Model for Box<T> {
     const SCALAR: bool = T::SCALAR;
     fn value_schema() -> serde_json::Value {
         T::value_schema()
+    }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        T::field_type(types)
     }
     const SHAPE: crate::Shape = T::SHAPE;
     const CHECKS: bool = T::CHECKS;
@@ -1758,6 +1841,9 @@ impl<T: Model> Model for Vec<T> {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "array", "items": T::value_schema()})
     }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::List(Box::new(T::field_type(types)))
+    }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
     const TABLE: &'static crate::table::ModelTable = &crate::table::VecOf::<T>::TABLE;
@@ -1773,6 +1859,9 @@ impl<T: Model, const N: usize> Settable for [T; N] {}
 impl<T: Model, const N: usize> Model for [T; N] {
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "array", "items": T::value_schema(), "minItems": N, "maxItems": N})
+    }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::List(Box::new(T::field_type(types)))
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;
@@ -1830,6 +1919,9 @@ impl<T: Model> Model for BTreeMap<String, T> {
     const SHAPE: crate::Shape = crate::Shape::Map(&T::SHAPE);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "object"})
+    }
+    fn field_type(types: &mut crate::TypeSet) -> crate::FieldType {
+        crate::FieldType::Map(Box::new(T::field_type(types)))
     }
     const CHECKS: bool = T::CHECKS;
     const OPS: bool = T::OPS;

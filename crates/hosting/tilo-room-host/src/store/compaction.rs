@@ -102,6 +102,7 @@ impl WorkspaceStore {
             let Some(author) = name
                 .to_str()
                 .and_then(|name| name.strip_suffix(&suffix))
+                // optional-decode: an entry not named `<author><suffix>` is not a lineage
                 .and_then(|author| hex::decode(author).ok())
                 .and_then(|author| <[u8; 32]>::try_from(author).ok())
             else {
@@ -134,6 +135,7 @@ impl WorkspaceStore {
             if let Some(channel) = name
                 .to_str()
                 .and_then(|name| name.split_once('-'))
+                // optional-decode: an entry not named `<author>-<channel>` is not a lineage
                 .and_then(|(_, channel)| hex::decode(channel).ok())
                 .and_then(|channel| <[u8; 32]>::try_from(channel).ok())
             {

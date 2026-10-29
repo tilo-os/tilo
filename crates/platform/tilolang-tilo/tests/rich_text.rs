@@ -166,7 +166,8 @@ fn two_writers_edits_with_references_merge_in_a_room() {
             tilolang_runtime::rich::resource_id(&reference).map(str::to_owned)
         })
         .collect();
-    assert_eq!(referred, [Some(task)]);
+    // The task was named by its older path; it is referred to by its id.
+    assert_eq!(referred, [Some(tilolang_runtime::value::flat_id(&task))]);
 }
 
 #[test]
@@ -480,7 +481,7 @@ fn a_post_about_a_task_only_ada_holds() -> (Room, String, String) {
         json!({"t": task}),
     );
     let posts = items(&ada, &meta, &root, "posts");
-    let post = format!("{root}/{}:{}", field_id(&meta, "Board", "posts"), posts[0]);
+    let post = format!("{root}/{}", posts[0]);
     // What was written still says the title: nothing rewrites the stored text.
     assert_eq!(
         body(&grace, &meta, &root, &posts[0]),

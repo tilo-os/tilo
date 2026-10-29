@@ -36,11 +36,7 @@ impl Names {
 
     /// Take the names presence reports now. Whether any changed.
     pub fn follow(&self, presence: &PresenceCtx) -> bool {
-        let mut names: HashMap<String, String> = presence
-            .names
-            .keys()
-            .map(|user| (user.0.clone(), presence.display_name(user)))
-            .collect();
+        let mut names: HashMap<String, String> = others(presence).into_iter().collect();
         if let Some(own) = presence.self_label() {
             names.insert(self.me.to_string(), own);
         }
@@ -58,36 +54,43 @@ impl Names {
         if let Some(name) = self.roster.borrow().names.get(id) {
             return name.clone();
         }
-        // A sample person a scenario named (`person("Mia")`) is called what it named them.
-        if let Some(name) = id.strip_prefix("scenario:") {
-            return name.to_owned();
-        }
-        if let Some(kind) = id.strip_prefix("agent:") {
-            return format!("{} (agent)", ui::format::capitalize_first(kind));
-        }
         if &*self.me == id {
-            return ui::local_identity::bound()
-                .map(|identity| identity.display_name.trim().to_owned())
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| "You".to_owned());
+            return own_name();
         }
-        short(id)
+        tilolang_tilo::names::unnamed(id)
     }
+}
+
+/// What this device calls its person, when presence does not say.
+fn own_name() -> String {
+    ui::local_identity::bound()
+        .map(|identity| identity.display_name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "You".to_owned())
+}
+
+/// The room's other participants as presence names them, by id.
+fn others(presence: &PresenceCtx) -> Vec<(String, String)> {
+    let mut others: Vec<(String, String)> = presence
+        .names
+        .keys()
+        .map(|user| (user.0.clone(), presence.display_name(user)))
+        .collect();
+    others.sort();
+    others
+}
+
+/// What a window tells an instance running out of its process it calls people
+/// (`ToApp::Names`): its own person, and the others by id.
+#[must_use]
+pub fn said(presence: &PresenceCtx) -> (String, Vec<(String, String)>) {
+    let me = presence.self_label().unwrap_or_else(own_name);
+    (me, others(presence))
 }
 
 impl NameHost for Names {
     fn name(&self, who: &Principal) -> String {
         self.label(&who.0)
-    }
-}
-
-/// An id no roster named, short enough to read: a long id keeps its first characters.
-fn short(id: &str) -> String {
-    const KEPT: usize = 8;
-    if id.chars().count() <= KEPT * 2 {
-        id.to_owned()
-    } else {
-        id.chars().take(KEPT).collect()
     }
 }
 

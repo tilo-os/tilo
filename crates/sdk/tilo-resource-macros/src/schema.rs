@@ -454,9 +454,96 @@ fn enum_schema(
     }))
 }
 
+/// The fields of a struct or variant as `(json name, field type fn)`
+/// pairs: the fields serde writes, a tuple's by position.
+fn typed_fields(fields: &Fields, rule: Option<&String>) -> syn::Result<Vec<Tokens>> {
+    let krate = krate();
+    let mut out = Vec::new();
+    for (index, field) in fields.iter().enumerate() {
+        let options = item_options(&field.attrs, false)?;
+        if options.skip {
+            continue;
+        }
+        let name = match &field.ident {
+            Some(ident) => json_name(ident, &options, rule)?,
+            None => index.to_string(),
+        };
+        let ty = &field.ty;
+        out.push(quote!((
+            #name,
+            <#ty as #krate::JsonSchema>::field_type
+                as fn(&mut #krate::TypeSet) -> #krate::FieldType,
+        )));
+    }
+    Ok(out)
+}
+
+/// The body of the derived `JsonSchema::field_type`: a struct with named
+/// fields is a record, a newtype or transparent struct is its field's type,
+/// an enum is an enum with its cases' fields, anything else no type.
+fn field_type_body(input: &DeriveInput, options: &ContainerOptions) -> syn::Result<Tokens> {
+    let krate = krate();
+    let name = input.ident.to_string();
+    let doc = crate::first_doc_line(&input.attrs);
+    let rule = options.rename_all.as_ref();
+    Ok(match &input.data {
+        Data::Struct(data) => {
+            let kept: Vec<&syn::Field> = data
+                .fields
+                .iter()
+                .filter(|field| !item_options(&field.attrs, false).is_ok_and(|o| o.skip))
+                .collect();
+            match (&data.fields, kept.as_slice()) {
+                (Fields::Named(_), _) if !options.transparent => {
+                    let fields = typed_fields(&data.fields, rule)?;
+                    quote!(#krate::surface::record_of(
+                        types,
+                        ::core::any::type_name::<Self>(),
+                        #name,
+                        #doc,
+                        &[#(#fields),*],
+                    ))
+                }
+                (_, [field]) if options.transparent || data.fields.len() == 1 => {
+                    let ty = &field.ty;
+                    quote!(<#ty as #krate::JsonSchema>::field_type(types))
+                }
+                _ => quote!({
+                    let _ = types;
+                    #krate::FieldType::Any
+                }),
+            }
+        }
+        Data::Enum(data) => {
+            let mut cases = Vec::new();
+            for variant in &data.variants {
+                let variant_options = item_options(&variant.attrs, true)?;
+                if variant_options.skip {
+                    continue;
+                }
+                let case = json_name(&variant.ident, &variant_options, rule)?;
+                let fields = typed_fields(&variant.fields, variant_options.rename_all.as_ref())?;
+                cases.push(quote!((#case, "", &[#(#fields),*])));
+            }
+            quote!(#krate::surface::enum_type(
+                types,
+                ::core::any::type_name::<Self>(),
+                #name,
+                #doc,
+                &[#(#cases),*],
+            ))
+        }
+        Data::Union(_) => quote!({
+            let _ = types;
+            #krate::FieldType::Any
+        }),
+    })
+}
+
 pub fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
     let krate = krate();
     let options = container_options(&input.attrs)?;
+    let field_type = field_type_body(input, &options)?;
     let doc = plain_doc(&input.attrs);
     let body = match &input.data {
         Data::Struct(data) => {
@@ -501,6 +588,10 @@ pub fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 #krate::schema::build(const {
                     &#krate::schema::TypeSchema { doc: #doc, body: #body }
                 })
+            }
+
+            fn field_type(types: &mut #krate::TypeSet) -> #krate::FieldType {
+                #field_type
             }
         }
     })

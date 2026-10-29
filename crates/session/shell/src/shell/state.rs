@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
+mod arrangement;
 mod local_app_records;
 mod personal_apps;
 mod room_binding;

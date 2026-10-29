@@ -41,7 +41,7 @@ pub(crate) use shortcuts::action_shortcut;
 pub(crate) use strips::valid_strip_name;
 use strips::{
     STRIP_CREATE_PARAMS, STRIP_MOVE_PARAMS, STRIP_REMOVE_PARAMS, STRIP_RENAME_PARAMS, create_strip,
-    move_strip, remove_strip, rename_strip,
+    move_strip, remove_strip, rename_strip, show_canvas, show_strips,
 };
 use tabs::{
     TAB_MOVE_TO_WORKSPACE_PARAMS, TAB_RENAME_PARAMS, move_focused_tab_to_workspace,

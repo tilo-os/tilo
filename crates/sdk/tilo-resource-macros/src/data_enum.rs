@@ -24,7 +24,7 @@ use quote::{format_ident, quote};
 use syn::spanned::Spanned;
 use syn::{DataEnum, DeriveInput, Fields, Ident, Type};
 
-use crate::{field_options, krate, snake_case};
+use crate::{field_options, first_doc_line, krate, snake_case};
 
 struct Field {
     /// How the variant's pattern and constructor name it: an identifier or
@@ -37,6 +37,8 @@ struct Field {
     storage: String,
     ty: Type,
     skip: bool,
+    /// Stored whole (`#[model(atom)]`): last writer wins.
+    atom: bool,
 }
 
 struct Variant {
@@ -104,6 +106,7 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
                 key,
                 ty: field.ty.clone(),
                 skip: options.skip,
+                atom: options.atom,
             });
         }
         out.push(Variant {
@@ -235,7 +238,12 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             } else {
                 let field_key = &field.key;
                 let storage = &field.storage;
-                quote!(#model::read_variant_field(doc, id, #storage, #field_key)?)
+                let read = if field.atom {
+                    quote!(read_variant_atom)
+                } else {
+                    quote!(read_variant_field)
+                };
+                quote!(#model::#read(doc, id, #storage, #field_key)?)
             }
         });
         quote!(#key => ::core::result::Result::Ok(#built),)
@@ -247,6 +255,13 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
         let keys = variant.stored().map(|field| &field.key);
         let storage: Vec<&String> = variant.stored().map(|field| &field.storage).collect();
         let bindings = variant.stored().map(|field| &field.binding);
+        let writes = variant.stored().map(|field| {
+            if field.atom {
+                quote!(write_variant_atom)
+            } else {
+                quote!(write_variant_field)
+            }
+        });
         let unused = variant
             .fields
             .iter()
@@ -256,7 +271,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             #pattern => {
                 #(let _ = #unused;)*
                 let __obj = #model::variant_map(doc, slot, #key, &[#(#storage),*])?;
-                #(#model::write_variant_field(doc, &__obj, #storage, #keys, #bindings)?;)*
+                #(#model::#writes(doc, &__obj, #storage, #keys, #bindings)?;)*
                 ::core::result::Result::Ok(())
             }
         }
@@ -273,6 +288,21 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
             )
         }
     });
+
+    let cases = variants.iter().map(|variant| {
+        let key = &variant.key;
+        let keys = variant.stored().map(|field| &field.key);
+        let types = variant.stored().map(|field| &field.ty);
+        quote! {
+            (#key, "", &[#((
+                #keys,
+                <#types as #krate::Model>::field_type
+                    as fn(&mut #krate::TypeSet) -> #krate::FieldType,
+            )),*])
+        }
+    });
+    let type_name = name.to_string();
+    let type_doc = first_doc_line(&input.attrs);
 
     let checks = variants.iter().map(|variant| {
         let pattern = variant.pattern();
@@ -384,6 +414,16 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
 
             fn value_schema() -> #krate::__private::serde_json::Value {
                 #krate::schema::one_of(::std::vec![#(#schemas),*])
+            }
+
+            fn field_type(types: &mut #krate::TypeSet) -> #krate::FieldType {
+                #krate::surface::enum_type(
+                    types,
+                    ::core::any::type_name::<Self>(),
+                    #type_name,
+                    #type_doc,
+                    &[#(#cases),*],
+                )
             }
 
             fn check(&self) -> ::core::result::Result<(), #krate::Refusal> {

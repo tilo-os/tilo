@@ -30,6 +30,7 @@ use ui::widget::{DescribedList, NavPane, NavShell, Widget as _};
 
 use super::*;
 
+mod mail;
 mod opening;
 
 /// The text a value of the runtime holds.
@@ -486,6 +487,31 @@ fn first_input(node: &UiNode) -> Option<&UiNode> {
     node.children.iter().find_map(first_input)
 }
 
+/// What a person types into a rich-text input: one paragraph of `text`.
+fn typed(text: &str) -> tilo_render_protocol::patch::rich::RichText {
+    tilo_render_protocol::patch::rich::RichText {
+        blocks: vec![tilo_render_protocol::patch::rich::Block {
+            kind: "paragraph".to_owned(),
+            text: text.to_owned(),
+            ..Default::default()
+        }],
+        embeds: Vec::new(),
+    }
+}
+
+/// The composer of a channel: its rich-text input and its send button.
+fn composer(shell: &UiNode) -> (String, String) {
+    let input = node_with(shell, "ui.RichInput", "", "")
+        .expect("the composer")
+        .key
+        .clone();
+    let send = node_with(shell, "ui.Button", "label", "Send")
+        .expect("the composer's send")
+        .key
+        .clone();
+    (input, send)
+}
+
 /// The children of the named slot `name` of a component node.
 fn slot_of<'a>(node: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
     node.children
@@ -684,35 +710,83 @@ fn what_an_agent_or_a_script_creates_through_the_door_moves_nobodys_view() {
 }
 
 #[test]
-fn a_new_conversation_shows_the_groups_avatar_until_someone_writes() {
-    let mut room = Room::new("chat");
-    room.header_action("New chat");
-    let items = room.items();
-    assert_eq!(items.len(), 1);
-    let ItemRow::Row(row) = &items[0].1.row else {
-        panic!("a conversation's row is a list row");
-    };
-    let avatar = row
-        .avatar
-        .as_ref()
-        .expect("a conversation always has an avatar");
-    assert_eq!(
-        avatar.glyph,
-        Some(ui::icons::Icon::Users),
-        "before a message, its group's"
-    );
-    assert_eq!(avatar.name.as_deref(), Some("New chat"));
-    let mut seeded = Room::seeded("chat");
-    for (_, item) in seeded.items() {
-        let ItemRow::Row(row) = item.row else {
-            panic!("a conversation's row is a list row");
-        };
-        if row.secondary.as_deref() == Some("No messages yet") {
-            continue;
+fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_its_category() {
+    /// The labels of the navigation items under `node`.
+    fn places(node: &UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.NavItem" {
+            out.push(tilo_ui_host::reconcile::display(&node.props["label"]));
         }
-        let avatar = row.avatar.expect("after a message, its last author's");
-        assert!(avatar.who.is_some(), "a participant's avatar: {avatar:?}");
+        for child in &node.children {
+            places(child, out);
+        }
     }
+    /// The sections of the navigation list under `node`: each heading and its places.
+    fn sections(node: &UiNode, out: &mut Vec<(String, Vec<String>)>) {
+        if node.kind == "ui.NavSection" {
+            let mut held = Vec::new();
+            places(node, &mut held);
+            out.push((tilo_ui_host::reconcile::display(&node.props["title"]), held));
+            return;
+        }
+        for child in &node.children {
+            sections(child, out);
+        }
+    }
+    let mut room = Room::new("chat");
+    assert!(
+        node_with(
+            &room.composed(),
+            "ui.EmptyState",
+            "title",
+            "No channels yet"
+        )
+        .is_some(),
+        "an empty workspace says so"
+    );
+    room.header_action("New channel");
+    assert_eq!(room.items_of("so.tilo.lang.chat", "items"), 1);
+    let shell = room.composed();
+    let item = node_with(&shell, "ui.NavItem", "label", "new-channel")
+        .expect("the new channel is in the sidebar, no message written");
+    assert_eq!(
+        item.props
+            .get("icon")
+            .map(tilo_ui_host::reconcile::display)
+            .as_deref(),
+        Some("hash"),
+        "with the channels' glyph"
+    );
+    let seeded = Room::seeded("chat");
+    let shell = seeded.composed();
+    let mut all = Vec::new();
+    places(&shell, &mut all);
+    let mut grouped = Vec::new();
+    sections(&shell, &mut grouped);
+    assert_eq!(
+        grouped,
+        vec![
+            (
+                "Team".to_owned(),
+                vec![
+                    "design".to_owned(),
+                    "release".to_owned(),
+                    "planning".to_owned()
+                ]
+            ),
+            (
+                "Social".to_owned(),
+                vec!["weekend".to_owned(), "books".to_owned()]
+            ),
+        ],
+        "each category's channels under its heading"
+    );
+    assert_eq!(
+        all,
+        [
+            "general", "random", "design", "release", "planning", "weekend", "books"
+        ],
+        "the channels outside any category first"
+    );
 }
 
 #[test]
@@ -833,7 +907,7 @@ fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
         .value
         .expect("the catalogue is the answer")
         .to_string();
-    assert!(text.contains("so.tilo.lang.letters"), "{text}");
+    assert!(text.contains("test.letters"), "{text}");
 }
 
 #[test]
@@ -884,7 +958,7 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
     let mut desk = Room::seeded("letters");
     let send = Room::surveyed()
         .into_iter()
-        .find(|d| d.resource_kind == "tl.so.tilo.lang.letters.Draft" && d.action_label == "Send")
+        .find(|d| d.resource_kind == "tl.test.letters.Draft" && d.action_label == "Send")
         .expect("a draft publishes its send");
     desk.applies_as(
         Some(task()),
@@ -906,7 +980,7 @@ fn the_verbs_of_items_are_published_on_the_door_and_an_agent_calls_them() {
 /// The first draft on the desk of a letters room.
 fn first_draft(room: &Room) -> tilolang_tilo::runtime::ResourceRef {
     let host = room.window.current_host().expect("the host started");
-    let desk = host.root_of("so.tilo.lang.letters").unwrap();
+    let desk = host.root_of("test.letters").unwrap();
     let RtValue::List(drafts) = host.runtime().read(&desk, "drafts").unwrap() else {
         panic!("the desk lists its drafts");
     };
@@ -1059,10 +1133,10 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
 /// how many of the todos are done.
 fn today_room() -> (Room, usize) {
     let mut room = Room::new("today");
-    room.seed("todo");
+    room.seed("tasks");
     room.seed("notes");
     let host = room.window.current_host().unwrap();
-    let list = host.root_of("so.tilo.lang.todo").unwrap();
+    let list = host.root_of("so.tilo.lang.tasks").unwrap();
     let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
@@ -1081,7 +1155,7 @@ fn today_room() -> (Room, usize) {
 
 fn cleanup_args(room: &Room) -> Json {
     let host = room.window.current_host().unwrap();
-    let list = host.root_of("so.tilo.lang.todo").unwrap().id_string();
+    let list = host.root_of("so.tilo.lang.tasks").unwrap().id_string();
     let notebook = host.root_of("so.tilo.lang.notes").unwrap().id_string();
     serde_json::json!({
         "flow": "so.tilo.lang.today.morning_cleanup",
@@ -1110,7 +1184,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "room",
         "agent-task:7",
         (
-            &agent_answers::AnswerScope::app("so.tilo.lang.todo"),
+            &agent_answers::AnswerScope::app("so.tilo.lang.tasks"),
             policy::ActionKind::Undoable,
         ),
         policy::Answer::Ask,
@@ -1120,7 +1194,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     room.window
         .instance
         .set_standing(Rc::new(move || Some(standing.clone())));
-    let todos = room.items_of("so.tilo.lang.todo", "items");
+    let todos = room.items_of("so.tilo.lang.tasks", "items");
     let notes = room.items_of("so.tilo.lang.notes", "items");
     let args = cleanup_args(&room);
     let waiting = room
@@ -1134,7 +1208,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "the window asks the person, as for a press"
     );
     assert_eq!(
-        room.items_of("so.tilo.lang.todo", "items"),
+        room.items_of("so.tilo.lang.tasks", "items"),
         todos,
         "nothing went while it waits"
     );
@@ -1151,7 +1225,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     assert_eq!(finished["state"], "done", "{finished}");
     assert_eq!(approvals, done, "one approval per removal");
     assert_eq!(
-        room.items_of("so.tilo.lang.todo", "items"),
+        room.items_of("so.tilo.lang.tasks", "items"),
         todos - done,
         "the done ones went, once"
     );
@@ -1165,17 +1239,17 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "it completes once"
     );
     room.settle();
-    assert_eq!(room.items_of("so.tilo.lang.todo", "items"), todos - done);
+    assert_eq!(room.items_of("so.tilo.lang.tasks", "items"), todos - done);
     assert_eq!(room.items_of("so.tilo.lang.notes", "items"), notes + 1);
 }
 
 #[test]
-fn search_finds_chat_messages_and_a_hit_opens_their_conversation() {
+fn search_finds_chat_messages_and_a_hit_opens_their_channel() {
     let mut room = Room::seeded("chat");
     let entries = crate::resource::search_entries();
     let hit = entries
         .iter()
-        .find(|entry| entry.title.contains("meet at the station"))
+        .find(|entry| entry.title.contains("third floor"))
         .unwrap_or_else(|| panic!("a message is found: {entries:#?}"));
     // The persistent index keeps short fields, never a prose body.
     assert!(
@@ -1185,17 +1259,22 @@ fn search_finds_chat_messages_and_a_hit_opens_their_conversation() {
             .all(|(text, _)| text.chars().count() <= 80)
     );
     let anchor = hit.anchor.clone().expect("a hit names its resource");
+    let before = format!("{:?}", room.window.instance().detail_tree());
+    assert!(
+        !before.contains("Coffee machine on the third floor is fixed."),
+        "the scenario opens another channel"
+    );
     room.window.open_requests().borrow_mut().push(anchor);
     room.settle();
     // The messages are rows of the transcript: what the app rendered of them.
-    let thread = room
+    let channel = room
         .window
         .instance()
         .detail_tree()
-        .expect("the hit opened its conversation");
+        .expect("the hit opened its channel");
     assert!(
-        format!("{thread:?}").contains("Let's meet at the station at ten."),
-        "the conversation shows the message: {thread:#?}"
+        format!("{channel:?}").contains("Coffee machine on the third floor is fixed."),
+        "the channel shows the message: {channel:#?}"
     );
 }
 
@@ -1243,7 +1322,7 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
 // its row's menu.
 #[test]
 fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() {
-    let mut room = Room::seeded("todo");
+    let mut room = Room::seeded("tasks");
     assert!(
         room.window.detail_target().is_some(),
         "the scenario's item is shown"
@@ -1252,8 +1331,8 @@ fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() 
     assert!(
         !header
             .iter()
-            .any(|label| label == "Check" || label == "Uncheck"),
-        "the Done switch stands for Check: {header:?}"
+            .any(|label| label == "Complete" || label == "Reopen"),
+        "the Done switch stands for Complete: {header:?}"
     );
     assert!(
         header.iter().any(|label| label == "Remove"),
@@ -1271,7 +1350,7 @@ fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() 
     assert!(
         menus
             .iter()
-            .any(|label| label == "Check" || label == "Uncheck"),
+            .any(|label| label == "Complete" || label == "Reopen"),
         "and in its row's menu: {menus:?}"
     );
 }
@@ -1292,7 +1371,7 @@ fn a_board_scenario_shows_the_apps_it_attaches_filled_by_their_own_scenarios() {
     walk(&tree, &mut cards);
     assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
     assert!(
-        room.items_of("so.tilo.lang.todo", "items") >= 12,
+        room.items_of("so.tilo.lang.tasks", "items") >= 12,
         "the list holds its scenario"
     );
     assert!(
@@ -1422,7 +1501,7 @@ fn a_change_to_an_item_reaches_its_shown_row() {
 
 #[test]
 fn a_rows_checkbox_shows_whether_its_item_is_done_from_its_first_read() {
-    let mut room = Room::staged("todo", "a saturday list");
+    let mut room = Room::staged("tasks", "a busy week");
     let checked: Vec<bool> = room
         .items()
         .into_iter()
@@ -1513,7 +1592,7 @@ fn a_change_on_a_canvas_replaces_the_card_it_changed_and_keeps_every_other_widge
 
     // Ticking a todo off changes what the todo card counts and previews, and nothing else.
     let host = room.window.current_host().unwrap();
-    let list = host.root_of("so.tilo.lang.todo").unwrap();
+    let list = host.root_of("so.tilo.lang.tasks").unwrap();
     let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
@@ -1615,14 +1694,9 @@ fn a_conversation_is_a_transcript_whose_messages_are_built_as_it_shows_them() {
     // Enough messages that the transcript shows only the last of them.
     let sent = 80;
     for n in 0..sent {
-        let shell = room.composed();
-        let input = first_input(&shell).expect("the composer").key.clone();
-        let button = node_with(&shell, "ui.Button", "label", "Send")
-            .expect("the composer's send")
-            .key
-            .clone();
+        let (input, button) = composer(&room.composed());
         room.window
-            .act(UiEvent::Edit(input, format!("Message {n}")));
+            .act(UiEvent::EditRich(input, typed(&format!("Message {n}"))));
         room.settle();
         room.window
             .act(UiEvent::Fire(button, "press".to_owned(), None));
@@ -1661,7 +1735,7 @@ fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_
             marks(child, found);
         }
     }
-    // Weekend plans: Mia twice, Leo, you, the next day Ada twice.
+    // The design channel: Mia twice, Leo, you, the next day Ada and Mia.
     let mut room = Room::seeded("chat");
     for _ in 0..3 {
         room.lay_out();
@@ -1684,8 +1758,8 @@ fn a_transcript_names_each_run_of_one_authors_messages_once_and_marks_where_the_
     marks(transcript, &mut found);
     assert_eq!(
         found,
-        (2, 4, 2),
-        "a divider for each of the two days, an avatar for each of the four runs, and the room of one under each message that continues a run"
+        (2, 5, 1),
+        "a divider for each of the two days, an avatar for each of the five runs, and the room of one under the message that continues a run"
     );
 }
 
@@ -1942,7 +2016,7 @@ fn a_later_build_that_changes_a_field_type_starts_over_on_the_same_data() {
 #[test]
 fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
     use ui::widget::Widget as _;
-    let mut room = Room::seeded("todo");
+    let mut room = Room::seeded("tasks");
     let (key, _) = room.rows().remove(0);
     room.activate(&key);
     let detail = room.window.detail_tree().expect("the item is shown");
@@ -1976,7 +2050,7 @@ fn a_keystroke_repaints_its_field_not_the_window() {
     // The item's column slides in: what a keystroke repaints is asked of the
     // window at rest.
     let _settled = ui::motion::testing::settled();
-    let mut room = Room::seeded("todo");
+    let mut room = Room::seeded("tasks");
     let (key, _) = room.rows().remove(0);
     room.activate(&key);
     let detail = room.window.detail_tree().expect("the item is shown");
@@ -2061,21 +2135,35 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
     assert_eq!(cards.len(), 3, "the todo list, the notebook and the chats");
     assert_eq!(
         text(cards[0], "title"),
-        "Saturday",
+        "Tasks",
         "a card is headed by its resource's title"
     );
     let mut shown = Vec::new();
+    let mut talks = Vec::new();
     for card in &cards {
         assert!(
             !text(card, "title").is_empty(),
             "every card has a title: {card:?}"
         );
-        let mut rows = Vec::new();
-        walk(card, "ui.ListRow", &mut rows);
         let Some(Value::Int(count)) = card.props.get("count") else {
             panic!("every card counts what it lists: {card:?}");
         };
         let preview = usize::try_from(*count).unwrap().min(5);
+        let mut rows = Vec::new();
+        walk(card, "ui.ListRow", &mut rows);
+        if text(card, "title") == "Chat" {
+            // The chat's channels and categories: a button that opens each channel outside a
+            // category, and each category's name.
+            let mut buttons = Vec::new();
+            walk(card, "ui.Button", &mut buttons);
+            let mut captions = Vec::new();
+            walk(card, "ui.Text", &mut captions);
+            talks.extend(buttons.iter().map(|button| text(button, "label")));
+            talks.extend(captions.iter().map(|caption| text(caption, "value")));
+            assert!(rows.is_empty(), "{rows:?}");
+            assert_eq!(talks.len(), preview, "a card shows its first entries: Chat");
+            continue;
+        }
         assert_eq!(
             rows.len(),
             preview,
@@ -2092,6 +2180,11 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
         shown.iter().any(|title| title == "Buy oat milk and eggs"),
         "the open todos are the todo card's rows: {shown:?}"
     );
+    assert_eq!(
+        talks,
+        ["# general", "# random", "Team", "Social"],
+        "the chat card's entries"
+    );
     // And the window draws them: a header and a row widget for each.
     let widgets = content_widgets(&mut room);
     let named = |name: &str| widgets.iter().filter(|(_, n)| n == name).count();
@@ -2102,27 +2195,18 @@ fn todays_cards_show_their_resources_title_count_and_first_rows() {
 #[test]
 fn a_send_pressed_in_the_frame_of_the_last_keystroke_sends_it_too() {
     let mut room = Room::seeded("chat");
-    let shell = room.composed();
-    let input = first_input(&shell).expect("the composer").key.clone();
-    let send = node_with(&shell, "ui.Button", "label", "Send")
-        .expect("the composer's send")
-        .key
-        .clone();
+    let (input, send) = composer(&room.composed());
     room.window
-        .act(UiEvent::Edit(input.clone(), "See you at noo".to_owned()));
+        .act(UiEvent::EditRich(input.clone(), typed("See you at noo")));
     room.settle();
     // The last keystroke and the press go to the app in one batch, before the view runs again.
     room.window
-        .act(UiEvent::Edit(input, "See you at noon".to_owned()));
+        .act(UiEvent::EditRich(input, typed("See you at noon")));
     room.window
         .act(UiEvent::Fire(send, "press".to_owned(), None));
     room.settle();
     let host = room.window.current_host().expect("the host started");
-    let conversation = room
-        .window
-        .detail_target()
-        .expect("the conversation")
-        .clone();
+    let channel = room.window.detail_target().expect("the channel").clone();
     let items = |target: &ResourceRef, field: &str| match host.runtime().read(target, field) {
         Ok(RtValue::List(items)) => items
             .into_iter()
@@ -2133,10 +2217,12 @@ fn a_send_pressed_in_the_frame_of_the_last_keystroke_sends_it_too() {
             .collect::<Vec<_>>(),
         other => panic!("{field} is a collection: {other:?}"),
     };
-    let last = items(&conversation, "messages").pop().expect("a message");
-    let part = items(&last, "parts").remove(0);
+    let last = items(&channel, "messages").pop().expect("a message");
+    let RtValue::Rich(body) = host.runtime().read(&last, "body").unwrap() else {
+        panic!("a message's body is rich text");
+    };
     assert_eq!(
-        rt_text(&host.runtime().read(&part, "body").unwrap()),
+        body.written_text(),
         "See you at noon",
         "the message has the keystroke typed in the frame of the press"
     );

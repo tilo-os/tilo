@@ -10,7 +10,9 @@
 //! - **Actions:** the instance publishes the app's resources and actions on its connection, as
 //!   the toolkit publishes an app's ([`tilo_actions::door::survey`], deltas through
 //!   [`SurfacePublication`]), and runs what the broker delivers: an action the broker admitted for
-//!   its invoker is built through the published spec and applied as that invoker's step.
+//!   its invoker is built through the published spec and applied as that invoker's step. It
+//!   offers an action directory on the connection too, answering it from what it published
+//!   ([`PublishedDirectory`]): what makes the instance one the door and agents can browse.
 //! - **What every app publishes:** on its app's resource the instance publishes the history
 //!   verbs (Undo, Redo, History, ...: `collaboration::history_source::verbs`), `read`
 //!   (`tilo_resource::read`) and "Show this window" (`tilo_actions::remote::activate_spec`), and
@@ -25,6 +27,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use collaboration::action_directory::PublishedDirectory;
 use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use collaboration::{CollabEvent, CollabRequest, SurfacePublication};
 use tilo_actions::{
@@ -44,7 +47,6 @@ use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
     Caller, Committer, Planner, Publications, host_resource, publish_package,
 };
-use tilolang_tilo::runtime::{NameHost, Principal};
 use tilolang_tilo::{HostEffect, OpenEffect};
 
 use crate::phrases::Phrases;
@@ -75,6 +77,10 @@ pub struct Spec {
     /// The participant at the window.
     pub person: String,
 }
+
+/// What a [`Surface`]'s resources are built from: the published records' revision and the
+/// loaded packages.
+type SurfaceInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>);
 
 /// What the instance publishes on its connection: the room's records with their actions, kept up
 /// to date change by change.
@@ -116,12 +122,31 @@ impl Surface {
             .update(&self.host, &self.planner);
     }
 
+    /// What [`Self::resources`] is built from, besides what never changes for this surface: the
+    /// published records' revision and the loaded packages.
+    fn inputs(&self) -> SurfaceInputs {
+        (
+            self.publications.borrow().revision(),
+            self.host
+                .packages()
+                .into_iter()
+                .map(|package| package.id)
+                .collect(),
+        )
+    }
+
     /// Every resource the room's packages hold, each with its actions; the host's own resource;
     /// and each package's actions that take no record, the instance's own app's with what every
     /// app publishes. Built now, so an invocation resolves against what the record holds now.
     fn resources(&self) -> Vec<ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
-        out.extend(self.publications.borrow().trees().values().cloned());
+        out.extend(
+            self.publications
+                .borrow()
+                .trees()
+                .values()
+                .map(|tree| (**tree).clone()),
+        );
         for package in self.host.packages() {
             let mut resource = publish_package(&package.meta, &self.planner);
             if package.meta.app == self.app {
@@ -211,15 +236,6 @@ impl Platform for HostPlatform {
     }
 }
 
-/// A principal as the room names them: by the id their changes carry.
-struct ById;
-
-impl NameHost for ById {
-    fn name(&self, who: &Principal) -> String {
-        who.0.clone()
-    }
-}
-
 /// Where an instance keeps what it keeps: its room record's on-disk copy and its indexes, under
 /// its package's directory in the host's storage.
 pub struct Kept {
@@ -239,6 +255,15 @@ pub struct Hosted {
     surface: SurfaceSlot,
     /// What the broker holds of the instance's surface, and the descriptors it was built from.
     published: Option<(Vec<ActionDescriptor>, SurfacePublication)>,
+    /// The directory the instance answers its connection's directory requests from: what it
+    /// last published, browsable by level and name, as the door and agents read it.
+    directory: PublishedDirectory,
+    /// Whether labels moved since [`Self::directory`] was built ([`Self::relabel`]): it is
+    /// built again when it is next asked, not on every keystroke.
+    directory_behind: bool,
+    /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
+    /// they are the same, a turn publishes without building anything.
+    published_from: Option<(Rc<Surface>, SurfaceInputs)>,
     registry: ActionRegistry,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
@@ -293,23 +318,30 @@ impl Hosted {
             wake,
             surface: Rc::clone(&surface),
         };
-        let instance = Instance::new(
+        let mut instance = Instance::new(
             Config {
                 app: spec.app.clone(),
                 me: spec.person.clone(),
                 mode: Mode::Live,
                 device: None,
-                index_dir: kept
-                    .indexes
-                    .as_ref()
-                    .map(|indexes| tilolang_tilo::index::room_dir(indexes, &spec.room)),
+                index_dir: kept.indexes.as_ref().map(|indexes| {
+                    tilolang_tilo::index::record_dir(
+                        indexes,
+                        &spec.room,
+                        record.route().record.as_deref(),
+                    )
+                }),
                 record_loader: None,
                 sink: None,
             },
             Rc::new(platform),
-            Rc::new(ById),
+            // People by what the window calls them, once it said (`ToApp::Names`).
+            Rc::new(tilolang_tilo::names::Unnamed),
             window,
         );
+        // The device that governs the room is its records' origin: the package's migrations
+        // run there, once.
+        instance.set_origin(record.governs());
         let registry = ActionRegistry::with(tilolang_tilo::instance::room::register);
         Self {
             spec,
@@ -319,6 +351,9 @@ impl Hosted {
             record,
             surface,
             published: None,
+            directory: PublishedDirectory::default(),
+            directory_behind: false,
+            published_from: None,
             registry,
             identity: None,
         }
@@ -358,6 +393,23 @@ impl Hosted {
         &self.record
     }
 
+    /// The package the instance runs.
+    #[must_use]
+    pub fn bundle(&self) -> &Bundle {
+        &self.bundle
+    }
+
+    /// Keep the package's types with an origin in step with `origin`'s service.
+    pub fn add_origin(&mut self, origin: tilolang_tilo::origin::SharedOrigin) {
+        self.instance.add_origin(origin);
+    }
+
+    /// Run the package's scenario `scenario` in the instance on its next frame, as a capture
+    /// stages one: its changes are the person's steps on the instance's record.
+    pub fn stage(&mut self, scenario: &str) {
+        self.instance.stage(Some(scenario));
+    }
+
     /// One frame: what the room sent taken in, the runtime brought up to date with the record,
     /// what the person did run, what was planned committed and sent, what the broker delivered
     /// run, and the surface published. Whether anything changed.
@@ -385,27 +437,91 @@ impl Hosted {
             changed |= self.delivered(event);
         }
         self.publish();
+        self.answer_directory();
         changed
     }
 
-    /// Run what the broker delivered on the instance's connection.
-    fn delivered(&mut self, event: CollabEvent) -> bool {
-        let CollabEvent::Invocation {
-            id,
-            invocation,
-            resource,
-            action,
-            argument,
-            actor,
-            context,
-        } = event
+    /// Offer the instance's action directory on its connection, once it is connected, and
+    /// answer what was asked of it since the last frame from what the instance published.
+    fn answer_directory(&mut self) {
+        let manager = self.record.manager_mut();
+        manager.publish_action_directory(self.spec.app.clone());
+        let requests = manager.take_action_directory_requests();
+        if !requests.is_empty() && self.directory_behind {
+            self.catch_up_directory();
+        }
+        for request in requests {
+            self.directory.answer(request);
+        }
+    }
+
+    /// Build the directory again from what the instance publishes now, after labels moved.
+    fn catch_up_directory(&mut self) {
+        self.directory_behind = false;
+        let (Some(surface), Some((descriptors, _))) =
+            (self.surface.borrow().clone(), self.published.as_ref())
         else {
-            return false;
+            return;
+        };
+        self.directory.publish(&surface.resources(), descriptors);
+    }
+
+    /// Run what the broker delivered on the instance's connection. Every event that waits on an
+    /// answer from the instance is answered: an invocation with its outcome, a handoff step with
+    /// what the host does of it. The rest says something the instance does not keep (presence,
+    /// cursors, the room's context, results of requests it never makes).
+    fn delivered(&mut self, event: CollabEvent) -> bool {
+        let (id, invocation, resource, action, argument, actor, context) = match event {
+            CollabEvent::Invocation {
+                id,
+                invocation,
+                resource,
+                action,
+                argument,
+                actor,
+                context,
+            } => (id, invocation, resource, action, argument, actor, context),
+            CollabEvent::Handoff { request } => {
+                self.handoff(&request);
+                return true;
+            }
+            CollabEvent::InvocationCancellation { id } => {
+                // An invocation runs to its end in the frame it arrives in and is answered
+                // there: by the time its cancellation arrives nothing of it is left to stop.
+                tracing::debug!(id, "a cancellation of an invocation already answered");
+                return false;
+            }
+            CollabEvent::TaskRun(_)
+            | CollabEvent::TaskRunCancellation { .. }
+            | CollabEvent::TaskRunControl { .. }
+            | CollabEvent::WorkspaceControl { .. } => {
+                tracing::warn!(
+                    app = self.spec.app,
+                    instance = self.spec.instance,
+                    "a task or workspace request reached an app instance, which does not run them"
+                );
+                return false;
+            }
+            _ => return false,
         };
         let address = ActionAddress::new(resource, action);
         // The invoker is who the broker admitted, with the participant and the person it acts
         // for that the broker set in the delivery's context; nothing else is trusted.
         let invoker = ActionInvoker::delivered(&actor, context.as_deref());
+        // A member's own record is that person's alone: anyone else is refused before anything
+        // of it is read.
+        let person = match invoker.kind {
+            ActorKind::Person => Some(invoker.actor.as_str()),
+            _ => invoker.on_behalf_of.as_deref(),
+        };
+        if !tilolang_tilo::reaches(self.record.route().record.as_deref(), person) {
+            let update = failed(
+                invocation,
+                Refused::new("permission_denied", "this is another member's own record"),
+            );
+            self.answer_invocation(id, update);
+            return true;
+        }
         let attributed = context
             .as_deref()
             .map(|context| context.clone().with_invoker(invoker.clone()));
@@ -414,10 +530,74 @@ impl Hosted {
             Ok(output) => InvocationUpdate::Succeeded { invocation, output },
             Err(error) => failed(invocation, error),
         };
-        self.record
-            .manager_mut()
-            .send(CollabRequest::UpdateInvocation { id, update });
+        self.answer_invocation(id, update);
         true
+    }
+
+    /// Hand the broker the outcome of the invocation `id`. An answer the connection does not
+    /// take leaves its invoker waiting until the broker ends the invocation with the connection:
+    /// that is said here.
+    fn answer_invocation(&mut self, id: u64, update: InvocationUpdate) {
+        if let Err(error) = self
+            .record
+            .manager_mut()
+            .try_send(CollabRequest::UpdateInvocation { id, update })
+        {
+            tracing::error!(
+                app = self.spec.app,
+                instance = self.spec.instance,
+                id,
+                %error,
+                "an invocation's outcome did not reach the broker"
+            );
+        }
+    }
+
+    /// Answer the shell's handoff step `request`: a checkpoint writes the record's on-disk copy
+    /// and is done; a retirement is refused with why, as the tilolang host does not move a
+    /// record to another workspace; an owner view is presentation the instance has no window
+    /// of its own for, and wants no answer.
+    fn handoff(&mut self, request: &collaboration::handoff::HandoffRequest) {
+        use collaboration::handoff::{HandoffReport, HandoffRequest};
+        let report = match request {
+            HandoffRequest::Checkpoint { token } => {
+                self.record.flush();
+                HandoffReport::Done {
+                    token: *token,
+                    heads: Vec::new(),
+                }
+            }
+            HandoffRequest::Retire { token, .. } => {
+                tracing::warn!(
+                    app = self.spec.app,
+                    instance = self.spec.instance,
+                    "the shell asked a tilolang instance to retire its record, which it cannot"
+                );
+                HandoffReport::Failed {
+                    token: *token,
+                    reason: "a tilolang app's instance does not move its record to another \
+                             workspace"
+                        .to_owned(),
+                }
+            }
+            HandoffRequest::OwnerView { .. } => return,
+        };
+        let app_id = self.record.route().app_id.clone();
+        if let Err(error) = self
+            .record
+            .manager_mut()
+            .try_send(CollabRequest::ReportHandoff {
+                app_id,
+                message: report.encode(),
+            })
+        {
+            tracing::error!(
+                app = self.spec.app,
+                instance = self.spec.instance,
+                %error,
+                "a handoff step's answer did not reach the shell"
+            );
+        }
     }
 
     /// Build the action `address` names for `invoker`, through the spec the instance publishes
@@ -493,7 +673,7 @@ impl Hosted {
             self.record
                 .apply_invoked(&mut self.instance, &action, invoker, ambient)
                 .map_err(|error| Refused::new("action_failed", error.to_string()))?;
-            return Ok(tilo_actions::ActionOutput::default());
+            return Ok(returned(&host, &action));
         }
         if address.resource == HOST_RESOURCE
             && encoded.type_id == <HostEffect as tilo_resource::Effect>::OPERATION
@@ -580,6 +760,21 @@ impl Hosted {
         let Some(surface) = self.surface.borrow().clone() else {
             return;
         };
+        // Nothing the surface is built from changed since the broker took it: a keystroke into
+        // a field nothing published reads, and every turn that changed nothing, cost no more
+        // with ten thousand records or items than with one.
+        let inputs = surface.inputs();
+        if self
+            .published_from
+            .as_ref()
+            .is_some_and(|(from, at)| Rc::ptr_eq(from, &surface) && *at == inputs)
+        {
+            return;
+        }
+        if self.relabel(&surface, inputs.clone()) {
+            return;
+        }
+        let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
         let resources = surface.resources();
         let handlers: HashSet<String> = HashSet::from([
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
@@ -598,6 +793,8 @@ impl Hosted {
                 );
             }
             // A stale catalogue that looks valid is worse than none.
+            self.directory.withdraw();
+            self.directory_behind = false;
             if self
                 .published
                 .as_ref()
@@ -616,16 +813,20 @@ impl Hosted {
                     })
                 {
                     self.published = Some((Vec::new(), state));
+                    self.published_from = None;
                 }
             }
             return;
         }
         let descriptors = tilo_actions::door::survey(&resources);
+        self.directory.publish(&resources, &descriptors);
+        self.directory_behind = false;
         if self
             .published
             .as_ref()
             .is_some_and(|(held, _)| *held == descriptors)
         {
+            self.published_from = Some((surface, inputs));
             return;
         }
         let prior = self
@@ -644,7 +845,69 @@ impl Hosted {
                 })
         {
             self.published = Some((descriptors, state));
+            self.published_from = Some((surface, inputs));
         }
+    }
+
+    /// Publish a change to the surface that moved only labels (a note's title typed into) as
+    /// those resources alone: their descriptors patched, and a delta of them, at the cost of
+    /// what changed whatever the notebook. `inputs` are the surface's ([`Surface::inputs`]).
+    /// Whether this turn's publishing is done; when the surface changed in more than labels
+    /// since the broker took it, the caller builds it whole.
+    ///
+    /// Nothing is validated again: no rule reads a label.
+    fn relabel(&mut self, surface: &Rc<Surface>, inputs: SurfaceInputs) -> bool {
+        let Some((from, (published_at, published_packages))) = &self.published_from else {
+            return false;
+        };
+        if !Rc::ptr_eq(from, surface) || *published_packages != inputs.1 {
+            return false;
+        }
+        let Some(labels) = surface.publications.borrow().labels_since(*published_at) else {
+            return false;
+        };
+        let Some((descriptors, state)) = &mut self.published else {
+            return false;
+        };
+        if labels
+            .iter()
+            .any(|(resource, _)| state.indices(resource).is_none())
+        {
+            return false;
+        }
+        let _phase = tilo_resource::profiling::Phase::start("tl.host.relabel");
+        for (resource, label) in &labels {
+            for index in state.indices(resource).unwrap_or_default() {
+                if let Some(descriptor) = descriptors.get_mut(*index) {
+                    descriptor.resource_label.clone_from(label);
+                }
+            }
+        }
+        self.directory_behind |= !labels.is_empty();
+        let changed: Vec<&str> = labels
+            .iter()
+            .map(|(resource, _)| resource.as_str())
+            .collect();
+        let Some(delta) = state.relabel(descriptors, &changed) else {
+            return false;
+        };
+        if !delta.is_empty()
+            && !self
+                .record
+                .manager_mut()
+                .send(CollabRequest::PublishActionSurface {
+                    app_id: self.spec.app.clone(),
+                    delta,
+                })
+        {
+            // What the broker holds is no longer what was patched: a later turn sends the
+            // surface whole, as a reset.
+            self.published = None;
+            self.published_from = None;
+            return true;
+        }
+        self.published_from = Some((Rc::clone(surface), inputs));
+        true
     }
 
     /// Write what the record holds to its on-disk copy, as the instance ends.
@@ -703,5 +966,17 @@ fn door_code(error: &tilo_actions::DoorError) -> &'static str {
         tilo_actions::DoorError::Unknown(_) => "action_unknown",
         tilo_actions::DoorError::Unavailable { .. } => "action_unavailable",
         _ => "action_invalid_arguments",
+    }
+}
+
+/// What the action `action` answers: the resource it returned, by its published id, which a
+/// task's program goes on with.
+fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_actions::ActionOutput {
+    let returned = host
+        .take_returned(&action.action_id)
+        .map(|made| tilolang_tilo::publish::resource_id(&action.app, &made.id_string()));
+    tilo_actions::ActionOutput {
+        value: None,
+        resources: returned.into_iter().collect(),
     }
 }

@@ -55,6 +55,8 @@ struct State {
     kinds: HashMap<String, String>,
     /// The principals the door admitted as software acting for a person, with that person.
     agents: HashMap<String, Option<String>>,
+    /// The packages whose records are each member's own (`records: .own`), by app id.
+    own: HashSet<String>,
 }
 
 /// The platform's authority. Clones share their state.
@@ -81,6 +83,9 @@ impl TiloAuthority {
         let mut state = self.state.borrow_mut();
         state.trusted.insert(module.clone());
         state.apps.insert(module.clone(), meta.app.clone());
+        if meta.own_records {
+            state.own.insert(meta.app.clone());
+        }
         for action in &meta.actions {
             let kind = meta
                 .subject_of(&action.params)
@@ -120,6 +125,23 @@ impl TiloAuthority {
     }
 }
 
+/// The prefix of the platform's migration principal: a package version updating its own
+/// records (`migration:<app>@<module hash>`).
+pub const MIGRATION_PREFIX: &str = "migration:";
+
+/// The principal a migration of `app`'s package version `module` (its module hash) runs as: the
+/// package updating what an earlier version of it wrote, which history names as such.
+#[must_use]
+pub fn migration_principal(app: &str, module: &str) -> Principal {
+    Principal::new(format!("{MIGRATION_PREFIX}{app}@{module}"))
+}
+
+/// The app and module hash a migration principal names, when `id` is one.
+#[must_use]
+pub fn migration_of(id: &str) -> Option<(&str, &str)> {
+    id.strip_prefix(MIGRATION_PREFIX)?.split_once('@')
+}
+
 /// The subject a principal is in the room's policy: an agent by its id, a person by theirs.
 fn principal_subject(id: &str) -> Subject {
     match id.strip_prefix("agent:") {
@@ -154,10 +176,18 @@ impl Authority for TiloAuthority {
             .get(&action.action)
             .cloned()
             .unwrap_or_else(|| format!("tl.{}", action.app));
-        let node = TreePath::room(room)
-            .app(&action.app)
-            .kind(kind)
-            .action(&action.action);
+        let node = TreePath::room(room).app(&action.app).kind(kind);
+        // An app whose records are each member's own acts on the record of the person at the
+        // window: whoever else invokes is decided as on anyone's own record, refused.
+        let own = standing
+            .as_ref()
+            .filter(|_| state.own.contains(&action.app))
+            .and_then(|standing| crate::member_record_of(&standing.person));
+        let node = match own {
+            Some(record) => node.resource(record),
+            None => node,
+        }
+        .action(&action.action);
         let agent = state.agents.get(&invoker.0);
         // Who the person is: the one an agent acts for, or the invoker; the person at the window
         // is the standing's person.
@@ -169,7 +199,11 @@ impl Authority for TiloAuthority {
             Some(standing) if person == self.viewer.0 => standing.person.as_str(),
             _ => person,
         });
+        // A migration is the platform running the package's own update of its records on the
+        // room's origin: no person's grants decide it, the package's code still bounds it.
+        let migration = migration_of(&invoker.0).is_some();
         let person_party = match (&standing, person, agent) {
+            _ if migration => Party::default().owning(TreePath::root()),
             (Some(standing), Some(person), _) => standing.policy.party(person),
             // An agent nobody delegated: only what the room grants it.
             (Some(standing), None, _) => standing
@@ -212,6 +246,8 @@ impl Authority for TiloAuthority {
                 None => authors.push((subject, own, of_app.is_some())),
             }
         }
+        // A grant written under an id the app had before (`previously:`) is the app's.
+        let earlier = crate::schema::earlier_ids();
         let mut policy = Policy::person(person_party);
         if let Some(delegation) = &delegation {
             policy = policy.bounded_by(delegation.party(room_grants));
@@ -220,9 +256,14 @@ impl Authority for TiloAuthority {
             // The room's grants bound an application's code; a block's author holds only what
             // its code may.
             let room = if *of_app { room_grants } else { &[] };
-            policy = policy.bounded_by(authorship::code_party(subject, own, room));
+            policy = policy.bounded_by(authorship::code_party_in(
+                subject,
+                own,
+                room,
+                Some(&earlier),
+            ));
         }
-        let cx = Context::at_time(std::time::SystemTime::now());
+        let cx = Context::at_time(std::time::SystemTime::now()).with_earlier_ids(&earlier);
         decision(policy.decide(&node, action_kind(action.class), &cx).answer)
     }
 }
@@ -252,6 +293,14 @@ mod tests {
         }
     }
 
+    impl TiloAuthority {
+        fn load_trusted_app(&self, module: &ModuleHash, app: &str) {
+            let mut state = self.state.borrow_mut();
+            state.trusted.insert(module.clone());
+            state.apps.insert(module.clone(), app.to_owned());
+        }
+    }
+
     fn authority(grants: Vec<Grant>) -> TiloAuthority {
         let mut policy = RoomPolicy::new(ROOM, PERSON);
         policy.grants.extend(grants);
@@ -262,6 +311,41 @@ mod tests {
         state.apps.insert(module(), APP.to_owned());
         drop(state);
         authority
+    }
+
+    #[test]
+    fn a_package_whose_records_are_each_members_own_is_its_persons_alone() {
+        let ada = "ab".repeat(32);
+        let owner = "ef".repeat(32);
+        let mut policy = RoomPolicy::new(ROOM, owner.clone());
+        policy
+            .members
+            .insert(ada.clone(), tilo_action_policy::Role::Editor);
+        let standing = Standing::person(policy, ada.clone());
+        let authority =
+            TiloAuthority::new(Principal::new(ada.clone()), move || Some(standing.clone()));
+        {
+            let mut state = authority.state.borrow_mut();
+            state.trusted.insert(module());
+            state.apps.insert(module(), APP.to_owned());
+        }
+        let change = info(EffectClass::Undoable, true);
+        let room_owner = Principal::new(owner);
+        // Shared, the room's owner may change what the package holds.
+        assert_eq!(
+            authority.decide(&room_owner, &[module()], &change),
+            Decision::Allow
+        );
+        // Each member's own, it is Ada's record: only she acts on it, not even the room's owner.
+        authority.state.borrow_mut().own.insert(APP.to_owned());
+        assert_eq!(
+            authority.decide(&Principal::new(ada), &[module()], &change),
+            Decision::Allow
+        );
+        assert_eq!(
+            authority.decide(&room_owner, &[module()], &change),
+            Decision::Deny
+        );
     }
 
     #[test]
@@ -361,6 +445,103 @@ mod tests {
         let me = Principal::new(PERSON);
         assert_eq!(authority.decide(&me, &[module()], &own), Decision::Deny);
         assert_eq!(authority.decide(&me, &[], &own), Decision::Allow);
+    }
+
+    #[test]
+    fn grants_on_the_earlier_id_decide_for_the_renamed_app() {
+        const TASKS: &str = "so.tilo.lang.tasks";
+        crate::schema::register_previously(TASKS, &[APP.to_owned()]);
+        let tasks = ModuleHash("tasks-v2".to_owned());
+        let action = |class| ActionInfo {
+            action: "remove".to_owned(),
+            app: TASKS.to_owned(),
+            class,
+            own: true,
+            module: tasks.clone(),
+        };
+        let renamed = |grants: Vec<Grant>| {
+            let authority = authority(grants);
+            let mut state = authority.state.borrow_mut();
+            state.trusted.insert(tasks.clone());
+            state.apps.insert(tasks.clone(), TASKS.to_owned());
+            drop(state);
+            authority
+        };
+        let own = action(EffectClass::Undoable);
+        let me = Principal::new(PERSON);
+        assert_eq!(
+            renamed(Vec::new()).decide(&me, std::slice::from_ref(&tasks), &own),
+            Decision::Allow
+        );
+
+        // The room's denial of Todo's code holds for Tasks' code.
+        let app_denied = Grant::new(
+            "deny-todo",
+            Subject::app(APP),
+            TreePath::room(ROOM),
+            tilo_action_policy::KindSet::ALL,
+            Answer::Deny,
+            Subject::person(PERSON),
+        );
+        assert_eq!(
+            renamed(vec![app_denied.clone()]).decide(&me, std::slice::from_ref(&tasks), &own),
+            Decision::Deny
+        );
+        // The person's answer for their agent on Todo holds on Tasks.
+        let answer = agent_answers::grant(
+            ROOM,
+            "helper",
+            (&AnswerScope::app(APP), ActionKind::Undoable),
+            Answer::Deny,
+            Subject::person(PERSON),
+        );
+        let authority = renamed(vec![answer]);
+        authority.admit_agent("agent:helper", Some(PERSON));
+        let agent = Principal::new("agent:helper");
+        assert_eq!(
+            authority.decide(&agent, std::slice::from_ref(&tasks), &own),
+            Decision::Deny
+        );
+        // A grant on Todo's node, `room/app:todo/**`, decides for a member on Tasks.
+        let mut policy = RoomPolicy::new(ROOM, PERSON);
+        let node_denied = Grant::new(
+            "no-todo-for-bob",
+            Subject::person("bob"),
+            TreePath::room(ROOM).app(APP).rest(),
+            tilo_action_policy::KindSet::ALL,
+            Answer::Deny,
+            Subject::person(PERSON),
+        );
+        let editor = Grant::new(
+            "bob-edits",
+            Subject::person("bob"),
+            TreePath::room(ROOM),
+            tilo_action_policy::KindSet::ALL,
+            Answer::Allow,
+            Subject::person(PERSON),
+        );
+        policy.grants.extend([node_denied.clone(), editor.clone()]);
+        let stored = policy.grants.clone();
+        let standing = Standing::person(policy.clone(), "bob");
+        let bob = TiloAuthority::new(Principal::new("bob"), move || Some(standing.clone()));
+        bob.load_trusted_app(&tasks, TASKS);
+        assert_eq!(
+            bob.decide(&Principal::new("bob"), std::slice::from_ref(&tasks), &own),
+            Decision::Deny
+        );
+        // Another app of the room is not Todo's.
+        let notes = ActionInfo {
+            app: "so.tilo.lang.notes".to_owned(),
+            ..action(EffectClass::Undoable)
+        };
+        assert_eq!(
+            bob.decide(&Principal::new("bob"), &[], &notes),
+            Decision::Allow
+        );
+        // Nothing stored was rewritten: the grants name Todo as they did.
+        assert_eq!(policy.grants, stored);
+        assert!(stored.contains(&node_denied) && stored.contains(&editor));
+        assert_eq!(app_denied.subject, Subject::app(APP));
     }
 
     #[test]

@@ -213,6 +213,22 @@ pub fn write(
             })
         })
         .collect();
+    // How the workspace is arranged is this device's to say like its
+    // strips: the kind, and the places of the groups it writes.
+    shared.arrangement.kind = workspace.arrangement.kind;
+    let written: HashSet<u64> = shared
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .map(|group| group.id)
+        .collect();
+    shared.arrangement.places = workspace
+        .arrangement
+        .places
+        .iter()
+        .filter(|(group, _)| written.contains(group))
+        .map(|(group, place)| (*group, *place))
+        .collect();
     let live = ids_of(&shared);
     if let Some(person) = writer.person {
         for id in live.iter().filter(|id| (writer.mine)(**id)) {
@@ -446,10 +462,27 @@ pub fn fold(doc: &impl ReadDoc, workspace: &mut Workspace, device: &str, kept: &
         })
         .collect();
     keep_apart(&mut strips, &workspace.strips, &ids_of(&record), kept);
-    let changed =
+    // The record's arrangement, with the places of what this device keeps
+    // apart from it kept where this device has them.
+    let mut arrangement = record.arrangement;
+    let shown: HashSet<u64> = strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .map(|group| group.id)
+        .collect();
+    for (group, place) in &workspace.arrangement.places {
+        if shown.contains(group) {
+            arrangement.places.entry(*group).or_insert(*place);
+        }
+    }
+    let mut changed =
         serde_json::to_value(&workspace.strips).ok() != serde_json::to_value(&strips).ok();
     if changed {
         workspace.strips = strips;
+    }
+    if workspace.arrangement != arrangement {
+        workspace.arrangement = arrangement;
+        changed = true;
     }
     changed
 }

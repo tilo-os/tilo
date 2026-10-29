@@ -173,4 +173,33 @@ mod cases {
             .unwrap();
         assert_eq!(out, InvokeOutcome::Done(Value::Unit));
     }
+
+    /// A requirement on an argument the caller gives is checked when the action runs with it:
+    /// the same title is refused with the requirement's reason and writes nothing, another
+    /// title runs.
+    #[test]
+    fn a_requirement_on_a_given_argument_refuses_the_invocation_with_its_reason() {
+        let app = App::compile(
+            "app t.notes \"Notes\"\ntype Note {\n    title: Text (title)\n}\naction retitle(n: Note, title: Text) (label: \"Rename…\") {\n    require title != n.title \"It has that title already\"\n    n.title = title\n}\n",
+            &[],
+        );
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let me = me();
+        let retitle = app.action("retitle");
+        let n = rt.create("Note").unwrap();
+        let call = |title: &str| {
+            rt.invoke_action(
+                &me,
+                (
+                    retitle.as_str(),
+                    vec![Value::resource(&n), Value::text(title)],
+                ),
+            )
+        };
+        assert_eq!(call("Plan").unwrap(), InvokeOutcome::Done(Value::Unit));
+        let refused = call("Plan").unwrap_err().to_string();
+        assert!(refused.contains("It has that title already"), "{refused}");
+        assert_eq!(rt.read(&n, "title").unwrap(), Value::text("Plan"));
+    }
 }

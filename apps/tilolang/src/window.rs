@@ -108,7 +108,11 @@ impl Platform for InProcess {
     }
 
     fn surface_changed(&self, app: &str, bundle: &tilolang_tilo::bundle::Bundle) {
-        ui::app_surface::register_package(app, &bundle.surface());
+        match bundle.surface() {
+            Ok(surface) => ui::app_surface::register_package(app, &surface),
+            // The surface registered before stays: receivers keep deciding against it.
+            Err(error) => tracing::error!(app, %error, "the updated package's surface is unusable"),
+        }
     }
 
     /// The platform's phrases, which the standard library's frames say.
@@ -127,6 +131,11 @@ impl Platform for InProcess {
             .with_timezone(&chrono::Utc)
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string()
+    }
+
+    /// The zone of the toolkit's clock: the person's, which "tomorrow 9am" is read in.
+    fn zone(&self) -> i64 {
+        i64::from(ui::clock::local_now().offset().local_minus_utc())
     }
 
     fn waker(&self) -> tilolang_tilo::background::Waker {
@@ -171,6 +180,9 @@ pub struct Window {
     indexes: Option<std::path::PathBuf>,
     /// The room this window shows, which names where its indexes are kept.
     room: Option<String>,
+    /// The record of the room it shows, when that is not the workspace's record of the app (a
+    /// member's own): its indexes are its own.
+    record: Option<String>,
     /// The room's record, while it is read off the frame and the window shows what the indexes
     /// hold ([`Self::opening`]).
     opening: Option<ui::record::RecordOpening>,
@@ -219,6 +231,7 @@ impl Window {
             names,
             indexes: None,
             room: None,
+            record: None,
             opening: None,
             undo: ui::undo::UndoAccess::new(),
             undrawn: None,
@@ -257,15 +270,25 @@ impl Window {
         self
     }
 
+    /// This window showing `record` of its room, a record other than the workspace's record
+    /// of the app (the person's own): it keeps that record's indexes apart from the room's.
+    #[must_use]
+    pub fn of_record(mut self, record: &str) -> Self {
+        self.record = Some(record.to_owned());
+        self.place_indexes();
+        self
+    }
+
     /// Where the indexes of this window's room are kept, when they are kept on disk: a past
     /// version and a capture build theirs in memory.
     fn place_indexes(&mut self) {
-        let dir = match (self.mode, &self.indexes, &self.room) {
-            (RunMode::Live, Some(indexes), Some(room)) => {
-                Some(tilolang_tilo::index::room_dir(indexes, room))
-            }
-            _ => None,
-        };
+        let dir =
+            match (self.mode, &self.indexes, &self.room) {
+                (RunMode::Live, Some(indexes), Some(room)) => Some(
+                    tilolang_tilo::index::record_dir(indexes, room, self.record.as_deref()),
+                ),
+                _ => None,
+            };
         self.instance.set_index_dir(dir);
     }
 
@@ -298,6 +321,13 @@ impl Window {
         source: impl Fn() -> Option<ui::permissions::Standing> + 'static,
     ) -> Self {
         self.instance.set_standing(Rc::new(source));
+        self
+    }
+
+    /// This window keeping its package's types with an origin in step with `origin`'s service.
+    #[must_use]
+    pub fn with_origin(mut self, origin: tilolang_tilo::origin::SharedOrigin) -> Self {
+        self.instance.add_origin(origin);
         self
     }
 
@@ -592,6 +622,12 @@ impl Widget for Window {
         }
         self.instance
             .set_peers(peers_of(presence, &self.app, &self.me));
+        // The room's policy names people; presence pairs each participant with theirs.
+        self.instance
+            .set_persons(presence.roster().into_iter().filter_map(|user| {
+                let person = presence.person_of(&ui::permissions::UserId(user.id.clone()))?;
+                Some((user.id, person.0.clone()))
+            }));
         self.view.draw(scene, transform, text, theme, presence);
         if let Some(undrawn) = self.undrawn.take() {
             let at = std::time::SystemTime::now()

@@ -8,18 +8,16 @@ use serde_json::{Map, Number, Value as Json};
 
 use crate::ids::{ActionId, DocId, FieldId, ItemId, ModuleHash, Principal, TypeId};
 
-/// One step into a nested record: the collection field and the item inside it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Step {
-    pub field: FieldId,
-    pub item: ItemId,
-}
-
-/// A reference to a resource: a document, or an item nested in one.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// A reference to a resource: a document, or an item of one, named by its id alone.
+///
+/// An item is identified by its id wherever it is: which collection holds it is a fact the store
+/// keeps of the item (its placement), so a reference stays valid when the item moves to another
+/// collection of its document. The document is where the item is stored; moves stay within it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ResourceRef {
     pub doc: DocId,
-    pub path: Vec<Step>,
+    /// The item, `None` for the document itself.
+    pub item: Option<ItemId>,
     pub ty: TypeId,
 }
 
@@ -28,61 +26,117 @@ impl ResourceRef {
     /// the first time it is opened; until then it reads as it would start.
     #[must_use]
     pub fn is_unmade_root(&self) -> bool {
-        self.path.is_empty() && self.doc.starts_with("root-")
+        self.item.is_none() && self.doc.starts_with("root-")
     }
 
     pub fn root(doc: impl Into<DocId>, ty: impl Into<TypeId>) -> Self {
         Self {
             doc: doc.into(),
-            path: Vec::new(),
+            item: None,
             ty: ty.into(),
         }
     }
 
+    /// The item `item` of this resource's document.
     #[must_use]
-    /// The item inside collection `field` of this resource.
-    pub fn item(&self, field: &str, item: &str, ty: impl Into<TypeId>) -> Self {
-        let mut path = self.path.clone();
-        path.push(Step {
-            field: field.to_owned(),
-            item: item.to_owned(),
-        });
+    pub fn item(&self, item: &str, ty: impl Into<TypeId>) -> Self {
         Self {
             doc: self.doc.clone(),
-            path,
+            item: Some(item.to_owned()),
             ty: ty.into(),
         }
     }
 
-    /// The reference as text: the document id, then `/field:item` per step.
+    /// The reference as text: the document id, then `/item` for an item.
     pub fn id_string(&self) -> String {
-        let mut out = self.doc.clone();
-        for step in &self.path {
-            out.push('/');
-            out.push_str(&step.field);
-            out.push(':');
-            out.push_str(&step.item);
+        match &self.item {
+            Some(item) => format!("{}/{item}", self.doc),
+            None => self.doc.clone(),
         }
-        out
     }
 
     /// Parse the text produced by [`ResourceRef::id_string`]. The caller supplies the type
     /// and is responsible for checking it against the stored one.
+    ///
+    /// A reference written before items were stored by id names the path down to the item
+    /// (`doc/field:item/field:item`); it reads as the item its last step names.
     pub fn parse_id(text: &str, ty: impl Into<TypeId>) -> Option<Self> {
-        let mut parts = text.split('/');
-        let doc = parts.next().filter(|d| !d.is_empty())?;
-        let mut path = Vec::new();
-        for part in parts {
-            let (field, item) = part.split_once(':')?;
-            path.push(Step {
-                field: field.to_owned(),
-                item: item.to_owned(),
-            });
-        }
+        let (doc, item) = split_id(text)?;
         Some(Self {
             doc: doc.to_owned(),
-            path,
+            item: item.map(str::to_owned),
             ty: ty.into(),
+        })
+    }
+}
+
+/// The document and the item (if any) of a resource written as [`ResourceRef::id_string`], or
+/// as the path a reference held before items were stored by id (its last step's item).
+#[must_use]
+pub fn split_id(text: &str) -> Option<(&str, Option<&str>)> {
+    let Some((doc, rest)) = text.split_once('/') else {
+        return (!text.is_empty()).then_some((text, None));
+    };
+    if doc.is_empty() || rest.split('/').any(str::is_empty) {
+        return None;
+    }
+    let last = rest.rsplit('/').next().unwrap_or(rest);
+    // A path's step is `field:item`; the field is never part of the item's id.
+    let item = last.split_once(':').map_or(last, |(_, item)| item);
+    (!item.is_empty()).then_some((doc, Some(item)))
+}
+
+/// A resource written as [`ResourceRef::id_string`], or as an older path to it, in the one form:
+/// the document, then `/item`.
+#[must_use]
+pub fn flat_id(text: &str) -> String {
+    match split_id(text) {
+        Some((doc, Some(item))) => format!("{doc}/{item}"),
+        Some((doc, None)) => doc.to_owned(),
+        None => text.to_owned(),
+    }
+}
+
+/// How a reference is written: its document, item and type. One written before items were
+/// stored by id held the path down to the item (`path`); it reads as its last step's item.
+#[derive(Serialize, Deserialize)]
+struct RefForm {
+    doc: DocId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    item: Option<ItemId>,
+    #[serde(default, skip_serializing)]
+    path: Vec<PathStep>,
+    ty: TypeId,
+}
+
+/// A step of a path an older reference held: only its item is read.
+#[derive(Serialize, Deserialize)]
+struct PathStep {
+    item: ItemId,
+}
+
+impl Serialize for ResourceRef {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        RefForm {
+            doc: self.doc.clone(),
+            item: self.item.clone(),
+            path: Vec::new(),
+            ty: self.ty.clone(),
+        }
+        .serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for ResourceRef {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let form = RefForm::deserialize(d)?;
+        let item = form
+            .item
+            .or_else(|| form.path.into_iter().last().map(|step| step.item));
+        Ok(Self {
+            doc: form.doc,
+            item,
+            ty: form.ty,
         })
     }
 }
@@ -257,7 +311,7 @@ impl CollRef {
     /// A reference to the item `id` of the collection.
     pub fn item_ref(&self, id: &str) -> Value {
         Value::Ref(RefValue {
-            target: Rc::new(self.target.item(&self.field, id, self.item.clone())),
+            target: Rc::new(self.target.item(id, self.item.clone())),
             author: self.author.clone(),
         })
     }
@@ -297,6 +351,9 @@ pub enum Value {
     /// holds its place (`open(x)` on `select(x)`), and the host puts the value there when the
     /// event fires (`ViewInstance::fire_with`).
     Event,
+    /// One part of what an event carries when it also says where its value lands (a drop
+    /// carries `[card, at]`): 0 the value, 1 the place.
+    EventPart(usize),
     /// A `window` or `lens` slot an action reference takes as an argument (`send(c, draft)`):
     /// read when the event fires, so the action gets what the person typed up to the press,
     /// whatever the view last drew. `scalar` slots hold their value boxed.
@@ -304,6 +361,12 @@ pub enum Value {
         key: crate::view_state::StateKey,
         scalar: bool,
     },
+    /// A map field read whole: its entries, each key once, in key order. Only a view reads
+    /// one, to hand it to a component or another view.
+    Map(Vec<(Value, Value)>),
+    /// An action offered in a component's prop (`ui.MenuButton(actions: actions(r))`): how
+    /// its control shows it, and the event of the node that runs it (host-internal).
+    Offered(Rc<tilolang::toolkit::Offered>),
     /// An argument of an action reference computed from view state (`set(open, not open)`,
     /// `send(c, "{draft}!")`): the function `e_<id>` of `module` over `args`, run when the
     /// event fires, after the view state among `args` is read. A `scalar` result is boxed
@@ -372,8 +435,10 @@ impl Value {
             Self::Node(_) => "ui node",
             Self::Rec(_) => "record",
             Self::Error(_) => "error",
-            Self::Event => "event value",
+            Self::Event | Self::EventPart(_) => "event value",
             Self::State { .. } => "view state",
+            Self::Map(_) => "map",
+            Self::Offered(_) => "offered action",
             Self::AtEvent { .. } => "argument computed at the event",
         }
     }
@@ -436,8 +501,11 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         | Value::Rec(_)
         | Value::Coll(_)
         | Value::Event
+        | Value::EventPart(_)
         | Value::State { .. }
-        | Value::AtEvent { .. } => {
+        | Value::AtEvent { .. }
+        | Value::Map(_)
+        | Value::Offered(_) => {
             return Err(format!("a {} cannot be stored", v.kind_name()));
         }
     })
@@ -591,7 +659,7 @@ mod tests {
 
     #[test]
     fn values_round_trip_through_json() {
-        let target = ResourceRef::root("d1", "T").item("f", "i-1", "U");
+        let target = ResourceRef::root("d1", "T").item("i-1", "U");
         let v = Value::List(vec![
             Value::Int(3),
             Value::Float(2.0),
@@ -616,8 +684,28 @@ mod tests {
 
     #[test]
     fn reference_ids_parse_back() {
-        let r = ResourceRef::root("d1", "T").item("f", "i-1", "U");
-        assert_eq!(r.id_string(), "d1/f:i-1");
+        let r = ResourceRef::root("d1", "T").item("i-1", "U");
+        assert_eq!(r.id_string(), "d1/i-1");
         assert_eq!(ResourceRef::parse_id(&r.id_string(), "U"), Some(r));
+    }
+
+    #[test]
+    fn a_path_written_before_items_were_flat_reads_as_its_last_item() {
+        let r = ResourceRef::root("d1", "T").item("i-2", "U");
+        assert_eq!(
+            ResourceRef::parse_id("d1/f:i-1/g:i-2", "U"),
+            Some(r.clone())
+        );
+        assert_eq!(flat_id("d1/f:i-1/g:i-2"), "d1/i-2");
+        assert_eq!(flat_id("d1"), "d1");
+        assert_eq!(ResourceRef::parse_id("/f:i", "U"), None);
+        let old = serde_json::json!({
+            "doc": "d1",
+            "path": [{"field": "f", "item": "i-1"}, {"field": "g", "item": "i-2"}],
+            "ty": "U",
+        });
+        assert_eq!(serde_json::from_value::<ResourceRef>(old).unwrap(), r);
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(serde_json::from_value::<ResourceRef>(json).unwrap(), r);
     }
 }

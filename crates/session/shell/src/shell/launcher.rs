@@ -17,6 +17,8 @@ mod embed_launch;
 pub(crate) mod launch_history;
 pub(crate) use embed_launch::queue_embed_launch;
 mod launch_records;
+#[cfg(target_os = "linux")]
+mod origin_connectors;
 mod recorded_use;
 #[cfg(target_os = "linux")]
 pub(crate) mod retained_home;
@@ -26,6 +28,21 @@ pub mod room_hold;
 mod room_hold_tests;
 #[cfg(target_os = "linux")]
 mod tilolang_hosts;
+
+/// Start the tilolang host of the agent task `task` in `room`: the agent door's end of its
+/// program connection (`tilolang_hosts::start_task`).
+///
+/// # Errors
+/// `room` is no room, no tilolang app is installed, or the host could not be started.
+pub(crate) fn start_task_host(room: &str, task: &str) -> std::io::Result<std::os::fd::OwnedFd> {
+    let room = RoomId::parse(room).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("`{room}` is no room"),
+        )
+    })?;
+    tilolang_hosts::start_task(room, task)
+}
 #[cfg(target_os = "linux")]
 pub(crate) mod window_doors;
 #[cfg(test)]
@@ -2027,9 +2044,12 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
         user_store = ?package_store::layout::default_user_root(),
         "reading installed application registry"
     );
-    tilo_installed_apps::read_from_env().map_err(|e| LaunchError::RegistryUnreadable {
+    let apps = tilo_installed_apps::read_from_env().map_err(|e| LaunchError::RegistryUnreadable {
         detail: e.to_string(),
-    })
+    });
+    // What the catalogue says of renamed apps reaches every decision in this process.
+    let _ = installed_earlier_ids();
+    apps
 }
 
 /// Result of resolving an installed package's signed continuity contract.
@@ -2091,6 +2111,36 @@ pub(crate) fn installed_app(
     });
     ensure_app_cache_watch();
     app
+}
+
+/// The ids installed apps were published under before, as the catalogue believes them
+/// ([`tilo_installed_apps::earlier_ids`]): the one lookup a window, a launch or an open written
+/// under an earlier id goes through. Read again only when a registry changed; empty for an
+/// unreadable catalogue.
+pub(crate) fn installed_earlier_ids() -> tilo_action_policy::EarlierIds {
+    static EARLIER: Mutex<Option<(Vec<Option<RegistryStamp>>, tilo_action_policy::EarlierIds)>> =
+        Mutex::new(None);
+    let stamps = registry_stamps();
+    if let Some((at, ids)) = lock(&EARLIER).as_ref()
+        && *at == stamps
+    {
+        return ids.clone();
+    }
+    let ids = package_store::Catalog::from_env()
+        .ok()
+        .and_then(|catalog| tilo_installed_apps::earlier_ids(&catalog).ok())
+        .unwrap_or_default();
+    // Every decision this process makes without a table of its own reads these too.
+    tilo_action_policy::earlier::register_all(&ids);
+    *lock(&EARLIER) = Some((stamps, ids.clone()));
+    ids
+}
+
+/// The installed app `package_id` names: its own, or the app that took the place of the id it
+/// had before.
+pub(crate) fn find_installed(apps: &[InstalledApp], package_id: &str) -> Option<InstalledApp> {
+    let find = |id: &str| apps.iter().find(|app| app.package_id == id).cloned();
+    find(package_id).or_else(|| find(installed_earlier_ids().successor(package_id)?))
 }
 
 /// Which version of a registry file is on disk. An install replaces the registry by one
@@ -3462,13 +3512,9 @@ fn launch_with_context(
     media_handoff: Option<MediaHandoffLaunch>,
 ) -> Result<InstalledApp, LaunchError> {
     let apps = installed_apps()?;
-    let app = apps
-        .iter()
-        .find(|a| a.package_id == package_id)
-        .cloned()
-        .ok_or_else(|| LaunchError::NotInstalled {
-            package_id: package_id.to_string(),
-        })?;
+    let app = find_installed(&apps, package_id).ok_or_else(|| LaunchError::NotInstalled {
+        package_id: package_id.to_string(),
+    })?;
     if !app.has_gui {
         return Err(LaunchError::NotAGuiApp {
             package_id: package_id.to_string(),
@@ -6862,6 +6908,8 @@ pub fn spawn_launch(
 use crate::shell::state::WorkspaceExt as _;
 use tilo_lock::MutexRecover as _;
 
+#[cfg(test)]
+mod earlier_ids_tests;
 #[cfg(test)]
 mod tests;
 

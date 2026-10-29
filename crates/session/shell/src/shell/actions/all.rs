@@ -1397,6 +1397,26 @@ impl Action {
         )
         .view_step(),
         Action {
+            id: "workspace.show-canvas",
+            label: "search-action-workspace-show-canvas",
+            subtitle: "search-action-workspace-show-canvas-subtitle",
+            keywords: "search-kw-workspace-show-canvas",
+            params: &[],
+            apply: show_canvas,
+            ..Action::NEW
+        }
+        .document(),
+        Action {
+            id: "workspace.show-strips",
+            label: "search-action-workspace-show-strips",
+            subtitle: "search-action-workspace-show-strips-subtitle",
+            keywords: "search-kw-workspace-show-strips",
+            params: &[],
+            apply: show_strips,
+            ..Action::NEW
+        }
+        .document(),
+        Action {
             id: "strip.create",
             label: "search-action-strip-create",
             subtitle: "search-action-strip-create-subtitle",

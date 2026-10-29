@@ -79,6 +79,9 @@ pub(crate) struct HostInner {
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
     produced: RefCell<Option<(String, ResourceRef)>>,
+    /// The resource the last action planned returned, whoever invoked it, with the action:
+    /// what its invocation answers.
+    returned: RefCell<Option<(String, ResourceRef)>>,
 }
 
 thread_local! {
@@ -317,6 +320,16 @@ impl HostInner {
         planned
     }
 
+    /// What `action` returned, for its invocation's answer.
+    fn returned_by(&self, action: &str, outcome: &InvokeOutcome) {
+        *self.returned.borrow_mut() = match outcome {
+            InvokeOutcome::Done(Value::Ref(made)) => {
+                Some((action.to_owned(), ResourceRef::clone(&made.target)))
+            }
+            _ => None,
+        };
+    }
+
     fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
         let action = package
@@ -378,6 +391,7 @@ impl HostInner {
             .runtime
             .invoke_action(&invoker, (request.action_id, args.clone()))
             .map_err(|error| error.to_string())?;
+        self.returned_by(request.action_id, &outcome);
         match outcome {
             InvokeOutcome::Done(Value::Ref(made))
                 if request.caller.is_none_or(|caller| !caller.agent) =>
@@ -507,6 +521,7 @@ impl Host {
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
             produced: RefCell::default(),
+            returned: RefCell::default(),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -582,20 +597,31 @@ impl Host {
         self.inner.suspended.borrow_mut().pop_front()
     }
 
-    /// Carry out the outside effects of this device that wait in the record: each goes to the
-    /// sink, and what settles is queued for the door like any other change. Returns how many
-    /// were delivered.
+    /// Carry out the outside effects of this device that wait in the record
+    /// ([`Runtime::settle`]): each is marked as being handed over, then goes to the sink, and
+    /// what became of it is queued for the door like any other change. Returns how many
+    /// changes that wrote. What `delivery(r)` reads follows the record either way.
     ///
     /// # Errors
     /// No sink is set, or the store failed.
     pub fn settle_outbox(&self) -> Result<usize, String> {
         if self.inner.store.outbox_pending_count() == 0 {
+            self.inner.runtime.refresh_deliveries();
             return Ok(0);
         }
         self.inner
             .runtime
             .settle()
-            .map(|report| report.delivered)
+            .map(|report| {
+                [
+                    report.failed.len(),
+                    report.marked,
+                    report.waiting,
+                    report.unknown,
+                ]
+                .into_iter()
+                .fold(report.delivered, usize::saturating_add)
+            })
             .map_err(|error| error.to_string())
     }
 
@@ -622,6 +648,17 @@ impl Host {
         let mut produced = self.inner.produced.borrow_mut();
         match produced.as_ref() {
             Some((made_by, _)) if made_by == action => produced.take().map(|(_, made)| made),
+            _ => None,
+        }
+    }
+
+    /// The resource `action` returned when it was last planned here, for whoever invoked it,
+    /// once: what its invocation answers.
+    #[must_use]
+    pub fn take_returned(&self, action: &str) -> Option<ResourceRef> {
+        let mut returned = self.inner.returned.borrow_mut();
+        match returned.as_ref() {
+            Some((made_by, _)) if made_by == action => returned.take().map(|(_, made)| made),
             _ => None,
         }
     }
@@ -785,6 +822,88 @@ impl Host {
         Ok(self.inner.store.create_with_id(&record, &id)?)
     }
 
+    /// Run each loaded package's migrations (`migration action`) on the resources an earlier
+    /// version of it wrote: once on each resource of the migration's subject type that holds
+    /// something in a field the type now keeps `(previously)` (or, for a type without such a
+    /// field, that the migration has not run on), as an action of the package version
+    /// ([`crate::authority::migration_principal`]), which records in the same change that it
+    /// ran. Only the room's origin calls it (`Instance::set_origin`). Returns how many ran. A migration that is
+    /// refused or fails leaves its resource as it was, to be tried again the next time.
+    pub fn migrate(&self) -> usize {
+        let mut ran: usize = 0;
+        for package in self.packages() {
+            for migration in package.meta.migrations() {
+                let Some(ty) = migration
+                    .params
+                    .first()
+                    .and_then(|subject| package.meta.type_named(&subject.ty))
+                else {
+                    continue;
+                };
+                let previously: Vec<&str> = ty
+                    .fields
+                    .iter()
+                    .filter(|f| f.role.as_deref() == Some("previously"))
+                    .map(|f| f.id.as_str())
+                    .collect();
+                for doc in self.inner.store.resources_of(&package.meta.app, &ty.id) {
+                    if self
+                        .inner
+                        .store
+                        .migrated(&doc, &migration.id)
+                        .unwrap_or(true)
+                        || !self.holds_previously(&doc, &previously)
+                    {
+                        continue;
+                    }
+                    let subject = Value::resource(&ResourceRef::root(&doc, ty.id.clone()));
+                    self.inner
+                        .store
+                        .set_migrating(Some((migration.id.clone(), doc.clone())));
+                    // The package updating its own records, not the person at the window: the
+                    // change is the package version's, under the platform's migration principal.
+                    let by = crate::authority::migration_principal(
+                        &package.meta.app,
+                        &package.meta.module_hash,
+                    );
+                    let outcome = self
+                        .inner
+                        .runtime
+                        .invoke_action(&by, (migration.id.as_str(), vec![subject]));
+                    self.inner.store.set_migrating(None);
+                    match outcome {
+                        Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
+                        other => tracing::warn!(
+                            app = package.meta.app,
+                            migration = migration.name,
+                            doc,
+                            ?other,
+                            "a migration did not run"
+                        ),
+                    }
+                }
+            }
+        }
+        ran
+    }
+
+    /// Whether the resource `doc` holds anything in the fields `previously` (none: whether it
+    /// may hold what an earlier version wrote, which only the migration can tell).
+    fn holds_previously(&self, doc: &str, previously: &[&str]) -> bool {
+        if previously.is_empty() {
+            return true;
+        }
+        let Ok(record) = self.inner.store.record(doc) else {
+            return false;
+        };
+        let Ok(empty) = crate::record::DynRecord::empty(record.schema()) else {
+            return false;
+        };
+        previously
+            .iter()
+            .any(|field| record.get(field) != empty.get(field))
+    }
+
     /// Open the window of `app`'s root resource, through the default view of its type.
     ///
     /// # Errors
@@ -890,6 +1009,16 @@ impl Host {
         }
     }
 
+    /// The argument of the type `ty` (as metadata writes it) of an action of `meta` that
+    /// `json` gives, read as the door reads an invocation's arguments: a resource by its id, a
+    /// case by its name, a person as the workspace subject they are.
+    ///
+    /// # Errors
+    /// `json` does not read as a value of `ty`, with why.
+    pub fn argument(&self, meta: &Meta, json: &Json, ty: &str) -> Result<Value, String> {
+        value_of(&self.inner, meta, json, ty)
+    }
+
     /// Whether the type `ty` is registered (a package of it was loaded here).
     #[must_use]
     pub fn knows_type(ty: &str) -> bool {
@@ -900,17 +1029,16 @@ impl Host {
 /// The `surface.toml` bytes of the host with these built-in packages (source and ids lock),
 /// generated from their metadata: what receivers decide the host's changes against.
 ///
-/// A package that does not compile is left out and named in the log.
-#[must_use]
-pub fn builtin_surface(packages: &[(&str, &str)]) -> Vec<u8> {
+/// # Errors
+/// A package does not compile, or the surface cannot be written: never a surface missing a
+/// package receivers would then decide its changes without.
+pub fn builtin_surface(packages: &[(&str, &str)]) -> Result<Vec<u8>, String> {
     let doc = tilo_resource::Doc::new();
-    let Ok(host) = Host::new(&doc, Principal::new("surface"), || None) else {
-        return Vec::new();
-    };
+    let host = Host::new(&doc, Principal::new("surface"), || None)
+        .map_err(|error| format!("no runtime to load the built-in packages: {error}"))?;
     for (source, ids) in packages {
-        if let Err(error) = host.load_builtin(source, ids) {
-            eprintln!("a built-in tilolang package did not compile: {error}");
-        }
+        host.load_builtin(source, ids)
+            .map_err(|error| format!("a built-in tilolang package did not compile: {error}"))?;
     }
     let metas: Vec<Meta> = host
         .packages()
@@ -918,7 +1046,7 @@ pub fn builtin_surface(packages: &[(&str, &str)]) -> Vec<u8> {
         .map(|package| package.meta)
         .collect();
     let refs: Vec<&Meta> = metas.iter().collect();
-    crate::surface::surface_toml(&refs).unwrap_or_default()
+    crate::surface::surface_toml(&refs).map_err(|error| error.to_string())
 }
 
 /// The system time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`: what `now` reads.

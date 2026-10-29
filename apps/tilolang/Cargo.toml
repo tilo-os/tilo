@@ -37,10 +37,30 @@ path = "tests/interaction.rs"
 name = "mentions"
 path = "tests/mentions.rs"
 
+# Views: an agent's answer drawn live over other apps' resources, in a package of its own.
+[[test]]
+name = "views"
+path = "tests/views.rs"
+
 # The Board package with cards on it: its window's bindings, actions and card menus.
 [[test]]
 name = "board"
 path = "tests/board.rs"
+
+# Tasks' actions that ask for more: their forms, as a person fills them in.
+[[test]]
+name = "forms"
+path = "tests/forms.rs"
+
+# The Tasks package on a project's board: cards dragged within and between its lanes.
+[[test]]
+name = "tasks_board"
+path = "tests/tasks_board.rs"
+
+# A hosted app's window, as a person uses it, against the tilolang host running its instance.
+[[test]]
+name = "hosted"
+path = "tests/hosted.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
@@ -52,6 +72,13 @@ tilo-startup-metrics = { version = "0.1.0", path = "../../crates/system/tilo-sta
 # Waiting on the hosted window's patch connection.
 libc.workspace = true
 tilolang-tilo = { path = "../../crates/platform/tilolang-tilo" }
+# The IMAP and SMTP protocol code of native Mail, and the settings' account store, behind the
+# mail origin of packages whose types hold a mail server's resources (`src/mail`).
+mail = { path = "../mail" }
+# The mail origin: in the window's process outside a host, and the connector process the
+# system runs for a hosted Mail.
+tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
+tilo-content = { path = "../../crates/system/content" }
 # The UI host's half of the window, and the patch protocol between it and the instance.
 tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }
 tilo-render-protocol = { path = "../../crates/platform/tilo-render-protocol" }
@@ -63,7 +90,15 @@ tracing.workspace = true
 
 [dev-dependencies]
 tilolang = { path = "../../crates/lang/tilolang" }
+# The test IMAP and SMTP servers the mail origin's tests run against.
+mail = { path = "../mail", features = ["fake-servers"] }
+tokio = { workspace = true, features = ["rt"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+# A hosted app's window against the tilolang host running its instance (`tests/hosted.rs`).
+tilolang-host = { path = "../../crates/platform/tilolang-host" }
+collaboration = { version = "0.1.0", path = "../../crates/collab/collaboration", features = ["test-support", "broker-transport", "native"] }
+automerge.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

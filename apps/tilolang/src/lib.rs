@@ -18,6 +18,7 @@ pub mod app;
 #[cfg(target_os = "linux")]
 pub mod hosted;
 pub mod i18n;
+
 pub mod names;
 #[cfg(test)]
 pub mod packages;
@@ -36,7 +37,7 @@ use ui::application::ApplicationDefinition;
 pub const UNBUNDLED_ID: &str = "so.tilo.lang";
 
 /// The record kind of an app's room record.
-pub const RECORD_KIND: &str = "tilolang.room";
+pub const RECORD_KIND: &str = tilolang_tilo::RECORD_KIND;
 
 /// The variable the launcher names the package's signed id with.
 pub const PACKAGE_ID_ENV: &str = "TILO_PACKAGE_ID";
@@ -119,10 +120,16 @@ pub fn definition() -> &'static ApplicationDefinition {
         }
         let Some(bundle) = installed_bundle() else {
             #[cfg(test)]
-            ui::app_surface::register_package(UNBUNDLED_ID, &packages::surface());
+            match packages::surface() {
+                Ok(surface) => ui::app_surface::register_package(UNBUNDLED_ID, &surface),
+                Err(error) => tracing::error!(error, "the built-in packages' surface is unusable"),
+            }
             return;
         };
-        ui::app_surface::register_package(&bundle.meta.app, &bundle.surface());
+        match bundle.surface() {
+            Ok(surface) => ui::app_surface::register_package(&bundle.meta.app, &surface),
+            Err(error) => tracing::error!(%error, "the package's surface is unusable"),
+        }
     });
     ui::framework::definition::<app::TlApp>()
 }

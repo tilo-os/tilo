@@ -131,12 +131,20 @@ impl Convert<'_> {
                 name: self.names.name(who),
             }),
             Value::Error(text) => wire::Value::Error(text.clone()),
+            Value::Map(entries) => wire::Value::Map(
+                entries
+                    .iter()
+                    .map(|(key, value)| (self.value(key), self.value(value)))
+                    .collect(),
+            ),
+            Value::Offered(offered) => wire::Value::Action((**offered).clone()),
             Value::Unit
             | Value::Coll(_)
             | Value::Action(_)
             | Value::Node(_)
             | Value::Rec(_)
             | Value::Event
+            | Value::EventPart(_)
             | Value::State { .. }
             | Value::AtEvent { .. } => wire::Value::Unit,
         }
@@ -277,11 +285,16 @@ pub fn runtime_value(value: &wire::Value) -> Option<Value> {
         wire::Value::Principal(who) => {
             Value::Principal(crate::runtime::Principal::new(who.id.clone()))
         }
+        // What a drop carries: the card and its place.
+        wire::Value::List(items) => {
+            Value::List(items.iter().map(runtime_value).collect::<Option<_>>()?)
+        }
         wire::Value::Unit
-        | wire::Value::List(_)
         | wire::Value::Opt(_)
         | wire::Value::Rich(_)
-        | wire::Value::Error(_) => {
+        | wire::Value::Error(_)
+        | wire::Value::Map(_)
+        | wire::Value::Action(_) => {
             return None;
         }
     })

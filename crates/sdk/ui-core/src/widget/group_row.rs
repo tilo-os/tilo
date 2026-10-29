@@ -35,8 +35,11 @@ use edges::RowEdgeDrag;
 #[path = "group_row_hint_places.rs"]
 mod hint_places;
 pub use hint_places::HintPlaces;
+#[path = "group_row_canvas.rs"]
+mod canvas;
 #[path = "group_row_scroll.rs"]
 mod scroll;
+pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};
 pub use scroll::{JUMP_PX_PER_DETENT, WheelJumpAccum, wheel_jump_detents};
 use scroll::{SnapTiming, snap_motion, strip_motion};
 
@@ -435,6 +438,15 @@ pub struct GroupRow {
     /// The desktop's coordinates in the scene the current lane is drawn
     /// into ([`WindowGroup::draw_docked_strip`]).
     drawing_desktop: Affine,
+    /// Where the row's windows stand on a canvas, while it shows one
+    /// instead of its strip ([`canvas`]).
+    canvas: Option<CanvasView>,
+    /// The canvas place of the window a drag is carrying, as it was when
+    /// the drag began.
+    canvas_drag_from: Option<Rect>,
+    /// A window carried to a new canvas place, for the host to keep
+    /// ([`Self::take_pending_canvas_move`]).
+    pending_canvas_move: Option<(u64, Rect)>,
 }
 
 /// What of a group at `rect` the draw viewport shows across, measured from
@@ -1376,6 +1388,9 @@ impl GroupRow {
             strip_desktop_shift: Vec::new(),
             drawing_desktop: Affine::IDENTITY,
             pan_unkept: Vec::new(),
+            canvas: None,
+            canvas_drag_from: None,
+            pending_canvas_move: None,
         }
     }
 
@@ -1444,6 +1459,9 @@ impl GroupRow {
         let Some(group) = self.groups.get(i) else {
             return false;
         };
+        if self.canvas.is_some() {
+            return false;
+        }
         if group.maximized || self.fullscreen_group == Some(group.id) {
             return false;
         }
@@ -3633,6 +3651,10 @@ impl GroupRow {
             // Pulled, never placed: there is no gap to drop it in.
             return true;
         }
+        if drag.moved && self.canvas.is_some() {
+            self.carry_on_canvas(drag.group_id, self.last_cursor - drag.start);
+            return true;
+        }
         if drag.moved {
             let (target, lane) = self.group_insertion_for(self.last_cursor);
             self.group_reorder_target = Some(target);
@@ -3665,6 +3687,10 @@ impl GroupRow {
             }
             self.group_reorder_target = None;
             self.group_reorder_lane = None;
+            return claimed;
+        }
+        if self.canvas.is_some() {
+            self.put_down_on_canvas(drag.group_id, commit && drag.moved);
             return claimed;
         }
         let lane = self.group_reorder_lane.take();
@@ -4276,6 +4302,15 @@ impl GroupRow {
             .collect();
         let runs = self.lanes.len().max(1);
         let mut maximized_in: Vec<Option<usize>> = vec![None; runs];
+        // On a canvas every window keeps its own place: none takes the
+        // screen from the others.
+        if self.canvas.is_some() {
+            return RowPlan {
+                lane_of,
+                maximized_in,
+                covered_lane: None,
+            };
+        }
         if let Some(fs) = self.fullscreen_idx()
             && let Some(slot) = maximized_in.get_mut(lane_of.get(fs).copied().unwrap_or(0))
         {
@@ -4302,6 +4337,10 @@ impl GroupRow {
     /// partitioned strip (one between two lanes is parked out of layout),
     /// and while no window is maximized otherwise.
     fn handles_laid(&self, plan: &RowPlan) -> bool {
+        // Windows on a canvas share no seams.
+        if self.canvas.is_some() {
+            return false;
+        }
         !self.lanes.is_empty() || plan.maximized_in.first().copied().flatten().is_none()
     }
 
@@ -4313,6 +4352,9 @@ impl GroupRow {
     /// silently shrinks siblings on every spawn, violating the
     /// infinite-strip invariant.
     fn group_node_style(&self, plan: &RowPlan, i: usize, own: Style) -> Style {
+        if let (Some(view), Some(group)) = (&self.canvas, self.groups.get(i)) {
+            return Self::canvas_node_style(view, group.id, own);
+        }
         let mut style = own;
         style.flex_shrink = 0.0;
         let lane = plan.lane_of.get(i).copied().unwrap_or(0);
@@ -4380,7 +4422,7 @@ impl GroupRow {
         } else {
             Display::Flex
         };
-        let children: Vec<NodeId> = if self.lanes.is_empty() {
+        let children: Vec<NodeId> = if self.lanes.is_empty() || self.canvas.is_some() {
             // Interleave handle nodes between group nodes:
             // `[g0, h0, g1, h1, …, g_{N-1}]`. Omitted entirely while any
             // group is maximized (no visible gaps to mark).
@@ -4762,6 +4804,12 @@ impl Widget for GroupRow {
         // Portable hosts learn their width here. Rebuild provisional widths
         // in the same bounded settlement, including a same-viewport root swap.
         self.structure_dirty |= !self.width_basis_is_current();
+        if let Some(view) = self.canvas.clone() {
+            self.apply_canvas_layout(taffy, &view);
+            self.sync_handle_neighbours();
+            self.recheck_edge_hover();
+            return;
+        }
         if self.lanes.is_empty() {
             self.pan.viewport = self.rect;
             self.pan.inset = self.leading_inset;
@@ -5010,6 +5058,7 @@ impl Widget for GroupRow {
             let max_scroll = pan.max_scroll_x();
             let pad = self.lane_canvas_pad(pan);
             let unbake = crate::retained_present::unbake_scroll()
+                && self.canvas.is_none()
                 && pan_within_canvas(scroll, max_scroll, pad);
             let clip_right = if unbake {
                 viewport.x1 + max_scroll + 2.0 * pad
@@ -5462,7 +5511,7 @@ impl Widget for GroupRow {
             return false;
         }
         let plan = self.plan_layout();
-        let partitioned = !self.lanes.is_empty();
+        let partitioned = !self.lanes.is_empty() && self.canvas.is_none();
         if partitioned
             && (plan.lane_of != self.laid_lanes
                 || plan.collapsed(self.lanes.len()) != self.laid_collapsed
@@ -6114,7 +6163,8 @@ impl GroupRow {
             .groups
             .iter()
             .any(super::window_group::WindowGroup::drag_in_flight);
-        if any_drag || maximized_idx.is_some() {
+        // Windows on a canvas share no seams to draw.
+        if any_drag || maximized_idx.is_some() || self.canvas.is_some() {
             return;
         }
         let now = crate::motion::frame_now();

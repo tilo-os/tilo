@@ -1,4 +1,4 @@
-//! Agents' programs: a session over Notes and Todo that finds, reads, acts, keeps its `let`s
+//! Agents' programs: a session over Notes and Tasks that finds, reads, acts, keeps its `let`s
 //! between programs, asks where the agent's code is not trusted, and teaches on errors.
 
 #[cfg(test)]
@@ -13,7 +13,7 @@ mod cases {
         AmStore, InvokeOutcome, Principal, ResourceRef, Runtime, SimpleAuthority, Value,
     };
 
-    const TODO: &str = include_str!("../../../../apps/tl/todo/app.tl");
+    const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
     const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 
     struct World {
@@ -35,7 +35,7 @@ mod cases {
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
         todo.load(&rt);
         notes_app.load(&rt);
-        let list = rt.create("TodoList").unwrap();
+        let list = rt.create("Tasks").unwrap();
         let nb = rt.create("Notes").unwrap();
         let mut notes = Vec::new();
         let mut titled = Vec::new();
@@ -85,7 +85,7 @@ mod cases {
 
     impl World {
         fn list_literal(&self) -> String {
-            format!("@todo.TodoList:{}", self.list.id_string())
+            format!("@tasks.Tasks:{}", self.list.id_string())
         }
 
         fn todo_titles(&self) -> Vec<String> {
@@ -133,7 +133,7 @@ mod cases {
             &w.rt,
             &agent(),
             &format!(
-                "let hits = find(\"Note launch\")\nfor n in hits {{\n    todo.add({}, \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
+                "let hits = find(\"Note launch\")\nfor n in hits {{\n    tasks.add({}, \"Follow up: {{n.title}}\")\n}}\nprint(hits.len(), \"notes\")\nhits",
                 w.list_literal()
             ),
         );
@@ -167,8 +167,18 @@ mod cases {
         assert!(literal.starts_with("@notes.Note:"), "{out}");
         let read = session.run(&w.rt, &agent(), &format!("print(read({literal}))"));
         let text = done(&read);
-        assert!(text.contains("title: Groceries"), "{text}");
-        assert!(text.contains("pinned: false"), "{text}");
+        assert!(
+            text.starts_with(&format!("{literal} \"Groceries\"  Note: 1 paragraph")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("{literal} title  Groceries")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("{literal} .pinned  false")),
+            "{text}"
+        );
     }
 
     #[test]
@@ -178,7 +188,7 @@ mod cases {
         let reply = session.run(
             &w.rt,
             &agent(),
-            "let all = find(\"launch\")\nprint(all.of(Note).len(), all.of(Todo).len())",
+            "let all = find(\"launch\")\nprint(all.of(Note).len(), all.of(Task).len())",
         );
         assert_eq!(done(&reply), "2 0");
         assert_eq!(w.notes.len(), 3);
@@ -192,7 +202,7 @@ mod cases {
             &w.rt,
             &agent(),
             &format!(
-                "print(\"before\")\ntodo.add({}, \"Ask first\")\nprint(\"after\")",
+                "print(\"before\")\ntasks.add({}, \"Ask first\")\nprint(\"after\")",
                 w.list_literal()
             ),
         );
@@ -208,7 +218,7 @@ mod cases {
     fn errors_name_what_was_meant() {
         let w = world();
         let mut session = Session::new();
-        let typo = rejected(&session.run(&w.rt, &agent(), "todo.ad(1)"));
+        let typo = rejected(&session.run(&w.rt, &agent(), "tasks.ad(1)"));
         assert!(typo.contains("did you mean `add`?"), "{typo}");
         let word = rejected(&session.run(&w.rt, &agent(), "prnt(1)"));
         assert!(word.contains("did you mean `print`?"), "{word}");
@@ -231,15 +241,66 @@ mod cases {
     }
 
     #[test]
-    fn a_program_changes_nothing_itself() {
+    fn a_programs_assignment_is_its_apps_field_edit() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
+
+        struct Sent(Rc<RefCell<Vec<Invocation>>>);
+        impl Invoker for Sent {
+            fn invoke(&self, invocation: &Invocation) -> Invoked {
+                self.0.borrow_mut().push(invocation.clone());
+                Invoked::Done(Value::Unit)
+            }
+        }
+
         let w = world();
-        let mut session = Session::new();
-        let reply = session.run(
+        let note = &w.notes[0];
+        let assign = format!(
+            "let n = @notes.Note:{}\nn.title = \"Mine\"",
+            note.id_string()
+        );
+        // A runtime that runs its apps' code itself has nowhere to send it: the program never
+        // writes the record.
+        let reply = Session::new().run(&w.rt, &agent(), &assign);
+        let ProgramOutcome::Failed(why) = &reply.outcome else {
+            panic!("an edit with nowhere to go ran: {:?}", reply.outcome);
+        };
+        assert!(why.contains("through its app"), "{why}");
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        w.rt.set_invoker(Sent(Rc::clone(&sent)));
+        let reply = Session::new().run(&w.rt, &agent(), &assign);
+        done(&reply);
+        let sent = sent.borrow();
+        let [
+            Invocation::Edit {
+                field,
+                value,
+                target,
+                ..
+            },
+        ] = sent.as_slice()
+        else {
+            panic!("one field edit: {sent:?}");
+        };
+        assert_eq!((field.as_str(), value), ("title", &Value::text("Mine")));
+        assert_eq!(target.id_string(), note.id_string());
+        assert_ne!(
+            w.rt.read(note, "title").unwrap(),
+            Value::text("Mine"),
+            "the program wrote nothing itself"
+        );
+    }
+
+    #[test]
+    fn a_collection_changes_through_its_apps_actions() {
+        let w = world();
+        let reply = Session::new().run(
             &w.rt,
             &agent(),
-            &format!("let l = {}\nl.name = \"Mine\"", w.list_literal()),
+            &format!("let l = {}\nl.items = l.items", w.list_literal()),
         );
         let lines = rejected(&reply);
-        assert!(lines.contains("only an action"), "{lines}");
+        assert!(lines.contains("'s actions"), "{lines}");
     }
 }

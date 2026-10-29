@@ -2424,7 +2424,7 @@ impl crate::widget::controls::ActionControls for NavList {
 }
 
 mod component;
-pub use component::{NavItemProps, NavListProps};
+pub use component::{NavEntry, NavItemProps, NavListProps, NavSectionProps};
 
 impl crate::resources::PublishesResources for NavList {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {

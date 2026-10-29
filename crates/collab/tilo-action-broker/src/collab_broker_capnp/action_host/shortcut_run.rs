@@ -49,8 +49,9 @@ impl CapnpBrokerState {
                 .map(|job| self.receipt_for(request.invocation, job))
                 .ok_or(ActionHostError::UnknownInvocation);
         }
-        let Some(shortcut) = self.saved_shortcut(caller, room, shortcut_id) else {
-            return Err(abandon(ActionHostError::UnknownAction));
+        let shortcut = match self.saved_shortcut(caller, room, shortcut_id) {
+            Ok(shortcut) => shortcut,
+            Err(refused) => return Err(abandon(refused)),
         };
         let inputs = match &request.argument {
             tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
@@ -133,9 +134,7 @@ impl CapnpBrokerState {
         inputs: serde_json::Map<String, serde_json::Value>,
         from: Option<tilo_automation::Continuation>,
     ) -> Result<u64, ActionHostError> {
-        let shortcut = self
-            .saved_shortcut(caller, room, shortcut_id)
-            .ok_or(ActionHostError::UnknownAction)?;
+        let shortcut = self.saved_shortcut(caller, room, shortcut_id)?;
         let origin = match &from {
             Some(continuation) => Some(self.earlier_run(continuation, shortcut_id)?),
             None => None,
@@ -217,9 +216,7 @@ impl CapnpBrokerState {
         run: tilo_automation::RunId,
         inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionHostError> {
-        let shortcut = self
-            .saved_shortcut(caller, room, shortcut_id)
-            .ok_or(ActionHostError::UnknownAction)?;
+        let shortcut = self.saved_shortcut(caller, room, shortcut_id)?;
         // The one rule arming holds too: started for its saver only, the
         // person a device of theirs proved saved it in this room.
         let actor = BrokerActor::for_caller(caller).id;
@@ -307,20 +304,33 @@ impl CapnpBrokerState {
 
     /// Shortcut `shortcut_id` as saved in `room`, when `caller` is offered
     /// that workspace.
+    ///
+    /// # Errors
+    /// [`ActionHostError::UnknownAction`] for a shortcut not saved there (or
+    /// a workspace not offered); [`ActionHostError::Unavailable`] with the
+    /// reason for a saved shortcut whose record does not decode.
     fn saved_shortcut(
         &self,
         caller: &Caller,
         room: &str,
         shortcut_id: &str,
-    ) -> Option<tilo_automation::Shortcut> {
+    ) -> Result<tilo_automation::Shortcut, ActionHostError> {
         self.decide_for(caller, room, |workspace, _, _| {
             workspace
                 .shortcuts
                 .iter()
                 .find(|shortcut| shortcut.id() == shortcut_id)
-                .and_then(|shortcut| shortcut.decode().ok())
+                .map(|shortcut| {
+                    shortcut.decode().map_err(|error| {
+                        tracing::warn!(room, shortcut = shortcut_id, %error, "saved shortcut does not decode");
+                        ActionHostError::Unavailable {
+                            reason: format!("the saved shortcut cannot be read: {error}"),
+                        }
+                    })
+                })
         })
         .flatten()
+        .unwrap_or(Err(ActionHostError::UnknownAction))
     }
 
     /// Run `shortcut` as `caller` through this broker, reporting on a new

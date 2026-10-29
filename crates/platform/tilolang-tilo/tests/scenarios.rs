@@ -19,13 +19,13 @@ macro_rules! app {
 fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
     vec![
         ("so.tilo.lang.counter", vec![app!("counter")]),
-        ("so.tilo.lang.todo", vec![app!("todo")]),
+        ("so.tilo.lang.tasks", vec![app!("tasks")]),
         ("so.tilo.lang.notes", vec![app!("notes")]),
-        ("so.tilo.lang.letters", vec![app!("letters")]),
+        ("so.tilo.lang.mail", vec![app!("mail")]),
         ("so.tilo.lang.chat", vec![app!("chat")]),
         (
             "so.tilo.lang.today",
-            vec![app!("notes"), app!("todo"), app!("chat"), app!("today")],
+            vec![app!("notes"), app!("tasks"), app!("chat"), app!("today")],
         ),
     ]
 }
@@ -76,7 +76,7 @@ fn every_scenario_of_every_app_seeds_its_root_and_the_first_fills_a_list_past_a_
 /// once their scenarios fill them.
 #[test]
 fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
-    let packages = vec![app!("notes"), app!("todo"), app!("chat"), app!("today")];
+    let packages = vec![app!("notes"), app!("tasks"), app!("chat"), app!("today")];
     let (mut replica, loaded) = Replica::new("ada", AutoCommit::new(), &packages);
     replica.host.root_of("so.tilo.lang.today").unwrap();
     replica.commit();
@@ -94,11 +94,11 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
     }
     view.poll_patches().unwrap();
     // Each card counts what its app's scenario made: the open todos, the pinned notes and the
-    // conversations.
+    // chat's channels and categories at the top of its sidebar.
     let counts: Vec<String> = format!("{:?}", view.tree())
         .split("\"count\": Int(")
         .skip(1)
         .filter_map(|rest| rest.split(')').next().map(str::to_owned))
         .collect();
-    assert_eq!(counts, ["10", "3", "12"]);
+    assert_eq!(counts, ["9", "3", "4"]);
 }
