@@ -12,7 +12,7 @@ use smithay::input::pointer::PointerHandle;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::utils::{Logical, Point};
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::content_type::ContentTypeState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
@@ -211,10 +211,9 @@ impl XdgActivationHandler for State {
         token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
-        if token_data.timestamp.elapsed() < ACTIVATION_TIMEOUT
-            && let Some(window) = self.window_of(&surface)
-        {
-            self.focus_window(&window, SERIAL_COUNTER.next_serial());
+        if let Some(window) = self.window_of(&surface) {
+            let fresh = token_data.timestamp.elapsed() < ACTIVATION_TIMEOUT;
+            self.activation_requested(&window, fresh);
         }
         self.protocols.activation.remove_token(&token);
     }

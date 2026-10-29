@@ -12,6 +12,7 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 pub use smithay::input::pointer::CursorIcon;
 
 use crate::input::HostKey;
+use crate::keys::KeyClaim;
 
 /// One buffer a hosted surface shows, at a position in the logical layout.
 #[derive(Debug, Clone)]
@@ -52,6 +53,10 @@ pub trait SurfaceHost {
     /// A pointer button (evdev code) changed state over the surface.
     fn pointer_button(&mut self, button: u32, pressed: bool);
 
+    /// A pointer button was pressed somewhere other than this surface (a
+    /// window, the desk, another surface): an open popover closes.
+    fn pressed_elsewhere(&mut self) {}
+
     /// Scroll over the surface, in logical pixels.
     fn pointer_axis(&mut self, _horizontal: f64, _vertical: f64) {}
 
@@ -61,8 +66,18 @@ pub trait SurfaceHost {
         false
     }
 
-    /// A key, while [`SurfaceHost::wants_keyboard`] holds.
+    /// A key, while [`SurfaceHost::wants_keyboard`] holds, or one this
+    /// surface claimed (its press, repeats and release).
     fn key(&mut self, _key: &HostKey) {}
+
+    /// Offered every press before whoever has the keyboard gets it, the
+    /// topmost surface first: a desktop chord or a hardware key this
+    /// surface answers wherever the keyboard is. `locked` while the session
+    /// is locked, when only keys that reveal nothing (volume, brightness)
+    /// may be taken.
+    fn claim_key(&mut self, _key: &HostKey, _locked: bool) -> KeyClaim {
+        KeyClaim::Pass
+    }
 
     /// A frame is about to be drawn: bring the layers up to date.
     fn prepare_frame(&mut self) {}

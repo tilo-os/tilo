@@ -33,6 +33,7 @@ pub mod gestures;
 pub mod host;
 pub mod idle;
 pub mod input;
+pub mod keys;
 mod lock;
 pub mod output;
 mod output_management;
@@ -75,6 +76,7 @@ pub use idle::{IdleConfig, SessionTransition};
 pub use input::{
     GestureEvent, HostKey, InputEvent, KeyModifiers, Switch, TabletEvent, TabletPhase,
 };
+pub use keys::{KeyClaim, KeyRepeat};
 pub use output::{ModeRequest, OutputChange, OutputConfig};
 pub use policy::{Arrangement, ResizeEdges, StackPolicy, WindowInfo, WindowPolicy, WindowRequest};
 pub use selection::Selection;
@@ -191,17 +193,29 @@ impl Compositor {
     /// Run until `stop` holds or the backend is done: wait for clients, devices and due frames,
     /// handle them and draw.
     pub fn run(&mut self, mut stop: impl FnMut(&Self) -> bool) -> Result<(), Error> {
-        /// The longest the loop sleeps with nothing due, so `stop` is asked.
-        const IDLE: Duration = Duration::from_millis(250);
-        while !self.data.backend.closed() && !stop(self) {
-            let timeout = self.data.backend.next_deadline().map_or(IDLE, |at| {
-                at.saturating_duration_since(std::time::Instant::now())
-                    .min(IDLE)
-            });
+        while !self.closed() && !stop(self) {
+            let timeout = self.next_wait();
             self.dispatch(timeout)?;
             self.render()?;
         }
         Ok(())
+    }
+
+    /// Whether the backend is done (its window closed, its seat gone).
+    pub fn closed(&self) -> bool {
+        self.data.backend.closed()
+    }
+
+    /// How long a loop may wait for clients and devices before the next
+    /// frame is due.
+    pub fn next_wait(&self) -> Duration {
+        /// The longest the loop sleeps with nothing due, so a caller's own
+        /// checks still run.
+        const IDLE: Duration = Duration::from_millis(250);
+        self.data.backend.next_deadline().map_or(IDLE, |at| {
+            at.saturating_duration_since(std::time::Instant::now())
+                .min(IDLE)
+        })
     }
 
     /// Add an output the backend simulates.
@@ -273,9 +287,14 @@ impl Compositor {
     /// Wait up to `timeout` for client requests or backend events, handle
     /// them and flush the answers.
     pub fn dispatch(&mut self, timeout: Duration) -> Result<(), Error> {
+        // A held key's next repeat for a hosted surface wakes the loop.
+        let timeout = self.data.state.host_keys.next_due().map_or(timeout, |due| {
+            timeout.min(due.saturating_duration_since(std::time::Instant::now()))
+        });
         self.event_loop
             .dispatch(Some(timeout), &mut self.data)
             .map_err(io)?;
+        self.data.state.repeat_keys();
         self.display.dispatch_clients(&mut self.data.state)?;
         self.data.state.refresh();
         self.configure_from_clients();
@@ -286,6 +305,27 @@ impl Compositor {
         self.sync_power();
         self.display.flush_clients()?;
         Ok(())
+    }
+
+    /// Magnify the whole scene `zoom` times about the pointer, which stays
+    /// on what it points at; 1 (or less) turns the magnifier off.
+    pub fn set_zoom(&mut self, zoom: f64) {
+        self.data.state.zoom = if zoom.is_finite() { zoom.max(1.0) } else { 1.0 };
+    }
+
+    /// The magnifier's zoom; 1 is off.
+    pub fn zoom(&self) -> f64 {
+        self.data.state.zoom
+    }
+
+    /// How held keys repeat, for clients (the seat's repeat info) and
+    /// hosted surfaces alike.
+    pub fn set_key_repeat(&mut self, repeat: KeyRepeat) {
+        self.data.state.host_keys.repeat = repeat;
+        if let Some(keyboard) = self.data.state.seat.get_keyboard() {
+            let delay = i32::try_from(repeat.delay.as_millis()).unwrap_or(i32::MAX);
+            keyboard.change_repeat_info(i32::try_from(repeat.rate).unwrap_or(i32::MAX), delay);
+        }
     }
 
     /// Switch the panels whose wanted power changed.
@@ -602,6 +642,8 @@ impl Compositor {
     /// accessibility filters) to the backend's devices, now and as they are
     /// plugged in. Backends without devices of their own ignore them.
     pub fn set_input_config(&mut self, config: InputConfig) {
+        let (delay, rate) = config.key_repeat_params();
+        self.set_key_repeat(KeyRepeat { delay, rate });
         let LoopData { state, backend } = &mut self.data;
         backend.set_input_config(state, config);
     }

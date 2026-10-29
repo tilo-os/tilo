@@ -15,6 +15,7 @@ use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::element::{AsRenderElements, Kind};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::output::Output;
@@ -35,6 +36,32 @@ smithay::backend::renderer::element::render_elements! {
     Hosted=MemoryRenderBufferRenderElement<R>,
     /// The idle dim over everything, where no backlight dims.
     Dim=SolidColorRenderElement,
+    /// A client surface under the magnifier.
+    ZoomedSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
+    /// A hosted surface's layer under the magnifier.
+    ZoomedHosted=RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
+}
+
+/// `element` as the magnifier shows it: scaled by `zoom` about `centre`
+/// (output physical pixels), which stays where it is on screen.
+fn zoomed<R>(
+    element: OutputRenderElement<R>,
+    centre: Point<i32, Physical>,
+    zoom: f64,
+) -> OutputRenderElement<R>
+where
+    R: Renderer + ImportAll + ImportMem,
+    R::TextureId: Clone + Send + 'static,
+{
+    match element {
+        OutputRenderElement::Surface(surface) => OutputRenderElement::ZoomedSurface(
+            RescaleRenderElement::from_element(surface, centre, zoom),
+        ),
+        OutputRenderElement::Hosted(hosted) => OutputRenderElement::ZoomedHosted(
+            RescaleRenderElement::from_element(hosted, centre, zoom),
+        ),
+        other => other,
+    }
 }
 
 /// The idle dim's buffer of one output.
@@ -129,5 +156,15 @@ where
         ));
     }
     hosted(renderer, &mut elements, true);
+    if state.zoom > 1.0 {
+        // The magnifier scales the whole scene about the pointer, which
+        // stays on what it points at.
+        let centre: Point<i32, Physical> =
+            (state.pointer - geometry.loc.to_f64()).to_physical_precise_round(scale);
+        elements = elements
+            .into_iter()
+            .map(|element| zoomed(element, centre, state.zoom))
+            .collect();
+    }
     elements
 }

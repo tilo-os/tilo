@@ -72,13 +72,6 @@ impl Input {
         for event in self.access.configure(config.bounce_keys, config.mouse_keys) {
             state.handle_input(event);
         }
-        let (delay, rate) = config.key_repeat_params();
-        if let Some(keyboard) = state.seat.get_keyboard() {
-            keyboard.change_repeat_info(
-                i32::try_from(rate).unwrap_or(i32::MAX),
-                i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
-            );
-        }
         self.config = config;
         input_config::reconfigure_all(&self.config, &mut self.devices);
     }

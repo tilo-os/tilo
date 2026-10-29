@@ -370,6 +370,8 @@ pub struct HostKey {
     pub keycode: u32,
     /// Pressed or released.
     pub pressed: bool,
+    /// A press repeated while the key is held, not a new one.
+    pub repeat: bool,
     /// The keysym with the active modifiers and layout applied.
     pub keysym: u32,
     /// The keysym of the key's first level (no Shift), for shortcuts.

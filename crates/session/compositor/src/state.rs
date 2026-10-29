@@ -39,6 +39,7 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use crate::host::SurfaceHost;
 use crate::input::{HostKey, InputEvent, KeyModifiers};
+use crate::keys::{HostKeys, KeyClaim};
 use crate::policy::{WindowInfo, WindowPolicy};
 
 /// Per-client data every Wayland client carries.
@@ -112,6 +113,10 @@ pub struct State {
     /// Outputs turned off by a display configuration: known, not shown.
     pub(crate) disabled_outputs: Vec<Output>,
     pub(crate) idle: crate::power::Idle,
+    /// The keys hosted surfaces hold, and their repeat.
+    pub(crate) host_keys: HostKeys,
+    /// The magnifier's zoom about the pointer; 1 is off.
+    pub(crate) zoom: f64,
     pub(crate) selections: crate::selection::Selections,
     pub(crate) dnd: crate::dnd::Dnd,
     pub(crate) display_changes: crate::display_change::DisplayChanges,
@@ -171,6 +176,8 @@ impl State {
             capture: crate::capture::Capture::new(display),
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
+            host_keys: HostKeys::default(),
+            zoom: 1.0,
             selections,
             dnd: crate::dnd::Dnd::default(),
             display_changes: crate::display_change::DisplayChanges::default(),
@@ -307,61 +314,7 @@ impl State {
                 horizontal,
                 vertical,
             } => self.pointer_axis(horizontal, vertical, time),
-            InputEvent::Key { keycode, pressed } => {
-                let Some(keyboard) = self.seat.get_keyboard() else {
-                    return;
-                };
-                let state = if pressed {
-                    KeyState::Pressed
-                } else {
-                    KeyState::Released
-                };
-                // evdev codes sit 8 below their XKB keycodes.
-                let code = keycode.saturating_add(8);
-                // The topmost hosted surface that wants the keyboard takes
-                // keys from every client.
-                let host = if self.locked() {
-                    None
-                } else {
-                    self.hosts.iter().rposition(|host| host.wants_keyboard())
-                };
-                let intercepted = keyboard.input(
-                    self,
-                    code.into(),
-                    state,
-                    serial,
-                    time,
-                    |_, modifiers, handle| {
-                        if host.is_none() {
-                            return FilterResult::Forward;
-                        }
-                        let unmodified = handle
-                            .raw_syms()
-                            .first()
-                            .copied()
-                            .unwrap_or_else(|| handle.modified_sym());
-                        FilterResult::Intercept(HostKey {
-                            keycode,
-                            pressed,
-                            keysym: handle.modified_sym().raw(),
-                            unmodified_keysym: unmodified.raw(),
-                            text: handle.modified_sym().key_char().filter(|c| !c.is_control()),
-                            modifiers: KeyModifiers {
-                                ctrl: modifiers.ctrl,
-                                alt: modifiers.alt,
-                                shift: modifiers.shift,
-                                logo: modifiers.logo,
-                                caps_lock: modifiers.caps_lock,
-                            },
-                        })
-                    },
-                );
-                if let (Some(index), Some(key)) = (host, intercepted)
-                    && let Some(host) = self.hosts.get_mut(index)
-                {
-                    host.key(&key);
-                }
-            }
+            InputEvent::Key { keycode, pressed } => self.key(keycode, pressed, serial, time),
             InputEvent::TouchDown { slot, x, y } => {
                 self.touch_down(slot, Point::from((x, y)), serial, time);
             }
@@ -374,6 +327,97 @@ impl State {
             InputEvent::Tablet(event) => self.tablet_input(&event, serial, time),
             InputEvent::Gesture(gesture) => self.gesture(gesture, serial, time),
             InputEvent::Switch { switch, on } => self.policy.switch(switch, on),
+        }
+    }
+
+    /// Route a key: a press to the hosted surface that claims it, else to
+    /// the topmost one that wants the keyboard, else to the focused client;
+    /// a release to where its press went ([`crate::keys`]).
+    fn key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let key_state = if pressed {
+            KeyState::Pressed
+        } else {
+            KeyState::Released
+        };
+        // evdev codes sit 8 below their XKB keycodes.
+        let code = keycode.saturating_add(8);
+        let routed = keyboard.input(
+            self,
+            code.into(),
+            key_state,
+            serial,
+            time,
+            |state, modifiers, handle| {
+                let unmodified = handle
+                    .raw_syms()
+                    .first()
+                    .copied()
+                    .unwrap_or_else(|| handle.modified_sym());
+                let key = HostKey {
+                    keycode,
+                    pressed,
+                    repeat: false,
+                    keysym: handle.modified_sym().raw(),
+                    unmodified_keysym: unmodified.raw(),
+                    text: handle.modified_sym().key_char().filter(|c| !c.is_control()),
+                    modifiers: KeyModifiers {
+                        ctrl: modifiers.ctrl,
+                        alt: modifiers.alt,
+                        shift: modifiers.shift,
+                        logo: modifiers.logo,
+                        caps_lock: modifiers.caps_lock,
+                    },
+                };
+                if !pressed {
+                    return state
+                        .host_keys
+                        .release(keycode)
+                        .map_or(FilterResult::Forward, |host| {
+                            FilterResult::Intercept((host, key))
+                        });
+                }
+                let locked = state.locked();
+                let now = Instant::now();
+                for index in (0..state.hosts.len()).rev() {
+                    let claim = state
+                        .hosts
+                        .get_mut(index)
+                        .map_or(KeyClaim::Pass, |host| host.claim_key(&key, locked));
+                    if claim != KeyClaim::Pass {
+                        let repeats = claim == KeyClaim::TakeRepeating;
+                        state.host_keys.press(index, &key, repeats, now);
+                        return FilterResult::Intercept((index, key));
+                    }
+                }
+                // The topmost hosted surface that wants the keyboard takes
+                // keys from every client.
+                let wanting = (!locked)
+                    .then(|| state.hosts.iter().rposition(|host| host.wants_keyboard()))
+                    .flatten();
+                let Some(index) = wanting else {
+                    return FilterResult::Forward;
+                };
+                let repeats = !handle.modified_sym().is_modifier_key();
+                state.host_keys.press(index, &key, repeats, now);
+                FilterResult::Intercept((index, key))
+            },
+        );
+        if let Some((index, key)) = routed
+            && let Some(host) = self.hosts.get_mut(index)
+        {
+            host.key(&key);
+        }
+    }
+
+    /// Hand hosted surfaces the repeats of the keys they hold that are due.
+    pub(crate) fn repeat_keys(&mut self) {
+        for (index, key) in self.host_keys.due(Instant::now()) {
+            if let Some(host) = self.hosts.get_mut(index) {
+                host.key(&key);
+            }
         }
     }
 
@@ -455,6 +499,14 @@ impl State {
     pub(crate) fn pointer_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
         if self.drag_button(button, pressed, serial, time) {
             return;
+        }
+        if pressed {
+            let target = self.pointer_target;
+            for (index, host) in self.hosts.iter_mut().enumerate() {
+                if target != PointerTarget::Host(index) {
+                    host.pressed_elsewhere();
+                }
+            }
         }
         if let PointerTarget::Host(index) = self.pointer_target {
             if let Some(host) = self.hosts.get_mut(index) {
@@ -654,6 +706,15 @@ impl State {
 struct WindowId(u64);
 
 impl State {
+    /// `window` asked for the keyboard: it gets it when the policy says so
+    /// ([`WindowPolicy::activate`]).
+    pub(crate) fn activation_requested(&mut self, window: &Window, fresh: bool) {
+        let focus = describe(window).map_or(fresh, |info| self.policy.activate(&info, fresh));
+        if focus {
+            self.focus_window(window, SERIAL_COUNTER.next_serial());
+        }
+    }
+
     /// Focus the window under `point` if the policy focuses on click, as a
     /// pointer press or a touch there does.
     pub(crate) fn focus_on_press(&mut self, point: Point<f64, Logical>, serial: Serial) {
