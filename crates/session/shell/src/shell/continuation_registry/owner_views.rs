@@ -1,8 +1,8 @@
 //! Coalesced session-local views. The caller supplies accepted ledger winners
 //! and a current, already enrolled personal route; raw wire entries never enter.
 use super::{AppInstanceId, LaunchIntent, ResumeMetadata, RoomId};
+use crate::shell::continuation::{AppInstanceState, ContinuityStamp};
 use crate::shell::network::AuthenticatedPersonalRoute;
-use crate::shell::personal_continuity::ContinuityStamp;
 use collab_types::handoff::{OwnerProjection, OwnerView};
 use std::collections::BTreeMap;
 
@@ -158,33 +158,23 @@ impl OwnerViews {
         self.claims.insert(key, self.revision);
     }
 
-    pub(super) fn acknowledge(
-        &mut self,
-        revision: u64,
-        snapshot: &crate::shell::personal_continuity::DeviceContinuationSnapshot,
-    ) {
-        for workspace in &snapshot.workspaces {
-            for app in &workspace.apps {
-                let LaunchIntent::App { app_id } = &app.launch else {
-                    continue;
-                };
-                let key = (
-                    workspace.room,
-                    app_id.clone(),
-                    app.record_instance.unwrap_or(app.id),
-                );
-                if self.claims.get(&key).is_none_or(|claim| *claim > revision) {
-                    continue;
-                }
-                let Some(resume) = app.resume.as_ref() else {
-                    continue;
-                };
-                self.claims.remove(&key);
-                self.live.remove(&key);
-                self.offer(key.clone(), app.stamp.clone(), resume, None);
-                if let Some(ack) = self.pending.remove(&key) {
-                    self.acknowledgements.insert(key, ack);
-                }
+    pub(super) fn acknowledge(&mut self, revision: u64, room: RoomId, apps: &[AppInstanceState]) {
+        for app in apps {
+            let LaunchIntent::App { app_id } = &app.launch else {
+                continue;
+            };
+            let key = (room, app_id.clone(), app.record_instance.unwrap_or(app.id));
+            if self.claims.get(&key).is_none_or(|claim| *claim > revision) {
+                continue;
+            }
+            let Some(resume) = app.resume.as_ref() else {
+                continue;
+            };
+            self.claims.remove(&key);
+            self.live.remove(&key);
+            self.offer(key.clone(), app.stamp.clone(), resume, None);
+            if let Some(ack) = self.pending.remove(&key) {
+                self.acknowledgements.insert(key, ack);
             }
         }
     }

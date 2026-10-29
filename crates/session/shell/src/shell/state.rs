@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
-mod continuation_labels;
 mod local_app_records;
 mod personal_apps;
 mod room_binding;
@@ -16,7 +15,6 @@ pub mod workspace_layout;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
-pub use continuation_labels::{ContinuationLabels, UnresolvedContinuationLabels};
 pub use local_app_records::LocalAppRecord;
 pub use personal_apps::is_personal_app;
 pub(crate) use room_binding::room_holds_files;
@@ -686,8 +684,8 @@ pub fn read_local_presence_hue() -> collab_types::presence::PresenceHue {
 
 /// Whether `room` is the local person's own room. It is never a workspace:
 /// it has no roster to invite anyone into, and its records travel only
-/// between that person's devices, so no invite, enrollment or continuation
-/// may turn it into a room collaborators share.
+/// between that person's devices, so no invite or enrollment may turn it
+/// into a room collaborators share.
 pub fn is_local_person_room(room: RoomId) -> bool {
     collab_types::person_room_of(&local_user_id()) == Some(room.as_uuid())
 }
@@ -853,30 +851,29 @@ pub struct WorkspaceTree {
     /// ([`Self::capture_workspace_layout`]).
     #[serde(skip)]
     pub layout_captured: HashMap<RoomId, workspace_layout::Captured>,
-    /// Tabs created from same-identity continuation rather than from this
-    /// machine's ordinary layout.  Persisting this marker lets a later
-    /// checkpoint remove a remote close without ever deleting a local tab
-    /// that happened to use the same app id.
-    #[serde(default)]
-    pub continuation_tabs: BTreeSet<TabId>,
     /// The person this device is certified for (their user root key), when
     /// the identity layer has certified it. Rooms that person owns are
     /// governed by any of their devices.
     #[serde(skip)]
     pub local_person: Option<[u8; 32]>,
-    /// Offered tabs this device has actively taken over. Kept separately so
-    /// a launch immediately followed by a close still emits a tombstone even
-    /// if no periodic checkpoint ran between those events.
-    #[serde(default)]
-    pub continuation_owned_tabs: HashMap<TabId, RoomId>,
-    #[serde(default)]
-    pub continuation_closed_tabs: HashMap<TabId, RoomId>,
-    /// Safe record-only file cards received through personal continuity.
-    /// The value has hashes/references only; it intentionally never contains
-    /// a local pathname or thumbnail bytes.
-    #[serde(default)]
-    pub continuation_file_references:
-        HashMap<TabId, crate::shell::personal_continuity::LaunchIntent>,
+    /// The person's documents another of their devices has open, by the
+    /// window showing them here, as the layout records' continuations name
+    /// them ([`workspace_layout`]). References and hashes only: never a
+    /// local pathname or thumbnail bytes.
+    #[serde(skip)]
+    pub continuation_file_references: HashMap<TabId, crate::shell::continuation::LaunchIntent>,
+    /// This device, when it notes in the layout records how its windows
+    /// resume and which one it is on, and reads its other devices' notes
+    /// ([`workspace_layout`]). `None` while app continuations are off or the
+    /// device has no certified identity.
+    #[serde(skip)]
+    pub continuation_device: Option<tilo_network_actor::fabric::DeviceId>,
+    /// What this device last noted of each window it resumes, by room: a
+    /// note another device of the person wrote since is theirs to keep until
+    /// this device's own state changes.
+    #[serde(skip)]
+    pub continuation_written:
+        HashMap<(RoomId, TabId), crate::shell::continuation::AppInstanceState>,
     /// Native hosted documents on this device. Paths stay in local `state.json`;
     /// room projection deliberately has no corresponding field.
     #[serde(default)]
@@ -977,11 +974,10 @@ impl Default for WorkspaceTree {
             strips_to_retain: BTreeSet::new(),
             layout_docs: HashMap::new(),
             layout_captured: HashMap::new(),
-            continuation_tabs: BTreeSet::new(),
             local_person: None,
-            continuation_owned_tabs: HashMap::new(),
-            continuation_closed_tabs: HashMap::new(),
             continuation_file_references: HashMap::new(),
+            continuation_device: None,
+            continuation_written: HashMap::new(),
             native_document_tabs: HashMap::new(),
             local_app_records: HashMap::new(),
             package_launches: HashMap::new(),
@@ -3301,8 +3297,7 @@ impl WorkspaceTree {
     }
 
     /// Forget each mark that a room is being joined with no enrollment into
-    /// it in flight: the person's continuity once marked the rooms it named
-    /// without entering them anywhere, and a mark nothing is entering would
+    /// it in flight: a mark nothing is entering would
     /// keep the room from ever being entered. The mark is bookkeeping;
     /// the room's workspace stays as it is. Answers the rooms whose mark
     /// went.
@@ -3568,249 +3563,6 @@ impl WorkspaceTree {
             self.queue_save();
         }
         moved
-    }
-
-    /// Turn a synchronized offer into a locally-owned live app. The Wayland
-    /// toplevel adoption handshake is the only caller: merely receiving or
-    /// painting an offer must not make this device echo it.
-    pub fn claim_continuation_tab(&mut self, tab: TabId) -> bool {
-        if !self.continuation_tabs.remove(&tab) {
-            return false;
-        }
-        self.continuation_file_references.remove(&tab);
-        if let Some(room) = self.desktop.workspaces.iter().find_map(|workspace| {
-            workspace
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .any(|candidate| candidate.id == tab)
-                .then_some(workspace.room())
-        }) {
-            self.continuation_closed_tabs.remove(&tab);
-            self.continuation_owned_tabs.insert(tab, room);
-        }
-        true
-    }
-
-    /// Materialize another device's continuation as synchronized placeholder
-    /// tabs, titled by the session's `labels`. This never activates a
-    /// workspace, strip, or group; the compositor opens the matching local
-    /// apps through its normal authorized launch path.
-    #[allow(
-        clippy::too_many_lines,
-        clippy::indexing_slicing,
-        reason = "continuation materialization grows strips and groups until the validated placement indices exist before indexing them"
-    )]
-    pub fn materialize_continuation_workspace(
-        &mut self,
-        _source_device: &str,
-        continuation: &crate::shell::personal_continuity::WorkspaceContinuation,
-        labels: &dyn ContinuationLabels,
-    ) -> bool {
-        let salt = self.local_salt();
-        let existing_continuation_tabs = self.continuation_tabs.clone();
-        let (changed, file_references, file_reference_removals, inserted_continuation_tabs) = {
-            let mut file_references = Vec::new();
-            let mut file_reference_removals = Vec::new();
-            let mut inserted_continuation_tabs = Vec::new();
-            let Some(workspace) = self
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room() == continuation.room)
-            else {
-                return false;
-            };
-            let mut changed = false;
-            let mut apps = continuation.apps.clone();
-            apps.sort_by_key(|app| (app.placement.strip, app.placement.group, app.placement.tab));
-            for app in apps {
-                let (title, tile_content) = match &app.launch {
-                    crate::shell::personal_continuity::LaunchIntent::App { app_id } => {
-                        // A newer app winner may reuse the durable tab id of
-                        // an earlier file-reference card.  Do not let the
-                        // old reference override capture after that change.
-                        file_reference_removals.push(app.id.0);
-                        if let Some(resume) = app.resume.clone()
-                            && let Ok(mut registry) =
-                                crate::shell::personal_continuity_registry::global_registry().lock()
-                        {
-                            registry.store_remote_resume(
-                                continuation.room,
-                                app.id,
-                                app_id.clone(),
-                                resume,
-                                app.record_instance.unwrap_or(app.id),
-                            );
-                        } else if let Ok(mut registry) =
-                            crate::shell::personal_continuity_registry::global_registry().lock()
-                        {
-                            registry.store_remote_record(
-                                continuation.room,
-                                app.id,
-                                app_id.clone(),
-                                app.record_instance.unwrap_or(app.id),
-                            );
-                        }
-                        (
-                            // Built on the compositor loop: the installed
-                            // apps as last enumerated, never a registry read.
-                            labels.app_name(app_id).unwrap_or_else(|| app_id.clone()),
-                            TileContent::PeerWindow {
-                                app_id: app_id.clone(),
-                                label: "Available on another device".to_string(),
-                                note: String::new(),
-                                missing: None,
-                            },
-                        )
-                    }
-                    crate::shell::personal_continuity::LaunchIntent::FileReference { .. } => {
-                        file_references.push((app.id.0, app.launch.clone()));
-                        (
-                            labels.file_reference_label(&app.launch),
-                            TileContent::Stub {
-                                kind: AppKind::FileExplorer,
-                                label: "Available on another device".to_string(),
-                            },
-                        )
-                    }
-                };
-                let at = workspace
-                    .strips
-                    .iter()
-                    .enumerate()
-                    .find_map(|(strip_index, strip)| {
-                        strip
-                            .window_groups
-                            .iter()
-                            .enumerate()
-                            .find_map(|(group_index, group)| {
-                                let index = group.tabs.iter().position(|tab| tab.id == app.id.0)?;
-                                Some((strip_index, group_index, index, group))
-                            })
-                    });
-                let exists = at.is_some();
-                if exists && !existing_continuation_tabs.contains(&app.id.0) {
-                    continue;
-                }
-                // Every checkpoint offers every card again: one already
-                // projected as offered stays, so an offer that moved nothing
-                // changes nothing.
-                if let Some((strip_index, group_index, index, group)) = at
-                    && strip_index == app.placement.strip as usize
-                    && group_index == app.placement.group as usize
-                    && index == (app.placement.tab as usize).min(group.tabs.len().saturating_sub(1))
-                    && group.tabs[index].title == title
-                    && group.tabs[index].tile == tile_content
-                {
-                    continue;
-                }
-                // An offer is a projection of its source placement, not a
-                // one-time insertion. Remove the old projected card before
-                // inserting it at the latest ordinal coordinates. Locally
-                // claimed tabs are excluded above and never moved remotely.
-                if exists {
-                    for strip in &mut workspace.strips {
-                        for group in &mut strip.window_groups {
-                            group.tabs.retain(|tab| tab.id != app.id.0);
-                            if group.active_tab == app.id.0 {
-                                group.active_tab = group.tabs.first().map_or(0, |tab| tab.id);
-                            }
-                        }
-                    }
-                }
-                while workspace.strips.len() <= app.placement.strip as usize {
-                    workspace
-                        .strips
-                        .push(Strip::new(StripId(mint_under(salt)), "Available elsewhere"));
-                }
-                let strip = &mut workspace.strips[app.placement.strip as usize];
-                while strip.window_groups.len() <= app.placement.group as usize {
-                    strip.window_groups.push(WindowGroup {
-                        id: mint_under(salt),
-                        tabs: Vec::new(),
-                        active_tab: 0,
-                        width: WindowWidth::Normal,
-                        maximized: false,
-                        focus_history: Vec::new(),
-                    });
-                }
-                let group = &mut strip.window_groups[app.placement.group as usize];
-                let tab = Tab {
-                    id: app.id.0,
-                    title,
-                    tile: tile_content,
-                    app_title: None,
-                };
-                if !existing_continuation_tabs.contains(&app.id.0) {
-                    inserted_continuation_tabs.push(app.id.0);
-                }
-                let index = (app.placement.tab as usize).min(group.tabs.len());
-                group.tabs.insert(index, tab);
-                if group.active_tab == 0 {
-                    // This only defines the group's internal default when the
-                    // person later enters it; it does not touch tree focus maps.
-                    group.activate_tab(app.id.0);
-                }
-                changed = true;
-            }
-            (
-                changed,
-                file_references,
-                file_reference_removals,
-                inserted_continuation_tabs,
-            )
-        };
-        self.continuation_tabs.extend(inserted_continuation_tabs);
-        for tab in file_reference_removals {
-            self.continuation_file_references.remove(&tab);
-        }
-        for (tab, reference) in file_references {
-            self.continuation_file_references.insert(tab, reference);
-        }
-        if changed {
-            self.seed_doc_from_cache();
-            self.queue_save();
-        }
-        changed
-    }
-
-    /// Remove continuation-owned tabs absent from the current deterministic
-    /// winner set. Local user-created tabs are deliberately unmarked and are
-    /// never touched by this reconciliation.
-    pub fn reconcile_continuation_tabs(&mut self, desired: &BTreeSet<TabId>) -> bool {
-        let stale: BTreeSet<_> = self
-            .continuation_tabs
-            .difference(desired)
-            .copied()
-            .collect();
-        if stale.is_empty() {
-            return false;
-        }
-        for workspace in &mut self.desktop.workspaces {
-            for strip in &mut workspace.strips {
-                for group in &mut strip.window_groups {
-                    group.tabs.retain(|tab| !stale.contains(&tab.id));
-                    if stale.contains(&group.active_tab) {
-                        group.active_tab = group.tabs.first().map_or(0, |tab| tab.id);
-                    }
-                }
-            }
-        }
-        self.continuation_tabs.retain(|tab| !stale.contains(tab));
-        self.continuation_file_references
-            .retain(|tab, _| !stale.contains(tab));
-        if let Ok(mut registry) =
-            crate::shell::personal_continuity_registry::global_registry().lock()
-        {
-            for tab in &stale {
-                registry.remove_remote_tab(crate::shell::personal_continuity::AppInstanceId(*tab));
-            }
-        }
-        self.seed_doc_from_cache();
-        self.queue_save();
-        true
     }
 
     pub fn set_active(&mut self, id: WorkspaceId) {
@@ -6059,211 +5811,6 @@ mod workspace_tree_lifecycle_tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the ownership-transfer regression keeps signing, persistence, replay, and rejection checks together"
-    )]
-    fn continuations_reconcile_safely_and_offers_stay_dormant_and_anonymous() {
-        // Phase `continuation_reconcile_keeps_local_and_claimed_tabs`.
-        {
-            // Phase `continuation_reconcile_removes_a_closed_remote_tab_but_not_local_tabs`.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let room = RoomId::new();
-                tree.join_room("Plans", room);
-                let device = tilo_network_actor::fabric::DeviceId::new("laptop").unwrap();
-                let app = crate::shell::personal_continuity::AppInstanceState::new(
-                    crate::shell::personal_continuity::AppInstanceId(0x99),
-                    crate::shell::personal_continuity::TabPlacement {
-                        strip: 0,
-                        group: 0,
-                        tab: 0,
-                    },
-                    crate::shell::personal_continuity::LaunchIntent::app("so.tilo.browser")
-                        .unwrap(),
-                    None,
-                    crate::shell::personal_continuity::ContinuityStamp { counter: 1, device },
-                );
-                assert!(tree.materialize_continuation_workspace(
-                    "Laptop",
-                    &crate::shell::personal_continuity::WorkspaceContinuation {
-                        room,
-                        apps: vec![app],
-                    },
-                    &crate::shell::doc_open::DesktopContinuationLabels,
-                ));
-                assert!(tree.continuation_tabs.contains(&0x99));
-                assert!(tree.reconcile_continuation_tabs(&BTreeSet::new()));
-                assert!(!tree.continuation_tabs.contains(&0x99));
-            }
-
-            // Phase `claimed_continuation_tab_becomes_local_and_survives_remote_reconciliation`.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let room = RoomId::new();
-                tree.join_room("Plans", room);
-                let app = crate::shell::personal_continuity::AppInstanceState::new(
-                    crate::shell::personal_continuity::AppInstanceId(0x9a),
-                    crate::shell::personal_continuity::TabPlacement {
-                        strip: 0,
-                        group: 0,
-                        tab: 0,
-                    },
-                    crate::shell::personal_continuity::LaunchIntent::app("so.tilo.browser")
-                        .unwrap(),
-                    None,
-                    crate::shell::personal_continuity::ContinuityStamp {
-                        counter: 1,
-                        device: tilo_network_actor::fabric::DeviceId::new("laptop").unwrap(),
-                    },
-                );
-                tree.materialize_continuation_workspace(
-                    "Laptop",
-                    &crate::shell::personal_continuity::WorkspaceContinuation {
-                        room,
-                        apps: vec![app],
-                    },
-                    &crate::shell::doc_open::DesktopContinuationLabels,
-                );
-
-                assert!(tree.claim_continuation_tab(0x9a));
-                assert!(!tree.continuation_tabs.contains(&0x9a));
-                assert!(!tree.reconcile_continuation_tabs(&BTreeSet::new()));
-                assert!(tree.desktop.workspaces.iter().any(|workspace| {
-                    workspace
-                        .strips
-                        .iter()
-                        .flat_map(|strip| &strip.window_groups)
-                        .flat_map(|group| &group.tabs)
-                        .any(|tab| tab.id == 0x9a)
-                }));
-            }
-        }
-
-        // Phase `continuation_offers_stay_dormant_live_and_free_of_identifiers`.
-        {
-            // Phase `continuation_offer_tracks_live_placement_and_title`.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let room = RoomId::new();
-                tree.join_room("Plans", room);
-                let device = tilo_network_actor::fabric::DeviceId::new("laptop").unwrap();
-                let make = |strip, title_app: &str| {
-                    crate::shell::personal_continuity::AppInstanceState::new(
-                        crate::shell::personal_continuity::AppInstanceId(0x9b),
-                        crate::shell::personal_continuity::TabPlacement {
-                            strip,
-                            group: 0,
-                            tab: 0,
-                        },
-                        crate::shell::personal_continuity::LaunchIntent::app(title_app).unwrap(),
-                        None,
-                        crate::shell::personal_continuity::ContinuityStamp {
-                            counter: u64::from(strip) + 1,
-                            device: device.clone(),
-                        },
-                    )
-                };
-                tree.materialize_continuation_workspace(
-                    "Laptop",
-                    &crate::shell::personal_continuity::WorkspaceContinuation {
-                        room,
-                        apps: vec![make(0, "so.tilo.browser")],
-                    },
-                    &crate::shell::doc_open::DesktopContinuationLabels,
-                );
-                tree.materialize_continuation_workspace(
-                    "Laptop",
-                    &crate::shell::personal_continuity::WorkspaceContinuation {
-                        room,
-                        apps: vec![make(1, "so.tilo.music")],
-                    },
-                    &crate::shell::doc_open::DesktopContinuationLabels,
-                );
-                let workspace = tree
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.room() == room)
-                    .unwrap();
-                assert!(
-                    !workspace.strips[0]
-                        .window_groups
-                        .iter()
-                        .flat_map(|group| &group.tabs)
-                        .any(|tab| tab.id == 0x9b)
-                );
-                let moved = workspace.strips[1]
-                    .window_groups
-                    .iter()
-                    .flat_map(|group| &group.tabs)
-                    .find(|tab| tab.id == 0x9b)
-                    .unwrap();
-                assert!(matches!(
-                    &moved.tile,
-                    TileContent::PeerWindow { app_id, .. } if app_id == "so.tilo.music"
-                ));
-            }
-
-            // Phase `continuation_placeholders_do_not_render_device_or_record_identifiers`.
-            {
-                use crate::shell::personal_continuity::{
-                    AppInstanceId, AppInstanceState, ContinuityStamp, LaunchIntent, TabPlacement,
-                    WorkspaceContinuation,
-                };
-                use tilo_network_actor::fabric::DeviceId;
-
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let room = RoomId::new();
-                let source = "ab".repeat(32);
-                tree.join_room("Plans", room);
-                let stamp = ContinuityStamp {
-                    counter: 1,
-                    device: DeviceId::new("laptop").unwrap(),
-                };
-                assert!(tree.materialize_continuation_workspace(
-                    &source,
-                    &WorkspaceContinuation {
-                        room,
-                        apps: vec![AppInstanceState::new(
-                                AppInstanceId(0x61),
-                                TabPlacement {
-                                    strip: 0,
-                                    group: 0,
-                                    tab: 0,
-                                },
-                                LaunchIntent::file_reference(
-                                    "record:private-id",
-                                    Some([2; 32]),
-                                    None
-                                )
-                                .unwrap(),
-                                None,
-                                stamp,
-                            )],
-                    },
-                    &crate::shell::doc_open::DesktopContinuationLabels,
-                ));
-                let workspace = tree
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|workspace| workspace.room() == room)
-                    .unwrap();
-                let tab = &workspace.strips[0].window_groups[0].tabs[0];
-                assert!(!workspace.name.contains(&source));
-                assert!(!tab.title.contains(&source));
-                assert!(!tab.title.contains("private-id"));
-                let TileContent::Stub { label, .. } = &tab.tile else {
-                    panic!("continuation file remains a dormant file card");
-                };
-                assert!(!label.contains(&source));
-                assert!(!label.contains("private-id"));
-            }
-        }
-    }
-
-    #[test]
     fn relay_authority_never_turns_session_grants_into_timeless_nas_access() {
         use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
         let mut workspace = Workspace::new(WorkspaceId(1), "A");
@@ -6297,89 +5844,6 @@ mod workspace_tree_lifecycle_tests {
         assert!(!readers.contains(&once));
         assert!(!readers.contains(&session));
         assert!(readers.contains(&persistent));
-    }
-
-    #[test]
-    fn newer_app_winner_clears_an_old_file_reference_for_the_same_tab() {
-        use crate::shell::personal_continuity::{
-            AppInstanceId, AppInstanceState, ContinuityStamp, LaunchIntent, TabPlacement,
-            WorkspaceContinuation,
-        };
-        use tilo_network_actor::fabric::DeviceId;
-
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let room = RoomId::new();
-        tree.join_room("Plans", room);
-        let id = AppInstanceId(0x55);
-        let placement = TabPlacement {
-            strip: 0,
-            group: 0,
-            tab: 0,
-        };
-        let stamp = ContinuityStamp {
-            counter: 1,
-            device: DeviceId::new("laptop").unwrap(),
-        };
-        let file = AppInstanceState::new(
-            id,
-            placement,
-            LaunchIntent::file_reference("record:book-55", Some([1; 32]), None).unwrap(),
-            None,
-            stamp.clone(),
-        );
-        assert!(tree.materialize_continuation_workspace(
-            "Laptop",
-            &WorkspaceContinuation {
-                room,
-                apps: vec![file],
-            },
-            &crate::shell::doc_open::DesktopContinuationLabels,
-        ));
-        assert!(tree.continuation_file_references.contains_key(&id.0));
-
-        let app = AppInstanceState::new(
-            id,
-            placement,
-            LaunchIntent::app("so.tilo.browser").unwrap(),
-            None,
-            stamp,
-        );
-        assert!(tree.materialize_continuation_workspace(
-            "Laptop",
-            &WorkspaceContinuation {
-                room,
-                apps: vec![app.clone()],
-            },
-            &crate::shell::doc_open::DesktopContinuationLabels,
-        ));
-        assert!(!tree.continuation_file_references.contains_key(&id.0));
-        // Every checkpoint offers it again; one that moved nothing changes
-        // nothing, so no document or save follows.
-        let heads = tree.current_heads();
-        assert!(!tree.materialize_continuation_workspace(
-            "Laptop",
-            &WorkspaceContinuation {
-                room,
-                apps: vec![app],
-            },
-            &crate::shell::doc_open::DesktopContinuationLabels,
-        ));
-        assert_eq!(tree.current_heads(), heads);
-        let replacement = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room() == room)
-            .into_iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .find(|tab| tab.id == id.0)
-            .expect("the newer app offer remains in the same logical tab");
-        assert!(matches!(
-            &replacement.tile,
-            TileContent::PeerWindow { app_id, .. } if app_id == "so.tilo.browser"
-        ));
     }
 
     #[test]

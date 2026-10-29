@@ -30,7 +30,7 @@ pub(super) type Stamp = [i64; 7];
 struct Generation {
     /// The active generation's stamp the summary below describes.
     stamp: Stamp,
-    /// Highest ordinal a record or continuity marker in it reserves.
+    /// Highest ordinal a record in it reserves.
     last: u64,
     /// The first eight bytes of every record's digest.
     digests: HashSet<u64>,

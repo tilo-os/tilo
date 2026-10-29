@@ -812,19 +812,9 @@
   "room_share_floor": {
     "00000000-0000-4000-8000-000000000002": 11
   },
-  "continuation_tabs": [
-    5
-  ],
   "continuation_rooms": [
     "00000000-0000-4000-8000-000000000003"
   ],
-  "continuation_owned_tabs": {
-    "5": "00000000-0000-4000-8000-000000000003"
-  },
-  "continuation_closed_tabs": {
-    "12": "00000000-0000-4000-8000-000000000003"
-  },
-  "continuation_file_references": {},
   "native_document_tabs": {
     "8": {
       "provider_id": "org.example.Editor",

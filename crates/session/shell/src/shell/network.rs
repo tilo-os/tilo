@@ -48,8 +48,6 @@ pub(crate) mod one_host_tests;
 mod own_devices;
 #[cfg(test)]
 mod own_devices_tests;
-#[cfg(test)]
-mod paired_continuity_tests;
 mod peer_sync_worker;
 mod personal_device_peers;
 mod personal_reconcile;
@@ -68,8 +66,6 @@ mod reachability_tests;
 mod record_content;
 #[cfg(test)]
 mod tick_bench;
-#[cfg(test)]
-mod tick_off_loop_tests;
 mod turn_steps;
 pub(crate) use native_enrollment::NativeOwnerStatus;
 pub use record_content::InboundRecordContent;
@@ -124,12 +120,11 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::presets;
 use rand_core::Rng;
-use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 use tokio::sync::mpsc;
 
 use crate::network::identity::PeerIdentityStore;
-use crate::network::protocol::{MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES, NeighbourMsg};
+use crate::network::protocol::NeighbourMsg;
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::{RoomId, WorkspaceTreeHandle};
 use tilo_network_actor::behaviour::load_or_create_keypair;
@@ -1028,10 +1023,6 @@ fn pending_invites_path(state_dir: &Path) -> PathBuf {
     state_dir.join("pending-invitations.json")
 }
 
-fn personal_continuity_path(state_dir: &Path) -> PathBuf {
-    state_dir.join("personal-continuity.postcard")
-}
-
 /// Tell the workspace menus which of the person's devices each of their
 /// workspaces shows on.
 fn refresh_device_choices(
@@ -1102,44 +1093,12 @@ fn write_device_fabric_checkpoint(path: &Path, bytes: &[u8]) -> Result<(), Strin
         .map_err(|error| format!("write {}: {error}", path.display()))
 }
 
-#[derive(Serialize, Deserialize)]
-struct PersistedPersonalContinuity {
-    counter: u64,
-    continuity: crate::shell::personal_continuity::PersonalContinuity,
-}
-
-fn decode_persisted_personal_continuity(bytes: &[u8]) -> Option<PersistedPersonalContinuity> {
-    let mut current = postcard::from_bytes::<PersistedPersonalContinuity>(bytes).ok()?;
-    current.counter = current.continuity.recover_counter(current.counter);
-    Some(current)
-}
-
-fn personal_continuity_backup_path(path: &Path) -> PathBuf {
-    path.with_extension("postcard.backup")
-}
-
-/// Remove the continuity store and its backup. Returns whether both are gone.
-fn purge_personal_continuity_store(path: &Path) -> bool {
-    let mut purged = true;
-    for candidate in [path.to_path_buf(), personal_continuity_backup_path(path)] {
-        match std::fs::remove_file(&candidate) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::warn!(%error, path = %candidate.display(), "personal continuity purge failed");
-                purged = false;
-            }
-        }
-    }
-    purged
-}
-
 /// What this process last asked a state file that only it writes to hold,
 /// or nothing while that is unknown.
 ///
 /// The network's upkeep runs on whatever wakes the compositor's loop, at
 /// most every couple of seconds, and asks for the same files each time: the
-/// exported room list, the continuity store or its purge. Asked for what
+/// exported room list. Asked for what
 /// the file already holds, it must touch nothing. Queueing the write wakes
 /// the state writer, and the write's own check (opening the file to compare)
 /// wakes every inotify watcher on its directory, the shell's among them. An
@@ -1174,164 +1133,6 @@ impl KnownContents {
             *known = None;
         }
     }
-}
-
-/// What may happen only once a continuity value is on disk, such as
-/// acknowledging the owner claims it carries.
-///
-/// The value is written on the state writer, never on the compositor's loop
-/// (a backup and a primary, four fsyncs that take seconds under I/O
-/// pressure). Each value handed to the writer gets the next sequence number;
-/// a successful write marks its number durable. An obligation waits for the
-/// value it was registered behind, or any later one: a newer value replaces
-/// a queued older one, and holds at least as much. It runs on the thread
-/// that next calls [`Self::settle`] (the loop's sync round, or the collab
-/// broker reading owner views), never on the writer, which a flush waits on.
-#[derive(Clone, Default)]
-struct ContinuityDurability(Arc<Mutex<DurabilityLedger>>);
-
-/// How many obligations wait for the disk at most.
-const MAX_CONTINUITY_OBLIGATIONS: usize = 64;
-
-type ContinuityObligation = Box<dyn FnOnce() + Send>;
-
-#[derive(Default)]
-struct DurabilityLedger {
-    /// The newest value handed to the writer.
-    submitted: u64,
-    /// Every value up to this one is on disk.
-    durable: u64,
-    pending: Vec<(u64, ContinuityObligation)>,
-}
-
-impl ContinuityDurability {
-    /// Number the next value handed to the writer.
-    fn submit(&self) -> u64 {
-        let Ok(mut ledger) = self.0.lock() else {
-            return 0;
-        };
-        ledger.submitted = ledger.submitted.saturating_add(1);
-        ledger.submitted
-    }
-
-    /// The writer put value `sequence` (and so everything it replaced) on
-    /// disk.
-    fn written(&self, sequence: u64) {
-        if let Ok(mut ledger) = self.0.lock() {
-            ledger.durable = ledger.durable.max(sequence);
-        }
-    }
-
-    /// Run `obligation` once the newest value handed to the writer is on
-    /// disk.
-    ///
-    /// While writes keep failing (a full disk), every sync round adds one, so
-    /// only the newest [`MAX_CONTINUITY_OBLIGATIONS`] wait. Dropping an older
-    /// one is what a failed write always meant: its claims stay
-    /// unacknowledged, and its closed tabs stay recorded, until a later
-    /// round's value covers them.
-    fn after_newest(&self, obligation: impl FnOnce() + Send + 'static) {
-        if let Ok(mut ledger) = self.0.lock() {
-            let sequence = ledger.submitted;
-            if ledger.pending.len() >= MAX_CONTINUITY_OBLIGATIONS {
-                drop(ledger.pending.remove(0));
-            }
-            ledger.pending.push((sequence, Box::new(obligation)));
-        }
-    }
-
-    /// Run, here, every obligation whose value is on disk.
-    fn settle(&self) {
-        let ready: Vec<ContinuityObligation> = {
-            let Ok(mut ledger) = self.0.lock() else {
-                return;
-            };
-            let durable = ledger.durable;
-            let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut ledger.pending)
-                .into_iter()
-                .partition(|(sequence, _)| *sequence <= durable);
-            ledger.pending = waiting;
-            ready
-                .into_iter()
-                .map(|(_, obligation)| obligation)
-                .collect()
-        };
-        for obligation in ready {
-            obligation();
-        }
-    }
-}
-
-fn load_personal_continuity(path: &Path) -> PersistedPersonalContinuity {
-    for (index, candidate) in [path.to_path_buf(), personal_continuity_backup_path(path)]
-        .into_iter()
-        .enumerate()
-    {
-        if let Ok(bytes) = std::fs::read(&candidate)
-            && let Some(mut value) = decode_persisted_personal_continuity(&bytes)
-        {
-            if index != 0 {
-                // The primary may have been published before it was damaged,
-                // while this backup is one revision behind. Reserve another
-                // Lamport value so the next capture cannot reuse a counter a
-                // peer already associates with different bytes.
-                value.counter = value.counter.saturating_add(1);
-            }
-            return value;
-        }
-    }
-    PersistedPersonalContinuity {
-        counter: 0,
-        continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
-    }
-}
-
-/// Encode and write `value`; the network writes through
-/// [`write_personal_continuity`] with the bytes it keeps.
-#[cfg(test)]
-fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity) -> bool {
-    let Ok(bytes) = postcard::to_allocvec(value) else {
-        return false;
-    };
-    write_personal_continuity(path, &bytes)
-}
-
-/// Write the encoded continuity to `path`, with its backup. Waits for the
-/// disk: callers on the compositor thread hand it to the state writer.
-fn write_personal_continuity(path: &Path, bytes: &[u8]) -> bool {
-    if let Some(parent) = path.parent()
-        && let Err(error) = std::fs::create_dir_all(parent)
-    {
-        tracing::warn!(%error, path = %path.display(), "personal continuity directory unavailable");
-        return false;
-    }
-    let current = std::fs::read(path).ok();
-    // A quiet tree asks to persist the same state on every sync round. The
-    // primary already holds it, and rewriting it costs four fsyncs (file and
-    // directory, for backup and primary).
-    if current.as_deref() == Some(bytes) {
-        return true;
-    }
-    // Establish the recovery point before replacing the primary. Refusing to
-    // advance when this fails keeps the backup exactly one committed primary
-    // behind (or equal on first write), which makes the reserved-counter
-    // recovery rule above sound even across repeated failures.
-    let prior = current
-        .filter(|prior| decode_persisted_personal_continuity(prior).is_some())
-        .unwrap_or_else(|| bytes.to_vec());
-    if let Err(error) = tilo_files::native::atomic::write_with_mode(
-        &personal_continuity_backup_path(path),
-        &prior,
-        0o600,
-    ) {
-        tracing::warn!(%error, path = %path.display(), "personal continuity backup failed");
-        return false;
-    }
-    if tilo_files::native::atomic::write_with_mode(path, bytes, 0o600).is_err() {
-        tracing::warn!(path = %path.display(), "personal continuity persistence failed");
-        return false;
-    }
-    true
 }
 
 fn load_pending_invitations(path: &Path) -> Vec<PendingInvitation> {
@@ -1509,23 +1310,12 @@ pub struct ShellNetwork {
     next_sync_pull: Mutex<Option<std::time::Instant>>,
     /// See [`Self::peers_joined_epoch`].
     peers_joined: std::sync::atomic::AtomicU64,
-    /// Private, same-person continuation state. It is intentionally separate
-    /// from `replica`, whose documents are visible to room collaborators.
-    personal_continuity: Mutex<crate::shell::personal_continuity::PersonalContinuity>,
     personal_continuity_user: Option<[u8; 32]>,
     /// The other roots that certified this device for a workspace of theirs
     /// (its workspace identities): each has a person room of its own, routed
     /// to that root's other devices only.
     workspace_person_roots: Vec<[u8; 32]>,
     pub(crate) personal_continuity_device: Option<tilo_network_actor::fabric::DeviceId>,
-    personal_continuity_counter: Mutex<u64>,
-    personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
-    personal_continuity_path: Option<PathBuf>,
-    /// What `personal_continuity_path` was last asked to hold.
-    personal_continuity_store: KnownContents,
-    /// Owner-claim acknowledgements and closed-tab bookkeeping waiting for
-    /// the continuity value they describe to reach the disk.
-    personal_continuity_durability: ContinuityDurability,
     /// What the exported room list (`personal-rooms.json`) was last asked to
     /// hold.
     personal_rooms_export: KnownContents,
@@ -1666,9 +1456,6 @@ pub struct ShellNetwork {
     /// Recent reader/transport exits, retained independently of mutable room
     /// state so cleanup cannot erase the evidence it needs to diagnose.
     peer_departures: Arc<PeerDepartureHistory>,
-    /// How tabs another of the person's devices has open are titled here
-    /// ([`Self::with_continuation_labels`]).
-    continuation_labels: Box<dyn crate::shell::state::ContinuationLabels + Send + Sync>,
 }
 
 /// One remote-action request kept until its sender's identity is accepted.
@@ -1998,19 +1785,6 @@ impl ShellNetwork {
         Self::spawn(tree, &peer_key_path(), &peer_state_dir()?)
     }
 
-    /// Title the placeholder tabs of what the person's other devices have
-    /// open with the session's `labels`. Without them an app goes by its id
-    /// and a file by a generic name
-    /// ([`crate::shell::state::UnresolvedContinuationLabels`]).
-    #[must_use]
-    pub fn with_continuation_labels(
-        mut self,
-        labels: Box<dyn crate::shell::state::ContinuationLabels + Send + Sync>,
-    ) -> Self {
-        self.continuation_labels = labels;
-        self
-    }
-
     /// [`Self::spawn`] reaching peers as `reach` says, authenticating to
     /// hosts with the identity `identity` finds for the key.
     #[allow(
@@ -2240,22 +2014,6 @@ impl ShellNetwork {
         });
 
         let pending_invitations_path = pending_invites_path(state_dir);
-        let personal_continuity_path = personal_continuity_path(state_dir);
-        let app_continuations_permitted =
-            crate::shell::continuity_policy::ContinuityPolicySnapshot::current()
-                .permits(crate::shell::continuity_policy::ContinuityCapability::AppContinuations);
-        let personal_continuity_store = KnownContents::default();
-        let persisted_continuity = if app_continuations_permitted {
-            load_personal_continuity(&personal_continuity_path)
-        } else {
-            if purge_personal_continuity_store(&personal_continuity_path) {
-                personal_continuity_store.changes(&personal_continuity_path, None);
-            }
-            PersistedPersonalContinuity {
-                counter: 0,
-                continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
-            }
-        };
         let device_fabric_path = device_fabric_path(state_dir);
         let device_fabric =
             load_device_fabric(&device_fabric_path).restored(personal_continuity_device.as_ref());
@@ -2322,20 +2080,10 @@ impl ShellNetwork {
             last_sync_kick: Mutex::new(None),
             next_sync_pull: Mutex::new(None),
             peers_joined: std::sync::atomic::AtomicU64::new(0),
-            personal_focus_recency: Mutex::new(
-                crate::shell::continuity_suggestion::FocusRecency::seeded(
-                    &persisted_continuity.continuity,
-                ),
-            ),
-            personal_continuity: Mutex::new(persisted_continuity.continuity),
+            personal_focus_recency: Mutex::default(),
             personal_continuity_user,
             workspace_person_roots,
             personal_continuity_device,
-            personal_continuity_counter: Mutex::new(persisted_continuity.counter),
-            personal_continuity_fingerprint: Mutex::new(None),
-            personal_continuity_path: Some(personal_continuity_path),
-            personal_continuity_store,
-            personal_continuity_durability: ContinuityDurability::default(),
             personal_rooms_export: KnownContents::default(),
             personal_workspaces,
             last_personal_workspaces_snapshot: Mutex::new(None),
@@ -2398,11 +2146,8 @@ impl ShellNetwork {
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             workspace_control_observers: Mutex::new(Vec::new()),
             peer_departures: Arc::new(PeerDepartureHistory::default()),
-            continuation_labels: Box::new(crate::shell::state::UnresolvedContinuationLabels),
         };
-        if !app_continuations_permitted {
-            network.enforce_app_continuations_policy();
-        }
+        network.enforce_app_continuations_policy();
         network.restore_display_observations();
         Ok(network)
     }
@@ -2740,15 +2485,6 @@ impl ShellNetwork {
     }
 
     fn explicit_topic_for_message(msg: &NeighbourMsg) -> Option<u64> {
-        if let NeighbourMsg::PersonalContinuityRequest {
-            user_public_key, ..
-        }
-        | NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key, ..
-        } = msg
-        {
-            return Some(personal_continuity_topic_id(user_public_key));
-        }
         if let Some(user_public_key) = msg.personal_lane() {
             return Some(personal_continuity_topic_id(user_public_key));
         }
@@ -2802,14 +2538,6 @@ impl ShellNetwork {
     }
 
     fn publish_message(&self, msg: NeighbourMsg) -> bool {
-        if matches!(
-            &msg,
-            NeighbourMsg::PersonalContinuityRequest { .. }
-                | NeighbourMsg::PersonalContinuityCheckpoint { .. }
-        ) && !self.enforce_app_continuations_policy()
-        {
-            return false;
-        }
         let ws = self.topic_for_message(&msg);
         if self.native_topic_required(ws)
             && matches!(
@@ -2970,11 +2698,6 @@ impl ShellNetwork {
     }
 
     fn publish_shell_checkpoint(&self, msg: NeighbourMsg) -> bool {
-        if matches!(&msg, NeighbourMsg::PersonalContinuityCheckpoint { .. })
-            && !self.enforce_app_continuations_policy()
-        {
-            return false;
-        }
         let ws = self.topic_for_message(&msg);
         self.join_topic(ws)
             && self
@@ -5158,8 +4881,6 @@ impl ShellNetwork {
     /// worker when the caller is the loop ([`Self::publish_sync_requests`]).
     /// Rooms need no asking: their state travels over their host sessions.
     fn publish_sync_requests_now(&self) {
-        self.publish_personal_continuity_request();
-        self.publish_personal_continuity_if_changed();
         self.publish_device_fabric_request();
     }
 
@@ -5182,272 +4903,92 @@ impl ShellNetwork {
         self.continuity_policy().permits(capability)
     }
 
-    /// Enforce revocation before every app-continuation boundary. Besides
-    /// refusing new wire and persistence work, this removes already staged
-    /// remote offers so turning the switch off has immediate local effect.
+    /// Apply the app continuations switch: while it is on, this device notes
+    /// in each workspace's layout record how its windows resume and which
+    /// one it is on, and reads its other devices' notes
+    /// ([`crate::shell::state::WorkspaceTree::capture_continuations`]). Off,
+    /// it takes its notes out and forgets what it read, at once. Returns
+    /// whether continuations are on.
     fn enforce_app_continuations_policy(&self) -> bool {
         use crate::shell::continuity_policy::ContinuityCapability;
 
-        if self.permits_continuity(ContinuityCapability::AppContinuations) {
-            return true;
+        let permitted = self.permits_continuity(ContinuityCapability::AppContinuations);
+        let device = self
+            .personal_continuity_device
+            .clone()
+            .filter(|_| permitted && self.personal_continuity_user.is_some());
+        // Asked on every round: only a change takes the tree for writing,
+        // which would wake every reader that watches its generation.
+        if self.tree.read().continuation_device != device {
+            self.tree.write().continuation_device = device;
         }
-        if let Ok(mut continuity) = self.personal_continuity.lock() {
-            *continuity = crate::shell::personal_continuity::PersonalContinuity::default();
-        }
-        if let Ok(mut recency) = self.personal_focus_recency.lock() {
-            recency.clear();
-        }
-        if let Ok(mut fingerprint) = self.personal_continuity_fingerprint.lock() {
-            *fingerprint = None;
-        }
-        if let Ok(mut registry) =
-            crate::shell::personal_continuity_registry::global_registry().lock()
-        {
-            registry.clear_remote();
-        }
-        // Every upkeep round asks again while the switch is off; the store is
-        // purged once, when it goes off (or a purge failed).
-        if let Some(path) = self.personal_continuity_path.as_deref()
-            && self.personal_continuity_store.changes(path, None)
-        {
-            // Behind any write queued for the store, so a write the policy
-            // change overtook cannot bring the file back.
-            let target = path.to_path_buf();
-            let known = self.personal_continuity_store.clone();
-            crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
-                if !purge_personal_continuity_store(&target) {
-                    known.forget();
-                }
-            });
-        }
-        // Asked on every boundary of every tick while the switch is off: only
-        // staged offers need the tree for writing. A write that removed
-        // nothing would still wait for any thread holding the tree, and wake
-        // every reader that watches its generation.
-        let staged = {
-            let tree = self.tree.read();
-            !tree.continuation_tabs.is_empty()
-        };
-        if staged {
-            let mut tree = self.tree.write();
-            tree.reconcile_continuation_tabs(&std::collections::BTreeSet::new());
-        }
-        false
-    }
-
-    fn local_continuity_snapshot_bytes(&self) -> Option<Vec<u8>> {
-        if !self.enforce_app_continuations_policy() {
-            return None;
-        }
-        let device = self.personal_continuity_device.clone()?;
-        let tree_handle = self.tree.clone();
-        let pending_closed_tabs = tree_handle.read().continuation_closed_tabs.clone();
-
-        // Hash a counter-neutral capture so a quiet tree stays quiet. The
-        // device counter advances only for a real topology/app change.
-        let reports = crate::shell::personal_continuity_registry::global_registry()
-            .lock()
-            .ok()?
-            .clone();
-        let neutral =
-            crate::shell::personal_continuity::DeviceContinuationSnapshot::capture_with_registry(
-                &tree_handle.read(),
-                device.clone(),
-                0,
-                &reports,
-            )
-            .snapshot;
-        let neutral_bytes = postcard::to_allocvec(&neutral).ok()?;
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&neutral_bytes);
-        hasher.update(&reports.owner_claim_revision().to_le_bytes());
-        let fingerprint = *hasher.finalize().as_bytes();
-
-        let mut previous = self.personal_continuity_fingerprint.lock().ok()?;
-        if previous.as_ref() == Some(&fingerprint) {
-            let continuity = self.personal_continuity.lock().ok()?;
-            let bytes = postcard::to_allocvec(&*continuity).ok()?;
-            if bytes.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES {
-                // Do not let a malformed/stale in-memory value bypass the
-                // transport limit merely because the captured tree is quiet.
-                tracing::warn!(
-                    bytes = bytes.len(),
-                    "cached personal continuity checkpoint exceeds transport limit"
-                );
-                return None;
+        if !permitted {
+            if let Ok(mut recency) = self.personal_focus_recency.lock() {
+                recency.clear();
             }
-            drop(continuity);
-            // Retry a prior failed durable write even while the captured tree
-            // is quiet.
-            drop(previous);
-            if !self.enforce_app_continuations_policy() {
-                return None;
+            if let Ok(mut registry) = crate::shell::continuation_registry::global_registry().lock()
+            {
+                registry.clear_remote();
             }
-            self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision());
-            return Some(bytes);
         }
-        let mut counter = self.personal_continuity_counter.lock().ok()?;
-        let prior = {
-            let continuity = self.personal_continuity.lock().ok()?;
-            *counter = continuity.recover_counter(*counter);
-            continuity.snapshot_for(&device).cloned()
+        permitted
+    }
+
+    /// Every focus the person's other devices noted in the layout records
+    /// this device holds, with the device it names.
+    fn noted_focus(&self) -> Vec<crate::shell::continuity_suggestion::DeviceFocus> {
+        let tree = self.tree.read();
+        let Some(person) = tree.local_person.map(hex::encode) else {
+            return Vec::new();
         };
-        *counter = counter.saturating_add(1);
-        let mut report =
-            crate::shell::personal_continuity::DeviceContinuationSnapshot::capture_with_registry(
-                &tree_handle.read(),
-                device,
-                *counter,
-                &reports,
-            );
-        if let Some(prior) = prior.as_ref() {
-            report
-                .snapshot
-                .preserve_owner_view_revisions(prior, &reports);
-        }
-        if let Some(prior) = prior.as_ref()
-            && let Err(error) = report.snapshot.record_closures_from(prior)
-        {
-            tracing::warn!(%error, "personal continuity could not record local closures");
-            return None;
-        }
-        if report.redacted_foreign_tabs > 0 {
-            tracing::debug!(
-                redacted = report.redacted_foreign_tabs,
-                "personal continuity omitted non-portable foreign surfaces"
-            );
-        }
-        let mut continuity = self.personal_continuity.lock().ok()?;
-        continuity.upsert(report.snapshot).ok()?;
-        let bytes = postcard::to_allocvec(&*continuity).ok()?;
-        if bytes.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES {
-            tracing::warn!(
-                bytes = bytes.len(),
-                "personal continuity checkpoint exceeds transport limit"
-            );
-            return None;
-        }
-        *previous = Some(fingerprint);
-        drop(continuity);
-        drop(counter);
-        drop(previous);
-        if !self.enforce_app_continuations_policy() {
-            return None;
-        }
-        if self.persist_and_acknowledge_owner_claims(reports.owner_claim_revision()) {
-            self.forget_closed_tabs_once_on_disk(tree_handle, pending_closed_tabs);
-        }
-        Some(bytes)
-    }
-
-    /// The tabs `closed` were recorded as closed in the continuity value just
-    /// handed to the writer; the tree forgets them once that value is on disk.
-    fn forget_closed_tabs_once_on_disk(
-        &self,
-        tree: crate::shell::state::WorkspaceTreeHandle,
-        closed: std::collections::HashMap<crate::shell::state::TabId, RoomId>,
-    ) {
-        if closed.is_empty() {
-            return;
-        }
-        self.personal_continuity_durability.after_newest(move || {
-            let mut tree = tree.write();
-            for (tab, room) in closed {
-                if tree.continuation_closed_tabs.get(&tab) == Some(&room) {
-                    tree.continuation_closed_tabs.remove(&tab);
-                }
-            }
-        });
-        self.personal_continuity_durability.settle();
-    }
-
-    fn persist_and_acknowledge_owner_claims(&self, revision: u64) -> bool {
-        self.persist_personal_continuity_with_claims(Some(revision))
-    }
-
-    fn persist_personal_continuity(&self) -> bool {
-        self.persist_personal_continuity_with_claims(None)
-    }
-
-    /// Hand the continuity value to the state writer and, with `claims`, the
-    /// acknowledgement of the owner claims up to that revision, to run once
-    /// the value is on disk. Whether a write was queued or was not needed.
-    ///
-    /// Every sync round asks for this from the compositor's loop, so it never
-    /// writes itself: the write (a backup and a primary, four fsyncs) can
-    /// take seconds under I/O pressure. The writer keeps the newest value per
-    /// file, and a quiet round asks for what the store already holds and
-    /// queues nothing.
-    fn persist_personal_continuity_with_claims(&self, claims: Option<u64>) -> bool {
-        // Acknowledge what earlier rounds' writes have since put on disk.
-        self.personal_continuity_durability.settle();
-        if !self.enforce_app_continuations_policy() {
-            return false;
-        }
-        let Some(path) = self.personal_continuity_path.as_deref() else {
-            return false;
-        };
-        // The value is captured under the ledger/counter locks; whatever is
-        // written and acknowledged below is exactly this capture.
-        let value = {
-            let (Ok(counter), Ok(continuity)) = (
-                self.personal_continuity_counter.lock(),
-                self.personal_continuity.lock(),
-            ) else {
-                return false;
+        let mut focus = Vec::new();
+        for (room, doc) in &tree.layout_docs {
+            let Some(room_doc) = tree.room_docs.get(room) else {
+                continue;
             };
-            PersistedPersonalContinuity {
-                counter: *counter,
-                continuity: continuity.clone(),
+            let devices = tilo_desktop_model::window_share::device_salts(room_doc);
+            let windows: std::collections::HashSet<u64> =
+                tilo_desktop_model::shared_record::read(doc, None)
+                    .into_iter()
+                    .flat_map(|shared| shared.authors.into_keys())
+                    .collect();
+            for (salt, note) in tilo_desktop_model::shared_record::continuation::focus(doc) {
+                let Some(device) = devices
+                    .get(&salt)
+                    .and_then(|key| tilo_network_actor::fabric::DeviceId::new(key.clone()).ok())
+                else {
+                    continue;
+                };
+                if note.author != person {
+                    continue;
+                }
+                focus.push(crate::shell::continuity_suggestion::DeviceFocus {
+                    device,
+                    room: *room,
+                    app: crate::shell::continuation::AppInstanceId(note.window),
+                    withdrawn: !windows.contains(&note.window),
+                });
             }
-        };
-        let Ok(bytes) = postcard::to_allocvec(&value) else {
-            return false;
-        };
-        if self.personal_continuity_store.changes(path, Some(&bytes)) {
-            let sequence = self.personal_continuity_durability.submit();
-            let target = path.to_path_buf();
-            let known = self.personal_continuity_store.clone();
-            let durability = self.personal_continuity_durability.clone();
-            crate::shell::durable_writer::global().submit(path.to_path_buf(), move || {
-                if write_personal_continuity(&target, &bytes) {
-                    durability.written(sequence);
-                } else {
-                    known.forget();
-                }
-            });
         }
-        // The acknowledgement refers to the captured value, never a later
-        // capture, and runs only once that value (or a newer one) is on disk.
-        if let Some(revision) = claims
-            && let Some(snapshot) = self
-                .personal_continuity_device
-                .as_ref()
-                .and_then(|device| value.continuity.snapshot_for(device))
-                .cloned()
-        {
-            self.personal_continuity_durability.after_newest(move || {
-                if let Ok(mut registry) =
-                    crate::shell::personal_continuity_registry::global_registry().lock()
-                {
-                    registry.acknowledge_owner_claims(revision, &snapshot);
-                }
-            });
-        }
-        // A value the disk already held is acknowledged at once.
-        self.personal_continuity_durability.settle();
-        true
+        focus
     }
 
     /// What chrome needs to offer continuing another device's focused tab:
     /// each device's focus and when it moved, plus the certified devices of
     /// this identity with their display labels.
     pub fn continuity_feed(&self) -> crate::shell::continuity_suggestion::ContinuityFeed {
-        let observations = self
-            .personal_focus_recency
-            .lock()
-            .map(|recency| recency.observations())
-            .unwrap_or_default();
+        let observations = if self.enforce_app_continuations_policy() {
+            let focus = self.noted_focus();
+            self.personal_focus_recency
+                .lock()
+                .map(|mut recency| {
+                    recency.observe(&focus, std::time::Instant::now());
+                    recency.observations()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let certified = self.certified_secret_recipients();
         let fabric = self.device_fabric.lock().ok();
         let devices = certified
@@ -5473,15 +5014,15 @@ impl ShellNetwork {
         }
     }
 
+    /// The live views of the text positions the person's windows were left
+    /// at, as the layout records note them: this device's own, and those of
+    /// another of its devices over that device's current route.
     pub(crate) fn pump_owner_views(
         &self,
     ) -> Vec<(
         collab_types::handoff::OwnerView,
         Option<AuthenticatedPersonalRoute>,
     )> {
-        // Owner claims whose continuity value has reached the disk since the
-        // last round are acknowledged before the views are read.
-        self.personal_continuity_durability.settle();
         let permitted = self.enforce_app_continuations_policy();
         let enrolled: std::collections::HashSet<_> = self
             .enrolled_personal_devices(Some(*self.local_peer_id.as_bytes()))
@@ -5509,12 +5050,12 @@ impl ShellNetwork {
                     .collect()
             })
             .unwrap_or_default();
-        let continuity = self
-            .personal_continuity
-            .lock()
-            .map(|state| state.clone())
-            .unwrap_or_default();
-        let registry = crate::shell::personal_continuity_registry::global_registry();
+        let noted = if permitted {
+            self.noted_continuations()
+        } else {
+            Vec::new()
+        };
+        let registry = crate::shell::continuation_registry::global_registry();
         let Ok(mut registry) = registry.lock() else {
             return Vec::new();
         };
@@ -5522,35 +5063,49 @@ impl ShellNetwork {
             permitted && current.get(&route.device) == Some(route)
         });
         if permitted {
-            let candidates: std::collections::BTreeSet<_> = continuity
-                .snapshots()
-                .values()
-                .flat_map(|snapshot| &snapshot.workspaces)
-                .flat_map(|workspace| workspace.apps.iter().map(|app| (workspace.room, app.id)))
-                .collect();
-            let live_keys = candidates
+            let live_keys = noted
                 .iter()
-                .filter_map(|(room, id)| {
-                    let app = continuity.newest_app_state_in_room(*room, *id)?;
-                    registry.owner_view_key(*room, app)
-                })
+                .filter_map(|(room, app)| registry.owner_view_key(*room, app))
                 .collect();
             registry.retain_owner_view_candidates(&live_keys);
-            for (room, id) in candidates {
-                let Some(app) = continuity.newest_app_state_in_room(room, id) else {
-                    continue;
-                };
+            for (room, app) in &noted {
                 if self.personal_continuity_device.as_ref() == Some(&app.stamp.device) {
-                    if registry.owner_claimed(room, app) {
+                    if registry.owner_claimed(*room, app) {
                         continue;
                     }
-                    registry.offer_owner_view(room, app, None);
+                    registry.offer_owner_view(*room, app, None);
                 } else if let Some(route) = current.get(&app.stamp.device) {
-                    registry.offer_owner_view(room, app, Some(route.clone()));
+                    registry.offer_owner_view(*room, app, Some(route.clone()));
                 }
             }
         }
         registry.drain_owner_views()
+    }
+
+    /// How each of the person's windows resumes, as the layout records this
+    /// device holds note it.
+    fn noted_continuations(&self) -> Vec<(RoomId, crate::shell::continuation::AppInstanceState)> {
+        let tree = self.tree.read();
+        let Some(person) = tree.local_person.map(hex::encode) else {
+            return Vec::new();
+        };
+        let mut noted = Vec::new();
+        for (room, doc) in &tree.layout_docs {
+            let authors = tilo_desktop_model::shared_record::read(doc, None)
+                .map(|shared| shared.authors)
+                .unwrap_or_default();
+            for (tab, text) in tilo_desktop_model::shared_record::continuation::windows(doc) {
+                if authors.get(&tab) != Some(&person) {
+                    continue;
+                }
+                if let Some(state) =
+                    crate::shell::continuation::AppInstanceState::from_record(tab, &text)
+                {
+                    noted.push((*room, state));
+                }
+            }
+        }
+        noted
     }
 
     /// Return the locally retained, convergent view of this person's devices.
@@ -6519,61 +6074,6 @@ impl ShellNetwork {
         }
     }
 
-    fn publish_personal_continuity_request(&self) {
-        if !self.enforce_app_continuations_policy() {
-            return;
-        }
-        let Some(user_public_key) = self.personal_continuity_user else {
-            return;
-        };
-        let _ = self.publish_message(NeighbourMsg::PersonalContinuityRequest {
-            user_public_key,
-            requester: self.local_peer_id_hash(),
-        });
-    }
-
-    /// Capture this device's continuity, keep it on disk, and tell the
-    /// person's other devices when it changed. The capture and its durable
-    /// write are this device's own state (they acknowledge owner claims and
-    /// closed tabs once on disk), so they happen even while it knows no
-    /// other device; only the publish waits for someone to tell.
-    fn publish_personal_continuity_if_changed(&self) {
-        if !self.enforce_app_continuations_policy() {
-            return;
-        }
-        let Some(user_public_key) = self.personal_continuity_user else {
-            return;
-        };
-        let before = self
-            .personal_continuity_fingerprint
-            .lock()
-            .ok()
-            .and_then(|fingerprint| *fingerprint);
-        let Some(snapshot) = self.local_continuity_snapshot_bytes() else {
-            return;
-        };
-        if !self.personal_fabric_allowed() {
-            return;
-        }
-        let after = self
-            .personal_continuity_fingerprint
-            .lock()
-            .ok()
-            .and_then(|fingerprint| *fingerprint);
-        if before == after && before.is_some() {
-            return;
-        }
-        let msg = NeighbourMsg::PersonalContinuityCheckpoint {
-            user_public_key,
-            publisher: self.local_peer_id_hash(),
-            snapshot,
-        };
-        let ws = personal_continuity_topic_id(&user_public_key);
-        if self.enforce_app_continuations_policy() && self.join_topic(ws) {
-            let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint { ws, msg });
-        }
-    }
-
     /// Send this device's whole workspace list, signed with its device key,
     /// on the person's own topic.
     fn publish_personal_workspaces(&self) {
@@ -6684,9 +6184,9 @@ impl ShellNetwork {
     }
 
     /// Called from every frame tick, which runs far more often than a room
-    /// changes. Every [`SYNC_KICK_INTERVAL`] it does the local upkeep that
-    /// keeps revocation prompt and continuity current, which sends nothing
-    /// unless something changed; [`Self::publish_sync_requests`] goes out
+    /// changes. Every [`SYNC_KICK_INTERVAL`] it applies the app
+    /// continuations switch, so turning it off takes effect promptly
+    /// ([`Self::enforce_app_continuations_policy`]); [`Self::publish_sync_requests`] goes out
     /// only when [`Self::schedule_repair_pull`] or [`SYNC_SAFETY_INTERVAL`]
     /// made it due.
     fn kick_periodic_sync(&self) {
@@ -6699,7 +6199,7 @@ impl ShellNetwork {
             due
         });
         if upkeep {
-            self.publish_personal_continuity_if_changed();
+            self.enforce_app_continuations_policy();
         }
         let pull = self.next_sync_pull.lock().is_ok_and(|mut next| {
             let due = next.is_none_or(|at| now >= at);
@@ -6904,7 +6404,6 @@ impl ShellNetwork {
                 }
                 self.on_demand_hosts_changed(ws);
                 self.record_content_sources_changed();
-                self.handle_host_ready(ws);
                 self.room_relay_ready();
                 // A configured host's session of the person's own topic is
                 // up: the rooms it holds for them are entered now.
@@ -7299,31 +6798,6 @@ impl ShellNetwork {
         });
     }
 
-    /// Seed the person's durable host with this device's continuity once it
-    /// finishes subscribing to their topic: see [`NetEvent::HostReady`]. A
-    /// newly enrolled or offline device then has a retained baseline even
-    /// when no other device of theirs is online.
-    fn handle_host_ready(&self, ws: u64) {
-        let Some(user_public_key) = self.personal_continuity_user else {
-            return;
-        };
-        if personal_continuity_topic_id(&user_public_key) != ws
-            || !self.enforce_app_continuations_policy()
-        {
-            return;
-        }
-        if let Some(snapshot) = self.local_continuity_snapshot_bytes() {
-            let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint {
-                ws,
-                msg: NeighbourMsg::PersonalContinuityCheckpoint {
-                    user_public_key,
-                    publisher: self.local_peer_id_hash(),
-                    snapshot,
-                },
-            });
-        }
-    }
-
     /// Route one gossip [`NeighbourMsg`] that arrived on topic `ws`
     /// from `peer` to its per-variant handler, then flush anything the
     /// replica queued in response. Split out of [`Self::tick`] via
@@ -7529,9 +7003,7 @@ impl ShellNetwork {
             );
             return;
         }
-        if self.dispatch_personal_continuity(ws, &origin, &msg)
-            || self.dispatch_personal_workspaces(ws, &origin, &msg)
-        {
+        if self.dispatch_personal_workspaces(ws, &origin, &msg) {
             return;
         }
         if self.require_peer_identity
@@ -7703,188 +7175,6 @@ impl ShellNetwork {
             })
     }
 
-    /// Show the newest app state the person's devices continue, in the
-    /// rooms this device has workspaces for. Which rooms are the person's,
-    /// and where they are hosted, is their workspace list's to say
-    /// ([`crate::shell::personal_workspaces::PersonalWorkspaces`]): state
-    /// for a room not here yet stays in the merged set, and shows once the
-    /// list has entered the room. Answers whether the tree changed.
-    fn materialize_continuations(
-        &self,
-        merged: &crate::shell::personal_continuity::PersonalContinuity,
-    ) -> bool {
-        if !self.enforce_app_continuations_policy() {
-            return false;
-        }
-        // From the accepted merged set, not from a wire payload: a
-        // checkpoint can carry stale entries beside one newer entry, and
-        // arrival order must never choose an app state.
-        let mut candidate_apps = std::collections::BTreeSet::new();
-        for snapshot in merged.snapshots().values() {
-            for workspace in &snapshot.workspaces {
-                for app in &workspace.apps {
-                    candidate_apps.insert((workspace.room, app.id));
-                }
-            }
-        }
-        let mut winners_by_room = std::collections::BTreeMap::<_, Vec<_>>::new();
-        for (room, app_id) in candidate_apps {
-            if let Some(app) = merged.newest_app_state_in_room(room, app_id) {
-                winners_by_room.entry(room).or_default().push(app.clone());
-            }
-        }
-        let desired_tabs = winners_by_room
-            .values()
-            .flat_map(|apps| apps.iter().map(|app| app.id.0))
-            .collect::<std::collections::BTreeSet<_>>();
-        // All tab changes share one write of the tree, so they reconcile
-        // against one snapshot. The frame loop opens materialized tabs
-        // locally without changing the active workspace or focus.
-        let mut tree = self.tree.write();
-        let mut materialized = false;
-        for (room, apps) in winners_by_room {
-            // A room the person's list has not brought yet waits for it.
-            if !tree.has_workspace(room) {
-                continue;
-            }
-            let source = apps
-                .first()
-                .map(|app| app.stamp.device.as_str().to_string())
-                .unwrap_or_default();
-            let workspace = crate::shell::personal_continuity::WorkspaceContinuation { room, apps };
-            materialized |= tree.materialize_continuation_workspace(
-                &source,
-                &workspace,
-                &*self.continuation_labels,
-            );
-        }
-        let reconciled = tree.reconcile_continuation_tabs(&desired_tabs);
-        drop(tree);
-        materialized || reconciled
-    }
-
-    /// [`Self::materialize_continuations`] from the merged set this device
-    /// keeps: a room the person's list brought has its workspace now.
-    pub(super) fn materialize_kept_continuations(&self) -> bool {
-        let Some(merged) = self
-            .personal_continuity
-            .lock()
-            .ok()
-            .map(|continuity| continuity.clone())
-        else {
-            return false;
-        };
-        self.materialize_continuations(&merged)
-    }
-
-    /// Handle the private same-person lane before room authorization. Returns
-    /// `true` for both accepted and rejected personal messages so neither can
-    /// fall through into the collaboration-room replica.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "personal-continuity dispatch validates the private lane and applies what it accepted as one authorization decision"
-    )]
-    fn dispatch_personal_continuity(
-        &self,
-        ws: u64,
-        origin: &crate::shell::state::PeerOrigin,
-        msg: &NeighbourMsg,
-    ) -> bool {
-        let (user_public_key, checkpoint) = match msg {
-            NeighbourMsg::PersonalContinuityRequest {
-                user_public_key, ..
-            } => (user_public_key, None),
-            NeighbourMsg::PersonalContinuityCheckpoint {
-                user_public_key,
-                snapshot,
-                ..
-            } => (user_public_key, Some(snapshot.as_slice())),
-            _ => return false,
-        };
-        if !self.enforce_app_continuations_policy() {
-            return true;
-        }
-        let Some(local_user) = self.personal_continuity_user else {
-            return true;
-        };
-        let identity = self.peer_identities.get(origin);
-        if ws != personal_continuity_topic_id(user_public_key)
-            || user_public_key != &local_user
-            || identity
-                .as_ref()
-                .is_none_or(|peer| !peer.is_same_user(&local_user))
-        {
-            tracing::warn!(
-                peer = %origin,
-                "dropping personal continuity traffic from a different identity"
-            );
-            return true;
-        }
-
-        let Some(snapshot_bytes) = checkpoint else {
-            let Some(snapshot) = self.local_continuity_snapshot_bytes() else {
-                return true;
-            };
-            let msg = NeighbourMsg::PersonalContinuityCheckpoint {
-                user_public_key: local_user,
-                publisher: self.local_peer_id_hash(),
-                snapshot,
-            };
-            if self.enforce_app_continuations_policy() && self.join_topic(ws) {
-                let _ = self.cmd_tx.try_send(NetCmd::PublishCheckpoint { ws, msg });
-            }
-            return true;
-        };
-        if snapshot_bytes.len() > MAX_PERSONAL_CONTINUITY_CHECKPOINT_BYTES {
-            tracing::warn!(
-                bytes = snapshot_bytes.len(),
-                "dropping oversized continuity state"
-            );
-            return true;
-        }
-        let Ok(incoming) = crate::shell::personal_continuity::decode_checkpoint(snapshot_bytes)
-        else {
-            tracing::warn!("dropping invalid continuity checkpoint");
-            return true;
-        };
-        if !self.enforce_app_continuations_policy() {
-            return true;
-        }
-        if let Ok(mut counter) = self.personal_continuity_counter.lock() {
-            *counter = (*counter).max(incoming.observed_counter());
-        }
-        let mut changed = false;
-        let mut merged = None;
-        if let Ok(mut continuity) = self.personal_continuity.lock() {
-            for snapshot in incoming.snapshots().values() {
-                match continuity.upsert(snapshot.clone()) {
-                    Ok(snapshot_changed) => changed |= snapshot_changed,
-                    Err(error) => {
-                        tracing::warn!(%error, "dropping conflicting continuity checkpoint");
-                    }
-                }
-            }
-            merged = Some(continuity.clone());
-        }
-        if changed
-            && let Some(merged) = merged.as_ref()
-            && let Ok(mut recency) = self.personal_focus_recency.lock()
-        {
-            recency.observe(merged, std::time::Instant::now());
-        }
-        if changed {
-            if !self.enforce_app_continuations_policy() {
-                return true;
-            }
-            let _ = self.persist_personal_continuity();
-            let Some(merged) = merged else {
-                return true;
-            };
-            self.materialize_continuations(&merged);
-        }
-        true
-    }
-
     /// Return the session handle a message claims as its publisher.
     ///
     /// These fields are routing conveniences, not identities. Production
@@ -7909,12 +7199,10 @@ impl ShellNetwork {
             | NeighbourMsg::SurfaceStreamEnd { source_peer, .. }
             | NeighbourMsg::SurfaceFrame { source_peer, .. } => Some(*source_peer),
             NeighbourMsg::ScrollbackRequest { requester, .. }
-            | NeighbourMsg::PersonalContinuityRequest { requester, .. }
             | NeighbourMsg::RecordContentWant { requester, .. } => Some(*requester),
             NeighbourMsg::ScrollbackResponse { responder, .. }
             | NeighbourMsg::RecordContentPiece { responder, .. }
             | NeighbourMsg::RecordContentLacks { responder, .. } => Some(*responder),
-            NeighbourMsg::PersonalContinuityCheckpoint { publisher, .. } => Some(*publisher),
             NeighbourMsg::SyncReq { .. }
             | NeighbourMsg::SyncResp { .. }
             | NeighbourMsg::PermissionGrant { .. }
@@ -8291,15 +7579,9 @@ pub(crate) fn shell_network_for_test(
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),
-        personal_continuity: Mutex::default(),
         personal_continuity_user: None,
         workspace_person_roots: Vec::new(),
         personal_continuity_device: None,
-        personal_continuity_counter: Mutex::new(0),
-        personal_continuity_fingerprint: Mutex::new(None),
-        personal_continuity_path: None,
-        personal_continuity_store: KnownContents::default(),
-        personal_continuity_durability: ContinuityDurability::default(),
         personal_rooms_export: KnownContents::default(),
         personal_workspaces: None,
         last_personal_workspaces_snapshot: Mutex::new(None),
@@ -8381,7 +7663,6 @@ pub(crate) fn shell_network_for_test(
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         workspace_control_observers: Mutex::new(Vec::new()),
         peer_departures: Arc::new(PeerDepartureHistory::default()),
-        continuation_labels: Box::new(crate::shell::doc_open::DesktopContinuationLabels),
     };
     (net, cmd_rx)
 }
@@ -8853,29 +8134,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn unchanged_personal_continuity_is_not_rewritten() {
-        use std::os::unix::fs::MetadataExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal-continuity.postcard");
-        let value = |counter| PersistedPersonalContinuity {
-            counter,
-            continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
-        };
-        assert!(persist_personal_continuity(&path, &value(7)));
-        let written = std::fs::metadata(&path).unwrap().ino();
-        assert!(persist_personal_continuity(&path, &value(7)));
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().ino(),
-            written,
-            "the same state must not be rewritten"
-        );
-        assert!(persist_personal_continuity(&path, &value(8)));
-        assert_ne!(std::fs::metadata(&path).unwrap().ino(), written);
-        assert_eq!(load_personal_continuity(&path).counter, 8);
-    }
-
     #[test]
     #[serial_test::serial(process_env)]
     fn an_enrolled_action_goes_to_the_named_room_or_the_one_the_device_is_in() {
@@ -9263,75 +8521,43 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_HOME_PEERS_PATH", &peers);
         env.set("XDG_STATE_HOME", &state);
-        let (mut net, _commands) = personal_continuity_network_for_test([0x44; 32]);
-        let store = dir.path().join("personal-continuity.postcard");
-        net.personal_continuity_path = Some(store.clone());
+        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
         assert!(net.join_default_workspace());
-        assert!(net.persist_personal_continuity());
         crate::shell::persist::wait_for_saves();
         assert!(export.exists(), "the room list is exported");
-        assert!(store.exists(), "the continuity store is written");
 
         let before = submits();
         let _ = net.refresh_home_peer_hosts();
-        assert!(net.persist_personal_continuity());
+        assert!(net.enforce_app_continuations_policy());
         assert_eq!(
             submits(),
             before,
-            "an unchanged room list and continuity store must not be queued again"
+            "an unchanged room list must not be queued again"
         );
-
-        // Turning app continuations off purges the store once, not on every
-        // round that finds it off.
-        net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
-        assert!(!net.enforce_app_continuations_policy());
-        crate::shell::persist::wait_for_saves();
-        assert!(
-            !store.exists(),
-            "revoking app continuations purges the store"
-        );
-        let before = submits();
-        assert!(!net.enforce_app_continuations_policy());
-        assert!(!net.enforce_app_continuations_policy());
-        assert_eq!(submits(), before, "a purged store is not purged again");
-
-        // Allowed again, the next round writes it back.
-        net.continuity_policy_override = Some(test_continuity_policy(true, true, true));
-        assert!(net.persist_personal_continuity());
-        crate::shell::persist::wait_for_saves();
-        assert!(store.exists(), "the store is written once allowed again");
     }
 
-    /// Every sync round captures and persists the personal continuity from
-    /// the compositor's loop. With owner claims to acknowledge, the store
-    /// was written there (four fsyncs) and froze the desktop under I/O
-    /// pressure; now the state writer writes it.
-    #[cfg(target_os = "linux")]
+    /// The app continuations switch decides whether this device notes, in
+    /// the layout records, how its windows resume and which it is on: off,
+    /// it stops at once and forgets the other devices' offers.
     #[test]
-    #[serial_test::serial(process_env)]
-    fn capturing_personal_continuity_never_waits_for_the_disk() {
-        let dir = tempfile::tempdir().expect("temp");
-        let peers = dir.path().join("home-peers.json");
-        std::fs::write(&peers, b"[]").unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_HOME_PEERS_PATH", &peers);
-        env.set("XDG_STATE_HOME", dir.path().join("state"));
-        let (mut net, _commands) = personal_continuity_network_for_test([0x45; 32]);
-        let store = dir.path().join("personal-continuity.postcard");
-        net.personal_continuity_path = Some(store.clone());
-        assert!(net.join_default_workspace());
-        crate::shell::persist::wait_for_saves();
-        let checkpoint = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
-            net.local_continuity_snapshot_bytes()
-        })
-        .expect("the round captures a checkpoint without a disk sync");
-        crate::shell::durable_writer::global().flush();
-        let stored = load_personal_continuity(&store);
-        assert_eq!(
-            postcard::to_allocvec(&stored.continuity).unwrap(),
-            checkpoint,
-            "the state writer stored exactly the captured checkpoint"
-        );
+    #[serial_test::serial]
+    fn app_continuations_follow_the_switch() {
+        let (mut net, _commands) = personal_continuity_network_for_test([0xA4; 32]);
+        let device = net.personal_continuity_device.clone();
+        assert!(device.is_some());
+        net.continuity_policy_override = Some(test_continuity_policy(true, true, true));
+        assert!(net.enforce_app_continuations_policy());
+        assert_eq!(net.tree.read().continuation_device, device);
+
+        net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
+        assert!(!net.enforce_app_continuations_policy());
+        assert_eq!(net.tree.read().continuation_device, None);
+        assert!(net.continuity_feed().observations.is_empty());
+        assert!(net.pump_owner_views().is_empty());
+
+        net.continuity_policy_override = Some(test_continuity_policy(true, true, true));
+        assert!(net.enforce_app_continuations_policy());
+        assert_eq!(net.tree.read().continuation_device, device);
     }
 
     /// Each of the person's devices restates its fabric checkpoint, and the
@@ -9370,44 +8596,6 @@ mod tests {
             load_device_fabric(&path).snapshots().contains_key(&owner),
             "the state writer stored the merged fabric"
         );
-    }
-
-    #[test]
-    fn continuity_obligations_wait_for_the_write_of_their_value() {
-        let durability = ContinuityDurability::default();
-        let ran = Arc::new(Mutex::new(Vec::new()));
-        let first = durability.submit();
-        let record = |label: &'static str| {
-            let ran = Arc::clone(&ran);
-            move || ran.lock().unwrap().push(label)
-        };
-        durability.after_newest(record("first"));
-        let second = durability.submit();
-        durability.after_newest(record("second"));
-        durability.settle();
-        assert!(ran.lock().unwrap().is_empty(), "nothing is on disk yet");
-        durability.written(first);
-        durability.settle();
-        assert_eq!(*ran.lock().unwrap(), ["first"]);
-        // A later value written stands for every earlier one, even one the
-        // writer replaced before it started.
-        durability.written(second);
-        durability.written(first);
-        durability.settle();
-        assert_eq!(*ran.lock().unwrap(), ["first", "second"]);
-        durability.after_newest(record("already durable"));
-        durability.settle();
-        assert_eq!(*ran.lock().unwrap(), ["first", "second", "already durable"]);
-
-        // Writes that keep failing leave a bounded backlog.
-        ran.lock().unwrap().clear();
-        let failing = durability.submit();
-        for _ in 0..MAX_CONTINUITY_OBLIGATIONS + 10 {
-            durability.after_newest(record("waiting"));
-        }
-        durability.written(failing);
-        durability.settle();
-        assert_eq!(ran.lock().unwrap().len(), MAX_CONTINUITY_OBLIGATIONS);
     }
 
     #[test]
@@ -10284,143 +9472,6 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn disabled_app_continuations_emit_nothing_purge_state_and_drop_ingress() {
-        fn disabled_app_continuations_emit_no_request_or_checkpoint_wire() {
-            let user = [0xA4; 32];
-            let (mut net, mut commands) = personal_continuity_network_for_test(user);
-            net.continuity_policy_override = Some(test_continuity_policy(false, true, true));
-
-            net.publish_personal_continuity_request();
-            net.publish_personal_continuity_if_changed();
-            net.publish_device_fabric_request();
-            assert!(
-                !net.publish_message(NeighbourMsg::PersonalContinuityRequest {
-                    user_public_key: user,
-                    requester: net.local_peer_id_hash(),
-                })
-            );
-            assert!(
-                std::iter::from_fn(|| commands.try_recv().ok()).all(|command| !matches!(
-                    command,
-                    NetCmd::PublishCheckpoint { .. }
-                        | NetCmd::PublishPersonalFabric { .. }
-                        | NetCmd::PublishPersonalFabricTarget { .. }
-                ))
-            );
-        }
-
-        fn disabling_app_continuations_purges_staged_topology_and_checkpoints() {
-            let user = [0xA5; 32];
-            let (mut net, _commands) = personal_continuity_network_for_test(user);
-            let room = RoomId::new();
-            net.tree.write().join_room("Plans", room);
-            let remote = test_device(0xA6);
-            let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
-                remote,
-                7,
-                None,
-                vec![crate::shell::personal_continuity::WorkspaceContinuation {
-                    room,
-                    apps: Vec::new(),
-                }],
-            )
-            .expect("valid remote snapshot");
-            net.personal_continuity
-                .lock()
-                .expect("continuity")
-                .upsert(snapshot)
-                .expect("stage checkpoint");
-            let tab = crate::shell::personal_continuity::AppInstanceId(0xA6A6);
-            let launch = crate::shell::personal_continuity::LaunchIntent::app("so.tilo.browser")
-                .expect("valid launch");
-            {
-                let registry = crate::shell::personal_continuity_registry::global_registry();
-                let mut registry = registry.lock().expect("continuation registry");
-                registry.clear_remote();
-                registry.store_remote_record(room, tab, "so.tilo.browser".into(), tab);
-                assert_eq!(
-                    registry.record_instance_for_tab(room, tab, &launch),
-                    Some(tab)
-                );
-                drop(registry);
-            }
-            let dir = tempfile::tempdir().expect("continuity store");
-            let path = dir.path().join("personal-continuity.postcard");
-            net.personal_continuity_path = Some(path.clone());
-            assert!(net.persist_personal_continuity());
-            crate::shell::persist::wait_for_saves();
-            assert!(path.exists());
-
-            net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
-            assert!(!net.enforce_app_continuations_policy());
-            crate::shell::persist::wait_for_saves();
-
-            assert!(
-                net.personal_continuity
-                    .lock()
-                    .expect("continuity")
-                    .is_empty()
-            );
-            assert!(!path.exists());
-            assert!(!personal_continuity_backup_path(&path).exists());
-            assert_eq!(
-                crate::shell::personal_continuity_registry::global_registry()
-                    .lock()
-                    .expect("continuation registry")
-                    .record_instance_for_tab(room, tab, &launch),
-                None
-            );
-        }
-
-        fn disabled_app_continuations_drop_authenticated_ingress_before_merge() {
-            let root = ed25519_dalek::SigningKey::from_bytes(&[0xA7; 32]);
-            let peer = iroh::SecretKey::from_bytes(&[0xA8; 32]);
-            let user = root.verifying_key().to_bytes();
-            let (mut net, _commands) = personal_continuity_network_for_test(user);
-            authenticated_personal_peer(&net, &root, &peer);
-            net.continuity_policy_override = Some(test_continuity_policy(true, false, true));
-            let remote = test_device(0xA9);
-            let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
-                remote,
-                1,
-                None,
-                Vec::new(),
-            )
-            .expect("valid snapshot");
-            let mut offered = crate::shell::personal_continuity::PersonalContinuity::default();
-            offered.upsert(snapshot).expect("valid checkpoint");
-
-            net.dispatch_neighbour_msg(
-                personal_continuity_topic_id(&user),
-                peer.public(),
-                None,
-                false,
-                NeighbourMsg::PersonalContinuityCheckpoint {
-                    user_public_key: user,
-                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(&peer.public()),
-                    snapshot: postcard::to_allocvec(&offered).expect("encode checkpoint"),
-                },
-            );
-
-            assert!(
-                net.personal_continuity
-                    .lock()
-                    .expect("continuity")
-                    .is_empty()
-            );
-        }
-
-        disabled_app_continuations_emit_no_request_or_checkpoint_wire();
-        disabling_app_continuations_purges_staged_topology_and_checkpoints();
-        disabled_app_continuations_drop_authenticated_ingress_before_merge();
-    }
-
-    #[test]
     #[serial_test::serial(process_env)]
     #[allow(
         clippy::too_many_lines,
@@ -10636,10 +9687,6 @@ mod tests {
         assert_eq!(
             network.pending_invitations_path.as_deref(),
             Some(state_dir.join("pending-invitations.json").as_path())
-        );
-        assert_eq!(
-            network.personal_continuity_path.as_deref(),
-            Some(state_dir.join("personal-continuity.postcard").as_path())
         );
         let fabric_path = network.device_fabric_path.as_ref().unwrap();
         assert_eq!(
@@ -10892,38 +9939,6 @@ mod tests {
         crate::shell::persist::wait_for_saves();
         assert!(checkpoint_path.is_file(), "the writer never wrote it");
         assert!(device_fabric_backup_path(&checkpoint_path).is_file());
-    }
-
-    #[test]
-    fn a_sync_round_persists_continuity_without_waiting_for_the_disk() {
-        // It runs from the compositor's loop on every sync round. Park the
-        // state writer: the call may not wait for it, and nothing reaches the
-        // disk until it is released.
-        let user = ed25519_dalek::SigningKey::from_bytes(&[0xE6; 32])
-            .verifying_key()
-            .to_bytes();
-        let (mut net, _commands) = personal_continuity_network_for_test(user);
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("personal-continuity.postcard");
-        net.personal_continuity_path = Some(path.clone());
-        let (release, parked) = std::sync::mpsc::channel::<()>();
-        let (started, running) = std::sync::mpsc::channel::<()>();
-        crate::shell::durable_writer::global().submit(
-            dir.path().join("parked-writer-blocker"),
-            move || {
-                started.send(()).unwrap();
-                let _ = parked.recv();
-            },
-        );
-        running.recv().unwrap();
-        assert!(net.persist_personal_continuity());
-        assert!(
-            !path.exists(),
-            "the continuity store was written on the calling thread"
-        );
-        release.send(()).unwrap();
-        crate::shell::persist::wait_for_saves();
-        assert!(path.is_file(), "the writer never wrote it");
     }
 
     #[test]
@@ -11669,659 +10684,6 @@ mod tests {
         personal_fabric_action_queue_reserves_control_during_media_saturation();
         personal_fabric_terminal_purges_only_the_exact_peer_stream();
         personal_fabric_all_control_saturation_fails_closed();
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn personal_continuity_store_survives_restart_and_backup_failure() {
-        fn personal_continuity_counter_and_checkpoint_survive_restart_store() {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("personal-continuity.postcard");
-            let device = tilo_network_actor::fabric::DeviceId::new("laptop").unwrap();
-            let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
-                device.clone(),
-                41,
-                None,
-                Vec::new(),
-            )
-            .unwrap();
-            let mut continuity = crate::shell::personal_continuity::PersonalContinuity::default();
-            continuity.upsert(snapshot.clone()).unwrap();
-            let _ = persist_personal_continuity(
-                &path,
-                &PersistedPersonalContinuity {
-                    counter: 41,
-                    continuity,
-                },
-            );
-            let restored = load_personal_continuity(&path);
-            assert_eq!(restored.counter, 41);
-            assert_eq!(restored.continuity.snapshot_for(&device), Some(&snapshot));
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt as _;
-                assert_eq!(
-                    std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                    0o600
-                );
-            }
-
-            std::fs::write(&path, b"torn").unwrap();
-            let recovered = load_personal_continuity(&path);
-            assert_eq!(
-                recovered.counter, 42,
-                "backup recovery reserves a counter peers may already have seen"
-            );
-            assert_eq!(recovered.continuity.snapshot_for(&device), Some(&snapshot));
-        }
-
-        fn backup_failure_never_advances_continuity_primary() {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("personal-continuity.postcard");
-            let initial = PersistedPersonalContinuity {
-                counter: 10,
-                continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
-            };
-            let _ = persist_personal_continuity(&path, &initial);
-            let backup = personal_continuity_backup_path(&path);
-            std::fs::remove_file(&backup).unwrap();
-            std::fs::create_dir(&backup).unwrap();
-
-            let _ = persist_personal_continuity(
-                &path,
-                &PersistedPersonalContinuity {
-                    counter: 11,
-                    continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
-                },
-            );
-            let restored = load_personal_continuity(&path);
-            assert_eq!(restored.counter, 10);
-        }
-
-        fn personal_continuity_topic_is_stable_and_root_bound() {
-            let root_a = [0xA1; 32];
-            let root_b = [0xB2; 32];
-            assert_eq!(
-                personal_continuity_topic_id(&root_a),
-                personal_continuity_topic_id(&root_a),
-                "a user's devices must join one stable private shard"
-            );
-            assert_ne!(
-                personal_continuity_topic_id(&root_a),
-                personal_continuity_topic_id(&root_b),
-                "fixed distinct roots must not share a test shard"
-            );
-            assert_ne!(personal_continuity_topic_id(&root_a), DEFAULT_WS_TOPIC);
-        }
-
-        personal_continuity_counter_and_checkpoint_survive_restart_store();
-        backup_failure_never_advances_continuity_primary();
-        personal_continuity_topic_is_stable_and_root_bound();
-    }
-
-    /// What another device continues in a room the person's list has not
-    /// brought here yet makes no workspace and marks nothing joined: the
-    /// list says which rooms are the person's and where they are hosted.
-    /// The app state is kept, and shows once the room is entered.
-    #[test]
-    #[serial_test::serial]
-    fn continued_app_state_waits_for_the_list_to_bring_its_room() {
-        use crate::shell::personal_continuity::{
-            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot,
-            LaunchIntent, PersonalContinuity, TabPlacement, WorkspaceContinuation,
-        };
-        use tilo_network_actor::fabric::DeviceId;
-        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE5; 32]);
-        let user_public_key = root.verifying_key().to_bytes();
-        let source_endpoint = iroh::SecretKey::from_bytes(&[0xE6; 32]);
-        let source_device = DeviceId::new(hex::encode(source_endpoint.public().as_bytes()))
-            .expect("endpoint ids are portable device ids");
-        let room = RoomId::new();
-        let tab = 0xC011_0101;
-        let app = AppInstanceState::new(
-            AppInstanceId(tab),
-            TabPlacement {
-                strip: 0,
-                group: 0,
-                tab: 0,
-            },
-            LaunchIntent::app("so.tilo.browser").expect("known app id"),
-            None,
-            ContinuityStamp {
-                counter: 1,
-                device: source_device.clone(),
-            },
-        );
-        let snapshot = DeviceContinuationSnapshot::new(
-            source_device,
-            1,
-            None,
-            vec![WorkspaceContinuation {
-                room,
-                apps: vec![app],
-            }],
-        )
-        .expect("valid snapshot");
-        let mut continuity = PersonalContinuity::default();
-        continuity.upsert(snapshot).expect("snapshot merges");
-        let checkpoint = postcard::to_allocvec(&continuity).expect("checkpoint encodes");
-
-        let (target, _commands) = personal_continuity_network_for_test(user_public_key);
-        authenticated_personal_peer(&target, &root, &source_endpoint);
-        target.dispatch_neighbour_msg(
-            personal_continuity_topic_id(&user_public_key),
-            source_endpoint.public(),
-            None,
-            false,
-            NeighbourMsg::PersonalContinuityCheckpoint {
-                user_public_key,
-                publisher: tilo_network_actor::behaviour::peer_liveness_handle(
-                    &source_endpoint.public(),
-                ),
-                snapshot: checkpoint,
-            },
-        );
-        {
-            let tree = target.tree.read();
-            assert!(!tree.has_workspace(room), "continuity made a workspace");
-            assert!(
-                !tree.joining_rooms.contains(&room),
-                "continuity marked it joined"
-            );
-            assert!(!tree.continuation_tabs.contains(&tab));
-        }
-
-        // The list brings the room: entering it makes its workspace.
-        target.tree.write().join_native_room("Plans", room);
-        assert!(target.materialize_kept_continuations());
-        assert!(
-            target.tree.read().continuation_tabs.contains(&tab),
-            "the kept app state shows in the entered room"
-        );
-        crate::shell::launcher::clear_pending_placements();
-    }
-
-    /// Exercises the shipped continuation boundaries as one lifecycle: an
-    /// app report becomes a private Postcard checkpoint, a second shell
-    /// turns it into dormant cards, the normal launcher handoff receives the
-    /// exact resume record, and a source close removes only that card.  The
-    /// two shells share this test process, so clear the process-local report
-    /// cache between their halves just as separate shell processes do.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the lifecycle test holds test-only state guards until each restart snapshot is asserted"
-    )]
-    #[test]
-    #[serial_test::serial]
-    fn personal_continuity_app_report_checkpoint_restore_close_and_restart_lifecycle() {
-        use crate::shell::personal_continuity::{AppInstanceId, LaunchIntent};
-        use crate::shell::state::{AppKind, Tab, TileContent, WindowGroup, WindowWidth};
-        use tilo_network_actor::fabric::DeviceId;
-
-        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE1; 32]);
-        let user_public_key = root.verifying_key().to_bytes();
-        let source_endpoint = iroh::SecretKey::from_bytes(&[0xE2; 32]);
-        let source_device = DeviceId::new(hex::encode(source_endpoint.public().as_bytes()))
-            .expect("endpoint ids are portable device ids");
-        let room = RoomId::new();
-        let browser_tab = 0xC011_0001;
-        let ebook_tab = 0xC011_0002;
-        let music_tab = 0xC011_0003;
-        let file_tab = 0xC011_0004;
-        let file_reference =
-            LaunchIntent::file_reference("record:book-continue", Some([7; 32]), None)
-                .expect("portable record reference");
-
-        let mut source_tree = WorkspaceTree::bootstrap_default();
-        source_tree.desktop.workspaces[0] =
-            crate::shell::state::rehomed(&source_tree.desktop.workspaces[0], room);
-        let source_workspace = source_tree
-            .desktop
-            .workspaces
-            .first_mut()
-            .expect("bootstrap workspace");
-        source_workspace.strips[0].window_groups.push(WindowGroup {
-            id: crate::shell::state::next_id(),
-            tabs: vec![
-                Tab {
-                    id: browser_tab,
-                    title: "Browser".into(),
-                    tile: TileContent::Foreign {
-                        app_id: "so.tilo.browser".into(),
-                        surface_id: 101,
-                    },
-                    app_title: None,
-                },
-                Tab {
-                    id: ebook_tab,
-                    title: "Ebook".into(),
-                    tile: TileContent::Foreign {
-                        app_id: "so.tilo.ebook".into(),
-                        surface_id: 102,
-                    },
-                    app_title: None,
-                },
-                Tab {
-                    id: music_tab,
-                    title: "Music".into(),
-                    tile: TileContent::Foreign {
-                        app_id: "so.tilo.music".into(),
-                        surface_id: 103,
-                    },
-                    app_title: None,
-                },
-                Tab {
-                    id: file_tab,
-                    title: "A book".into(),
-                    tile: TileContent::Stub {
-                        kind: AppKind::FileExplorer,
-                        label: "A book".into(),
-                    },
-                    app_title: None,
-                },
-            ],
-            active_tab: browser_tab,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        });
-        source_tree
-            .continuation_file_references
-            .insert(file_tab, file_reference.clone());
-
-        // This is the shell-side endpoint of the app collaboration adapter:
-        // each metadata report is keyed by its launcher-issued record id.
-        let registry = crate::shell::personal_continuity_registry::global_registry();
-        {
-            let mut reports = registry.lock().expect("continuation registry");
-            for (tab, app_id, schema_version, metadata) in [
-                (
-                    browser_tab,
-                    "so.tilo.browser",
-                    ui::collaboration::semantic_schema::WEB_LOCATION_V1,
-                    br#"{"url":"https://example.test/reading"}"#.to_vec(),
-                ),
-                (
-                    ebook_tab,
-                    "so.tilo.ebook",
-                    ui::collaboration::semantic_schema::PUBLICATION_POSITION_V1,
-                    br#"{"book_id":"book-42","chapter":4,"page":9}"#.to_vec(),
-                ),
-                (
-                    music_tab,
-                    "so.tilo.music",
-                    ui::collaboration::semantic_schema::MEDIA_POSITION_V1,
-                    br#"{"track_id":"track-42","position_ms":12345,"paused":true}"#.to_vec(),
-                ),
-            ] {
-                let metadata = ui::app::compose_structural_continuation_metadata(
-                    ui::view::View::default(),
-                    Some(ui::collaboration::ContinuationMetadata {
-                        schema_version,
-                        bytes: metadata,
-                    }),
-                )
-                .expect("framework presentation and app semantic checkpoint");
-                reports.bind_tab(AppInstanceId(tab), AppInstanceId(tab));
-                assert!(
-                    reports
-                        .report(
-                            room,
-                            app_id,
-                            AppInstanceId(tab),
-                            metadata.schema_version,
-                            metadata.bytes
-                        )
-                        .expect("shipped app metadata contract accepts the report")
-                );
-            }
-        }
-
-        let dir = tempfile::tempdir().expect("continuity store");
-        let continuity_path = dir.path().join("personal-continuity.postcard");
-        let (mut source, _source_commands) = personal_continuity_network_for_test(user_public_key);
-        source.tree = source_tree.shared();
-        source.personal_continuity_device = Some(source_device.clone());
-        source.personal_continuity_path = Some(continuity_path.clone());
-        let checkpoint = source
-            .local_continuity_snapshot_bytes()
-            .expect("report registry is captured through the shell checkpoint");
-        let checkpoint_state = crate::shell::personal_continuity::decode_checkpoint(&checkpoint)
-            .expect("shipped Postcard checkpoint");
-        let offered = checkpoint_state
-            .snapshot_for(&source_device)
-            .expect("source snapshot");
-        assert_eq!(offered.workspaces[0].apps.len(), 4);
-        assert!(
-            offered.workspaces[0]
-                .apps
-                .iter()
-                .any(|app| { app.id == AppInstanceId(ebook_tab) && app.resume.is_some() })
-        );
-        assert!(
-            offered.workspaces[0]
-                .apps
-                .iter()
-                .any(|app| { app.id == AppInstanceId(music_tab) && app.resume.is_some() })
-        );
-
-        // A real second shell has a distinct process-local cache. Preserve
-        // only the encoded relay payload before crossing that boundary.
-        {
-            let mut reports = registry.lock().expect("continuation registry");
-            for tab in [browser_tab, ebook_tab, music_tab, file_tab] {
-                reports.forget_local_tab(AppInstanceId(tab));
-            }
-        }
-
-        let (target, _target_commands) = personal_continuity_network_for_test(user_public_key);
-        authenticated_personal_peer(&target, &root, &source_endpoint);
-        // The person's list brought the room here; continuity shows what is
-        // open in it.
-        target.tree.write().join_room("Plans", room);
-        target.dispatch_neighbour_msg(
-            personal_continuity_topic_id(&user_public_key),
-            source_endpoint.public(),
-            None,
-            false,
-            NeighbourMsg::PersonalContinuityCheckpoint {
-                user_public_key,
-                publisher: tilo_network_actor::behaviour::peer_liveness_handle(
-                    &source_endpoint.public(),
-                ),
-                snapshot: checkpoint,
-            },
-        );
-        {
-            let tree = target.tree.read();
-            for tab in [browser_tab, ebook_tab, music_tab, file_tab] {
-                assert!(tree.continuation_tabs.contains(&tab));
-            }
-            assert_eq!(
-                tree.continuation_file_references.get(&file_tab),
-                Some(&file_reference)
-            );
-            assert!(
-                tree.desktop
-                    .workspaces
-                    .iter()
-                    .any(|workspace| workspace.room() == room)
-            );
-        }
-
-        // Model the exact peer-window -> launcher staging used before the
-        // restored toplevel adopts its remote tab. This verifies metadata and
-        // source CRDT record identity travel together without starting a GUI.
-        let browser_launch = LaunchIntent::app("so.tilo.browser").expect("known app id");
-        let browser_resume = registry
-            .lock()
-            .expect("continuation registry")
-            .continuation_for_tab(room, AppInstanceId(browser_tab), &browser_launch)
-            .expect("remote placeholder retains the app report");
-        crate::shell::launcher::clear_pending_placements();
-        crate::shell::launcher::set_pending_placement(
-            "so.tilo.browser",
-            crate::shell::tab_binding::Placement::IntoTab(browser_tab),
-        );
-        crate::shell::launcher::stage_continuation_resume(
-            room,
-            browser_tab,
-            browser_resume.resume.schema_version(),
-            browser_resume.resume.bytes().to_vec(),
-            browser_resume.record_instance.0,
-        );
-        assert_eq!(
-            crate::shell::launcher::take_staged_resume_for_package("so.tilo.browser", room),
-            Some((
-                Some((
-                    browser_resume.resume.schema_version(),
-                    browser_resume.resume.bytes().to_vec()
-                )),
-                browser_tab,
-            )),
-            "the real launcher consumption path receives exact resume metadata and record",
-        );
-        crate::shell::launcher::clear_pending_placements();
-
-        // Closing on the source passes through compositor tab removal, then
-        // a fresh checkpoint tombstones that durable tab. The target removes
-        // it while retaining the other independent offers.
-        {
-            assert!(crate::shell::tab_binding::remove_tab(
-                &mut source.tree.write(),
-                browser_tab,
-            ));
-        }
-        let closed_checkpoint = source
-            .local_continuity_snapshot_bytes()
-            .expect("close creates a newer checkpoint");
-        let closed_state = crate::shell::personal_continuity::decode_checkpoint(&closed_checkpoint)
-            .expect("closed checkpoint decodes");
-        let closed_source = closed_state
-            .snapshot_for(&source_device)
-            .expect("updated source snapshot");
-        assert!(closed_source.tombstones.iter().any(|tombstone| {
-            tombstone.room == room && tombstone.id == AppInstanceId(browser_tab)
-        }));
-        target.dispatch_neighbour_msg(
-            personal_continuity_topic_id(&user_public_key),
-            source_endpoint.public(),
-            None,
-            false,
-            NeighbourMsg::PersonalContinuityCheckpoint {
-                user_public_key,
-                publisher: tilo_network_actor::behaviour::peer_liveness_handle(
-                    &source_endpoint.public(),
-                ),
-                snapshot: closed_checkpoint,
-            },
-        );
-        let tree = target.tree.read();
-        assert!(!tree.continuation_tabs.contains(&browser_tab));
-        assert!(tree.continuation_tabs.contains(&ebook_tab));
-        assert!(tree.continuation_tabs.contains(&music_tab));
-        assert!(tree.continuation_tabs.contains(&file_tab));
-        drop(tree);
-
-        // The checkpoint is written on the state writer.
-        crate::shell::durable_writer::global().flush();
-        let restarted = load_personal_continuity(&continuity_path);
-        assert!(
-            restarted.counter >= closed_source.stamp.counter,
-            "restart must never reuse the close checkpoint's Lamport counter"
-        );
-        assert_eq!(
-            restarted.continuity.snapshot_for(&source_device),
-            Some(closed_source),
-            "the durable restart store retains the close tombstone"
-        );
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn personal_continuity_checkpoints_are_root_checked_without_side_effects() {
-        fn personal_continuity_rejects_a_certified_different_root() {
-            let local_root = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
-            let foreign_root = ed25519_dalek::SigningKey::from_bytes(&[0xB2; 32]);
-            let foreign_device = iroh::SecretKey::from_bytes(&[0xB3; 32]);
-            let local_user = local_root.verifying_key().to_bytes();
-            let (net, mut commands) = personal_continuity_network_for_test(local_user);
-            authenticated_personal_peer(&net, &foreign_root, &foreign_device);
-            while commands.try_recv().is_ok() {}
-
-            let foreign_device_id = tilo_network_actor::fabric::DeviceId::new(hex::encode(
-                foreign_device.public().as_bytes(),
-            ))
-            .expect("endpoint id is a valid device id");
-            let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
-                foreign_device_id.clone(),
-                1,
-                None,
-                Vec::new(),
-            )
-            .expect("valid snapshot");
-            net.dispatch_neighbour_msg(
-                personal_continuity_topic_id(&local_user),
-                foreign_device.public(),
-                None,
-                false,
-                NeighbourMsg::PersonalContinuityCheckpoint {
-                    user_public_key: local_user,
-                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(
-                        &foreign_device.public(),
-                    ),
-                    snapshot: postcard::to_allocvec(&snapshot).expect("encode snapshot"),
-                },
-            );
-
-            assert!(
-                net.personal_continuity
-                    .lock()
-                    .expect("continuity")
-                    .snapshot_for(&foreign_device_id)
-                    .is_none(),
-                "a valid device certificate for another root cannot write this private lane"
-            );
-            assert!(
-                commands.try_recv().is_err(),
-                "rejection must not trigger restore or other transport side effects"
-            );
-        }
-
-        fn personal_continuity_accepts_same_root_checkpoint_without_restore_side_effects() {
-            let root = ed25519_dalek::SigningKey::from_bytes(&[0xC1; 32]);
-            let peer_device = iroh::SecretKey::from_bytes(&[0xC2; 32]);
-            let user_public_key = root.verifying_key().to_bytes();
-            let (net, mut commands) = personal_continuity_network_for_test(user_public_key);
-            authenticated_personal_peer(&net, &root, &peer_device);
-            while commands.try_recv().is_ok() {}
-
-            let peer_device_id = tilo_network_actor::fabric::DeviceId::new(hex::encode(
-                peer_device.public().as_bytes(),
-            ))
-            .expect("endpoint id is a valid device id");
-            let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
-                peer_device_id.clone(),
-                1,
-                None,
-                Vec::new(),
-            )
-            .expect("valid snapshot");
-            let mut offered = crate::shell::personal_continuity::PersonalContinuity::default();
-            offered
-                .upsert(snapshot.clone())
-                .expect("store offered state");
-            net.dispatch_neighbour_msg(
-                personal_continuity_topic_id(&user_public_key),
-                peer_device.public(),
-                None,
-                false,
-                NeighbourMsg::PersonalContinuityCheckpoint {
-                    user_public_key,
-                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(
-                        &peer_device.public(),
-                    ),
-                    snapshot: postcard::to_allocvec(&offered).expect("encode checkpoint"),
-                },
-            );
-
-            assert_eq!(
-                net.personal_continuity
-                    .lock()
-                    .expect("continuity")
-                    .snapshot_for(&peer_device_id),
-                Some(&snapshot),
-                "same-root state is stored as an offer for later UX, not applied now"
-            );
-            assert!(
-                commands.try_recv().is_err(),
-                "receiving a checkpoint neither focuses nor launches applications"
-            );
-        }
-
-        #[allow(
-            clippy::similar_names,
-            clippy::significant_drop_tightening,
-            reason = "the checkpoint test intentionally distinguishes root identity, room, and scoped continuation values"
-        )]
-        fn personal_continuity_accepts_populated_same_root_checkpoint_without_changing_focus() {
-            let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
-            let peer_device = iroh::SecretKey::from_bytes(&[0xD2; 32]);
-            let user_public_key = root.verifying_key().to_bytes();
-            let (net, _commands) = personal_continuity_network_for_test(user_public_key);
-            authenticated_personal_peer(&net, &root, &peer_device);
-
-            let active_before = net
-                .tree
-                .read()
-                .desktop
-                .active_workspace()
-                .map(|workspace| workspace.id);
-            let peer_device_id = tilo_network_actor::fabric::DeviceId::new(hex::encode(
-                peer_device.public().as_bytes(),
-            ))
-            .expect("endpoint id is a valid device id");
-            let room = RoomId::new();
-            let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
-                peer_device_id.clone(),
-                1,
-                None,
-                vec![crate::shell::personal_continuity::WorkspaceContinuation {
-                    room,
-                    apps: Vec::new(),
-                }],
-            )
-            .expect("valid populated snapshot");
-            let mut offered = crate::shell::personal_continuity::PersonalContinuity::default();
-            offered
-                .upsert(snapshot.clone())
-                .expect("store offered state");
-
-            net.dispatch_neighbour_msg(
-                personal_continuity_topic_id(&user_public_key),
-                peer_device.public(),
-                None,
-                false,
-                NeighbourMsg::PersonalContinuityCheckpoint {
-                    user_public_key,
-                    publisher: tilo_network_actor::behaviour::peer_liveness_handle(
-                        &peer_device.public(),
-                    ),
-                    snapshot: postcard::to_allocvec(&offered).expect("encode populated checkpoint"),
-                },
-            );
-
-            assert_eq!(
-                net.personal_continuity
-                    .lock()
-                    .expect("continuity")
-                    .snapshot_for(&peer_device_id),
-                Some(&snapshot),
-                "a populated continuation must traverse the production Postcard codec"
-            );
-            let tree = net.tree.read();
-            assert_eq!(
-                tree.desktop
-                    .active_workspace()
-                    .map(|workspace| workspace.id),
-                active_before,
-                "receiving a continuation must not move focus"
-            );
-            assert!(
-                !tree.has_workspace(room) && !tree.is_joining(room),
-                "a continuation alone brings no workspace and no join: the person's list does"
-            );
-        }
-
-        personal_continuity_rejects_a_certified_different_root();
-        personal_continuity_accepts_same_root_checkpoint_without_restore_side_effects();
-        personal_continuity_accepts_populated_same_root_checkpoint_without_changing_focus();
     }
 
     #[test]

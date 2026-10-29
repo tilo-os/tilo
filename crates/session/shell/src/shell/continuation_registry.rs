@@ -10,7 +10,7 @@ mod owner_views;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::shell::personal_continuity::{
+use crate::shell::continuation::{
     AppInstanceId, ContinuityError, LaunchIntent, ResumeMetadata, ResumeSensitivity,
 };
 use crate::shell::state::RoomId;
@@ -195,13 +195,16 @@ pub struct ContinuationRegistry {
     /// record identity of a local process already bound into that tab.
     remote_resumes: BTreeMap<(RoomId, String, AppInstanceId), ResolvedContinuation>,
     remote_records: BTreeMap<(RoomId, String, AppInstanceId), AppInstanceId>,
+    /// Counts the changes to what this device's windows resume with, so the
+    /// layout looks again when an app reports a new state.
+    changes: u64,
 }
 
 impl ContinuationRegistry {
     pub(crate) fn owner_view_key(
         &self,
         room: RoomId,
-        app: &crate::shell::personal_continuity::AppInstanceState,
+        app: &crate::shell::continuation::AppInstanceState,
     ) -> Option<(RoomId, String, AppInstanceId)> {
         let LaunchIntent::App { app_id } = &app.launch else {
             return None;
@@ -221,7 +224,7 @@ impl ContinuationRegistry {
     pub(crate) fn offer_owner_view(
         &mut self,
         room: RoomId,
-        app: &crate::shell::personal_continuity::AppInstanceState,
+        app: &crate::shell::continuation::AppInstanceState,
         route: Option<crate::shell::network::AuthenticatedPersonalRoute>,
     ) {
         let Some(key) = self.owner_view_key(room, app) else {
@@ -260,22 +263,31 @@ impl ContinuationRegistry {
         self.owner_views.drain()
     }
 
+    /// The claims up to `revision` reached the layout record, which now
+    /// holds `apps` for `room`: their owner views are this device's.
     pub(crate) fn acknowledge_owner_claims(
         &mut self,
         revision: u64,
-        snapshot: &crate::shell::personal_continuity::DeviceContinuationSnapshot,
+        room: RoomId,
+        apps: &[crate::shell::continuation::AppInstanceState],
     ) {
-        self.owner_views.acknowledge(revision, snapshot);
+        self.owner_views.acknowledge(revision, room, apps);
     }
 
     pub(crate) fn owner_claim_revision(&self) -> u64 {
         self.owner_views.revision
     }
 
+    /// Changes whenever a local report, binding or claim changes: what the
+    /// layout record's continuations of this device are written from.
+    pub(crate) fn revision(&self) -> (u64, u64) {
+        (self.changes, self.owner_views.revision)
+    }
+
     pub(crate) fn owner_claimed(
         &self,
         room: RoomId,
-        app: &crate::shell::personal_continuity::AppInstanceState,
+        app: &crate::shell::continuation::AppInstanceState,
     ) -> bool {
         let LaunchIntent::App { app_id } = &app.launch else {
             return false;
@@ -416,6 +428,7 @@ impl ContinuationRegistry {
             return Ok(false);
         }
         self.reports.insert(key, report);
+        self.changes = self.changes.wrapping_add(1);
         Ok(true)
     }
 
@@ -448,6 +461,7 @@ impl ContinuationRegistry {
     /// claimed it. This is established only by the pending-launch/toplevel
     /// handshake; apps cannot choose a tab by reporting metadata.
     pub fn bind_tab(&mut self, tab: AppInstanceId, instance: AppInstanceId) {
+        self.changes = self.changes.wrapping_add(1);
         self.tab_instances.insert(tab, instance);
         self.remove_remote_tab(tab);
     }
@@ -455,11 +469,13 @@ impl ContinuationRegistry {
     /// Drop a local tab association after the tab's launch identity changes.
     /// Keep exact remote offers: they may now be the tab's intended source.
     pub(crate) fn forget_local_binding(&mut self, tab: AppInstanceId) {
+        self.changes = self.changes.wrapping_add(1);
         self.tab_instances.remove(&tab);
     }
 
     /// Remove every process-local association owned by a closed tab.
     pub fn forget_local_tab(&mut self, tab: AppInstanceId) {
+        self.changes = self.changes.wrapping_add(1);
         if let Some(instance) = self.tab_instances.remove(&tab) {
             let owned: Vec<_> = self
                 .reports
@@ -479,6 +495,7 @@ impl ContinuationRegistry {
     /// Level-triggered clear for an app which no longer has safe resume
     /// metadata. The route supplies the exact room/app/instance tuple.
     pub fn clear(&mut self, room: RoomId, app_id: &str, instance: AppInstanceId) -> bool {
+        self.changes = self.changes.wrapping_add(1);
         self.reports
             .remove(&(room, app_id.to_string(), instance))
             .is_some()
@@ -531,6 +548,19 @@ impl ContinuationRegistry {
             .retain(|(_, _, candidate), _| *candidate != tab);
         self.remote_records
             .retain(|(_, _, candidate), _| *candidate != tab);
+    }
+
+    /// Keep, of the offers learned for `room`, only those of the windows in
+    /// `offered`: the room's layout record no longer offers the others.
+    pub fn retain_remote_in_room(
+        &mut self,
+        room: RoomId,
+        offered: &std::collections::BTreeSet<AppInstanceId>,
+    ) {
+        self.remote_resumes
+            .retain(|(held, _, tab), _| *held != room || offered.contains(tab));
+        self.remote_records
+            .retain(|(held, _, tab), _| *held != room || offered.contains(tab));
     }
 
     /// Purge every unclaimed offer learned from another device while keeping
@@ -667,10 +697,7 @@ pub(crate) mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn owner_takeover_reserves_bounded_acknowledgement_capacity() {
-        use crate::shell::personal_continuity::{
-            AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, TabPlacement,
-            WorkspaceContinuation,
-        };
+        use crate::shell::continuation::{AppInstanceState, ContinuityStamp};
         use tilo_network_actor::fabric::DeviceId;
         let (_store, _env) = app_store(
             "so.tilo.code-editor",
@@ -698,11 +725,6 @@ pub(crate) mod tests {
                 .unwrap();
             apps.push(AppInstanceState::new(
                 instance,
-                TabPlacement {
-                    strip: 0,
-                    group: u32::try_from(id).unwrap(),
-                    tab: 0,
-                },
                 LaunchIntent::App {
                     app_id: "so.tilo.code-editor".into(),
                 },
@@ -747,17 +769,11 @@ pub(crate) mod tests {
         // A different offered app cannot steal the pending claim's last slot.
         registry.offer_owner_view(room, &apps[129], None);
         assert!(registry.drain_owner_views().is_empty());
-        let snapshot = DeviceContinuationSnapshot::new(
-            device,
-            1,
-            None,
-            vec![WorkspaceContinuation {
-                room,
-                apps: vec![apps[128].clone()],
-            }],
-        )
-        .unwrap();
-        registry.acknowledge_owner_claims(registry.owner_claim_revision(), &snapshot);
+        registry.acknowledge_owner_claims(
+            registry.owner_claim_revision(),
+            room,
+            std::slice::from_ref(&apps[128]),
+        );
         let views = registry.drain_owner_views();
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].0.instance, 129);

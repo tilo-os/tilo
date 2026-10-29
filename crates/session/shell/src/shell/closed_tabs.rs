@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use crate::shell::state::{
-    GroupId, LocalAppRecord, RoomId, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
+    GroupId, LocalAppRecord, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
     WorkspaceId, WorkspaceTree,
 };
 
@@ -27,9 +27,6 @@ pub const UNDO_WINDOW: Duration = Duration::from_secs(8);
 pub struct ClosedTabContent {
     pub tab: Tab,
     pub local_app_record: Option<LocalAppRecord>,
-    /// The personal-continuity room this device owned the tab in, so a
-    /// reopen withdraws the pending close instead of publishing it.
-    pub continuation_room: Option<RoomId>,
 }
 
 /// A close that can be undone: one tab, or a whole window group.
@@ -89,7 +86,6 @@ fn content(tree: &WorkspaceTree, tab: &Tab) -> ClosedTabContent {
     ClosedTabContent {
         tab: relaunchable(tab),
         local_app_record: tree.local_app_records.get(&tab.id).cloned(),
-        continuation_room: tree.continuation_owned_tabs.get(&tab.id).copied(),
     }
 }
 
@@ -259,11 +255,7 @@ pub fn restore(tree: &mut WorkspaceTree, entry: ClosedTab) -> Option<TabId> {
     let mut tabs = Vec::with_capacity(entry.tabs.len());
     let mut local_state = Vec::with_capacity(entry.tabs.len());
     for content in entry.tabs {
-        local_state.push((
-            content.tab.id,
-            content.local_app_record,
-            content.continuation_room,
-        ));
+        local_state.push((content.tab.id, content.local_app_record));
         tabs.push(content.tab);
     }
     let (strip_id, group_id) = if let Some((strip_id, group_index)) = existing_group {
@@ -308,13 +300,9 @@ pub fn restore(tree: &mut WorkspaceTree, entry: ClosedTab) -> Option<TabId> {
         );
         (strip.id, entry.group)
     };
-    for (id, record, continuation_room) in local_state {
+    for (id, record) in local_state {
         if let Some(record) = record {
             tree.local_app_records.insert(id, record);
-        }
-        if let Some(room) = continuation_room {
-            tree.continuation_closed_tabs.remove(&id);
-            tree.continuation_owned_tabs.insert(id, room);
         }
     }
     tree.desktop.active = entry.workspace;

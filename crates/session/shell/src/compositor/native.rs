@@ -8101,10 +8101,7 @@ fn start_session_peer_sync(
         Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
             let net = Arc::new(
                 crate::shell::network::ShellNetwork::spawn_for_session(tree_handle)
-                    .map_err(|error| error.to_string())?
-                    .with_continuation_labels(Box::new(
-                        crate::shell::doc_open::DesktopContinuationLabels,
-                    )),
+                    .map_err(|error| error.to_string())?,
             );
             // Joining reads the enrolled rooms, this device's identities and
             // the community configuration, and redeems a boot invitation:
