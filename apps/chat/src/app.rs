@@ -311,9 +311,6 @@ pub struct ChatApp {
     /// app/test hosts leave this empty and fall back to the app rect.
     pub(crate) floating_surface_bounds: Rect,
 
-    /// Opens the platform search when the header's search button is used.
-    pub(crate) search_opener: ui::search::SearchOpener,
-
     /// The shell's sidebar: the channels this window shows in it and what
     /// the person does there ([`crate::sidebar`]).
     pub(crate) places: NavFeed,
@@ -746,7 +743,6 @@ impl ChatApp {
             huddle_chip_rows: 0,
             pending_floating: None,
             floating_surface_bounds: Rect::ZERO,
-            search_opener: ui::search::SearchOpener::new(),
             places: NavFeed::new(),
             bar: None,
             bar_entries: crate::window_bar::BarEntries::new(),
@@ -1503,18 +1499,6 @@ impl Collaborative for ChatApp {
             }
             _ => {}
         }
-    }
-}
-
-impl ui::widget::controls::ActionControls for ChatApp {
-    /// The header's search button asks the platform to open search over
-    /// Chat; everything else comes from the children.
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.search_opener.take().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(ui::widget::controls::take_control_invocation)
-        })
     }
 }
 

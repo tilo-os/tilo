@@ -298,12 +298,6 @@ impl Widget for ChatWindow {
     }
 }
 
-impl ui::widget::controls::ActionControls for ChatWindow {
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.state().take_control_invocation()
-    }
-}
-
 impl ui::semantic_document_read::SemanticReaders for ChatWindow {
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
         self.chat.borrow().semantic_readers()
