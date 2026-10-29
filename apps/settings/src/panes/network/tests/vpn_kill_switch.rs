@@ -46,12 +46,10 @@ fn checked(widget: &dyn Widget, id: &str) -> Option<bool> {
 
 /// Whether the page says `text`.
 fn draws(app: &mut App, text: &str) -> bool {
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
-        let model = super::super::area(settings).unwrap().model();
-        let model = model.borrow();
-        super::shown(&model).iter().any(|line| line.contains(text))
-    })
-    .unwrap()
+    app.settle();
+    crate::widgets::announced_text(app.harness().root_widget())
+        .iter()
+        .any(|line| line.contains(text))
 }
 
 /// The window over `fake`, on the page of the "Work" tunnel, its session's

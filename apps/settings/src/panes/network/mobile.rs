@@ -15,8 +15,11 @@
 //! setting is a [`MobileEffect`]. PINs and PUKs are asked with the
 //! window's password prompt ([`codes`]) and handed to the change in zeroed
 //! buffers; they are never drawn and never reach a document.
+//!
+//! The card and the page are view code over the model ([`Page`]), built
+//! within Network's page.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -25,28 +28,26 @@ use os_actions::{
     ModemState, NetworkModes, Registration, SimCard, SimKind, SimLock, Technology, Traffic,
     UnlockRetries,
 };
+use provider_settings_ui::bound::SettingRows as _;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 use ui::LocalState;
-use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected};
+use ui::framework::{Actions, EffectAnswer, EffectCx, EffectStatus, Effected, ViewCx};
 use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{self, ActionRef};
-use ui::widget::{
-    Button, ButtonRole, ListRow, Row, SignalLevel, Spacer, TextInput, TextInputKind, Widget,
-};
+use ui::widget::{Button, ButtonRole, ListRow, Row, SignalLevel, Spacer, TextInput, TextInputKind};
 use zeroize::Zeroizing;
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::scenarios::MobileSample;
 use crate::setting::{Follows, Read};
 use crate::settings_app::SettingsApp;
 use crate::widgets::{
-    El, Item, SettingsSection, error_caption, field_row, note, page, row, rows, section,
-    section_with, value_row,
+    El, Item, SettingsSection, error_caption, field_row, note, row, rows, section, section_with,
+    value_row,
 };
 
 crate::effects::effect_family!(MobileEffect => answer);
@@ -220,11 +221,12 @@ pub(crate) fn mobile_data(app: &SettingsApp, _: &Follows) -> Read {
 }
 
 /// The mobile data switch where search finds it.
-pub(crate) fn mobile_data_switch(cx: &PaneCx, on: bool) -> Item {
-    cx.row(t("net-mobile-data"))
+pub(crate) fn mobile_data_switch(cx: &ViewCx<Settings>, on: bool) -> Item {
+    cx.setting(t("net-mobile-data"))
         .id("network.mobile")
         .toggle_effect(
             &LocalState::new(on),
+            &cx.actions(),
             effect(MobileEffect::SET_MOBILE_BROADBAND),
         )
 }
@@ -233,7 +235,7 @@ pub(crate) fn mobile_data_switch(cx: &PaneCx, on: bool) -> Item {
 /// first needed.
 pub struct MobileArea {
     cx: PaneCx,
-    model: OnceCell<Shared<MobileModel>>,
+    model: OnceCell<Rc<RefCell<MobileModel>>>,
 }
 
 impl MobileArea {
@@ -244,9 +246,22 @@ impl MobileArea {
         }
     }
 
+    /// The area over `service` in place of the device's modems.
+    #[cfg(test)]
+    pub(crate) fn over(cx: &PaneCx, service: Arc<dyn MobileService>) -> Self {
+        let area = Self::new(cx);
+        let _ = area
+            .model
+            .set(Rc::new(RefCell::new(MobileModel::loaded_from(
+                cx.clone(),
+                service,
+            ))));
+        area
+    }
+
     /// The model over this device's modems, or over a scripted one for a
     /// capture.
-    pub fn model(&self) -> &Shared<MobileModel> {
+    pub fn model(&self) -> &Rc<RefCell<MobileModel>> {
         self.model.get_or_init(|| {
             let model = if self.cx.reaches_devices() {
                 MobileModel::of_device(self.cx.clone())
@@ -257,7 +272,7 @@ impl MobileArea {
                 model.stage(sample);
                 model
             };
-            Rc::new(std::cell::RefCell::new(model))
+            Rc::new(RefCell::new(model))
         })
     }
 
@@ -1614,9 +1629,35 @@ fn situation(modem: &ModemInfo, data_on: bool) -> String {
     }
 }
 
-impl MobileModel {
+/// The modem's card or page as the view builds it: the model as it is now,
+/// and the view its controls bind through. It reads the model's state
+/// through [`std::ops::Deref`].
+pub(crate) struct Page<'a> {
+    model: &'a MobileModel,
+    cx: &'a ViewCx<Settings>,
+    actions: Actions<Settings>,
+}
+
+impl std::ops::Deref for Page<'_> {
+    type Target = MobileModel;
+
+    fn deref(&self) -> &MobileModel {
+        self.model
+    }
+}
+
+impl<'a> Page<'a> {
+    pub(crate) fn new(model: &'a MobileModel, cx: &'a ViewCx<Settings>) -> Self {
+        Self {
+            model,
+            cx,
+            actions: cx.actions(),
+        }
+    }
+
     fn button(&self, id: &str, label: &str, effect: MobileEffect) -> Button {
-        self.cx.bind_invocation(Button::new(id, label), effect)
+        self.actions
+            .bind_effect_invocation(Button::new(id, label), &SettingsEffect::from(effect))
     }
 
     fn buttons(buttons: Vec<Button>) -> Item {
@@ -1704,23 +1745,25 @@ impl MobileModel {
         let profile = self.profile.as_ref();
         items.push(
             self.cx
-                .row(t("net-mobile-roaming-setting"))
+                .setting(t("net-mobile-roaming-setting"))
                 .id("network.mobile.roaming")
                 .described(t("net-mobile-roaming-caption"))
                 .toggle_effect(
                     &LocalState::new(profile.is_some_and(|profile| profile.roaming)),
+                    &self.actions,
                     effect(MobileEffect::SET_DATA_ROAMING),
                 ),
         );
         let metered = profile.map_or(MeteredPolicy::Automatic, |profile| profile.metered);
         items.push(
             self.cx
-                .row(t("net-mobile-metered"))
+                .setting(t("net-mobile-metered"))
                 .id("network.mobile.metered")
                 .described(t("net-mobile-metered-caption"))
                 .choice_effect(
                     METERED.iter().map(|(_, words)| t(words)),
                     &LocalState::new(metered_shown(metered)),
+                    &self.actions,
                     effect(MobileEffect::SET_MOBILE_METERED),
                 ),
         );
@@ -1728,11 +1771,12 @@ impl MobileModel {
             let current = modem.modes.map(modes_shown).unwrap_or_default();
             items.push(
                 self.cx
-                    .row(t("net-mobile-network-type"))
+                    .setting(t("net-mobile-network-type"))
                     .id("network.mobile.network-type")
                     .choice_effect(
                         modem.supported_modes.iter().copied().map(modes_shown),
                         &LocalState::new(current),
+                        &self.actions,
                         effect(MobileEffect::SET_PREFERRED_NETWORK),
                     ),
             );
@@ -1760,7 +1804,7 @@ impl MobileModel {
         if self.apn_open {
             items.push(
                 self.cx
-                    .row(t("net-mobile-apn-auto"))
+                    .setting(t("net-mobile-apn-auto"))
                     .id("network.mobile.apn.automatic")
                     .described(t("net-mobile-apn-auto-caption"))
                     .control(Box::new(
@@ -1820,11 +1864,12 @@ impl MobileModel {
                     ))),
             )),
             self.cx
-                .row(t("net-mobile-reset-day"))
+                .setting(t("net-mobile-reset-day"))
                 .id("network.mobile.reset-day")
                 .choice_effect(
                     RESET_DAYS.map(|day| day.to_string()),
                     &LocalState::new(self.usage.reset_day().to_string()),
+                    &self.actions,
                     effect(MobileEffect::SET_DATA_RESET_DAY)
                         .map(|day: String| day.parse::<u32>().unwrap_or(1)),
                 ),
@@ -1894,11 +1939,12 @@ impl MobileModel {
             };
             items.push(
                 self.cx
-                    .row(t("net-mobile-pin-lock"))
+                    .setting(t("net-mobile-pin-lock"))
                     .id("network.mobile.pin-lock")
                     .described(t("net-mobile-pin-lock-caption"))
                     .toggle_effect(
                         &LocalState::new(shown),
+                        &self.actions,
                         effect(MobileEffect::SET_SIM_PIN_LOCK)
                             .map(|on: bool| (None::<String>, on, None::<String>)),
                     ),
@@ -1924,7 +1970,7 @@ impl MobileModel {
     /// The mobile data switch, which a modem that cannot connect holds off.
     fn data_switch(&self, modem: &ModemInfo) -> El {
         Box::new(
-            self.cx.bind(
+            self.actions.bind_effect(
                 ui::widget::Toggle::from_state(&LocalState::new(self.data_on()))
                     .with_id("network.mobile")
                     .with_enabled(modem.usable()),
@@ -1944,7 +1990,10 @@ impl MobileModel {
             return self.page_sections();
         };
         let mut status = self.status_row(modem).disclosure();
-        status = match self.cx.invocation_binding(super::NetworkEffect::ShowMobile) {
+        status = match self
+            .actions
+            .effect(&SettingsEffect::from(super::NetworkEffect::ShowMobile))
+        {
             Some(binding) => status.on_action(binding),
             None => status.with_enabled(false),
         };
@@ -2007,35 +2056,30 @@ impl MobileModel {
     }
 }
 
-impl PaneModel for MobileModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        page(self.page_sections())
-    }
-
-    fn poll(&mut self) -> bool {
+impl MobileModel {
+    /// Take in what arrived, the codes answered and what the modems
+    /// reported; whether what the page shows changed.
+    pub(super) fn poll(&mut self) -> bool {
         self.poll_background();
         self.poll_codes();
         self.read_reported_changes();
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "MobilePane"
-    }
-
-    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+    /// Follow the modems for a page that shows the model, for as long as
+    /// the answer is held; pages share one follow.
+    pub(super) fn follow(&mut self) -> Rc<crate::watch::Counted> {
         if let Some(held) = self.following.upgrade() {
-            return Some(held);
+            return held;
         }
         // Nothing was followed while no pane showed the model: a model
         // already read reads the modems again once; a first read on its way
         // covers it.
         self.changes_seen = if self.loaded { u64::MAX } else { 0 };
         let service = Arc::clone(&self.service);
-        let following = crate::watch::shared(&mut self.following, move || {
+        crate::watch::shared(&mut self.following, move || {
             crate::watch::Counted::start(|changed| service.follow(changed))
-        });
-        Some(following)
+        })
     }
 }
 

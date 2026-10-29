@@ -12,7 +12,7 @@ use settings_store::device_vpn::{self, PROFILE_KILL_SWITCHES, ProfileKillSwitch}
 use ui::LocalState;
 use ui::widget::Toggle;
 
-use super::super::{Begun, NetworkModel, VpnInfo};
+use super::super::{Begun, NetworkModel, Page, VpnInfo};
 use super::VpnEffect;
 use crate::effects::effect;
 use crate::i18n::t;
@@ -118,7 +118,9 @@ impl NetworkModel {
         }
         self.unblock(uuid);
     }
+}
 
+impl Page<'_> {
     /// The profile page's kill switch, and while it is on whether the local
     /// network stays reachable, and the session's failure to block.
     pub(super) fn kill_switch_rows(
@@ -128,7 +130,7 @@ impl NetworkModel {
     ) -> Vec<Item> {
         let switch = self.kill_switch(&vpn.uuid);
         let label = t("net-vpn-kill-switch");
-        let toggle = self.cx.bind_on_row(
+        let toggle = self.bind_on_row(
             live,
             Toggle::from_state(&LocalState::new(switch.is_some()))
                 .with_id(&format!("settings.network.vpn.kill-switch.{}", vpn.uuid))
@@ -147,7 +149,7 @@ impl NetworkModel {
             return out;
         };
         let local = t("net-vpn-allow-local");
-        let toggle = self.cx.bind_on_row(
+        let toggle = self.bind_on_row(
             live,
             Toggle::from_state(&LocalState::new(switch.allow_local))
                 .with_id(&format!("settings.network.vpn.allow-local.{}", vpn.uuid))
@@ -173,7 +175,9 @@ impl NetworkModel {
         }
         out
     }
+}
 
+impl NetworkModel {
     /// The sample tunnel `uuid` with its kill switch on, for a capture: up,
     /// or dropped with its block holding (and the local network let
     /// through).

@@ -27,11 +27,37 @@ fn run(model: &mut MobileModel, effect: MobileEffect) -> Result<(), String> {
     answer
 }
 
-fn said(model: &MobileModel) -> Vec<String> {
-    crate::widgets::announced_text(&*model.compose())
+/// What `read` finds in a Settings window on the modem's page over `model`
+/// as it is now. The model is lent to the window's Mobile area meanwhile
+/// and handed back as the page left it.
+fn on_its_page<T>(model: &mut MobileModel, read: impl FnOnce(&dyn ui::widget::Widget) -> T) -> T {
+    let mut app = App::new().unwrap();
+    // Away from Network, so its page is built over the model lent.
+    crate::effects::show_pane(&mut app, crate::categories::Category::Appearance);
+    let held = app
+        .with_widget::<crate::window::SettingsWindow, _>(|settings| {
+            super::super::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .open_page(super::super::PAGE_MOBILE, t("net-mobile"));
+            Rc::clone(area(settings).unwrap().model())
+        })
+        .unwrap();
+    std::mem::swap(&mut *held.borrow_mut(), model);
+    crate::effects::show_pane(&mut app, crate::categories::Category::Network);
+    app.settle();
+    let found = read(app.harness().root_widget());
+    std::mem::swap(&mut *held.borrow_mut(), model);
+    found
 }
 
-fn says(model: &MobileModel, text: &str) -> bool {
+/// What a Settings window shows on the modem's page over `model`.
+fn said(model: &mut MobileModel) -> Vec<String> {
+    on_its_page(model, crate::widgets::announced_text)
+}
+
+fn says(model: &mut MobileModel, text: &str) -> bool {
     said(model).iter().any(|said| said.contains(text))
 }
 
@@ -40,8 +66,12 @@ fn without_a_modem_there_is_no_section_and_no_mobile_setting_is_tried() {
     let (device, mut model) = scripted(None);
     assert!(model.loaded);
     assert!(!model.present());
-    assert!(model.page_sections().is_empty(), "nothing is shown");
-    assert!(model.card().is_empty());
+    assert!(
+        on_its_page(&mut model, |page| {
+            ui::widget::find_test_id(page, "network.mobile").is_none()
+        }),
+        "nothing is shown"
+    );
     for effect in [
         MobileEffect::SetMobileBroadband { on: true },
         MobileEffect::SetDataRoaming { on: true },
@@ -170,7 +200,7 @@ fn a_registered_modem_shows_operator_technology_signal_and_data() {
     let (_, model) = scripted(Some(MobileSample::Registered));
     assert!(model.present());
     assert!(model.data_on());
-    let said = said(&model);
+    let said = said(&mut model);
     for expected in ["Telekom.de", "LTE, connected", "Data roaming", "Data used"] {
         assert!(
             said.iter().any(|text| text.contains(expected)),
@@ -194,8 +224,8 @@ fn a_registered_modem_shows_operator_technology_signal_and_data() {
 #[test]
 fn roaming_is_said_and_switched_on_the_profile() {
     let (device, mut model) = scripted(Some(MobileSample::Roaming));
-    assert!(says(&model, "Orange F"));
-    assert!(says(&model, "roaming"));
+    assert!(says(&mut model, "Orange F"));
+    assert!(says(&mut model, "roaming"));
     run(&mut model, MobileEffect::SetDataRoaming { on: false }).unwrap();
     assert_eq!(model.profile.as_ref().map(|p| p.roaming), Some(false));
     assert!(
@@ -211,15 +241,10 @@ fn roaming_is_said_and_switched_on_the_profile() {
 /// The window over a scripted modem standing as `sample`, its Network
 /// pane open on the first page.
 fn hosted(sample: MobileSample) -> (Arc<ScriptedModem>, App) {
-    let mut app = App::new().unwrap();
     let device = Arc::new(ScriptedModem::new(Some(sample)));
     let service = Arc::clone(&device) as Arc<dyn MobileService>;
-    app.with_widget::<crate::window::SettingsWindow, _>(|settings| {
-        let area = area(settings).unwrap();
-        let model = MobileModel::loaded_from(area.cx.clone(), service);
-        *area.model().borrow_mut() = model;
-    })
-    .unwrap();
+    crate::area::replace_in_next_window(move |context| MobileArea::over(context.cx, service));
+    let mut app = App::new().unwrap();
     app.harness().resize((1280, 900)).unwrap();
     app.call("open-pane", serde_json::json!({"pane": "network"}))
         .unwrap();
@@ -408,8 +433,8 @@ fn the_last_wrong_pin_asks_for_the_puk_and_a_new_pin() {
 fn the_puk_sample_starts_blocked() {
     let (_, model) = scripted(Some(MobileSample::Puk));
     assert_eq!(model.modem().unwrap().lock, SimLock::Puk);
-    assert!(says(&model, "SIM blocked"));
-    assert!(says(&model, "Unblock SIM…"));
+    assert!(says(&mut model, "SIM blocked"));
+    assert!(says(&mut model, "Unblock SIM…"));
 }
 
 /// Turning the PIN lock off asks for the PIN first; nothing is sent until
@@ -517,7 +542,7 @@ fn codes_given_to_the_effects_change_the_sim_directly() {
         },
     )
     .unwrap();
-    assert!(says(&model, "PIN changed."));
+    assert!(says(&mut model, "PIN changed."));
     assert!(model.asking.is_none(), "nothing was asked");
 }
 
@@ -651,7 +676,7 @@ fn a_change_the_device_refuses_is_said() {
     device.refuse("nmcli is not installed");
     let error = run(&mut model, MobileEffect::SetDataRoaming { on: true }).unwrap_err();
     assert!(error.contains("nmcli is not installed"), "{error}");
-    assert!(says(&model, "nmcli is not installed"));
+    assert!(says(&mut model, "nmcli is not installed"));
 }
 
 #[test]
@@ -787,11 +812,6 @@ fn the_shown_section_reads_the_modems_again_when_they_change() {
     let mut model = MobileModel::loaded_from(cx(), Arc::clone(&device) as Arc<dyn MobileService>);
     let reads = || device.reads.load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(reads(), 1);
-    assert_eq!(
-        PaneModel::next_wake(&model),
-        None,
-        "nothing reads on a timer"
-    );
     let poll_until_read = |model: &mut MobileModel, count: usize| {
         let deadline = tilo_test_env::hang_deadline();
         while reads() < count || model.snapshot.is_some() {
@@ -804,7 +824,7 @@ fn the_shown_section_reads_the_modems_again_when_they_change() {
         }
     };
 
-    let following = PaneModel::follow(&mut model).expect("a shown section follows the modems");
+    let following = model.follow();
     let changed = device
         .follower
         .lock()

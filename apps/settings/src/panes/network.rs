@@ -6,8 +6,9 @@
 //! and in what order) with the controls under it, and drills into pages
 //! ([`crate::pages`]): every network in range, one network's page, the known
 //! networks, the VPNs and a VPN's page (`vpn`), the hotspot and the
-//! advanced settings. Every page is the same model; the
-//! page on top of the window's trail says which one it composes.
+//! advanced settings. Every page is view code over the same model
+//! ([`view`]); the page on top of the window's trail says which one it
+//! builds.
 //!
 //! Every read and change may block on `nmcli` or the system bus for
 //! seconds, so none runs on the UI thread: the model reads a snapshot in the
@@ -50,7 +51,6 @@ use crate::dispatcher::dispatcher_or_real;
 use crate::effects::SettingsEffect;
 use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 
@@ -62,6 +62,9 @@ mod page;
 pub(crate) mod values;
 mod view;
 pub(crate) mod vpn;
+
+use view::Page;
+pub(crate) use view::view;
 
 pub(crate) use labels::{
     HOTSPOT_BANDS, IPV6_METHODS, MAC_POLICIES, METERED_POLICIES, PROXY_MODES, band_from_label,
@@ -343,6 +346,12 @@ crate::area::pane_area! {
     NetworkArea;
     fn poll(&self) {
         NetworkArea::poll(self);
+    }
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        NetworkArea::next_wake(self)
+    }
+    fn pending_visual_work(&self) -> bool {
+        NetworkArea::pending_visual_work(self)
     }
     fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
         NetworkArea::statuses(self)
@@ -1523,7 +1532,9 @@ impl NetworkRadios {
 /// needed.
 pub struct NetworkArea {
     cx: PaneCx,
-    model: std::cell::OnceCell<Shared<NetworkModel>>,
+    model: std::cell::OnceCell<Rc<RefCell<NetworkModel>>>,
+    /// Moves whenever what the page shows of the model does.
+    shown: LocalState<u64>,
 }
 
 impl NetworkArea {
@@ -1531,17 +1542,18 @@ impl NetworkArea {
         Self {
             cx: cx.clone(),
             model: std::cell::OnceCell::new(),
+            shown: LocalState::new(0),
         }
     }
 
     /// The model, where the networks were read; never reads them.
-    pub(crate) fn read(&self) -> Option<&Shared<NetworkModel>> {
+    pub(crate) fn read(&self) -> Option<&Rc<RefCell<NetworkModel>>> {
         self.model.get()
     }
 
     /// The model over this device's networks, or over sample networks for a
     /// screenshot.
-    pub fn model(&self) -> &Shared<NetworkModel> {
+    pub fn model(&self) -> &Rc<RefCell<NetworkModel>> {
         self.model.get_or_init(|| {
             let model = if self.cx.reaches_devices() {
                 NetworkModel::of_device(self.cx.clone())
@@ -1606,11 +1618,38 @@ impl NetworkArea {
         statuses
     }
 
-    /// Take in background results, if the model exists.
+    /// Take in background results, if the model exists. While a page shows
+    /// the model, also take in what the device reported, scan when due and
+    /// move what the page is keyed by when what it shows changed.
     pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().poll_background();
+        let Some(model) = self.model.get() else {
+            return;
+        };
+        let Ok(mut model) = model.try_borrow_mut() else {
+            return;
+        };
+        if !model.shown() {
+            model.poll_background();
+            return;
         }
+        if model.poll() {
+            self.shown.set(self.shown.get().wrapping_add(1));
+        }
+    }
+
+    /// When the page next scans for networks, while one shows them.
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        let model = self.model.get()?.try_borrow().ok()?;
+        model.shown().then(|| model.next_wake()).flatten()
+    }
+
+    /// Whether a page shows "Scanning…" for a scan already under way, which
+    /// its networks replace when it lands.
+    fn pending_visual_work(&self) -> bool {
+        self.model
+            .get()
+            .and_then(|model| model.try_borrow().ok())
+            .is_some_and(|model| model.shown() && model.scan_in_flight)
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -1737,8 +1776,8 @@ pub struct NetworkModel {
     jobs: Vec<crate::channel::Receiver<Landed>>,
     /// The modem's model, whose card the first page shows next to Wi-Fi
     /// and whose page is one of this pane's: the window's [`mobile::MobileArea`]
-    /// keeps it, the pane composes and polls it.
-    mobile: Option<Shared<mobile::MobileModel>>,
+    /// keeps it, the page shows it and the model polls it.
+    mobile: Option<Rc<RefCell<mobile::MobileModel>>>,
     /// What follows the device while a pane shows the model.
     following: std::rc::Weak<crate::watch::Counted>,
     /// The device's change count when the model last started a read.
@@ -1981,7 +2020,7 @@ impl NetworkModel {
     }
 
     /// Show the modem `mobile` describes on the first page and its own page.
-    pub(crate) fn host_mobile(&mut self, mobile: &Shared<mobile::MobileModel>) {
+    pub(crate) fn host_mobile(&mut self, mobile: &Rc<RefCell<mobile::MobileModel>>) {
         if !self
             .mobile
             .as_ref()
@@ -3626,11 +3665,14 @@ fn join_with_shared_password(
     }
 }
 
-impl PaneModel for NetworkModel {
-    fn compose(&self) -> Box<dyn ui::widget::Widget> {
-        self.build_composition()
+impl NetworkModel {
+    /// Whether a page shows the model: it follows the device while it does.
+    fn shown(&self) -> bool {
+        self.following.strong_count() > 0
     }
 
+    /// Take in what background work finished and what the device reports
+    /// now, scanning when due; whether what the page shows changed.
     fn poll(&mut self) -> bool {
         self.poll_background();
         self.read_reported_changes();
@@ -3664,30 +3706,23 @@ impl PaneModel for NetworkModel {
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "NetworkPane"
-    }
-
+    /// When the page next scans for networks while nothing else happens.
     fn next_wake(&self) -> Option<ui::time::Instant> {
         self.scans_networks()
             .then(|| self.scanned_at?.checked_add(SCAN_EVERY))
             .flatten()
     }
 
-    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+    /// Follow the device, and the modems whose card and page are Network's,
+    /// for a page that shows the model, for as long as the answer is held;
+    /// pages share one follow.
+    fn follow(&mut self) -> Rc<dyn std::any::Any> {
         let device = self.follow_device();
-        // The modem's card and page are this pane's: it follows the modems
-        // too.
         let mobile = self
             .mobile
             .as_ref()
-            .and_then(|mobile| mobile.try_borrow_mut().ok()?.follow());
-        Some(Rc::new((device, self.follow_device_vpn(), mobile)))
-    }
-
-    // The scan's networks replace "Scanning…" when it lands.
-    fn pending_visual_work(&self) -> bool {
-        self.scan_in_flight
+            .and_then(|mobile| Some(mobile.try_borrow_mut().ok()?.follow()));
+        Rc::new((device, self.follow_device_vpn(), mobile))
     }
 }
 

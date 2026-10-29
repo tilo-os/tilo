@@ -170,18 +170,19 @@ fn named_widget_identity(widget: &dyn Widget, name: &str) -> Option<usize> {
 }
 
 #[test]
-fn search_preserves_production_network_pane_but_category_switch_replaces_it() {
+fn search_preserves_the_pane_but_category_switch_replaces_it() {
     let config = crate::prefs::test_env::ScratchConfig::new();
     let mut h = wide(&config);
-    let network = named_widget_identity(&*h, "NetworkPane").unwrap();
+    select(&mut h, Category::About);
+    let about = named_widget_identity(&*h, "AboutPane").unwrap();
     // A query that finds no setting narrows the list and leaves the pane;
     // one that finds settings shows them instead.
     bar_search(&mut h, &mut ui::widget::SearchDriver::default(), "zqx");
     assert!(h.found_settings().is_empty());
-    assert_eq!(named_widget_identity(&*h, "NetworkPane"), Some(network));
-    select(&mut h, Category::About);
-    assert_eq!(h.selected(), super::Category::About);
-    assert_eq!(named_widget_identity(&*h, "NetworkPane"), None);
+    assert_eq!(named_widget_identity(&*h, "AboutPane"), Some(about));
+    select(&mut h, Category::Printers);
+    assert_eq!(h.selected(), super::Category::Printers);
+    assert_eq!(named_widget_identity(&*h, "AboutPane"), None);
 }
 
 /// Searching from a narrow window's list narrows the list; what it finds

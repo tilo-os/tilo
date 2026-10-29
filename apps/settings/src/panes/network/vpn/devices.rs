@@ -21,7 +21,7 @@ use ui::icons::Icon;
 use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, ListRow, Toggle};
 
-use super::super::{Begun, Landed, NetworkModel};
+use super::super::{Begun, Landed, NetworkModel, Page};
 use super::VpnEffect;
 use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
@@ -201,7 +201,9 @@ impl NetworkModel {
             .bound(),
         )
     }
+}
 
+impl Page<'_> {
     /// The VPN list's rows for the person's devices to route through.
     pub(super) fn through_lines(&self) -> Vec<El> {
         let Some(status) = &self.vpn.devices.status else {
@@ -211,10 +213,10 @@ impl NetworkModel {
             .rows()
             .iter()
             .map(|row| {
-                let row_live = Self::through_live(row).into_resource();
+                let row_live = NetworkModel::through_live(row).into_resource();
                 let name = through_name(&row.label);
                 let device = row.device.clone();
-                let toggle = self.cx.bind_on_row(
+                let toggle = self.bind_on_row(
                     &row_live,
                     Toggle::from_state(&LocalState::new(row.is_on()))
                         .with_id(&format!(
@@ -233,7 +235,7 @@ impl NetworkModel {
                     device: row.device.clone(),
                     on: !row.is_on(),
                 };
-                Box::new(match self.cx.row_invocation(&row_live, choose) {
+                Box::new(match self.row_invocation(&row_live, choose) {
                     Some(binding) => line.on_action(binding),
                     None => line.with_enabled(false),
                 }) as El
@@ -251,7 +253,7 @@ impl NetworkModel {
             .as_ref()
             .filter(|status| status.exit_available)?;
         let share = t("net-device-vpn-share");
-        let toggle = self.cx.bind(
+        let toggle = self.bind(
             Toggle::from_state(&LocalState::new(status.exit_on))
                 .with_id("settings.network.vpn.exit")
                 .with_accessible_name(&share),
@@ -267,8 +269,8 @@ impl NetworkModel {
                 .exit_users
                 .iter()
                 .map(|user| {
-                    let user_row = Self::exit_user_live(user).into_resource();
-                    let stop = self.cx.bind_row(
+                    let user_row = NetworkModel::exit_user_live(user).into_resource();
+                    let stop = self.bind_row(
                         Button::new(
                             &format!("settings.network.vpn.exit-user.stop.{}", user.device),
                             &t("net-device-vpn-stop"),
@@ -293,7 +295,9 @@ impl NetworkModel {
         }
         Some(card(&t("net-device-vpn-exit"), rows(content)))
     }
+}
 
+impl NetworkModel {
     /// Route through `device`, keeping the options chosen before, or stop
     /// routing through it.
     pub(super) fn route_through_device(&mut self, device: &str, on: bool) -> Result<Begun, String> {
@@ -402,13 +406,15 @@ impl NetworkModel {
         self.changed = true;
         Ok(Begun::Done)
     }
+}
 
+impl Page<'_> {
     /// The route through a device in use, and whether its traffic is
     /// blocked while the tunnel is down.
     pub(super) fn kill_switch_row(&self) -> Option<crate::widgets::Item> {
         let client = self.vpn.devices.status.as_ref()?.client.as_ref()?;
         let label = t("net-device-vpn-kill-switch");
-        let toggle = self.cx.bind(
+        let toggle = self.bind(
             Toggle::from_state(&LocalState::new(client.kill_switch))
                 .with_id("settings.network.vpn.device.kill-switch")
                 .with_accessible_name(&label),
@@ -420,7 +426,9 @@ impl NetworkModel {
             Box::new(toggle),
         ))
     }
+}
 
+impl NetworkModel {
     /// Let the person's other devices use this one as a VPN, or not.
     pub(super) fn share_device(&mut self, on: bool) -> Result<Begun, String> {
         if !self

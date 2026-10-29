@@ -71,6 +71,8 @@ pub(crate) fn view(
         crate::categories::Category::KeyboardShortcuts => keyboard_shortcuts::view(cx, app),
         crate::categories::Category::Sound => audio::view(cx, app),
         crate::categories::Category::Speakers => speakers::view(cx, app),
+        crate::categories::Category::Bluetooth => bluetooth::view(cx, app),
+        crate::categories::Category::Network => network::view(cx, app),
         _ => None,
     }
 }

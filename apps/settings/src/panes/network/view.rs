@@ -1,33 +1,145 @@
-//! The pane's first page — the Wi-Fi list, the wired connection and the
-//! controls under them — and the pages those controls open that are not a
-//! network's: the hotspot and the advanced settings. The modem's card and
-//! page are composed by its own model (`network/mobile.rs`).
+//! The Network page as view code ([`view`], [`Page`]): the first page — the
+//! Wi-Fi list, the wired connection and the controls under them — and the
+//! pages those controls open that are not a network's: the hotspot and the
+//! advanced settings. The modem's card and page are built over its own
+//! model (`network/mobile.rs`).
 
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use os_actions::{ConnectivityState, SavedNetworkProfile, WifiNetworkInfo};
 use ui::LocalState;
+use ui::framework::{ActionControl, Actions, Dispatcher, ViewCx};
 use ui::icons::Icon;
+use ui::tilo_resource::Binds;
 use ui::widget::{
-    Button, ButtonRole, Dropdown, ListRow, QrWidget, Row, SignalLevel, Spacer, TextInput, Toggle,
-    Widget,
+    Button, ButtonRole, Dropdown, Element, ListRow, QrWidget, Row, SignalLevel, Spacer, TextInput,
+    Toggle,
 };
 
 use super::{
     HOTSPOT_BANDS, NetworkEffect, NetworkModel, PAGE_ADVANCED, PAGE_ALL, PAGE_HOTSPOT, PAGE_KNOWN,
-    PAGE_MOBILE, PAGE_WIFI, band_shown, connectivity_shown, network_detail, order, profile_label,
-    wake_description,
+    PAGE_MOBILE, PAGE_WIFI, area, band_shown, connectivity_shown, mobile, network_detail, order,
+    profile_label, wake_description,
 };
-use crate::effects::effect;
+use crate::effects::{SettingsEffect, effect};
 use crate::i18n::{t, t_args};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 use crate::widgets::{
     El, Item, SettingsSection, block, card, card_with_action, error_caption, error_row, field_row,
     note, row, rows, setting_row, setting_row_described, value_row,
 };
 
-impl NetworkModel {
-    /// The page on top of the trail, composed.
-    pub(super) fn build_composition(&self) -> Box<dyn Widget> {
+/// The Network page as view code over the model the area keeps: the page
+/// on top of the window's trail, built again whenever what it shows changes
+/// ([`super::NetworkArea::poll`]). The device, and the modems, are followed
+/// while the page is shown.
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    let held = area(app)?;
+    let model = Rc::clone(held.model());
+    // The modem's card and page are the network page's.
+    if let Some(mobile) = mobile::area(app) {
+        model.borrow_mut().host_mobile(mobile.model());
+    }
+    let following = model.borrow_mut().follow();
+    Some(cx.switch(&held.shown, move |cx, _| {
+        // The part keeps the device followed while it is shown.
+        let _followed = &following;
+        Page::new(&model.borrow(), cx).build()
+    }))
+}
+
+/// One page of Network as the view builds it: the model as it is now, and
+/// the view its controls bind through. It reads the model's state through
+/// [`std::ops::Deref`].
+pub(super) struct Page<'a> {
+    model: &'a NetworkModel,
+    pub(super) cx: &'a ViewCx<Settings>,
+    actions: Actions<Settings>,
+    dispatcher: Dispatcher<Settings>,
+}
+
+impl std::ops::Deref for Page<'_> {
+    type Target = NetworkModel;
+
+    fn deref(&self) -> &NetworkModel {
+        self.model
+    }
+}
+
+impl<'a> Page<'a> {
+    pub(super) fn new(model: &'a NetworkModel, cx: &'a ViewCx<Settings>) -> Self {
+        Self {
+            model,
+            cx,
+            actions: cx.actions(),
+            dispatcher: cx.dispatcher(),
+        }
+    }
+
+    /// `control`, invoking `effect` with each committed value.
+    pub(super) fn bind<I: 'static, C: ActionControl<I>>(
+        &self,
+        control: C,
+        effect: impl Binds<SettingsEffect, I>,
+    ) -> C {
+        self.actions.bind_effect(control, effect)
+    }
+
+    /// `control` (a button), invoking the fully specified `effect`.
+    pub(super) fn bind_invocation<C: ActionControl<()>>(
+        &self,
+        control: C,
+        effect: impl Into<SettingsEffect>,
+    ) -> C {
+        self.actions.bind_effect_invocation(control, &effect.into())
+    }
+
+    /// The binding of the fully specified `effect`, for a row's own press.
+    pub(super) fn invocation_binding(
+        &self,
+        effect: impl Into<SettingsEffect>,
+    ) -> Option<ui::tilo_actions::ActionBinding<()>> {
+        self.actions.effect(&effect.into())
+    }
+
+    /// `control`, invoking `effect` with each committed value on the live
+    /// row `row` ([`crate::on_row::bind`]).
+    pub(super) fn bind_on_row<I: 'static, C: ActionControl<I>>(
+        &self,
+        row: &ui::tilo_actions::ResourceSpec,
+        control: C,
+        effect: impl Binds<SettingsEffect, I>,
+    ) -> C {
+        crate::on_row::bind(&self.dispatcher, row, control, effect)
+    }
+
+    /// `control` (a button), invoking the fully specified `effect` on the
+    /// live row `row` ([`crate::on_row::bind_invocation`]).
+    pub(super) fn bind_row<C: ActionControl<()>>(
+        &self,
+        control: C,
+        row: &ui::tilo_actions::ResourceSpec,
+        effect: impl Into<SettingsEffect>,
+    ) -> C {
+        crate::on_row::bind_invocation(&self.dispatcher, row, control, effect)
+    }
+
+    /// The binding of the fully specified `effect` on the live row `row`
+    /// ([`crate::on_row::invocation`]).
+    pub(super) fn row_invocation(
+        &self,
+        row: &ui::tilo_actions::ResourceSpec,
+        effect: impl Into<SettingsEffect>,
+    ) -> Option<ui::tilo_actions::ActionBinding<()>> {
+        crate::on_row::invocation(&self.dispatcher, row, effect)
+    }
+}
+
+impl Page<'_> {
+    /// The page on top of the trail.
+    pub(super) fn build(&self) -> Element {
         if !self.loaded {
             let mut pending = vec![note(&t("net-pending"))];
             if let Some(notice) = &self.notice {
@@ -43,7 +155,7 @@ impl NetworkModel {
             Some(PAGE_HOTSPOT) => vec![self.hotspot_card()],
             Some(PAGE_ADVANCED) => self.advanced_page(),
             Some(PAGE_MOBILE) => self
-                .mobile_sections(super::mobile::MobileModel::page_sections)
+                .mobile_sections(mobile::Page::page_sections)
                 .unwrap_or_else(|| self.first_page()),
             Some(key) => match key.strip_prefix(PAGE_WIFI) {
                 Some(ssid) => self.network_page(ssid),
@@ -60,7 +172,7 @@ impl NetworkModel {
         label: &str,
         effect: impl Into<crate::effects::SettingsEffect>,
     ) -> Button {
-        self.cx.bind_invocation(Button::new(id, label), effect)
+        self.bind_invocation(Button::new(id, label), effect)
     }
 
     /// `button`, sized to its label and pushed to the row's start.
@@ -87,11 +199,7 @@ impl NetworkModel {
     ) -> Item {
         row(Box::new(
             Row::new()
-                .push(Box::new(self.cx.bind_row(
-                    Button::new(id, label),
-                    on,
-                    effect,
-                )))
+                .push(Box::new(self.bind_row(Button::new(id, label), on, effect)))
                 .push(Box::new(Spacer::new())),
         ))
     }
@@ -103,7 +211,7 @@ impl NetworkModel {
         on: bool,
         set: ui::tilo_resource::ActionRef<NetworkEffect, bool>,
     ) -> Toggle {
-        self.cx.bind(
+        self.bind(
             Toggle::from_state(&LocalState::new(on)).with_id(id),
             effect(set),
         )
@@ -122,19 +230,20 @@ impl NetworkModel {
         if let Some(value) = value {
             line = line.value(value);
         }
-        match self.cx.invocation_binding(effect) {
+        match self.invocation_binding(effect) {
             Some(binding) => line.on_action(binding),
             None => line.with_enabled(false),
         }
     }
 
-    /// What the modem's model composes, when the device has a modem.
+    /// What `build` makes of the modem's model, when the device has a
+    /// modem.
     fn mobile_sections(
         &self,
-        compose: impl FnOnce(&super::mobile::MobileModel) -> Vec<SettingsSection>,
+        build: impl FnOnce(&mobile::Page<'_>) -> Vec<SettingsSection>,
     ) -> Option<Vec<SettingsSection>> {
         let mobile = self.mobile.as_ref()?.try_borrow().ok()?;
-        Some(compose(&mobile)).filter(|sections| !sections.is_empty())
+        Some(build(&mobile::Page::new(&mobile, self.cx))).filter(|sections| !sections.is_empty())
     }
 
     /// The first page: Wi-Fi and mobile data, the controls, and the wired
@@ -143,10 +252,7 @@ impl NetworkModel {
         // The controls follow the radios at once, so they stay in view on a
         // normal window; the wired connection comes after them.
         let mut cards = vec![self.wifi_card()];
-        cards.extend(
-            self.mobile_sections(super::mobile::MobileModel::card)
-                .unwrap_or_default(),
-        );
+        cards.extend(self.mobile_sections(mobile::Page::card).unwrap_or_default());
         cards.push(self.controls_card());
         if self.wired.device.is_some() || self.read_errors.wired.is_some() {
             cards.push(self.wired_card());
@@ -246,7 +352,7 @@ impl NetworkModel {
         let detail = network_detail(net);
         let level = SignalLevel::from_bars(net.signal);
         let resource = self.wifi_live(&net.ssid).into_resource();
-        let page = self.cx.bind_row(
+        let page = self.bind_row(
             Button::icon_only(
                 &format!("settings.network.page.{}", net.ssid),
                 Icon::ChevronRight,
@@ -288,7 +394,7 @@ impl NetworkModel {
                 password: None,
             }
         };
-        Box::new(match self.cx.row_invocation(&resource, choose) {
+        Box::new(match self.row_invocation(&resource, choose) {
             Some(binding) => line.on_action(binding),
             None => line.with_enabled(false),
         })
@@ -537,7 +643,7 @@ impl NetworkModel {
             Some(Ok(status)) => {
                 let uuid = profile.uuid.clone();
                 let live = self.profile_live(profile).into_resource();
-                let toggle = self.cx.bind_on_row(
+                let toggle = self.bind_on_row(
                     &live,
                     Toggle::from_state(&LocalState::new(status.configured))
                         .with_id(&format!("network.profile.wake.{}", profile.uuid))
@@ -573,7 +679,7 @@ impl NetworkModel {
         ask: impl Into<crate::effects::SettingsEffect>,
     ) -> Item {
         let given = buffer.lock().is_ok_and(|held| !held.is_empty());
-        let button = self.cx.bind_invocation(
+        let button = self.bind_invocation(
             Button::new(
                 id,
                 &t(if given {
