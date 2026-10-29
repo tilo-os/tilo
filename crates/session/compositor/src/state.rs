@@ -112,6 +112,7 @@ pub struct State {
     pub(crate) disabled_outputs: Vec<Output>,
     pub(crate) idle: crate::power::Idle,
     pub(crate) selections: crate::selection::Selections,
+    pub(crate) display_changes: crate::display_change::DisplayChanges,
     /// The compositor's event loop, for work the window manager schedules.
     pub(crate) loop_handle:
         Option<smithay::reexports::calloop::LoopHandle<'static, crate::LoopData>>,
@@ -167,6 +168,7 @@ impl State {
             disabled_outputs: Vec::new(),
             idle: crate::power::Idle::new(),
             selections,
+            display_changes: crate::display_change::DisplayChanges::default(),
             loop_handle: None,
         }
     }

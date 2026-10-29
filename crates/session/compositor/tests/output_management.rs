@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
+use tilo_compositor::{CONFIRM_FOR, Compositor, DisplayEvent, OutputConfig, StackPolicy};
 use wayland_client::protocol::{
     wl_output, wl_output::WlOutput, wl_registry, wl_registry::WlRegistry,
 };
@@ -557,4 +557,126 @@ fn the_sessions_settings_turn_an_output_off_rescale_another_and_set_the_layout()
         .apply_settings(&tilo_compositor::Settings::default())
         .expect("settings");
     assert!(compositor.output_lit("HEADLESS-2"));
+}
+
+/// Rescale `name` to `scale` from the tool and wait for the answer.
+fn rescale(
+    compositor: &mut Compositor,
+    client: &mut Client,
+    name: &str,
+    scale: f64,
+) -> &'static str {
+    let head = client
+        .tool
+        .heads
+        .iter()
+        .find(|head| head.name == name)
+        .and_then(|head| head.object.clone())
+        .expect("head");
+    let handle = client.queue.handle();
+    let manager = client.tool.manager.clone().expect("manager");
+    client.tool.outcome = None;
+    let configuration =
+        manager.create_configuration(client.tool.serial.expect("serial"), &handle, ());
+    configuration
+        .enable_head(&head, &handle, ())
+        .set_scale(scale);
+    configuration.apply();
+    pump(compositor, client, |tool| tool.outcome.is_some());
+    client.tool.outcome.expect("outcome")
+}
+
+fn scale_of(client: &Client, name: &str) -> f64 {
+    client
+        .tool
+        .heads
+        .iter()
+        .find(|head| head.name == name)
+        .expect("head")
+        .scale
+}
+
+#[test]
+fn a_risky_change_asks_to_be_kept_and_a_reverted_one_is_not_put_back() {
+    let mut compositor = two_outputs();
+    let mut client = Client::connect(&mut compositor, true);
+    pump(&mut compositor, &mut client, |tool| {
+        tool.serial.is_some() && tool.heads.len() == 2
+    });
+
+    // Nobody looks at the second output: the change is simply kept.
+    assert_eq!(
+        rescale(&mut compositor, &mut client, "HEADLESS-2", 2.0),
+        "succeeded"
+    );
+    let events = compositor.take_display_events();
+    assert!(
+        matches!(events.as_slice(), [DisplayEvent::Kept { changes }] if changes[0].scale == Some(2.0)),
+        "{events:?}"
+    );
+
+    // The pointer is on the first: a scale it never showed is asked about.
+    assert_eq!(
+        rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
+        "succeeded"
+    );
+    let events = compositor.take_display_events();
+    let [DisplayEvent::Confirm { id, within, .. }] = events.as_slice() else {
+        panic!("{events:?}");
+    };
+    assert_eq!(*within, CONFIRM_FOR);
+    pump(&mut compositor, &mut client, |tool| {
+        (scale_of_tool(tool, "HEADLESS-1") - 3.0).abs() < f64::EPSILON
+    });
+    assert!(compositor.revert_display_change(*id).expect("revert"));
+    pump(&mut compositor, &mut client, |tool| {
+        (scale_of_tool(tool, "HEADLESS-1") - 1.0).abs() < f64::EPSILON
+    });
+    assert!(!compositor.keep_display_change(*id), "answered already");
+
+    // Sending it again at once is refused, and the session hears once.
+    assert_eq!(
+        rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
+        "failed"
+    );
+    assert_eq!(
+        rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
+        "failed"
+    );
+    let events = compositor.take_display_events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, DisplayEvent::RefusedReapply { .. }))
+            .count(),
+        1,
+        "{events:?}"
+    );
+    assert!((scale_of(&client, "HEADLESS-1") - 1.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn a_trusted_tool_changes_the_display_in_use_without_asking() {
+    let mut compositor = two_outputs();
+    compositor.set_trusted_display_tools([std::env::current_exe().expect("test binary")]);
+    let mut client = Client::connect(&mut compositor, true);
+    pump(&mut compositor, &mut client, |tool| {
+        tool.serial.is_some() && tool.heads.len() == 2
+    });
+    assert_eq!(
+        rescale(&mut compositor, &mut client, "HEADLESS-1", 3.0),
+        "succeeded"
+    );
+    let events = compositor.take_display_events();
+    assert!(
+        matches!(events.as_slice(), [DisplayEvent::Kept { .. }]),
+        "{events:?}"
+    );
+}
+
+fn scale_of_tool(tool: &Tool, name: &str) -> f64 {
+    tool.heads
+        .iter()
+        .find(|head| head.name == name)
+        .map_or(0.0, |head| head.scale)
 }
