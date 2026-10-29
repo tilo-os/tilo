@@ -1369,6 +1369,32 @@ fn subsurface_location(
     )
 }
 
+/// The `wl_surface.set_input_region` `states` last applied, `None` for the
+/// protocol default (the whole surface).
+fn committed_input_region(
+    states: &wl_compositor::SurfaceData,
+) -> Option<crate::shell::foreign::InputRegion> {
+    let rects = states
+        .cached_state
+        .get::<wl_compositor::SurfaceAttributes>()
+        .current()
+        .input_region
+        .as_ref()?
+        .rects
+        .iter()
+        .map(|(kind, rect)| {
+            (
+                matches!(kind, wl_compositor::RectangleKind::Add),
+                rect.loc.x,
+                rect.loc.y,
+                rect.size.w,
+                rect.size.h,
+            )
+        })
+        .collect();
+    Some(crate::shell::foreign::InputRegion { rects })
+}
+
 /// How the buffer `states` last committed lies on its surface: the buffer
 /// scale and the `wp_viewport` rectangles.
 #[allow(
@@ -4996,20 +5022,22 @@ impl State {
                     placed.push((
                         surface.clone(),
                         subsurface_location(root, surface, states, *parent),
+                        committed_input_region(states),
                     ));
                 }
             },
             |_, _, _| true,
         );
+        let store = crate::shell::foreign::store();
         let children = placed
             .into_iter()
-            .map(|(surface, (x, y))| crate::shell::foreign::ChildFrame {
-                surface: surface_id(&surface),
-                x,
-                y,
+            .map(|(surface, (x, y), input_region)| {
+                let surface = surface_id(&surface);
+                store.note_input_region(surface, input_region);
+                crate::shell::foreign::ChildFrame { surface, x, y }
             })
             .collect();
-        crate::shell::foreign::store().set_children(root_id, children);
+        store.set_children(root_id, children);
     }
 
     fn capture_committed_foreign_pixels(&mut self, surface: &WlSurface, surface_id: u64) {
