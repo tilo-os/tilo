@@ -119,6 +119,7 @@ imports! {
     (ReadText, "read_text", "i", "i"),
     (OfType, "of_type", "ii", "i"),
     (Keep, "keep", "ii", ""),
+    (EditField, "edit_field", "iii", ""),
 
     (UiNode, "ui_node", "ii", "i"),
     (UiPropH, "ui_prop_h", "iii", ""),

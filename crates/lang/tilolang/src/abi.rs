@@ -133,6 +133,7 @@ imports! {
     ReadText = "read_text" ([H] -> [H]);
     OfType = "of_type" ([H, H] -> [H]);
     Keep = "keep" ([H, H] -> []);
+    EditField = "edit_field" ([H, H, H] -> []);
 
     UiNode = "ui_node" ([H, H] -> [H]);
     UiPropH = "ui_prop_h" ([H, H, H] -> []);

@@ -193,6 +193,20 @@ impl Runtime {
         (io, outcome)
     }
 
+    /// The fields of the type `ty` as a store reads them, or `None` for a type no loaded package
+    /// declares.
+    #[must_use]
+    pub fn field_specs(&self, ty: &str) -> Option<Vec<crate::store::FieldSpec>> {
+        let registry = self.core.registry.borrow();
+        registry.type_info(ty).map(|(_, info)| info.specs())
+    }
+
+    /// Send what programs change to `invoker` instead of running it here: the runtime of a
+    /// task's host, which holds no records and runs no app's code ([`crate::delegate`]).
+    pub fn set_invoker(&self, invoker: impl crate::delegate::Invoker + 'static) {
+        *self.core.invoker.borrow_mut() = Some(Box::new(invoker));
+    }
+
     /// Find resources by text for programs' `find`: the host's search, which answers words
     /// with the resources that hold them, the best first.
     pub fn set_text_search(&self, search: impl Fn(&str, usize) -> Vec<ResourceRef> + 'static) {

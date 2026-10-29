@@ -936,6 +936,10 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
+        if self.st.program {
+            self.program_edit(base, &key, &f, op, value, span);
+            return;
+        }
         if self.st.ctx != Ctx::Action {
             let who = self.st.ctx.word();
             self.err("E040", span, format!("{who} cannot change `{}.{}`; only an action mutates fields. Write an action and apply it", key.name, f.name));

@@ -26,6 +26,21 @@ pub mod room_hold;
 mod room_hold_tests;
 #[cfg(target_os = "linux")]
 mod tilolang_hosts;
+
+/// Start the tilolang host of the agent task `task` in `room`: the agent door's end of its
+/// program connection (`tilolang_hosts::start_task`).
+///
+/// # Errors
+/// `room` is no room, no tilolang app is installed, or the host could not be started.
+pub(crate) fn start_task_host(room: &str, task: &str) -> std::io::Result<std::os::fd::OwnedFd> {
+    let room = RoomId::parse(room).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("`{room}` is no room"),
+        )
+    })?;
+    tilolang_hosts::start_task(room, task)
+}
 #[cfg(target_os = "linux")]
 pub(crate) mod window_doors;
 #[cfg(test)]

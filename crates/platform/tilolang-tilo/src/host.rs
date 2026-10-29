@@ -76,12 +76,12 @@ pub(crate) struct HostInner {
     packages: RefCell<Vec<Package>>,
     /// Suggestions an agent's flow raised on the door, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
-    /// The program sessions of the callers that run programs on the door, by caller and
-    /// session name: the `let`s each keeps between programs.
-    pub(crate) programs: RefCell<HashMap<String, tilolang_runtime::program::Session>>,
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
     produced: RefCell<Option<(String, ResourceRef)>>,
+    /// The resource the last action planned returned, whoever invoked it, with the action:
+    /// what its invocation answers.
+    returned: RefCell<Option<(String, ResourceRef)>>,
 }
 
 thread_local! {
@@ -381,6 +381,13 @@ impl HostInner {
             .runtime
             .invoke_action(&invoker, (request.action_id, args.clone()))
             .map_err(|error| error.to_string())?;
+        *self.returned.borrow_mut() = match &outcome {
+            InvokeOutcome::Done(Value::Ref(made)) => Some((
+                request.action_id.to_owned(),
+                ResourceRef::clone(&made.target),
+            )),
+            _ => None,
+        };
         match outcome {
             InvokeOutcome::Done(Value::Ref(made))
                 if request.caller.is_none_or(|caller| !caller.agent) =>
@@ -509,8 +516,8 @@ impl Host {
             viewer,
             packages: RefCell::new(Vec::new()),
             suspended: RefCell::default(),
-            programs: RefCell::default(),
             produced: RefCell::default(),
+            returned: RefCell::default(),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
@@ -626,6 +633,17 @@ impl Host {
         let mut produced = self.inner.produced.borrow_mut();
         match produced.as_ref() {
             Some((made_by, _)) if made_by == action => produced.take().map(|(_, made)| made),
+            _ => None,
+        }
+    }
+
+    /// The resource `action` returned when it was last planned here, for whoever invoked it,
+    /// once: what its invocation answers.
+    #[must_use]
+    pub fn take_returned(&self, action: &str) -> Option<ResourceRef> {
+        let mut returned = self.inner.returned.borrow_mut();
+        match returned.as_ref() {
+            Some((made_by, _)) if made_by == action => returned.take().map(|(_, made)| made),
             _ => None,
         }
     }

@@ -81,6 +81,9 @@ pub struct Core {
     pub program: RefCell<Option<crate::program::ProgramIo>>,
     /// What finds resources by text for programs' `find`.
     pub text_search: RefCell<Option<Box<crate::program::TextSearch>>>,
+    /// Where a task's programs send what they change, in a host that runs no app's code
+    /// ([`crate::delegate`]); `None` where the runtime runs actions itself.
+    pub invoker: RefCell<Option<Box<dyn crate::delegate::Invoker>>>,
 }
 
 /// What `now` reads while the host has set no clock.
@@ -179,6 +182,7 @@ impl Core {
             items_built: std::cell::Cell::new(0),
             program: RefCell::new(None),
             text_search: RefCell::new(None),
+            invoker: RefCell::new(None),
         });
         // The types the host provides to every module, such as `Invocation`.
         let host = crate::registry::Package::new(
@@ -319,6 +323,7 @@ impl Core {
             Imp::Print | Imp::Find | Imp::ReadText | Imp::OfType | Imp::Keep => {
                 self.program_import(imp, a)
             }
+            Imp::EditField => self.flow_edit(a),
             Abort => {
                 let msg = self.text(a.h(0)?)?;
                 trap(format!("abort: {msg}"))

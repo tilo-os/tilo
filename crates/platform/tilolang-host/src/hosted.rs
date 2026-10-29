@@ -493,7 +493,14 @@ impl Hosted {
             self.record
                 .apply_invoked(&mut self.instance, &action, invoker, ambient)
                 .map_err(|error| Refused::new("action_failed", error.to_string()))?;
-            return Ok(tilo_actions::ActionOutput::default());
+            // What the action returned, by its published id: a task's program goes on with it.
+            let returned = host
+                .take_returned(&action.action_id)
+                .map(|made| tilolang_tilo::publish::resource_id(&action.app, &made.id_string()));
+            return Ok(tilo_actions::ActionOutput {
+                value: None,
+                resources: returned.into_iter().collect(),
+            });
         }
         if address.resource == HOST_RESOURCE
             && encoded.type_id == <HostEffect as tilo_resource::Effect>::OPERATION

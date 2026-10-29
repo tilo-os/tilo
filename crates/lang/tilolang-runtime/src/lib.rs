@@ -17,6 +17,7 @@ pub mod authority;
 pub mod catalogue;
 mod colls;
 mod core;
+pub mod delegate;
 mod embed;
 pub mod engine;
 pub mod error;

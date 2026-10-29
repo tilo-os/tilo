@@ -173,7 +173,7 @@ title several resources share has the level listed to decide.
 | `tilo_read` | a resource as compact text: markdown whose blocks end in their id, a list of what an app holds | `{path: "notes/Todo"}` |
 | `tilo_do` | the action's result, waited for (default 5 s) | `{path: "notes/Todo/body#append-paragraph", args: {text: "Buy milk"}}` |
 | `tilo_find` | ranked one-line hits, ready to pass to `tilo_do`; `app` narrows by name or id | `{query: "checklist add", app: "notes"}` |
-| `tilo` | a tilolang program's output, run in the app it names as this task (below) | `{program: "notes.notes.filter(.pinned)"}` |
+| `tilo` | a tilolang program's output, run as this task in its own tilolang host (below) | `{program: "notes.notes.filter(.pinned)"}` |
 | `tilo_status` | how a pending invocation went; `cancel: true` stops it | `{invocation_id}` |
 
 ```text
@@ -245,10 +245,16 @@ bytes of markdown against 370 for the structured `read` answer of the same page.
 ### Programs: the `tilo` tool
 
 `tilo {program, confirm?}` runs a tilolang program
-(`docs/designs/app-language/agents.md`) as this task, in the tilolang host of
-the app it names: the host's `run-program`, invoked through the same gate,
-attribution and grants as every other action, so a program reaches exactly
-what the agent may. Its top-level `let`s stay for the task's next program.
+(`docs/designs/app-language/agents.md`) as this task, in a tilolang host of
+the task's own: its code author is the task, the session starts it on the
+task's first program, and it lives as long as the connection, holding the
+task's `let`s and no records. A program names any installed app's types and
+actions; what it reads it reads through each app as the task, and what it
+changes it changes only by invoking: a method is its type's declared action,
+an assignment (`t.done = true`) the resource's field edit. Each invocation is
+the task's, in this call's step, decided at that action's own node by the
+workspace's policy: asked about or refused, never done silently. For now the
+apps a program reads must be open.
 
 ```text
 > tilo {program: "notes.notes.filter(.pinned)"}
@@ -269,16 +275,15 @@ step 1: 2 changes in notes; `undo` takes it back
   line; later programs of the session use it like a name. A reference the
   session never showed, or a resource literal typed by hand, is refused, so
   none can be invented.
-- **One program is one step.** What it changes commits together; a program
-  that fails changes nothing. One that would change more than three
-  resources, or destroy something, answers with a preview of the actions it
-  would apply and changes nothing until it is sent again with
+- **One program is one step.** Every invocation it makes carries the call's
+  undo step and the task's run; a program that fails takes back what it
+  changed. One that would change more than three resources, or destroy
+  something, answers with a preview of the invocations a provisional run
+  listed (it sends none) and changes nothing until it is sent again with
   `confirm: true`.
-- **Undo.** `undo` takes back the last step, `undo task` every step of this
-  session, newest first, through each app's own undo (the agent's run's
-  steps); `history task` lists the steps.
-- **For now** a program runs in one app; one that names two is refused and
-  says so. The apps it may name are the running ones.
+- **Undo.** `undo` takes back the last step in every app it changed, `undo
+  task` every step of this session, newest first, through each app's own
+  undo; `history task` lists the steps.
 
 `tilolang repl` is a terminal for the same tool: it connects to a session's
 door (a nested session by default, `--real` for the person's own) and sends
