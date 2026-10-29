@@ -68,9 +68,7 @@ impl BodyEditor {
         }
         self.shown.clone_from(&markdown);
         self.value.set(markdown.clone());
-        self.sink
-            .borrow_mut()
-            .push(UiEvent::Edit(self.key.clone(), markdown));
+        self.sink.push(UiEvent::Edit(self.key.clone(), markdown));
         true
     }
 
@@ -168,6 +166,6 @@ mod tests {
             body.editor.to_markdown().trim(),
             "Changed by a collaborator"
         );
-        assert!(sink.borrow().is_empty(), "showing a value reports no edit");
+        assert!(sink.is_empty(), "showing a value reports no edit");
     }
 }

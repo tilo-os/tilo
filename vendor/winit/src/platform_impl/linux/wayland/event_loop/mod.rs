@@ -485,10 +485,10 @@ impl<T: 'static> EventLoop<T> {
         self.with_state(|state| {
             buffer_sink.append(&mut state.events_sink);
         });
-        for event in buffer_sink.drain() {
+        buffer_sink.deliver(|event| {
             let event = event.map_nonuser_event().unwrap();
             callback(event, &self.window_target);
-        }
+        });
 
         // Collect the window ids
         self.with_state(|state| {

@@ -40,6 +40,7 @@
 pub(crate) mod complete;
 pub(crate) mod keys;
 pub(crate) mod line;
+mod native;
 pub(crate) mod render;
 
 use std::collections::{HashSet, VecDeque};
@@ -86,6 +87,8 @@ pub(crate) struct State {
     decoder: Decoder,
     kills: KillRing,
     history: History,
+    /// The line as the app's field ([`crate::field`]).
+    native: native::Native,
 }
 
 #[derive(Default)]
@@ -248,6 +251,15 @@ fn incoming(body: &str, key: &str) -> Option<Incoming> {
     }
 }
 
+/// What reading the next key came to.
+enum Next {
+    Key(Key, Vec<u8>),
+    /// The app's field has a request to serve.
+    Woken,
+    /// The input ended.
+    End,
+}
+
 /// What the last key did, for the edits that join their predecessor (kills
 /// in a row are one kill; typing in a row is one undo).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,7 +367,16 @@ impl Shell {
             after: Vec::new(),
         };
         self.redraw(&screen, &mut edit);
-        let read = self.edit_keys(&mut state, &input, &screen, &mut edit);
+        let field = self.host.field();
+        if let Some(field) = &field {
+            state.native.prompt();
+            field.listen(true);
+        }
+        let read = self.edit_keys(&mut state, &input, &screen, &mut edit, field.as_deref());
+        if let Some(field) = &field {
+            field.listen(false);
+            state.native.leave(field.as_ref());
+        }
         drop(state);
         let _ = screen.write_str("\x1b[?2004l");
         self.host.edit_mode(false);
@@ -385,8 +406,10 @@ impl Shell {
         let _ = screen.write_str(&out);
     }
 
-    /// The next key, and the bytes it came as.
-    fn next_key(state: &mut State, input: &Input) -> Option<(Key, Vec<u8>)> {
+    /// The next key, and the bytes it came as. With `woken`, a read the
+    /// app's field interrupted ([`crate::field::Field::listen`]) comes back
+    /// as [`Next::Woken`] before a key is under way.
+    fn next_key(state: &mut State, input: &Input, woken: bool) -> Next {
         let mut bytes = Vec::new();
         loop {
             let byte = if let Some(byte) = state.typeahead.pop_front() {
@@ -394,15 +417,20 @@ impl Shell {
             } else {
                 let mut byte = [0_u8; 1];
                 match input.read(&mut byte) {
-                    Ok(0) => return None,
+                    Ok(0) => return Next::End,
                     Ok(_) => byte[0],
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(_) => return None,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
+                        if woken && bytes.is_empty() {
+                            return Next::Woken;
+                        }
+                        continue;
+                    }
+                    Err(_) => return Next::End,
                 }
             };
             bytes.push(byte);
             if let Some(key) = state.decoder.push(byte) {
-                return Some((key, bytes));
+                return Next::Key(key, bytes);
             }
         }
     }
@@ -417,16 +445,35 @@ impl Shell {
         input: &Input,
         screen: &Output,
         edit: &mut Edit,
+        field: Option<&dyn crate::field::Field>,
     ) -> Read {
         loop {
-            let Some((key, bytes)) = Self::next_key(state, input) else {
-                if edit.line.is_empty() {
-                    self.leave(screen, edit);
-                    return Read::Eof;
+            if let Some(field) = field {
+                // What the app asked meanwhile, then the line as it is now.
+                let mut changed = false;
+                while let Some((id, request)) = field.take() {
+                    changed |= state.native.serve(field, id, request, edit);
                 }
-                self.leave(screen, edit);
-                return Read::Line(edit.line.text());
+                if changed {
+                    self.redraw(screen, edit);
+                }
+                state.native.publish(field, 0, Some(edit));
+            }
+            let (key, bytes) = match Self::next_key(state, input, field.is_some()) {
+                Next::Key(key, bytes) => (key, bytes),
+                Next::Woken => continue,
+                Next::End => {
+                    if edit.line.is_empty() {
+                        self.leave(screen, edit);
+                        return Read::Eof;
+                    }
+                    self.leave(screen, edit);
+                    return Read::Line(edit.line.text());
+                }
             };
+            if field.is_some() {
+                state.native.key();
+            }
             if let Key::Mark(body) = &key {
                 let Some(key) = state.runs_key.clone() else {
                     continue;

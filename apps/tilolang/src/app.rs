@@ -199,8 +199,8 @@ impl ResourceApp for TlApp {
             && tilolang_tilo::origin::uses_origin(meta, "imap")
         {
             let wake = ui::wake::WakeHandle::new();
-            let origin = crate::mail::live_origin(
-                crate::mail::settings_accounts(cx.storage().config_root()),
+            let origin = tilolang_mail::live_origin(
+                tilolang_mail::settings_accounts(cx.storage().config_root()),
                 std::sync::Arc::new(move || wake.wake()),
             );
             window = window.with_origin(origin);

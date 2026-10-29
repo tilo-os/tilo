@@ -15,6 +15,17 @@ fn main() -> std::process::ExitCode {
         eprintln!("tilolang: {error}");
         return std::process::ExitCode::from(2);
     }
+    // The system runs this app's connector for an outside service in a process of its own,
+    // with no window: the app's instances in the tilolang host reach it.
+    if let Ok(origin) = std::env::var(tilolang_mail::CONNECTOR_ORIGIN_ENV) {
+        return match tilolang_mail::run_connector(&origin) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("tilolang: {error}");
+                std::process::ExitCode::from(2)
+            }
+        };
+    }
     // In a development session, later builds of the package take over while it runs.
     if let Some(bundle) = tilolang_app::installed_bundle() {
         tilolang_app::updates::start(&bundle.meta.app);

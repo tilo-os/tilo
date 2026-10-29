@@ -34,13 +34,17 @@ impl TouchHandler for WinitState {
                 window.record_press(&touch.seat(), serial);
                 window.scale_factor()
             }
-            None => return,
+            None => {
+                self.events_sink.push_input_serial(serial);
+                return;
+            }
         };
 
         let seat_state = match self.seats.get_mut(&touch.seat().id()) {
             Some(seat_state) => seat_state,
             None => {
                 warn!("Received wl_touch::down without seat");
+                self.events_sink.push_input_serial(serial);
                 return;
             }
         };
@@ -63,6 +67,7 @@ impl TouchHandler for WinitState {
             }),
             window_id,
         );
+        self.events_sink.push_input_serial(serial);
     }
 
     fn up(
@@ -70,7 +75,7 @@ impl TouchHandler for WinitState {
         _: &Connection,
         _: &QueueHandle<Self>,
         touch: &WlTouch,
-        _: u32,
+        serial: u32,
         _: u32,
         id: i32,
     ) {
@@ -78,6 +83,7 @@ impl TouchHandler for WinitState {
             Some(seat_state) => seat_state,
             None => {
                 warn!("Received wl_touch::up without seat");
+                self.events_sink.push_input_serial(serial);
                 return;
             }
         };
@@ -85,13 +91,19 @@ impl TouchHandler for WinitState {
         // Remove the touch point.
         let touch_point = match seat_state.touch_map.remove(&id) {
             Some(touch_point) => touch_point,
-            None => return,
+            None => {
+                self.events_sink.push_input_serial(serial);
+                return;
+            }
         };
 
         let window_id = wayland::make_wid(&touch_point.surface);
         let scale_factor = match self.windows.get_mut().get(&window_id) {
             Some(window) => window.lock().unwrap().scale_factor(),
-            None => return,
+            None => {
+                self.events_sink.push_input_serial(serial);
+                return;
+            }
         };
 
         self.events_sink.push_window_event(
@@ -106,6 +118,7 @@ impl TouchHandler for WinitState {
             }),
             window_id,
         );
+        self.events_sink.push_input_serial(serial);
     }
 
     fn motion(

@@ -176,6 +176,10 @@ pub struct Caller {
     execution: Option<ExecutionLease>,
     // The person a non-person principal acts for, as the host admitted it.
     acting_for: Option<String>,
+    // The person's own device handed this connection to the agent
+    // (`Self::delegated_to`), rather than the agent being admitted as a member
+    // in its own right and acting for them (`Self::acting_for`).
+    session_delegated: bool,
     // The Shortcut whose run this person's invocation is a step of.
     shortcut: Option<String>,
     // How far the invocation this caller's requests continue was admitted
@@ -196,6 +200,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -213,6 +218,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -229,6 +235,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -247,6 +254,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -270,6 +278,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: None,
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -292,6 +301,7 @@ impl Caller {
             foreign: false,
             execution: None,
             acting_for: Some(hex::encode(user_public_key)),
+            session_delegated: false,
             shortcut: None,
             within: within::Within::NONE,
         }
@@ -372,8 +382,18 @@ impl Caller {
             return self;
         };
         self.acting_for = Some(person.clone());
+        self.session_delegated = true;
         self.principal = CallerPrincipal::Agent(agent_id.into());
         self
+    }
+
+    /// Whether this agent is one the person's own device handed its session to
+    /// ([`Self::delegated_to`]): it carries the delegation a device gives its
+    /// agents. An agent admitted as a member that acts for a person
+    /// ([`Self::acting_for`]) carries only what the room grants it.
+    #[must_use]
+    pub fn is_session_delegated(&self) -> bool {
+        self.session_delegated
     }
 
     /// The person this caller acts for, when it is not that person.

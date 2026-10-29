@@ -2419,3 +2419,131 @@ async fn a_file_read_whole_is_stored_and_its_folder_hears_of_it() {
     } = mount;
     shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
 }
+
+/// A workspace whose root holds `.config`, mounted as `owner`'s
+/// ([`QuickFS::with_owner`]), or each caller's when `None`.
+async fn mount_owned_by(
+    owner: Option<(u32, u32)>,
+    allow_other: bool,
+) -> (
+    tempfile::TempDir,
+    fuser::BackgroundSession,
+    Endpoint,
+    Arc<ContentStore>,
+) {
+    let dir = tempdir().expect("mount temp dir");
+    let endpoint = Endpoint::bind(presets::Minimal)
+        .await
+        .expect("bind endpoint");
+    let store = Arc::new(ContentStore::memory());
+    let namespace = Arc::new(Mutex::new(Namespace::new("owner-peer").unwrap()));
+    namespace
+        .lock()
+        .unwrap()
+        .create_dir(ROOT_INO, ".config", 1)
+        .unwrap();
+    let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone()));
+    let fs = QuickFS::new(namespace, hydrator, heuristics).with_owner(owner);
+    let mut config = Config::default();
+    config.mount_options = vec![MountOption::FSName("quickfs_owner".to_string())];
+    if allow_other {
+        config.acl = fuser::SessionACL::All;
+    }
+    let session = fuser::spawn_mount(fs, dir.path(), &config).expect("spawn FUSE session");
+    wait_for_mount(dir.path()).await;
+    (dir, session, endpoint, store)
+}
+
+/// The workspace is the person's, whoever's daemon serves it: its files are
+/// presented as owned by the local person when the daemon knows them, else
+/// by whoever looks, and never by the daemon's own account (root, on a
+/// device). An environment's guest, which maps only its user's id, sees its
+/// home and what is in it as its user's: `stat -c %U ~ ~/.config` names the
+/// guest's user, so programs that check who owns their config (podman, ssh)
+/// accept it. Nothing is chowned; ownership is only presented.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_workspace_is_presented_as_the_persons_or_the_callers() {
+    require_fuse!();
+    tilo_test_env::within("workspace ownership is presented", async {
+        let me = tempdir().unwrap();
+        let (uid, gid) = {
+            let meta = std::fs::metadata(me.path()).unwrap();
+            (meta.uid(), meta.gid())
+        };
+        let root = uid == 0;
+
+        // No person named: each caller sees the files as their own. The
+        // kernel keeps what one caller was answered for the attribute TTL,
+        // so each case below looks at a fresh mount first.
+        let (dir, session, endpoint, store) = mount_owned_by(None, root).await;
+        let home = dir.path();
+        if root {
+            // Only root can mount for other accounts: one looking sees the
+            // files as its own, not as the daemon's. (The mount point itself
+            // was already answered to root, waiting for the mount.)
+            if std::path::Path::new("/usr/bin/setpriv").is_file() {
+                let out = std::process::Command::new("/usr/bin/setpriv")
+                    .args(["--reuid", "65534", "--regid", "65534", "--clear-groups"])
+                    .args(["stat", "-c", "%u:%g"])
+                    .arg(home.join(".config"))
+                    .output()
+                    .expect("setpriv runs");
+                assert_eq!(
+                    String::from_utf8_lossy(&out.stdout),
+                    "65534:65534\n",
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        } else {
+            // A guest as ush builds one: a user namespace mapping only the
+            // user's own id, the workspace at its home.
+            if let Some(bwrap) = ["/usr/bin/bwrap", "/bin/bwrap"]
+                .into_iter()
+                .find(|p| std::path::Path::new(p).is_file())
+            {
+                let out = std::process::Command::new(bwrap)
+                    .args([
+                        "--unshare-user",
+                        "--uid",
+                        &uid.to_string(),
+                        "--gid",
+                        &gid.to_string(),
+                    ])
+                    .args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"])
+                    .arg("--bind")
+                    .arg(home)
+                    .arg("/var/workspace")
+                    .args(["--setenv", "HOME", "/var/workspace", "--chdir", "/"])
+                    .args(["sh", "-c", r#"stat -c %U "$HOME" "$HOME/.config"; id -un"#])
+                    .output()
+                    .expect("bwrap runs");
+                let text = String::from_utf8_lossy(&out.stdout);
+                assert!(
+                    out.status.success(),
+                    "{text}{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let lines: Vec<&str> = text.lines().collect();
+                assert_eq!(lines.len(), 3, "{text}");
+                assert_eq!(lines[0], lines[2], "~ is the guest user's: {text}");
+                assert_eq!(lines[1], lines[2], "~/.config is the guest user's: {text}");
+            }
+            for path in [home.to_path_buf(), home.join(".config")] {
+                let meta = std::fs::metadata(&path).unwrap();
+                assert_eq!((meta.uid(), meta.gid()), (uid, gid), "{}", path.display());
+            }
+        }
+        shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
+
+        // The local person named: everyone sees the files as theirs.
+        let (dir, session, endpoint, store) = mount_owned_by(Some((4242, 4343)), false).await;
+        for path in [dir.path().to_path_buf(), dir.path().join(".config")] {
+            let meta = std::fs::metadata(&path).unwrap();
+            assert_eq!((meta.uid(), meta.gid()), (4242, 4343), "{}", path.display());
+        }
+        shutdown_fuse_fixture(session, dir.path(), endpoint, store).await;
+    })
+    .await;
+}

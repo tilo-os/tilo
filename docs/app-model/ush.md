@@ -182,9 +182,9 @@ This control connection retains the same authenticated caller for every request;
 each Host request still checks the current owner grant and original requester.
 A successful version-two session reply includes `"protocol":2` and exactly two
 close-on-exec descriptors, in order: the PTY master and a private session lease.
-The supervisor offers no native editor capability: an `editor_protocol` in a
-request is ignored, since an environment session runs ush's own shell, which
-does not serve it.
+An environment session on this device that negotiated `editor_protocol`
+appends the editor capability as a third, last descriptor; the session's line
+editor serves it (below).
 The control connection remains available for subsequent targets. Requests are
 bounded to 4096 bytes and eight active leases. Malformed requests close control;
 completed sequential sessions do not exhaust a lifetime request counter.
@@ -359,7 +359,13 @@ same ones: Left, Right, Home, End, `Ctrl+A/E/B/F`, `Alt+B/F` and
 `Ctrl+_` undoes, `Ctrl+L` clears, `Ctrl+C` drops the line and `Ctrl+D` on an
 empty line ends the session. An open quote, a trailing `\` or an open block
 asks for more lines with `$PS2`. A paste (bracketed) goes in as it is,
-newlines included, and runs only on Enter. The editor reads keys through the
+newlines included, and runs only on Enter. Terminal edits the line too, as a
+native text field: its input method and dictation put text in at the cursor
+as if typed, and take it back with Undo
+([`field`](../../crates/runtime/ush-shell/src/field.rs)). At the prompt the
+editor publishes the line and a lease on it over the editor capability
+Terminal negotiated; an edit of a line that changed since is refused, an edit
+never presses Enter, and away from the prompt the line is not offered. The editor reads keys through the
 shell's host (`Host::edit_mode` switches the terminal; on the Tilo side it
 is the session's pty, switched by `ush::tilo_side::DevicePlace`), so it is the
 same on a device, on a host and in a browser.
