@@ -247,14 +247,20 @@ cmp -s <(get "/v/$version/pkg/tilo_browser_runtime_bg.wasm" -H 'Accept-Encoding:
 etag_of() { sed -n 's/^etag: *//Ip' <<<"$(head_of "$1" -H "Accept-Encoding: $2" -H 'Accept: */*')"; }
 
 # Every answer a visitor revalidates by carries an ETag naming the bytes it
-# answers with. br is a sidecar the image ships (the Containerfile's compress
-# stage) and gzip is compressed here, as an edge does for a client the origin
-# left unencoded; either way a validator and a body must not part ways, which
-# is what one ETag over both of a file's encodings would mean.
+# answers with. Caddy names none for a file dated 0 or 1, the date a
+# reproducible build would give every file, which is why oci-build.sh dates
+# them by their commit. The pages and modules are also served as their br and
+# zstd sidecars (the Containerfile's compress stage), each another entity with
+# an ETag of its own: a validator and a body must not part ways, which is what
+# one ETag over two encodings of a file would mean. gzip is the edge's, as
+# above.
 for path in / /app/ /version.json /entry.json "/v/$version/entry-page.mjs" "/v/$version/pkg/tilo_browser_runtime_bg.wasm"; do
   identity=$(etag_of "$path" identity)
   [[ -n $identity ]] || fail "$path (identity) carries no ETag"
-  for encoding in br gzip; do
+done
+for path in / /app/ "/v/$version/entry-page.mjs" "/v/$version/pkg/tilo_browser_runtime_bg.wasm"; do
+  identity=$(etag_of "$path" identity)
+  for encoding in br zstd; do
     headers=$(head_of "$path" -H "Accept-Encoding: $encoding" -H 'Accept: */*')
     grep -q "^content-encoding: $encoding\$" <<<"$headers" \
       || fail "$path with Accept-Encoding $encoding: no Content-Encoding $encoding: $(tr '\n' ' ' <<<"$headers")"
@@ -266,15 +272,13 @@ for path in / /app/ /version.json /entry.json "/v/$version/entry-page.mjs" "/v/$
 done
 
 # The entry page is revalidated on every visit: it is no-cache, so nothing but
-# a 304 stops a restart from downloading the editor's module graph again, and
-# its ETag is what revalidates it. Caddy's file handler hands 304s to
-# ServeContent, which shares one 304 branch between If-Match and the date but
-# none between the ETag and the date. Over gzip the answer carries no
-# Last-Modified, so the ETag is what must answer.
-etag=$(etag_of / gzip)
-not_modified=$(head_of / -H 'Accept-Encoding: gzip' -H "If-None-Match: $etag")
-[[ $(head -1 <<<"$not_modified") == 'HTTP/1.1 304 Not Modified' ]] \
-  || fail "/ is not a 304 for the ETag it just sent: $(head -1 <<<"$not_modified")"
+# a 304 stops a restart from downloading the editor's module graph again.
+for encoding in br identity; do
+  etag=$(etag_of / "$encoding")
+  not_modified=$(head_of / -H "Accept-Encoding: $encoding" -H "If-None-Match: $etag")
+  [[ $(head -1 <<<"$not_modified") == 'HTTP/1.1 304 Not Modified' ]] \
+    || fail "/ ($encoding) is not a 304 for the ETag $etag it just sent: $(head -1 <<<"$not_modified")"
+done
 
 # The start module is one immutable URL and one validator per encoding: a
 # revisit is a 304 whatever the age of the file, and the br answer a browser
