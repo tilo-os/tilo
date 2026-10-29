@@ -429,18 +429,6 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
 /// Every pane, by the categories it shows.
 pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
-        categories: &[Category::TimeDate],
-        build: |app, _| {
-            time_date::area(app).map_or_else(
-                || crate::widgets::page(Vec::new()),
-                |area| {
-                    Box::new(time_date::TimeDatePane::new(app.host().clone(), area))
-                        as Box<dyn ui::widget::Widget>
-                },
-            )
-        },
-    },
-    crate::area::PaneEntry {
         categories: &[Category::DeviceMesh],
         build: |app, _| model_pane(device_mesh::area(app).map(device_mesh::DeviceMeshArea::model)),
     },
@@ -558,7 +546,7 @@ const SETTINGS: &[crate::setting::SettingEntry] = &[
     crate::setting::setting_row!("region.numbers", tilo_locale::Locale => region::number_style),
     crate::setting::setting_row!("region.first_day", tilo_locale::Locale => region::first_day),
     crate::setting::setting_value!("region.language" => known region::language::value),
-    crate::setting::setting_switch!("time.automatic" => time_date::values::automatic, time_date::values::automatic_switch),
+    crate::setting::setting_view_switch!("time.automatic" => time_date::values::automatic, time_date::values::automatic_switch),
     crate::setting::setting_value!("time.zone" => time_date::values::zone),
     crate::setting::setting_value!("storage.cache" => storage::values::cache),
     crate::setting::setting_value!("storage.clean" => storage::values::clean),

@@ -226,9 +226,10 @@ fn drawn_pages_switch() {
 /// a press, four moves and a release, reported per event.
 #[test]
 fn globe_drag_frame() {
-    let config = crate::support::ScratchConfig::new();
-    let mut app = mount_on(&config, Category::TimeDate);
-    let h = Framed::harness_mut(&mut app);
+    // Time & Date is view code over its sections, built only in the app's
+    // view.
+    let mut app = crate::support::window_on(Category::TimeDate, (W, H));
+    let h = app.harness();
     // The clock is read off the UI thread; the globe is drawn once it lands.
     let globe = tilo_test_env::wait_for("the globe is laid out", || {
         let _ = h.poll_frame();
