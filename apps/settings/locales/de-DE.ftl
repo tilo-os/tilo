@@ -2287,7 +2287,6 @@ input-scope-all = Alle Tastaturen
 input-scope-inheritance = Jede Tastatur tippt diese Belegungen, außer du gibst ihr eigene. Die Bildschirmtastatur hat eigene.
 input-scope-own = { $name } nutzt eigene Tastaturbelegungen
 input-scope-use-shared = Gemeinsame Belegungen nutzen
-input-error-keyboard-shared = Diese Tastatur nutzt bereits die gemeinsamen Belegungen.
 input-keyboard-scope = Gilt für
 input-source-activate = Aktivieren
 input-sources-selection-description = Wähle eine Quelle zum Ansehen oder Bearbeiten. Ziehe sie, um die Reihenfolge zu ändern.

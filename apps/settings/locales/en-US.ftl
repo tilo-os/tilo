@@ -2287,7 +2287,6 @@ input-scope-all = All keyboards
 input-scope-inheritance = Every keyboard types these layouts unless you give it its own. The on-screen keyboard has its own.
 input-scope-own = { $name } types its own layouts
 input-scope-use-shared = Use shared layouts
-input-error-keyboard-shared = that keyboard already types the shared layouts.
 input-keyboard-scope = Applies to
 input-source-activate = Make active
 input-sources-selection-description = Select a source to preview or edit. Drag to reorder.

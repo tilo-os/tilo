@@ -73,6 +73,15 @@ pub(crate) fn view(
         crate::categories::Category::Speakers => speakers::view(cx, app),
         crate::categories::Category::Bluetooth => bluetooth::view(cx, app),
         crate::categories::Category::Network => network::view(cx, app),
+        crate::categories::Category::Keyboard => {
+            mouse_keyboard::view(cx, app, mouse_keyboard::InputPage::Keyboard)
+        }
+        crate::categories::Category::Pointing => {
+            mouse_keyboard::view(cx, app, mouse_keyboard::InputPage::Pointing)
+        }
+        crate::categories::Category::Spelling => {
+            mouse_keyboard::view(cx, app, mouse_keyboard::InputPage::Spelling)
+        }
         _ => None,
     }
 }
