@@ -6,11 +6,10 @@
 //! scrollback goes with it, so the person is asked.
 
 use super::{
-    CONNECT_DEADLINE, ConnectionId, LiveSession, PendingConfirmation, RemoteApp, SessionStatus,
-    owner,
+    CONNECT_DEADLINE, ConnectionId, LiveSession, PendingConfirmation, SessionStatus, Store, owner,
 };
 
-impl RemoteApp {
+impl Store {
     /// A connection attempt the machine has not answered within
     /// [`CONNECT_DEADLINE`] is given up: "Connecting to X" is a claim with a
     /// time on it, not a page you sit on.

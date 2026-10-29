@@ -11,7 +11,8 @@ use ui::tilo_resource::{Atom, Invoke};
 
 /// What `app` submitted, comparable: each invocation's action and arguments.
 fn sent(app: &RemoteApp) -> Vec<(&'static str, serde_json::Map<String, serde_json::Value>)> {
-    app.submitted
+    app.state()
+        .submitted
         .borrow()
         .iter()
         .map(|invoke| (invoke.id, invoke.arguments.clone()))
@@ -89,7 +90,8 @@ fn framed(app: RemoteApp, w: f64, h: f64) -> Framed<RemoteApp> {
 }
 
 fn pending_confirmation_is(app: &RemoteApp, id: ConnectionId) -> bool {
-    app.pending_confirmation
+    app.state()
+        .pending_confirmation
         .as_ref()
         .is_some_and(|pending| pending.id() == id)
 }
@@ -99,9 +101,12 @@ fn the_live_app_starts_empty_and_the_samples_are_complete() {
     eprintln!("phase live_new_starts_empty_and_writes_nothing");
     {
         let app = RemoteApp::new();
-        assert!(app.workspace.connections().is_empty());
-        assert!(app.tilo_devices.is_empty(), "no fabricated nearby devices");
-        assert_eq!(app.screen, Screen::List);
+        assert!(app.state().workspace.connections().is_empty());
+        assert!(
+            app.state().tilo_devices.is_empty(),
+            "no fabricated nearby devices"
+        );
+        assert_eq!(app.state().screen, Screen::List);
         assert!(
             hosted().state().connections.is_empty(),
             "an empty live app must not write machines into the document"
@@ -155,7 +160,7 @@ fn the_live_app_starts_empty_and_the_samples_are_complete() {
 #[test]
 fn rows_say_when_a_machine_was_used_or_why_it_cannot_open() {
     let app = demo();
-    let rows = app.rows();
+    let rows = app.state().rows();
     assert_eq!(rows.len(), 9);
     assert!(
         rows.iter().take_while(|row| row.favourite).count() == 2,
@@ -195,8 +200,8 @@ fn rows_say_when_a_machine_was_used_or_why_it_cannot_open() {
     eprintln!("phase pinned_destination_lists_only_pinned_connections");
     let mut app = demo();
     app.apply(Action::Show(Destination::Pinned));
-    assert!(app.rows().iter().all(|row| row.favourite));
-    assert_eq!(app.rows().len(), 2);
+    assert!(app.state().rows().iter().all(|row| row.favourite));
+    assert_eq!(app.state().rows().len(), 2);
 }
 
 #[test]
@@ -205,40 +210,47 @@ fn the_form_saves_through_the_resource_and_reports_problems_at_save() {
     {
         let mut app = demo();
         app.apply(Action::NewConnection);
-        assert_eq!(app.screen, Screen::Form { editing: None });
-        assert_eq!(app.problems, FormProblems::default(), "quiet until saved");
-        app.fields.port.set(String::new());
+        assert_eq!(app.state().screen, Screen::Form { editing: None });
+        assert_eq!(
+            app.state().problems,
+            FormProblems::default(),
+            "quiet until saved"
+        );
+        app.state().fields.port.set(String::new());
         app.apply(Action::SaveForm);
-        assert!(app.problems.name.is_some());
-        assert!(app.problems.host.is_some());
-        assert!(app.problems.port.is_some());
-        assert_eq!(app.screen, Screen::Form { editing: None }, "still editing");
-        assert!(app.submitted.borrow().is_empty(), "nothing written");
+        assert!(app.state().problems.name.is_some());
+        assert!(app.state().problems.host.is_some());
+        assert!(app.state().problems.port.is_some());
+        assert_eq!(
+            app.state().screen,
+            Screen::Form { editing: None },
+            "still editing"
+        );
+        assert!(app.state().submitted.borrow().is_empty(), "nothing written");
     }
 
     eprintln!("phase a_complete_draft_is_written_and_marked_in_the_list");
     {
         let mut app = demo();
         app.apply(Action::NewConnection);
-        app.fields.name.set("Media server".into());
-        app.fields.host.set("media.home.arpa".into());
-        app.fields.user.set("media".into());
+        app.state().fields.name.set("Media server".into());
+        app.state().fields.host.set("media.home.arpa".into());
+        app.state().fields.user.set("media".into());
         app.apply(Action::SetAuth(AuthMethod::PublicKey));
         app.apply(Action::SaveForm);
-        assert_eq!(app.screen, Screen::List);
-        let saved = app
-            .workspace
-            .connections()
-            .iter()
-            .find(|c| c.name == "Media server")
-            .expect("saved");
+        assert_eq!(app.state().screen, Screen::List);
+        let state = app.state();
+        let connections = state.workspace.connections();
+        let at = connections.len() - 1;
+        let saved = connections.iter().find(|c| c.name == "Media server");
+        let saved = saved.expect("saved").clone();
         assert_eq!(saved.port, 22);
         assert_eq!(saved.auth, AuthMethod::PublicKey);
-        assert_eq!(app.selected, Some(saved.id));
-        let at = app.workspace.connections().len() - 1;
+        assert_eq!(state.selected, Some(saved.id));
+        drop(state);
         assert_eq!(
             sent(&app),
-            [as_sent(&insertion(saved, at))],
+            [as_sent(&insertion(&saved, at))],
             "the new connection went through the resource's door"
         );
     }
@@ -247,40 +259,50 @@ fn the_form_saves_through_the_resource_and_reports_problems_at_save() {
     {
         let mut app = demo();
         app.apply(Action::NewConnection);
-        app.fields.name.set("Lab box".into());
+        app.state().fields.name.set("Lab box".into());
         app.apply(Action::SetKind(ConnectionKind::Vnc));
-        assert_eq!(app.fields.name.with(Clone::clone), "Lab box");
+        assert_eq!(app.state().fields.name.with(Clone::clone), "Lab box");
         assert_eq!(
-            app.fields.port.with(Clone::clone),
+            app.state().fields.port.with(Clone::clone),
             "22",
             "a typed port is kept"
         );
-        app.fields.port.set(String::new());
+        app.state().fields.port.set(String::new());
         app.apply(Action::SetKind(ConnectionKind::Vnc));
-        assert_eq!(app.fields.port.with(Clone::clone), "5900");
+        assert_eq!(app.state().fields.port.with(Clone::clone), "5900");
         app.apply(Action::SetKind(ConnectionKind::Tilo));
-        assert_eq!(app.draft.auth, AuthMethod::DeviceIdentity);
+        assert_eq!(app.state().draft.auth, AuthMethod::DeviceIdentity);
         app.apply(Action::PickTiloDevice(1));
-        assert_eq!(app.fields.name.with(Clone::clone), "Workshop laptop");
-        assert!(app.form_model(None).devices[1].picked);
+        assert_eq!(
+            app.state().fields.name.with(Clone::clone),
+            "Workshop laptop"
+        );
+        assert!(app.state().form_model(None).devices[1].picked);
     }
 
     eprintln!("phase after_a_failed_save_problems_follow_each_edit");
     {
         let mut app = demo();
         app.apply(Action::NewConnection);
-        app.revalidate();
-        assert_eq!(app.problems, FormProblems::default(), "quiet while typing");
-        app.apply(Action::SaveForm);
-        assert!(app.problems.name.is_some());
-        app.fields.name.set("Lab box".into());
-        app.revalidate();
-        assert!(app.problems.name.is_none(), "a fixed field loses its error");
-        assert!(app.problems.host.is_some(), "the rest stay");
-        app.apply(Action::NewConnection);
-        app.revalidate();
+        app.state().revalidate();
         assert_eq!(
-            app.problems,
+            app.state().problems,
+            FormProblems::default(),
+            "quiet while typing"
+        );
+        app.apply(Action::SaveForm);
+        assert!(app.state().problems.name.is_some());
+        app.state().fields.name.set("Lab box".into());
+        app.state().revalidate();
+        assert!(
+            app.state().problems.name.is_none(),
+            "a fixed field loses its error"
+        );
+        assert!(app.state().problems.host.is_some(), "the rest stay");
+        app.apply(Action::NewConnection);
+        app.state().revalidate();
+        assert_eq!(
+            app.state().problems,
             FormProblems::default(),
             "a new draft starts quiet"
         );
@@ -292,18 +314,18 @@ fn the_form_saves_through_the_resource_and_reports_problems_at_save() {
 #[test]
 fn editing_preserves_favourite_and_history() {
     let mut app = demo();
-    let id = app.first_of_kind(ConnectionKind::Ssh).unwrap();
-    let before = app.workspace.get(id).unwrap().clone();
-    app.fields.secret.set("typed before".into());
+    let id = app.state().first_of_kind(ConnectionKind::Ssh).unwrap();
+    let before = app.state().workspace.get(id).unwrap().clone();
+    app.state().fields.secret.set("typed before".into());
     app.apply(Action::EditConnection(id));
-    assert_eq!(app.fields.host.with(Clone::clone), before.host.0);
+    assert_eq!(app.state().fields.host.with(Clone::clone), before.host.0);
     assert!(
-        app.fields.secret.with(String::is_empty),
+        app.state().fields.secret.with(String::is_empty),
         "a saved credential is never read back into the form"
     );
-    app.fields.name.set("Build server (rack 2)".into());
+    app.state().fields.name.set("Build server (rack 2)".into());
     app.apply(Action::SaveForm);
-    let after = app.workspace.get(id).unwrap();
+    let after = app.state().workspace.get(id).unwrap().clone();
     assert_eq!(after.name, "Build server (rack 2)");
     assert_eq!(after.favorite, before.favorite);
     assert_eq!(after.last_used_ms, before.last_used_ms);
@@ -322,26 +344,26 @@ fn editing_preserves_favourite_and_history() {
 #[test]
 fn favourites_and_deletion_go_through_the_document_actions() {
     let mut app = demo();
-    let id = app.first_of_kind(ConnectionKind::Vnc).unwrap();
-    assert!(!app.workspace.get(id).unwrap().favorite);
+    let id = app.state().first_of_kind(ConnectionKind::Vnc).unwrap();
+    assert!(!app.state().workspace.get(id).unwrap().favorite);
     app.apply(Action::ToggleFavorite(id));
-    assert!(app.workspace.get(id).unwrap().favorite);
+    assert!(app.state().workspace.get(id).unwrap().favorite);
     assert_eq!(sent(&app).last(), Some(&as_sent(&pin(id, true))));
 
     app.apply(Action::RequestDelete(id));
     assert!(pending_confirmation_is(&app, id));
     assert!(app.dialog.as_ref().is_some_and(ModalDialog::is_open));
     assert!(
-        app.workspace.get(id).is_some(),
+        app.state().workspace.get(id).is_some(),
         "nothing removed before confirming"
     );
     app.apply(Action::CancelPending);
     assert!(app.dialog.is_none());
-    assert!(app.workspace.get(id).is_some());
+    assert!(app.state().workspace.get(id).is_some());
 
     app.apply(Action::RequestDelete(id));
     app.apply(Action::ConfirmPending);
-    assert!(app.workspace.get(id).is_none());
+    assert!(app.state().workspace.get(id).is_none());
     assert_eq!(sent(&app).last(), Some(&as_sent(&removal(id))));
 }
 
@@ -403,13 +425,14 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
     eprintln!("phase save_writes_the_profile_and_keeps_the_password_on_this_device");
     {
         let mut app = demo();
-        app.secrets = Some(ui::storage::secrets(RemoteShell::ID));
+        app.state().secrets = Some(ui::storage::secrets(RemoteShell::ID));
         app.apply(Action::NewConnection);
-        app.fields.name.set("Test".into());
-        app.fields.host.set("1.2.3.4".into());
-        app.fields.secret.set("hunter2".into());
+        app.state().fields.name.set("Test".into());
+        app.state().fields.host.set("1.2.3.4".into());
+        app.state().fields.secret.set("hunter2".into());
         app.apply(Action::SaveForm);
         let saved = app
+            .state()
             .workspace
             .connections()
             .iter()
@@ -417,7 +440,7 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
             .expect("saved")
             .clone();
         assert_eq!(saved.port, 22);
-        let at = app.workspace.connections().len() - 1;
+        let at = app.state().workspace.connections().len() - 1;
         assert_eq!(
             sent(&app),
             [as_sent(&insertion(&saved, at))],
@@ -428,7 +451,7 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
             "the password never enters the document"
         );
         assert!(
-            app.fields.secret.with(String::is_empty),
+            app.state().fields.secret.with(String::is_empty),
             "the form lets go of it"
         );
         let secret = ui::storage::secrets(RemoteShell::ID)
@@ -456,7 +479,7 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
     eprintln!("phase connect_requires_confirmation_before_opening_a_broker_route");
     {
         let mut app = demo();
-        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
+        let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
         app.apply(Action::RequestConnect(id));
         assert!(pending_confirmation_is(&app, id));
         assert!(app.session.borrow().live.is_none());
@@ -466,9 +489,10 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
     eprintln!("phase confirmation_revalidates_a_collaboratively_changed_target");
     {
         let mut app = demo();
-        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
+        let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
         app.apply(Action::RequestConnect(id));
-        app.workspace.get_mut(id).unwrap().host = Atom(SecretKey::generate().public().to_string());
+        app.state().workspace.get_mut(id).unwrap().host =
+            Atom(SecretKey::generate().public().to_string());
         app.apply(Action::ConfirmPending);
         assert!(app.session.borrow().live.is_none());
         assert!(
@@ -481,11 +505,14 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
     eprintln!("phase unavailable_transports_open_a_recovery_state_without_a_socket");
     {
         let mut app = demo();
-        let ssh = app.first_of_kind(ConnectionKind::Ssh).unwrap();
+        let ssh = app.state().first_of_kind(ConnectionKind::Ssh).unwrap();
         if !crate::session::live_sessions_enabled() {
             app.apply(Action::RequestConnect(ssh));
-            assert!(app.pending_confirmation.is_none(), "nothing to confirm");
-            assert_eq!(app.screen, Screen::Session { id: ssh });
+            assert!(
+                app.state().pending_confirmation.is_none(),
+                "nothing to confirm"
+            );
+            assert_eq!(app.state().screen, Screen::Session { id: ssh });
             assert!(matches!(
                 app.session.borrow().live,
                 Some(LiveSession::Unavailable {
@@ -494,36 +521,36 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
                 })
             ));
             assert!(
-                app.status_model(ssh).action.is_none(),
+                app.state().status_model(ssh).action.is_none(),
                 "editing cannot grant access"
             );
             assert!(
-                app.submitted.borrow().is_empty(),
+                app.state().submitted.borrow().is_empty(),
                 "a session that never started marks nothing used"
             );
         }
-        let rdp = app.first_of_kind(ConnectionKind::Rdp).unwrap();
+        let rdp = app.state().first_of_kind(ConnectionKind::Rdp).unwrap();
         app.apply(Action::RequestConnect(rdp));
-        assert_eq!(app.screen, Screen::Session { id: rdp });
+        assert_eq!(app.state().screen, Screen::Session { id: rdp });
         assert_eq!(
-            app.status_model(rdp).action,
+            app.state().status_model(rdp).action,
             Some(("Edit connection", Action::EditConnection(rdp)))
         );
         // Ending a live session asks first: its scrollback goes with it.
         app.apply(Action::Disconnect);
         assert!(app.dialog.is_some(), "closing a session asks first");
         app.apply(Action::ConfirmPending);
-        assert_eq!(app.screen, Screen::List);
-        assert!(app.session_for.is_none());
+        assert_eq!(app.state().screen, Screen::List);
+        assert!(app.state().session_for.is_none());
     }
 
     eprintln!("phase exhausted_session_generation_fails_closed_without_reuse");
     {
-        let mut app = demo();
-        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-        app.session_generation = u64::MAX;
-        app.open_session(id);
-        assert_eq!(app.session_generation, u64::MAX);
+        let app = demo();
+        let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
+        app.state().session_generation = u64::MAX;
+        app.state().open_session(id);
+        assert_eq!(app.state().session_generation, u64::MAX);
         assert!(matches!(
             app.session.borrow().live,
             Some(LiveSession::Error(_))
@@ -535,17 +562,23 @@ fn connecting_asks_first_revalidates_and_explains_unavailable_transports() {
 fn leaving_a_session_that_is_not_live_closes_it() {
     let mut app = demo();
     app.stage(Some("session-closed"));
-    assert!(app.session_for.is_some());
+    assert!(app.state().session_for.is_some());
     app.apply(Action::Show(Destination::Connections));
-    assert!(app.session_for.is_none(), "the rail no longer offers it");
-    assert_eq!(app.screen, Screen::List);
-    assert_eq!(app.destination, Destination::Connections);
+    assert!(
+        app.state().session_for.is_none(),
+        "the rail no longer offers it"
+    );
+    assert_eq!(app.state().screen, Screen::List);
+    assert_eq!(app.state().destination, Destination::Connections);
 
     let mut app = demo();
     app.stage(Some("session-ssh"));
     app.apply(Action::Show(Destination::Pinned));
-    assert!(app.session_for.is_some(), "a connected session stays open");
-    assert_eq!(app.destination, Destination::Pinned);
+    assert!(
+        app.state().session_for.is_some(),
+        "a connected session stays open"
+    );
+    assert_eq!(app.state().destination, Destination::Pinned);
 }
 
 #[test]
@@ -556,16 +589,16 @@ fn staged_sessions_show_a_connected_surface_and_record_nothing() {
     ] {
         let mut app = demo();
         app.stage(Some(scenario));
-        let id = app.first_of_kind(kind).unwrap();
-        let before = app.workspace.presence_of(id);
-        assert!(matches!(app.content(), Content::Surface(shown) if shown == id));
-        app.pump_session();
+        let id = app.state().first_of_kind(kind).unwrap();
+        let before = app.state().workspace.presence_of(id);
+        assert!(matches!(app.state().content(), Content::Surface(shown) if shown == id));
+        app.state().pump_session();
         assert!(
-            app.submitted.borrow().is_empty(),
+            app.state().submitted.borrow().is_empty(),
             "{scenario} wrote nothing"
         );
         assert_eq!(
-            app.workspace.presence_of(id),
+            app.state().workspace.presence_of(id),
             before,
             "{scenario} observed no machine"
         );
@@ -582,11 +615,14 @@ fn staged_sessions_show_a_connected_surface_and_record_nothing() {
 fn opening_a_session_marks_the_machine_used_and_this_device_observes_it() {
     eprintln!("phase opening_marks_last_used_for_every_device");
     {
-        let mut app = demo();
-        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-        app.open_session(id);
-        let now = app.now_ms();
-        assert_eq!(app.workspace.get(id).unwrap().last_used_ms, Some(now));
+        let app = demo();
+        let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
+        app.state().open_session(id);
+        let now = app.state().now_ms();
+        assert_eq!(
+            app.state().workspace.get(id).unwrap().last_used_ms,
+            Some(now)
+        );
         assert_eq!(
             sent(&app),
             [as_sent(&Remote::MARK_USED.with(
@@ -601,42 +637,43 @@ fn opening_a_session_marks_the_machine_used_and_this_device_observes_it() {
 
     eprintln!("phase the_outcome_is_observed_on_this_device_only");
     {
-        let mut app = demo();
-        let id = app.first_of_kind(ConnectionKind::Ssh).unwrap();
-        assert_eq!(app.workspace.presence_of(id), Presence::Online);
-        app.session_for = Some(id);
+        let app = demo();
+        let id = app.state().first_of_kind(ConnectionKind::Ssh).unwrap();
+        assert_eq!(app.state().workspace.presence_of(id), Presence::Online);
+        app.state().session_for = Some(id);
         app.session.borrow_mut().live = Some(LiveSession::Error("Connection refused".into()));
-        app.pump_session();
-        app.pump_session();
-        assert_eq!(app.workspace.presence_of(id), Presence::Offline);
+        app.state().pump_session();
+        app.state().pump_session();
+        assert_eq!(app.state().workspace.presence_of(id), Presence::Offline);
         assert!(
-            app.submitted.borrow().is_empty(),
+            app.state().submitted.borrow().is_empty(),
             "whether a machine answered is never written to the document"
         );
     }
 
     eprintln!("phase a_capture_reaches_nothing");
     {
-        let mut app = demo();
-        app.capture = true;
-        let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-        app.open_session(id);
+        let app = demo();
+        app.state().capture = true;
+        let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
+        app.state().open_session(id);
         assert!(matches!(
             app.session.borrow().live,
             Some(LiveSession::Preview(SessionStatus::Connecting))
         ));
         assert!(app.session.borrow().collab_outbox.is_empty());
-        assert!(app.submitted.borrow().is_empty());
+        assert!(app.state().submitted.borrow().is_empty());
     }
 
     eprintln!("phase a_preview_observes_nothing");
     {
-        let mut app = demo();
-        app.preview_session(ConnectionKind::Vnc, SessionStatus::Failed("refused".into()));
-        let id = app.session_for.unwrap();
-        let before = app.workspace.presence_of(id);
-        app.pump_session();
-        assert_eq!(app.workspace.presence_of(id), before);
+        let app = demo();
+        app.state()
+            .preview_session(ConnectionKind::Vnc, SessionStatus::Failed("refused".into()));
+        let id = app.state().session_for.unwrap();
+        let before = app.state().workspace.presence_of(id);
+        app.state().pump_session();
+        assert_eq!(app.state().workspace.presence_of(id), before);
     }
 }
 
@@ -660,9 +697,9 @@ fn credentials_are_filed_by_what_the_connection_signs_in_with() {
 fn tilo_sessions_use_the_authenticated_broker_and_consent() {
     let mut app = demo();
     let target = SecretKey::generate().public();
-    let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-    app.workspace.get_mut(id).unwrap().host = Atom(target.to_string());
-    app.open_session(id);
+    let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
+    app.state().workspace.get_mut(id).unwrap().host = Atom(target.to_string());
+    app.state().open_session(id);
     let session_id = match app.session.borrow().live.as_ref() {
         Some(LiveSession::Tilo(session)) => session.id,
         _ => panic!("Tilo session"),
@@ -711,9 +748,9 @@ fn a_tilo_stream_gap_asks_the_target_for_a_keyframe() {
     const DELTA: [u8; 6] = [0, 0, 0, 1, 0x41, 0x9a];
     let mut app = demo();
     let target = SecretKey::generate().public();
-    let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-    app.workspace.get_mut(id).unwrap().host = Atom(target.to_string());
-    app.open_session(id);
+    let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
+    app.state().workspace.get_mut(id).unwrap().host = Atom(target.to_string());
+    app.state().open_session(id);
     let session_id = match app.session.borrow().live.as_ref() {
         Some(LiveSession::Tilo(session)) => session.id,
         _ => panic!("Tilo session"),
@@ -772,9 +809,9 @@ fn a_tilo_stream_gap_asks_the_target_for_a_keyframe() {
 fn connected_tilo_session() -> RemoteApp {
     let mut app = demo();
     let target = SecretKey::generate().public();
-    let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-    app.workspace.get_mut(id).unwrap().host = Atom(target.to_string());
-    app.open_session(id);
+    let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
+    app.state().workspace.get_mut(id).unwrap().host = Atom(target.to_string());
+    app.state().open_session(id);
     let session_id = match app.session.borrow().live.as_ref() {
         Some(LiveSession::Tilo(session)) => session.id,
         _ => panic!("Tilo session"),
@@ -906,32 +943,32 @@ fn a_key_whose_release_the_window_takes_is_still_released_on_the_remote_machine(
 
 #[test]
 fn resource_operations_settle_only_their_own_session() {
-    let mut app = demo();
-    let id = app.first_of_kind(ConnectionKind::Tilo).unwrap();
-    app.session_for = Some(id);
-    app.session_generation = 42;
+    let app = demo();
+    let id = app.state().first_of_kind(ConnectionKind::Tilo).unwrap();
+    app.state().session_for = Some(id);
+    app.state().session_generation = 42;
     app.session.borrow_mut().live = Some(LiveSession::Preview(SessionStatus::Connecting));
-    app.pending_resource_operation = Some(PendingResourceOperation::Connect {
+    app.state().pending_resource_operation = Some(PendingResourceOperation::Connect {
         reply: None,
         connection_id: id,
         session_generation: 42,
     });
     assert!(matches!(
-        app.pending_outcome(true),
+        app.state().pending_outcome(true),
         Some(Err(ref message)) if message.contains("cancelled")
     ));
     assert!(app.session.borrow().live.is_none());
 
-    app.session_for = Some(id);
-    app.session_generation = 99;
+    app.state().session_for = Some(id);
+    app.state().session_generation = 99;
     app.session.borrow_mut().live = Some(LiveSession::Preview(SessionStatus::Connecting));
-    app.pending_resource_operation = Some(PendingResourceOperation::Connect {
+    app.state().pending_resource_operation = Some(PendingResourceOperation::Connect {
         reply: None,
         connection_id: id,
         session_generation: 98,
     });
     assert!(matches!(
-        app.pending_outcome(true),
+        app.state().pending_outcome(true),
         Some(Err(ref message)) if message.contains("cancelled")
     ));
     assert!(
@@ -943,15 +980,21 @@ fn resource_operations_settle_only_their_own_session() {
 #[test]
 fn a_picked_search_hit_shows_its_connection() {
     let mut app = demo();
-    let id = app.first_of_kind(ConnectionKind::Vnc).unwrap();
+    let id = app.state().first_of_kind(ConnectionKind::Vnc).unwrap();
     app.apply(Action::NewConnection);
-    app.open_requests()
+    app.state()
+        .open_requests()
         .borrow_mut()
         .push(crate::resource::connection_resource_id(id));
-    app.open_found();
-    assert_eq!(app.screen, Screen::List);
-    assert_eq!(app.selected, Some(id));
-    assert!(app.rows().iter().any(|row| row.id == id && row.selected));
+    app.state().open_found();
+    assert_eq!(app.state().screen, Screen::List);
+    assert_eq!(app.state().selected, Some(id));
+    assert!(
+        app.state()
+            .rows()
+            .iter()
+            .any(|row| row.id == id && row.selected)
+    );
 }
 
 #[test]
@@ -1083,24 +1126,24 @@ fn the_window_bar_names_the_screen_and_holds_its_actions() {
     assert_eq!(names(&bar), ["New connection"]);
 
     press(&mut app, "New connection");
-    assert_eq!(app.screen, Screen::Form { editing: None });
+    assert_eq!(app.state().screen, Screen::Form { editing: None });
     let bar = app.window_toolbar();
     assert_eq!(label(&bar).as_deref(), Some("New connection"));
     assert_eq!(names(&bar), ["Save"]);
 
     press(&mut app, "Save");
     assert!(
-        app.problems.name.is_some(),
+        app.state().problems.name.is_some(),
         "Save in the bar saves the form"
     );
     press(
         &mut app,
         &ui::i18n::I18nManager::lookup_plain("window-toolbar-back"),
     );
-    assert_eq!(app.screen, Screen::List);
+    assert_eq!(app.state().screen, Screen::List);
 
-    let rdp = app.first_of_kind(ConnectionKind::Rdp).unwrap();
-    let name = app.workspace.get(rdp).unwrap().name.clone();
+    let rdp = app.state().first_of_kind(ConnectionKind::Rdp).unwrap();
+    let name = app.state().workspace.get(rdp).unwrap().name.clone();
     app.apply(Action::RequestConnect(rdp));
     assert_eq!(label(&app.window_toolbar()), Some(name));
 }
