@@ -207,6 +207,12 @@ cmd_layer() {
     case $entry in
       compiled)
         export TILO_COMPILED=$os/compiled
+        # A release's tree holds the apps stable published (tools/ci/publish/os-compile.sh), which
+        # the app store installs as they are instead of packing thin apps.
+        [[ -f $os/compiled/prebuilt.env ]] || die "$os/compiled is not a compiled tree: no prebuilt.env"
+        if grep -qx 'TILO_PREBUILT_APPS=1' "$os/compiled/prebuilt.env"; then
+          layer_args+=(--build-arg TILO_PREBUILT_APPS=1)
+        fi
         continue ;;
       *:*) what=${entry%%:*} stage=${entry#*:} ;;
     esac

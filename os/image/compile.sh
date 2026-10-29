@@ -130,6 +130,11 @@ export LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
 : "${TILO_WITH_BROWSER:=}"
 : "${TILO_PREBUILT_APPS:=0}"
 : "${TILO_PREBUILT_DESKTOP:=0}"
+# Where prebuilt apps and the desktop come from: a release's, as tools/ci/publish/os-compile.sh
+# staged them from the published collection and payload, else what a build put in os/.
+: "${TILO_APP_ARTIFACTS:=os/app-artifacts}"
+: "${TILO_APP_RUNTIME:=os/app-runtime}"
+: "${TILO_DESKTOP_ARTIFACTS:=os/desktop-artifacts}"
 # Parallel jobs, when the caller sets them (os/dev/build-image.sh, by the memory a
 # link takes); else cargo's own count, within the jobserver t gives every build.
 : "${TILO_CARGO_BUILD_JOBS:=}"
@@ -242,10 +247,10 @@ case "$TILO_RUST_LTO" in \
     && build_phase rust-stage-outputs \
     && mkdir -p "$out" "$out"/thin-apps \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
-         cp os/desktop-artifacts/shell \
-            os/desktop-artifacts/tilo-runtime-mcp \
-            os/desktop-artifacts/tilo-launcher \
-            os/desktop-artifacts/tilo-unlock-helper \
+         cp "$TILO_DESKTOP_ARTIFACTS"/shell \
+            "$TILO_DESKTOP_ARTIFACTS"/tilo-runtime-mcp \
+            "$TILO_DESKTOP_ARTIFACTS"/tilo-launcher \
+            "$TILO_DESKTOP_ARTIFACTS"/tilo-unlock-helper \
             "$out"/; \
        else \
          cp $target/release/shell \
@@ -323,10 +328,11 @@ case "$TILO_RUST_LTO" in \
     && $target/release/app completions zsh > "$out"/completions/zsh/_app \
     && build_phase rust-thin-apps \
     && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
-         mkdir -p "$out"/prebuilt-apps \
-         && cp os/app-artifacts/*.tapp "$out"/prebuilt-apps/ \
-         && mkdir -p "$out/prebuilt-runtime" && cp -a os/app-runtime/tilo-runtime "$out/prebuilt-runtime/" \
-         && cp os/app-runtime/runtime-bundle-publisher.hex "$out"/ \
+         rm -rf "$out"/prebuilt-apps "$out"/prebuilt-runtime \
+         && mkdir -p "$out"/prebuilt-apps \
+         && cp "$TILO_APP_ARTIFACTS"/*.tapp "$out"/prebuilt-apps/ \
+         && mkdir -p "$out/prebuilt-runtime" && cp -a "$TILO_APP_RUNTIME"/tilo-runtime "$out/prebuilt-runtime/" \
+         && cp "$TILO_APP_RUNTIME"/runtime-bundle-publisher.hex "$out"/ \
          && RUNTIME_DYLIB="$(find "$out/prebuilt-runtime/tilo-runtime" -name libruntime_dylib.so -print -quit)" \
          && [ -n "$RUNTIME_DYLIB" ] \
          && cp "$RUNTIME_DYLIB" "$out"/libruntime_dylib.so \
@@ -384,3 +390,9 @@ os/scripts/verify-elf-hardening.sh "$out" \
          || os/scripts/verify-elf-hardening.sh "$out"/thin-apps; } \
     && os/scripts/verify-elf-hardening.sh "$out"/libruntime_dylib.so "$out"/tilo-runtime-account-capability \
          $(sed "s|^|$out/|" "$out/runtime-engines")
+
+# Which apps and desktop the tree holds, for the image build that packs it (os/image/build-layer.sh
+# passes TILO_PREBUILT_APPS to the app store's stage): written by every compile, so a tree never
+# says what an earlier one in the same directory held.
+printf 'TILO_PREBUILT_APPS=%s\nTILO_PREBUILT_DESKTOP=%s\n' "$TILO_PREBUILT_APPS" "$TILO_PREBUILT_DESKTOP" \
+    > "$out/prebuilt.env"

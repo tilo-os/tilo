@@ -56,6 +56,14 @@ def scripts_of(paths, depth=3):
     return sorted(found)
 
 
+# The release checks whose pointers a stable OS image embeds what they name from: the app
+# collection and the desktop payload (docs/publishing-on-t.md, "The OS"), and what stages them.
+RELEASE_INPUTS = ["publish-apps", "publish-desktop-payload"]
+RELEASE_INPUT_TOOLS = ["tools/ci/publish/os-compile.sh", "tools/ci/publish/os_inputs.py",
+                       "tools/ci/publish/pointers.py", "tools/ci/publish/lib.sh",
+                       "tools/apps/check-collection-members.sh"]
+
+
 # The verified, read-only fixture cache every build that ships takes (TILO_TEST_ASSET_SEED):
 # filled once by the `test-assets` check, keyed by the manifests, so a trusted build, which
 # reruns every build script, never reaches the forge for a fixture.
@@ -139,7 +147,10 @@ def block():
 # reruns the compile, the binaries' layers and the derived and boot layers above them, never the
 # packages, kernel or system layers. `t test os-image-x86_64` builds what a development VM runs
 # from your tree (no LTO, the apps and desktop of the commit, its UKI sealing a placeholder
-# composefs digest) and leaves it as an OCI layout (`t outputs`).
+# composefs digest) and leaves it as an OCI layout (`t outputs`). On stable the compile takes
+# the app collection and desktop payload stable published instead (publish-apps and
+# publish-desktop-payload, as optional needs), so the image stable tests carries the apps a
+# device installs.
 """,
            check([("name", '"os-assets"'),
                   ("run", '"bash os/image/build-layer.sh assets"'),
@@ -186,9 +197,12 @@ def block():
         out.append(check([
             ("name", f'"os-compile-{arch}"'),
             ("image", BUILDER_IMAGE.format(arch=arch)),
-            ("run", f'"bash os/image/compile.sh /target/os/{arch}/compiled"'),
-            ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh"])))),
+            ("run", f'"bash tools/ci/publish/os-compile.sh {arch} /target/os/{arch}/compiled"'),
+            ("inputs", arr(sorted(set(builder_sources + ["os/image/compile.sh"] + RELEASE_INPUT_TOOLS)))),
             ("needs", arr(["os-assets", "test-assets"])),
+            # On stable the tree takes the apps and desktop stable published, through the pointer
+            # files these leave (tools/ci/publish/os-compile.sh); they run nowhere else.
+            ("optional_needs", arr(RELEASE_INPUTS)),
             # The development image's compile: no LTO and no line tables, as Build / OS dev did.
             # A build to ship, not a lint gate: warnings stay warnings, as in every image build.
             ("env", '{ TILO_RUST_LTO = "off", TILO_RUST_DEBUGINFO = "0", TILO_WITH_BROWSER = "1", '
