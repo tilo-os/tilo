@@ -15695,6 +15695,7 @@ dependencies = [
  "tilo-app",
  "tilo-app-package",
  "tilo-app-state",
+ "tilo-audio-service",
  "tilo-auth",
  "tilo-automation",
  "tilo-automerge",
@@ -17781,6 +17782,21 @@ dependencies = [
  "tempfile",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-audio-service"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "settings-store",
+ "tilo-media",
+ "tilo-test-env",
+ "tracing",
+ "tracing-subscriber",
+ "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
@@ -27375,6 +27391,7 @@ dependencies = [
  "tilo-appearance",
  "tilo-archive",
  "tilo-ask-password",
+ "tilo-audio-service",
  "tilo-auth",
  "tilo-automation",
  "tilo-automerge",

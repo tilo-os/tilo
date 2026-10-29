@@ -1113,6 +1113,7 @@ doc = false
 "tilo-appearance" = { path = "../../../crates/platform/tilo-appearance", default-features = false, features = [] }
 "tilo-archive" = { path = "../../../crates/platform/tilo-archive", default-features = false, features = [] }
 "tilo-ask-password" = { path = "../../../crates/system/ask-password", default-features = false, features = [] }
+"tilo-audio-service" = { path = "../../../crates/session/audio-service", default-features = false, features = ["default", "service"] }
 "tilo-auth" = { path = "../../../crates/system/tilo-auth", default-features = false, features = ["default", "service"] }
 "tilo-automation" = { path = "../../../crates/collab/automation", default-features = false, features = ["model"] }
 "tilo-automerge" = { path = "../../../crates/doc/tilo-automerge", default-features = false, features = ["heap-probe"] }
@@ -3513,6 +3514,7 @@ doc = false
 "tilo-appearance" = { path = "../../../crates/platform/tilo-appearance", default-features = false, features = [] }
 "tilo-archive" = { path = "../../../crates/platform/tilo-archive", default-features = false, features = [] }
 "tilo-ask-password" = { path = "../../../crates/system/ask-password", default-features = false, features = [] }
+"tilo-audio-service" = { path = "../../../crates/session/audio-service", default-features = false, features = ["default", "service"] }
 "tilo-auth" = { path = "../../../crates/system/tilo-auth", default-features = false, features = ["default", "service"] }
 "tilo-automation" = { path = "../../../crates/collab/automation", default-features = false, features = ["model"] }
 "tilo-automerge" = { path = "../../../crates/doc/tilo-automerge", default-features = false, features = ["heap-probe"] }
