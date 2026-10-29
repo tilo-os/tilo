@@ -109,8 +109,6 @@ mod focused_group_marking;
 mod foreign_surface_compositing;
 #[path = "fractional_scale_protocol.rs"]
 mod fractional_scale_protocol;
-#[path = "freeze_bench.rs"]
-mod freeze_bench;
 #[path = "gpu_loss.rs"]
 mod gpu_loss;
 #[path = "hardware_encode.rs"]

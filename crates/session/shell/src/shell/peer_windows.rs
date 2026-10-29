@@ -1406,12 +1406,10 @@ mod tests {
         set_note(&mut tree, tab, "A launch failed".into());
         tree.remember_local_app_record(tab, 8181);
         let records = tree.local_app_records.clone();
-        let inputs = crate::shell::hosted_inputs::HostedTileInputs::fixture().unwrap();
         let tile = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0]
             .tile
             .clone();
-        let ui::widget::TileContent::App(card) =
-            crate::shell::to_ui_tile_for_tab_with_inputs(&tile, tab, &inputs)
+        let ui::widget::TileContent::App(card) = crate::shell::to_ui_tile_for_tab(&tile, tab)
         else {
             panic!("the saved failure card must offer recovery, not only static text");
         };

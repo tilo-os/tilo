@@ -137,22 +137,6 @@ fn harness(tabs: usize) -> Harness {
     harness_built_with(tabs, build_tilo_overlay_host_with_chrome)
 }
 
-/// [`harness`] over explicit hosted inputs, for tests that need the
-/// production Files services (document-open capability) wired in.
-fn harness_with_inputs(
-    tabs: usize,
-    inputs: crate::shell::hosted_inputs::HostedTileInputs,
-) -> Harness {
-    harness_built_with(tabs, |tree| {
-        crate::shell::build_tilo_overlay_host_with_inputs(
-            tree.clone().shared(),
-            false,
-            ui::record::RecordStore::in_memory(),
-            inputs,
-        )
-    })
-}
-
 fn harness_built_with(
     tabs: usize,
     build: impl FnOnce(&WorkspaceTree) -> (ShellOverlayHost, Chrome),

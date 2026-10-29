@@ -305,7 +305,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
         Some(_) => return "Notice",
         None => {}
     }
-    match to_ui_tile_with_inputs(t, &inputs) {
+    match to_ui_tile(t) {
         UiTile::App(_) => "App",
         UiTile::Stub { .. } => "Stub",
         UiTile::Notice { .. } => "Notice",
@@ -330,14 +330,7 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
 }
 
 pub fn to_ui_tile(t: &ShellTile) -> UiTile {
-    to_ui_tile_with_inputs(t, &hosted_inputs::HostedTileInputs::default())
-}
-
-pub(crate) fn to_ui_tile_with_inputs(
-    t: &ShellTile,
-    inputs: &hosted_inputs::HostedTileInputs,
-) -> UiTile {
-    match try_to_ui_tile(t, inputs) {
+    match try_to_ui_tile(t) {
         Ok(tile) => tile,
         Err(error) => UiTile::Notice {
             title: crate::shell::i18n::t("shell-app-unavailable"),
@@ -346,12 +339,8 @@ pub(crate) fn to_ui_tile_with_inputs(
     }
 }
 
-pub(crate) fn to_ui_tile_for_tab_with_inputs(
-    t: &ShellTile,
-    tab: state::TabId,
-    inputs: &hosted_inputs::HostedTileInputs,
-) -> UiTile {
-    try_to_ui_tile_for_tab(t, inputs, Some(tab)).unwrap_or_else(|error| UiTile::Notice {
+pub(crate) fn to_ui_tile_for_tab(t: &ShellTile, tab: state::TabId) -> UiTile {
+    try_to_ui_tile_for_tab(t, Some(tab)).unwrap_or_else(|error| UiTile::Notice {
         title: crate::shell::i18n::t("shell-app-unavailable"),
         detail: error.to_string(),
     })
@@ -361,11 +350,8 @@ pub(crate) fn to_ui_tile_for_tab_with_inputs(
 /// app's component for it ([`mount_in_process`]).
 /// # Errors
 /// A required service must exist before the content is constructed.
-pub fn try_to_ui_tile(
-    t: &ShellTile,
-    inputs: &hosted_inputs::HostedTileInputs,
-) -> Result<UiTile, hosted_inputs::HostedTileError> {
-    try_to_ui_tile_for_tab(t, inputs, None)
+pub fn try_to_ui_tile(t: &ShellTile) -> Result<UiTile, hosted_inputs::HostedTileError> {
+    try_to_ui_tile_for_tab(t, None)
 }
 
 #[expect(
@@ -374,7 +360,6 @@ pub fn try_to_ui_tile(
 )]
 fn try_to_ui_tile_for_tab(
     t: &ShellTile,
-    inputs: &hosted_inputs::HostedTileInputs,
     tab: Option<state::TabId>,
 ) -> Result<UiTile, hosted_inputs::HostedTileError> {
     Ok(match t {
@@ -556,13 +541,6 @@ pub fn build_tilo_overlay_host_with_options(
 /// the same conversion when splicing freshly-added groups into a live
 /// [`GroupRow`].
 pub fn to_ui_window_group(g: &state::WindowGroup) -> UiGroup {
-    to_ui_window_group_with_inputs(g, &hosted_inputs::HostedTileInputs::default())
-}
-
-pub fn to_ui_window_group_with_inputs(
-    g: &state::WindowGroup,
-    inputs: &hosted_inputs::HostedTileInputs,
-) -> UiGroup {
     let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
         .tabs
         .iter()
@@ -582,7 +560,7 @@ pub fn to_ui_window_group_with_inputs(
                         },
                     ),
                 },
-                to_ui_tile_for_tab_with_inputs(&t.tile, t.id, inputs),
+                to_ui_tile_for_tab(&t.tile, t.id),
             )
         })
         .collect();
@@ -639,10 +617,9 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
         if let Some(mounted) = mount_in_process(&request, self.inputs) {
             return mounted;
         }
-        tilo_desktop::resolver::TileResolution::Content(to_ui_tile_for_tab_with_inputs(
+        tilo_desktop::resolver::TileResolution::Content(to_ui_tile_for_tab(
             &request.tab.tile,
             request.tab.id,
-            self.inputs,
         ))
     }
     fn tab_icon(&self, tab: &state::Tab) -> Option<ui::icons::AppImage> {
