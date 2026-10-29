@@ -273,6 +273,20 @@ impl QuickSettingsState {
         }
     }
 
+    /// The panel before anything of the device is read: no levels, no
+    /// radios, no controls found yet. A device host starts here and lands
+    /// its readings over it.
+    #[must_use]
+    pub fn unread() -> Self {
+        Self {
+            brightness_available: false,
+            volume_available: false,
+            status: crate::status::SystemStatus::default(),
+            available: crate::actions::QsActionAvailability::default(),
+            ..Self::fixture()
+        }
+    }
+
     /// The renderer's dispatch key. Defaults to `Root` if the stack is
     /// somehow empty (`new()` always seeds it).
     pub fn current_level(&self) -> &QsLevel {
