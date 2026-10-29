@@ -84,6 +84,7 @@ mod parked_workspaces;
 mod peer_sync_dispatch;
 mod shared_window_follow;
 mod sheet_accessibility;
+pub(crate) mod sheet_apps;
 mod shortcut_steps;
 mod shortcut_triggers;
 mod shortcuts;
@@ -164,9 +165,6 @@ pub use crate::shell::peer_sync_overlay::{
 };
 use crate::shell::peer_sync_overlay::{InviteContext, PeerSyncOverlay};
 use crate::shell::portal_dialog::PortalDialogController;
-use crate::shell::power_menu::PowerMenu;
-#[cfg(test)]
-use crate::shell::power_menu::PowerMenuClick;
 use crate::shell::projection_overlay::ProjectionOverlay;
 use crate::shell::search::ResourceKindText as _;
 use crate::shell::state::{Capability, GroupId, StripId, WorkspaceId};
@@ -271,6 +269,7 @@ use palette_search::LaunchpadMark;
 mod nested_shortcuts;
 mod peer_sync;
 mod portal_prompts;
+mod power_sheet;
 mod projection;
 mod qs_device_input;
 mod qs_device_rows;

@@ -214,8 +214,10 @@ fn hardware_key_readouts_open_on_the_focused_display() {
 fn menus_and_panels_open_on_the_focused_display() {
     let mut desk = Desk::new("laptop-beside-1080p");
     desk.on_each_display(|desk, display, name| {
+        desk.fb.host_mut().force_power_menu_for_visual_test();
+        desk.settle();
+        desk.settle();
         let host = desk.fb.host_mut();
-        host.layers.power_menu.open();
         let rows = host.power_menu_semantic_rects();
         assert!(!rows.is_empty(), "the power menu has rows");
         for (row, rect) in rows {
