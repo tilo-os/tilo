@@ -23,6 +23,7 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat as _;
 use crate::presence::PresenceCtx;
 use crate::search::{
     ActivationModifier, CommandRow, PREVIEW_BODY_LINES, PREVIEW_LINES, SearchGroup, SearchPreview,
@@ -226,6 +227,9 @@ pub struct SearchResultsView {
     /// Its owner holds the keyboard: the selected row is the focused one
     /// to assistive technology.
     focused: bool,
+    /// What to try instead when nothing matches: the empty state then
+    /// stands composed, a search glyph over its line and this hint.
+    empty_hint: Option<String>,
 }
 
 impl SearchResultsView {
@@ -250,6 +254,7 @@ impl SearchResultsView {
             highlight: String::new(),
             held: None,
             focused: false,
+            empty_hint: None,
         }
     }
 
@@ -330,6 +335,12 @@ impl SearchResultsView {
     }
 
     /// Update the empty-state copy without rebuilding the shared result view.
+    /// What to try instead when nothing matches, read under the empty
+    /// line ([`Self::set_empty_text`]); `None` for the line alone.
+    pub(crate) fn set_empty_hint(&mut self, hint: Option<String>) {
+        self.empty_hint = hint;
+    }
+
     pub fn set_empty_text(&mut self, text: impl Into<String>) {
         self.empty_text = text.into();
     }
@@ -1057,13 +1068,17 @@ impl SearchResultsView {
         (self.rect.x0 + PAD, width, style)
     }
 
-    fn draw_empty(
+    pub(crate) fn draw_empty(
         &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        if let Some(hint) = &self.empty_hint {
+            self.draw_composed_empty(scene, transform, tr, theme, hint);
+            return;
+        }
         let (x, width, style) = self.empty_frame(theme);
         let (_, th) = tr.measure_style(&self.empty_text, Some(width), &style);
         let cy = (self.rect.y1 - self.empty_footer + self.rect.y0) / 2.0 - f64::from(th) / 2.0;
@@ -1073,6 +1088,67 @@ impl SearchResultsView {
             theme.tokens.colors.text_dim,
             compose(transform, Affine::translate((x, cy))),
             Some(width),
+            &style,
+        );
+    }
+
+    /// A search glyph over the empty line, and the hint under it, centred
+    /// so the card keeps its shape instead of collapsing to a bare field.
+    fn draw_composed_empty(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hint: &str,
+    ) {
+        let colors = &theme.tokens.colors;
+        let (top, bottom) = (self.rect.y0 + PAD, self.rect.y1 - PAD);
+        if bottom <= top {
+            return;
+        }
+        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
+        let cy = f64::midpoint(top, bottom);
+        let icon_size = 24.0;
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                cx - icon_size / 2.0,
+                cy - icon_size - 10.0,
+                cx + icon_size / 2.0,
+                cy - 10.0,
+            ),
+            crate::icons::Icon::Search,
+            colors.text_dim.with_alpha_factor(0.55),
+            1.5,
+        );
+        let style = theme.text(TextRole::Caption);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "card widths are logical pixels well within f32 range"
+        )]
+        let room = (self.rect.width() - 48.0).max(1.0) as f32;
+        let title = tr.elide_to_width_style(&self.empty_text, room, &style);
+        let (tw, th) = tr.measure_style(&title, None, &style);
+        tr.draw_style(
+            scene,
+            &title,
+            colors.text_primary,
+            compose(transform, Affine::translate((cx - f64::from(tw) / 2.0, cy))),
+            None,
+            &style,
+        );
+        let (hw, _) = tr.measure_style(hint, None, &style);
+        tr.draw_style(
+            scene,
+            hint,
+            colors.text_dim,
+            compose(
+                transform,
+                Affine::translate((cx - f64::from(hw) / 2.0, cy + f64::from(th) + 6.0)),
+            ),
+            None,
             &style,
         );
     }
@@ -1670,11 +1746,14 @@ impl Widget for SearchResultsView {
         use crate::a11y::{AccessNode, AccessState, Role};
         let total = self.flat.len();
         let mut children = if self.flat.is_empty() {
-            vec![
-                AccessNode::new(Role::StaticText)
-                    .with_name(&self.empty_text)
-                    .with_live(crate::a11y::Politeness::Polite),
-            ]
+            let mut empty = AccessNode::new(Role::StaticText)
+                .with_name(&self.empty_text)
+                .with_bounds(self.rect)
+                .with_live(crate::a11y::Politeness::Polite);
+            if let Some(hint) = &self.empty_hint {
+                empty = empty.with_description(hint.clone());
+            }
+            vec![empty]
         } else {
             let mut rows: Vec<(Option<&str>, AccessNode)> = Vec::new();
             for row in self.plan().rows {

@@ -12,18 +12,16 @@ use std::sync::Arc;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_search::FieldWeight;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
 use crate::icons::{self, Icon};
 use crate::platform::{PlatformConventions, Shortcut};
 use crate::presence::PresenceCtx;
 use crate::search::{CommandRow, SearchGroup, SearchResult, SearchRow};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{
     ChipFace, ChipLead, ControlSize, SearchField, SearchResultsView, TextInputKind, Widget,
@@ -1356,6 +1354,16 @@ impl CommandPalette {
     /// "No results".
     pub fn set_searching(&mut self, searching: bool) {
         self.searching = searching;
+        self.sync_empty_state();
+    }
+
+    /// What the empty list says: searching, nothing yet, or no match for
+    /// the query with what to try instead.
+    fn sync_empty_state(&mut self) {
+        self.results.set_empty_text(self.empty_results_title());
+        self.results.set_empty_hint(
+            (!self.is_searching()).then(|| crate::i18n!("palette-no-results-hint")),
+        );
     }
 
     /// Every entry passes through unless [`Self::search_filter`] rejects it.
@@ -1652,73 +1660,6 @@ impl CommandPalette {
         }
     }
 
-    /// Painted in the list area so the card keeps its shape instead of
-    /// collapsing to a bare input.
-    fn draw_empty_state(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let colors = &theme.tokens.colors;
-        let top = self.list_top_y();
-        let bottom = self.list_bottom_y();
-        if bottom <= top {
-            return;
-        }
-        let cx = f64::midpoint(self.rect.x0, self.rect.x1);
-        let cy = f64::midpoint(top, bottom);
-        let icon_size = 24.0;
-        icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(
-                cx - icon_size / 2.0,
-                cy - icon_size - 10.0,
-                cx + icon_size / 2.0,
-                cy - 10.0,
-            ),
-            Icon::Search,
-            colors.text_dim.with_alpha_factor(0.55),
-            1.5,
-        );
-        let title_style = theme.text(TextRole::Caption);
-        let title = self.empty_results_title();
-        let title = text_renderer.elide_to_width_style(
-            &title,
-            f32_of_f64(self.rect.width() - 48.0),
-            &title_style,
-        );
-        let (tw, title_height) = text_renderer.measure_style(&title, None, &title_style);
-        text_renderer.draw_style(
-            scene,
-            &title,
-            colors.text_primary,
-            transform.pre_translate(Vec2::new(cx - f64::from(tw) / 2.0, cy)),
-            None,
-            &title_style,
-        );
-        if self.is_searching() {
-            return;
-        }
-        let hint_style = theme.text(TextRole::Caption);
-        let hint = crate::i18n!("palette-no-results-hint");
-        let hint = hint.as_str();
-        let (hw, _) = text_renderer.measure_style(hint, None, &hint_style);
-        text_renderer.draw_style(
-            scene,
-            hint,
-            colors.text_dim,
-            transform.pre_translate(Vec2::new(
-                cx - f64::from(hw) / 2.0,
-                cy + f64::from(title_height) + 6.0,
-            )),
-            None,
-            &hint_style,
-        );
-    }
-
     fn is_searching(&self) -> bool {
         // Entries this palette ranks itself wait for the index's code too.
         (self.searching || (!self.bypass_fuzzy && !crate::search::engine_ready()))
@@ -1801,6 +1742,7 @@ impl CommandPalette {
         self.results.set_groups(groups);
         let query = self.query_text().to_owned();
         self.results.set_highlight(&query);
+        self.sync_empty_state();
         self.sync_list();
     }
 
@@ -2030,7 +1972,8 @@ impl Widget for CommandPalette {
         }
 
         if self.visible.is_empty() {
-            self.draw_empty_state(scene, transform, text_renderer, theme);
+            self.results
+                .draw_empty(scene, transform, text_renderer, theme);
         } else {
             self.results
                 .draw_list(scene, transform, text_renderer, theme);
@@ -2258,17 +2201,8 @@ impl Widget for CommandPalette {
             .results
             .accessibility()
             .unwrap_or_else(|| AccessNode::new(Role::List));
-        if self.visible.is_empty() {
-            list.children = if self.arg_state.is_none() {
-                vec![
-                    AccessNode::new(Role::StaticText)
-                        .with_name(self.empty_results_title())
-                        .with_description(crate::i18n!("palette-no-results-hint"))
-                        .with_bounds(self.list_rect()),
-                ]
-            } else {
-                Vec::new()
-            };
+        if self.visible.is_empty() && self.arg_state.is_some() {
+            list.children.clear();
         }
         let mut children = vec![
             query_node,
@@ -2464,6 +2398,7 @@ mod tests;
 #[cfg(test)]
 mod selected_status_tests {
     use super::*;
+    use crate::tokens::TextRole;
 
     #[test]
     fn combined_scaling_keeps_two_line_results_inside_rows() {

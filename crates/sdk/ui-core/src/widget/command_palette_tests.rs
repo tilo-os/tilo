@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::testing::{Dispatch, dispatch};
+use crate::tokens::TextRole;
 use taffy::TaffyTree;
 use winit::event::Modifiers;
 use winit::keyboard::SmolStr;
