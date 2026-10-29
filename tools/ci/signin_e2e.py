@@ -3,7 +3,7 @@
 
   signin_e2e.py --medium INSTALLER_QCOW2 --out DIR --storage DIR [--variant one-secret|separate-disk-secret]...
 
-The installer medium is dev-installer-medium-x86_64's. Everything runs through the repository's
+The installer medium is dev-installer-medium-<arch>'s. Everything runs through the repository's
 VM harness: os/dev/vm.sh boots the live installer and the installed target in one named cycle
 (disk, swtpm state and firmware persist across its boots and nowhere else), and the installer
 and greeter are driven through their console channel (os/dev/installer-console.py, the same
@@ -38,6 +38,9 @@ and the run fails.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
+import http.server
 import importlib.util
 import json
 import os
@@ -48,7 +51,9 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -287,6 +292,42 @@ def quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
+def sha256_of(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+@contextlib.contextmanager
+def serve_file(path: Path) -> Iterator[int]:
+    """Serve `path` as /archive over HTTP on this host's loopback, on a free port it yields."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - the stdlib's name
+            if self.path != "/archive":
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.end_headers()
+            with path.open("rb") as f:
+                shutil.copyfileobj(f, self.wfile)
+
+        def log_message(self, *_: object) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 # The test-only unit written into the installed target's /etc. Its port exists only when this
 # check hot-plugs it; without the port the loop only waits.
 SHELL_SCRIPT = f"""#!/usr/bin/bash
@@ -334,7 +375,6 @@ class Run:
         self.facts: dict = {"variant": variant, "cycle": self.cycle.name}
         self.shell: Shell | None = None
         self.old_image: str | None = args.pre_pam_tilo_image
-        self.old_archive: str | None = args.pre_pam_tilo_archive
         # The device settings the current boot was started with, and what they replaced.
         self.boot_devices: dict[str, str | None] = {}
 
@@ -1629,20 +1669,27 @@ cryptsetup close e2e-target
         """Item 9: switch to an image from before pam_tilo and back, so it stays the rollback
         deployment; migrate on the new image; roll back and sign in with the old password; roll
         forward and find the hash still kept while the old image can boot."""
-        if not self.old_image and not self.old_archive:
-            raise Failed("the rollback variant needs --pre-pam-tilo-image or --pre-pam-tilo-archive")
-        evidence: dict = {"old_image": self.old_image or self.old_archive}
+        if not self.old_image:
+            raise Failed("the rollback variant needs --pre-pam-tilo-image")
+        evidence: dict = {"old_image": self.old_image}
         label = "rollback-switch"
         self.boot(label)
         self.unlock_at_disk_prompt(label, self.account, f"{label}-disk-prompt")
         self.connect()
-        switch = f"switch {quote(self.old_image)}" if self.old_image else ""
-        if self.old_archive:
-            archive = "/var/tmp/pre-pam-tilo.ociarchive"
-            code, text = self.guest(f"curl -fsS -o {archive} {quote(self.old_archive)}", 1800)
+        archive = Path(self.old_image)
+        if archive.is_file():
+            # The image's policy takes registry.tilo.so/tilo/tilo signed for release only, and a
+            # local archive from anywhere: the guest fetches this one from the run over the user
+            # network, whose 10.0.2.2 is this host.
+            evidence["old_image_sha256"] = sha256_of(archive)
+            guest_archive = "/var/tmp/pre-pam-tilo.ociarchive"
+            with serve_file(archive) as port:
+                code, text = self.guest(f"curl -fsS -o {guest_archive} http://10.0.2.2:{port}/archive", 1800)
             if code:
                 raise Failed(f"could not fetch the old image's archive: {text.strip()[-200:]}")
-            switch = f"switch --transport oci-archive {archive}"
+            switch = f"switch --transport oci-archive {guest_archive}"
+        else:
+            switch = f"switch {quote(self.old_image)}"
         code, text = self.guest(bootc(switch, 20), 1800)
         evidence["switch"] = {"exit": code, "output": text.strip()[-400:]}
         if code:
@@ -1839,13 +1886,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--variant", action="append",
                         choices=["one-secret", "separate-disk-secret", "rollback"])
     parser.add_argument("--pre-pam-tilo-image",
-                        help="for the rollback variant: an image reference from before pam_tilo "
-                             "that the guest can pull")
-    parser.add_argument("--pre-pam-tilo-archive", metavar="URL",
-                        help="for the rollback variant, instead of --pre-pam-tilo-image: an OCI "
-                             "archive of such an image the guest fetches over HTTP. The image's "
-                             "policy takes registry.tilo.so/tilo/tilo signed for release only, and "
-                             "a local archive from anywhere")
+                        help="for the rollback variant: an image from before pam_tilo, as a "
+                             "reference the guest can pull or the path of an OCI archive here, "
+                             "which the run serves the guest. The image's policy takes "
+                             "registry.tilo.so/tilo/tilo signed for release only, and a local "
+                             "archive from anywhere")
     args = parser.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     args.storage.mkdir(parents=True, exist_ok=True)
