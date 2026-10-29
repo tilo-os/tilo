@@ -14,6 +14,9 @@
 //! own click. Once a drag starts, the card under it is told the pointer left,
 //! so releasing ends the drag without also opening the card.
 //!
+//! On a touchscreen a still hold lifts a card and a drag after it moves it;
+//! a drag that begins without the hold scrolls what the board is in.
+//!
 //! A card is moved without a pointer through what it is an object of (a
 //! status in its page, the action the drop stands for), never only by
 //! dragging.
@@ -70,6 +73,8 @@ pub struct Board {
     cursor: Point,
     dirty: bool,
     on_drop: Option<Box<dyn FnMut(BoardDrop)>>,
+    /// What the board is, for assistive technology.
+    pub(crate) name: Option<String>,
 }
 
 impl Default for Board {
@@ -88,6 +93,7 @@ impl Board {
             cursor: Point::ZERO,
             dirty: false,
             on_drop: None,
+            name: None,
         }
     }
 
@@ -153,7 +159,7 @@ impl Board {
     }
 
     /// Each card's rect in lane `lane`, in order.
-    fn card_rects(&self, lane: usize) -> Vec<Rect> {
+    pub(crate) fn card_rects(&self, lane: usize) -> Vec<Rect> {
         let children = self.row.children();
         let Some(container) = children.get(lane) else {
             return Vec::new();
@@ -265,6 +271,22 @@ impl crate::widget::Decorator for Board {
         self.dirty || Widget::needs_redraw(&self.row)
     }
 
+    /// A contact on a card holds to lift it; anywhere else it is ordinary content.
+    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+        if self.card_at(point).is_some() {
+            crate::interaction::TouchClaim::HoldDrag
+        } else {
+            Widget::touch_claim(&self.row, point)
+        }
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        self.name
+            .as_ref()
+            .map(|name| AccessNode::new(Role::Group).with_optional_name(Some(name.clone())))
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -316,6 +338,16 @@ impl crate::widget::Decorator for Board {
                         target: None,
                     });
                 }
+            }
+            // A secondary press ends a pick-up without a drop: a hold lifted where it began
+            // is one, and opens the card's menu.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } if self.drag.is_some() => {
+                self.drag = None;
+                self.dirty = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,

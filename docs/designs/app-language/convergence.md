@@ -61,6 +61,19 @@ type Workshop {
   everywhere, and its author is told why.
 - Invariants come with the type: reuse a `Workshop` and its capacity rule comes along.
 - An invariant can only cover data with one origin. Across origins there are flows (§6).
+- An action states what it needs of its subject with `require`, the action's own invariant:
+
+  ```
+  primary action send(d: Draft) {
+      require not d.sent "{d.subject} went already"
+      ...
+  }
+  ```
+
+  A requirement is pure and reads only the subject, so wherever the action would be offered on
+  it (a window's header, a menu, an agent's choices) the system leaves it out while one fails,
+  and an invocation anyway is rejected with the reason, the same way everywhere, before it
+  writes anything.
 - An outside service's own rules ("attachment too large") come back as the same kind of
   rejection.
 

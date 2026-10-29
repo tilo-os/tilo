@@ -14,8 +14,21 @@ pub struct PageLayout {
     measure: Option<Length>,
     class: Option<WidthClass>,
     /// One row of the page's content, which a virtual list stacks: the gutter at the sides
-    /// only, half the sibling rhythm above and below.
-    row: bool,
+    /// only, and the row's own spacing above and below.
+    row: Option<RowSpacing>,
+}
+
+/// The space a row of a page's content ([`Page::row`]) has above and below it.
+#[derive(Clone, Copy, Debug)]
+enum RowSpacing {
+    /// Half the sibling rhythm above and below: rows a sibling apart.
+    Halves,
+    /// The gap to the row before it above, nothing below: a transcript's message, the next
+    /// line of a run closer than the next run.
+    After(crate::tokens::Rhythm),
+    /// A section's gap above, the gutter below: the bar at a column's foot, close under what
+    /// it follows.
+    Foot,
 }
 
 impl PageLayout {
@@ -38,11 +51,16 @@ impl Layout for PageLayout {
 
     fn container(&self, resolved: &Resolved) -> Style {
         let gutter = length(self.gutter(resolved));
-        let (top, bottom) = if self.row {
-            let half = length(resolved.gap(crate::tokens::Rhythm::Sibling) / 2.0);
-            (half, half)
-        } else {
-            (gutter, gutter)
+        let (top, bottom) = match self.row {
+            Some(RowSpacing::Halves) => {
+                let half = length(resolved.gap(crate::tokens::Rhythm::Sibling) / 2.0);
+                (half, half)
+            }
+            Some(RowSpacing::After(gap)) => (length(resolved.gap(gap)), length(0.0_f32)),
+            Some(RowSpacing::Foot) => {
+                (length(resolved.gap(crate::tokens::Rhythm::Section)), gutter)
+            }
+            None => (gutter, gutter),
         };
         Style {
             display: taffy::Display::Flex,
@@ -89,7 +107,7 @@ impl Arranged<PageLayout> {
         Self::with_layout(PageLayout {
             measure: Some(Length::Rem(MEASURE_REM)),
             class: None,
-            row: false,
+            row: None,
         })
     }
 
@@ -99,7 +117,7 @@ impl Arranged<PageLayout> {
         Self::with_layout(PageLayout {
             measure: None,
             class: None,
-            row: false,
+            row: None,
         })
     }
 
@@ -109,7 +127,25 @@ impl Arranged<PageLayout> {
     /// children do.
     #[must_use]
     pub const fn row(mut self) -> Self {
-        self.layout.row = true;
+        self.layout.row = Some(RowSpacing::Halves);
+        self
+    }
+
+    /// One row of a page's content that stands `gap` below the row before it and has nothing
+    /// below it: a transcript's message, whose run's next line sits closer than the next run.
+    /// Its list leaves [`TranscriptEdges`] around the rows.
+    #[must_use]
+    pub const fn row_after(mut self, gap: crate::tokens::Rhythm) -> Self {
+        self.layout.row = Some(RowSpacing::After(gap));
+        self
+    }
+
+    /// The bar at the foot of a page's column (a conversation's composer): the page's gutter
+    /// at its sides and below it, and a section's gap above, so it sits close under the content
+    /// it follows.
+    #[must_use]
+    pub const fn foot(mut self) -> Self {
+        self.layout.row = Some(RowSpacing::Foot);
         self
     }
 
@@ -157,7 +193,7 @@ impl crate::widget::virtual_list::ListEdges for PageRowEdges {
         let layout = PageLayout {
             measure: None,
             class: Some(class),
-            row: true,
+            row: Some(RowSpacing::Halves),
         };
         let edge = (layout.gutter(&resolved) - resolved.gap(crate::tokens::Rhythm::Sibling) / 2.0)
             .max(0.0);
@@ -168,5 +204,52 @@ impl crate::widget::virtual_list::ListEdges for PageRowEdges {
 impl Default for Arranged<PageLayout> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The space a transcript's list of page rows ([`Page::row_after`]) leaves above its first row
+/// and below its last: above, the page's gutter less the gap the first row has over it, so the
+/// first message stands where a page's first child does; below, nothing, since what follows a
+/// transcript (its composer) brings its own spacing, and the newest message sits right above
+/// it.
+#[derive(Debug)]
+pub struct TranscriptEdges {
+    resolved: Option<Resolved>,
+    class: Option<WidthClass>,
+    /// The gap the first row has above it.
+    first: crate::tokens::Rhythm,
+}
+
+impl TranscriptEdges {
+    /// Edges for rows whose first stands `first` below the row before it.
+    #[must_use]
+    pub const fn new(first: crate::tokens::Rhythm) -> Self {
+        Self {
+            resolved: None,
+            class: None,
+            first,
+        }
+    }
+}
+
+impl crate::widget::virtual_list::ListEdges for TranscriptEdges {
+    fn theme(&mut self, theme: &crate::theme::Theme) {
+        self.resolved = Some(Resolved::of(theme));
+    }
+
+    fn edges(&mut self, width: f64) -> (f64, f64) {
+        let Some(resolved) = self.resolved else {
+            return (0.0, 0.0);
+        };
+        let width = crate::num::f32_of_f64(width);
+        let class = WidthClass::with_history(width / resolved.rem, self.class);
+        self.class = Some(class);
+        let layout = PageLayout {
+            measure: None,
+            class: Some(class),
+            row: Some(RowSpacing::After(self.first)),
+        };
+        let lead = (layout.gutter(&resolved) - resolved.gap(self.first)).max(0.0);
+        (f64::from(lead), 0.0)
     }
 }

@@ -3,7 +3,7 @@
 # compiled into a runtime bundle and captured by `tilolang-app --shots` in every state below.
 #
 #   cargo build -p tilolang-app --bin tilolang-app --example seeded_room
-#   scripts/headless-examples/tl-shots.sh OUT [app...]     (default: notes todo chat board letters)
+#   scripts/headless-examples/tl-shots.sh OUT [app...]     (default: notes todo chat board letters today)
 #
 # Writes OUT/<app>-<state>-<size>[-light].png: `seeded` (the package's first scenario, its
 # item open), `empty` (no scenario), `search` (search open over the seeded state), at
@@ -12,7 +12,7 @@ set -eu
 here=$(cd "$(dirname "$0")/../.." && pwd)
 out=$(realpath -m "$1"); shift
 tl=${TL_DIR:-$here/apps/tl}
-apps=("$@"); [ ${#apps[@]} -gt 0 ] || apps=(notes todo chat board letters)
+apps=("$@"); [ ${#apps[@]} -gt 0 ] || apps=(notes todo chat board letters today)
 bin=${TILOLANG_APP:-$here/target/debug/tilolang-app}
 seed=${SEEDED_ROOM:-$here/target/debug/examples/seeded_room}
 # Software Vulkan only: the loader sees lavapipe and nothing else, so no shot reaches the GPU.

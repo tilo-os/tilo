@@ -266,19 +266,37 @@ pub struct ActionDecl {
     pub proposal: Option<Proposal>,
     /// `(icon: .plus, label: "New")`, as written.
     pub opts: Vec<ActionOpt>,
+    /// The `require` lines heading the body: when the action is available on its subject.
+    pub requires: Vec<Require>,
     pub body: Block,
+    pub span: Span,
+}
+
+/// `require not d.sent "{d.subject} went already"`, heading an action's body: a condition on the
+/// action's subject (its first parameter) the action needs, and why it is unavailable when the
+/// condition does not hold. Where the action would be offered on the subject (its window's
+/// header, a menu, an agent's choices) it is not offered then; invoked anyway, it is refused
+/// with the reason before it changes anything. The condition is pure: it reads only the
+/// subject, as the action's presentation does.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Require {
+    pub cond: Expr,
+    /// Text: why the action is unavailable.
+    pub reason: Expr,
     pub span: Span,
 }
 
 impl ActionDecl {
     /// Whether the action's presentation follows its subject: a `label:` or `icon:` written
-    /// as an `if`, or an `on:` state. It is then lowered to a hidden view of the subject.
+    /// as an `if`, an `on:` state, or a `require` on it. It is then lowered to a hidden view of
+    /// the subject.
     pub fn presents_state(&self) -> bool {
-        self.opts.iter().any(|o| match o.name.name.as_str() {
-            "on" => true,
-            "label" | "icon" => matches!(o.value.kind, ExprKind::If { .. }),
-            _ => false,
-        })
+        !self.requires.is_empty()
+            || self.opts.iter().any(|o| match o.name.name.as_str() {
+                "on" => true,
+                "label" | "icon" => matches!(o.value.kind, ExprKind::If { .. }),
+                _ => false,
+            })
     }
 }
 

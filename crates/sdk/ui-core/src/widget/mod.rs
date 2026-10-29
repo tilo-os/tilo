@@ -3266,7 +3266,9 @@ pub use date_indexed_scrollbar::{
     ProjectedDateMarker,
 };
 pub mod board;
+mod board_component;
 pub use board::{Board, BoardDrop};
+pub use board_component::{BoardCardProps, BoardLaneProps, BoardProps};
 pub mod drag;
 pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
 mod scrollable;
@@ -3576,7 +3578,9 @@ pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
 pub mod banner;
 pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice};
 pub mod chip;
+mod chip_component;
 pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
+pub use chip_component::ChipProps;
 pub mod conversation;
 pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,

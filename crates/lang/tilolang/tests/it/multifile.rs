@@ -273,21 +273,21 @@ impl Drop for Scratch {
 
 #[test]
 fn imports_are_found_among_sibling_packages_and_compiled_first() {
-    let board = apps_tl().join("board");
-    let order = dependency_order(&board, &[]).unwrap();
+    let today = apps_tl().join("today");
+    let order = dependency_order(&today, &[]).unwrap();
     let names: Vec<String> = order
         .iter()
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(names.last().map(String::as_str), Some("board"));
+    assert_eq!(names.last().map(String::as_str), Some("today"));
     for dep in ["notes", "todo", "chat"] {
         assert!(names.contains(&dep.to_string()), "{names:?}");
     }
-    assert_eq!(names.len(), 4, "only what board imports: {names:?}");
+    assert_eq!(names.len(), 4, "only what today imports: {names:?}");
     let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         built.last().unwrap().compiled.meta.app,
-        "so.tilo.lang.board"
+        "so.tilo.lang.today"
     );
 }
 

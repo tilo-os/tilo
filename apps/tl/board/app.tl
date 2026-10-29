@@ -1,91 +1,147 @@
 app so.tilo.lang.board "Board" (icon: .layout_grid, category: .office)
 
-use so.tilo.lang.notes as notes
-use so.tilo.lang.todo as todo
-use so.tilo.lang.chat as chat
+/// A card: one thing to get done, with notes, in one column of the board.
+type Card {
+    title: Text (title)
+    notes: Text (body)
+    /// The column it is in.
+    column: Column
+}
 
-/// A dashboard over other apps: it holds references to their root resources and draws their
-/// views, so each part keeps its own app's authority.
+/// A column of the board: a stage the cards go through, such as "Doing".
+type Column {
+    title: Text (title)
+}
+
+/// The workspace's board: its columns, left to right, and its cards, each in one of them.
 type Board {
-    notebook: Option<notes.Notebook>
-    todos: Option<todo.TodoList>
-    chats: Option<chat.Chat>
+    columns: Collection<Column>
+    /// Every card, in the order the columns show them.
+    cards: Collection<Card>
 }
 
 root Board
 
 default view board for Board
 
-/// Points the board at the resources it shows.
-action attach(b: Board, nb: notes.Notebook, list: todo.TodoList, c: chat.Chat) {
-    b.notebook = .some(nb)
-    b.todos = .some(list)
-    b.chats = .some(c)
+default view card_page for Card
+
+/// Adds a column at the right of the board.
+primary action new_column(b: Board) -> Column (icon: .plus, label: "New column") {
+    b.columns.insert(Column(title: "Untitled"))
 }
 
-/// Clears the finished todos and files a note saying how many went. The changes belong to the
-/// todo and notes apps, so each one asks until the board is trusted.
-flow morning_cleanup(list: todo.TodoList, nb: notes.Notebook) -> Int {
-    let n = 0
-    for item in list.items {
-        if item.done {
-            todo.remove(list, item)
-            n += 1
+/// Adds a card at the foot of a column.
+action new_card(b: Board, col: Column) -> Card (icon: .plus, label: "New card") {
+    b.cards.insert(Card(title: "Untitled", column: col))
+}
+
+/// Moves a card to the foot of a column.
+action move_to(b: Board, card: Card, col: Column) (icon: .arrow_right) {
+    card.column = col
+    b.cards.move(card, b.cards.len())
+}
+
+/// Moves a card to just above another, into that card's column.
+action move_before(b: Board, card: Card, next: Card) {
+    card.column = next.column
+    b.cards.move(card, place_of(b, card, next))
+}
+
+/// Deletes a card.
+destructive action delete_card(b: Board, card: Card) (icon: .trash, label: "Delete") {
+    b.cards.remove(card)
+}
+
+/// Renames a column.
+action rename_column(col: Column, title: Text) {
+    col.title = title
+}
+
+/// Where `next` is among the cards other than `card`: the place `card` takes to be just above
+/// it.
+fn place_of(b: Board, card: Card, next: Card) -> Int {
+    let at = 0
+    let seen = false
+    for c in b.cards {
+        if c == next {
+            seen = true
+        }
+        if not seen and c != card {
+            at += 1
         }
     }
-    let note = notes.new_note(nb)
-    notes.retitle(note, "Morning: {n} done")
-    notes.tag(note, "morning")
-    n
+    at
 }
 
-/// The board's window: a card per app it points at, holding that app's resources as rows that
-/// open them: the open todos, the pinned notes, the conversations.
+/// The cards of a column, in order.
+fn cards_of(b: Board, col: Column) -> List<Card> {
+    b.cards.filter(c -> c.column == col)
+}
+
+/// The board's window: a lane per column with its cards, each card its title and the start of
+/// its notes. A card is dragged to another place or column, or moved from its menu, which also
+/// holds its actions, and opens in a page of its own.
 view board(b: Board) {
-    std.page(b, canvas: true, empty: b.todos == .none and b.notebook == .none and b.chats == .none) {
-        header: {
-            match b.todos {
-                .some(todos) => match b.notebook {
-                    .some(nb) => button(morning_cleanup(todos, nb)) as morning,
-                    .none => {}
-                },
-                .none => {}
-            }
-        }
-        grid(min: 22rem) {
-            match b.todos {
-                .some(todos) => card(todos, count: todos.items.count(item -> not item.done)) {
-                    list(todos.items.filter(item -> not item.done)) { item ->
-                        row(item)
+    std.page(b, canvas: true, empty: b.columns.is_empty()) {
+        ui.Scroll(across: true) {
+            ui.Board {
+                for col in b.columns {
+                    let cards = cards_of(b, col)
+                    ui.BoardLane(col, title: col.title, count: cards.len(), action: "New card") {
+                        on act: new_card(b, col)
+                        on drop(moved: Card): move_to(b, moved, col)
+                        for card in cards {
+                            ui.BoardCard(card, title: card.title) {
+                                on activate: open(card)
+                                on drop(moved: Card): move_before(b, moved, card)
+                                menu: {
+                                    for other in b.columns {
+                                        if other != card.column {
+                                            ui.MenuItem("Move to {other.title}", icon: .arrow_right) {
+                                                on choose: move_to(b, card, other)
+                                            }
+                                        }
+                                    }
+                                    for a in actions(card) {
+                                        ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
+                                            on choose: a.run
+                                        }
+                                    }
+                                }
+                                if card.notes != "" {
+                                    text(card.notes, role: .caption)
+                                }
+                            }
+                        }
                     }
-                },
-                .none => {}
-            }
-            match b.notebook {
-                .some(nb) => card(nb, count: nb.notes.count(n -> n.pinned)) {
-                    list(nb.notes.filter(n -> n.pinned)) { n ->
-                        row(n)
-                    }
-                },
-                .none => {}
-            }
-            match b.chats {
-                .some(c) => card(c, count: c.conversations.count(x -> true)) {
-                    list(c.conversations) { x ->
-                        row(x)
-                    }
-                },
-                .none => {}
+                }
             }
         }
     }
 }
 
-/// A board over this morning's list, notebook and chats. Each app's own first scenario fills
-/// what the board attaches.
-scenario "a morning board" {
+/// A card's page: its title and its notes.
+view card_page(card: Card) {
+    std.document(card) {
+        ui.TextInput(value: card.title, placeholder: "Title")
+        ui.TextInput(value: card.notes, placeholder: "Notes", lines: 8)
+    }
+}
+
+/// A team's board a week into a release: three columns with cards in each.
+scenario "a release board" {
     let b = root Board
-    b.todos = .some(root todo.TodoList)
-    b.notebook = .some(root notes.Notebook)
-    b.chats = .some(root chat.Chat)
+    let todo = b.columns.insert(Column(title: "To do"))
+    let doing = b.columns.insert(Column(title: "Doing"))
+    let done = b.columns.insert(Column(title: "Done"))
+    b.cards.insert(Card(title: "Write the release notes", notes: "Lead with the sync fix, then the new board.", column: todo))
+    b.cards.insert(Card(title: "Screenshots for the docs", column: todo))
+    b.cards.insert(Card(title: "Translate the onboarding", notes: "German and French first.", column: todo))
+    b.cards.insert(Card(title: "Check the importer on large tables", column: todo))
+    b.cards.insert(Card(title: "Fix the sidebar at large text", notes: "It collapses too early above 150%.", column: doing))
+    b.cards.insert(Card(title: "Review the sharing dialog", column: doing))
+    b.cards.insert(Card(title: "Bump the version", column: done))
+    b.cards.insert(Card(title: "Merge the offline queue", notes: "Landed on Tuesday.", column: done))
+    b.cards.insert(Card(title: "Plan the next cycle", column: done))
 }

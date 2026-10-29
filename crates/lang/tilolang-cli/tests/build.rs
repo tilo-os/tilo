@@ -31,12 +31,12 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     let scratch = tempfile::tempdir().unwrap();
     // The packages are copied: a build writes new ids into their locks.
     let source = scratch.path().join("tl");
-    for name in ["board", "notes", "todo", "chat"] {
+    for name in ["today", "notes", "todo", "chat"] {
         copy_package(&packages().join(name), &source.join(name));
     }
     let identity = tilolang_cli::identity_at(&scratch.path().join("publisher.json")).unwrap();
     let options = BuildOptions {
-        dir: source.join("board"),
+        dir: source.join("today"),
         search: Vec::new(),
         out: scratch.path().join("out"),
         tilo_runtime: "tilo-runtime/2026.07".into(),
@@ -47,7 +47,7 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
     let ids: Vec<&str> = apps.iter().map(|app| app.app.as_str()).collect();
     assert_eq!(
         ids.last(),
-        Some(&"so.tilo.lang.board"),
+        Some(&"so.tilo.lang.today"),
         "the package last, after what it uses"
     );
     for used in [
@@ -99,37 +99,37 @@ fn each_package_is_a_signed_app_that_runs_on_the_tilolang_runtime() {
             );
         }
     }
-    let board = apps.last().unwrap();
+    let today = apps.last().unwrap();
     let notes = apps
         .iter()
         .find(|app| app.app == "so.tilo.lang.notes")
         .unwrap();
-    let board_manifest =
-        Manifest::from_toml_str(&std::fs::read_to_string(&board.manifest).unwrap()).unwrap();
-    assert_eq!(board_manifest.package.name.as_deref(), Some("Board"));
-    assert_eq!(board_manifest.package.category.as_deref(), Some("Office"));
-    // Board uses Notes: it reads their records, declared, and carries their schema.
-    let surface = std::fs::read(board.payload.join("surface.toml")).unwrap();
+    let today_manifest =
+        Manifest::from_toml_str(&std::fs::read_to_string(&today.manifest).unwrap()).unwrap();
+    assert_eq!(today_manifest.package.name.as_deref(), Some("Today"));
+    assert_eq!(today_manifest.package.category.as_deref(), Some("Office"));
+    // Today uses Notes: it reads their records, declared, and carries their schema.
+    let surface = std::fs::read(today.payload.join("surface.toml")).unwrap();
     let surface = collab_types_surface(&surface);
     let notes_surface =
         collab_types_surface(&std::fs::read(notes.payload.join("surface.toml")).unwrap());
     assert!(
         surface.reads_any_of(&notes_surface),
-        "Board's surface declares that it reads Notes' kinds"
+        "Today's surface declares that it reads Notes' kinds"
     );
     assert!(
-        board
+        today
             .payload
-            .join("imports/so.tilo.lang.notes.json")
+            .join("imports/so.tilo.lang.notes.wasm")
             .is_file()
     );
-    let installed = tilolang_tilo::bundle::Bundle::read(&board.payload).unwrap();
-    assert_eq!(installed.meta.app, "so.tilo.lang.board");
+    let installed = tilolang_tilo::bundle::Bundle::read(&today.payload).unwrap();
+    assert_eq!(installed.meta.app, "so.tilo.lang.today");
     assert!(
         installed
             .imports
             .iter()
-            .any(|meta| meta.app == "so.tilo.lang.notes")
+            .any(|import| import.meta.app == "so.tilo.lang.notes")
     );
 }
 

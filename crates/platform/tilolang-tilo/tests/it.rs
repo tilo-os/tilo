@@ -10,6 +10,7 @@
     reason = "test assertions"
 )]
 
+mod bundle;
 mod collab;
 mod columns;
 mod engines;

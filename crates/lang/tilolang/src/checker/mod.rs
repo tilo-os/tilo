@@ -185,7 +185,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             continue;
         };
         let f = match item {
-            Item::Action(a) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &a.body),
+            Item::Action(a) => c.run_action(&callable, &a.requires, &a.body),
             Item::Flow(f) => c.run_body(&callable, FuncKind::Flow, Ctx::Flow, &f.body),
             Item::Fn(f) => c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body),
             Item::Scenario(s) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &s.body),
@@ -216,7 +216,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         let Some(action) = env.own_callable(&a.name.name) else {
             continue;
         };
-        funcs.push(c.run_present(&view, &a.opts, &action.params));
+        funcs.push(c.run_present(&view, &a.opts, &a.requires, &action.params));
     }
     // The defaults of action parameters, in the order the resolver numbered them.
     for d in &env.defaults {
@@ -381,8 +381,36 @@ impl Checker<'_> {
         }
     }
 
+    /// An action's body, after its requirements: each refuses the invocation with its reason
+    /// when its condition does not hold, before anything changes.
+    fn run_action(
+        &mut self,
+        c: &Callable,
+        requires: &[ast::Require],
+        body: &ast::Block,
+    ) -> ir::Func {
+        self.run_guarded(c, FuncKind::Action, Ctx::Action, requires, body)
+    }
+
     fn run_body(&mut self, c: &Callable, kind: FuncKind, ctx: Ctx, body: &ast::Block) -> ir::Func {
+        self.run_guarded(c, kind, ctx, &[], body)
+    }
+
+    fn run_guarded(
+        &mut self,
+        c: &Callable,
+        kind: FuncKind,
+        ctx: Ctx,
+        requires: &[ast::Require],
+        body: &ast::Block,
+    ) -> ir::Func {
         self.begin(ctx, &c.params, c.result.clone(), &c.id);
+        for r in requires {
+            let cond = self.expr_as(&r.cond, &Ty::Bool);
+            let reason = self.expr_as(&r.reason, &Ty::Text);
+            let refuse = Stmt::Eval(Ex::host(Imp::Abort, vec![reason], Ty::Unit));
+            self.emit(Stmt::If(cond, Vec::new(), vec![refuse]));
+        }
         self.st.scenario = c.scenario;
         let valued = !matches!(c.result, Ty::Unit | Ty::Error);
         let stmts = match body.stmts.split_last() {

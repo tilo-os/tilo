@@ -1,5 +1,5 @@
 //! Every app under `apps/tl`, compiled with its committed ids and run end to end: chat with
-//! embedded agent blocks, letters, the board's foreign views and flow, lists that open their
+//! embedded agent blocks, letters, Today's foreign views and flow, lists that open their
 //! items in windows of their own, window and lens state, and every root's window at a compact
 //! and a wide space.
 
@@ -48,7 +48,7 @@ mod cases {
         chat: App,
         letters: App,
         counter: App,
-        board: App,
+        today: App,
     }
 
     fn apps() -> Apps {
@@ -57,14 +57,14 @@ mod cases {
         let chat = build("chat", app_source!("chat"), &[]);
         let letters = build("letters", app_source!("letters"), &[]);
         let counter = build("counter", app_source!("counter"), &[]);
-        let board = build("board", app_source!("board"), &[&notes, &todo, &chat]);
+        let today = build("today", app_source!("today"), &[&notes, &todo, &chat]);
         Apps {
             notes,
             todo,
             chat,
             letters,
             counter,
-            board,
+            today,
         }
     }
 
@@ -86,7 +86,7 @@ mod cases {
             &apps.chat,
             &apps.letters,
             &apps.counter,
-            &apps.board,
+            &apps.today,
         ]
         .iter()
         .map(|a| a.load(&rt))
@@ -302,7 +302,7 @@ mod cases {
         let a = apps();
         let w = world(&a, &AmStore::new());
         assert_eq!(w.ids.len(), 6);
-        for app in [&a.notes, &a.todo, &a.chat, &a.letters, &a.counter, &a.board] {
+        for app in [&a.notes, &a.todo, &a.chat, &a.letters, &a.counter, &a.today] {
             let meta = app.meta();
             let root = meta
                 .roots
@@ -1070,11 +1070,11 @@ mod cases {
         );
     }
 
-    // ----- board ------------------------------------------------------------------------------
+    // ----- today ------------------------------------------------------------------------------
 
     struct Morning {
         w: World,
-        board: ResourceRef,
+        today: ResourceRef,
         list: ResourceRef,
         notebook: ResourceRef,
         chat: ResourceRef,
@@ -1082,18 +1082,18 @@ mod cases {
 
     fn morning(apps: &Apps) -> Morning {
         let w = world(apps, &AmStore::new());
-        let board = w.create("Board");
+        let today = w.create("Today");
         let notebook = w.create("Notebook");
         let list = w.create("TodoList");
         let chat = w.create("Chat");
         w.call(
-            &apps.board,
+            &apps.today,
             "attach",
-            vec![res(&board), res(&notebook), res(&list), res(&chat)],
+            vec![res(&today), res(&notebook), res(&list), res(&chat)],
         );
         Morning {
             w,
-            board,
+            today,
             list,
             notebook,
             chat,
@@ -1115,13 +1115,13 @@ mod cases {
         add_todo(&m, &apps, "milk", false);
         add_todo(&m, &apps, "bins", true);
         m.w.call(&apps.notes, "new_note", vec![res(&m.notebook)]);
-        let view = m.w.view(&apps.board, "board", vec![res(&m.board)]);
+        let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
         let tree = view.tree();
         assert_eq!(tree.kind, "ui.NavShell", "{}", dump(tree));
         assert_eq!(
             of_kind(tree, "page")[0].props["full"],
             Value::Int(1),
-            "the board is a canvas the window's width: {}",
+            "Today is a canvas the window's width: {}",
             dump(tree)
         );
         let cards = of_kind(tree, "ui.Card");
@@ -1135,7 +1135,7 @@ mod cases {
         assert_eq!(
             shown,
             [&m.list, &m.notebook, &m.chat],
-            "a card per resource the board points at"
+            "a card per resource Today points at"
         );
         assert_eq!(
             cards[0].props.get("count"),
@@ -1164,7 +1164,7 @@ mod cases {
         add_todo(&m, &apps, "b", false);
         add_todo(&m, &apps, "c", true);
 
-        let view = m.w.view(&apps.board, "board", vec![res(&m.board)]);
+        let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
         let button = button_labelled(view.tree(), "Morning cleanup").key.clone();
         let mut out = FlowOutcome::Suspended(suggested(view.press(&button).unwrap()));
         let mut asked = Vec::new();
@@ -1174,7 +1174,7 @@ mod cases {
                     assert_eq!(
                         s.chain,
                         vec![m.w.id_of(5).clone()],
-                        "the board wrote these invocations"
+                        "Today wrote these invocations"
                     );
                     asked.push(s.action.clone());
                     out = m.w.rt.resolve(&s.run, &me(), Resolution::Approve).unwrap();
@@ -1218,7 +1218,7 @@ mod cases {
         let m = morning(&apps);
         add_todo(&m, &apps, "a", true);
         m.w.auth.trust(m.w.id_of(5));
-        let flow = apps.board.flow("morning_cleanup");
+        let flow = apps.today.flow("morning_cleanup");
         let out =
             m.w.rt
                 .run_flow(&me(), &flow, vec![res(&m.list), res(&m.notebook)])
@@ -1314,6 +1314,43 @@ mod cases {
     }
 
     #[test]
+    fn an_action_whose_requirement_fails_is_not_offered_and_is_refused_with_its_reason() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        let list = w.create("TodoList");
+        let item = returned_ref(w.call(&apps.todo, "add", vec![res(&list), Value::text("milk")]));
+        let labels = |v: &ViewInstance| -> Vec<String> {
+            of_kind(v.tree(), "ui.Button")
+                .iter()
+                .map(|button| text_prop(button, "label"))
+                .collect()
+        };
+        let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
+        assert!(
+            !labels(&v).contains(&"Clear done".to_owned()),
+            "nothing is done, so the header offers no Clear done: {:?}",
+            labels(&v)
+        );
+        let refused =
+            w.rt.invoke_action(
+                &me(),
+                (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
+            )
+            .expect_err("clear_done is refused while nothing is done");
+        assert!(
+            refused.to_string().contains("Nothing is done yet"),
+            "{refused}"
+        );
+        w.call(&apps.todo, "check", vec![res(&item)]);
+        v.poll_patches().unwrap();
+        assert!(
+            labels(&v).contains(&"Clear done".to_owned()),
+            "once an item is done, Clear done is offered: {:?}",
+            labels(&v)
+        );
+    }
+
+    #[test]
     fn clearing_done_removes_only_the_finished_items() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
@@ -1401,7 +1438,7 @@ mod cases {
     fn board_is_a_grid_of_cards_at_every_width() {
         let apps = apps();
         let m = morning(&apps);
-        let mut v = m.w.view(&apps.board, "board", vec![res(&m.board)]);
+        let mut v = m.w.view(&apps.today, "today", vec![res(&m.today)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
             let grid = of_kind(tree, "grid")[0];

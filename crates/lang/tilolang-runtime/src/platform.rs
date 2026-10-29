@@ -338,7 +338,7 @@ impl Core {
                     rest: action.params.get(1..).unwrap_or_default(),
                     present: true,
                 };
-                out.push(self.action_value(&shown, subject)?);
+                out.extend(self.action_value(&shown, subject)?);
             }
         }
         // The holder's, on it.
@@ -374,7 +374,7 @@ impl Core {
                         rest,
                         present: false,
                     };
-                    out.push(self.action_value(&shown, subject)?);
+                    out.extend(self.action_value(&shown, subject)?);
                 }
             }
         }
@@ -396,7 +396,8 @@ impl Core {
 
     /// An offered action as a `host.Action`: presented for the subject (its label, icon and
     /// toggled state as its presentation view gives them now), the view taking what that read.
-    fn action_value(&self, shown: &Offered<'_>, subject: &RefValue) -> HResult<Value> {
+    /// `None` while a requirement of it on the subject does not hold: it is not offered.
+    fn action_value(&self, shown: &Offered<'_>, subject: &RefValue) -> HResult<Option<Value>> {
         let action = shown.action;
         let mut label = label_of(action);
         let mut icon = action.icon.clone();
@@ -416,6 +417,9 @@ impl Core {
                 Some(Value::Int(flag)) => Some(*flag != 0),
                 _ => None,
             };
+            if matches!(node.props.get("unavailable"), Some(Value::Text(why)) if !why.is_empty()) {
+                return Ok(None);
+            }
         }
         let role = action.role.clone().unwrap_or_default();
         let params = shown
@@ -432,7 +436,7 @@ impl Core {
             })
             .collect();
         let author = Some(self.module_of_frame()?);
-        Ok(Value::Tuple(vec![
+        Ok(Some(Value::Tuple(vec![
             Value::Text(label),
             icon.map_or_else(Value::none, |icon| Value::some(Value::Text(icon))),
             Value::Text(role.clone()),
@@ -445,7 +449,7 @@ impl Core {
                 args: shown.args.clone(),
                 author,
             }),
-        ]))
+        ])))
     }
 
     /// The `present` node the presentation view `view` builds for `subject`, rendered as part

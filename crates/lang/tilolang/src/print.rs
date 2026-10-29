@@ -492,6 +492,12 @@ impl Printer {
                 head.push_str(&self.opts(&a.opts));
                 head.push_str(" {");
                 self.line(&head);
+                self.level += 1;
+                for r in &a.requires {
+                    let (cond, reason) = (self.ex(&r.cond), self.ex(&r.reason));
+                    self.line(&format!("require {cond} {reason}"));
+                }
+                self.level -= 1;
                 self.block_body(&a.body);
                 self.line("}");
             }
