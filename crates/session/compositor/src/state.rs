@@ -544,6 +544,8 @@ impl State {
         let windows = self.windows();
         let outputs = self.output_geometries();
         let Some(arrangements) = self.policy.arrange(&windows, &outputs) else {
+            // Focus and closes the policy asked for apply all the same.
+            self.apply_policy_focus_and_closes();
             return;
         };
         let stack: Vec<Window> = self.space.elements().cloned().collect();
