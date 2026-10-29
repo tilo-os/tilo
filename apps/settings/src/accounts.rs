@@ -826,8 +826,7 @@ pub fn short_url(url: &str) -> String {
 const MAIL_TYPE: &str = "email";
 /// The shared-store type id for `CalDAV` accounts (Calendar contributes these).
 const CALDAV_TYPE: &str = "caldav";
-pub const WEBDAV_TYPE: &str = "webdav";
-pub const NEXTCLOUD_TYPE: &str = "nextcloud";
+pub use accounts::cloud_types::{NEXTCLOUD as NEXTCLOUD_TYPE, WEBDAV as WEBDAV_TYPE};
 
 /// A deterministic, populated directory for `--shots` and tests so the
 /// panel renders a realistic accounts list without touching disk.
