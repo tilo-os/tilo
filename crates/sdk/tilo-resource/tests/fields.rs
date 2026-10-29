@@ -1482,3 +1482,59 @@ fn a_variants_atoms_are_one_of_the_values_set_and_its_other_fields_merge() {
         "a colour and a width changed apart both survive"
     );
 }
+
+/// A frame and how it looks: the look stored field by field.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Frame {
+    pub title: String,
+    pub look: Look,
+}
+
+/// How a frame looks.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Look {
+    #[model(atom)]
+    pub colour: String,
+    pub width: f64,
+    /// Typed into, so edited by character.
+    pub caption: String,
+}
+
+#[resource(kind = "test.frame", label = "Frame")]
+impl Frame {
+    /// Clear the title.
+    #[action]
+    pub fn untitle(&mut self) {
+        self.title.clear();
+    }
+}
+
+#[test]
+fn a_records_fields_only_ever_set_are_named_on_its_line() {
+    let published = Replica::<Frame>::new().published().unwrap();
+    let spec = published
+        .actions
+        .iter()
+        .find(|spec| spec.id == tilo_resource::FIELD_EDIT)
+        .unwrap();
+    let schema = spec.params()[0].schema.as_deref().unwrap().clone();
+    let (look, _) = described(&schema, "look");
+    assert!(
+        look.ends_with("; set one field of it: `colour`, `width`"),
+        "{look}"
+    );
+    let (caption, _) = described(&schema, "look.caption");
+    assert!(caption.contains("set, splice, replace"), "{caption}");
+    let listing = schema["description"].as_str().unwrap();
+    assert!(!listing.contains("- `look.colour`"), "{listing}");
+    let edit = serde_json::json!({
+        "path": [{ "field": "look" }, { "field": "width" }],
+        "op": "set",
+        "value": 2.0,
+    });
+    tilo_actions::validate_json_schema(&edit, &schema).expect("the edit fits the schema");
+    let edit: tilo_resource::Edit<Frame> = serde_json::from_value(edit).unwrap();
+    let mut frame = Replica::<Frame>::new();
+    frame.apply(edit).unwrap();
+    assert_eq!(frame.state().unwrap().look.width, 2.0);
+}

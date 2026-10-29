@@ -548,7 +548,11 @@ fn described_edit(
     ];
     let mut examples = Vec::new();
     let mut shapes: Vec<Vec<String>> = Vec::new();
-    for alternative in alternatives {
+    // Each listed path, its line, and the fields named on that line when it
+    // is a record stored field by field.
+    let mut listed: Vec<(String, String, Vec<String>)> = Vec::new();
+    let nexts = alternatives.iter().skip(1).map(Some).chain([None]);
+    for (alternative, next) in alternatives.iter().zip(nexts) {
         let at = |pointer: &str| alternative.pointer(pointer).cloned().unwrap_or_default();
         let template = at("/properties/path/examples/0");
         let ops: Vec<String> = at("/properties/op/enum")
@@ -562,14 +566,7 @@ fn described_edit(
             .unwrap_or_default();
         let value = at("/properties/value");
         let text = |key: &str| at(key).as_str().unwrap_or_default().to_owned();
-        let kind = value_kind(&value);
-        lines.push(format!(
-            "- `{}`: {} — {}{}",
-            text("/title"),
-            ops.join(", "),
-            text("/description"),
-            kind.map_or_else(String::new, |kind| format!(" ({kind})")),
-        ));
+        let title = text("/title");
         // One example per shape of path (a field, an item's field, an
         // entry): the listing names every path of each shape.
         let shape: Vec<String> = template
@@ -581,6 +578,43 @@ fn described_edit(
                     .collect()
             })
             .unwrap_or_default();
+        // A field of a record stored field by field, only ever set and with
+        // no paths inside it, is named on its record's line: its meaning is
+        // the record's, and a line of its own would repeat the record's
+        // path for every field.
+        let leaf = next.is_none_or(|next| {
+            next.get("title")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|next| !next.starts_with(&format!("{title}.")))
+        });
+        let in_record = shape
+            .iter()
+            .rev()
+            .take(2)
+            .filter(|kind| *kind == "field")
+            .count()
+            == 2;
+        let record = title
+            .rsplit_once('.')
+            .and_then(|(parent, key)| {
+                listed
+                    .iter_mut()
+                    .find(|(path, ..)| path == parent)
+                    .map(|(_, _, fields)| (fields, key))
+            })
+            .filter(|_| in_record && leaf && ops == ["set"]);
+        if let Some((fields, key)) = record {
+            fields.push(format!("`{key}`"));
+        } else {
+            let kind = value_kind(&value);
+            let line = format!(
+                "- `{title}`: {} — {}{}",
+                ops.join(", "),
+                text("/description"),
+                kind.map_or_else(String::new, |kind| format!(" ({kind})")),
+            );
+            listed.push((title.clone(), line, Vec::new()));
+        }
         if shapes.contains(&shape) {
             continue;
         }
@@ -592,6 +626,13 @@ fn described_edit(
         }
         examples.push(serde_json::Value::Object(example));
     }
+    lines.extend(listed.into_iter().map(|(_, line, fields)| {
+        if fields.is_empty() {
+            line
+        } else {
+            format!("{line}; set one field of it: {}", fields.join(", "))
+        }
+    }));
     if let Some(object) = schema.as_object_mut() {
         object.insert("description".into(), lines.join("\n").into());
         object.insert("examples".into(), examples.into());
