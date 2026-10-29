@@ -4,11 +4,13 @@ use super::*;
 
 /// A tiny PNG: the signature is all `Icon::sniff` and the entry need.
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR fixture";
+#[cfg(feature = "appimage")]
 const SVG: &[u8] = b"<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>";
 
 /// A type 2 `AppImage`: a 64-byte ELF64 header marked `AI\x02` whose
 /// section headers end where it ends, then the squashfs image. That is the
 /// layout the runtime has; nothing here runs.
+#[cfg(feature = "appimage")]
 pub(crate) fn appimage(image: &[u8]) -> Vec<u8> {
     let mut elf = vec![0u8; 64];
     elf[..4].copy_from_slice(b"\x7fELF");

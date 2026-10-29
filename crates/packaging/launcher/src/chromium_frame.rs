@@ -19,7 +19,6 @@
 //! launch naming its own `--user-data-dir` is not the default profile and
 //! is not touched.
 
-use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 
 use desktop_entry::EntrySource;
@@ -184,30 +183,8 @@ pub fn prefer_system_frame(profile: &ChromiumProfile) -> std::io::Result<Outcome
     }
     section.insert(CUSTOM_FRAME.to_string(), Value::Bool(false));
     let bytes = serde_json::to_vec(&Value::Object(document)).map_err(std::io::Error::other)?;
-    write_atomically(&path, &bytes)?;
+    tilo_files::native::atomic::write_private(&path, &bytes)?;
     Ok(outcome)
-}
-
-/// Replace `path` with `bytes` in one rename, so a crash leaves either the
-/// old file or the new one, never half of either. Private to the person,
-/// as Chromium creates its profile.
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
-    let dir = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("the profile file has no directory"))?;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)?;
-    let mut file = tempfile::Builder::new()
-        .prefix(".Preferences.tilo-")
-        .permissions(std::fs::Permissions::from_mode(0o600))
-        .tempfile_in(dir)?;
-    file.write_all(bytes)?;
-    file.as_file().sync_all()?;
-    file.persist(path).map_err(|error| error.error)?;
-    std::fs::File::open(dir)?.sync_all()
 }
 
 /// [`prefer_system_frame`] for the browser `launch` starts, if it is one.

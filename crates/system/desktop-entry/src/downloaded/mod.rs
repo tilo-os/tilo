@@ -813,7 +813,7 @@ impl Store {
         if let Some(parent) = self.declined.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        write_atomically(&self.declined, &text)
+        tilo_files::native::atomic::write(&self.declined, &text)
     }
 
     /// Whether the person declined the program at `path`: the same file,
@@ -911,7 +911,7 @@ impl Store {
             })
             .unwrap_or_default();
         let contents = render(identity, program, icon.as_deref(), &locations);
-        write_atomically(&path, contents.as_bytes())?;
+        tilo_files::native::atomic::write(&path, contents.as_bytes())?;
         Ok(desktop_id)
     }
 
@@ -1018,7 +1018,7 @@ impl Store {
             entry.icon.as_deref(),
             &locations,
         );
-        write_atomically(&path, rendered.as_bytes())
+        tilo_files::native::atomic::write(&path, rendered.as_bytes())
     }
 
     /// When the file the entry `desktop_id` starts is gone, make the newest
@@ -1123,7 +1123,7 @@ impl Store {
         let path = self
             .icons
             .join(format!("{slug}.{}", icon.format.extension()));
-        write_atomically(&path, &icon.bytes)?;
+        tilo_files::native::atomic::write(&path, &icon.bytes)?;
         Ok(path.to_string_lossy().into_owned())
     }
 }
@@ -1376,20 +1376,6 @@ fn render(
         let _ = writeln!(out, "{KEY_LOCATIONS}={}", list(&paths));
     }
     out
-}
-
-/// Write `bytes` to `path` through a temporary file beside it, so a reader
-/// (the scan's worker) never sees half an entry.
-fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent"))?;
-    let name = path
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
-    let temporary = dir.join(format!(".{}.partial", name.to_string_lossy()));
-    std::fs::write(&temporary, bytes)?;
-    std::fs::rename(&temporary, path)
 }
 
 #[cfg(test)]

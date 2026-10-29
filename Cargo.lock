@@ -18563,6 +18563,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-files",
  "tilo-seat-peer",
  "tilo-test-env",
  "tokio",
