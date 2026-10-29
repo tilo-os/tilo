@@ -824,3 +824,9 @@ the Discord worker. The patch backports upstream's removal of that assertion;
 the worker's bridge tests cover it. See
 `vendor/twilight-http-ratelimiting/PROVENANCE.md`.
 
+
+## Smithay
+
+`smithay` 0.7.0 is the checksum-verified MIT registry release the compositor
+(`tilo-compositor`) is built on. Only the library is vendored. See
+`vendor/smithay/TILO-PATCH.md` for its changes and when to drop them.
