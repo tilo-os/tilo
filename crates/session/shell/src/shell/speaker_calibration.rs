@@ -25,11 +25,11 @@
 //!   from the others ([`media::calibration_fusion`]).
 //!
 //! A microphone on another device is recorded only with that device's own
-//! consent ([`crate::shell::speaker_group::SpeakerListener`]); the device
+//! consent ([`tilo_device_fabric::speaker_group::SpeakerListener`]); the device
 //! measures its recording itself and sends back only the arrival, level and
 //! smoothed response. The calibrating device schedules each recording on the
 //! listening device's clock through the fabric clock estimate it holds for
-//! that device ([`crate::shell::fabric_clock`]), so capture timestamps and
+//! that device ([`tilo_device_fabric::clock`]), so capture timestamps and
 //! the sweep share one timeline; that estimate's error bound weights the
 //! reading.
 //!
@@ -42,10 +42,10 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
-
-use crate::shell::device_fabric::PersonalFabricAction;
-use crate::shell::speaker_group::{EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerTrim};
+use tilo_device_fabric::PersonalFabricAction;
+use tilo_device_fabric::speaker_group::{
+    EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerTrim,
+};
 use tilo_network_actor::fabric::DeviceId;
 
 /// Sweep used for every member: 20 Hz to 20 kHz over three seconds.
@@ -54,7 +54,7 @@ pub const SWEEP_END_HZ: f64 = 20_000.0;
 pub const SWEEP_SECONDS: f64 = 3.0; // a duration, not a pixel length
 pub const SWEEP_RATE: u32 = 48_000;
 /// Points of a smoothed response a listening device may send back.
-pub const MAX_RESPONSE_POINTS: usize = 512;
+pub use tilo_device_fabric::speaker_group::{HearingFailure, MAX_RESPONSE_POINTS, SpeakerHearing};
 /// How far ahead a sweep is scheduled: time for the requests to cross the
 /// fabric and for every stream to open.
 const SWEEP_LEAD_NS: i64 = 1_200_000_000;
@@ -72,7 +72,6 @@ const MAX_LISTEN_LEAD_NS: i64 = 10_000_000_000;
 /// measuring without the ones that did not.
 pub const MICROPHONE_CONSENT_WAIT: Duration = Duration::from_secs(60);
 /// Largest arrival a listening device may report.
-const MAX_REPORTED_ARRIVAL_NS: i64 = 1_000_000_000;
 
 /// The sweep every device plays and measures against.
 pub fn sweep() -> Result<media::calibration::LogSweep, String> {
@@ -90,62 +89,6 @@ fn sweep_capture_ns() -> i64 {
     sweep_ns
         .saturating_add(CAPTURE_PREROLL_NS)
         .saturating_add(CAPTURE_TAIL_NS)
-}
-
-/// Why a microphone has no reading of a sweep. Typed, so no process detail
-/// of the listening device crosses the fabric.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HearingFailure {
-    /// Nothing stood out of the noise: too far away, or muted.
-    NoArrival,
-    /// That device has not agreed to listen for this group.
-    NotAllowed,
-    MicrophoneGone,
-    /// The request arrived too late, or too far ahead, to record around.
-    OutOfWindow,
-    /// That device is already recording another sweep.
-    Busy,
-    CaptureFailed,
-    /// No estimate of that device's clock yet.
-    ClockUnknown,
-    /// No answer before the sweep's deadline.
-    NoAnswer,
-}
-
-impl HearingFailure {
-    #[must_use]
-    pub fn describe(self) -> String {
-        crate::shell::i18n::t(match self {
-            Self::NoArrival => "speaker-calibration-reason-not-heard",
-            Self::NotAllowed => "speaker-calibration-reason-not-allowed",
-            Self::MicrophoneGone => "speaker-calibration-reason-microphone-gone",
-            Self::OutOfWindow => "speaker-calibration-reason-out-of-window",
-            Self::Busy => "speaker-calibration-reason-busy",
-            Self::CaptureFailed => "speaker-calibration-reason-capture-failed",
-            Self::ClockUnknown => "speaker-calibration-reason-clock-unknown",
-            Self::NoAnswer => "speaker-calibration-reason-no-answer",
-        })
-    }
-}
-
-/// What one microphone heard of one sweep, as the listening device reports
-/// it: numbers measured from the recording, never the recording.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SpeakerHearing {
-    Heard {
-        /// Direct sound after the scheduled start, on the listening device's
-        /// clock.
-        arrival_ns: i64,
-        /// Level and peak-to-noise ratio in hundredths of a dB.
-        level_cdb: i32,
-        snr_cdb: i32,
-        /// The smoothed magnitude response on the sweep's fixed grid, in
-        /// hundredths of a dB.
-        response_cdb: Vec<i16>,
-    },
-    NotHeard {
-        failure: HearingFailure,
-    },
 }
 
 fn to_centi(value: f64) -> i32 {
@@ -167,10 +110,17 @@ fn to_centi_i16(value: f64) -> i16 {
     centi
 }
 
-impl SpeakerHearing {
+/// The calibration maths' view of a reading that crossed the fabric.
+pub trait HearingMeasurement: Sized {
     /// A heard sweep, from the listening device's own measurement.
-    #[must_use]
-    pub fn from_measurement(measurement: &media::calibration::SpeakerMeasurement) -> Self {
+    fn from_measurement(measurement: &media::calibration::SpeakerMeasurement) -> Self;
+    /// The reading as a measurement the calibration maths consumes. Its
+    /// room EQ is fitted later, from whichever reading the run keeps.
+    fn measurement(&self) -> Option<media::calibration::SpeakerMeasurement>;
+}
+
+impl HearingMeasurement for SpeakerHearing {
+    fn from_measurement(measurement: &media::calibration::SpeakerMeasurement) -> Self {
         Self::Heard {
             arrival_ns: measurement.arrival_ns,
             level_cdb: to_centi(measurement.level_db),
@@ -185,34 +135,7 @@ impl SpeakerHearing {
         }
     }
 
-    /// Bounded and plausible, as the fabric admits it.
-    #[must_use]
-    pub fn valid(&self) -> bool {
-        match self {
-            Self::Heard {
-                arrival_ns,
-                response_cdb,
-                ..
-            } => {
-                (-MAX_REPORTED_ARRIVAL_NS..=MAX_REPORTED_ARRIVAL_NS).contains(arrival_ns)
-                    && response_cdb.len() <= MAX_RESPONSE_POINTS
-            }
-            Self::NotHeard { .. } => true,
-        }
-    }
-
-    #[must_use]
-    pub const fn failure(&self) -> Option<HearingFailure> {
-        match self {
-            Self::Heard { .. } => None,
-            Self::NotHeard { failure } => Some(*failure),
-        }
-    }
-
-    /// The reading as a measurement the calibration maths consumes. Its
-    /// room EQ is fitted later, from whichever reading the run keeps.
-    #[must_use]
-    pub fn measurement(&self) -> Option<media::calibration::SpeakerMeasurement> {
+    fn measurement(&self) -> Option<media::calibration::SpeakerMeasurement> {
         let Self::Heard {
             arrival_ns,
             level_cdb,
@@ -454,7 +377,7 @@ pub struct SweepRequest {
 /// the estimate's error bound there, both in nanoseconds.
 #[must_use]
 pub fn schedule_on_peer(
-    clock: &crate::shell::fabric_clock::ClockEstimate,
+    clock: &tilo_device_fabric::clock::ClockEstimate,
     play_at_ns: i64,
 ) -> Option<(i64, i64)> {
     let mapping = clock.local_to_peer(u64::try_from(play_at_ns / 1_000).ok()?)?;
@@ -505,7 +428,7 @@ pub struct TimedMeasurement {
     in_flight: Option<InFlight>,
     /// A sweep waiting for the clocks it is scheduled through.
     waiting: Option<SweepRequest>,
-    clock_syncs: Vec<crate::shell::device_fabric_runtime::FabricClockSync>,
+    clock_syncs: Vec<tilo_device_fabric::clock::FabricClockSync>,
 }
 
 impl TimedMeasurement {
@@ -524,7 +447,7 @@ impl TimedMeasurement {
         Self {
             clock_syncs: peers
                 .into_iter()
-                .map(crate::shell::device_fabric_runtime::hold_fabric_clock_sync)
+                .map(tilo_device_fabric::clock::hold_fabric_clock_sync)
                 .collect(),
             local,
             send,
@@ -579,7 +502,7 @@ impl TimedMeasurement {
     }
 }
 
-fn clock_reason(reason: crate::shell::fabric_clock::ClockSyncFailure) -> String {
+fn clock_reason(reason: tilo_device_fabric::clock::ClockSyncFailure) -> String {
     crate::shell::i18n::t_args(
         "speaker-calibration-reason-clock",
         &[("reason", crate::shell::i18n::t(reason.message_key()).into())],
@@ -587,11 +510,11 @@ fn clock_reason(reason: crate::shell::fabric_clock::ClockSyncFailure) -> String 
 }
 
 impl TimedMeasurement {
-    fn clock_state(&self, device: &DeviceId) -> Option<crate::shell::fabric_clock::ClockSyncState> {
+    fn clock_state(&self, device: &DeviceId) -> Option<tilo_device_fabric::clock::ClockSyncState> {
         self.clock_syncs
             .iter()
             .find(|sync| sync.peer() == device)
-            .map(crate::shell::device_fabric_runtime::FabricClockSync::state)
+            .map(tilo_device_fabric::clock::FabricClockSync::state)
     }
 
     /// Start the waiting sweep once the member's clock and every listening
@@ -599,7 +522,7 @@ impl TimedMeasurement {
     /// member whose clock failed fails the sweep with the reason, a
     /// listening device whose clock failed just has no reading.
     fn start_waiting(&mut self) -> Option<Result<(), String>> {
-        use crate::shell::fabric_clock::ClockSyncState;
+        use tilo_device_fabric::clock::ClockSyncState;
         let request = self.waiting.as_ref()?;
         let syncing = std::iter::once(&request.member)
             .chain(request.microphones.iter().map(|(device, _)| device))
@@ -630,7 +553,7 @@ impl TimedMeasurement {
             }
             // Schedule the recording on that device's own clock, through the
             // estimate this device holds of it.
-            let scheduled = crate::shell::device_fabric_runtime::fabric_peer_clock(device)
+            let scheduled = tilo_device_fabric::clock::fabric_peer_clock(device)
                 .and_then(|clock| schedule_on_peer(&clock, play_at));
             let Some((start_ns, error_ns)) = scheduled else {
                 immediate.insert(
@@ -646,12 +569,11 @@ impl TimedMeasurement {
             self.play_locally(request.output, play_at)?;
         } else {
             // The member plays on its own clock, converted the same way.
-            let (start_ns, _) =
-                crate::shell::device_fabric_runtime::fabric_peer_clock(&request.member)
-                    .and_then(|clock| schedule_on_peer(&clock, play_at))
-                    .ok_or_else(|| {
-                        clock_reason(crate::shell::fabric_clock::ClockSyncFailure::NoReply)
-                    })?;
+            let (start_ns, _) = tilo_device_fabric::clock::fabric_peer_clock(&request.member)
+                .and_then(|clock| schedule_on_peer(&clock, play_at))
+                .ok_or_else(|| {
+                    clock_reason(tilo_device_fabric::clock::ClockSyncFailure::NoReply)
+                })?;
             (self.send)(
                 &request.member,
                 PersonalFabricAction::SpeakerSweep {

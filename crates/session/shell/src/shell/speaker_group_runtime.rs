@@ -26,13 +26,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::shell::device_fabric::{DeviceFabric, PersonalFabricAction};
-use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState};
-use crate::shell::speaker_group::{
+use tilo_device_fabric::clock::{ClockSyncFailure, ClockSyncState};
+use tilo_device_fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerFabricState, SpeakerGroup,
     SpeakerGroupId, SpeakerGroupMember, SpeakerListener, SpeakerMemberStatus, SpeakerMembership,
     SpeakerRole, SpeakerTrim,
 };
+use tilo_device_fabric::{DeviceFabric, PersonalFabricAction};
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
 
@@ -239,7 +239,9 @@ impl SpeakerGroupCore {
         members: &[MemberSpec],
         now: Instant,
     ) -> Result<Vec<Egress>, String> {
-        if self.groups.iter().flatten().count() >= crate::shell::speaker_group::MAX_SPEAKER_GROUPS {
+        if self.groups.iter().flatten().count()
+            >= tilo_device_fabric::speaker_group::MAX_SPEAKER_GROUPS
+        {
             return Err(crate::shell::i18n::t("speaker-error-too-many-groups"));
         }
         if self.led_group(id).is_some() {
@@ -427,7 +429,7 @@ impl SpeakerGroupCore {
                 return Err(crate::shell::i18n::t("speaker-error-group-changed"));
             }
             if self.memberships.iter().flatten().count()
-                >= crate::shell::speaker_group::MAX_SPEAKER_MEMBERSHIPS
+                >= tilo_device_fabric::speaker_group::MAX_SPEAKER_MEMBERSHIPS
             {
                 self.consents.insert(group_id, pending);
                 return Err(crate::shell::i18n::t("speaker-error-too-many-memberships"));
@@ -593,7 +595,8 @@ impl SpeakerGroupCore {
                             accepted: true,
                         },
                     ));
-                } else if self.consents.len() < crate::shell::speaker_group::MAX_SPEAKER_MEMBERSHIPS
+                } else if self.consents.len()
+                    < tilo_device_fabric::speaker_group::MAX_SPEAKER_MEMBERSHIPS
                     || self.consents.contains_key(group)
                 {
                     self.consents.insert(
@@ -1260,7 +1263,7 @@ fn build_group(
             device: local.clone(),
         },
     };
-    if !crate::shell::speaker_group::valid_group_name(&group.name) {
+    if !tilo_device_fabric::speaker_group::valid_group_name(&group.name) {
         return Err(crate::shell::i18n::t("speaker-error-name"));
     }
     group
@@ -1821,7 +1824,7 @@ pub(crate) fn authored_state(
 /// speaker-group action, including a rejected one.
 pub(crate) fn handle_action(
     network: &crate::shell::network::ShellNetwork,
-    envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
 ) -> bool {
     let Ok(local) = local_device(network) else {
         return false;
@@ -2454,7 +2457,7 @@ pub fn endpoints_from_graph(
             device.description.clone()
         };
         label.retain(|character| !character.is_control());
-        while label.len() > crate::shell::speaker_group::MAX_AUDIO_ENDPOINT_LABEL_BYTES {
+        while label.len() > tilo_device_fabric::speaker_group::MAX_AUDIO_ENDPOINT_LABEL_BYTES {
             label.pop();
         }
         label
@@ -2478,7 +2481,7 @@ pub fn endpoints_from_graph(
             is_default: device.is_default,
         })
         .filter(|endpoint| !endpoint.label.is_empty() && seen.insert(endpoint.selector))
-        .take(crate::shell::speaker_group::MAX_AUDIO_ENDPOINTS)
+        .take(tilo_device_fabric::speaker_group::MAX_AUDIO_ENDPOINTS)
         .collect()
 }
 

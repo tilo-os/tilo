@@ -57,7 +57,7 @@ impl RealtimeFabricSessionId {
         self.broker != [0; 16] && self.nonce != [0; 16]
     }
 
-    pub(crate) const fn into_broker_id(self) -> RealtimeSessionId {
+    pub const fn into_broker_id(self) -> RealtimeSessionId {
         RealtimeSessionId {
             broker: BrokerInstanceId(self.broker),
             nonce: self.nonce,
@@ -83,7 +83,7 @@ pub struct VerifiedAppRegistration {
 impl VerifiedAppRegistration {
     /// Construct only after the caller verified the installed package and
     /// resolved the workspace through trusted shell state.
-    pub(crate) fn new_verified(
+    pub fn new_verified(
         app_id: impl Into<String>,
         workspace_id: impl Into<String>,
     ) -> Result<Self, RealtimeSessionError> {
@@ -350,14 +350,6 @@ pub struct BrokerRealtimeFabricAdapter {
 }
 
 impl BrokerRealtimeFabricAdapter {
-    #[must_use]
-    pub fn new(broker: Arc<Mutex<RealtimeSessionBroker>>) -> Self {
-        Self::with_app_verifier(broker, |app_id| {
-            crate::shell::launcher::installed_apps()
-                .is_ok_and(|apps| apps.iter().any(|installed| installed.package_id == app_id))
-        })
-    }
-
     #[must_use]
     pub fn with_app_verifier(
         broker: Arc<Mutex<RealtimeSessionBroker>>,

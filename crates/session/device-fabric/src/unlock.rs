@@ -36,7 +36,7 @@ use tilo_unlock_protocol::{
 };
 use tilo_user_identity::{CertifiedFleet, DeviceStanding};
 
-use crate::shell::device_fabric::FabricError;
+use crate::FabricError;
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
 
@@ -69,7 +69,7 @@ pub struct UnlockEnrolment {
 
 impl UnlockEnrolment {
     /// Authored by the enrolled device itself, root-certified, bounded.
-    pub(crate) fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
+    pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if &self.stamp.device != owner || owner.as_str() != hex::encode(self.cert.device_public_key)
         {
             return Err(FabricError::ForeignAuthorship);
@@ -139,7 +139,7 @@ impl AutoApproval {
     }
 
     #[cfg(test)]
-    pub(crate) fn signed(
+    pub fn signed(
         root: &ed25519_dalek::SigningKey,
         device_public_key: [u8; 32],
         accepted_boot_chains: Vec<[u8; 32]>,
@@ -160,7 +160,7 @@ impl AutoApproval {
         Some(approval)
     }
 
-    pub(crate) fn validate(&self) -> Result<(), FabricError> {
+    pub fn validate(&self) -> Result<(), FabricError> {
         let valid = self.accepted_boot_chains.len() <= MAX_ACCEPTED_BOOT_CHAINS
             && <[u8; 64]>::try_from(self.signature.as_slice())
                 .ok()
@@ -189,9 +189,9 @@ pub struct UnlockFabricState {
 }
 
 impl UnlockFabricState {
-    pub(crate) fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
+    pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if self.enrolments.len() > MAX_UNLOCK_ENROLMENTS
-            || self.auto_approvals.len() > crate::shell::device_fabric::MAX_DEVICES
+            || self.auto_approvals.len() > crate::MAX_DEVICES
         {
             return Err(FabricError::SnapshotTooLarge);
         }
@@ -746,5 +746,5 @@ fn release(
 }
 
 #[cfg(test)]
-#[path = "device_unlock_tests.rs"]
+#[path = "unlock_tests.rs"]
 mod tests;

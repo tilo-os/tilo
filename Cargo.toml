@@ -429,6 +429,8 @@ members = [
     "crates/session/tilo-unlock-helper",
     "crates/session/audio-service",
     "crates/session/messaging-service",
+    "crates/session/device-fabric",
+    "crates/session/nearby-service",
     "crates/session/topbar",
     "crates/session/tray-host",
     "crates/session/wayland-ext",

@@ -110,9 +110,9 @@ impl ShellOverlayHost {
     /// person acts on (its power). Reachability is already the status, and
     /// latency or route counts are diagnostics.
     pub(super) fn fabric_health_detail(
-        health: &crate::shell::spatial_calibration::DeviceHealthView,
+        health: &tilo_device_fabric::spatial_calibration::DeviceHealthView,
     ) -> Option<String> {
-        use crate::shell::spatial_calibration::DevicePower;
+        use tilo_device_fabric::spatial_calibration::DevicePower;
         let power = match health.power {
             DevicePower::Unknown => return None,
             DevicePower::External => t("qs-devices-external-power"),
@@ -150,10 +150,10 @@ impl ShellOverlayHost {
                     .find(|device| device.id == proposal.peer)
                     .map_or_else(|| t("a11y-certified-display"), |device| device.label.clone());
                 let side = match proposal.edge {
-                    crate::shell::device_fabric::DisplayEdge::Left => "left",
-                    crate::shell::device_fabric::DisplayEdge::Right => "right",
-                    crate::shell::device_fabric::DisplayEdge::Top => "above",
-                    crate::shell::device_fabric::DisplayEdge::Bottom => "below",
+                    tilo_device_fabric::DisplayEdge::Left => "left",
+                    tilo_device_fabric::DisplayEdge::Right => "right",
+                    tilo_device_fabric::DisplayEdge::Top => "above",
+                    tilo_device_fabric::DisplayEdge::Bottom => "below",
                 };
                 (
                     t_args("qs-devices-place", &[("display", label.into()), ("side", side.into())]),
@@ -618,7 +618,7 @@ impl ShellOverlayHost {
             DeviceFabricPaneRow::Device(device) => {
                 let enabled = !device.is_local
                     && device.online
-                    && (device.kind == crate::shell::device_fabric::DeviceKind::Phone
+                    && (device.kind == tilo_device_fabric::DeviceKind::Phone
                         || matches!(
                             self.qs_selected_source,
                             Some(
@@ -630,7 +630,7 @@ impl ShellOverlayHost {
                         )
                         || selected.is_some_and(|media| media.targets.contains(&device.id)));
                 let mut detail = if device.kind
-                    == crate::shell::device_fabric::DeviceKind::Phone
+                    == tilo_device_fabric::DeviceKind::Phone
                     && !device.is_local
                     && device.online
                     && self.qs_selected_source.is_none()

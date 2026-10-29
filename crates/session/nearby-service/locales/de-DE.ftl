@@ -1,0 +1,15 @@
+nearby-error-destination-not-folder = das Ziel für Nearby Send ist kein Ordner
+nearby-error-too-large = die Übertragung überschreitet die Größenbegrenzung
+nearby-error-destination-name = für das Ziel von Nearby Send ist kein Name verfügbar
+nearby-error-outside-grant = die Quelle für Nearby Send liegt außerhalb der Freigabe von Dateien
+nearby-error-one-item = Nearby Send braucht genau eine normale Datei oder einen Ordner
+nearby-error-queue-full = die Warteschlange für Übertragungen ist voll
+nearby-error-quota-full = der Speicherplatz für Übertragungen ist voll
+nearby-error-disk-full = nicht genug freier Speicherplatz für diese Übertragung
+nearby-error-too-many = zu viele Übertragungen
+nearby-error-not-regular = die Quelle ist keine normale Datei
+nearby-error-folder-too-many = der Ordner enthält zu viele Einträge
+nearby-error-folder-special = der Ordner enthält eine Verknüpfung oder Sonderdatei
+nearby-error-folder-too-large = der Ordner überschreitet die Größenbegrenzung
+nearby-error-source-changed = die Quelle hat sich während der Vorbereitung geändert
+nearby-error-name-not-portable = der Name der Quelle ist nicht übertragbar

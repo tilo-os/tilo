@@ -5,6 +5,20 @@
 //! module applies one policy model to media, clipboard, roaming preferences,
 //! secret references and cross-screen input.
 
+pub mod clock;
+mod i18n {
+    ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
+}
+pub mod notification;
+pub mod random;
+pub mod realtime_session;
+pub mod remote_capture;
+pub mod secrets;
+pub mod spatial_calibration;
+pub mod speaker_group;
+pub mod tethering;
+pub mod unlock;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
@@ -185,7 +199,7 @@ pub struct DevicePresence {
 
 /// Whether the person's session on a device is locked, when they last locked
 /// or unlocked it themselves, and when they last used it
-/// (`crate::shell::owner_session`).
+/// (the shell's owner session).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnerSession {
     pub locked: bool,
@@ -408,7 +422,7 @@ pub enum PersonalFabricAction {
     NearbyTransferOffer {
         transfer_id: [u8; 16],
         name: String,
-        kind: crate::shell::nearby_transfer::TransferKind,
+        kind: tilo_nearby_service::TransferKind,
         total_bytes: u64,
         content_hash: [u8; 32],
     },
@@ -436,34 +450,34 @@ pub enum PersonalFabricAction {
     /// Ephemeral, policy-redacted notification state. Authorship comes only
     /// from the authenticated envelope source; the payload names no device.
     NotificationProject {
-        notification: crate::notifications::ContinuityNotificationProjection,
+        notification: crate::notification::ContinuityNotificationProjection,
     },
     NotificationRetire {
-        id: tilo_desktop::notifications::ContinuityNotificationId,
+        id: crate::notification::ContinuityNotificationId,
     },
     NotificationDismiss {
-        id: tilo_desktop::notifications::ContinuityNotificationId,
+        id: crate::notification::ContinuityNotificationId,
     },
     NotificationInvoke {
-        id: tilo_desktop::notifications::ContinuityNotificationId,
+        id: crate::notification::ContinuityNotificationId,
         action_key: String,
     },
     /// Metadata-only realtime handoff offer. Capture grants, media handles,
     /// and join URLs are deliberately not representable on this wire.
     RealtimeOffer {
-        offer: crate::shell::realtime_session::RealtimeFabricOffer,
+        offer: crate::realtime_session::RealtimeFabricOffer,
     },
     RealtimeAccept {
-        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+        session_id: crate::realtime_session::RealtimeFabricSessionId,
     },
     RealtimeMediaReady {
-        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+        session_id: crate::realtime_session::RealtimeFabricSessionId,
     },
     RealtimeStopSource {
-        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+        session_id: crate::realtime_session::RealtimeFabricSessionId,
     },
     RealtimeCancel {
-        session_id: crate::shell::realtime_session::RealtimeFabricSessionId,
+        session_id: crate::realtime_session::RealtimeFabricSessionId,
     },
     /// Request one fixed-profile virtual gamepad on the exact target. The
     /// payload contains semantic controls only: descriptors, HID reports,
@@ -539,12 +553,12 @@ pub enum PersonalFabricAction {
     /// scanner. PipeWire/V4L2 identities and local app approvals never appear
     /// in this payload.
     RemoteCaptureSignal {
-        signal: crate::shell::remote_capture::device::RemoteCaptureSignal,
+        signal: crate::remote_capture::RemoteCaptureSignal,
     },
     /// One bounded media or scanner chunk. The runtime validates it again
     /// against the exact authenticated peer/session/grant/profile binding.
     RemoteCaptureChunk {
-        chunk: crate::shell::remote_capture::device::RemoteCaptureChunk,
+        chunk: crate::remote_capture::RemoteCaptureChunk,
     },
     /// Shell-owned liveness and RTT probe. The random nonce is bound to the
     /// exact authenticated peer and is never exposed through an app contract.
@@ -554,7 +568,7 @@ pub enum PersonalFabricAction {
     /// Power is diagnostic routing context, never authorization. Latency is
     /// deliberately absent because the probing compositor measures it.
     DeviceHealthReport {
-        report: crate::shell::spatial_calibration::DeviceHealthReport,
+        report: crate::spatial_calibration::DeviceHealthReport,
     },
     /// Fabric clock probe, sent only while something on the prober holds
     /// this peer's clock in sync. `sent_us` is the prober's
@@ -567,12 +581,12 @@ pub enum PersonalFabricAction {
     /// The reporter's receive and reply times for one clock probe, from
     /// which the prober estimates clock offset and skew.
     FabricClockReport {
-        report: crate::shell::fabric_clock::ClockReport,
+        report: crate::clock::ClockReport,
     },
     /// Consent-bound request, grant, sealed credential, or teardown for an
     /// exact certified phone. Plaintext Wi-Fi secrets are not representable.
     Tethering {
-        signal: crate::shell::personal_tethering::TetheringSignal,
+        signal: crate::tethering::TetheringSignal,
     },
     /// Abort one exact authenticated Bluetooth transaction. Both peers roll
     /// back only the accessory bound to this request; no inventory or bond
@@ -605,39 +619,39 @@ pub enum PersonalFabricAction {
         /// Sent by the playing device only: whether it has the source's
         /// clock, so the source can show a member still syncing, or why it
         /// cannot play in time.
-        playout: Option<crate::shell::fabric_clock::ClockSyncState>,
+        playout: Option<crate::clock::ClockSyncState>,
     },
     /// Ask one exact member device to join a group. The member's own
     /// compositor asks its user; nothing plays until it approves.
     SpeakerGroupInvite {
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: crate::speaker_group::SpeakerGroupId,
         name: String,
-        output: crate::shell::speaker_group::EndpointSelector,
-        role: crate::shell::speaker_group::SpeakerRole,
+        output: crate::speaker_group::EndpointSelector,
+        role: crate::speaker_group::SpeakerRole,
     },
     /// The member's answer. The durable consent itself is the membership the
     /// member authors in its own snapshot; this only reports promptly.
     SpeakerGroupDecision {
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: crate::speaker_group::SpeakerGroupId,
         accepted: bool,
     },
     /// The leader removed this member or deleted the group, or the member
     /// left. Either side tears down every session of the group.
     SpeakerGroupLeave {
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: crate::speaker_group::SpeakerGroupId,
     },
     /// Start one playback session on a consented member. Any of the person's
     /// devices may play to a group; the member admits it only while its own
     /// membership still covers the group as published by the leader.
     SpeakerGroupSessionOffer {
         session_id: [u8; 16],
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: crate::speaker_group::SpeakerGroupId,
     },
     /// Admission result. Approval carries a fresh random capability bound to
     /// the exact source and session.
     SpeakerGroupSessionDecision {
         session_id: [u8; 16],
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: crate::speaker_group::SpeakerGroupId,
         authorization: Option<[u8; 16]>,
     },
     SpeakerGroupSessionStop {
@@ -647,7 +661,7 @@ pub enum PersonalFabricAction {
     /// Play a short sound on one of the target's own outputs so the person
     /// setting up speakers can tell which one it is. Rate-limited there.
     SpeakerIdentify {
-        output: crate::shell::speaker_group::EndpointSelector,
+        output: crate::speaker_group::EndpointSelector,
     },
     /// The group's leader, calibrating, asks a member to play the
     /// measurement sweep so its first sample leaves the speaker at `start_ns`
@@ -655,21 +669,21 @@ pub enum PersonalFabricAction {
     /// schedule through its estimate of the member's clock, and refuses to
     /// calibrate without one.
     SpeakerSweep {
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: crate::speaker_group::SpeakerGroupId,
         start_ns: i64,
     },
     /// The group's leader asks one of the person's devices to let it listen
     /// with `microphone` while calibrating the group. That device's own
     /// compositor asks its user; nothing is recorded until it approves.
     SpeakerListenInvite {
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: crate::speaker_group::SpeakerGroupId,
         name: String,
-        microphone: crate::shell::speaker_group::EndpointSelector,
+        microphone: crate::speaker_group::EndpointSelector,
     },
     /// The answer. The durable consent itself is the listener record the
     /// device authors in its own snapshot; this only reports promptly.
     SpeakerListenDecision {
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: crate::speaker_group::SpeakerGroupId,
         accepted: bool,
     },
     /// The calibrating leader asks a consenting device to record around one
@@ -678,17 +692,17 @@ pub enum PersonalFabricAction {
     /// schedule through the fabric clock estimate it holds of that device, so
     /// the listener needs no estimate of its own.
     SpeakerListen {
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: crate::speaker_group::SpeakerGroupId,
         sweep: [u8; 16],
-        microphone: crate::shell::speaker_group::EndpointSelector,
+        microphone: crate::speaker_group::EndpointSelector,
         start_ns: i64,
     },
     /// What that microphone heard of the sweep, measured on the device. The
     /// recording itself never crosses the fabric.
     SpeakerHeard {
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: crate::speaker_group::SpeakerGroupId,
         sweep: [u8; 16],
-        hearing: crate::shell::speaker_calibration::SpeakerHearing,
+        hearing: crate::speaker_group::SpeakerHearing,
     },
     /// The legacy app windows this device shows right now, each at the size
     /// it shows it. The device running a listed window streams that one
@@ -742,7 +756,7 @@ pub enum PersonalFabricAction {
         tab: u64,
     },
     /// Certify a device the sender paired: the devices that can approve it
-    /// ask their person (`crate::shell::device_certification`). The ask,
+    /// ask their person (the shell's device certification). The ask,
     /// postcard-encoded.
     CertifyAsk {
         ask: Vec<u8>,
@@ -958,7 +972,7 @@ impl PersonalFabricActionEnvelope {
                 role,
             } => {
                 if !group.valid()
-                    || !crate::shell::speaker_group::valid_group_name(name)
+                    || !crate::speaker_group::valid_group_name(name)
                     || !output.valid()
                     || !role.valid()
                 {
@@ -981,7 +995,7 @@ impl PersonalFabricActionEnvelope {
                 microphone,
             } => {
                 if !group.valid()
-                    || !crate::shell::speaker_group::valid_group_name(name)
+                    || !crate::speaker_group::valid_group_name(name)
                     || !microphone.valid()
                 {
                     return Err(FabricError::InvalidAction);
@@ -1079,7 +1093,7 @@ impl PersonalFabricActionEnvelope {
                 }
             }
             PersonalFabricAction::RemoteCaptureChunk { chunk } => {
-                use crate::shell::remote_capture::device::RemoteCaptureKind;
+                use crate::remote_capture::RemoteCaptureKind;
                 if !chunk.valid_for(RemoteCaptureKind::Camera)
                     && !chunk.valid_for(RemoteCaptureKind::Microphone)
                     && !chunk.valid_for(RemoteCaptureKind::DocumentScanner)
@@ -1176,7 +1190,7 @@ impl PersonalFabricActionEnvelope {
                 content_hash,
                 bytes,
             } => {
-                if !valid_nearby_file_name(file_name)
+                if !tilo_nearby_service::valid_nearby_file_name(file_name)
                     || bytes.is_empty()
                     || bytes.len() > MAX_NEARBY_DROP_BYTES
                     || blake3::hash(bytes).as_bytes() != content_hash
@@ -1189,7 +1203,8 @@ impl PersonalFabricActionEnvelope {
                 file_name,
                 ..
             } => {
-                if request_id == &[0; 16] || !valid_nearby_file_name(file_name) {
+                if request_id == &[0; 16] || !tilo_nearby_service::valid_nearby_file_name(file_name)
+                {
                     return Err(FabricError::InvalidAction);
                 }
             }
@@ -1200,9 +1215,9 @@ impl PersonalFabricActionEnvelope {
                 ..
             } => {
                 if transfer_id == &[0; 16]
-                    || !valid_nearby_file_name(name)
+                    || !tilo_nearby_service::valid_nearby_file_name(name)
                     || *total_bytes == 0
-                    || *total_bytes > crate::shell::nearby_transfer::MAX_TRANSFER_BYTES
+                    || *total_bytes > tilo_nearby_service::MAX_TRANSFER_BYTES
                 {
                     return Err(FabricError::InvalidAction);
                 }
@@ -1215,7 +1230,7 @@ impl PersonalFabricActionEnvelope {
             } => {
                 if request_id == &[0; 16]
                     || transfer_id == &[0; 16]
-                    || *committed_offset > crate::shell::nearby_transfer::MAX_TRANSFER_BYTES
+                    || *committed_offset > tilo_nearby_service::MAX_TRANSFER_BYTES
                 {
                     return Err(FabricError::InvalidAction);
                 }
@@ -1582,7 +1597,7 @@ impl WifiCredential {
         {
             return Err(FabricError::InvalidWifiCredential);
         }
-        crate::shell::device_fabric_secrets::validate_wifi_envelopes(&self.sealed_secret)
+        crate::secrets::validate_wifi_envelopes(&self.sealed_secret)
             .map_err(|_| FabricError::InvalidWifiCredential)?;
         Ok(())
     }
@@ -1758,7 +1773,7 @@ impl ScrollUnit {
 }
 
 impl FabricInputEvent {
-    pub(crate) fn validate(self) -> bool {
+    pub fn validate(self) -> bool {
         match self {
             Self::PointerMotion { x, y } => {
                 x.unsigned_abs() <= 1_000_000 && y.unsigned_abs() <= 1_000_000
@@ -1843,10 +1858,10 @@ pub struct DeviceFabricSnapshot {
     pub settings: Vec<RoamingSetting>,
     pub wifi: Vec<WifiCredential>,
     pub display: Option<DisplayPlacement>,
-    pub speakers: crate::shell::speaker_group::SpeakerFabricState,
+    pub speakers: crate::speaker_group::SpeakerFabricState,
     /// Disk-unlock enrolments of this device and the owner's unlock
     /// settings published from it.
-    pub unlock: crate::shell::device_unlock::UnlockFabricState,
+    pub unlock: crate::unlock::UnlockFabricState,
 }
 
 impl DeviceFabricSnapshot {
@@ -2459,10 +2474,10 @@ impl DeviceFabric {
 
 impl DeviceFabric {
     /// Every group any certified device leads, newest record per id.
-    pub fn speaker_groups(&self) -> Vec<&crate::shell::speaker_group::SpeakerGroup> {
+    pub fn speaker_groups(&self) -> Vec<&crate::speaker_group::SpeakerGroup> {
         let mut winners = BTreeMap::<
-            crate::shell::speaker_group::SpeakerGroupId,
-            &crate::shell::speaker_group::SpeakerGroup,
+            crate::speaker_group::SpeakerGroupId,
+            &crate::speaker_group::SpeakerGroup,
         >::new();
         for group in self
             .snapshots
@@ -2483,8 +2498,8 @@ impl DeviceFabric {
 
     pub fn speaker_group(
         &self,
-        id: crate::shell::speaker_group::SpeakerGroupId,
-    ) -> Option<&crate::shell::speaker_group::SpeakerGroup> {
+        id: crate::speaker_group::SpeakerGroupId,
+    ) -> Option<&crate::speaker_group::SpeakerGroup> {
         self.speaker_groups()
             .into_iter()
             .find(|group| group.id == id)
@@ -2493,9 +2508,9 @@ impl DeviceFabric {
     /// Where each member of `group` stands, in member order.
     pub fn speaker_member_states(
         &self,
-        group: &crate::shell::speaker_group::SpeakerGroup,
-    ) -> Vec<crate::shell::speaker_group::SpeakerMemberStatus> {
-        use crate::shell::speaker_group::SpeakerMemberStatus;
+        group: &crate::speaker_group::SpeakerGroup,
+    ) -> Vec<crate::speaker_group::SpeakerMemberStatus> {
+        use crate::speaker_group::SpeakerMemberStatus;
         group
             .members
             .iter()
@@ -2539,7 +2554,7 @@ impl DeviceFabric {
     /// join or does not offer that output.
     pub fn admit_speaker_group(
         &self,
-        group: &crate::shell::speaker_group::SpeakerGroup,
+        group: &crate::speaker_group::SpeakerGroup,
     ) -> Result<(), FabricError> {
         group.validate(&group.leader)?;
         for member in &group.members {
@@ -2571,16 +2586,6 @@ fn valid_mime(value: &str) -> bool {
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '+' | '_'))
-}
-
-pub(crate) fn valid_nearby_file_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 255
-        && value != "."
-        && value != ".."
-        && !value
-            .chars()
-            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
 }
 
 fn seat_bounds(screens: &[(DisplayRect, DisplayRect)]) -> Option<(i32, i32, i32, i32)> {
@@ -2675,7 +2680,7 @@ fn valid_bluetooth_pairing_action(
 /// Whether a settings-store leaf is part of a person's fabric: a leaf of a
 /// section the person holds ([`settings_store::placement`]). A section
 /// nobody declared stays on the device.
-pub(super) fn valid_setting_key(key: &str) -> bool {
+pub fn valid_setting_key(key: &str) -> bool {
     valid_identifier(key, 256)
         && settings_store::placement::holder_of_key(key)
             == Some(settings_store::placement::Holder::Person)
@@ -2832,8 +2837,8 @@ mod tests {
                 scale_milli: 1000,
                 stamp: stamp(device, counter),
             }),
-            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
-            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
+            unlock: crate::unlock::UnlockFabricState::default(),
+            speakers: crate::speaker_group::SpeakerFabricState::default(),
         }
     }
 
@@ -3495,7 +3500,7 @@ mod tests {
                 envelope(PersonalFabricAction::NearbyTransferOffer {
                     transfer_id: [4; 16],
                     name: "Photos".into(),
-                    kind: crate::shell::nearby_transfer::TransferKind::FolderArchive,
+                    kind: tilo_nearby_service::TransferKind::FolderArchive,
                     total_bytes: 100,
                     content_hash: [5; 32],
                 })
@@ -3516,7 +3521,7 @@ mod tests {
                 envelope(PersonalFabricAction::NearbyTransferOffer {
                     transfer_id: [4; 16],
                     name: "../escape".into(),
-                    kind: crate::shell::nearby_transfer::TransferKind::File,
+                    kind: tilo_nearby_service::TransferKind::File,
                     total_bytes: 100,
                     content_hash: [5; 32],
                 })
@@ -3710,7 +3715,7 @@ mod tests {
             let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
             let owner_text = hex::encode(key.verifying_key().to_bytes());
             let owner = id(&owner_text);
-            let mut credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+            let mut credential = crate::secrets::seal_wifi_credential(
                 "Corp",
                 os_actions::WifiSecurity::Wpa2,
                 "legacy-secret",
@@ -3727,8 +3732,8 @@ mod tests {
             credential.security = os_actions::WifiSecurity::Enterprise;
 
             assert_eq!(
-                crate::shell::device_fabric_secrets::open_wifi_credential(&credential, &key),
-                Err(crate::shell::device_fabric_secrets::WifiSecretError::InvalidCredential)
+                crate::secrets::open_wifi_credential(&credential, &key),
+                Err(crate::secrets::WifiSecretError::InvalidCredential)
             );
 
             let mut source = snapshot(&owner_text, 1, 0, FabricCapabilities::default());
@@ -4097,21 +4102,21 @@ mod tests {
             .unwrap();
             assert_eq!(nearby.first(), Some(&13));
             let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
-                id: tilo_desktop::notifications::ContinuityNotificationId {
+                id: crate::notification::ContinuityNotificationId {
                     epoch: [1; 16],
                     token: [2; 16],
                 },
             })
             .unwrap();
             assert_eq!(notification.first(), Some(&21));
-            let realtime_id = crate::shell::realtime_session::RealtimeFabricSessionId {
+            let realtime_id = crate::realtime_session::RealtimeFabricSessionId {
                 broker: [1; 16],
                 nonce: [2; 16],
             };
             for (action, index) in [
                 (
                     PersonalFabricAction::RealtimeOffer {
-                        offer: crate::shell::realtime_session::RealtimeFabricOffer {
+                        offer: crate::realtime_session::RealtimeFabricOffer {
                             session_id: realtime_id,
                             app_id: "so.tilo.chat".into(),
                             workspace_id: "room".into(),
@@ -4119,8 +4124,7 @@ mod tests {
                             room_id: "call".into(),
                             semantic_position: None,
                             media_bits: 1,
-                            controls: crate::shell::realtime_session::RealtimeControlState::default(
-                            ),
+                            controls: crate::realtime_session::RealtimeControlState::default(),
                             expires_unix_ms: 20_000,
                         },
                     },
@@ -4202,8 +4206,8 @@ mod tests {
         fn notification_actions_are_source_bound_bounded_and_fresh() {
             let source = id("source");
             let target = id("target");
-            let notification = crate::notifications::ContinuityNotificationProjection {
-                id: tilo_desktop::notifications::ContinuityNotificationId {
+            let notification = crate::notification::ContinuityNotificationProjection {
+                id: crate::notification::ContinuityNotificationId {
                     epoch: [1; 16],
                     token: [2; 16],
                 },
@@ -4231,7 +4235,7 @@ mod tests {
 
             let invalid = PersonalFabricActionEnvelope {
                 action: PersonalFabricAction::NotificationInvoke {
-                    id: tilo_desktop::notifications::ContinuityNotificationId {
+                    id: crate::notification::ContinuityNotificationId {
                         epoch: [1; 16],
                         token: [2; 16],
                     },
@@ -4248,8 +4252,8 @@ mod tests {
         fn realtime_offer_rejects_spoofing_urls_and_stale_metadata() {
             let source = id("source");
             let target = id("target");
-            let mut offer = crate::shell::realtime_session::RealtimeFabricOffer {
-                session_id: crate::shell::realtime_session::RealtimeFabricSessionId {
+            let mut offer = crate::realtime_session::RealtimeFabricOffer {
+                session_id: crate::realtime_session::RealtimeFabricSessionId {
                     broker: [1; 16],
                     nonce: [2; 16],
                 },
@@ -4259,7 +4263,7 @@ mod tests {
                 room_id: "call-7".into(),
                 semantic_position: Some("stage".into()),
                 media_bits: 1,
-                controls: crate::shell::realtime_session::RealtimeControlState::default(),
+                controls: crate::realtime_session::RealtimeControlState::default(),
                 expires_unix_ms: 20_000,
             };
             let envelope = PersonalFabricActionEnvelope {
@@ -4497,7 +4501,7 @@ mod tests {
 
     #[test]
     fn speaker_group_wire_rejects_zero_identities_and_bad_names() {
-        use crate::shell::speaker_group::{
+        use crate::speaker_group::{
             EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerRole, StereoSide,
         };
         let source = id("source");
@@ -4570,7 +4574,7 @@ mod tests {
 
     #[test]
     fn a_snapshot_cannot_carry_a_group_led_by_another_device() {
-        use crate::shell::speaker_group::{
+        use crate::speaker_group::{
             EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerGroupMember, SpeakerRole,
             SpeakerTrim, StereoSide,
         };

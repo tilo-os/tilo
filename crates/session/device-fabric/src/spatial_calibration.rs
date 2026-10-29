@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::shell::device_fabric::DisplayEdge;
+use crate::DisplayEdge;
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::DisplayRect;
 
@@ -278,7 +278,7 @@ pub struct DeviceHealthView {
 
 /// Reply to one health probe: the reporter's power state, bound to the
 /// probe's nonce. Clock timestamps travel only on the Media-classified
-/// [`crate::shell::fabric_clock::ClockReport`].
+/// [`crate::clock::ClockReport`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceHealthReport {
     pub probe_nonce: [u8; 16],

@@ -739,9 +739,9 @@ pub(crate) mod tests {
     fn speaker_group(
         seed: u8,
         name: &str,
-        state: crate::shell::speaker_group::SpeakerMemberStatus,
+        state: tilo_device_fabric::speaker_group::SpeakerMemberStatus,
     ) -> crate::shell::speaker_group_runtime::SpeakerGroupView {
-        use crate::shell::speaker_group::{
+        use tilo_device_fabric::speaker_group::{
             EndpointSelector, SpeakerGroupId, SpeakerRole, SpeakerTrim, StereoSide,
         };
         crate::shell::speaker_group_runtime::SpeakerGroupView {
@@ -764,7 +764,7 @@ pub(crate) mod tests {
 
     #[test]
     fn speaker_groups_are_output_targets_named_like_the_palette_and_revalidated() {
-        use crate::shell::speaker_group::{SpeakerGroupId, SpeakerMemberStatus};
+        use tilo_device_fabric::speaker_group::{SpeakerGroupId, SpeakerMemberStatus};
         let mut view = fabric();
         view.speaker_groups.groups = vec![
             speaker_group(0x51, "Living room", SpeakerMemberStatus::Ready),
@@ -877,7 +877,7 @@ pub(crate) mod tests {
         FabricDeviceView {
             id: DeviceId::new(id).expect("device id"),
             label: label.into(),
-            kind: crate::shell::device_fabric::DeviceKind::Laptop,
+            kind: tilo_device_fabric::DeviceKind::Laptop,
             is_local: false,
             online: true,
             audio_output: true,

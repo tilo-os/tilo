@@ -279,7 +279,7 @@ pub(super) fn install_device_fabric_bridge(
                             crate::shell::i18n::t("fabric-focus-app-for-remote-input")
                         })?;
                     let app =
-                        crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+                        tilo_device_fabric::realtime_session::VerifiedAppRegistration::new_verified(
                             binding.app_id,
                             binding.workspace_id,
                         )
@@ -428,15 +428,13 @@ pub(super) fn end_spatial_control(
     let events = session
         .pressed_keys
         .into_iter()
-        .map(
-            |keycode| crate::shell::device_fabric::FabricInputEvent::Key {
-                keycode,
-                pressed: false,
-                modifiers: 0,
-            },
-        )
+        .map(|keycode| tilo_device_fabric::FabricInputEvent::Key {
+            keycode,
+            pressed: false,
+            modifiers: 0,
+        })
         .chain(session.pressed_buttons.into_iter().map(|button| {
-            crate::shell::device_fabric::FabricInputEvent::PointerButton {
+            tilo_device_fabric::FabricInputEvent::PointerButton {
                 button,
                 pressed: false,
             }

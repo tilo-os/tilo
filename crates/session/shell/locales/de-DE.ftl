@@ -1025,13 +1025,6 @@ portal-capture-primary-display = Hauptbildschirm
 portal-capture-system-audio = Systemaudio
 
 # Die Rolle eines Lautsprechers in einer Lautsprechergruppe, als $role eines Satzes („Wohnzimmer als rechter Lautsprecher beitreten“)
-speaker-role-left = linker Lautsprecher
-speaker-role-right = rechter Lautsprecher
-speaker-role-centre = Mittellautsprecher
-speaker-role-subwoofer = Subwoofer
-speaker-role-surround-left = linker Surround-Lautsprecher
-speaker-role-surround-right = rechter Surround-Lautsprecher
-speaker-role-room = Raumlautsprecher
 speaker-group-summary = { $total ->
     [one] { $ready } von 1 Lautsprecher bereit
    *[other] { $ready } von { $total } Lautsprechern bereit
@@ -2096,7 +2089,6 @@ speaker-error-audio-unavailable = der Ton für Lautsprechergruppen ist nicht ver
 speaker-error-other-session = auf diesem Gerät spielt bereits eine andere Lautsprechergruppe
 
 # Lautsprecher für die Kalibrierung messen
-speaker-calibration-reason-microphone-gone = dieses Mikrofon ist nicht mehr verbunden
 speaker-calibration-reason-output-gone = der Ausgang dieses Lautsprechers ist nicht mehr verbunden
 speaker-calibration-reason-play-failed = das Messsignal konnte nicht abgespielt werden: { $error }
 speaker-calibration-reason-clock = die Uhr dieses Lautsprechers konnte nicht abgeglichen werden: { $reason }
@@ -2106,13 +2098,6 @@ now-playing-speakers-playing = Spielt auf { $group }
 now-playing-speakers-connecting = { $group }: verbindet…
 now-playing-speakers-syncing = { $group }: Uhren werden abgeglichen…
 now-playing-speakers-clock-failed = { $group } kann nicht synchron spielen: { $reason }
-speaker-calibration-reason-not-heard = dort hob sich kein Messsignal vom Rauschen ab
-speaker-calibration-reason-not-allowed = dieses Gerät hat sein Mikrofon nicht freigegeben
-speaker-calibration-reason-out-of-window = die Anfrage kam zu spät auf diesem Gerät an
-speaker-calibration-reason-busy = dieses Mikrofon war mit einem anderen Messsignal beschäftigt
-speaker-calibration-reason-capture-failed = die Aufnahme ist fehlgeschlagen
-speaker-calibration-reason-clock-unknown = die Uhr dieses Geräts ist noch nicht synchronisiert
-speaker-calibration-reason-no-answer = dieses Gerät hat nicht rechtzeitig geantwortet
 speaker-calibration-reason-not-at-seat = kein Mikrofon hat ihn deutlich genug gehört
 speaker-calibration-failed = { $speaker } konnte nicht gemessen werden: { $reason }
 speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
@@ -2233,21 +2218,6 @@ catalogue-error-flathub-missing = Flathub ist auf diesem Gerät nicht eingericht
 catalogue-error-flathub-not-found = sie wurde installiert, kann aber nicht zum Öffnen gefunden werden
 
 # Warum das Senden an ein Gerät in der Nähe fehlschlug
-nearby-error-destination-not-folder = das Ziel für Nearby Send ist kein Ordner
-nearby-error-too-large = die Übertragung überschreitet die Größenbegrenzung
-nearby-error-destination-name = für das Ziel von Nearby Send ist kein Name verfügbar
-nearby-error-outside-grant = die Quelle für Nearby Send liegt außerhalb der Freigabe von Dateien
-nearby-error-one-item = Nearby Send braucht genau eine normale Datei oder einen Ordner
-nearby-error-queue-full = die Warteschlange für Übertragungen ist voll
-nearby-error-quota-full = der Speicherplatz für Übertragungen ist voll
-nearby-error-disk-full = nicht genug freier Speicherplatz für diese Übertragung
-nearby-error-too-many = zu viele Übertragungen
-nearby-error-not-regular = die Quelle ist keine normale Datei
-nearby-error-folder-too-many = der Ordner enthält zu viele Einträge
-nearby-error-folder-special = der Ordner enthält eine Verknüpfung oder Sonderdatei
-nearby-error-folder-too-large = der Ordner überschreitet die Größenbegrenzung
-nearby-error-source-changed = die Quelle hat sich während der Vorbereitung geändert
-nearby-error-name-not-portable = der Name der Quelle ist nicht übertragbar
 
 # AirDrop lab receiver verification
 airdrop-verify-title = AirDrop-Empfänger überprüfen

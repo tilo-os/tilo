@@ -3323,7 +3323,7 @@ pub fn launch_with_uri(
 pub fn launch_media_handoff(
     package_id: &str,
     room: RoomId,
-    locator: &crate::shell::device_fabric::MediaSourceLocator,
+    locator: &tilo_device_fabric::MediaSourceLocator,
     title: &str,
     request_id: [u8; 16],
     position_ms: u64,
@@ -3336,17 +3336,17 @@ pub fn launch_media_handoff(
         resume_playing,
     };
     match locator {
-        crate::shell::device_fabric::MediaSourceLocator::Workspace { path } => {
+        tilo_device_fabric::MediaSourceLocator::Workspace { path } => {
             let document = media::Source::workspace_root().join(path);
             launch_with_context(package_id, room, Some(&document), None, None, Some(state))
         }
-        crate::shell::device_fabric::MediaSourceLocator::RemoteStream { url } => {
+        tilo_device_fabric::MediaSourceLocator::RemoteStream { url } => {
             launch_with_context(package_id, room, None, Some(url), None, Some(state))
         }
-        crate::shell::device_fabric::MediaSourceLocator::AppResource { uri } => {
+        tilo_device_fabric::MediaSourceLocator::AppResource { uri } => {
             launch_with_context(package_id, room, None, Some(uri), None, Some(state))
         }
-        crate::shell::device_fabric::MediaSourceLocator::PersonalTransfer { .. } => {
+        tilo_device_fabric::MediaSourceLocator::PersonalTransfer { .. } => {
             // Transfer identities are deliberately not paths. The fabric
             // runtime must resolve and hash-verify one before launching.
             Err(LaunchError::NoWorkspace)

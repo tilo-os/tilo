@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::shell::device_fabric::FabricError;
+use crate::FabricError;
 pub use runtime_collab::SpeakerMemberStatus;
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
@@ -218,7 +218,7 @@ impl SpeakerRole {
     /// Short human description, used in consent prompts and status rows.
     #[must_use]
     pub fn describe(self) -> String {
-        crate::shell::i18n::t(self.describe_key())
+        crate::i18n::t(self.describe_key())
     }
 
     #[must_use]
@@ -654,6 +654,93 @@ fn round_u32(value: f64) -> u32 {
         value.round().clamp(0.0, f64::from(u32::MAX)) as u32
     } else {
         0
+    }
+}
+
+/// Most points of a heard sweep's magnitude response a reading carries.
+pub const MAX_RESPONSE_POINTS: usize = 512;
+/// Furthest from the scheduled start a reported arrival may be.
+const MAX_REPORTED_ARRIVAL_NS: i64 = 1_000_000_000;
+
+/// Why a microphone has no reading of a sweep. Typed, so no process detail
+/// of the listening device crosses the fabric.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HearingFailure {
+    /// Nothing stood out of the noise: too far away, or muted.
+    NoArrival,
+    /// That device has not agreed to listen for this group.
+    NotAllowed,
+    MicrophoneGone,
+    /// The request arrived too late, or too far ahead, to record around.
+    OutOfWindow,
+    /// That device is already recording another sweep.
+    Busy,
+    CaptureFailed,
+    /// No estimate of that device's clock yet.
+    ClockUnknown,
+    /// No answer before the sweep's deadline.
+    NoAnswer,
+}
+
+impl HearingFailure {
+    #[must_use]
+    pub fn describe(self) -> String {
+        crate::i18n::t(match self {
+            Self::NoArrival => "speaker-calibration-reason-not-heard",
+            Self::NotAllowed => "speaker-calibration-reason-not-allowed",
+            Self::MicrophoneGone => "speaker-calibration-reason-microphone-gone",
+            Self::OutOfWindow => "speaker-calibration-reason-out-of-window",
+            Self::Busy => "speaker-calibration-reason-busy",
+            Self::CaptureFailed => "speaker-calibration-reason-capture-failed",
+            Self::ClockUnknown => "speaker-calibration-reason-clock-unknown",
+            Self::NoAnswer => "speaker-calibration-reason-no-answer",
+        })
+    }
+}
+
+/// What one microphone heard of one sweep, as the listening device reports
+/// it: numbers measured from the recording, never the recording.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpeakerHearing {
+    Heard {
+        /// Direct sound after the scheduled start, on the listening device's
+        /// clock.
+        arrival_ns: i64,
+        /// Level and peak-to-noise ratio in hundredths of a dB.
+        level_cdb: i32,
+        snr_cdb: i32,
+        /// The smoothed magnitude response on the sweep's fixed grid, in
+        /// hundredths of a dB.
+        response_cdb: Vec<i16>,
+    },
+    NotHeard {
+        failure: HearingFailure,
+    },
+}
+
+impl SpeakerHearing {
+    /// Bounded and plausible, as the fabric admits it.
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        match self {
+            Self::Heard {
+                arrival_ns,
+                response_cdb,
+                ..
+            } => {
+                (-MAX_REPORTED_ARRIVAL_NS..=MAX_REPORTED_ARRIVAL_NS).contains(arrival_ns)
+                    && response_cdb.len() <= MAX_RESPONSE_POINTS
+            }
+            Self::NotHeard { .. } => true,
+        }
+    }
+
+    #[must_use]
+    pub const fn failure(&self) -> Option<HearingFailure> {
+        match self {
+            Self::Heard { .. } => None,
+            Self::NotHeard { failure } => Some(*failure),
+        }
     }
 }
 

@@ -15647,6 +15647,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-desktop-model",
  "tilo-desktop-search",
+ "tilo-device-fabric",
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-doc",
@@ -15670,6 +15671,7 @@ dependencies = [
  "tilo-messaging-service",
  "tilo-model-client",
  "tilo-moq",
+ "tilo-nearby-service",
  "tilo-net",
  "tilo-net-answers",
  "tilo-network-actor",
@@ -18581,6 +18583,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-device-fabric"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "libc",
+ "os-actions",
+ "postcard",
+ "runtime-collab",
+ "serde",
+ "serde_json",
+ "settings-store",
+ "thiserror 2.0.21",
+ "tilo-desktop-surface",
+ "tilo-media",
+ "tilo-nearby-service",
+ "tilo-network-actor",
+ "tilo-seal",
+ "tilo-ui",
+ "tilo-unlock-protocol",
+ "tilo-user-identity",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-device-vpn"
 version = "0.1.0"
 dependencies = [
@@ -19763,6 +19792,29 @@ dependencies = [
  "tokio",
  "url",
  "web-transport-quinn",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-nearby-service"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "iroh",
+ "libc",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tilo-files",
+ "tilo-network-actor",
+ "tilo-test-env",
+ "tilo-ui",
+ "tokio",
+ "walkdir",
  "workspace-hack",
 ]
 

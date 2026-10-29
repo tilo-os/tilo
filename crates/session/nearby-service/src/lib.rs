@@ -20,6 +20,17 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+mod i18n {
+    ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
+}
+
+fn random_id() -> [u8; 16] {
+    use getrandom::rand_core::Rng as _;
+    let mut id = [0; 16];
+    getrandom::rand_core::UnwrapErr(getrandom::SysRng).fill_bytes(&mut id);
+    id
+}
+
 pub const STORE_SCHEMA_VERSION: u16 = 1;
 pub const MAX_TRANSFERS: usize = 64;
 pub const MAX_TRANSFER_BYTES: u64 = 64 * 1024 * 1024 * 1024;
@@ -55,7 +66,7 @@ impl SecureNearbyDestination {
     /// Retain an exact directory beneath an existing grant, with the same
     /// no-follow relative walk used by source admission.
     #[cfg(target_os = "linux")]
-    pub(crate) fn open_beneath(grant: &Path, requested: &Path) -> Result<Self, String> {
+    pub fn open_beneath(grant: &Path, requested: &Path) -> Result<Self, String> {
         let source = SecureNearbySource::open_beneath(grant, requested)?;
         if !source.metadata()?.is_dir() {
             return Err("destination is not a directory".into());
@@ -67,14 +78,14 @@ impl SecureNearbyDestination {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn metadata(&self) -> Result<fs::Metadata, String> {
+    pub fn metadata(&self) -> Result<fs::Metadata, String> {
         self.directory.metadata().map_err(display)
     }
 
     /// Retain the leaf itself, including a symlink as data. Only one validated
     /// name is accepted; directory walking remains the existing beneath walk.
     #[cfg(target_os = "linux")]
-    pub(crate) fn entry(&self, name: &std::ffi::OsStr) -> Result<File, String> {
+    pub fn entry(&self, name: &std::ffi::OsStr) -> Result<File, String> {
         let path = Path::new(name);
         validate_relative(path)?;
         if path.components().count() != 1 {
@@ -100,7 +111,7 @@ impl SecureNearbyDestination {
     /// Create a private child under this retained directory, without reopening
     /// its display path. Existing children are never adopted.
     #[cfg(target_os = "linux")]
-    pub(crate) fn private_child(&self, name: &std::ffi::OsStr) -> Result<Self, String> {
+    pub fn private_child(&self, name: &std::ffi::OsStr) -> Result<Self, String> {
         let path = Path::new(name);
         validate_relative(path)?;
         if path.components().count() != 1 {
@@ -136,7 +147,7 @@ impl SecureNearbyDestination {
             .open(&display_root)
             .map_err(display)?;
         if !directory.metadata().map_err(display)?.is_dir() {
-            return Err(crate::shell::i18n::t("nearby-error-destination-not-folder"));
+            return Err(i18n::t("nearby-error-destination-not-folder"));
         }
         Ok(Self {
             directory,
@@ -145,22 +156,22 @@ impl SecureNearbyDestination {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
+    pub fn directory_fd(&self) -> std::os::fd::RawFd {
         use std::os::fd::AsRawFd as _;
         self.directory.as_raw_fd()
     }
 
     #[cfg(not(target_os = "macos"))]
-    pub(crate) fn anchored_root(&self) -> PathBuf {
+    pub fn anchored_root(&self) -> PathBuf {
         PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()))
     }
 
-    pub(crate) fn install_inline(&self, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    pub fn install_inline(&self, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
         #[cfg(target_os = "macos")]
         {
             if bytes.is_empty() || u64::try_from(bytes.len()).map_err(display)? > MAX_TRANSFER_BYTES
             {
-                return Err(crate::shell::i18n::t("nearby-error-too-large"));
+                return Err(i18n::t("nearby-error-too-large"));
             }
             return install_capability_file(&self.directory, name, &mut io::Cursor::new(bytes))
                 .map(|name| self.display_root.join(name));
@@ -171,7 +182,7 @@ impl SecureNearbyDestination {
             Ok(self.display_root.join(
                 anchored
                     .file_name()
-                    .ok_or_else(|| crate::shell::i18n::t("nearby-error-destination-name"))?,
+                    .ok_or_else(|| i18n::t("nearby-error-destination-name"))?,
             ))
         }
     }
@@ -192,7 +203,7 @@ impl SecureNearbySource {
         let file = if metadata.is_dir() {
             let relative = requested
                 .strip_prefix(grant)
-                .map_err(|_| crate::shell::i18n::t("nearby-error-outside-grant"))?;
+                .map_err(|_| i18n::t("nearby-error-outside-grant"))?;
             if relative.as_os_str().is_empty() {
                 root
             } else {
@@ -202,17 +213,17 @@ impl SecureNearbySource {
         } else if metadata.is_file() && requested == grant {
             root
         } else {
-            return Err(crate::shell::i18n::t("nearby-error-outside-grant"));
+            return Err(i18n::t("nearby-error-outside-grant"));
         };
         let source_metadata = file.metadata().map_err(display)?;
         if !source_metadata.is_file() && !source_metadata.is_dir() {
-            return Err(crate::shell::i18n::t("nearby-error-one-item"));
+            return Err(i18n::t("nearby-error-one-item"));
         }
         Ok(Self { file, name })
     }
 
     /// Pin a granted directory before a pending user selection can replace it.
-    pub(crate) fn anchor_directory(grant: &Path) -> Result<File, String> {
+    pub fn anchor_directory(grant: &Path) -> Result<File, String> {
         let canonical = fs::canonicalize(grant).map_err(display)?;
         OpenOptions::new()
             .read(true)
@@ -222,33 +233,29 @@ impl SecureNearbySource {
     }
 
     /// Resolve a selection using the exact admitted directory descriptor.
-    pub(crate) fn open_in_directory(
-        root: &File,
-        grant: &Path,
-        requested: &Path,
-    ) -> Result<Self, String> {
+    pub fn open_in_directory(root: &File, grant: &Path, requested: &Path) -> Result<Self, String> {
         let name = portable_name(requested)?;
         let relative = requested
             .strip_prefix(grant)
-            .map_err(|_| crate::shell::i18n::t("nearby-error-outside-grant"))?;
+            .map_err(|_| i18n::t("nearby-error-outside-grant"))?;
         validate_relative(relative)?;
         let file = open_beneath(root, relative, false)?;
         let metadata = file.metadata().map_err(display)?;
         if !metadata.is_file() {
-            return Err(crate::shell::i18n::t("nearby-error-one-item"));
+            return Err(i18n::t("nearby-error-one-item"));
         }
         Ok(Self { file, name })
     }
 
-    pub(crate) fn metadata(&self) -> Result<fs::Metadata, String> {
+    pub fn metadata(&self) -> Result<fs::Metadata, String> {
         self.file.metadata().map_err(display)
     }
 
-    pub(crate) fn name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
-    pub(crate) fn into_file(self) -> File {
+    pub fn into_file(self) -> File {
         self.file
     }
 }
@@ -269,19 +276,6 @@ pub enum TransferKind {
     /// delivered only into the private media cache. Neither side keeps it
     /// across a restart: the authorising action is session-local.
     MediaHandoff,
-}
-
-impl TransferKind {
-    /// The continuity switch that governs transfers of this kind.
-    #[must_use]
-    pub const fn capability(self) -> crate::shell::continuity_policy::ContinuityCapability {
-        match self {
-            Self::File | Self::FolderArchive => {
-                crate::shell::continuity_policy::ContinuityCapability::FileTransfer
-            }
-            Self::MediaHandoff => crate::shell::continuity_policy::ContinuityCapability::Media,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,7 +410,7 @@ impl MediaCache {
 }
 
 /// One staging request: the identity and display name an outbox entry gets.
-pub(crate) struct Staging {
+pub struct Staging {
     id: [u8; 16],
     name: String,
     target: String,
@@ -426,7 +420,7 @@ pub(crate) struct Staging {
 
 impl Staging {
     /// The file or folder at `source`, named after it, as transfer `id`.
-    pub(crate) fn for_path(
+    pub fn for_path(
         source: &Path,
         target: String,
         now_unix_ms: u64,
@@ -436,7 +430,7 @@ impl Staging {
     }
 
     /// The regular file behind a media handoff, shown as `name`.
-    pub(crate) fn for_media(
+    pub fn for_media(
         name: String,
         target: String,
         now_unix_ms: u64,
@@ -447,7 +441,7 @@ impl Staging {
 
     /// An object staged from an already-open grant capability, named as the
     /// capability was opened.
-    pub(crate) fn for_secure(
+    pub fn for_secure(
         source: &SecureNearbySource,
         target: String,
         now_unix_ms: u64,
@@ -469,8 +463,8 @@ impl Staging {
         id: [u8; 16],
         media: bool,
     ) -> Result<Self, String> {
-        if !super::device_fabric::valid_nearby_file_name(&name) {
-            return Err(crate::shell::i18n::t("nearby-error-name-not-portable"));
+        if !valid_nearby_file_name(&name) {
+            return Err(i18n::t("nearby-error-name-not-portable"));
         }
         Ok(Self {
             id,
@@ -484,7 +478,7 @@ impl Staging {
 
 /// What a staged source is on disk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StageShape {
+pub enum StageShape {
     /// A regular file of this many bytes.
     Regular(u64),
     Folder,
@@ -507,7 +501,7 @@ impl StageShape {
     ///
     /// # Errors
     /// Returns an error when `source` cannot be inspected.
-    pub(crate) fn of_path(source: &Path) -> Result<Self, String> {
+    pub fn of_path(source: &Path) -> Result<Self, String> {
         fs::symlink_metadata(source)
             .map(|metadata| Self::of(&metadata))
             .map_err(display)
@@ -517,7 +511,7 @@ impl StageShape {
     ///
     /// # Errors
     /// Returns an error when the capability cannot be inspected.
-    pub(crate) fn of_secure(source: &SecureNearbySource) -> Result<Self, String> {
+    pub fn of_secure(source: &SecureNearbySource) -> Result<Self, String> {
         source.metadata().map(|metadata| Self::of(&metadata))
     }
 }
@@ -526,7 +520,7 @@ impl StageShape {
 /// to be written without holding the store: copying, archiving, hashing and
 /// syncing a large source take as long as the source is big, and the store's
 /// thread (and through it every receive) would otherwise wait for them.
-pub(crate) struct ReservedStage {
+pub struct ReservedStage {
     staging: Staging,
     kind: TransferKind,
     object: PathBuf,
@@ -534,7 +528,7 @@ pub(crate) struct ReservedStage {
 
 /// A reserved object whose bytes are written, synced and hashed, ready for
 /// the store to record.
-pub(crate) struct WrittenStage {
+pub struct WrittenStage {
     reserved: ReservedStage,
     total_bytes: u64,
     content_hash: [u8; 32],
@@ -546,7 +540,7 @@ impl ReservedStage {
     /// # Errors
     /// Returns an error when the source changed or cannot be copied; the
     /// partial object is removed.
-    pub(crate) fn write_path(self, source: &Path) -> Result<WrittenStage, String> {
+    pub fn write_path(self, source: &Path) -> Result<WrittenStage, String> {
         let object = self.object.clone();
         let written = match self.kind {
             TransferKind::FolderArchive => archive_folder(source, &object),
@@ -560,7 +554,7 @@ impl ReservedStage {
     /// # Errors
     /// Returns an error when the source changed or cannot be copied; the
     /// partial object is removed.
-    pub(crate) fn write_secure(self, source: SecureNearbySource) -> Result<WrittenStage, String> {
+    pub fn write_secure(self, source: SecureNearbySource) -> Result<WrittenStage, String> {
         let object = self.object.clone();
         let written = match self.kind {
             TransferKind::FolderArchive => archive_open_folder(&source.into_file(), &object),
@@ -664,7 +658,7 @@ impl NearbyTransferStore {
         now_unix_ms: u64,
     ) -> Result<OutboxEntry, String> {
         let id = loop {
-            let candidate = crate::random::bytes::<16>();
+            let candidate = random_id();
             if !self.index.outbox.iter().any(|entry| entry.id == candidate)
                 && !self.index.inbox.iter().any(|entry| entry.id == candidate)
                 && !self.object_path(candidate).exists()
@@ -712,7 +706,7 @@ impl NearbyTransferStore {
     /// caller writes it ([`ReservedStage::write_path`],
     /// [`ReservedStage::write_secure`]) without holding the store, then
     /// records it with [`Self::record_stage`].
-    pub(crate) fn reserve_stage(
+    pub fn reserve_stage(
         &self,
         staging: Staging,
         shape: StageShape,
@@ -727,7 +721,7 @@ impl NearbyTransferStore {
                     TransferKind::File
                 }
             }
-            _ if staging.media => return Err(crate::shell::i18n::t("nearby-error-not-regular")),
+            _ if staging.media => return Err(i18n::t("nearby-error-not-regular")),
             StageShape::Folder => TransferKind::FolderArchive,
             StageShape::Other => {
                 return Err("nearby transfer source must be a regular file or folder".into());
@@ -745,7 +739,7 @@ impl NearbyTransferStore {
     /// # Errors
     /// Returns an error when the object no longer fits the queue or cannot
     /// be persisted; the object is then removed.
-    pub(crate) fn record_stage(&mut self, written: WrittenStage) -> Result<OutboxEntry, String> {
+    pub fn record_stage(&mut self, written: WrittenStage) -> Result<OutboxEntry, String> {
         let object = written.reserved.object.clone();
         let recorded = self.record_outgoing(written);
         if recorded.is_err() {
@@ -788,7 +782,7 @@ impl NearbyTransferStore {
     /// Whether a regular file of `len` bytes may be staged.
     fn admit_regular(&self, len: u64) -> Result<(), String> {
         if len == 0 || len > MAX_TRANSFER_BYTES {
-            return Err(crate::shell::i18n::t("nearby-error-too-large"));
+            return Err(i18n::t("nearby-error-too-large"));
         }
         self.ensure_capacity(len)?;
         self.ensure_free_space(len)
@@ -815,7 +809,7 @@ impl NearbyTransferStore {
             content_hash,
         } = written;
         if total_bytes == 0 || total_bytes > MAX_TRANSFER_BYTES {
-            return Err(crate::shell::i18n::t("nearby-error-too-large"));
+            return Err(i18n::t("nearby-error-too-large"));
         }
         self.ensure_capacity(total_bytes)?;
         let entry = OutboxEntry {
@@ -893,7 +887,7 @@ impl NearbyTransferStore {
     /// Accept a fresh, explicitly consented offer for the same immutable object.
     /// A sender restart/retry changes the request ID, not the certified source
     /// or manifest. Ordinary `begin_incoming` remains exact-request bound.
-    pub(crate) fn accept_incoming_offer(
+    pub fn accept_incoming_offer(
         &mut self,
         manifest: IncomingManifest,
         now_unix_ms: u64,
@@ -948,10 +942,7 @@ impl NearbyTransferStore {
     ///
     /// # Errors
     /// Returns an error when matching retained bytes cannot be removed.
-    pub(crate) fn decline_incoming_offer(
-        &mut self,
-        manifest: &IncomingManifest,
-    ) -> Result<bool, String> {
+    pub fn decline_incoming_offer(&mut self, manifest: &IncomingManifest) -> Result<bool, String> {
         let Some(existing) = self
             .index
             .inbox
@@ -1173,7 +1164,7 @@ impl NearbyTransferStore {
             Ok(destination.display_root.join(
                 installed
                     .file_name()
-                    .ok_or_else(|| crate::shell::i18n::t("nearby-error-destination-name"))?,
+                    .ok_or_else(|| i18n::t("nearby-error-destination-name"))?,
             ))
         }
     }
@@ -1268,10 +1259,10 @@ impl NearbyTransferStore {
         let budget = MAX_MEDIA_CACHE_BYTES
             .checked_sub(reserved)
             .and_then(|remaining| remaining.checked_sub(candidate_bytes))
-            .ok_or_else(|| crate::shell::i18n::t("nearby-error-quota-full"))?;
+            .ok_or_else(|| i18n::t("nearby-error-quota-full"))?;
         let protected = self.media.protected_paths();
         if prune_media_objects(&self.media_root(), &protected, budget) > budget {
-            return Err(crate::shell::i18n::t("nearby-error-quota-full"));
+            return Err(i18n::t("nearby-error-quota-full"));
         }
         Ok(())
     }
@@ -1286,7 +1277,7 @@ impl NearbyTransferStore {
             .saturating_add(candidate_bytes)
             .saturating_add(MIN_FREE_BYTES);
         if available_bytes(&self.root).is_none_or(|available| available < required) {
-            return Err(crate::shell::i18n::t("nearby-error-disk-full"));
+            return Err(i18n::t("nearby-error-disk-full"));
         }
         Ok(())
     }
@@ -1299,7 +1290,7 @@ impl NearbyTransferStore {
             .saturating_add(self.index.inbox.len())
             >= MAX_TRANSFERS
         {
-            return Err(crate::shell::i18n::t("nearby-error-queue-full"));
+            return Err(i18n::t("nearby-error-queue-full"));
         }
         let bytes = self
             .index
@@ -1309,9 +1300,9 @@ impl NearbyTransferStore {
             .sum::<u64>()
             .checked_add(self.index.inbox.iter().map(|e| e.total_bytes).sum())
             .and_then(|bytes| bytes.checked_add(candidate_bytes))
-            .ok_or_else(|| crate::shell::i18n::t("nearby-error-quota-full"))?;
+            .ok_or_else(|| i18n::t("nearby-error-quota-full"))?;
         if bytes > MAX_TOTAL_BYTES {
-            return Err(crate::shell::i18n::t("nearby-error-quota-full"));
+            return Err(i18n::t("nearby-error-quota-full"));
         }
         Ok(())
     }
@@ -1463,7 +1454,7 @@ fn same_incoming_object(entry: &InboxEntry, manifest: &IncomingManifest) -> bool
 
 fn validate_index(index: &StoreIndex) -> Result<(), String> {
     if index.outbox.len().saturating_add(index.inbox.len()) > MAX_TRANSFERS {
-        return Err(crate::shell::i18n::t("nearby-error-too-many"));
+        return Err(i18n::t("nearby-error-too-many"));
     }
     let mut ids = BTreeSet::new();
     let mut claimed_bytes = 0_u64;
@@ -1498,7 +1489,7 @@ fn validate_manifest(id: [u8; 16], peer: &str, name: &str, total: u64) -> Result
     if id == [0; 16]
         || peer.is_empty()
         || peer.len() > 256
-        || !super::device_fabric::valid_nearby_file_name(name)
+        || !valid_nearby_file_name(name)
         || total == 0
         || total > MAX_TRANSFER_BYTES
     {
@@ -1514,7 +1505,7 @@ fn copy_regular(source: &Path, destination: &Path) -> Result<(), String> {
         .open(source)
         .map_err(display)?;
     if !input.metadata().map_err(display)?.is_file() {
-        return Err(crate::shell::i18n::t("nearby-error-not-regular"));
+        return Err(i18n::t("nearby-error-not-regular"));
     }
     let mut output = create_private_new(destination)?;
     io::copy(&mut input, &mut output).map_err(display)?;
@@ -1537,7 +1528,7 @@ fn archive_folder(source: &Path, destination: &Path) -> Result<(), String> {
             .cmp(b.path().strip_prefix(source).unwrap_or_else(|_| b.path()))
     });
     if entries.len() > MAX_FOLDER_ENTRIES {
-        return Err(crate::shell::i18n::t("nearby-error-folder-too-many"));
+        return Err(i18n::t("nearby-error-folder-too-many"));
     }
     let mut source_bytes = 0_u64;
     for entry in entries.into_iter().skip(1) {
@@ -1545,7 +1536,7 @@ fn archive_folder(source: &Path, destination: &Path) -> Result<(), String> {
         validate_relative(relative)?;
         let file_type = entry.file_type();
         if file_type.is_symlink() || (!file_type.is_dir() && !file_type.is_file()) {
-            return Err(crate::shell::i18n::t("nearby-error-folder-special"));
+            return Err(i18n::t("nearby-error-folder-special"));
         }
         let mut header = tar::Header::new_gnu();
         header.set_uid(0);
@@ -1568,9 +1559,9 @@ fn archive_folder(source: &Path, destination: &Path) -> Result<(), String> {
             let size = file.metadata().map_err(display)?.len();
             source_bytes = source_bytes
                 .checked_add(size)
-                .ok_or_else(|| crate::shell::i18n::t("nearby-error-folder-too-large"))?;
+                .ok_or_else(|| i18n::t("nearby-error-folder-too-large"))?;
             if source_bytes > MAX_TRANSFER_BYTES {
-                return Err(crate::shell::i18n::t("nearby-error-folder-too-large"));
+                return Err(i18n::t("nearby-error-folder-too-large"));
             }
             header.set_entry_type(tar::EntryType::Regular);
             header.set_size(size);
@@ -1593,7 +1584,7 @@ fn copy_open_regular(mut source: File, destination: &Path) -> Result<(), String>
     let mut output = create_private_new(destination)?;
     let copied = io::copy(&mut source, &mut output).map_err(display)?;
     if copied != metadata.len() {
-        return Err(crate::shell::i18n::t("nearby-error-source-changed"));
+        return Err(i18n::t("nearby-error-source-changed"));
     }
     output.sync_all().map_err(display)
 }
@@ -1623,7 +1614,7 @@ fn archive_open_folder(source: &File, destination: &Path) -> Result<(), String> 
             .collect::<Result<Vec<_>, String>>()?;
         entries.sort_by(|a, b| a.0.cmp(&b.0));
         if entries.len() >= MAX_FOLDER_ENTRIES {
-            return Err(crate::shell::i18n::t("nearby-error-folder-too-many"));
+            return Err(i18n::t("nearby-error-folder-too-many"));
         }
         entries
     };
@@ -1637,7 +1628,7 @@ fn archive_open_folder(source: &File, destination: &Path) -> Result<(), String> 
         let mut opened = open_beneath(source, relative, is_directory)?;
         let metadata = opened.metadata().map_err(display)?;
         if !metadata.is_dir() && !metadata.is_file() {
-            return Err(crate::shell::i18n::t("nearby-error-folder-special"));
+            return Err(i18n::t("nearby-error-folder-special"));
         }
         let mut header = tar::Header::new_gnu();
         header.set_uid(0);
@@ -1655,9 +1646,9 @@ fn archive_open_folder(source: &File, destination: &Path) -> Result<(), String> 
             let size = metadata.len();
             source_bytes = source_bytes
                 .checked_add(size)
-                .ok_or_else(|| crate::shell::i18n::t("nearby-error-folder-too-large"))?;
+                .ok_or_else(|| i18n::t("nearby-error-folder-too-large"))?;
             if source_bytes > MAX_TRANSFER_BYTES {
-                return Err(crate::shell::i18n::t("nearby-error-folder-too-large"));
+                return Err(i18n::t("nearby-error-folder-too-large"));
             }
             header.set_entry_type(tar::EntryType::Regular);
             header.set_size(size);
@@ -1676,7 +1667,7 @@ fn extract_archive_create_new(
     root: &Path,
     name: &str,
 ) -> Result<PathBuf, String> {
-    let destination = root.join(format!(".{}.partial", id_hex(crate::random::bytes::<16>())));
+    let destination = root.join(format!(".{}.partial", id_hex(random_id())));
     fs::DirBuilder::new()
         .mode(0o700)
         .create(&destination)
@@ -1761,7 +1752,7 @@ fn install_file_create_new(source: &Path, root: &Path, name: &str) -> Result<Pat
 
 fn install_bytes_create_new(root: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     if bytes.is_empty() || u64::try_from(bytes.len()).map_err(display)? > MAX_TRANSFER_BYTES {
-        return Err(crate::shell::i18n::t("nearby-error-too-large"));
+        return Err(i18n::t("nearby-error-too-large"));
     }
     let destination = unique_destination(root, name)?;
     let mut output = create_private_new(&destination)?;
@@ -1796,10 +1787,10 @@ fn portable_name(path: &Path) -> Result<String, String> {
     let name = path
         .file_name()
         .and_then(|v| v.to_str())
-        .ok_or_else(|| crate::shell::i18n::t("nearby-error-name-not-portable"))?
+        .ok_or_else(|| i18n::t("nearby-error-name-not-portable"))?
         .to_string();
-    if !super::device_fabric::valid_nearby_file_name(&name) {
-        return Err(crate::shell::i18n::t("nearby-error-name-not-portable"));
+    if !valid_nearby_file_name(&name) {
+        return Err(i18n::t("nearby-error-name-not-portable"));
     }
     Ok(name)
 }
@@ -1898,6 +1889,18 @@ fn remove_if_exists(path: &Path) -> Result<(), String> {
         Err(error) => Err(error.to_string()),
     }
 }
+/// Whether `value` names one file portably on every device.
+#[must_use]
+pub fn valid_nearby_file_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && value != "."
+        && value != ".."
+        && !value
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+}
+
 fn id_hex(id: [u8; 16]) -> String {
     hex::encode(id)
 }
@@ -2844,7 +2847,7 @@ fn ensure_capability_directory(root: &File, relative: &Path) -> Result<File, Str
 
 #[cfg(target_os = "macos")]
 fn extract_capability_archive(source: &Path, root: &File, name: &str) -> Result<String, String> {
-    let temporary = format!(".{}.partial", id_hex(crate::random::bytes::<16>()));
+    let temporary = format!(".{}.partial", id_hex(random_id()));
     let temporary_c = CString::new(temporary.as_str()).map_err(display)?;
     // Reserve a private directory exclusively; do not reuse a planted entry.
     if unsafe { libc::mkdirat(root.as_raw_fd(), temporary_c.as_ptr(), 0o700) } != 0 {

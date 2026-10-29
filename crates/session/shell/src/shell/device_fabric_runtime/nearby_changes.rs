@@ -18,8 +18,8 @@ use tokio::sync::watch;
 
 use super::{NEARBY_CONSENT_TIMEOUT, nearby_drop_state, nearby_store_cell};
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-use crate::shell::nearby_transfer::{InboxEntry, OutboxEntry, TransferKind};
 use crate::shell::network::ShellNetwork;
+use tilo_nearby_service::{InboxEntry, OutboxEntry, TransferKind};
 
 /// The revision Files' waits follow. It starts at 1, so an endpoint's first
 /// wait (from 0) answers at once and fetches its first view.

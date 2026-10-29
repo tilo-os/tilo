@@ -1,5 +1,5 @@
 use super::*;
-use crate::shell::device_fabric::PersonalFabricActionEnvelope;
+use tilo_device_fabric::PersonalFabricActionEnvelope;
 
 fn lease() -> InputLease {
     InputLease {

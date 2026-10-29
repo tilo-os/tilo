@@ -27,17 +27,17 @@ use runtime_collab::{
     SpeakerSnapshot, SpeakerTrimInfo,
 };
 
-use crate::shell::device_fabric::DeviceFabric;
 use crate::shell::speaker_calibration::{
     CalibrationPhase, CalibrationRun, MemberProgress, MicrophoneConsent, MicrophoneProgress,
     RunMicrophone,
 };
-use crate::shell::speaker_group::{
-    AudioEndpointKind, EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerRole, SpeakerTrim,
-    StereoSide, SurroundChannel,
-};
 use crate::shell::speaker_group_runtime::{
     ListenerCandidate, ListenerState, MemberSpec, SpeakerGroupsView, SpeakerSessionStatus,
+};
+use tilo_device_fabric::DeviceFabric;
+use tilo_device_fabric::speaker_group::{
+    AudioEndpointKind, EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerRole, SpeakerTrim,
+    StereoSide, SurroundChannel,
 };
 use tilo_network_actor::fabric::DeviceId;
 

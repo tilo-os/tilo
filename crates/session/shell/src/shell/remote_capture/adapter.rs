@@ -18,12 +18,12 @@ use crate::portal::{
     CaptureAuthorizationId, CaptureBroker, CaptureKind, CaptureLeaseId, CaptureSessionBinding,
     LocalCaptureHandle,
 };
-use crate::shell::realtime_session::VerifiedAppRegistration;
-use crate::shell::remote_capture::device::{
+use crate::shell::remote_capture::host::CaptureHost;
+use tilo_device_fabric::realtime_session::VerifiedAppRegistration;
+use tilo_device_fabric::remote_capture::{
     MAX_REMOTE_CAPTURE_SESSIONS, RemoteCaptureChunk, RemoteCaptureGrant, RemoteCaptureKind,
     RemoteCaptureProfile, RemoteCaptureRequest,
 };
-use crate::shell::remote_capture::host::CaptureHost;
 use tilo_network_actor::fabric::DeviceId;
 
 /// A provisioned, target-local media endpoint. These values must never enter a
@@ -479,7 +479,7 @@ impl ProductionRemoteCaptureAdapter {
         session_id: [u8; 16],
         profile: &RemoteCaptureProfile,
     ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
-        use crate::shell::remote_capture::device::RemoteVideoFormat;
+        use tilo_device_fabric::remote_capture::RemoteVideoFormat;
         let RemoteCaptureProfile::Camera {
             format,
             width,
@@ -538,7 +538,7 @@ impl ProductionRemoteCaptureAdapter {
         session_id: [u8; 16],
         profile: &RemoteCaptureProfile,
     ) -> Result<RemoteCaptureEndpoint, RemoteCaptureAdapterError> {
-        use crate::shell::remote_capture::device::RemoteAudioFormat;
+        use tilo_device_fabric::remote_capture::RemoteAudioFormat;
         let RemoteCaptureProfile::Microphone {
             format,
             sample_rate,
@@ -753,9 +753,7 @@ pub(crate) enum RemoteCaptureAdapterError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::remote_capture::device::{
-        REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteVideoFormat,
-    };
+    use tilo_device_fabric::remote_capture::{REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteVideoFormat};
 
     #[derive(Default)]
     struct FakeAdapter {
@@ -800,7 +798,7 @@ mod tests {
     }
 
     fn grant_for(request: &RemoteCaptureRequest) -> ([u8; 16], RemoteCaptureGrant) {
-        let mut registry = crate::shell::remote_capture::device::RemoteCaptureRegistry::default();
+        let mut registry = tilo_device_fabric::remote_capture::RemoteCaptureRegistry::default();
         registry
             .grant(
                 request,
@@ -861,7 +859,7 @@ mod tests {
                 adapter.provision(
                     [7; 16],
                     &RemoteCaptureProfile::DocumentScanner {
-                        format: crate::shell::remote_capture::device::RemoteDocumentFormat::Png,
+                        format: tilo_device_fabric::remote_capture::RemoteDocumentFormat::Png,
                         max_pages: 1,
                         max_document_bytes: 1024,
                     }

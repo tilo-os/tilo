@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::shell::device_fabric::WifiCredential;
-use crate::shell::device_fabric_secrets::wifi_envelope_recipients;
+use crate::WifiCredential;
+use crate::secrets::wifi_envelope_recipients;
 use tilo_network_actor::fabric::DeviceId;
 #[cfg(test)]
 use tilo_network_actor::fabric::FabricStamp;
@@ -922,7 +922,7 @@ mod tests {
         password: &str,
         counter: u64,
     ) -> WifiCredential {
-        crate::shell::device_fabric_secrets::seal_wifi_credential(
+        crate::secrets::seal_wifi_credential(
             "Phone hotspot",
             os_actions::WifiSecurity::Wpa3,
             password,
@@ -995,11 +995,7 @@ mod tests {
                 panic!("expected connect offer");
             };
             assert_eq!(
-                crate::shell::device_fabric_secrets::open_wifi_credential(
-                    &credential,
-                    &requester_key
-                )
-                .unwrap(),
+                crate::secrets::open_wifi_credential(&credential, &requester_key).unwrap(),
                 "not-in-wire-debug"
             );
             assert!(!format!("{:?}", signals[1]).contains("not-in-wire-debug"));

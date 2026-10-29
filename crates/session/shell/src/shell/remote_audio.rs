@@ -36,18 +36,16 @@ use media::sync_playout::{
 };
 use rand_core::Rng;
 
-use crate::shell::device_fabric::{
+use crate::shell::network::{PersonalFabricSendError, ShellNetwork};
+use crate::shell::physical_gamepad::PhysicalGamepadBinding;
+use tilo_device_fabric::clock::{ClockSyncFailure, ClockSyncState, PeerPlayoutClock};
+use tilo_device_fabric::clock::{FabricClockSync, fabric_peer_clock, hold_fabric_clock_sync};
+use tilo_device_fabric::{
     MAX_REMOTE_AUDIO_FRAME_BYTES, MAX_REMOTE_AUDIO_SESSIONS, PersonalFabricAction,
     PersonalFabricActionEnvelope, REMOTE_AUDIO_CHANNELS, REMOTE_AUDIO_FRAME_SAMPLES,
     REMOTE_AUDIO_GROUP_LATENCY_NS, REMOTE_AUDIO_PROTOCOL_VERSION, REMOTE_AUDIO_SAMPLE_FRAME_BYTES,
     REMOTE_AUDIO_SAMPLE_RATE_HZ, remote_audio_media_ns,
 };
-use crate::shell::device_fabric_runtime::{
-    FabricClockSync, fabric_peer_clock, hold_fabric_clock_sync,
-};
-use crate::shell::fabric_clock::{ClockSyncFailure, ClockSyncState, PeerPlayoutClock};
-use crate::shell::network::{PersonalFabricSendError, ShellNetwork};
-use crate::shell::physical_gamepad::PhysicalGamepadBinding;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::fabric::DeviceId;
 
@@ -258,7 +256,7 @@ impl GroupPlayback {
     pub fn new(
         sink_serial: u32,
         role: ChannelRole,
-        trim: &crate::shell::speaker_group::SpeakerTrim,
+        trim: &tilo_device_fabric::speaker_group::SpeakerTrim,
     ) -> Self {
         Self {
             sink_serial,

@@ -597,7 +597,7 @@ pub(super) enum QsDeviceSource {
     Realtime(String),
     Gamepad(u64),
     RemoteAudio(u64),
-    RemoteCapture(crate::shell::remote_capture::device::RemoteCaptureKind),
+    RemoteCapture(tilo_device_fabric::remote_capture::RemoteCaptureKind),
 }
 
 /// This machine's sound outputs as Quick Settings lists them.

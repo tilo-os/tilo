@@ -10,12 +10,12 @@ use std::time::Instant;
 use tokio::sync::oneshot;
 
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-use crate::shell::device_fabric::PersonalFabricAction;
 use crate::shell::network::{ReceivedPersonalFabricAction, ShellNetwork};
 use crate::shell::physical_gamepad::PhysicalGamepadBinding;
 use crate::shell::portal_dialog::{PortalDialogQueue, ReviewDecision, ReviewRequest};
-use crate::shell::remote_capture::device::MAX_REMOTE_CAPTURE_SESSIONS;
 use crate::shell::remote_capture::runtime::{RemoteCaptureConsentView, SharedRemoteCaptureRuntime};
+use tilo_device_fabric::PersonalFabricAction;
+use tilo_device_fabric::remote_capture::MAX_REMOTE_CAPTURE_SESSIONS;
 use tilo_network_actor::fabric::DeviceId;
 
 #[derive(Default)]
@@ -266,9 +266,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::portal::CaptureBroker;
-    use crate::shell::realtime_session::VerifiedAppRegistration;
-    use crate::shell::remote_capture::device::{RemoteCaptureProfile, RemoteVideoFormat};
     use crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime;
+    use tilo_device_fabric::realtime_session::VerifiedAppRegistration;
+    use tilo_device_fabric::remote_capture::{RemoteCaptureProfile, RemoteVideoFormat};
 
     #[test]
     fn remote_capture_owner_follows_focus_and_teardown_survives_contention() {

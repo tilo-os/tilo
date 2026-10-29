@@ -11,41 +11,47 @@ use tokio::sync::mpsc;
 
 use tilo_action_broker::services::{RealtimeRequestContext, RealtimeServices};
 struct RealtimeBinding {
-    id: crate::shell::realtime_session::RealtimeSessionId,
-    app: crate::shell::realtime_session::VerifiedAppRegistration,
+    id: tilo_device_fabric::realtime_session::RealtimeSessionId,
+    app: tilo_device_fabric::realtime_session::VerifiedAppRegistration,
     source: tilo_network_actor::fabric::DeviceId,
     owner_peer: u64,
-    authorization: Option<crate::shell::realtime_session::CaptureAuthorizationId>,
+    authorization: Option<tilo_device_fabric::realtime_session::CaptureAuthorizationId>,
     target_peer: Option<u64>,
     capture_leases: Vec<crate::portal::capture_broker::CaptureLeaseGrant>,
     imported: bool,
 }
 
 struct RealtimeSubscriber {
-    app: crate::shell::realtime_session::VerifiedAppRegistration,
+    app: tilo_device_fabric::realtime_session::VerifiedAppRegistration,
     tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 struct RealtimeBridge {
-    broker: Arc<Mutex<crate::shell::realtime_session::RealtimeSessionBroker>>,
-    fabric: Arc<crate::shell::realtime_session::BrokerRealtimeFabricAdapter>,
+    broker: Arc<Mutex<tilo_device_fabric::realtime_session::RealtimeSessionBroker>>,
+    fabric: Arc<tilo_device_fabric::realtime_session::BrokerRealtimeFabricAdapter>,
     capture: Arc<Mutex<crate::portal::CaptureBroker>>,
     sessions: HashMap<String, RealtimeBinding>,
     subscribers: HashMap<u64, RealtimeSubscriber>,
-    pending_imported_offers: VecDeque<crate::shell::realtime_session::ImportedRealtimeFabricOffer>,
+    pending_imported_offers:
+        VecDeque<tilo_device_fabric::realtime_session::ImportedRealtimeFabricOffer>,
     consent_capabilities_issued: std::collections::HashSet<String>,
 }
 
 impl Default for RealtimeBridge {
     fn default() -> Self {
         let broker = Arc::new(Mutex::new(
-            crate::shell::realtime_session::RealtimeSessionBroker::new(),
+            tilo_device_fabric::realtime_session::RealtimeSessionBroker::new(),
         ));
         Self {
             fabric: Arc::new(
-                crate::shell::realtime_session::BrokerRealtimeFabricAdapter::new(Arc::clone(
-                    &broker,
-                )),
+                tilo_device_fabric::realtime_session::BrokerRealtimeFabricAdapter::with_app_verifier(
+                    Arc::clone(&broker),
+                    |app_id| {
+                        crate::shell::launcher::installed_apps().is_ok_and(|apps| {
+                            apps.iter().any(|installed| installed.package_id == app_id)
+                        })
+                    },
+                ),
             ),
             broker,
             capture: Arc::new(Mutex::new(
@@ -89,7 +95,7 @@ impl RealtimeBridge {
 
     fn required_capture_kinds(
         &self,
-        id: crate::shell::realtime_session::RealtimeSessionId,
+        id: tilo_device_fabric::realtime_session::RealtimeSessionId,
     ) -> Option<Vec<crate::portal::CaptureKind>> {
         let media = self.broker.lock().ok()?.session(id)?.intent.media;
         let mut kinds = Vec::with_capacity(4);
@@ -111,8 +117,8 @@ impl RealtimeBridge {
 
 fn broker_realtime_controls(
     controls: collab_types::realtime::RealtimeControlIntent,
-) -> crate::shell::realtime_session::RealtimeControlState {
-    crate::shell::realtime_session::RealtimeControlState {
+) -> tilo_device_fabric::realtime_session::RealtimeControlState {
+    tilo_device_fabric::realtime_session::RealtimeControlState {
         microphone_muted: controls.microphone_muted,
         camera_muted: controls.camera_muted,
         screen_share_paused: controls.screen_share_paused,
@@ -121,7 +127,7 @@ fn broker_realtime_controls(
 }
 
 fn app_realtime_controls(
-    controls: crate::shell::realtime_session::RealtimeControlState,
+    controls: tilo_device_fabric::realtime_session::RealtimeControlState,
 ) -> collab_types::realtime::RealtimeControlIntent {
     collab_types::realtime::RealtimeControlIntent {
         microphone_muted: controls.microphone_muted,
@@ -133,7 +139,7 @@ fn app_realtime_controls(
 
 fn acquire_realtime_capture_leases(
     capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
-    app: &crate::shell::realtime_session::VerifiedAppRegistration,
+    app: &tilo_device_fabric::realtime_session::VerifiedAppRegistration,
     session: &str,
     target: &tilo_network_actor::fabric::DeviceId,
     opaque_authorizations: &[String],
@@ -157,7 +163,7 @@ fn acquire_realtime_capture_leases(
 
 fn realtime_capture_leases_ready(
     capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
-    app: &crate::shell::realtime_session::VerifiedAppRegistration,
+    app: &tilo_device_fabric::realtime_session::VerifiedAppRegistration,
     session: &str,
     target: &tilo_network_actor::fabric::DeviceId,
     leases: &[crate::portal::capture_broker::CaptureLeaseGrant],
@@ -178,7 +184,7 @@ fn realtime_capture_leases_ready(
 
 fn release_realtime_capture_session(
     capture: &Arc<Mutex<crate::portal::CaptureBroker>>,
-    app: &crate::shell::realtime_session::VerifiedAppRegistration,
+    app: &tilo_device_fabric::realtime_session::VerifiedAppRegistration,
     session: &str,
     target: &tilo_network_actor::fabric::DeviceId,
 ) {
@@ -257,7 +263,7 @@ fn teardown_imported_realtime_consent(realtime: &mut RealtimeBridge, session: &s
                     &app,
                     id,
                     &source,
-                    crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                    tilo_device_fabric::realtime_session::RealtimeMediaAction::Leave,
                     now,
                 );
             }
@@ -345,9 +351,11 @@ impl RealtimeFabricAppBridge {
     }
 
     #[must_use]
-    pub fn adapter(&self) -> Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter> {
+    pub fn adapter(
+        &self,
+    ) -> Option<tilo_device_fabric::realtime_session::SharedRealtimeFabricAdapter> {
         self.state.realtime.lock().ok().map(|realtime| {
-            let adapter: crate::shell::realtime_session::SharedRealtimeFabricAdapter =
+            let adapter: tilo_device_fabric::realtime_session::SharedRealtimeFabricAdapter =
                 realtime.fabric.clone();
             adapter
         })
@@ -373,7 +381,7 @@ impl RealtimeFabricAppBridge {
     /// identities never enter the application contract.
     #[must_use]
     pub fn ui_view(&self) -> RealtimeContinuityUiView {
-        use crate::shell::realtime_session::RealtimeSessionPhase;
+        use tilo_device_fabric::realtime_session::RealtimeSessionPhase;
 
         let Ok(realtime) = self.state.realtime.lock() else {
             return RealtimeContinuityUiView::default();
@@ -631,7 +639,7 @@ impl RealtimeFabricAppBridge {
                 view.source == source
                     && view.target.as_ref() == Some(&target)
                     && view.phase
-                        == crate::shell::realtime_session::RealtimeSessionPhase::AwaitingTargetAccept
+                        == tilo_device_fabric::realtime_session::RealtimeSessionPhase::AwaitingTargetAccept
             });
         let current_required = realtime.required_capture_kinds(id);
         let still_reserved = realtime.consent_capabilities_issued.contains(session);
@@ -694,7 +702,7 @@ impl NativeRealtimeState {
         };
         for imported in offers {
             if realtime.pending_imported_offers.len()
-                == crate::shell::realtime_session::MAX_REALTIME_SESSIONS
+                == tilo_device_fabric::realtime_session::MAX_REALTIME_SESSIONS
             {
                 realtime.pending_imported_offers.pop_front();
             }
@@ -733,10 +741,12 @@ impl NativeRealtimeState {
             if !live {
                 continue;
             }
-            let Ok(app) = crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
-                imported.offer.app_id.clone(),
-                imported.offer.workspace_id.clone(),
-            ) else {
+            let Ok(app) =
+                tilo_device_fabric::realtime_session::VerifiedAppRegistration::new_verified(
+                    imported.offer.app_id.clone(),
+                    imported.offer.workspace_id.clone(),
+                )
+            else {
                 continue;
             };
             let Ok(intent) = imported.offer.intent() else {
@@ -774,7 +784,7 @@ impl NativeRealtimeState {
             if !realtime.notify(peer, &event) {
                 realtime.sessions.remove(&token);
                 if realtime.pending_imported_offers.len()
-                    == crate::shell::realtime_session::MAX_REALTIME_SESSIONS
+                    == tilo_device_fabric::realtime_session::MAX_REALTIME_SESSIONS
                 {
                     realtime.pending_imported_offers.pop_front();
                 }
@@ -807,7 +817,7 @@ impl NativeRealtimeState {
             for (token, peer, leases) in bindings {
                 let terminal = !matches!(
                     &event.kind,
-                    crate::shell::realtime_session::BrokerEventKind::RolledBackToSource { .. }
+                    tilo_device_fabric::realtime_session::BrokerEventKind::RolledBackToSource { .. }
                 );
                 let app_event = if terminal {
                     collab_types::realtime::RealtimeEvent::Ended {
@@ -847,7 +857,7 @@ impl NativeRealtimeState {
 
     fn authorize_realtime_capture_batch(
         &self,
-        app: &crate::shell::realtime_session::VerifiedAppRegistration,
+        app: &tilo_device_fabric::realtime_session::VerifiedAppRegistration,
         session: &str,
         target: &tilo_network_actor::fabric::DeviceId,
         selections: &[(crate::portal::CaptureKind, String)],
@@ -950,7 +960,7 @@ impl NativeRealtimeState {
                         .broker
                         .lock()
                         .map_err(|_| {
-                            crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                            tilo_device_fabric::realtime_session::RealtimeSessionError::InvalidTransition
                         })
                         .and_then(|mut broker| {
                             broker
@@ -983,7 +993,7 @@ impl NativeRealtimeState {
                         &app,
                         id,
                         &target,
-                        crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                        tilo_device_fabric::realtime_session::RealtimeMediaAction::Leave,
                         std::time::Instant::now(),
                     );
                 }
@@ -1033,7 +1043,7 @@ impl NativeRealtimeState {
                     &app,
                     id,
                     &source,
-                    crate::shell::realtime_session::RealtimeMediaAction::Leave,
+                    tilo_device_fabric::realtime_session::RealtimeMediaAction::Leave,
                     std::time::Instant::now(),
                 );
             }
@@ -1073,7 +1083,7 @@ impl NativeRealtimeServices {
         workspace_id: &str,
         bytes: &[u8],
     ) -> Result<collab_types::realtime::RealtimeReply, capnp::Error> {
-        let app = crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+        let app = tilo_device_fabric::realtime_session::VerifiedAppRegistration::new_verified(
             app_id,
             workspace_id,
         )
@@ -1098,19 +1108,23 @@ impl NativeRealtimeServices {
             collab_types::realtime::RealtimeCommand::Register { intent } => {
                 let mut facets = Vec::with_capacity(4);
                 if intent.media.microphone {
-                    facets.push(crate::shell::realtime_session::RealtimeMediaFacet::Microphone);
+                    facets
+                        .push(tilo_device_fabric::realtime_session::RealtimeMediaFacet::Microphone);
                 }
                 if intent.media.camera {
-                    facets.push(crate::shell::realtime_session::RealtimeMediaFacet::Camera);
+                    facets.push(tilo_device_fabric::realtime_session::RealtimeMediaFacet::Camera);
                 }
                 if intent.media.screen_share {
-                    facets.push(crate::shell::realtime_session::RealtimeMediaFacet::ScreenShare);
+                    facets.push(
+                        tilo_device_fabric::realtime_session::RealtimeMediaFacet::ScreenShare,
+                    );
                 }
                 if intent.media.share_audio {
-                    facets.push(crate::shell::realtime_session::RealtimeMediaFacet::ShareAudio);
+                    facets
+                        .push(tilo_device_fabric::realtime_session::RealtimeMediaFacet::ShareAudio);
                 }
-                let registered = crate::shell::realtime_session::RealtimeResumeIntent {
-                    room: match crate::shell::realtime_session::SemanticRoomLocator::new(
+                let registered = tilo_device_fabric::realtime_session::RealtimeResumeIntent {
+                    room: match tilo_device_fabric::realtime_session::SemanticRoomLocator::new(
                         intent.provider,
                         intent.room_id,
                     ) {
@@ -1118,7 +1132,8 @@ impl NativeRealtimeServices {
                         Err(error) => return Err(capnp::Error::failed(error.to_string())),
                     },
                     semantic_position: intent.semantic_position,
-                    media: match crate::shell::realtime_session::RealtimeMediaSet::new(facets) {
+                    media: match tilo_device_fabric::realtime_session::RealtimeMediaSet::new(facets)
+                    {
                         Ok(media) => media,
                         Err(error) => return Err(capnp::Error::failed(error.to_string())),
                     },
@@ -1128,7 +1143,7 @@ impl NativeRealtimeServices {
                     .broker
                     .lock()
                     .map_err(|_| {
-                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                        tilo_device_fabric::realtime_session::RealtimeSessionError::InvalidTransition
                     })
                     .and_then(|mut broker| broker.register(&app, local.clone(), registered, now))
                 {
@@ -1184,20 +1199,19 @@ impl NativeRealtimeServices {
                     Ok(leases) => leases,
                     Err(error) => return Err(capnp::Error::failed(error.to_string())),
                 };
-                let authorization =
-                    if imported {
-                        if let Err(error) =
-                            bridge
-                                .fabric
-                                .accept_imported(id.fabric_id(), &source, &local, now)
-                        {
-                            release_realtime_capture_leases(&bridge.capture, &leases);
-                            return Err(capnp::Error::failed(error.to_string()));
-                        }
-                        None
-                    } else {
-                        let authorization = match bridge.broker.lock().map_err(|_| {
-                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                let authorization = if imported {
+                    if let Err(error) =
+                        bridge
+                            .fabric
+                            .accept_imported(id.fabric_id(), &source, &local, now)
+                    {
+                        release_realtime_capture_leases(&bridge.capture, &leases);
+                        return Err(capnp::Error::failed(error.to_string()));
+                    }
+                    None
+                } else {
+                    let authorization = match bridge.broker.lock().map_err(|_| {
+                        tilo_device_fabric::realtime_session::RealtimeSessionError::InvalidTransition
                     }).and_then(|mut broker| {
                         broker.authorize_target_capture(&app, id, &source, &local, now)
                     }) {
@@ -1207,16 +1221,16 @@ impl NativeRealtimeServices {
                             return Err(capnp::Error::failed(error.to_string()));
                         }
                     };
-                        if let Err(error) = bridge.broker.lock().map_err(|_| {
-                        crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                    if let Err(error) = bridge.broker.lock().map_err(|_| {
+                        tilo_device_fabric::realtime_session::RealtimeSessionError::InvalidTransition
                     }).and_then(|mut broker| {
                         broker.accept_target(&app, id, &source, &local, authorization, now)
                     }) {
                         release_realtime_capture_leases(&bridge.capture, &leases);
                         return Err(capnp::Error::failed(error.to_string()));
                     }
-                        Some(authorization)
-                    };
+                    Some(authorization)
+                };
                 if let Some(binding) = bridge.sessions.get_mut(&session) {
                     binding.authorization = authorization;
                     binding.target_peer = Some(peer_id);
@@ -1296,7 +1310,7 @@ impl NativeRealtimeServices {
                         .broker
                         .lock()
                         .map_err(|_| {
-                            crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                            tilo_device_fabric::realtime_session::RealtimeSessionError::InvalidTransition
                         })
                         .and_then(|mut broker| {
                             broker
@@ -1365,7 +1379,7 @@ impl NativeRealtimeServices {
                         .broker
                         .lock()
                         .map_err(|_| {
-                            crate::shell::realtime_session::RealtimeSessionError::InvalidTransition
+                            tilo_device_fabric::realtime_session::RealtimeSessionError::InvalidTransition
                         })
                         .and_then(|mut broker| {
                             broker
@@ -1417,7 +1431,7 @@ impl RealtimeServices for NativeRealtimeServices {
         &self,
         context: &RealtimeRequestContext,
     ) -> Result<mpsc::UnboundedReceiver<Vec<u8>>, String> {
-        let app = crate::shell::realtime_session::VerifiedAppRegistration::new_verified(
+        let app = tilo_device_fabric::realtime_session::VerifiedAppRegistration::new_verified(
             context.app_id(),
             context.workspace_id(),
         )

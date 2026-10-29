@@ -1073,7 +1073,7 @@ pub struct State {
     personal_fabric_input: PersonalFabricInputHolders,
     /// Admitted input from the person's other devices, for the event loop to
     /// deliver as this device's own ([`Self::take_personal_fabric_input`]).
-    routed_fabric_input: Vec<crate::shell::device_fabric::FabricInputEvent>,
+    routed_fabric_input: Vec<tilo_device_fabric::FabricInputEvent>,
     /// Whose hands the event being delivered comes from.
     pub input_origin: InputOrigin,
     /// Every live client surface, keyed by the stable collaboration id.
@@ -4349,9 +4349,9 @@ impl State {
     pub fn apply_personal_fabric_input(
         &mut self,
         controller: &tilo_network_actor::fabric::DeviceId,
-        event: crate::shell::device_fabric::FabricInputEvent,
+        event: tilo_device_fabric::FabricInputEvent,
     ) -> bool {
-        use crate::shell::device_fabric::FabricInputEvent;
+        use tilo_device_fabric::FabricInputEvent;
         let is_release = matches!(
             event,
             FabricInputEvent::PointerButton { pressed: false, .. }
@@ -4384,9 +4384,7 @@ impl State {
 
     /// The admitted input of the person's other devices since the last call,
     /// in order.
-    pub fn take_personal_fabric_input(
-        &mut self,
-    ) -> Vec<crate::shell::device_fabric::FabricInputEvent> {
+    pub fn take_personal_fabric_input(&mut self) -> Vec<tilo_device_fabric::FabricInputEvent> {
         std::mem::take(&mut self.routed_fabric_input)
     }
 
@@ -4398,7 +4396,7 @@ impl State {
         &mut self,
         controller: &tilo_network_actor::fabric::DeviceId,
     ) -> bool {
-        use crate::shell::device_fabric::FabricInputEvent;
+        use tilo_device_fabric::FabricInputEvent;
         let (keys, buttons) = self.personal_fabric_input.release_controller(controller);
         let before = self.routed_fabric_input.len();
         self.routed_fabric_input

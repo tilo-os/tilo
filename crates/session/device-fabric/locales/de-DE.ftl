@@ -1,0 +1,15 @@
+speaker-role-left = linker Lautsprecher
+speaker-role-right = rechter Lautsprecher
+speaker-role-centre = Mittellautsprecher
+speaker-role-subwoofer = Subwoofer
+speaker-role-surround-left = linker Surround-Lautsprecher
+speaker-role-surround-right = rechter Surround-Lautsprecher
+speaker-role-room = Raumlautsprecher
+speaker-calibration-reason-microphone-gone = dieses Mikrofon ist nicht mehr verbunden
+speaker-calibration-reason-not-heard = dort hob sich kein Messsignal vom Rauschen ab
+speaker-calibration-reason-not-allowed = dieses Gerät hat sein Mikrofon nicht freigegeben
+speaker-calibration-reason-out-of-window = die Anfrage kam zu spät auf diesem Gerät an
+speaker-calibration-reason-busy = dieses Mikrofon war mit einem anderen Messsignal beschäftigt
+speaker-calibration-reason-capture-failed = die Aufnahme ist fehlgeschlagen
+speaker-calibration-reason-clock-unknown = die Uhr dieses Geräts ist noch nicht synchronisiert
+speaker-calibration-reason-no-answer = dieses Gerät hat nicht rechtzeitig geantwortet

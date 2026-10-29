@@ -46,16 +46,17 @@ use crate::compositor::selection::{
     shareable_clipboard_history,
 };
 use crate::shell::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
-use crate::shell::device_fabric::{
+use crate::shell::network::ShellNetwork;
+pub(crate) use nearby_changes::{
+    nearby_changes, next_consent_expiry as next_nearby_consent_expiry, note_nearby_changed,
+    observe_nearby_view, served_incomplete_view as served_incomplete_nearby_view,
+};
+use tilo_device_fabric::clock::{fabric_monotonic_us, with_fabric_clock};
+use tilo_device_fabric::{
     ClipboardEntry, ClipboardPayload, DeviceFabric, DeviceFabricSnapshot, DeviceKind,
     DevicePresence, DisplayEdge, DisplayPlacement, FABRIC_SCHEMA_VERSION, FabricCapabilities,
     FabricInputEvent, InputLease, MAX_INPUT_LEASE_MS, MediaHandoffFailure, MediaSession,
     MediaSourceLocator, OwnerSession, PersonalFabricAction, RoamingSetting,
-};
-use crate::shell::network::{ShellNetwork, fabric_monotonic_us};
-pub(crate) use nearby_changes::{
-    nearby_changes, next_consent_expiry as next_nearby_consent_expiry, note_nearby_changed,
-    observe_nearby_view, served_incomplete_view as served_incomplete_nearby_view,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::fabric::DisplayRect;
@@ -237,7 +238,7 @@ struct NearbyDropState {
     >,
     last_offer: BTreeMap<[u8; 16], Instant>,
     incoming: BTreeMap<[u8; 16], PendingNearbyConsent>,
-    destinations: BTreeMap<[u8; 16], crate::shell::nearby_transfer::SecureNearbyDestination>,
+    destinations: BTreeMap<[u8; 16], tilo_nearby_service::SecureNearbyDestination>,
     history: VecDeque<NearbyTransferHistory>,
     /// Exact sender/transfer pairs a queued `ResumeMedia` authorised. Only
     /// these media-handoff offers are accepted, without a Files consent, and
@@ -259,7 +260,7 @@ enum PendingNearbyPayload {
         content_hash: [u8; 32],
     },
     Durable {
-        kind: crate::shell::nearby_transfer::TransferKind,
+        kind: tilo_nearby_service::TransferKind,
         content_hash: [u8; 32],
     },
 }
@@ -316,15 +317,14 @@ fn nearby_transfer_root() -> Option<PathBuf> {
     tilo_paths::state_dir().map(|root| root.join("tilo").join("nearby-transfers"))
 }
 
-fn nearby_store_cell() -> &'static Mutex<Option<crate::shell::nearby_transfer::NearbyTransferStore>>
-{
-    static STORE: OnceLock<Mutex<Option<crate::shell::nearby_transfer::NearbyTransferStore>>> =
+fn nearby_store_cell() -> &'static Mutex<Option<tilo_nearby_service::NearbyTransferStore>> {
+    static STORE: OnceLock<Mutex<Option<tilo_nearby_service::NearbyTransferStore>>> =
         OnceLock::new();
     STORE.get_or_init(|| Mutex::new(None))
 }
 
 fn with_nearby_transfer_store<T>(
-    operation: impl FnOnce(&mut crate::shell::nearby_transfer::NearbyTransferStore) -> Result<T, String>,
+    operation: impl FnOnce(&mut tilo_nearby_service::NearbyTransferStore) -> Result<T, String>,
 ) -> Result<T, String> {
     let mut guard = nearby_store_cell()
         .lock()
@@ -332,7 +332,7 @@ fn with_nearby_transfer_store<T>(
     if guard.is_none() {
         let root = nearby_transfer_root()
             .ok_or_else(|| "nearby transfer state directory is unavailable".to_string())?;
-        *guard = Some(crate::shell::nearby_transfer::NearbyTransferStore::open(
+        *guard = Some(tilo_nearby_service::NearbyTransferStore::open(
             root,
             unix_now_ms(),
         )?);
@@ -349,7 +349,7 @@ fn with_nearby_transfer_store<T>(
 /// only when nothing else holds it.
 #[cfg(test)]
 fn with_open_nearby_transfer_store<T>(
-    operation: impl FnOnce(&mut crate::shell::nearby_transfer::NearbyTransferStore) -> T,
+    operation: impl FnOnce(&mut tilo_nearby_service::NearbyTransferStore) -> T,
 ) -> Option<T> {
     nearby_store_cell()
         .try_lock()
@@ -365,15 +365,15 @@ fn remove_legacy_media_cache() {
     }
 }
 
-fn try_outbox_entries() -> Vec<crate::shell::nearby_transfer::OutboxEntry> {
-    try_nearby_entries(crate::shell::nearby_transfer::NearbyTransferStore::outbox)
+fn try_outbox_entries() -> Vec<tilo_nearby_service::OutboxEntry> {
+    try_nearby_entries(tilo_nearby_service::NearbyTransferStore::outbox)
 }
 
 /// A copy of the store's `entries`. A store that is busy or not open yet
 /// reads as empty rather than blocking: opening repairs the spool and
 /// replaces its index with fsyncs, so it happens on the store's thread.
 fn try_nearby_entries<T: Clone>(
-    entries: impl FnOnce(&crate::shell::nearby_transfer::NearbyTransferStore) -> &[T],
+    entries: impl FnOnce(&tilo_nearby_service::NearbyTransferStore) -> &[T],
 ) -> Vec<T> {
     let Ok(guard) = nearby_store_cell().try_lock() else {
         return Vec::new();
@@ -390,11 +390,11 @@ fn try_nearby_entries<T: Clone>(
 /// record it: the copy, archive, hash and sync in between run unlocked, so
 /// the store's thread (and every receive behind it) never waits for them.
 fn stage_outside_store_lock(
-    staging: crate::shell::nearby_transfer::Staging,
-    shape: crate::shell::nearby_transfer::StageShape,
+    staging: tilo_nearby_service::Staging,
+    shape: tilo_nearby_service::StageShape,
     write: impl FnOnce(
-        crate::shell::nearby_transfer::ReservedStage,
-    ) -> Result<crate::shell::nearby_transfer::WrittenStage, String>,
+        tilo_nearby_service::ReservedStage,
+    ) -> Result<tilo_nearby_service::WrittenStage, String>,
 ) -> Result<(), String> {
     let reserved = with_nearby_transfer_store(|store| store.reserve_stage(staging, shape))?;
     let written = write(reserved)?;
@@ -445,7 +445,7 @@ fn read_inline_nearby_file(path: &Path) -> Result<Vec<u8>, String> {
             )
         })?;
     let mut bytes = Vec::new();
-    file.take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
+    file.take((tilo_device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| {
             crate::shell::i18n::t_args(
@@ -453,7 +453,7 @@ fn read_inline_nearby_file(path: &Path) -> Result<Vec<u8>, String> {
                 &[("error", error.to_string().into())],
             )
         })?;
-    if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
+    if bytes.len() > tilo_device_fabric::MAX_NEARBY_DROP_BYTES {
         return Err(crate::shell::i18n::t("device-fabric-error-file-changed"));
     }
     Ok(bytes)
@@ -687,13 +687,22 @@ pub(crate) fn handle_nearby_transfer_frame(
 
 /// The kind of the receive admitted for this exact sender and request, while
 /// the continuity switch for that kind is on: bytes land in nothing else.
+/// The continuity switch that governs transfers of `kind`.
+const fn transfer_capability(kind: tilo_nearby_service::TransferKind) -> ContinuityCapability {
+    match kind {
+        tilo_nearby_service::TransferKind::File
+        | tilo_nearby_service::TransferKind::FolderArchive => ContinuityCapability::FileTransfer,
+        tilo_nearby_service::TransferKind::MediaHandoff => ContinuityCapability::Media,
+    }
+}
+
 fn admitted_incoming_kind(
     source: &tilo_network_actor::fabric::DeviceId,
     transfer_id: [u8; 16],
     request_id: [u8; 16],
-) -> Option<crate::shell::nearby_transfer::TransferKind> {
+) -> Option<tilo_nearby_service::TransferKind> {
     incoming_transfer_kind(source, request_id, transfer_id)
-        .filter(|kind| ContinuityPolicySnapshot::current().permits(kind.capability()))
+        .filter(|kind| ContinuityPolicySnapshot::current().permits(transfer_capability(*kind)))
 }
 
 /// Verify and install a finished receive, on the store's thread. What it
@@ -704,7 +713,7 @@ fn finish_nearby_transfer(
     content_hash: [u8; 32],
 ) -> Option<nearby_store_worker::FollowUp> {
     let kind = admitted_incoming_kind(source, transfer_id, request_id)?;
-    if kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff {
+    if kind == tilo_nearby_service::TransferKind::MediaHandoff {
         return Some(finish_media_handoff(
             source,
             (transfer_id, request_id),
@@ -1103,7 +1112,7 @@ impl SpatialInputState {
         input: OutboundSpatialInput,
         now: u64,
     ) -> Result<(), String> {
-        if !crate::shell::device_fabric::permits_spatial_input(
+        if !tilo_device_fabric::permits_spatial_input(
             self.received.get(&input.target),
             controller,
             &input.target,
@@ -1168,12 +1177,12 @@ pub(crate) fn start_session_for_test() {
 }
 
 /// This device's power source and whether energy saver is on.
-type LocalPower = (crate::shell::spatial_calibration::DevicePower, bool);
+type LocalPower = (tilo_device_fabric::spatial_calibration::DevicePower, bool);
 
 /// A peer's health report, addressed.
 type HealthReply = (
     tilo_network_actor::fabric::DeviceId,
-    crate::shell::spatial_calibration::DeviceHealthReport,
+    tilo_device_fabric::spatial_calibration::DeviceHealthReport,
 );
 
 /// Probes answered once the in-flight power sample lands; older ones are
@@ -1182,7 +1191,7 @@ const MAX_PENDING_HEALTH_PROBES: usize = 32;
 
 /// A probe older than a fabric action may be is not worth answering.
 const PENDING_HEALTH_PROBE_TTL: Duration =
-    Duration::from_millis(crate::shell::device_fabric::MAX_FABRIC_ACTION_AGE_MS);
+    Duration::from_millis(tilo_device_fabric::MAX_FABRIC_ACTION_AGE_MS);
 
 /// A peer's probe waiting for the power sample.
 struct PendingHealthProbe {
@@ -1193,11 +1202,11 @@ struct PendingHealthProbe {
 
 #[derive(Default)]
 struct DeviceHealthRuntimeState {
-    tracker: crate::shell::spatial_calibration::DeviceHealthTracker,
+    tracker: tilo_device_fabric::spatial_calibration::DeviceHealthTracker,
     last_probe: Option<Instant>,
     local_power: Option<(
         Instant,
-        crate::shell::spatial_calibration::DevicePower,
+        tilo_device_fabric::spatial_calibration::DevicePower,
         bool,
     )>,
     /// The power sample running on its own thread, if one is.
@@ -1210,78 +1219,13 @@ fn device_health_state() -> &'static Mutex<DeviceHealthRuntimeState> {
     STATE.get_or_init(|| Mutex::new(DeviceHealthRuntimeState::default()))
 }
 
-fn fabric_clock_state() -> &'static Mutex<crate::shell::fabric_clock::FabricClockCore> {
-    static STATE: OnceLock<Mutex<crate::shell::fabric_clock::FabricClockCore>> = OnceLock::new();
-    STATE.get_or_init(|| Mutex::new(crate::shell::fabric_clock::FabricClockCore::default()))
-}
-
-fn with_fabric_clock<T>(
-    apply: impl FnOnce(&mut crate::shell::fabric_clock::FabricClockCore) -> T,
-) -> T {
-    let mut core = fabric_clock_state().lock_recover();
-    apply(&mut core)
-}
-
-/// Keeps one peer's clock estimate fresh: the fabric clock probes a peer
-/// only while a handle for it is alive, at
-/// [`CLOCK_SYNC_PROBE_INTERVAL`](crate::shell::fabric_clock::CLOCK_SYNC_PROBE_INTERVAL),
-/// and only while Media continuity is on. Dropping the last handle stops
-/// probing and forgets the estimate.
-#[must_use = "the peer's clock is kept only while the handle is held"]
-#[derive(Debug)]
-pub struct FabricClockSync {
-    peer: tilo_network_actor::fabric::DeviceId,
-}
-
-impl FabricClockSync {
-    #[must_use]
-    pub fn peer(&self) -> &tilo_network_actor::fabric::DeviceId {
-        &self.peer
-    }
-
-    /// The peer's current clock model; see [`fabric_peer_clock`].
-    #[must_use]
-    pub fn estimate(&self) -> Option<crate::shell::fabric_clock::ClockEstimate> {
-        fabric_peer_clock(&self.peer)
-    }
-
-    /// Whether audio timed against the peer can play now, and why not.
-    #[must_use]
-    pub fn state(&self) -> crate::shell::fabric_clock::ClockSyncState {
-        let now_us = fabric_monotonic_us();
-        with_fabric_clock(|core| core.state(&self.peer, Instant::now(), now_us))
-    }
-}
-
-impl Drop for FabricClockSync {
-    fn drop(&mut self) {
-        with_fabric_clock(|core| core.release(&self.peer));
-    }
-}
-
-/// Keep `peer`'s clock synchronised for as long as the returned handle
-/// lives.
-pub fn hold_fabric_clock_sync(peer: tilo_network_actor::fabric::DeviceId) -> FabricClockSync {
-    with_fabric_clock(|core| core.hold(peer.clone(), Instant::now()));
-    FabricClockSync { peer }
-}
-
-/// The certified peer's clock relative to [`fabric_monotonic_us`], or `None`
-/// while nothing holds it in sync or before its first clock report.
-#[must_use]
-pub fn fabric_peer_clock(
-    peer: &tilo_network_actor::fabric::DeviceId,
-) -> Option<crate::shell::fabric_clock::ClockEstimate> {
-    let now_us = fabric_monotonic_us();
-    with_fabric_clock(|core| core.estimate(peer, now_us))
-}
-
 fn spatial_calibration_state()
--> &'static Mutex<crate::shell::spatial_calibration::SpatialCalibrationState> {
-    static STATE: OnceLock<Mutex<crate::shell::spatial_calibration::SpatialCalibrationState>> =
-        OnceLock::new();
+-> &'static Mutex<tilo_device_fabric::spatial_calibration::SpatialCalibrationState> {
+    static STATE: OnceLock<
+        Mutex<tilo_device_fabric::spatial_calibration::SpatialCalibrationState>,
+    > = OnceLock::new();
     STATE.get_or_init(|| {
-        Mutex::new(crate::shell::spatial_calibration::SpatialCalibrationState::default())
+        Mutex::new(tilo_device_fabric::spatial_calibration::SpatialCalibrationState::default())
     })
 }
 
@@ -1301,13 +1245,13 @@ fn fresh_local_power(state: &DeviceHealthRuntimeState, now: Instant) -> Option<L
 fn sample_local_power() -> LocalPower {
     let battery = os_actions::BatteryInfo::from_system();
     let power = if !battery.present {
-        crate::shell::spatial_calibration::DevicePower::External
+        tilo_device_fabric::spatial_calibration::DevicePower::External
     } else if battery.on_ac || battery.status.eq_ignore_ascii_case("charging") {
-        crate::shell::spatial_calibration::DevicePower::Charging(
+        tilo_device_fabric::spatial_calibration::DevicePower::Charging(
             u8::try_from(battery.capacity.min(100)).unwrap_or(100),
         )
     } else {
-        crate::shell::spatial_calibration::DevicePower::Battery(
+        tilo_device_fabric::spatial_calibration::DevicePower::Battery(
             u8::try_from(battery.capacity.min(100)).unwrap_or(100),
         )
     };
@@ -1321,8 +1265,8 @@ fn sample_local_power() -> LocalPower {
 fn health_report(
     nonce: [u8; 16],
     (power, energy_saver): LocalPower,
-) -> crate::shell::spatial_calibration::DeviceHealthReport {
-    crate::shell::spatial_calibration::DeviceHealthReport {
+) -> tilo_device_fabric::spatial_calibration::DeviceHealthReport {
+    tilo_device_fabric::spatial_calibration::DeviceHealthReport {
         probe_nonce: nonce,
         power,
         energy_saver,
@@ -1735,7 +1679,7 @@ pub(crate) struct FabricTurn {
     pub selection: SharedSelection,
     pub local: LocalFabricCapabilities,
     pub app_focus: Option<crate::shell::physical_gamepad::PhysicalGamepadBinding>,
-    pub realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
+    pub realtime_adapter: Option<tilo_device_fabric::realtime_session::SharedRealtimeFabricAdapter>,
     pub remote_capture: Option<crate::shell::remote_capture::runtime::SharedRemoteCaptureRuntime>,
 }
 
@@ -1817,7 +1761,7 @@ pub struct DeviceFabricRuntime {
     pending_incoming_media: BTreeMap<[u8; 16], PendingIncomingMedia>,
     waiting_incoming_media: BTreeMap<[u8; 16], PendingIncomingMedia>,
     notification_bridge: NotificationBridge,
-    realtime_adapter: Option<crate::shell::realtime_session::SharedRealtimeFabricAdapter>,
+    realtime_adapter: Option<tilo_device_fabric::realtime_session::SharedRealtimeFabricAdapter>,
     realtime_online_peers: BTreeSet<tilo_network_actor::fabric::DeviceId>,
     remote_capture: remote_capture::RemoteCaptureIntegration,
     tethering: crate::shell::personal_tethering_runtime::PersonalTetheringRuntime,
@@ -1871,7 +1815,7 @@ impl DeviceFabricRuntime {
 
     /// Tell the person how their request to wake a device ended.
     fn notify_wake_outcomes(&self) {
-        use crate::shell::device_fabric::WakeOutcome;
+        use tilo_device_fabric::WakeOutcome;
         for event in crate::shell::device_wake::drain_events() {
             let device = event.label.as_str();
             let (summary, body) = match event.outcome {
@@ -1920,7 +1864,7 @@ impl DeviceFabricRuntime {
 
     pub fn set_realtime_adapter(
         &mut self,
-        adapter: crate::shell::realtime_session::SharedRealtimeFabricAdapter,
+        adapter: tilo_device_fabric::realtime_session::SharedRealtimeFabricAdapter,
     ) {
         self.realtime_adapter = Some(adapter);
     }
@@ -2204,7 +2148,7 @@ impl DeviceFabricRuntime {
                 // Cancellation is teardown, not a new projection, so deliver
                 // the adapter's terminal signals before suppressing the plane.
                 for egress in adapter.drain_egress() {
-                    if let crate::shell::realtime_session::RealtimeFabricSignal::Cancel(
+                    if let tilo_device_fabric::realtime_session::RealtimeFabricSignal::Cancel(
                         session_id,
                     ) = egress.signal
                     {
@@ -2525,7 +2469,7 @@ impl DeviceFabricRuntime {
     fn handle_gamepad_action(
         &mut self,
         network: &ShellNetwork,
-        envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+        envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
     ) -> bool {
         match &envelope.action {
             PersonalFabricAction::GamepadForwardRequest { .. } => {
@@ -2619,7 +2563,7 @@ impl DeviceFabricRuntime {
     fn queue_gamepad_request(
         &self,
         network: &ShellNetwork,
-        envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+        envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
     ) {
         let PersonalFabricAction::GamepadForwardRequest {
             forwarding_id,
@@ -2898,9 +2842,9 @@ impl DeviceFabricRuntime {
 
     fn handle_realtime_action(
         &self,
-        envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+        envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
     ) -> bool {
-        use crate::shell::realtime_session::RealtimeFabricSignal;
+        use tilo_device_fabric::realtime_session::RealtimeFabricSignal;
 
         let signal = match &envelope.action {
             PersonalFabricAction::RealtimeOffer { offer } => {
@@ -2937,7 +2881,7 @@ impl DeviceFabricRuntime {
         network: &ShellNetwork,
         policy: ContinuityPolicySnapshot,
     ) {
-        use crate::shell::realtime_session::RealtimeFabricSignal;
+        use tilo_device_fabric::realtime_session::RealtimeFabricSignal;
 
         if !policy.permits(ContinuityCapability::RealtimeSessions) {
             if let Some(adapter) = self.realtime_adapter.as_ref() {
@@ -2986,7 +2930,7 @@ impl DeviceFabricRuntime {
     fn handle_notification_action(
         &self,
         network: &ShellNetwork,
-        envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+        envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
     ) -> bool {
         match &envelope.action {
             PersonalFabricAction::NotificationProject { notification } => {
@@ -3408,13 +3352,13 @@ fn resume_nearby_transfers(network: &ShellNetwork, policy: ContinuityPolicySnaps
             .retain(|transfer_id, _| entries.iter().any(|entry| entry.id == *transfer_id));
     }
     for entry in entries {
-        if !policy.permits(entry.kind.capability()) {
+        if !policy.permits(transfer_capability(entry.kind)) {
             continue;
         }
         let Ok(target) = tilo_network_actor::fabric::DeviceId::new(entry.target.clone()) else {
             continue;
         };
-        if entry.kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff
+        if entry.kind == tilo_nearby_service::TransferKind::MediaHandoff
             && !media_transfer_pending(entry.id, &target)
         {
             nearby_store_worker::cancel_outgoing(entry.id);
@@ -3703,18 +3647,18 @@ fn handle_nearby_drop_action(
         PersonalFabricAction::NearbyTransferOffer {
             transfer_id,
             name,
-            kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+            kind: tilo_nearby_service::TransferKind::MediaHandoff,
             total_bytes,
             content_hash,
         } => accept_media_handoff_offer(
             network,
             &source,
-            crate::shell::nearby_transfer::IncomingManifest {
+            tilo_nearby_service::IncomingManifest {
                 id: transfer_id,
                 source: source.as_str().to_string(),
                 request_id: envelope_request_id,
                 name,
-                kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                kind: tilo_nearby_service::TransferKind::MediaHandoff,
                 total_bytes,
                 content_hash,
             },
@@ -3777,7 +3721,7 @@ fn handle_nearby_drop_action(
                 });
                 let (entry, path) = manifest.ok()?;
                 let local_prefix =
-                    crate::shell::nearby_transfer::hash_prefix(&path, committed_offset).ok()?;
+                    tilo_nearby_service::hash_prefix(&path, committed_offset).ok()?;
                 Some(Box::new(move |network: &ShellNetwork| {
                     if !transfer_kind_permitted(entry.kind) {
                         return;
@@ -3855,7 +3799,7 @@ fn handle_nearby_drop_action(
                     }
                 }
                 let outgoing_kind = outgoing_transfer_kind(transfer_id)
-                    .unwrap_or(crate::shell::nearby_transfer::TransferKind::File);
+                    .unwrap_or(tilo_nearby_service::TransferKind::File);
                 Some(Box::new(move |network: &ShellNetwork| {
                     let outgoing = transfer_kind_permitted(outgoing_kind)
                         .then(|| {
@@ -3886,11 +3830,11 @@ fn handle_nearby_drop_action(
             // disk, so the store's thread finishes it.
             let _ = nearby_store_worker::on_store_thread(network, move || {
                 let kind = outgoing_transfer_kind(transfer_id)
-                    .unwrap_or(crate::shell::nearby_transfer::TransferKind::File);
+                    .unwrap_or(tilo_nearby_service::TransferKind::File);
                 if !transfer_kind_permitted(kind) {
                     return None;
                 }
-                let media = kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff;
+                let media = kind == tilo_nearby_service::TransferKind::MediaHandoff;
                 let pending = nearby_drop_state().lock().ok().and_then(|mut state| {
                     let pending = state
                         .large_offers
@@ -3928,8 +3872,8 @@ fn handle_nearby_drop_action(
 }
 
 /// Whether the continuity switch that governs `kind` is on right now.
-fn transfer_kind_permitted(kind: crate::shell::nearby_transfer::TransferKind) -> bool {
-    ContinuityPolicySnapshot::current().permits(kind.capability())
+fn transfer_kind_permitted(kind: tilo_nearby_service::TransferKind) -> bool {
+    ContinuityPolicySnapshot::current().permits(transfer_capability(kind))
 }
 
 /// The kind of the receive this exact sender and request own, if any.
@@ -3937,7 +3881,7 @@ fn incoming_transfer_kind(
     source: &tilo_network_actor::fabric::DeviceId,
     request_id: [u8; 16],
     transfer_id: [u8; 16],
-) -> Option<crate::shell::nearby_transfer::TransferKind> {
+) -> Option<tilo_nearby_service::TransferKind> {
     with_nearby_transfer_store(|store| {
         Ok(store
             .inbox()
@@ -3954,9 +3898,7 @@ fn incoming_transfer_kind(
 }
 
 /// The kind of one staged outgoing object, if it is still staged.
-fn outgoing_transfer_kind(
-    transfer_id: [u8; 16],
-) -> Option<crate::shell::nearby_transfer::TransferKind> {
+fn outgoing_transfer_kind(transfer_id: [u8; 16]) -> Option<tilo_nearby_service::TransferKind> {
     with_nearby_transfer_store(|store| {
         Ok(store
             .outbox()
@@ -3974,7 +3916,7 @@ fn outgoing_transfer_kind(
 fn accept_media_handoff_offer(
     network: &ShellNetwork,
     source: &tilo_network_actor::fabric::DeviceId,
-    manifest: crate::shell::nearby_transfer::IncomingManifest,
+    manifest: tilo_nearby_service::IncomingManifest,
 ) {
     let transfer_id = manifest.id;
     let request_id = manifest.request_id;
@@ -4031,7 +3973,7 @@ fn accept_media_handoff_offer(
 
 fn handle_device_health_action(
     network: &ShellNetwork,
-    envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
 ) -> bool {
     let now = Instant::now();
     match &envelope.action {
@@ -4068,7 +4010,7 @@ fn handle_device_health_action(
 /// already admitted both under Media continuity.
 fn handle_fabric_clock_action(
     network: &ShellNetwork,
-    envelope: &crate::shell::device_fabric::PersonalFabricActionEnvelope,
+    envelope: &tilo_device_fabric::PersonalFabricActionEnvelope,
     received_monotonic_us: u64,
 ) -> bool {
     match &envelope.action {
@@ -4109,7 +4051,7 @@ fn health_probe_targets(
 ) -> Vec<tilo_network_actor::fabric::DeviceId> {
     let due = state.last_probe.is_none_or(|sampled| {
         now.checked_duration_since(sampled)
-            .is_none_or(|age| age >= crate::shell::spatial_calibration::HEALTH_PROBE_INTERVAL)
+            .is_none_or(|age| age >= tilo_device_fabric::spatial_calibration::HEALTH_PROBE_INTERVAL)
     });
     if !due {
         return Vec::new();
@@ -5291,7 +5233,7 @@ pub fn request_media_handoff(
 /// thread and then offered as a [`TransferKind::MediaHandoff`] object, so the
 /// handoff resumes from the destination's verified prefix after a drop.
 ///
-/// [`TransferKind::MediaHandoff`]: crate::shell::nearby_transfer::TransferKind::MediaHandoff
+/// [`TransferKind::MediaHandoff`]: tilo_nearby_service::TransferKind::MediaHandoff
 struct PreparedMediaTransfer {
     transfer_id: [u8; 16],
     name: String,
@@ -5304,7 +5246,7 @@ impl PreparedMediaTransfer {
             .map_err(|error| format!("media file cannot be inspected: {error}"))?;
         if !metadata.file_type().is_file()
             || metadata.len() == 0
-            || metadata.len() > crate::shell::nearby_transfer::MAX_TRANSFER_BYTES
+            || metadata.len() > tilo_nearby_service::MAX_TRANSFER_BYTES
         {
             return Err("media source is not a supported regular file".into());
         }
@@ -5333,14 +5275,14 @@ impl PreparedMediaTransfer {
             .name("tilo-media-stage".into())
             .spawn(move || {
                 let _permit = permit;
-                let result = crate::shell::nearby_transfer::Staging::for_media(
+                let result = tilo_nearby_service::Staging::for_media(
                     self.name.clone(),
                     target.as_str().to_string(),
                     unix_now_ms(),
                     self.transfer_id,
                 )
                 .and_then(|staging| {
-                    let shape = crate::shell::nearby_transfer::StageShape::of_path(&self.source)?;
+                    let shape = tilo_nearby_service::StageShape::of_path(&self.source)?;
                     stage_outside_store_lock(staging, shape, |reserved| {
                         reserved.write_path(&self.source)
                     })
@@ -5378,7 +5320,7 @@ fn portable_media_name(name: &str) -> Option<String> {
         }
         sanitized.push(character);
     }
-    super::device_fabric::valid_nearby_file_name(&sanitized).then_some(sanitized)
+    tilo_nearby_service::valid_nearby_file_name(&sanitized).then_some(sanitized)
 }
 
 pub(crate) fn media_handoff_status_views(network: &ShellNetwork) -> Vec<MediaHandoffStatusView> {
@@ -5597,7 +5539,7 @@ pub fn remote_audio_view(
 pub fn request_speaker_group_audio(
     network: &ShellNetwork,
     source_token: u64,
-    group: crate::shell::speaker_group::SpeakerGroupId,
+    group: tilo_device_fabric::speaker_group::SpeakerGroupId,
 ) -> Result<[u8; 16], String> {
     require_continuity(ContinuityCapability::Media)?;
     crate::shell::speaker_group_runtime::start_session(
@@ -5617,7 +5559,7 @@ pub fn request_speaker_group_audio(
 pub fn play_media_on_speaker_group(
     network: &ShellNetwork,
     session_id: &str,
-    group: crate::shell::speaker_group::SpeakerGroupId,
+    group: tilo_device_fabric::speaker_group::SpeakerGroupId,
 ) -> Result<[u8; 16], String> {
     require_continuity(ContinuityCapability::Media)?;
     if !media::handoff::playback_sessions()
@@ -5662,7 +5604,7 @@ pub fn request_nearby_drop(
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .filter(|name| super::device_fabric::valid_nearby_file_name(name))
+        .filter(|name| tilo_nearby_service::valid_nearby_file_name(name))
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-name-not-portable"))?
         .to_string();
     let metadata = std::fs::symlink_metadata(path).map_err(|error| {
@@ -5674,9 +5616,7 @@ pub fn request_nearby_drop(
     if metadata.file_type().is_symlink() || (!metadata.is_file() && !metadata.is_dir()) {
         return Err(crate::shell::i18n::t("device-fabric-error-drop-one-item"));
     }
-    if metadata.is_dir()
-        || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
-    {
+    if metadata.is_dir() || metadata.len() > tilo_device_fabric::MAX_NEARBY_DROP_BYTES as u64 {
         let permit = NearbyStagingPermit::acquire("shell:spatial-drop")?;
         let target = target.clone();
         let worker_target = target.clone();
@@ -5688,14 +5628,14 @@ pub fn request_nearby_drop(
             .name("tilo-nearby-stage".into())
             .spawn(move || {
                 let permit = permit;
-                let result = crate::shell::nearby_transfer::Staging::for_path(
+                let result = tilo_nearby_service::Staging::for_path(
                     &source,
                     worker_target.as_str().to_string(),
                     unix_now_ms(),
                     transfer_id,
                 )
                 .and_then(|staging| {
-                    let shape = crate::shell::nearby_transfer::StageShape::of_path(&source)?;
+                    let shape = tilo_nearby_service::StageShape::of_path(&source)?;
                     stage_outside_store_lock(staging, shape, |reserved| {
                         reserved.write_path(&source)
                     })
@@ -5793,7 +5733,7 @@ fn read_inline_off_the_loop(
 pub fn request_nearby_drop_secure(
     network: &ShellNetwork,
     target: &tilo_network_actor::fabric::DeviceId,
-    source: crate::shell::nearby_transfer::SecureNearbySource,
+    source: tilo_nearby_service::SecureNearbySource,
     staging_owner: &str,
 ) -> Result<[u8; 16], String> {
     require_continuity(ContinuityCapability::FileTransfer)?;
@@ -5804,7 +5744,7 @@ pub fn request_nearby_drop_secure(
 pub enum PreparedNearbyDrop {
     /// A directory, or a file too large to offer inline: a staging worker
     /// reads it from the open source.
-    Staged(crate::shell::nearby_transfer::SecureNearbySource),
+    Staged(tilo_nearby_service::SecureNearbySource),
     /// A small file, already read, offered inline.
     Inline { file_name: String, bytes: Vec<u8> },
 }
@@ -5828,12 +5768,10 @@ impl PreparedNearbyDrop {
 /// Returns a message when the source cannot be inspected or read, is empty,
 /// or changes while read.
 pub(crate) fn prepare_nearby_drop(
-    source: crate::shell::nearby_transfer::SecureNearbySource,
+    source: tilo_nearby_service::SecureNearbySource,
 ) -> Result<PreparedNearbyDrop, String> {
     let metadata = source.metadata()?;
-    if metadata.is_dir()
-        || metadata.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64
-    {
+    if metadata.is_dir() || metadata.len() > tilo_device_fabric::MAX_NEARBY_DROP_BYTES as u64 {
         return Ok(PreparedNearbyDrop::Staged(source));
     }
     if metadata.len() == 0 {
@@ -5843,7 +5781,7 @@ pub(crate) fn prepare_nearby_drop(
     let mut bytes = Vec::new();
     source
         .into_file()
-        .take((crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
+        .take((tilo_device_fabric::MAX_NEARBY_DROP_BYTES as u64).saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| {
             crate::shell::i18n::t_args(
@@ -5851,7 +5789,7 @@ pub(crate) fn prepare_nearby_drop(
                 &[("error", error.to_string().into())],
             )
         })?;
-    if bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES {
+    if bytes.len() > tilo_device_fabric::MAX_NEARBY_DROP_BYTES {
         return Err(crate::shell::i18n::t("device-fabric-error-file-changed"));
     }
     Ok(PreparedNearbyDrop::Inline { file_name, bytes })
@@ -5889,18 +5827,15 @@ pub(crate) fn request_prepared_nearby_drop(
         .name("tilo-nearby-stage".into())
         .spawn(move || {
             let permit = permit;
-            let result =
-                crate::shell::nearby_transfer::StageShape::of_secure(&source).and_then(|shape| {
-                    let staging = crate::shell::nearby_transfer::Staging::for_secure(
-                        &source,
-                        worker_target.as_str().to_string(),
-                        unix_now_ms(),
-                        transfer_id,
-                    );
-                    stage_outside_store_lock(staging, shape, |reserved| {
-                        reserved.write_secure(source)
-                    })
-                });
+            let result = tilo_nearby_service::StageShape::of_secure(&source).and_then(|shape| {
+                let staging = tilo_nearby_service::Staging::for_secure(
+                    &source,
+                    worker_target.as_str().to_string(),
+                    unix_now_ms(),
+                    transfer_id,
+                );
+                stage_outside_store_lock(staging, shape, |reserved| reserved.write_secure(source))
+            });
             if !permit.valid() {
                 if result.is_ok() {
                     let _ = with_nearby_transfer_store(|store| store.cancel_outgoing(transfer_id));
@@ -6005,7 +5940,7 @@ pub fn decide_nearby_transfer_at(
     network: &ShellNetwork,
     transfer_id: [u8; 16],
     accept: bool,
-    destination: Option<crate::shell::nearby_transfer::SecureNearbyDestination>,
+    destination: Option<tilo_nearby_service::SecureNearbyDestination>,
 ) -> Result<(), String> {
     require_continuity(ContinuityCapability::FileTransfer)?;
     if accept && destination.is_none() {
@@ -6040,14 +5975,14 @@ pub fn decide_nearby_transfer_at(
                 .iter()
                 .find(|entry| {
                     entry.id == transfer_id
-                        && entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+                        && entry.kind != tilo_nearby_service::TransferKind::MediaHandoff
                 })
                 .cloned()
                 .ok_or_else(|| {
                     crate::shell::i18n::t("device-fabric-error-transfer-unrecoverable")
                 })?;
             let (committed_offset, prefix_hash) = store.begin_incoming(
-                crate::shell::nearby_transfer::IncomingManifest {
+                tilo_nearby_service::IncomingManifest {
                     id: entry.id,
                     source: entry.source.clone(),
                     request_id: entry.request_id,
@@ -6085,7 +6020,7 @@ pub fn decide_nearby_transfer_at(
         } => {
             let install_result = accept.then(|| {
                 if bytes.is_empty()
-                    || bytes.len() > crate::shell::device_fabric::MAX_NEARBY_DROP_BYTES
+                    || bytes.len() > tilo_device_fabric::MAX_NEARBY_DROP_BYTES
                     || blake3::hash(&bytes).as_bytes() != &content_hash
                 {
                     return Err("invalid nearby drop".into());
@@ -6136,7 +6071,7 @@ pub fn decide_nearby_transfer_at(
         PendingNearbyPayload::Durable { kind, content_hash } => {
             if !accept {
                 let discarded = with_nearby_transfer_store(|store| {
-                    store.decline_incoming_offer(&crate::shell::nearby_transfer::IncomingManifest {
+                    store.decline_incoming_offer(&tilo_nearby_service::IncomingManifest {
                         id: transfer_id,
                         source: pending.source.as_str().to_string(),
                         request_id: pending.request_id,
@@ -6171,7 +6106,7 @@ pub fn decide_nearby_transfer_at(
             }
             let (committed_offset, prefix_hash) = with_nearby_transfer_store(|store| {
                 store.accept_incoming_offer(
-                    crate::shell::nearby_transfer::IncomingManifest {
+                    tilo_nearby_service::IncomingManifest {
                         id: transfer_id,
                         source: pending.source.as_str().to_string(),
                         request_id: pending.request_id,
@@ -6212,8 +6147,7 @@ pub fn decide_nearby_transfer_at(
 pub fn retry_nearby_transfer(network: &ShellNetwork, transfer_id: [u8; 16]) -> Result<(), String> {
     require_continuity(ContinuityCapability::FileTransfer)?;
     let exists = try_outbox_entries().iter().any(|entry| {
-        entry.id == transfer_id
-            && entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+        entry.id == transfer_id && entry.kind != tilo_nearby_service::TransferKind::MediaHandoff
     });
     if !exists {
         return Err(crate::shell::i18n::t(
@@ -6325,8 +6259,8 @@ pub fn nearby_transfer_statuses(network: &ShellNetwork) -> NearbyTransferStatuse
     );
     statuses.truncate(runtime_collab::MAX_NEARBY_TRANSFER_STATUSES);
     // A media handoff's object reports through the handoff, not Files.
-    let nearby_send = |kind: crate::shell::nearby_transfer::TransferKind| {
-        kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+    let nearby_send = |kind: tilo_nearby_service::TransferKind| {
+        kind != tilo_nearby_service::TransferKind::MediaHandoff
     };
     for entry in inbox.into_iter().filter(|entry| nearby_send(entry.kind)) {
         if statuses.len() >= runtime_collab::MAX_NEARBY_TRANSFER_STATUSES {
@@ -6426,7 +6360,7 @@ fn fabric_transfer_views() -> Vec<crate::shell::overlay_host::FabricTransferView
 }
 
 fn bluetooth_authorization_views(
-    fabric: &crate::shell::device_fabric::DeviceFabric,
+    fabric: &tilo_device_fabric::DeviceFabric,
 ) -> Vec<crate::shell::overlay_host::BluetoothHandoffAuthorizationView> {
     use crate::shell::overlay_host::BluetoothHandoffAuthorizationView;
 
@@ -6462,7 +6396,7 @@ fn bluetooth_authorization_views(
 }
 
 fn bluetooth_handoff_status_views(
-    fabric: &crate::shell::device_fabric::DeviceFabric,
+    fabric: &tilo_device_fabric::DeviceFabric,
 ) -> Vec<BluetoothHandoffStatusView> {
     let Ok(mut state) = bluetooth_handoff_state().lock() else {
         return Vec::new();
@@ -6508,7 +6442,7 @@ fn bluetooth_handoff_status_views(
 }
 
 fn gamepad_authorization_views(
-    fabric: &crate::shell::device_fabric::DeviceFabric,
+    fabric: &tilo_device_fabric::DeviceFabric,
 ) -> Vec<crate::shell::overlay_host::GamepadAuthorizationView> {
     let mut authorizations = pending_typed_gamepad_authorizations()
         .into_iter()
@@ -6777,7 +6711,8 @@ pub fn device_fabric_view(
                     .collect::<Vec<_>>()
             },
         );
-        let health = crate::shell::spatial_calibration::summarize_health(observations, now_unix_ms);
+        let health =
+            tilo_device_fabric::spatial_calibration::summarize_health(observations, now_unix_ms);
         let proposals = spatial_calibration_proposals(network);
         let reverts = spatial_calibration_state()
             .lock()
@@ -6884,13 +6819,13 @@ pub fn step_input_level(node_id: u32, raise: bool) -> Result<(), String> {
 
 fn calibration_devices(
     network: &ShellNetwork,
-) -> Vec<crate::shell::spatial_calibration::CalibrationDevice> {
+) -> Vec<tilo_device_fabric::spatial_calibration::CalibrationDevice> {
     network
         .device_fabric()
         .snapshots()
         .values()
         .map(
-            |snapshot| crate::shell::spatial_calibration::CalibrationDevice {
+            |snapshot| tilo_device_fabric::spatial_calibration::CalibrationDevice {
                 id: snapshot.owner.clone(),
                 certified: true,
                 online: snapshot.presence.online,
@@ -6903,7 +6838,7 @@ fn calibration_devices(
 
 fn spatial_calibration_proposals(
     network: &ShellNetwork,
-) -> Vec<crate::shell::spatial_calibration::CalibrationProposal> {
+) -> Vec<tilo_device_fabric::spatial_calibration::CalibrationProposal> {
     if require_continuity(ContinuityCapability::DisplayInput).is_err() {
         return Vec::new();
     }
@@ -7094,7 +7029,7 @@ pub fn move_device_display(
                 expected,
                 rect,
                 expires_unix_ms: unix_now_ms()
-                    .saturating_add(crate::shell::device_fabric::MAX_DISPLAY_MOVE_AGE_MS),
+                    .saturating_add(tilo_device_fabric::MAX_DISPLAY_MOVE_AGE_MS),
             },
         )
         .map(|_| ())
@@ -7110,9 +7045,9 @@ fn checked_display_move(
         tilo_network_actor::fabric::FabricStamp,
         DisplayRect,
     ),
-    crate::shell::device_fabric::FabricError,
+    tilo_device_fabric::FabricError,
 > {
-    use crate::shell::device_fabric::FabricError;
+    use tilo_device_fabric::FabricError;
     let target = tilo_network_actor::fabric::DeviceId::new(request.screen.device.clone())
         .map_err(|_| FabricError::InvalidIdentifier)?;
     let snapshot = fabric
@@ -8141,8 +8076,7 @@ fn roaming_provenance(
         })
         .collect();
 
-    let mut wifi_by_network =
-        BTreeMap::<[u8; 32], Vec<&crate::shell::device_fabric::WifiCredential>>::new();
+    let mut wifi_by_network = BTreeMap::<[u8; 32], Vec<&tilo_device_fabric::WifiCredential>>::new();
     for credential in fabric
         .snapshots()
         .values()
@@ -8246,7 +8180,7 @@ fn reconcile_roaming_settings(
 fn apply_roaming_settings(settings: &BTreeMap<String, Value>) {
     let mut sections = BTreeMap::<String, Map<String, Value>>::new();
     for (key, value) in settings {
-        if !super::device_fabric::valid_setting_key(key) {
+        if !tilo_device_fabric::valid_setting_key(key) {
             tracing::warn!(key, "ignored non-roaming setting from personal fabric");
             continue;
         }
@@ -8578,9 +8512,7 @@ fn tear_down_nearby_transfers() {
             Ok(store
                 .outbox()
                 .iter()
-                .filter(|entry| {
-                    entry.kind == crate::shell::nearby_transfer::TransferKind::MediaHandoff
-                })
+                .filter(|entry| entry.kind == tilo_nearby_service::TransferKind::MediaHandoff)
                 .map(|entry| entry.id)
                 .collect::<BTreeSet<_>>())
         })
@@ -8648,7 +8580,7 @@ fn withdraw_nearby_transfers(network: &ShellNetwork, media_outgoing: &BTreeSet<[
         let incoming = store
             .inbox()
             .iter()
-            .filter(|entry| entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff)
+            .filter(|entry| entry.kind != tilo_nearby_service::TransferKind::MediaHandoff)
             .map(|entry| entry.id)
             .collect::<Vec<_>>();
         for transfer_id in incoming {
@@ -9287,7 +9219,7 @@ mod tests {
 
     #[test]
     fn health_probe_never_samples_power_inline() {
-        use crate::shell::spatial_calibration::DevicePower;
+        use tilo_device_fabric::spatial_calibration::DevicePower;
         let peer = DeviceId::new("health-probe-peer").unwrap();
         let start = Instant::now();
         let mut state = DeviceHealthRuntimeState::default();
@@ -9351,21 +9283,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn clock_sync_handles_are_counted_until_the_last_is_dropped() {
-        let peer = DeviceId::new("clock-handle-peer").unwrap();
-        let held = || with_fabric_clock(|core| core.is_held(&peer));
-        let first = hold_fabric_clock_sync(peer.clone());
-        let second = hold_fabric_clock_sync(peer.clone());
-        assert!(held());
-        drop(first);
-        assert!(held());
-        assert_eq!(second.peer(), &peer);
-        assert!(second.estimate().is_none());
-        drop(second);
-        assert!(!held());
-    }
-
     fn provenance_snapshot(
         device: DeviceId,
         label: &str,
@@ -9402,8 +9319,8 @@ mod tests {
                 .collect(),
             wifi: Vec::new(),
             display: None,
-            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
-            speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
+            unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
+            speakers: tilo_device_fabric::speaker_group::SpeakerFabricState::default(),
         }
     }
 
@@ -9578,7 +9495,7 @@ mod tests {
                 PersonalFabricAction::NearbyTransferOffer {
                     transfer_id,
                     name: "unsolicited.mp4".into(),
-                    kind: crate::shell::nearby_transfer::TransferKind::MediaHandoff,
+                    kind: tilo_nearby_service::TransferKind::MediaHandoff,
                     total_bytes: 4,
                     content_hash: *blake3::hash(b"evil").as_bytes(),
                 },
@@ -10043,8 +9960,8 @@ mod tests {
                 settings: Vec::new(),
                 wifi: Vec::new(),
                 display: None,
-                unlock: crate::shell::device_unlock::UnlockFabricState::default(),
-                speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
+                unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
+                speakers: tilo_device_fabric::speaker_group::SpeakerFabricState::default(),
             };
             let stamp = FabricStamp { counter: 9, device };
             stamp_snapshot(&mut snapshot, &stamp, 42);
@@ -10081,8 +9998,8 @@ mod tests {
                 }],
                 wifi: Vec::new(),
                 display: None,
-                unlock: crate::shell::device_unlock::UnlockFabricState::default(),
-                speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
+                unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
+                speakers: tilo_device_fabric::speaker_group::SpeakerFabricState::default(),
             };
             let next_stamp = FabricStamp { counter: 9, device };
             let applied_remote =
@@ -10479,7 +10396,7 @@ mod tests {
                 counter: 4,
                 device: second.clone(),
             };
-            let first_credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+            let first_credential = tilo_device_fabric::secrets::seal_wifi_credential(
                 "Home",
                 os_actions::WifiSecurity::Wpa2,
                 "first-secret",
@@ -10488,7 +10405,7 @@ mod tests {
                 first_stamp,
             )
             .unwrap();
-            let second_credential = crate::shell::device_fabric_secrets::seal_wifi_credential(
+            let second_credential = tilo_device_fabric::secrets::seal_wifi_credential(
                 "Home",
                 os_actions::WifiSecurity::Wpa2,
                 "second-secret",

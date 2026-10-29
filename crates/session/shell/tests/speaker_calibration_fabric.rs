@@ -14,19 +14,19 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use shell::shell::device_fabric::{
-    DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-    FabricCapabilities, OwnerSession, PersonalFabricAction,
-};
 use shell::shell::speaker_calibration::{
     CalibrationPhase, CalibrationRun, HearingFailure, MeasurementSource, MemberProgress,
     MicrophoneConsent, MicrophoneHearing, MicrophoneProgress, SpeakerHearing, SweepRequest,
 };
-use shell::shell::speaker_group::{
-    AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerGroupId, SpeakerRole, StereoSide,
-};
 use shell::shell::speaker_group_runtime::{Egress, ListenerState, MemberSpec, SpeakerGroupCore};
 use shell::shell::speaker_settings::plan_microphones;
+use tilo_device_fabric::speaker_group::{
+    AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerGroupId, SpeakerRole, StereoSide,
+};
+use tilo_device_fabric::{
+    DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
+    FabricCapabilities, OwnerSession, PersonalFabricAction,
+};
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
 
@@ -121,7 +121,7 @@ impl Device {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
-            unlock: shell::shell::device_unlock::UnlockFabricState::default(),
+            unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
             speakers: self.core.authored(endpoints, &stamp(self.name)),
         };
         assert_eq!(fabric.upsert(snapshot), Ok(true));

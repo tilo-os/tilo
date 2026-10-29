@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_seal::{Label, PublicKey, SealedBox, SecretKey};
 
-use crate::shell::device_fabric::{MAX_DEVICES, MAX_SEALED_SECRET_BYTES, WifiCredential};
+use crate::{MAX_DEVICES, MAX_SEALED_SECRET_BYTES, WifiCredential};
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
 
@@ -171,7 +171,7 @@ pub fn wifi_envelope_recipients(
         .collect())
 }
 
-pub(crate) fn validate_wifi_envelopes(bytes: &[u8]) -> Result<(), WifiSecretError> {
+pub fn validate_wifi_envelopes(bytes: &[u8]) -> Result<(), WifiSecretError> {
     let bundle = decode_bundle(bytes)?;
     let listed = bundle.recipients();
     if listed.is_empty() || listed.len() > MAX_DEVICES {

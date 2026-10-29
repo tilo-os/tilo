@@ -27,12 +27,13 @@
 //! the clock, sends the probes and feeds the reports in.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use ui::num::f64_of_i64;
 
 use serde::{Deserialize, Serialize};
 
-use crate::shell::device_fabric::PersonalFabricAction;
+use crate::PersonalFabricAction;
 use tilo_network_actor::fabric::DeviceId;
 
 /// Probe cadence toward a peer while something holds its clock in sync.
@@ -742,6 +743,92 @@ impl FabricClockCore {
     }
 }
 
+/// This device's `CLOCK_MONOTONIC` in microseconds: the clock the device
+/// fabric exchanges for peer clock estimation, and the one `PipeWire` schedules
+/// audio against.
+#[must_use]
+pub fn fabric_monotonic_us() -> u64 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `time` is a valid, writable timespec for the duration of the
+    // call, and CLOCK_MONOTONIC is always available on Linux.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut time) };
+    if status != 0 {
+        return 0;
+    }
+    u64::try_from(time.tv_sec)
+        .unwrap_or_default()
+        .saturating_mul(1_000_000)
+        .saturating_add(u64::try_from(time.tv_nsec).unwrap_or_default() / 1_000)
+}
+
+fn fabric_clock_state() -> &'static Mutex<FabricClockCore> {
+    static STATE: OnceLock<Mutex<FabricClockCore>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(FabricClockCore::default()))
+}
+
+/// Run `apply` on this process's fabric clock.
+pub fn with_fabric_clock<T>(apply: impl FnOnce(&mut FabricClockCore) -> T) -> T {
+    let mut core = fabric_clock_state()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    apply(&mut core)
+}
+
+/// Keeps one peer's clock estimate fresh: the fabric clock probes a peer
+/// only while a handle for it is alive, at
+/// [`CLOCK_SYNC_PROBE_INTERVAL`](CLOCK_SYNC_PROBE_INTERVAL),
+/// and only while Media continuity is on. Dropping the last handle stops
+/// probing and forgets the estimate.
+#[must_use = "the peer's clock is kept only while the handle is held"]
+#[derive(Debug)]
+pub struct FabricClockSync {
+    peer: DeviceId,
+}
+
+impl FabricClockSync {
+    #[must_use]
+    pub fn peer(&self) -> &DeviceId {
+        &self.peer
+    }
+
+    /// The peer's current clock model; see [`fabric_peer_clock`].
+    #[must_use]
+    pub fn estimate(&self) -> Option<ClockEstimate> {
+        fabric_peer_clock(&self.peer)
+    }
+
+    /// Whether audio timed against the peer can play now, and why not.
+    #[must_use]
+    pub fn state(&self) -> ClockSyncState {
+        let now_us = fabric_monotonic_us();
+        with_fabric_clock(|core| core.state(&self.peer, Instant::now(), now_us))
+    }
+}
+
+impl Drop for FabricClockSync {
+    fn drop(&mut self) {
+        with_fabric_clock(|core| core.release(&self.peer));
+    }
+}
+
+/// Keep `peer`'s clock synchronised for as long as the returned handle
+/// lives.
+pub fn hold_fabric_clock_sync(peer: DeviceId) -> FabricClockSync {
+    with_fabric_clock(|core| core.hold(peer.clone(), Instant::now()));
+    FabricClockSync { peer }
+}
+
+/// The certified peer's clock relative to [`fabric_monotonic_us`], or `None`
+/// while nothing holds it in sync or before its first clock report.
+#[must_use]
+pub fn fabric_peer_clock(peer: &DeviceId) -> Option<ClockEstimate> {
+    let now_us = fabric_monotonic_us();
+    with_fabric_clock(|core| core.estimate(peer, now_us))
+}
+
 #[cfg(test)]
 #[allow(
     clippy::arithmetic_side_effects,
@@ -1170,5 +1257,20 @@ mod tests {
             ClockSyncState::Syncing,
             "turning Media back on restarts the deadline"
         );
+    }
+
+    #[test]
+    fn clock_sync_handles_are_counted_until_the_last_is_dropped() {
+        let peer = DeviceId::new("clock-handle-peer").unwrap();
+        let held = || with_fabric_clock(|core| core.is_held(&peer));
+        let first = hold_fabric_clock_sync(peer.clone());
+        let second = hold_fabric_clock_sync(peer.clone());
+        assert!(held());
+        drop(first);
+        assert!(held());
+        assert_eq!(second.peer(), &peer);
+        assert!(second.estimate().is_none());
+        drop(second);
+        assert!(!held());
     }
 }

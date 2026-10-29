@@ -1,8 +1,8 @@
 //! Receiver decisions for durable Nearby transfers whose live offer was lost.
 
 use super::{NearbyDropState, NearbyTransferHistory};
-use crate::shell::device_fabric::PersonalFabricAction;
-use crate::shell::nearby_transfer::NearbyTransferStore;
+use tilo_device_fabric::PersonalFabricAction;
+use tilo_nearby_service::NearbyTransferStore;
 use tilo_network_actor::fabric::DeviceId;
 
 /// Discard only the selected recovered receive. Files has already authenticated
@@ -21,8 +21,7 @@ pub(super) fn decline_recovered_receive(
         .inbox()
         .iter()
         .find(|entry| {
-            entry.id == transfer_id
-                && entry.kind != crate::shell::nearby_transfer::TransferKind::MediaHandoff
+            entry.id == transfer_id && entry.kind != tilo_nearby_service::TransferKind::MediaHandoff
         })
         .cloned()
         .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-consent-expired"))?;
@@ -78,7 +77,7 @@ impl RecoveredReceiveDecline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::nearby_transfer::{CHECKPOINT_BYTES, IncomingManifest, TransferKind};
+    use tilo_nearby_service::{CHECKPOINT_BYTES, IncomingManifest, TransferKind};
 
     #[test]
     fn recovered_receive_decline_removes_checkpoint_even_when_sender_is_offline() {

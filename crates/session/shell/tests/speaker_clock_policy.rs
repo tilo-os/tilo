@@ -7,18 +7,18 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use shell::shell::continuity_policy::ContinuityPolicySnapshot;
-use shell::shell::device_fabric::{
-    DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
-    FabricCapabilities, OwnerSession, PersonalFabricAction,
-};
-use shell::shell::fabric_clock::{
-    CLOCK_SYNC_DEADLINE, ClockSyncFailure, ClockSyncState, FabricClockCore,
-};
-use shell::shell::speaker_group::{
-    AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerGroupId, SpeakerRole, StereoSide,
-};
 use shell::shell::speaker_group_runtime::{
     Egress, GroupAudioSource, MemberSpec, SpeakerGroupCore, SpeakerSessionStatus, member_route_id,
+};
+use tilo_device_fabric::clock::{
+    CLOCK_SYNC_DEADLINE, ClockSyncFailure, ClockSyncState, FabricClockCore,
+};
+use tilo_device_fabric::speaker_group::{
+    AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerGroupId, SpeakerRole, StereoSide,
+};
+use tilo_device_fabric::{
+    DeviceFabric, DeviceFabricSnapshot, DeviceKind, DevicePresence, FABRIC_SCHEMA_VERSION,
+    FabricCapabilities, OwnerSession, PersonalFabricAction,
 };
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
@@ -108,7 +108,7 @@ impl Device {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
-            unlock: shell::shell::device_unlock::UnlockFabricState::default(),
+            unlock: tilo_device_fabric::unlock::UnlockFabricState::default(),
             speakers: self
                 .core
                 .authored(endpoints, &stamp(self.name, self.counter)),

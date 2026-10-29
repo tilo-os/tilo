@@ -1026,15 +1026,7 @@ portal-capture-default-microphone = Default microphone
 portal-capture-default-camera = Default camera
 portal-capture-primary-display = Main display
 portal-capture-system-audio = System audio
-
 # A speaker's role in a speaker group, as the $role of a sentence ("Join Living room as the right speaker")
-speaker-role-left = left speaker
-speaker-role-right = right speaker
-speaker-role-centre = centre speaker
-speaker-role-subwoofer = subwoofer
-speaker-role-surround-left = left surround speaker
-speaker-role-surround-right = right surround speaker
-speaker-role-room = room speaker
 speaker-group-summary = { $total ->
     [one] { $ready } of 1 speaker ready
    *[other] { $ready } of { $total } speakers ready
@@ -2117,7 +2109,6 @@ speaker-error-audio-unavailable = speaker group audio is unavailable
 speaker-error-other-session = another speaker group session is already playing from this device
 
 # Measuring speakers for calibration
-speaker-calibration-reason-microphone-gone = that microphone is no longer connected
 speaker-calibration-reason-output-gone = that speaker's output is no longer connected
 speaker-calibration-reason-play-failed = could not play the sweep: { $error }
 speaker-calibration-reason-clock = could not sync clocks with that speaker: { $reason }
@@ -2127,13 +2118,6 @@ now-playing-speakers-playing = Playing on { $group }
 now-playing-speakers-connecting = { $group }: connecting…
 now-playing-speakers-syncing = { $group }: syncing clocks…
 now-playing-speakers-clock-failed = { $group } can't play in time: { $reason }
-speaker-calibration-reason-not-heard = no sweep stood out of the noise there
-speaker-calibration-reason-not-allowed = that device has not allowed its microphone
-speaker-calibration-reason-out-of-window = the request reached that device too late
-speaker-calibration-reason-busy = that microphone was busy with another sweep
-speaker-calibration-reason-capture-failed = the recording failed
-speaker-calibration-reason-clock-unknown = that device's clock is not synchronised yet
-speaker-calibration-reason-no-answer = that device did not answer in time
 speaker-calibration-reason-not-at-seat = no microphone heard it clearly enough
 speaker-calibration-failed = Could not measure { $speaker }: { $reason }
 speaker-calibration-cancelled = Calibration was cancelled
@@ -2252,23 +2236,6 @@ catalogue-error-flathub-invalid = this isn't a Flathub app
 catalogue-error-flathub-untrusted = your Flathub source must be enabled, check signatures and use the official repository
 catalogue-error-flathub-missing = Flathub isn't set up on this device
 catalogue-error-flathub-not-found = it was installed but can't be found to open
-
-# Why sending to a nearby device failed
-nearby-error-destination-not-folder = Nearby Send destination is not a directory
-nearby-error-too-large = nearby transfer exceeds the size limit
-nearby-error-destination-name = Nearby Send destination name is unavailable
-nearby-error-outside-grant = Nearby Send source is outside this Files grant
-nearby-error-one-item = Nearby Send requires one regular file or folder
-nearby-error-queue-full = nearby transfer queue is full
-nearby-error-quota-full = nearby transfer quota is full
-nearby-error-disk-full = not enough free disk space for this transfer
-nearby-error-too-many = too many nearby transfers
-nearby-error-not-regular = source is not a regular file
-nearby-error-folder-too-many = folder contains too many entries
-nearby-error-folder-special = folder contains a link or special file
-nearby-error-folder-too-large = folder exceeds the size limit
-nearby-error-source-changed = nearby transfer source changed while staging
-nearby-error-name-not-portable = source name is not portable
 
 # AirDrop lab receiver verification
 airdrop-verify-title = Verify AirDrop receiver

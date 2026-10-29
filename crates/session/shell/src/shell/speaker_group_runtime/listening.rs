@@ -14,10 +14,10 @@ use std::time::Instant;
 use super::{
     CONSENT_TTL, Egress, SpeakerConsentScope, SpeakerConsentView, SpeakerGroupCore, egress,
 };
-use crate::shell::device_fabric::{DeviceFabric, PersonalFabricAction};
-use crate::shell::speaker_group::{
+use tilo_device_fabric::speaker_group::{
     EndpointSelector, MAX_SPEAKER_LISTENERS, SpeakerGroup, SpeakerGroupId, SpeakerListener,
 };
+use tilo_device_fabric::{DeviceFabric, PersonalFabricAction};
 use tilo_network_actor::fabric::DeviceId;
 use tilo_network_actor::fabric::FabricStamp;
 

@@ -79,7 +79,7 @@ impl SpatialInputState {
         if events.iter().any(|event| {
             !event.validate()
                 || release_key(*event).is_none()
-                || !crate::shell::device_fabric::permits_spatial_input(
+                || !tilo_device_fabric::permits_spatial_input(
                     self.received.get(target),
                     controller,
                     target,

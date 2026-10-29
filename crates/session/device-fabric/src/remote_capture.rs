@@ -26,7 +26,7 @@ pub const REMOTE_CAPTURE_GRANT_TTL: Duration = Duration::from_secs(5 * 60);
 
 /// When a capture grant issued or refreshed at `now` lapses. An expiry the
 /// clock cannot represent fails closed and lapses at `now` rather than never.
-pub(crate) fn grant_expiry(now: Instant) -> Instant {
+pub fn grant_expiry(now: Instant) -> Instant {
     now.checked_add(REMOTE_CAPTURE_GRANT_TTL).unwrap_or(now)
 }
 

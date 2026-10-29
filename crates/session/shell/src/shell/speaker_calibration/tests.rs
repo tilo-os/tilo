@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::shell::speaker_group::{SpeakerGroupMember, SpeakerRole, StereoSide};
+use tilo_device_fabric::speaker_group::{SpeakerGroupMember, SpeakerRole, StereoSide};
 use tilo_network_actor::fabric::FabricStamp;
 
 fn id(value: &str) -> DeviceId {
@@ -499,12 +499,12 @@ fn a_skewed_listening_clock_is_scheduled_through_the_fabric_estimate() {
         us
     };
     // Twelve seconds of probes, 250 ms apart, 400 us each way.
-    let mut estimator = crate::shell::fabric_clock::PeerClockEstimator::default();
+    let mut estimator = tilo_device_fabric::clock::PeerClockEstimator::default();
     let start_ns = 50_000_000_000.0;
     for step in 0..48_u32 {
         let t1 = start_ns + f64::from(step) * 250_000_000.0;
         let t2 = peer_ns(t1 + 400_000.0);
-        assert!(estimator.observe(crate::shell::fabric_clock::ClockSample {
+        assert!(estimator.observe(tilo_device_fabric::clock::ClockSample {
             t1: as_us(t1),
             t2: as_us(t2),
             t3: as_us(t2 + 50_000.0),

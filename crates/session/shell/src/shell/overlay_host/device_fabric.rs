@@ -11,7 +11,7 @@
 pub struct FabricDeviceView {
     pub id: tilo_network_actor::fabric::DeviceId,
     pub label: String,
-    pub kind: crate::shell::device_fabric::DeviceKind,
+    pub kind: tilo_device_fabric::DeviceKind,
     pub is_local: bool,
     pub online: bool,
     pub audio_output: bool,
@@ -96,8 +96,8 @@ pub struct DeviceFabricView {
     pub transfers: Vec<FabricTransferView>,
     pub remote_audio: crate::shell::remote_audio::RemoteAudioView,
     pub speaker_groups: crate::shell::speaker_group_runtime::SpeakerGroupsView,
-    pub device_health: Vec<crate::shell::spatial_calibration::DeviceHealthView>,
-    pub calibration_proposals: Vec<crate::shell::spatial_calibration::CalibrationProposal>,
+    pub device_health: Vec<tilo_device_fabric::spatial_calibration::DeviceHealthView>,
+    pub calibration_proposals: Vec<tilo_device_fabric::spatial_calibration::CalibrationProposal>,
     pub revertible_calibrations: Vec<tilo_network_actor::fabric::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
     pub(crate) remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView,
@@ -187,30 +187,30 @@ pub enum DeviceFabricUiAction {
     /// Answer "Join this speaker group?" or "Let it use this microphone?"
     /// on this device.
     ResolveSpeakerGroupConsent {
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: tilo_device_fabric::speaker_group::SpeakerGroupId,
         kind: crate::shell::speaker_group_runtime::SpeakerConsentKind,
         approved: bool,
     },
     /// Withdraw this device from a group led by another device, or stop
     /// letting it listen with this device's microphone.
     LeaveSpeakerGroup {
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: tilo_device_fabric::speaker_group::SpeakerGroupId,
         kind: crate::shell::speaker_group_runtime::SpeakerConsentKind,
     },
     StartSpeakerGroupAudio {
         source_token: u64,
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: tilo_device_fabric::speaker_group::SpeakerGroupId,
     },
     PlayMediaOnSpeakerGroup {
         session_id: String,
-        group: crate::shell::speaker_group::SpeakerGroupId,
+        group: tilo_device_fabric::speaker_group::SpeakerGroupId,
     },
     StopSpeakerGroupSession {
         session_id: [u8; 16],
     },
     RequestRemoteCapture {
         peer: tilo_network_actor::fabric::DeviceId,
-        kind: crate::shell::remote_capture::device::RemoteCaptureKind,
+        kind: tilo_device_fabric::remote_capture::RemoteCaptureKind,
     },
     AuthorizeRemoteCapture {
         request_id: [u8; 16],
@@ -259,7 +259,7 @@ pub enum DeviceFabricUiAction {
     },
     Place {
         device: tilo_network_actor::fabric::DeviceId,
-        edge: crate::shell::device_fabric::DisplayEdge,
+        edge: tilo_device_fabric::DisplayEdge,
     },
     ApplyCalibration {
         device: tilo_network_actor::fabric::DeviceId,
@@ -302,7 +302,7 @@ pub type RealtimeContinuityBridge = std::rc::Rc<
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DeviceFabricPaneRow {
-    CalibrationProposal(crate::shell::spatial_calibration::CalibrationProposal),
+    CalibrationProposal(tilo_device_fabric::spatial_calibration::CalibrationProposal),
     CalibrationRevert(tilo_network_actor::fabric::DeviceId),
     RemoteAudioConsent(crate::shell::remote_audio::RemoteAudioConsentView),
     RemoteAudioSource(crate::shell::remote_audio::RemoteAudioSourceView),
@@ -313,7 +313,7 @@ pub(super) enum DeviceFabricPaneRow {
     SpeakerMembership(crate::shell::speaker_group_runtime::SpeakerMembershipView),
     /// Opens Settings → Speakers to make a new set.
     SpeakerSetup,
-    RemoteCaptureSource(crate::shell::remote_capture::device::RemoteCaptureKind),
+    RemoteCaptureSource(tilo_device_fabric::remote_capture::RemoteCaptureKind),
     RemoteCaptureSession(crate::shell::remote_capture::runtime::RemoteCaptureSessionView),
     RemoteCaptureDegraded(crate::shell::remote_capture::runtime::RemoteCaptureDegradedView),
     RealtimeConsent(crate::shell::collab_broker_capnp::RealtimeConsentUiView),
@@ -445,15 +445,15 @@ pub(super) fn device_fabric_pane_rows(
         .chain(
             [
                 (
-                    crate::shell::remote_capture::device::RemoteCaptureKind::Camera,
+                    tilo_device_fabric::remote_capture::RemoteCaptureKind::Camera,
                     view.remote_capture.local_receivers.camera,
                 ),
                 (
-                    crate::shell::remote_capture::device::RemoteCaptureKind::Microphone,
+                    tilo_device_fabric::remote_capture::RemoteCaptureKind::Microphone,
                     view.remote_capture.local_receivers.microphone,
                 ),
                 (
-                    crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner,
+                    tilo_device_fabric::remote_capture::RemoteCaptureKind::DocumentScanner,
                     view.remote_capture.local_receivers.scanner,
                 ),
             ]
@@ -581,7 +581,7 @@ pub(super) fn speaker_group_summary(
         .members
         .iter()
         .filter(|member| {
-            member.state == crate::shell::speaker_group::SpeakerMemberStatus::AwaitingConsent
+            member.state == tilo_device_fabric::speaker_group::SpeakerMemberStatus::AwaitingConsent
         })
         .count();
     let counts: [(&str, ui::i18n::ArgValue); 3] = [
@@ -607,14 +607,14 @@ pub(super) fn sentence_case(text: &str) -> String {
 /// The catalogue key naming a remote input ("camera"), as the `$input` of a
 /// sentence.
 pub(crate) const fn remote_capture_kind_key(
-    kind: crate::shell::remote_capture::device::RemoteCaptureKind,
+    kind: tilo_device_fabric::remote_capture::RemoteCaptureKind,
 ) -> &'static str {
     match kind {
-        crate::shell::remote_capture::device::RemoteCaptureKind::Camera => "remote-input-camera",
-        crate::shell::remote_capture::device::RemoteCaptureKind::Microphone => {
+        tilo_device_fabric::remote_capture::RemoteCaptureKind::Camera => "remote-input-camera",
+        tilo_device_fabric::remote_capture::RemoteCaptureKind::Microphone => {
             "remote-input-microphone"
         }
-        crate::shell::remote_capture::device::RemoteCaptureKind::DocumentScanner => {
+        tilo_device_fabric::remote_capture::RemoteCaptureKind::DocumentScanner => {
             "remote-input-scanner"
         }
     }
@@ -622,9 +622,9 @@ pub(crate) const fn remote_capture_kind_key(
 
 /// The catalogue key of the reason, as the `$reason` of a sentence.
 pub(super) const fn media_handoff_failure_key(
-    failure: crate::shell::device_fabric::MediaHandoffFailure,
+    failure: tilo_device_fabric::MediaHandoffFailure,
 ) -> &'static str {
-    use crate::shell::device_fabric::MediaHandoffFailure;
+    use tilo_device_fabric::MediaHandoffFailure;
     match failure {
         MediaHandoffFailure::DestinationUnavailable => {
             "media-handoff-failure-destination-unavailable"
