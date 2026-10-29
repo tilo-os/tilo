@@ -15,24 +15,6 @@ spec.loader.exec_module(release)
 
 
 class SignalProviderRelease(unittest.TestCase):
-    def environment(self):
-        return {'SIGNAL_PROVIDER_ONLY': 'true', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
-                'GITHUB_REF': 'refs/heads/main', 'GITHUB_SHA': 'a' * 40,
-                'REQUESTED_PUBLISH': 'true', 'REQUESTED_ARCHITECTURES': 'x86_64'}
-
-    def test_only_exact_explicit_main_release_is_admitted(self):
-        self.assertTrue(release.mode(self.environment(), 'a' * 40))
-        for change in ({'GITHUB_EVENT_NAME': 'push'}, {'GITHUB_EVENT_NAME': 'pull_request'},
-                       {'GITHUB_REF': 'refs/heads/codex/task'}, {'GITHUB_SHA': 'b' * 40},
-                       {'REQUESTED_PUBLISH': 'false'}, {'REQUESTED_ARCHITECTURES': 'aarch64'},
-                       {'REQUESTED_ARCHITECTURES': ''}, {'REQUESTED_APPS': 'browser'},
-                       {'ENGINE_RUNTIME_ONLY': 'true'}, {'VERIFY_FINAL_RECEIPT': 'true'},
-                       {'COORDINATOR_INTENT': 'intent'}, {'REQUESTED_BUILDER': 'other'},
-                       {'BASELINE_SHA': 'b' * 40}, {'SIGNAL_PROVIDER_ONLY': 'yes'}):
-            with self.subTest(change=change), self.assertRaises(ValueError):
-                release.mode(self.environment() | change, 'a' * 40)
-        self.assertFalse(release.mode({}, 'a' * 40))
-
     def test_app_kind_is_refused_before_release_provenance_is_admitted(self):
         with patch.object(release.tomllib, 'loads', return_value={
             'package': {'runtime': release.RUNTIME, 'kind': 'app'},
@@ -106,6 +88,39 @@ class SignalProviderRelease(unittest.TestCase):
                     patch.object(release.subprocess, 'run') as execute:
                 with self.assertRaisesRegex(ValueError, 'accepted runtime publisher differs'):
                     release.seal(root, proof['source'], '1')
+                execute.assert_not_called()
+
+    def test_a_rehearsal_seals_with_the_build_s_throwaway_runtime_signer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            proof = self.compiled(root)
+            environment = {'RUNTIME_BUNDLE_IDENTITY_FILE': '/fixture/throwaway-runtime',
+                           'TAPP_PUBLISHER_IDENTITY_FILE': '/fixture/throwaway-app'}
+
+            def built(args, **kwargs):
+                self.assertEqual(args[1], 'build')
+                raise RuntimeError('fixture stops at the bundle build')
+
+            with patch.dict(os.environ, environment, clear=True), \
+                    patch.object(release.release, 'head', return_value=proof['source']), \
+                    patch.object(release.subprocess, 'check_output', return_value='f' * 64), \
+                    patch.object(release.subprocess, 'run', side_effect=built):
+                with self.assertRaisesRegex(RuntimeError, 'stops at the bundle build'):
+                    release.seal(root, proof['source'], '1', rehearsal=True)
+
+    def test_a_rehearsal_seal_never_verifies_for_publication(self):
+        source = release.release.head()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            proof = release.provenance(source)
+            proof.update(package_version='0.1.1+g' + source, app_publisher='f' * 64,
+                         runtime_build=release.RUNTIME + '+native.' + 'a' * 32, rehearsal=True,
+                         packages={})
+            (root / 'release.json').write_text(json.dumps(proof))
+            with patch.object(release.release, 'head', return_value=source), \
+                    patch.object(release.subprocess, 'run') as execute:
+                with self.assertRaisesRegex(ValueError, 'rehearsal seal is never published'):
+                    release.verify(root, source, '1', 'f' * 64)
                 execute.assert_not_called()
 
     def test_sealing_uses_the_existing_payload_bound_native_bundle_builder(self):

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Build the optional Signal service with the existing protected release authorities."""
+"""Build the optional Signal service with the existing protected release authorities.
+
+tools/apps/t-signal-release.sh runs it as t's checks: `compile` without credentials, `seal` with the
+publisher identities (or, as `seal --rehearsal`, with throwaway ones whose result nothing
+publishes), and `verify` before the registry entries are signed.
+"""
 import argparse
 import base64
 import importlib.util
@@ -30,9 +35,6 @@ RUNTIME = 'tilo-runtime/2026.10.1-signal'
 RUNTIME_ENTRYPOINT = 'lib/lib64/ld-linux-x86-64.so.2'
 
 
-mode = release.signal_mode
-
-
 def provenance(source):
     commit = release.verify_source(source)
     pin = json.loads(prepare.PIN.read_text())
@@ -59,7 +61,7 @@ def inventory(path):
 
 def compile_provider(out, source):
     proof = provenance(source)
-    if not isinstance(source, release.Source) or source.snapshot_commit is None:
+    if (not isinstance(source, release.Source) or source.snapshot_commit is None) and release.t_checkout() is None:
         require(not subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip(),
                 'Signal compilation requires a clean committed source')
     subprocess.run(['bash', 'os/dev/assert-native-arch.sh', 'x86_64'], cwd=ROOT, check=True)
@@ -129,7 +131,12 @@ def compile_provider(out, source):
     (out / 'build.json').write_text(json.dumps(proof, sort_keys=True) + '\n')
 
 
-def seal(out, source, sequence):
+def seal(out, source, sequence, rehearsal=False):
+    """Seal the compiled provider with the publisher identities.
+
+    A rehearsal seals with throwaway identities the build made, so its runtime publisher is not the
+    one installed systems trust; its release.json says so, and `verify` refuses it.
+    """
     expected = provenance(source)
     proof = json.loads((out / 'build.json').read_text())
     require({key: proof.get(key) for key in expected} == expected, 'compiled Signal provenance differs')
@@ -142,7 +149,7 @@ def seal(out, source, sequence):
     require(runtime_identity and app_identity, 'existing runtime and app signing identities required; none is created')
     binary = out / 'bin/tilo-runtime-bundle'
     runtime_key = subprocess.check_output([str(binary), 'key', 'pubkey', '--identity', runtime_identity], text=True).strip()
-    require(runtime_key == expected['runtime_publisher'], 'existing accepted runtime publisher differs')
+    require(rehearsal or runtime_key == expected['runtime_publisher'],'existing accepted runtime publisher differs')
     runtime = out / 'bundle'
     versions = out / 'bundles'
     version_file = out / 'runtime-version'
@@ -171,13 +178,16 @@ def seal(out, source, sequence):
     key = subprocess.check_output([str(binary), 'key', 'pubkey', '--identity', app_identity], text=True).strip()
     proof.update(package_version=version, app_publisher=key,
                  runtime_build='tilo-runtime/' + bundle_version)
+    if rehearsal:
+        proof['rehearsal'] = True
     proof['packages'] = {name: inventory(out / name) for name in ('runtime-package', 'provider-package')}
     (out / 'release.json').write_text(json.dumps(proof, sort_keys=True) + '\n')
-    verify(out, source, sequence, key)
+    verify(out, source, sequence, key, rehearsal=rehearsal)
 
 
-def verify(out, source, sequence, trusted_key):
+def verify(out, source, sequence, trusted_key, rehearsal=False):
     proof = json.loads((out / 'release.json').read_text())
+    require(rehearsal or not proof.get('rehearsal'), 'a rehearsal seal is never published')
     expected = provenance(source)
     require({key: proof.get(key) for key in expected} == expected, 'Signal publication provenance differs')
     require(proof['package_version'] == '0.1.' + sequence + '+g' + source
@@ -218,18 +228,16 @@ def verify(out, source, sequence, trusted_key):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=('plan', 'compile', 'native-proof', 'seal', 'verify'))
+    parser.add_argument('operation', choices=('compile', 'native-proof', 'seal', 'verify'))
     parser.add_argument('--out', type=Path, default=ROOT / 'dist/signal-provider-release')
     parser.add_argument('--source')
     parser.add_argument('--sequence')
     parser.add_argument('--trusted-key')
     parser.add_argument('--source-commit')
+    parser.add_argument('--rehearsal', action='store_true',
+                        help='seal with throwaway identities; the result never verifies for publication')
     args = parser.parse_args()
-    if args.operation == 'plan':
-        enabled = mode(os.environ, release.head())
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-            output.write('signal_provider_only=' + str(enabled).lower() + '\n')
-        return
+    require(not args.rehearsal or args.operation == 'seal', 'only a seal can be a rehearsal')
     require(args.source and re.fullmatch('[0-9a-f]{40}', args.source), 'exact source required')
     require(not args.source_commit or args.operation == 'native-proof', 'snapshot proof cannot seal or publish')
     if args.operation == 'native-proof':
@@ -241,7 +249,7 @@ def main():
         compile_provider(args.out.resolve(), args.source)
     elif args.operation == 'seal':
         require(args.sequence, 'release sequence required')
-        seal(args.out.resolve(), args.source, args.sequence)
+        seal(args.out.resolve(), args.source, args.sequence, rehearsal=args.rehearsal)
     else:
         require(args.sequence and args.trusted_key and re.fullmatch('[0-9a-f]{64}', args.trusted_key),
                 'release sequence and independently selected trusted key required')
