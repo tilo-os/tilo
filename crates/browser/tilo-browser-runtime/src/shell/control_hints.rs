@@ -20,7 +20,7 @@ pub(super) fn load() -> ControlHints {
 impl BrowserShell {
     /// What the page's frame shows the hints now.
     fn hint_frame(&self) -> HintFrame {
-        let area = self.area.get_rect();
+        let area = self.desk.area().get_rect();
         // The chord the page's search answers to on this platform.
         let keys = tilo_desktop_surface::search_chord_keys(ui::platform::PlatformConventions::new(
             if self.offers.mac {
@@ -29,7 +29,7 @@ impl BrowserShell {
                 ui::platform::Platform::Linux
             },
         ));
-        let avatar = self.bar.own_avatar_rect();
+        let avatar = self.top.bar().own_avatar_rect();
         HintFrame {
             row: self.handle.hint_places(),
             area,
@@ -53,11 +53,8 @@ impl BrowserShell {
             || self.handle.search_open()
             || self.picker.is_open()
             || self.people_open
-            || self.tilo_menu.is_open()
-            || self.workspace_menu.is_open()
             || self.profile.is_open()
-            || self.overview.is_open()
-            || self.navigator.takes_keys();
+            || self.top.wants_keyboard();
         busy.then_some(Quiet::Busy)
     }
 

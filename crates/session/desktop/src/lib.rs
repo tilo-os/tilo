@@ -22,6 +22,7 @@ pub mod collaborators;
 pub mod composition;
 pub mod control_hints;
 pub mod desk_edges;
+pub mod desktop_host;
 pub mod emoji_picker;
 pub mod feedback;
 pub mod feedback_picker;
