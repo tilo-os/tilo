@@ -168,8 +168,6 @@ use crate::shell::window_menu::WindowMenuAction;
 pub use peer_sync_dispatch::{PeerSyncCall, PeerSyncJob, PeerSyncRunner, PeerSyncWorker};
 pub use tilo_desktop::collaborators::RosterRow;
 use tilo_desktop::collaborators::{CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay};
-#[cfg(test)]
-use tilo_desktop::drill_in as qs;
 use tilo_desktop::workspace_settings::EXPIRY_CHOICES;
 pub use tilo_desktop::workspace_settings::overlay::GrantComposerRects;
 use tilo_desktop::workspace_settings::overlay::{
