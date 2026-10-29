@@ -18,6 +18,7 @@
 
 #[cfg(feature = "native")]
 use crate::host_core::HostCore as _;
+#[cfg(feature = "native")]
 use crate::widget::InPlace;
 use crate::widget::SearchDriver;
 #[cfg(feature = "native")]

@@ -283,6 +283,7 @@ pub(crate) trait HostCore {
         self.tree().focused_widget_wants_tab_input()
     }
 
+    #[cfg(any(feature = "native", test))]
     fn capture_history_target(&self) -> Result<HistoryTarget, HistoryError> {
         self.tree().capture_history_target()
     }

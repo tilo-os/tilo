@@ -3506,6 +3506,7 @@ impl App {
 
     /// The person pressed or typed again: what stood at their last control
     /// is done with.
+    #[cfg(feature = "native")]
     pub(super) fn dismiss_control_notice(&mut self) {
         if self.actions.control_notice.take().is_some() {
             self.request_redraw_for_notice();
@@ -3559,6 +3560,7 @@ impl App {
     /// Open search on the app's action `address`, asking for its
     /// arguments: the session's search inside a session, the window's own
     /// outside one. Whether it opened.
+    #[cfg(feature = "native")]
     pub(super) fn open_search_at_action(&mut self, address: &tilo_actions::ActionAddress) -> bool {
         let asked = crate::search::SearchRequest::asking(
             crate::search::ScopeDecl::new(address.resource.clone(), String::new()),
@@ -4192,7 +4194,7 @@ impl crate::host_core::HostCore for App {
         crate::host_core::HostTree {
             state: &self.state,
             root: self.root_widget.as_ref(),
-                history: self.history.as_deref(),
+            history: self.history.as_deref(),
             bindings: &self.bindings,
             node_map: &self.layout.node_map,
             taffy: &self.layout.taffy,
