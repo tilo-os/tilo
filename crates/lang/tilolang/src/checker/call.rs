@@ -105,6 +105,7 @@ impl Checker<'_> {
             "person" => return self.builtin_person(args, span),
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
+            "delivery" => return self.builtin_delivery(args, span),
             "members" => return self.builtin_members(args, span),
             "created" | "updated" | "history" => {
                 return self.builtin_versions(name, args, span);

@@ -122,6 +122,24 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "Delivery",
+        id: "host-delivery",
+        doc: "How an outside effect a resource's action queued stands: a mail being sent.",
+        fields: &[
+            (
+                "state",
+                "Text",
+                "`waiting` (to go online), `sending`, `sent`, `rejected` or `unknown` (the device \
+                 stopped while handing it over, so it is not tried again).",
+            ),
+            (
+                "reason",
+                "Text",
+                "Why it waits or was rejected, as the service said; empty otherwise.",
+            ),
+        ],
+    },
+    ValueType {
         name: "Lens",
         id: "host-lens",
         doc: "Someone's lens on a resource: a person or an agent whose window shows it now.",
