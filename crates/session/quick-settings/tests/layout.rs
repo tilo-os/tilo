@@ -378,3 +378,21 @@ fn every_scenario_renders() {
         );
     }
 }
+
+#[test]
+fn tab_walks_the_controls_from_brightness() {
+    let mut app = staged("controls");
+    let d = app.harness();
+    assert!(
+        d.focus_order().len() > 10,
+        "every control takes the keyboard"
+    );
+    d.tab(false);
+    assert_eq!(
+        d.focused_access_node()
+            .and_then(|node| node.name)
+            .as_deref(),
+        Some("Brightness"),
+        "the first Tab reaches brightness"
+    );
+}

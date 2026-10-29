@@ -492,7 +492,7 @@ fn secret_field_carries_a_show_hide_control_off_the_tab_order() {
         let mut taffy = TaffyTree::new();
         let mut node_map = std::collections::HashMap::new();
         let root = ti.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let (order, trapped) = crate::focus_navigation::order(root, &ti, &taffy);
+        let (order, trapped) = crate::focus_navigation::order(root, &ti, &taffy, &node_map);
         assert!(!trapped);
         assert_eq!(order, [root], "the field alone, not its show/hide control");
     }

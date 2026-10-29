@@ -54,6 +54,10 @@ pub struct EmbeddedApp {
     /// Focus state represented by `painted`. A hidden app can lose and regain
     /// focus without changing the frame its host last showed.
     painted_focus: bool,
+    /// The control `painted` shows focused: focus that moved between
+    /// controls, or into the app before its first control was laid out,
+    /// needs a frame too.
+    painted_control: Option<NodeId>,
     restore_focus: Option<NodeId>,
     /// Shift was held as focus last moved, so focus entering the app lands
     /// on its last control.
@@ -153,6 +157,7 @@ impl EmbeddedApp {
             },
             focused: false,
             painted_focus: false,
+            painted_control: None,
             restore_focus: None,
             entering_backwards: false,
             wants_frame: Cell::new(true),
@@ -265,6 +270,12 @@ impl EmbeddedApp {
         self.deadline.set(deadline);
         self.deadline_known.set(true);
         deadline
+    }
+
+    /// Whether focus differs from what was last painted: the app gained or
+    /// lost it, or it moved to another control.
+    fn focus_moved(&self) -> bool {
+        self.focused != self.painted_focus || self.app.focused_control() != self.painted_control
     }
 
     /// The app runs: its deadlines may move.
@@ -481,7 +492,7 @@ impl Widget for EmbeddedApp {
             // step of half a logical pixel is a whole one and copies.
             self.damage.set_copy_scale(copy_scale(placement));
         }
-        if self.wants_frame.get() || woken || due || self.focused != self.painted_focus {
+        if self.wants_frame.get() || woken || due || self.focus_moved() {
             self.runs();
             // A frame whose sync or layout leaves more to settle runs again
             // at once, so what the host paints is the app at rest.
@@ -534,6 +545,7 @@ impl Widget for EmbeddedApp {
             self.wants_frame
                 .set(again || self.region.redraw.replace(false));
             self.painted_focus = self.focused;
+            self.painted_control = self.app.focused_control();
         }
         // A host comparing this frame with one that painted the generation
         // before repaints only the app's damage; any other change to the
@@ -798,7 +810,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.wants_frame.get() || self.focused != self.painted_focus
+        self.wants_frame.get() || self.focus_moved()
     }
 
     fn has_pending_visual_work(&self) -> bool {

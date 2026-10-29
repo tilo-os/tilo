@@ -443,8 +443,8 @@ impl App {
         };
 
         let (order, trap_active) = self
-            .with_native_presentation(|widget, _, _, taffy, _| {
-                crate::focus_navigation::order(root, widget, taffy)
+            .with_native_presentation(|widget, nodes, _, taffy, _| {
+                crate::focus_navigation::order(root, widget, taffy, nodes)
             })
             .unwrap_or_default();
         self.focusable_order = order;

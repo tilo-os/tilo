@@ -4360,7 +4360,13 @@ impl FrameHarness {
                 .unwrap_or(self.child_node);
             self.history_app_focus_order(root, &restrictions).0
         } else {
-            crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy).0
+            crate::focus_navigation::order(
+                self.child_node,
+                self.root.as_ref(),
+                &self.taffy,
+                &self.node_map,
+            )
+            .0
         }
     }
 
@@ -4485,7 +4491,12 @@ impl FrameHarness {
                 .unwrap_or(self.child_node);
             self.history_app_focus_order(root, &restrictions)
         } else {
-            crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy)
+            crate::focus_navigation::order(
+                self.child_node,
+                self.root.as_ref(),
+                &self.taffy,
+                &self.node_map,
+            )
         };
         if !self.focus_trap_active && trapped {
             // Capture a stable semantic/owner identity, never carry a stale Taffy id
