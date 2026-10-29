@@ -585,9 +585,7 @@ impl HistoryOpener {
         let control = self.control?;
         (rect.width() > 0.0).then(|| {
             AccessNode::new(Role::ToggleButton)
-                .with_name(crate::i18n::I18nManager::lookup_plain(
-                    "standalone-history-title",
-                ))
+                .with_name(crate::i18n::I18nManager::lookup_plain("history-mode-title"))
                 .with_action_target(HISTORY_TARGET)
                 .with_bounds(rect)
                 .with_state(

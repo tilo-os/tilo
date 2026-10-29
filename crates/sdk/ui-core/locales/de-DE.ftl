@@ -6,8 +6,12 @@ tab-controls-desktop = Steuert deinen Desktop
 tab-dev-build = Entwicklungsversion von { $installer }
 tab-shared-with = Geteilt mit { $place }
 
-standalone-history-title = Verlauf
-standalone-history-preview-resource = Dokument
+history-mode-title = Verlauf
+history-mode-close = Verlauf schließen
+history-mode-select-hint = Wähle eine Änderung aus, um Details zu sehen.
+history-mode-entry-ids = Änderungen
+history-mode-selected-details = Ausgewählte Änderungen
+history-mode-preview-resource = Dokument
 host-search = Suchen…
 host-search-placeholder = Suchen
 dropdown-search-placeholder = Auswahl durchsuchen
@@ -91,7 +95,6 @@ history-restore-unsupported = Diese Version kann mit dem Inhaltsformat dieser Ap
 history-preview-description = { $resource } in dieser Version
 
 # The History host's own controls and status, beside the live app.
-history-mode-title = Verlauf
 history-mode-unavailable = Verlauf nicht verfügbar
 history-mode-content-unavailable = Früherer Inhalt nicht verfügbar
 history-mode-back-to-activity = Zurück zur Aktivität

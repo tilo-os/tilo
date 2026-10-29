@@ -6,12 +6,12 @@ tab-controls-desktop = Controls your desktop
 tab-dev-build = Dev build by { $installer }
 tab-shared-with = Shared with { $place }
 standalone-search-title = Search
-standalone-history-title = History
-standalone-history-close = Close history
-standalone-history-select-hint = Select a change to see details.
-standalone-history-entry-ids = Changes
-standalone-history-selected-details = Selected changes
-standalone-history-preview-resource = Document
+history-mode-title = History
+history-mode-close = Close history
+history-mode-select-hint = Select a change to see details.
+history-mode-entry-ids = Changes
+history-mode-selected-details = Selected changes
+history-mode-preview-resource = Document
 host-search = Search…
 host-search-placeholder = Search
 dropdown-search-placeholder = Search choices
@@ -96,7 +96,6 @@ history-restore-unsupported = This version cannot be restored safely with this a
 history-preview-description = { $resource } as of this version
 
 # The History host's own controls and status, beside the live app.
-history-mode-title = History
 history-mode-unavailable = History unavailable
 history-mode-content-unavailable = Historical content unavailable
 history-mode-back-to-activity = Back to activity

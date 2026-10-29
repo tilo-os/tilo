@@ -105,7 +105,7 @@ fn mail_app(request: SearchRequest) -> App {
             search: search_button(request),
         }),
     );
-    app.enable_document_history_chrome();
+    app.present_history_in_header();
     app.init_layout();
     app
 }

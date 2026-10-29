@@ -20,7 +20,7 @@
 //! dumps is the persistence proof for the app's document.
 
 mod controls;
-mod document_history;
+mod history;
 pub mod host_media;
 mod keys;
 

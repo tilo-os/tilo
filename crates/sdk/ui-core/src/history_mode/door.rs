@@ -38,10 +38,10 @@ pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button 
     let shortcut = crate::platform::HostShortcut::History
         .shortcut(platform)
         .label(platform);
-    Button::icon_only(id, crate::icons::Icon::History, "standalone-history-title")
+    Button::icon_only(id, crate::icons::Icon::History, "history-mode-title")
         .tooltip(format!(
             "{} ({shortcut})",
-            I18nManager::lookup_plain("standalone-history-title")
+            I18nManager::lookup_plain("history-mode-title")
         ))
         .toggled(control.is_open())
 }
@@ -116,7 +116,7 @@ fn open_resource() -> ResourceSpec {
     ResourceSpec::new(
         HISTORY_RESOURCE,
         "tilo.host.history",
-        I18nManager::lookup_plain("standalone-history-title"),
+        I18nManager::lookup_plain("history-mode-title"),
     )
     // Named by what it does: a row reads "Show History", never the
     // resource's own name twice.
@@ -157,15 +157,15 @@ pub(crate) fn history_resource(can_open: bool, open: bool) -> ResourceSpec {
 fn open_at_operation() -> ActionSpec {
     ActionSpec::typed_operation(
         "open_at",
-        I18nManager::lookup_plain("standalone-history-title"),
-        I18nManager::lookup_plain("standalone-history-select-hint"),
+        I18nManager::lookup_plain("history-mode-title"),
+        I18nManager::lookup_plain("history-mode-select-hint"),
         OperationKind::View,
         HISTORY_OPERATION,
         vec![
             ActionParam::required_owned(
                 "entry",
                 ParamType::Text,
-                I18nManager::lookup_plain("standalone-history-entry-ids"),
+                I18nManager::lookup_plain("history-mode-entry-ids"),
             )
             .with_schema(serde_json::json!({"pattern": "^[0-9a-f]{32}$"})),
         ],

@@ -164,7 +164,7 @@ const OUTLINE_LINES: usize = 400;
 /// The snapshot does not load as a document.
 pub fn outline_preview(input: super::PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
-    let label = crate::i18n::I18nManager::lookup_plain("standalone-history-preview-resource");
+    let label = crate::i18n::I18nManager::lookup_plain("history-mode-preview-resource");
     Ok(Box::new(
         FrozenRootPreview::new(outline_root(&doc), doc, label).with_view(input.initial_view),
     ))

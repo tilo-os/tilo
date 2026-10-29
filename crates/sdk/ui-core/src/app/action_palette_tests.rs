@@ -769,7 +769,7 @@ fn host_commands_present_host_services_and_enter_the_palette_door() {
         app.state.doc.put(ROOT, "title", title).unwrap();
         app.state.commit_action(None, None);
     }
-    app.enable_document_history_chrome();
+    app.present_history_in_header();
     app.init_layout();
     let platform = app.input.platform;
 

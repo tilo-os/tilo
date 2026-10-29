@@ -42,7 +42,6 @@ pub mod animation_schedule;
 mod action_directory_snapshot;
 mod bound_record_sync;
 mod close_admission;
-mod document_history;
 mod follow_ups;
 mod handoff;
 mod held_answers;

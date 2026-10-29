@@ -67,7 +67,7 @@ fn page() -> Column {
 fn capture(out: &Path, file: &str, root: Box<dyn Widget>, theme: &Theme, history: bool) {
     let mut harness = FrameHarness::new_with_theme(State::new(), root, (1000, 640), theme.clone());
     if history {
-        harness.enable_document_history_chrome();
+        harness.present_history_in_header();
     }
     harness.settle_for_capture(SETTLE);
     harness.render_png(&out.join(file));

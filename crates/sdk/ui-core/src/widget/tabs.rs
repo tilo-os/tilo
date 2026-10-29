@@ -4138,7 +4138,7 @@ impl Widget for TabBar {
         let control = self.controls.hit(point)?;
         let (rect, key) = match control {
             super::window_controls::WindowControl::History => {
-                (self.controls.history, "standalone-history-title")
+                (self.controls.history, "history-mode-title")
             }
             super::window_controls::WindowControl::Maximize => (
                 self.controls.maximize,
@@ -4310,9 +4310,7 @@ impl Widget for TabBar {
                 if let Some(control) = self.history.get(&t.id).filter(|_| chips) {
                     node.children.push(
                         drawn(&self.history_rects, AccessNode::new(Role::ToggleButton))
-                            .with_name(crate::i18n::I18nManager::lookup_plain(
-                                "standalone-history-title",
-                            ))
+                            .with_name(crate::i18n::I18nManager::lookup_plain("history-mode-title"))
                             .with_action_target(format!("tab-history:{}", t.id))
                             .with_state(AccessState {
                                 focusable: true,
@@ -4378,7 +4376,7 @@ impl Widget for TabBar {
             if let Some(control) = self.history.get(&self.active_id) {
                 let mut history = button(
                     Role::ToggleButton,
-                    crate::i18n::I18nManager::lookup_plain("standalone-history-title"),
+                    crate::i18n::I18nManager::lookup_plain("history-mode-title"),
                     WINDOW_HISTORY_TARGET,
                     self.controls.history,
                 );

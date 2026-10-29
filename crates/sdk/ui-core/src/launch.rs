@@ -1252,7 +1252,7 @@ fn dispatch_definition_with(
             }
             .into());
         }
-        driver.enable_document_history_chrome();
+        driver.present_history_in_header();
         if !args.native_audit
             && let Err(source) = show_history_for_capture(&mut driver, args)
         {

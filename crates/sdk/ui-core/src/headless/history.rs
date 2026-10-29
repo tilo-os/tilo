@@ -6,7 +6,7 @@ use super::FrameHarness;
 impl FrameHarness {
     /// Present the window's History in the app's own header rather than a
     /// fallback bar of its own, as a native App window does.
-    pub fn enable_document_history_chrome(&mut self) {
+    pub fn present_history_in_header(&mut self) {
         self.invalidate_local();
         if let Some(history) = &mut self.history {
             history.remove_fallback_bar();
