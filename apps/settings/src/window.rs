@@ -124,6 +124,8 @@ pub(crate) fn window(cx: &ViewCx<Settings>, mut app: SettingsApp) -> Element {
 /// outside it, only the panes the areas build show.
 fn content(app: &Rc<SettingsApp>, key: &PaneKey, cx: Option<&ViewCx<Settings>>) -> Element {
     app.content_built().set(key.generation);
+    app.content_language()
+        .set(ui::i18n::I18nManager::revision());
     let (body, offset): (Element, ScrollOffset) = if key.found.is_empty() {
         (
             pane_body(app, key.category, cx),
@@ -240,9 +242,6 @@ pub struct SettingsWindow {
     found_over: Option<NavPane>,
     value_follows: crate::setting::Follows,
     pages_seen: u64,
-    /// The language the content column was built in
-    /// ([`ui::i18n::I18nManager::revision`]).
-    language_seen: u64,
     secret: Option<crate::secrets::ShownPrompt>,
     /// The person's appearance, as the view follows it; `None` outside a
     /// view, where it is read from the settings when asked.
@@ -300,7 +299,6 @@ impl SettingsWindow {
             found_over: None,
             value_follows: crate::setting::Follows::default(),
             pages_seen: 0,
-            language_seen: ui::i18n::I18nManager::revision(),
             secret: None,
             look: None,
         }
@@ -853,9 +851,9 @@ impl Widget for SettingsWindow {
         // Another language: the content column is built again in it, as a
         // page that is view code over its sections wrote its words as it
         // was built.
-        let language = ui::i18n::I18nManager::revision();
-        if language != self.language_seen {
-            self.language_seen = language;
+        if self.content_shown()
+            && self.app.content_language().get() != ui::i18n::I18nManager::revision()
+        {
             self.structure_dirty = true;
             self.refresh_shell_children();
         }

@@ -39,6 +39,8 @@ pub struct SettingsApp {
     pane_waits: Cell<bool>,
     /// The generation of the content column last built.
     content_built: Cell<u64>,
+    /// The language it was built in ([`ui::i18n::I18nManager::revision`]).
+    content_language: Cell<u64>,
     /// The Keyboard pane was built without its layout list.
     keyboard_partial: Cell<bool>,
     pane_scroll: RefCell<HashMap<Category, ScrollOffset>>,
@@ -91,6 +93,7 @@ impl SettingsApp {
             keyboard_map_input: ui::KeyboardMapInput::default(),
             pane_waits: Cell::new(false),
             content_built: Cell::new(0),
+            content_language: Cell::new(ui::i18n::I18nManager::revision()),
             keyboard_partial: Cell::new(false),
             pane_scroll: RefCell::default(),
             keyboard_shown: RefCell::new(None),
@@ -304,6 +307,11 @@ impl SettingsApp {
     /// The generation of the content column last built.
     pub(crate) fn content_built(&self) -> &Cell<u64> {
         &self.content_built
+    }
+
+    /// The language the content column last built was built in.
+    pub(crate) fn content_language(&self) -> &Cell<u64> {
+        &self.content_language
     }
 
     /// Whether the pane shown is not yet built as it will show: it waits
