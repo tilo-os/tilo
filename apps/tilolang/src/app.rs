@@ -36,7 +36,7 @@ pub fn hosted() -> Option<&'static PackageMeta> {
 
 /// Load what a window of the hosted package runs into `host`: the installed package, or the
 /// latest later build of it a development session handed over ([`crate::updates`]), with the
-/// record schemas of the packages it uses; in the window's tests, every built-in package. The
+/// packages it uses; in the window's tests, every built-in package. The
 /// later build it loaded, 0 for the installed package.
 pub fn load(host: &Host) -> u64 {
     #[cfg(test)]

@@ -21,6 +21,44 @@ pub enum Confirmation {
     Witnessed(String),
 }
 
+/// The person's answer to [`ActionHost::confirm`](super::ActionHost::confirm):
+/// the confirmation to invoke again with, and the arguments to invoke with.
+///
+/// Where the person changed the draft they were shown
+/// ([`Draft::apply_edits`](crate::Draft::apply_edits)), `arguments` holds
+/// the arguments as they changed them, and the confirmation is bound to
+/// exactly those: the caller invokes again with them, under the same
+/// invocation id. The host never swaps arguments on its own; arguments
+/// other than these are refused, as any other confirmation is for
+/// arguments it was not given for.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfirmedInvocation {
+    pub confirmation: Confirmation,
+    /// The person's arguments; `None` when they changed nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+impl ConfirmedInvocation {
+    /// The person confirmed the arguments as they were asked about.
+    #[must_use]
+    pub const fn unchanged(confirmation: Confirmation) -> Self {
+        Self {
+            confirmation,
+            arguments: None,
+        }
+    }
+
+    /// `request`, ready to be invoked again: carrying the confirmation, and
+    /// the person's arguments where they changed them.
+    pub fn apply(self, request: &mut super::InvokeRequest) {
+        request.confirmation = Some(self.confirmation);
+        if let Some(arguments) = self.arguments {
+            request.argument = super::InvokeArgument::Json(arguments);
+        }
+    }
+}
+
 /// A question a device of the person's puts to them on another of their
 /// own devices: one invocation of an action their grants leave to them.
 ///

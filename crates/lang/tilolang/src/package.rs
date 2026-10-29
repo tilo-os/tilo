@@ -356,6 +356,14 @@ fn build_meta(
     let type_id =
         |key: &crate::types::TypeKey| env.type_info(key).map(|t| t.id.clone()).unwrap_or_default();
     meta.roots = env.roots.iter().map(type_id).collect();
+    meta.named_roots = env
+        .named_roots
+        .iter()
+        .map(|(name, key)| crate::meta::NamedRootMeta {
+            name: name.clone(),
+            ty: type_id(key),
+        })
+        .collect();
     let views_meta = |views: &[(crate::types::TypeKey, String)]| -> Vec<DefaultViewMeta> {
         views
             .iter()
@@ -379,6 +387,27 @@ fn build_meta(
     for item in &module.items {
         match item {
             Item::Use(_) | Item::Root(_) | Item::DefaultView(_) | Item::RowView(_) => {}
+            Item::Alias(a) => {
+                let key = crate::types::TypeKey {
+                    app: app.to_string(),
+                    name: a.name.name.clone(),
+                };
+                if let Some(info) = env.type_info(&key) {
+                    meta.types.push(TypeMeta {
+                        id: info.id.clone(),
+                        name: info.key.name.clone(),
+                        doc: doc(&a.doc),
+                        fields: info.fields.iter().map(|f| field_meta(f, app)).collect(),
+                        search: info.search.clone(),
+                        holder: true,
+                    });
+                } else if let Some((_, ty)) = env.aliases.iter().find(|(k, _)| *k == key) {
+                    meta.aliases.push(crate::meta::AliasMeta {
+                        name: key.name.clone(),
+                        ty: ty.meta_text(app),
+                    });
+                }
+            }
             Item::Scenario(sc) => {
                 let Some(c) = env.scenario(&sc.name) else {
                     continue;
@@ -439,6 +468,7 @@ fn build_meta(
                     doc: doc(&t.doc),
                     fields,
                     search: info.search.clone(),
+                    holder: false,
                 });
             }
             Item::Action(a) => {
@@ -702,6 +732,7 @@ pub fn compile_program(
         doc: "Any resource of the workspace, of whichever app: what `find` answers when its query names no type. `.of(T)` keeps those of one type.".to_owned(),
         fields: Vec::new(),
         search: crate::meta::SearchMeta::default(),
+        holder: false,
     });
     let env = agent_env(&app, &host, visible);
     let mut diags = Vec::new();

@@ -46,9 +46,7 @@ fn at_420_px_the_transition_strip_folds_and_every_transition_can_be_chosen() {
     app.selection.select_only(clip);
     render_shipped(&mut app);
     // The window bar's Inspector action shows it over the editor.
-    app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
-        id: super::super::window_bar::INSPECTOR.into(),
-    });
+    app.press_bar("panel-right");
     app.inspector_flap.snap(true);
     render_shipped(&mut app);
     let r = app.regions();

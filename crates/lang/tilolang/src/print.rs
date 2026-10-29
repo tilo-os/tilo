@@ -86,6 +86,9 @@ fn block_text(b: &Block, level: usize) -> String {
 }
 
 fn pattern_text(p: &Pattern) -> String {
+    if let Some(ty) = &p.ty {
+        return format!("{}: {}", p.variant.name, print_type(ty));
+    }
     if p.binds.is_empty() {
         format!(".{}", p.variant.name)
     } else {
@@ -124,6 +127,10 @@ pub fn print_type(t: &TypeExpr) -> String {
         TypeExprKind::Fn(params, result) => {
             let inner: Vec<String> = params.iter().map(print_type).collect();
             format!("({}) -> {}", inner.join(", "), print_type(result))
+        }
+        TypeExprKind::Union(cases) => {
+            let inner: Vec<String> = cases.iter().map(print_type).collect();
+            inner.join(" | ")
         }
     }
 }
@@ -436,7 +443,14 @@ impl Printer {
                 self.level -= 1;
                 self.line("}");
             }
-            Item::Root(r) => self.line(&format!("root {}", print_type(&r.ty))),
+            Item::Root(r) => match &r.name {
+                Some(name) => self.line(&format!("root {}: {}", name.name, print_type(&r.ty))),
+                None => self.line(&format!("root {}", print_type(&r.ty))),
+            },
+            Item::Alias(a) => {
+                self.docs(&a.doc);
+                self.line(&format!("type {} = {}", a.name.name, print_type(&a.ty)));
+            }
             Item::DefaultView(d) => self.line(&format!(
                 "default view {} for {}",
                 d.view.name,
@@ -478,6 +492,12 @@ impl Printer {
                 head.push_str(&self.opts(&a.opts));
                 head.push_str(" {");
                 self.line(&head);
+                self.level += 1;
+                for r in &a.requires {
+                    let (cond, reason) = (self.ex(&r.cond), self.ex(&r.reason));
+                    self.line(&format!("require {cond} {reason}"));
+                }
+                self.level -= 1;
                 self.block_body(&a.body);
                 self.line("}");
             }

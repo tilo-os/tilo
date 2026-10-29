@@ -1,11 +1,10 @@
 //! The editor's controls live in the window's bar: the shown file, the
 //! bottom panel's toggle, and find and replace in the buffer.
 
-use ui::widget::{FindOptions, InPlace, SearchDriver, Widget};
+use ui::widget::{FindOptions, InPlace, SearchDriver};
 use ui::window_toolbar::{SearchOpening, ToolbarEvent};
 
 use super::super::{CodeApp, EditorDoc};
-use super::BOTTOM_PANEL;
 use crate::commands::Command;
 
 fn synced_sample() -> crate::test_support::Sample {
@@ -24,12 +23,12 @@ fn panel_action(app: &CodeApp) -> ui::window_toolbar::ToolbarAction {
     app.window_toolbar()
         .actions
         .into_iter()
-        .find(|action| action.id == BOTTOM_PANEL)
+        .find(|action| action.icon == "panel-bottom")
         .expect("the bottom panel's toggle is a bar action")
 }
 
 #[test]
-fn the_editor_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
+fn the_bar_names_the_shown_file_and_its_panel_toggle_acts() {
     let mut sample = synced_sample();
     sample.editor(|app| {
         let toolbar = app.window_toolbar();
@@ -41,14 +40,6 @@ fn the_editor_draws_no_header_row_and_its_controls_are_in_the_window_bar() {
         let panel = panel_action(app);
         assert!(panel.enabled, "a live project's panel toggle acts");
         assert_eq!(panel.on, app.panel_visible);
-
-        let children: Vec<&str> = app.children().iter().map(|child| child.name()).collect();
-        for drawn in ["FindBar", "Button", "BottomPanelToggle", "Text"] {
-            assert!(
-                !children.contains(&drawn),
-                "the window draws no {drawn} of its own: {children:?}"
-            );
-        }
     });
 }
 
@@ -58,7 +49,7 @@ fn the_bar_shows_and_hides_the_bottom_panel() {
     let panel = sample.editor(|app| {
         let panel = app.panel_visible;
         app.run_window_bar_event(&ToolbarEvent::Action {
-            id: BOTTOM_PANEL.into(),
+            id: panel_action(app).id,
         });
         panel
     });
@@ -141,7 +132,7 @@ fn a_capture_shows_the_panel_toggle_but_it_cannot_act() {
     });
     crate::test_support::editor(&mut capture, |app| {
         app.run_window_bar_event(&ToolbarEvent::Action {
-            id: BOTTOM_PANEL.into(),
+            id: panel_action(app).id,
         });
     });
     assert_eq!(

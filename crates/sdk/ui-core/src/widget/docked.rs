@@ -1,11 +1,12 @@
 //! Content above a bar docked at the foot of its column, as a described component.
 
 use crate::component::{Component, Described, SlotViews};
-use crate::widget::arrange::{Fit, Slot, Stack};
+use crate::widget::arrange::{Fit, Page, Slot, Stack};
 use crate::widget::{Decorator, Element, Widget};
 
 /// Content that fills its column above a bar that stays at the column's foot: a
-/// conversation above its composer.
+/// conversation above its composer. The bar stands in the column's page, a section's gap under
+/// the content and the page's gutter at its sides and below.
 #[derive(Component, Default)]
 #[component(name = "Docked", role = "Group")]
 pub struct DockedProps {
@@ -42,7 +43,14 @@ impl Described for Docked {
             .fill_width()
             .fill_height()
             .push_slot(slot(content.unwrap_or_else(empty), Fit::fill(1.0)))
-            .push_slot(slot(foot.unwrap_or_else(empty), Fit::hug()));
+            .push_slot(slot(
+                Box::new(
+                    Page::full()
+                        .foot()
+                        .push_slot(Slot::new(foot.unwrap_or_else(empty))),
+                ),
+                Fit::hug(),
+            ));
         Self { stack, editing: 0 }
     }
 
@@ -68,28 +76,30 @@ impl SlotViews for Docked {
     }
 
     fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
-        if index == 0 {
-            self.stack.child_mut(self.editing)
+        if index != 0 {
+            return None;
+        }
+        if self.editing == 0 {
+            self.stack.child_mut(0)
         } else {
-            None
+            self.foot_page()?.child_mut(0)
         }
     }
 
     fn insert(&mut self, _index: usize, view: Element) {
-        let _ = self.stack.replace(self.editing, view);
+        self.put(view);
     }
 
     fn remove(&mut self, _index: usize) {
-        let _ = self.stack.replace(
-            self.editing,
-            Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)),
-        );
+        self.put(Box::new(crate::widget::Spacer::token(
+            crate::tokens::SpacingStep::S0,
+        )));
     }
 
     fn move_view(&mut self, _from: usize, _to: usize) {}
 
     fn replace(&mut self, _index: usize, view: Element) {
-        let _ = self.stack.replace(self.editing, view);
+        self.put(view);
     }
 }
 
@@ -110,6 +120,23 @@ impl Decorator for Docked {
 }
 
 impl Docked {
+    /// The page the foot stands in.
+    fn foot_page(&mut self) -> Option<&mut Page> {
+        self.stack
+            .child_mut(1)?
+            .as_any_mut()?
+            .downcast_mut::<Page>()
+    }
+
+    /// Put `view` in the slot being changed.
+    fn put(&mut self, view: Element) {
+        if self.editing == 0 {
+            let _ = self.stack.replace(0, view);
+        } else if let Some(page) = self.foot_page() {
+            let _ = page.replace(0, view);
+        }
+    }
+
     /// The content, to read it.
     #[must_use]
     pub fn content(&self) -> Option<&dyn Widget> {

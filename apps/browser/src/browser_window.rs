@@ -1532,17 +1532,10 @@ mod tests {
                 declared
                     .actions
                     .iter()
-                    .map(|action| action.id.as_str())
+                    .map(|action| action.icon.as_str())
                     .collect::<Vec<_>>(),
                 [
-                    "reload",
-                    "bookmark",
-                    "library",
-                    "page",
-                    "zoom",
-                    "extensions",
-                    "privacy",
-                    "settings"
+                    "refresh", "star", "history", "globe", "plus", "box", "shield", "settings"
                 ],
                 "the row's buttons, then the More menu's commands"
             );

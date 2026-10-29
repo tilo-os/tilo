@@ -30,9 +30,7 @@ fn main() -> Result<(), String> {
     let main = packages.last().ok_or("no package")?;
     let imports = packages
         .iter()
-        .filter(|compiled| compiled.meta.app != main.meta.app)
-        .map(|compiled| compiled.meta.clone())
-        .collect();
+        .filter(|compiled| compiled.meta.app != main.meta.app);
     tilolang_tilo::bundle::Bundle::new(main, imports)
         .write(&out.join("bundle"))
         .map_err(|e| e.to_string())?;

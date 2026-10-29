@@ -80,7 +80,7 @@ pub trait Publication {
 /// What an instance asks of whatever runs it.
 pub trait Platform {
     /// Load what a window of the package runs into `host`: the installed package, or the latest
-    /// later build of it, with the record schemas of the packages it uses. The later build it
+    /// later build of it, with the packages it uses. The later build it
     /// loaded, 0 for the installed package.
     fn load(&self, host: &Host) -> u64;
 

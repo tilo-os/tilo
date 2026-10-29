@@ -204,7 +204,8 @@ view document<R>(of: R, content: View) {
 
 /// A window that is a page of `of`: its content at the readable measure, or as a `canvas` at
 /// the window's full width, scrolling under a header of `of`'s actions and `header`, the
-/// page's own controls. A page with nothing on it (`empty`) says so.
+/// page's own controls. A page with nothing on it (`empty`) says so and offers its primary
+/// action.
 view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, content: View) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
@@ -214,7 +215,12 @@ view page<R>(of: R, canvas: Bool = false, empty: Bool = false, header: View, con
         }
         content: {
             if empty {
-                ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon)
+                match actions(of).find(a -> a.primary) {
+                    .some(a) => ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon, action: a.label) {
+                        on act: a.run
+                    },
+                    .none => ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon),
+                }
             } else {
                 ui.Scroll {
                     if canvas {
@@ -256,10 +262,8 @@ view transcript<R, T>(
         content: {
             ui.Docked {
                 foot: {
-                    page(full) {
-                        stack {
-                            composer
-                        }
+                    stack {
+                        composer
                     }
                 }
                 ui.VirtualList(transcript: true) {

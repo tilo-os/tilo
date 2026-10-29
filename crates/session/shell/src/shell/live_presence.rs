@@ -347,9 +347,11 @@ impl Outbound {
     /// receivers show it once, by its counter. A frame that names no record
     /// yet names `desktop` (the room's desktop), as a browser tab's does
     /// with no window in front: a frame goes out sealed with its record's
-    /// keys. Returns the frames to publish, in order: a device the room
-    /// never heard from first says it is here, since the first presence
-    /// anyone hears from a device only sets where its waves stand.
+    /// keys. Returns the frames to publish, in order: first the frame as it
+    /// stands, then the one with the wave. The first presence anyone hears
+    /// from a device only sets where its waves stand, and the one waved at
+    /// may have just come onto the live plane, never having heard this
+    /// device: the first frame is that one, and the wave is news.
     pub fn wave(
         &mut self,
         ws: u64,
@@ -358,14 +360,11 @@ impl Outbound {
         wave: LiveWave,
         now: Instant,
     ) -> Vec<Vec<u8>> {
-        let first = !self.rooms.contains_key(&ws);
         let room = self.room(ws, now);
         room.frame.participant = Some(participant);
         room.frame.focus.get_or_insert(desktop);
         let mut frames = Vec::new();
-        if first {
-            frames.extend(self.publish(ws, now));
-        }
+        frames.extend(self.publish(ws, now));
         if let Some(room) = self.rooms.get_mut(&ws) {
             room.frame.wave = Some(wave);
         }

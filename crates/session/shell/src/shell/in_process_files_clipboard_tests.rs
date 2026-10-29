@@ -311,6 +311,7 @@ mod files_clipboard_tests {
                     })
                     .map(|root| root.peer_id.to_string())
             };
+            Self::await_records(&mut shown);
             let [first, second] = &mut shown;
             until(
                 &mut [first, second],
@@ -331,6 +332,63 @@ mod files_clipboard_tests {
                 folders,
                 source_grants,
                 session,
+            }
+        }
+
+        /// Frames until each window has applied its record's committed
+        /// history. A record that only the room's host retains (after a
+        /// restart) arrives with the host's replay; until a window applied
+        /// it, the window offers no history to act on.
+        fn await_records(shown: &mut [Shown; 2]) {
+            let deadline = tilo_test_env::hang_deadline();
+            loop {
+                for app in shown.iter_mut() {
+                    app.frame();
+                }
+                let phases: Vec<Option<serde_json::Value>> = shown
+                    .iter()
+                    .zip(TABS)
+                    .map(|(app, tab)| {
+                        let record = RecordId::for_tab(tab);
+                        app.tile
+                            .as_any()
+                            .and_then(|any| any.downcast_ref::<ui::app::EmbeddedApp>())
+                            .and_then(|embedded| {
+                                embedded
+                                    .app()
+                                    .controlled_document_merge_phase_for_test()
+                                    .into_iter()
+                                    .find(|phase| {
+                                        phase["app"] == APP && phase["record"] == record.as_str()
+                                    })
+                            })
+                    })
+                    .collect();
+                if phases.iter().all(|phase| {
+                    phase.as_ref().is_some_and(|phase| {
+                        phase["committed_read_ready"] == true && phase["pending_remote"] == false
+                    })
+                }) {
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let all: Vec<_> = shown
+                        .iter()
+                        .map(|app| {
+                            app.tile
+                                .as_any()
+                                .and_then(|any| any.downcast_ref::<ui::app::EmbeddedApp>())
+                                .map(|embedded| {
+                                    (
+                                        embedded.app().collaboration_state(),
+                                        embedded.app().controlled_document_merge_phase_for_test(),
+                                    )
+                                })
+                        })
+                        .collect();
+                    panic!("both actual Files windows load their records: {all:?}");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
         }
 
@@ -1316,6 +1374,12 @@ mod files_clipboard_tests {
                 .unwrap()
                 .try_flush()
                 .unwrap();
+            // The room's host keeps the receiving record too: withhold its
+            // writes from the host as well as from local storage, so the
+            // kill lands before the Undo intent is durable anywhere.
+            let _withheld = crate::shell::network::test_withheld_records::TestWithheldRecord::new(
+                &RecordId::for_tab(TABS[1]).to_string(),
+            );
             fixture.succeeds(1, "undo");
             drop(fixture);
             panic!("the actual cross-device compensation phase was not reached");

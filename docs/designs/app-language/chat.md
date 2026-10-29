@@ -11,13 +11,13 @@ defaults are right for every app.
 ```
 app so.tilo.lang.chat "Chat" (icon: .message_circle, category: .network)
 
-type Channels = List<Category | Channel>
+type Channels = Collection<Category | Channel>
 root channels: Channels
 
 /// A named group of channels in the sidebar.
 type Category {
     name: Text (title)
-    channels: List<Channel>
+    channels: Collection<Channel>
 }
 
 type Channel = TextChannel | VoiceChannel

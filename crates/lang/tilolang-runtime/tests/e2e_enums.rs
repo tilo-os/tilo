@@ -1,4 +1,4 @@
-//! Sum types and view state end to end: enum values as host handles in fields, through sync
+//! Enums, unions and view state end to end: enum values and union references in fields, through sync
 //! and in views, and `window`/`lens` state bound to controls.
 
 #[cfg(test)]
@@ -14,15 +14,28 @@ mod cases {
 
     const SOURCE: &str = r#"app so.tilo.shapes "Shapes"
 
-enum Shape {
+enum Kind {
     dot
-    line(len: Int)
-    box(w: Float, label: Text)
+    line
+    big
 }
 
+type Line {
+    len: Int
+}
+
+type Box {
+    w: Float
+    label: Text
+}
+
+type Shape = Line | Box
+
 type Canvas {
-    shape: Shape
-    last: Option<Shape>
+    kind: Kind
+    last: Option<Kind>
+    shapes: Collection<Shape>
+    shape: Option<Shape> = .none
 }
 
 root Canvas
@@ -30,15 +43,19 @@ root Canvas
 default view drawing for Canvas
 
 action draw(c: Canvas, len: Int) {
-    c.last = .some(c.shape)
-    c.shape = if len > 5 { .box(w: 1.5, label: "big") } else { .line(len: len) }
+    c.last = .some(c.kind)
+    c.kind = if len > 5 { .big } else { .line }
+    if len > 5 {
+        c.shape = c.shapes.insert(Box(w: 1.5, label: "big"))
+    } else {
+        c.shape = c.shapes.insert(Line(len: len))
+    }
 }
 
 fn describe(s: Shape) -> Text {
     match s {
-        .dot => "a dot",
-        .line(n) => "a line of {n}",
-        .box(w, label) => "{label} {w}",
+        l: Line => "a line of {l.len}",
+        b: Box => "{b.label} {b.w}",
     }
 }
 
@@ -46,8 +63,12 @@ view drawing(c: Canvas) {
     lens query: Text
     window zoom: Int = 1
     page {
-        text(describe(c.shape))
-        if c.last == .some(Shape.dot) {
+        if let s = c.shape {
+            text(describe(s))
+        } else {
+            text("a dot")
+        }
+        if c.last == .some(Kind.dot) {
             text("was a dot")
         }
         input(bind: query, placeholder: "Find")
@@ -81,38 +102,34 @@ view drawing(c: Canvas) {
             .collect()
     }
 
-    // USER REQUIREMENT (2026-10-20): "Enums are valid field types (merge: register — whole
-    // value)" and "Encode enum values in the ABI as host handles (tag + payload)".
+    // An enum field holds one case and merges as a register; a union field holds a reference
+    // to a resource of any of its types, and a collection of a union owns items of each type.
     #[test]
-    fn an_enum_field_holds_the_whole_value_and_syncs_as_a_register() {
+    fn enum_and_union_fields_hold_whole_values_and_sync_as_registers() {
         let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
         let (rt_a, app, canvas) = setup(&store_a);
         let ids = &app.compiled.ids;
         let id = |name: &str| ids.get(name).unwrap().to_owned();
         assert_eq!(
-            rt_a.read(&canvas, "shape").unwrap(),
+            rt_a.read(&canvas, "kind").unwrap(),
             Value::Enum(EnumValue {
-                ty: id("Shape"),
-                variant: id("Shape.dot"),
+                ty: id("Kind"),
+                variant: id("Kind.dot"),
                 fields: std::collections::BTreeMap::default(),
             }),
-            "an enum field starts as its first variant"
+            "an enum field starts as its first case"
         );
         draw(&rt_a, &app, &canvas, 3);
-        let Value::Enum(line) = rt_a.read(&canvas, "shape").unwrap() else {
-            panic!("an enum value");
+        let Value::Opt(Some(line)) = rt_a.read(&canvas, "shape").unwrap() else {
+            panic!("a shape");
         };
-        assert_eq!(line.variant, id("Shape.line"));
-        assert_eq!(line.fields[&id("Shape.line.len")], Value::Int(3));
-
+        let Value::Ref(line) = *line else {
+            panic!("a reference")
+        };
+        assert_eq!(line.target.ty, id("Line"), "a reference to a Line");
         let rt_b = Runtime::new(store_b.clone(), SimpleAuthority::new()).unwrap();
         app.load(&rt_b);
         store_a.sync_with(&mut store_b).unwrap();
-        assert_eq!(
-            rt_b.read(&canvas, "shape").unwrap(),
-            Value::Enum(line),
-            "the whole value arrives"
-        );
         draw(&rt_a, &app, &canvas, 9);
         draw(&rt_b, &app, &canvas, 2);
         store_a.sync_with(&mut store_b).unwrap();
@@ -120,11 +137,24 @@ view drawing(c: Canvas) {
             rt_a.read(&canvas, "shape").unwrap(),
             rt_b.read(&canvas, "shape").unwrap(),
         );
-        assert_eq!(on_a, on_b, "concurrent writes converge on one whole value");
-        assert!(
-            matches!(&on_a, Value::Enum(shape) if shape.variant == id("Shape.box") || shape.fields.get(&id("Shape.line.len")) == Some(&Value::Int(2))),
-            "never a mix of the two: {on_a:?}"
+        assert_eq!(
+            on_a, on_b,
+            "concurrent writes converge on one whole reference"
         );
+        let Value::List(items) = rt_a.read(&canvas, "shapes").unwrap() else {
+            panic!("a list");
+        };
+        let mut types: Vec<String> = items
+            .iter()
+            .map(|v| match v {
+                Value::Ref(r) => r.target.ty.clone(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        types.sort();
+        let mut want = vec![id("Line"), id("Line"), id("Box")];
+        want.sort();
+        assert_eq!(types, want, "each item is read as its own type");
     }
 
     #[test]

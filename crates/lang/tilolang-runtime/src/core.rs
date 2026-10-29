@@ -258,7 +258,7 @@ impl Core {
             ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut,
             MapRemove, MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalName,
             PrincipalNamed, Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
-            RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
+            RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
             ResTextSet, RichEmpty, RichNew, RichPart, SetAdd, SetRemove, SomeF, SomeH, SomeI,
             SpaceF, SpaceI, StateGet, StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke,
             TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAnchor,
@@ -295,7 +295,7 @@ impl Core {
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
             | ResTextSet | CollInsert | CollRemove | CollMove | SetAdd | SetRemove | MapPut
             | MapRemove | MapGetH | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit
-            | RefEq | RefId => self.resource_import(imp, a),
+            | RefEq | RefIs | RefId => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
             | PrincipalName | QueueBlock | Now | PrincipalNamed | InvokerPush | InvokerPop => {
                 self.effect_import(imp, a)

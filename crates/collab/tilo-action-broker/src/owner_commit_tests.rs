@@ -1408,6 +1408,7 @@ mod owner_commit_tests {
                 resolve_mode: DirectoryResolveMode::Found,
                 result: tilo_actions::ResultSpec::None,
                 confirmation_required: false,
+                params: Vec::new(),
                 query_count: 0,
                 resolve_count: 0,
             }
@@ -1482,6 +1483,7 @@ mod owner_commit_tests {
                 resolve_mode: DirectoryResolveMode::Found,
                 result: tilo_actions::ResultSpec::None,
                 confirmation_required: false,
+                params: Vec::new(),
                 query_count: 0,
                 resolve_count: 0,
             }

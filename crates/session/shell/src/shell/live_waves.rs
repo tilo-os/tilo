@@ -188,13 +188,33 @@ mod tests {
         assert_eq!(heard.len(), 1, "the tab hears the wave once");
         assert_eq!(heard[0].id, hex::encode(desk));
         assert_eq!(heard[0].name, "Kim");
+        // A tab that comes onto the live plane later hears the next wave:
+        // its first frame from the desktop is the one before the wave.
+        let mut late = HereState::default();
+        let next = outbound.wave(
+            ws,
+            desktop_focus.clone(),
+            participant("Kim"),
+            LiveWave {
+                seq: 2,
+                target: hex::encode(tab),
+            },
+            now,
+        );
+        assert_eq!(next.len(), 2, "the frame as it stands, then the wave");
+        for frame in &next {
+            late.set_members(Some(own.clone()), Some(vec![member(&desk, frame)]));
+        }
+        assert_eq!(late.take_waves().len(), 1, "the late tab hears it");
+        browser.set_members(Some(own.clone()), Some(vec![member(&desk, &next[1])]));
+        assert_eq!(browser.take_waves().len(), 1);
         // Restated with the desktop's next frame, it is not news again.
         let restated = outbound.wave(
             ws,
             desktop_focus,
             participant("Kim"),
             LiveWave {
-                seq: 1,
+                seq: 2,
                 target: hex::encode(tab),
             },
             now,

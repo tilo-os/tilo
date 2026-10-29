@@ -931,6 +931,7 @@ impl Checker<'_> {
         &mut self,
         view: &Callable,
         opts: &[ast::ActionOpt],
+        requires: &[ast::Require],
         params: &[crate::resolve::ParamInfo],
     ) -> crate::ir::Func {
         self.begin(super::Ctx::View, &view.params, Ty::View, &view.id);
@@ -979,6 +980,21 @@ impl Checker<'_> {
                     self.prop(node.clone(), "on", v, opt.value.span);
                 }
             }
+        }
+        // Why it is unavailable on the subject now: the reason of its first requirement that
+        // does not hold, which is set last.
+        for r in requires.iter().rev() {
+            if let Some(other) = mentions(&r.cond, others).or_else(|| mentions(&r.reason, others)) {
+                let subject = params.first().map_or("", |p| p.name.as_str());
+                self.err("E090", r.span, format!("a requirement says whether the action is offered on `{subject}`, before anyone gives `{other}`; it reads only the subject, `{subject}`"));
+                continue;
+            }
+            let cond = self.expr_as(&r.cond, &Ty::Bool);
+            let reason = self.expr_as(&r.reason, &Ty::Text);
+            self.push_sink();
+            self.prop(node.clone(), "unavailable", reason, r.span);
+            let unmet = self.pop_sink();
+            self.emit(Stmt::If(cond, Vec::new(), unmet));
         }
         self.emit(Stmt::Return(Some(node)));
         let mut f = self.end(

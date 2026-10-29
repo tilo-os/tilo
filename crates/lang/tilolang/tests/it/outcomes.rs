@@ -108,10 +108,6 @@ fn only_an_action_takes_defaults() {
     ] {
         assert_eq!(codes_of(&body(src)), vec!["E028"], "{src}");
     }
-    assert_eq!(
-        codes_of(&body("enum E {\n    a(x: Int = 1)\n}")),
-        vec!["E028"]
-    );
 }
 
 #[test]

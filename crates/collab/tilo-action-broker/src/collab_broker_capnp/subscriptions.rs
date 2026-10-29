@@ -233,8 +233,10 @@ mod tests {
             ));
         }
         let mut channels = channels.lock().unwrap();
-        channels.record_history(&route, &op);
+        let unsynced = channels.record_history(&route, &op);
         channels.state_for(artifact).record_validated_op(op);
+        drop(channels);
+        unsynced.sync().unwrap();
     }
 
     /// The records each `RecordsArrived` the subscriber was sent named.

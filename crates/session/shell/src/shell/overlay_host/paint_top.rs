@@ -274,6 +274,17 @@ impl ShellOverlayHost {
                 }
                 return;
             }
+            // A draft sheet's detail wraps: measured before the sheet is
+            // laid out, so its rows start below it.
+            if let Some((detail, width)) = self.portal_dialogs.draft_detail_wrap(area) {
+                let (_, height) = text_renderer.measure_style(
+                    &detail,
+                    Some(sheet_text_width(width)),
+                    &theme.text(TextRole::Body),
+                );
+                self.portal_dialogs
+                    .set_draft_detail_height(f64::from(height));
+            }
             let Some(layout) = self.portal_dialogs.layout(area) else {
                 return;
             };
@@ -316,7 +327,7 @@ impl ShellOverlayHost {
                 &self.portal_dialogs.displayed_detail(),
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((layout.sheet.x0 + 24.0, layout.sheet.y0 + 74.0).into()),
-                None,
+                layout.detail_width.map(sheet_text_width),
                 &theme.text(TextRole::Body),
             );
             for (index, (choice, rect)) in view.choices().iter().zip(&layout.choices).enumerate() {
@@ -409,10 +420,49 @@ impl ShellOverlayHost {
                     );
                 }
             }
+            // A confirmation's draft: each field labelled above its control,
+            // a yes-or-no field as its own check row. Its text fields are
+            // painted with the sheet's others, below.
+            for face in self.portal_dialogs.draft_faces(&layout) {
+                let Some(placed) = layout.draft_rows.iter().find(|row| row.index == face.index)
+                else {
+                    continue;
+                };
+                if let Some(on) = face.flag {
+                    draw_check_row(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        placed.control,
+                        &CheckRow {
+                            checked: on,
+                            pose: self.faces.check(
+                                ("draft", view.handle(), face.index),
+                                on,
+                                ui::widget::CheckGlyph::Check,
+                                theme.motion(),
+                            ),
+                            label: &face.label,
+                            detail: None,
+                            focused: face.focused,
+                        },
+                    );
+                } else {
+                    text_renderer.draw_style(
+                        scene,
+                        &face.label,
+                        theme.tokens.colors.text_dim,
+                        transform.pre_translate((placed.label.x0, placed.label.y0).into()),
+                        Some(sheet_text_width(placed.label.width())),
+                        &theme.text(TextRole::Caption),
+                    );
+                }
+            }
             // The sheet's text fields: an authentication answer, a shortcut
-            // step's, or one row per network secret labelled by its
-            // placeholder. Secret ones stay hidden until their own show/hide
-            // control is used.
+            // step's, one row per network secret labelled by its
+            // placeholder, or a draft's fields. Secret ones stay hidden until
+            // their own show/hide control is used.
             let presence = PresenceCtx::default();
             for field in self.portal_dialogs.place_fields(&layout) {
                 field.draw(scene, transform, text_renderer, theme, &presence);
@@ -589,5 +639,16 @@ impl ShellOverlayHost {
         if rows_needed != previous_rows && self.palette.set_host_filter_strip_rows(rows_needed) {
             self.palette_layout_dirty = true;
         }
+    }
+}
+
+/// A width text on a review sheet wraps at, as the text renderer takes it.
+fn sheet_text_width(width: f64) -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a sheet is at most a few hundred logical pixels wide"
+    )]
+    {
+        width.max(0.0) as f32
     }
 }

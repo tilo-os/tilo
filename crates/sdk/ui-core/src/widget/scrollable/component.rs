@@ -13,6 +13,8 @@ pub struct ScrollProps {
     /// Open at the end of the content and stay there while it grows, unless the person
     /// scrolled away from the end: a conversation's transcript, whose newest line is last.
     pub follow_end: bool,
+    /// Scroll sideways instead: a row wider than its column, such as a board's lanes.
+    pub across: bool,
     /// What scrolls.
     #[component(slot(default))]
     pub content: Option<Element>,
@@ -24,9 +26,14 @@ impl Described for Scrollable {
     fn from_props(_key: &str, props: ScrollProps) -> Self {
         let ScrollProps {
             follow_end,
+            across,
             content,
         } = props;
-        let mut scroll = Self::new_vertical();
+        let mut scroll = if across {
+            Self::new_horizontal()
+        } else {
+            Self::new_vertical()
+        };
         if follow_end {
             scroll = scroll.following_end();
         }
@@ -38,7 +45,11 @@ impl Described for Scrollable {
 
     /// The same scroll stays, and keeps its position, while its content changes in place.
     fn set_props(&mut self, props: ScrollProps) -> bool {
-        props.follow_end == self.follow_end
+        let same_axis = matches!(
+            (props.across, self.axis),
+            (true, super::ScrollAxis::Horizontal) | (false, super::ScrollAxis::Vertical)
+        );
+        props.follow_end == self.follow_end && same_axis
     }
 
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {

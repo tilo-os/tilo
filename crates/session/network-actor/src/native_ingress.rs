@@ -210,6 +210,11 @@ impl ActorState {
         .await
         {
             Ok(Ok(changed)) => {
+                self.tally.note(if changed {
+                    "NativeGovernanceChanged"
+                } else {
+                    "NativeGovernanceUnchanged"
+                });
                 if changed {
                     self.drive_native_publication(ws);
                     if let Some(wake) = &self.wake {
@@ -218,6 +223,7 @@ impl ActorState {
                 }
             }
             Ok(Err(error)) => {
+                self.tally.note("NativeGovernanceRefused");
                 tracing::warn!(%error, %room, "native relay governance admission denied");
             }
             Err(error) => {
@@ -263,15 +269,85 @@ impl ActorState {
         };
         // Held until a host keeps it: a session up now may already be gone
         // without this device knowing, and the next one sends it again.
-        let (op, payload) = self
+        let (op, payload, record) = self
             .sealed_outbox
             .entry(ws)
             .or_default()
             .hold(channel, retention, bytes);
+        // In the room's log too: a device shut down before a host kept it
+        // still holds it when it starts again.
+        if let (Some(record), Some(route)) = (record, self.native_routes.entries.get(&ws)) {
+            self.sealed_records.hold(ws, route.connect.room(), record);
+        }
         if let Some(session) = native_session(&self.host_sessions, ws)
             && let Err(error) = session.commit(op, &payload)
         {
             tracing::debug!(ws, %error, "sealed write held for the room's next session");
+        }
+        self.tell_unsynced(ws);
+    }
+
+    /// A host of the room on topic `ws` keeps this device's sealed write
+    /// `op`: it is let go, here and in the room's log.
+    pub(super) fn sealed_kept(&mut self, ws: u64, op: [u8; 16]) {
+        let Some(outbox) = self.sealed_outbox.get_mut(&ws) else {
+            return;
+        };
+        if !outbox.kept(op) {
+            return;
+        }
+        let empty = outbox.is_empty();
+        if empty {
+            self.sealed_outbox.remove(&ws);
+        }
+        if let Some(route) = self.native_routes.entries.get(&ws) {
+            self.sealed_records
+                .kept(ws, route.connect.room(), op, empty);
+        }
+        self.tell_unsynced(ws);
+    }
+
+    /// A host of the room on topic `ws` did not keep this device's sealed
+    /// write `op`: it stays held, not yet synced, until the room's next
+    /// session sends it again.
+    pub(super) fn sealed_refused(&mut self, ws: u64, op: [u8; 16]) {
+        if self
+            .sealed_outbox
+            .get_mut(&ws)
+            .is_some_and(|outbox| outbox.refused(op))
+        {
+            self.tell_unsynced(ws);
+        }
+    }
+
+    /// Tell the room on topic `ws`'s apps how many of this device's writes
+    /// to it are not yet synced ([`crate::room_sync::unsynced`]):
+    /// the committed writes in its owner's outgoing custody and the sealed
+    /// writes held for its hosts, all of them while no session of the room
+    /// carries them, else the sealed writes its host did not keep. A write
+    /// sent on a session up now is on its way, and says nothing.
+    pub(super) fn tell_unsynced(&self, ws: u64) {
+        let Some(route) = self.native_routes.entries.get(&ws) else {
+            return;
+        };
+        let carried = native_session(&self.host_sessions, ws).is_some();
+        let sealed = self
+            .sealed_outbox
+            .get(&ws)
+            .map_or(0, |outbox| outbox.unsynced(carried));
+        let committed = if carried {
+            0
+        } else {
+            route
+                .connect
+                .owner()
+                .unadmitted_writes(route.connect.room())
+                .unwrap_or(0)
+        };
+        if crate::room_sync::unsynced(ws, sealed.saturating_add(committed))
+            && let Some(wake) = &self.wake
+        {
+            wake();
         }
     }
 
@@ -281,6 +357,7 @@ impl ActorState {
                 tracing::debug!(%error,"native publication remains in durable custody");
             }
         }
+        self.tell_unsynced(ws);
     }
     /// Send `request` to the governor of the governed room on topic `ws`,
     /// opening the room's private lane on first use.
@@ -337,6 +414,22 @@ impl ActorState {
         }
         // Apps in the room say they are connecting until its first sync.
         crate::room_sync::connecting(ws);
+        // The sealed writes the room's log held when this device started:
+        // its next session sends them.
+        match self
+            .held_log
+            .as_ref()
+            .map(|log| log.read(connect.room()))
+            .transpose()
+        {
+            Ok(Some(held)) if !held.is_empty() => {
+                self.sealed_outbox.entry(ws).or_default().restore(held);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(ws, %error, "the room's held sealed writes cannot be read");
+            }
+        }
         self.native_routes.entries.insert(
             ws,
             Route {
@@ -348,6 +441,7 @@ impl ActorState {
                 local: false,
             },
         );
+        self.tell_unsynced(ws);
         self.retry_native_routes();
     }
     pub(super) fn retry_native_routes(&mut self) {
@@ -635,15 +729,13 @@ impl ActorState {
                 tracing::warn!(ws, %error, "held state not sent to the room's relay");
             }
         }
-        for (op, payload) in self
-            .sealed_outbox
-            .get(&ws)
-            .into_iter()
-            .flat_map(super::sealed_outbox::SealedOutbox::commits)
-        {
-            if let Err(error) = session.commit(op, &payload) {
-                tracing::debug!(ws, %error, "sealed write held for the room's next session");
+        if let Some(outbox) = self.sealed_outbox.get_mut(&ws) {
+            for (op, payload) in outbox.commits() {
+                if let Err(error) = session.commit(op, &payload) {
+                    tracing::debug!(ws, %error, "sealed write held for the room's next session");
+                }
             }
+            outbox.sent_again();
         }
         // Pointers, cursor chat and reactions ride the room's live plane,
         // which carries only what its members say: join it, as a workspace

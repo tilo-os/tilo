@@ -1330,9 +1330,14 @@ fn the_dock_opens_and_closes_from_the_bar_the_keyboard_and_escape_inside_the_vie
     sample.open("src/main.rs");
     sample.editor(|app| {
         assert!(!app.panel_visible);
-        app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
-            id: window_bar::BOTTOM_PANEL.into(),
-        });
+        let id = app
+            .window_toolbar()
+            .actions
+            .into_iter()
+            .find(|action| action.icon == "panel-bottom")
+            .expect("the bottom panel's toggle")
+            .id;
+        app.run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action { id });
     });
     let driver = sample.app.harness();
     driver.resize((480, 900)).unwrap();

@@ -3842,6 +3842,9 @@ async fn drive_shovel(
     // The first document mutation since the last publication barrier that
     // did not reach the broker, reported to (and cleared by) that barrier.
     let mut unpublished: Option<String> = None;
+    // The action directory the owner published while no primary route was
+    // joined, sent as soon as one is.
+    let mut unrouted_directory: Option<(String, mpsc::SyncSender<ActionDirectoryRequest>)> = None;
 
     loop {
         let timed = asks_channel_keys
@@ -3979,6 +3982,9 @@ async fn drive_shovel(
                         link.flush(true).await;
                     }
                     tilo_startup_metrics::startup_mark("collab-activity-linked");
+                    if let Some((app_id, requests)) = unrouted_directory.take() {
+                        publish_directory(route, &app_id, requests, &inbound_tx).await;
+                    }
                 }
             }
             SdkCommand::Primary(request) => {
@@ -4116,42 +4122,17 @@ async fn drive_shovel(
                 let _ = reply.send(result);
             }
             SdkCommand::PublishActionDirectory { app_id, requests } => {
-                let Some(key) = primary.as_ref() else {
-                    tracing::warn!("collab: directory published before the primary route joined");
-                    continue;
-                };
-                let Some(route) = routes.get_mut(key) else {
-                    tracing::warn!(
-                        "collab: primary route disappeared before directory publication"
-                    );
-                    continue;
-                };
-                let directory = capnp_rpc::new_client(ActionDirectoryServer {
-                    requests,
-                    owner: inbound_tx.state.owner_wake.clone(),
-                });
-                if let Err(error) = route
-                    .channel
-                    .publish_action_directory(&app_id, directory)
-                    .await
-                {
-                    inbound_tx
-                        .state
-                        .directory_rpc_failures
-                        .fetch_add(1, Ordering::AcqRel);
-                    tracing::warn!(%error, "collab: publishing pull resource/action directory failed");
-                } else {
-                    inbound_tx
-                        .state
-                        .directory_rpc_successes
-                        .fetch_add(1, Ordering::AcqRel);
-                }
-                if inbound_tx
-                    .state
-                    .directory_observation_enabled
-                    .load(Ordering::Acquire)
-                {
-                    inbound_tx.state.notify_events();
+                // The directory rides the primary route. One published before
+                // the route joined (or while a later Hello's join is still
+                // failing) is kept and sent once a route joins: the owner
+                // counts it as published and never sends it again.
+                match primary.as_ref().and_then(|key| routes.get(key)) {
+                    Some(route) => {
+                        publish_directory(route, &app_id, requests, &inbound_tx).await;
+                    }
+                    None => {
+                        unrouted_directory = Some((app_id, requests));
+                    }
                 }
             }
             SdkCommand::BrowserServiceSession {
@@ -5337,6 +5318,47 @@ async fn send_settings(
                 wake.wake();
             }
         }
+    }
+}
+
+/// Register the owner's pull directory on `route`, counting the outcome
+/// for [`BrokerTransport::action_directory_publication_counts`].
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn publish_directory(
+    route: &SdkRoute,
+    app_id: &str,
+    requests: mpsc::SyncSender<ActionDirectoryRequest>,
+    inbound_tx: &InboundBridge,
+) {
+    let directory = capnp_rpc::new_client(ActionDirectoryServer {
+        requests,
+        owner: inbound_tx.state.owner_wake.clone(),
+    });
+    if let Err(error) = route
+        .channel
+        .publish_action_directory(app_id, directory)
+        .await
+    {
+        inbound_tx
+            .state
+            .directory_rpc_failures
+            .fetch_add(1, Ordering::AcqRel);
+        tracing::warn!(%error, "collab: publishing pull resource/action directory failed");
+    } else {
+        inbound_tx
+            .state
+            .directory_rpc_successes
+            .fetch_add(1, Ordering::AcqRel);
+    }
+    if inbound_tx
+        .state
+        .directory_observation_enabled
+        .load(Ordering::Acquire)
+    {
+        inbound_tx.state.notify_events();
     }
 }
 
@@ -7377,6 +7399,9 @@ mod tests {
     #[cfg(unix)]
     #[cfg(test)]
     include!("committed_read_deadline_tests.rs");
+    #[cfg(unix)]
+    #[cfg(test)]
+    include!("directory_publication_tests.rs");
     #[cfg(test)]
     include!("committed_absent_tests.rs");
     #[cfg(test)]

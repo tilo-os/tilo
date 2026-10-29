@@ -103,11 +103,11 @@ pub(crate) fn ask_here(
         ask,
         Box::new(move |chosen| {
             runtime.spawn(async move {
+                // The question shows no draft, so an answer changes nothing
+                // in it.
                 completer.complete(Ok(match chosen.await {
-                    Ok(tilo_action_broker::app_actions::AppActionConsent::Deny) | Err(_) => {
-                        ConfirmationReply::Deny
-                    }
-                    Ok(_) => ConfirmationReply::AllowOnce,
+                    Ok(answer) if answer.allowed() => ConfirmationReply::AllowOnce,
+                    Ok(_) | Err(_) => ConfirmationReply::Deny,
                 }));
             });
             // The question is asked once, about one invocation: nothing of it

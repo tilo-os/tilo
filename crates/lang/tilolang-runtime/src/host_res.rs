@@ -59,6 +59,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         Ty::Tuple(items) => Value::Tuple(items.iter().map(type_default).collect::<Result<_, _>>()?),
         Ty::Unit => Value::Unit,
         Ty::Record(_)
+        | Ty::Union(_)
         | Ty::Principal
         | Ty::Date
         | Ty::Time
@@ -224,6 +225,11 @@ impl Core {
         }
     }
 
+    /// The type a resource is stored as: what an item of a collection of several types is.
+    pub(crate) fn stored_type(&self, at: &ResourceRef) -> String {
+        self.store.borrow().type_of(at).unwrap_or_default()
+    }
+
     /// Check a reference read from a field. A target that is gone (removed, or not synced yet)
     /// is still a reference: it compares equal and reading its fields fails then. Only a
     /// target of another type than the reference claims is refused.
@@ -338,12 +344,21 @@ impl Core {
             (FieldKind::Text, FieldValue::Text(t)) => Ok(Value::Text(t)),
             (FieldKind::RichText, FieldValue::Rich(r)) => Ok(Value::Rich(r)),
             (FieldKind::Collection, FieldValue::Items(ids)) => {
-                let item = self.item_type(&field.ty)?;
+                let one = match inner_ty(&field.ty) {
+                    Some(Ty::Union(_)) => None,
+                    _ => Some(self.item_type(&field.ty)?.id.clone()),
+                };
                 Ok(Value::List(
                     ids.iter()
                         .map(|id| {
+                            let ty = match &one {
+                                Some(ty) => ty.clone(),
+                                None => {
+                                    self.stored_type(&target.item(&field.id, id, String::new()))
+                                }
+                            };
                             Value::Ref(RefValue {
-                                target: Rc::new(target.item(&field.id, id, item.id.clone())),
+                                target: Rc::new(target.item(&field.id, id, ty)),
                                 author: author.cloned(),
                             })
                         })
@@ -437,11 +452,15 @@ impl Core {
             // A view reads a collection item by item, as it uses it (`colls`): the field is
             // read when one of its items, its length or an end is.
             if f.kind == FieldKind::Collection && matches!(top.kind, FrameKind::View(_)) {
-                let item = self.item_type(&f.ty)?;
+                // A collection of a union's types names no one item type: each item's is its own.
+                let item = match inner_ty(&f.ty) {
+                    Some(Ty::Union(_)) => String::new(),
+                    _ => self.item_type(&f.ty)?.id.clone(),
+                };
                 return Ok(Value::Coll(Rc::new(CollRef {
                     target: Rc::clone(target),
                     field: f.id.clone(),
-                    item: item.id.clone(),
+                    item,
                     author: Some(author.clone()),
                     filter: None,
                     order: None,
@@ -556,11 +575,30 @@ impl Core {
         ret_void()
     }
 
-    fn coll_field(&self, ctx: &MutCtx) -> HResult<Rc<TypeInfo>> {
+    /// The types a collection's items may be: one, or each case of a union.
+    fn coll_field(&self, ctx: &MutCtx) -> HResult<Vec<Rc<TypeInfo>>> {
         if ctx.field.kind != FieldKind::Collection {
             return trap(format!("field `{}` is not a collection", ctx.field.name));
         }
-        Ok(self.item_type(&ctx.field.ty)?)
+        Ok(self.item_types(&ctx.field.ty)?)
+    }
+
+    /// The record types the elements of `ty` may be: its element type, or each case of a union.
+    pub(crate) fn item_types(&self, ty: &Ty) -> Result<Vec<Rc<TypeInfo>>, String> {
+        match inner_ty(ty) {
+            Some(Ty::Union(keys)) => keys.iter().map(|key| self.record_info(key)).collect(),
+            _ => Ok(vec![self.item_type(ty)?]),
+        }
+    }
+
+    fn record_info(&self, key: &tilolang::types::TypeKey) -> Result<Rc<TypeInfo>, String> {
+        let reg = self.registry.borrow();
+        let id = reg
+            .type_for(key)
+            .ok_or_else(|| format!("type `{}` is not declared by any loaded package", key.name))?;
+        reg.type_info(&id)
+            .map(|(_, t)| t)
+            .ok_or_else(|| format!("type `{}` is not loaded", key.name))
     }
 
     fn item_arg(&self, ctx: &MutCtx, item: i32) -> HResult<String> {
@@ -579,16 +617,18 @@ impl Core {
 
     fn coll_insert(&self, rh: i32, fh: i32, init: i32) -> HResult<Option<Wasm>> {
         let ctx = self.mut_ctx(rh, fh)?;
-        let item_ty = self.coll_field(&ctx)?;
+        let item_tys = self.coll_field(&ctx)?;
         let Value::Rec(rec) = self.val(init)? else {
             return trap("expected a record under construction");
         };
-        if rec.ty != item_ty.id {
+        let Some(item_ty) = item_tys.iter().find(|t| t.id == rec.ty).cloned() else {
+            let held: Vec<&str> = item_tys.iter().map(|t| t.name.as_str()).collect();
             return trap(format!(
                 "the collection holds `{}`, not `{}`",
-                item_ty.name, rec.ty
+                held.join(" | "),
+                rec.ty
             ));
-        }
+        };
         let new = crate::store::NewRecord {
             ty: item_ty.id.clone(),
             app: String::new(),
@@ -728,6 +768,17 @@ impl Core {
             Imp::RefEq => {
                 let (x, y) = (self.ref_arg(a.h(0)?)?, self.ref_arg(a.h(1)?)?);
                 ret_i32(i32::from(x.target == y.target))
+            }
+            // Whether a resource is of the type `ty` (a case of a union).
+            Imp::RefIs => {
+                let r = self.ref_arg(a.h(0)?)?;
+                let ty = self.text(a.h(1)?)?;
+                let stored = if r.target.ty.is_empty() {
+                    self.stored_type(&r.target)
+                } else {
+                    r.target.ty.clone()
+                };
+                ret_i32(i32::from(stored == ty))
             }
             Imp::RefId => {
                 let r = self.ref_arg(a.h(0)?)?;

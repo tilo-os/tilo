@@ -241,8 +241,10 @@ fn fit_of(node: &UiNode) -> Fit {
 fn placement(parent: &UiNode, child: &UiNode) -> Placement {
     let mut fit = fit_of(child);
     // Beside siblings in a row, a container takes the room they leave rather than hugging
-    // its content, so what it holds lays out in the width the row offers.
+    // its content, so what it holds lays out in the width the row offers. A row that wraps
+    // flows its items at their own width instead, as chips and tags do.
     if parent.kind == "row"
+        && !flag(parent, "wrap")
         && (is_container(&child.kind) || child.kind == "embed")
         && number(child, "fill").is_none()
     {

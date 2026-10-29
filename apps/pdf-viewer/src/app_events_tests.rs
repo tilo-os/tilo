@@ -118,10 +118,7 @@ impl Rig {
     /// Arm `tool` from its item in the window bar's Tools menu, and assert
     /// it is armed.
     fn arm_via_window_bar(&mut self, tool: Tool, why: &str) {
-        self.app
-            .run_window_bar_event(&ui::window_toolbar::ToolbarEvent::Action {
-                id: super::window_bar::tool_id(tool),
-            });
+        self.app.press_bar(tool.label());
         assert_eq!(self.app.tool, tool, "{why}");
     }
 
@@ -823,20 +820,14 @@ fn inline_editor_commits_replies_discards_empty_notes_and_handles_clipboard_chor
 #[test]
 #[serial(pdfium)]
 fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
-    let open = || ui::window_toolbar::ToolbarEvent::Action {
-        id: super::window_bar::OPEN.into(),
-    };
     let (mut app, _) = sample_app();
     assert!(
-        app.window_toolbar()
-            .actions
-            .iter()
-            .any(|action| action.id == super::window_bar::OPEN && action.enabled),
+        app.bar_entry("Open PDF").enabled,
         "the window bar offers Open"
     );
     let (services, recorder) = ui::host::HostServices::recording();
     ui::host::scoped(&services, || {
-        app.run_window_bar_event(&open());
+        app.press_bar("Open PDF");
     });
     assert!(
         app.portal_rx.is_some(),
@@ -859,14 +850,11 @@ fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
     // With no document open the bar's menu still offers Open.
     assert!(
-        app.window_toolbar()
-            .actions
-            .iter()
-            .any(|action| action.id == super::window_bar::OPEN && action.enabled),
+        app.bar_entry("Open PDF").enabled,
         "the bar offers Open with no document"
     );
     ui::host::scoped(&services, || {
-        app.run_window_bar_event(&open());
+        app.press_bar("Open PDF");
     });
     app.sync_settled(&mut st.doc, &st.root);
     assert!(
@@ -891,7 +879,7 @@ fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
     let (services, recorder) = ui::host::HostServices::recording();
     recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
     ui::host::scoped(&services, || {
-        app.run_window_bar_event(&open());
+        app.press_bar("Open PDF");
     });
     assert!(
         app.portal_rx.is_some(),

@@ -30,7 +30,7 @@ use std::sync::Arc;
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueQuery,
-    Confirmation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_agent_participant::room_actions::RoomMember;
 use tilo_agent_participant::{
@@ -268,7 +268,7 @@ impl ActionHost for RelayWitness {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
-    ) -> Pending<Result<Confirmation, ActionHostError>> {
+    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
         let question = match self.question(caller, request) {
             Ok(question) => question,
             Err(error) => return Pending::ready(Err(error)),
@@ -278,7 +278,10 @@ impl ActionHost for RelayWitness {
         self.runtime.spawn(async move {
             let token = hex::encode(question.id);
             completer.complete(match certification.confirm(question).await {
-                Ok(ConfirmationAnswer::AllowOnce) => Ok(Confirmation::Witnessed(token)),
+                // The question shows no draft, so nothing in it is changed.
+                Ok(ConfirmationAnswer::AllowOnce) => Ok(ConfirmedInvocation::unchanged(
+                    Confirmation::Witnessed(token),
+                )),
                 Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
                 Err(_) => Err(ActionHostError::ConfirmationRequired),
             });

@@ -174,8 +174,8 @@ fn accept(
     from_user_id: impl FnOnce(&CrdtRoute) -> String,
 ) {
     let artifact = envelope.artifact;
-    if let Ok(mut ch) = channels.lock() {
-        ch.record_history(route, &envelope);
+    let unsynced = channels.lock().ok().map(|mut ch| {
+        let unsynced = ch.record_history(route, &envelope);
         let state = ch.state_for(artifact);
         state.record_validated_op(envelope.clone());
         if envelope.kind == OpKind::Compaction
@@ -183,6 +183,12 @@ fn accept(
         {
             let _ = state.apply_compaction(&cp);
         }
+        unsynced
+    });
+    // Synced outside the channels' lock, which the main loop takes too, and
+    // before the op goes on to the apps.
+    if let Some(unsynced) = unsynced {
+        unsynced.finish();
     }
     if envelope.kind == OpKind::Redaction {
         apply_redaction_from_envelope(&envelope, artifact, channels);
