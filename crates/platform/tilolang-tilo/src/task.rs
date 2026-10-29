@@ -454,7 +454,12 @@ impl TaskStore {
             return Ok(Rc::clone(known));
         }
         let app = self.app_of(at)?;
-        let answer = self.door.read(&app, &id).map_err(StoreError::NotFound)?;
+        // A read that did not reach the app fails the program; one the app answered that it
+        // holds no such resource is a resource that is not there.
+        let answer = self.door.read(&app, &id).map_err(StoreError::Backend)?;
+        if answer.get("missing").is_some() {
+            return Err(StoreError::NotFound(format!("{app} holds no {id}")));
+        }
         let read = Rc::new(read_of(&answer).map_err(StoreError::Backend)?);
         self.reads.borrow_mut().known.insert(id, Rc::clone(&read));
         Ok(read)
@@ -677,15 +682,19 @@ fn read_of(answer: &Json) -> Result<Read, String> {
 
 impl Host {
     /// The resource `item` (its id in its record), as a task's host reads it: its type and
-    /// every field as stored, by field id. The app's half of a task's read; what the task may
-    /// read the door decided before it asked.
+    /// every field as stored, by field id, or `{"missing": true}` when the room holds no such
+    /// resource. The app's half of a task's read; what the task may read the door decided
+    /// before it asked.
     ///
     /// # Errors
     /// The item names nothing in this room.
     pub fn read_values(&self, item: &str) -> Result<Json, String> {
         let unknown = || format!("no resource `{item}` in this room");
         let probe = ResourceRef::parse_id(item, String::new()).ok_or_else(unknown)?;
-        let ty = self.store().type_of(&probe).map_err(|_| unknown())?;
+        let Ok(ty) = self.store().type_of(&probe) else {
+            // Not there (a root nobody made yet reads as empty): said, not failed.
+            return Ok(json!({"missing": true}));
+        };
         let at = ResourceRef { ty, ..probe };
         let specs = self.runtime().field_specs(&at.ty).ok_or_else(unknown)?;
         let mut fields = serde_json::Map::new();

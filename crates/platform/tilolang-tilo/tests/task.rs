@@ -192,3 +192,26 @@ fn a_refused_invocation_is_never_done() {
     assert_eq!(tried["state"], "done", "{tried:#}");
     assert_eq!(tried["output"], json!(["renamed"]), "{tried:#}");
 }
+
+#[test]
+fn what_cannot_be_read_is_an_error_never_nothing() {
+    let mut apps = Apps::new(&[&[NOTES], &[TODO]]);
+    apps.unreachable = vec![(TODO_APP, "todo is not open")];
+    let door = Rc::new(apps);
+    let session = door.task();
+    for source in [
+        "todo.todos.items.len()",
+        "print(todo.todos.items.len())",
+        "todo.todos.items",
+    ] {
+        let answer = session.run(source, false);
+        assert_eq!(answer["state"], "failed", "{source}: {answer:#}");
+        assert!(
+            answer["detail"]
+                .as_str()
+                .unwrap()
+                .contains("todo is not open"),
+            "{source}: {answer:#}"
+        );
+    }
+}

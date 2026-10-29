@@ -27,6 +27,8 @@ pub struct Apps {
     pub invoked: RefCell<Vec<Json>>,
     /// Actions whose invocations the policy refuses.
     pub refused: Vec<&'static str>,
+    /// Apps the door cannot reach (not open), and why.
+    pub unreachable: Vec<(&'static str, &'static str)>,
 }
 
 impl Apps {
@@ -69,6 +71,7 @@ impl Apps {
             bundles,
             invoked: RefCell::default(),
             refused: Vec::new(),
+            unreachable: Vec::new(),
         }
     }
 
@@ -91,6 +94,9 @@ impl Apps {
 
 impl TaskDoor for Apps {
     fn read(&self, app: &str, item: &str) -> Result<Json, String> {
+        if let Some((_, why)) = self.unreachable.iter().find(|(gone, _)| *gone == app) {
+            return Err((*why).to_owned());
+        }
         self.replica(app).host.read_values(item)
     }
 
