@@ -87,8 +87,6 @@ enum Cmd {
     /// certifying only the browsers its operator admits on stdin.
     #[cfg(feature = "web")]
     Room(Box<web_cli::RoomArgs>),
-    /// Print current metrics + hosted workspace list.
-    Status,
     /// Seal what the rooms whose channels this relay takes part in hold in the clear, and check
     /// every record of them: nothing left in the clear, no change lost.
     /// Fails when a record is not sealed whole.
@@ -167,7 +165,6 @@ fn run() -> anyhow::Result<()> {
         Cmd::Room(args) => {
             tilo_rt::daemon("tilo-relay").run(web_cli::room(*args, wait_for_shutdown()))?
         }
-        Cmd::Status => cmd_status(&cli.config),
         #[cfg(feature = "agents")]
         Cmd::Reseal {
             scratch,
@@ -245,50 +242,6 @@ fn cmd_init(path: &std::path::Path) -> anyhow::Result<()> {
     cfg.save(path)
         .with_context(|| format!("save {}", path.display()))?;
     println!("wrote default config: {}", path.display());
-    Ok(())
-}
-
-fn cmd_status(path: &Path) -> anyhow::Result<()> {
-    let cfg = load_or_default(path)?;
-    println!(
-        "tilo-relay {} (config: {})",
-        tilo_relay::VERSION,
-        path.display()
-    );
-    println!("identity_root: {}", cfg.identity_root.display());
-    println!("state_root:    {}", cfg.state_root.display());
-    println!("full replica:  {}", cfg.full_replica_status.display());
-    println!("iroh_listen:   {}", cfg.iroh_listen);
-    match std::fs::read(&cfg.full_replica_status)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-    {
-        Some(status) => println!(
-            "full_content_replication: {}",
-            status
-                .get("full_content_replication")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false)
-                && status.get("state").and_then(serde_json::Value::as_str) == Some("ready")
-        ),
-        None => println!("full_content_replication: false"),
-    }
-    if let Some(metrics) = tilo_relay::store::load_metrics(&cfg.state_root)? {
-        println!(
-            "connections: {}/{} authenticated",
-            metrics.conns_authed, metrics.conns_accepted
-        );
-        println!("auth rejected: {}", metrics.auth_rejected);
-        println!(
-            "deltas: {} received, {} fanned out",
-            metrics.deltas_received, metrics.deltas_fanned_out
-        );
-        println!("bytes queued: {}", metrics.bytes_queued);
-        println!(
-            "bytes sent: {} ({} live fan-out)",
-            metrics.bytes_sent, metrics.bytes_sent_live
-        );
-    }
     Ok(())
 }
 

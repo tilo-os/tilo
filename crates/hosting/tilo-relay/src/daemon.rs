@@ -121,7 +121,7 @@ struct Planes {
     /// Answers remote-action frames addressed to this host, see
     /// [`Relay::start_with_app_serving`].
     app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
-    /// Classifies co-edit bodies, see [`Relay::start_with_shell_payloads`].
+    /// Classifies co-edit bodies.
     shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
 }
 
@@ -359,39 +359,6 @@ impl Relay {
             None,
             Vec::new(),
             Planes::desktop(app_serving),
-            Arc::new(tilo_clock::SystemClock),
-        ))
-        .await
-    }
-
-    /// [`Relay::start`], asking `shell_payloads` what the host may know
-    /// about opaque co-edit bodies instead of the desktop's
-    /// [`NeighbourPayloads`](crate::payloads::NeighbourPayloads).
-    ///
-    /// The adapter decides document compaction, retained-checkpoint
-    /// replacement, continuity evidence, surface admission and the live
-    /// checkpoint gate for every workspace this relay opens. Data retained
-    /// under one adapter must be served by the same one: its verdicts are
-    /// reproduced from the stored bytes after a restart.
-    ///
-    /// # Errors
-    ///
-    /// The same as [`Relay::start`].
-    pub async fn start_with_shell_payloads(
-        cfg: RelayConfig,
-        identity: RelayIdentity,
-        shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
-    ) -> Result<Self, RelayError> {
-        Box::pin(Self::start_inner(
-            cfg,
-            identity,
-            None,
-            None,
-            Vec::new(),
-            Planes {
-                app_serving: None,
-                shell_payloads,
-            },
             Arc::new(tilo_clock::SystemClock),
         ))
         .await
