@@ -451,29 +451,8 @@ fn apply_one(
                 doc.put(&held, "owner", owner.as_str())?;
             }
         }
-        DynEdit::OutboxSettle {
-            id,
-            entry,
-            outcome,
-            reason,
-        } => {
-            if let Some(held) = outbox_entry(doc, &app, id, entry)? {
-                doc.put(&held, "settled", outcome.as_str())?;
-                if !reason.is_empty() {
-                    doc.put(&held, "reason", reason.as_str())?;
-                }
-            }
-        }
-        DynEdit::OutboxMark {
-            id,
-            entry,
-            state,
-            detail,
-        } => {
-            if let Some(held) = outbox_entry(doc, &app, id, entry)? {
-                doc.put(&held, "state", state.as_str())?;
-                doc.put(&held, "detail", detail.as_str())?;
-            }
+        DynEdit::OutboxSettle { .. } | DynEdit::OutboxMark { .. } => {
+            write_outbox_entry(doc, &app, edit)?;
         }
         DynEdit::Migrated { id, migration } => mark_migrated(doc, &app, id, migration)?,
         DynEdit::In { .. } => {}
@@ -709,6 +688,42 @@ impl StoredEntry {
                 .map(|outcome| (outcome, self.reason.as_str())),
         )
     }
+}
+
+/// Record how an outbox entry was settled, or where it is before it settles.
+fn write_outbox_entry(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    edit: &DynEdit,
+) -> Result<(), automerge::AutomergeError> {
+    match edit {
+        DynEdit::OutboxSettle {
+            id,
+            entry,
+            outcome,
+            reason,
+        } => {
+            if let Some(held) = outbox_entry(doc, app, id, entry)? {
+                doc.put(&held, "settled", outcome.as_str())?;
+                if !reason.is_empty() {
+                    doc.put(&held, "reason", reason.as_str())?;
+                }
+            }
+        }
+        DynEdit::OutboxMark {
+            id,
+            entry,
+            state,
+            detail,
+        } => {
+            if let Some(held) = outbox_entry(doc, app, id, entry)? {
+                doc.put(&held, "state", state.as_str())?;
+                doc.put(&held, "detail", detail.as_str())?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// The map of the entry `entry` queued on the resource `id` under the app's map `app`.

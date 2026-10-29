@@ -2851,7 +2851,7 @@ impl Store for TiloStore {
 impl TiloStore {
     /// Write `edit` of the outbox entry `entry` as a change of its own, noted as `note`.
     fn write_outbox(
-        &mut self,
+        &self,
         entry: &OutboxEntry,
         edit: DynEdit,
         seed: Vec<u8>,

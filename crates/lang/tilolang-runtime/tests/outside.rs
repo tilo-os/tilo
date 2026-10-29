@@ -101,20 +101,31 @@ mod cases {
         // The server cannot be reached: it waits, and is not tried again on its own.
         assert_eq!(w.rt.settle().unwrap().waiting, 1);
         for _ in 0..3 {
-            assert_eq!(w.rt.settle().unwrap(), Default::default(), "it waits");
+            assert_eq!(
+                w.rt.settle().unwrap(),
+                tilolang_runtime::SettleReport::default(),
+                "it waits"
+            );
         }
         assert_eq!(sink.0.borrow().len(), 2, "handed over once");
         // The network came back: marked again, handed over, no answer yet, then refused.
         w.rt.retry_waiting();
         assert_eq!(w.rt.settle().unwrap().marked, 1);
-        assert_eq!(w.rt.settle().unwrap(), Default::default(), "no answer yet");
+        assert_eq!(
+            w.rt.settle().unwrap(),
+            tilolang_runtime::SettleReport::default(),
+            "no answer yet"
+        );
         let report = w.rt.settle().unwrap();
         assert_eq!(
             report.failed,
             vec![(report.failed[0].0.clone(), "mailbox unavailable".to_owned())]
         );
         assert!(w.rt.pending_outbox().is_empty(), "a refusal is final");
-        assert_eq!(w.rt.settle().unwrap(), Default::default());
+        assert_eq!(
+            w.rt.settle().unwrap(),
+            tilolang_runtime::SettleReport::default()
+        );
     }
 
     #[test]

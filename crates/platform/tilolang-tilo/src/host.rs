@@ -613,11 +613,14 @@ impl Host {
             .runtime
             .settle()
             .map(|report| {
-                report.delivered
-                    + report.failed.len()
-                    + report.marked
-                    + report.waiting
-                    + report.unknown
+                [
+                    report.failed.len(),
+                    report.marked,
+                    report.waiting,
+                    report.unknown,
+                ]
+                .into_iter()
+                .fold(report.delivered, usize::saturating_add)
             })
             .map_err(|error| error.to_string())
     }

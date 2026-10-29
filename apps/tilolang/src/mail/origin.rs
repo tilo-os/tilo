@@ -140,6 +140,19 @@ impl ImapOrigin {
         }
     }
 
+    /// Online again, when it is: each server that could not be reached is asked what changed,
+    /// and what waits to go online is sent. Whether the outbox is to be settled.
+    fn reconnect(&mut self, host: &Host) -> bool {
+        if !self.reconnected.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        for account in self.trouble.keys() {
+            self.due.push((account.clone(), "inbox".to_owned()));
+        }
+        host.runtime().retry_waiting();
+        true
+    }
+
     /// This origin, trying again what could not reach its server whenever `reconnected` is set
     /// (the device came online again) and it is woken.
     #[must_use]
@@ -840,15 +853,7 @@ impl Origin for ImapOrigin {
             polled.wrote = true;
         }
         polled.wrote |= self.add_accounts(cx.host, &cx.now);
-        if self.reconnected.swap(false, Ordering::AcqRel) {
-            // Online again: each server that could not be reached is asked what changed, and
-            // what waits to go online is sent.
-            for account in self.trouble.keys() {
-                self.due.push((account.clone(), "inbox".to_owned()));
-            }
-            cx.host.runtime().retry_waiting();
-            polled.settle = true;
-        }
+        polled.settle |= self.reconnect(cx.host);
         for (account, mailbox) in std::mem::take(&mut self.due) {
             let _ = self.connector.changes(&account, &mailbox);
         }

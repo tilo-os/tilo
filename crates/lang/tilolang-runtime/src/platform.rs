@@ -134,6 +134,24 @@ struct Offered<'m> {
 }
 
 impl Core {
+    /// `delivery(r)` of the document `doc`: how its last outside effect stands, as the host
+    /// last said; a view that read it runs again when that moves.
+    fn delivery_of(&self, doc: &str) -> HResult<Value> {
+        let key = delivery_key(doc);
+        let (value, generation) = {
+            let states = self.view_states.borrow();
+            (
+                states
+                    .get(&key)
+                    .cloned()
+                    .map_or_else(Value::none, Value::some),
+                states.generation(&key),
+            )
+        };
+        self.note_state_read(key, generation, &value)?;
+        Ok(value)
+    }
+
     /// `dated(text, at)`: when `text` says something is due, read at the time `at` in the
     /// person's zone, as a `host.Dated` tuple of the rest of the text, the day and the moment.
     fn dated(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
@@ -167,18 +185,7 @@ impl Core {
             }
             Imp::Delivery => {
                 let target = self.ref_arg(a.h(0)?)?;
-                let key = delivery_key(&target.target.doc);
-                let (value, generation) = {
-                    let states = self.view_states.borrow();
-                    (
-                        states
-                            .get(&key)
-                            .cloned()
-                            .map_or_else(Value::none, Value::some),
-                        states.generation(&key),
-                    )
-                };
-                self.note_state_read(key, generation, &value)?;
+                let value = self.delivery_of(&target.target.doc)?;
                 self.ret_h(value)
             }
             Imp::Lenses => {
