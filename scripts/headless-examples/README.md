@@ -110,9 +110,9 @@ Error codes that show up in normal use:
 
 ## Offscreen rendering and recordings
 
-- **For golden-image / regression tests**: use `cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots -- --mode offscreen --out target/<dir>` for deterministic scenario output.
-- **For video walkthroughs**: use `cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots -- --mode recording --scenario <name> --out file.h264`.
-- **For a windowed preview**: use `cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots -- --mode window`.
+- **For golden-image / regression tests**: use `cargo run -p shell --features hosted-test-control,test-support --bin shots -- --mode offscreen --out target/<dir>` for deterministic scenario output.
+- **For video walkthroughs**: use `cargo run -p shell --features hosted-test-control,test-support --bin shots -- --mode recording --scenario <name> --out file.h264`.
+- **For a windowed preview**: use `cargo run -p shell --features hosted-test-control,test-support --bin shots -- --mode window`.
 
 ## Further reading
 

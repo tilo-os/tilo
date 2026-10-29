@@ -48,20 +48,6 @@ dev-overrides = ["tilo-identity-host/throwaway-test-identity"]
 # machine an agent drives (no local person, no lock screen). Non-default and
 # independent of `dev-overrides`; desktop and OS images never enable it.
 agent-control = []
-# Draw the packaged first-party apps (Terminal, Files, Notes, Editor, Word,
-# Browser, Activity) inside this process, from their
-# crates: what the macOS runner, the `shots` captures and the tests that
-# drive those apps through the shell need. The Wayland session runs them as
-# their own processes, so its compositor is built without them.
-in-process-apps = [
-    "dep:terminal",
-    "dep:browser",
-    "dep:notes",
-    "dep:activity",
-    "dep:code-editor",
-    "dep:word-processor",
-    "dep:osk",
-]
 
 # Binaries the integration tests start, with no tests of their own: without
 # `test = false` every shell change also compiled and linked an empty test
@@ -73,11 +59,11 @@ test = false
 bench = false
 
 # The deterministic screenshot renderer drives the shell through its test
-# seams, and draws the apps the shell shows inside its own process.
+# seams.
 [[bin]]
 name = "shots"
 path = "src/bin/shots/main.rs"
-required-features = ["hosted-test-control", "in-process-apps", "test-support"]
+required-features = ["hosted-test-control", "test-support"]
 
 [[bin]]
 name = "tilo-runtime-mcp"
@@ -223,20 +209,12 @@ tilo-cli-kit = { path = "../../runtime/cli" }
 # Search: the launcher the shell hosts as its search surface, always: it is
 # the shell's own surface, not a user app.
 launcher-app = { path = "../../../apps/launcher" }
-terminal = { path = "../../../apps/terminal", optional = true }
-messages = { path = "../../../apps/messages" }
-passwords = { path = "../../../apps/passwords" }
 tilo-messaging = { path = "../../platform/tilo-messaging" }
 accounts = { path = "../../system/accounts" }
 tilo-contact-directory = { path = "../../platform/tilo-contact-directory" }
-# The messaging service's door and the client Messages shown here uses.
+# The messaging service's door.
 tilo-messaging-service = { path = "../messaging-service", default-features = false }
 file-explorer = { path = "../../../apps/file-explorer" }
-browser = { path = "../../../apps/browser", optional = true }
-notes = { path = "../../../apps/notes", optional = true }
-activity = { path = "../../../apps/activity", optional = true }
-code-editor = { path = "../../../apps/code-editor", optional = true }
-word-processor = { path = "../../../apps/word-processor", optional = true }
 # The tracker's record, read for the runs of issues assigned to agents.
 tasks = { path = "../../../apps/tasks" }
 # The document-format registry. The shell asks it whether a path is an
@@ -358,7 +336,6 @@ tilo-callstream = { path = "../../collab/tilo-callstream", features = ["surface-
 # The on-screen keyboard's widget, which the `shots` capture draws in place of
 # the keyboard client's surface (it has no clients) and which reads the input
 # method's content type the way the keyboard app does.
-osk = { path = "../../../apps/osk", optional = true }
 # `firstboot` provisions a fresh single-device identity at first login
 # via `threshold-identity::ThresholdIdentity::bootstrap_single_device_seed`,
 # which yields the raw dalek-compatible seed + pubkey that the
@@ -474,8 +451,6 @@ app-fleet = { path = "../../packaging/app-fleet" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# Tests, examples and benches drive the apps the shell can draw itself.
-shell = { path = ".", features = ["in-process-apps"] }
 # The hooks the network tests reach the actor through.
 tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 # The calibrated test panels the presenter tests render through.
@@ -522,8 +497,13 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony", features = ["test-support"] }
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
-# The hosted-terminal tests tee its PTY writes in any profile.
-terminal = { path = "../../../apps/terminal", features = ["test-support"] }
+# Real app content for the frame's measurements.
+notes = { path = "../../../apps/notes" }
+# Apps the network tests run as their own windows on a hosted room.
+word-processor = { path = "../../../apps/word-processor" }
+code-editor = { path = "../../../apps/code-editor" }
+# The input-method wire test reads the protocol as the on-screen keyboard does.
+osk = { path = "../../../apps/osk" }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A browser in the room a node governs, for the node's own session to share
 # sealed records with.

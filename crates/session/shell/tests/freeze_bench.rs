@@ -47,36 +47,6 @@ fn placeholder_group(kind: ui::widget::AppKind, label: &str) -> WindowGroup {
 
 #[test]
 #[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
-fn terminal_first_sync_crdt_cost() {
-    // The actual drop freeze: a terminal's first sync/handle_event lazily
-    // populates its grid into the shared Automerge doc (`init_crdt` ->
-    // `ensure_lines`).
-    use automerge::{AutoCommit, ROOT};
-    use terminal::TerminalWidget;
-    use ui::widget::Widget;
-
-    // Explicit fixture process: a populated PTY without login startup files.
-    let mut command = terminal::CommandBuilder::new("/bin/sh");
-    command.arg("-c");
-    command.arg("printf 'fixture terminal ready\\r\\n$ '");
-    let mut w = TerminalWidget::spawn_command(command).expect("fixture PTY");
-    std::thread::sleep(std::time::Duration::from_millis(300));
-
-    // Fresh shared doc (like the compositor's `test_control_ctx.doc`).
-    let doc = AutoCommit::new();
-    let first = ms(|| {
-        Widget::sync(&mut w, &doc, &ROOT);
-    });
-    let second = ms(|| {
-        Widget::sync(&mut w, &doc, &ROOT);
-    });
-    println!("--- terminal first-sync CRDT populate (the drop freeze) ---");
-    println!("  first  sync (init_crdt): {first:8.2} ms");
-    println!("  second sync (idempotent):{second:8.2} ms");
-}
-
-#[test]
-#[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
 fn rematerialize_group_cost() {
     let inputs = shell::shell::hosted_inputs::HostedTileInputs::fixture().unwrap();
     // Warm the OS caches once so we measure steady-state, not first-touch.

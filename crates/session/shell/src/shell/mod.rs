@@ -873,36 +873,6 @@ impl tilo_desktop::resolver::TileResolver for NativeTileResolver<'_> {
     }
 }
 
-/// Mount Terminal in `tab`, lent the window it is shown in: where it says
-/// where its shell runs (the bar's location) and closes its tab when the
-/// shell exits.
-#[cfg(feature = "in-process-apps")]
-fn mount_terminal(
-    apps: &mut in_process::InProcessApps,
-    room: &str,
-    tab: u64,
-    inputs: &hosted_inputs::HostedTileInputs,
-) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
-    let window = apps.hosted_window(tab);
-    apps.mount(
-        terminal::definition(),
-        room,
-        tab,
-        ui::record::RecordId::for_tab(tab),
-        |context| {
-            context.lend(window);
-            // Only a real session's terminals open sessions; a test's or a
-            // capture's show a terminal with none.
-            if inputs.opens_sessions() {
-                // Discovery and connect belong to the open worker, too.
-                context.lend(terminal::HostedSessionSource);
-            } else {
-                context.lend(terminal::HostedProcessServices::unavailable());
-            }
-        },
-    )
-}
-
 fn mount_private_feedback(
     apps: &mut in_process::InProcessApps,
     room: &str,
@@ -917,8 +887,10 @@ fn mount_private_feedback(
     )
 }
 
-/// The tab as a component this process draws: the shell's own feedback, or
-/// a packaged app where the host draws its apps itself ([`mount_app`]).
+/// The tab as a component this process draws: the shell's own feedback.
+/// Every packaged app runs as its own process: its tab becomes the app's
+/// window (`tab_binding::reopen_app_tabs_as_processes`) and holds the place
+/// until then.
 pub fn mount_in_process(
     request: &tilo_desktop::resolver::TileRequest<'_>,
     inputs: &hosted_inputs::HostedTileInputs,
@@ -928,39 +900,25 @@ pub fn mount_in_process(
     let ShellTile::AppPlaceholder { kind, .. } = &request.tab.tile else {
         return None;
     };
-    // The app runs as its own process here: the tab becomes its window
-    // (`tab_binding::reopen_app_tabs_as_processes`) and holds the place
-    // until then.
-    if inputs.apps_as_processes() && tab_binding::own_process_package(kind).is_some() {
-        return Some(TileResolution::Opening);
-    }
     let room = request.room.to_string();
-    let tab = request.tab.id;
     let mounted = match kind {
         ShellKind::Other(name) if name.eq_ignore_ascii_case(tilo_desktop::feedback::KIND) => {
-            mount_private_feedback(&mut apps.borrow_mut(), &room, tab)
+            mount_private_feedback(&mut apps.borrow_mut(), &room, request.tab.id)
         }
-        // Messages and Passwords borrow what only the session holds: the
-        // person's messaging accounts and their credential owner. They are
-        // drawn here in every session until those are served to the apps'
-        // own processes.
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Messages") => apps.borrow_mut().mount(
-            messages::definition(),
+        // The frame's own tests measure it drawing real app content: a
+        // Notes tab there shows Notes' widgets.
+        #[cfg(test)]
+        ShellKind::Other(name) if name.eq_ignore_ascii_case("Notes") => apps.borrow_mut().mount(
+            notes::definition(),
             &room,
-            tab,
-            ui::record::RecordId::room_default(),
+            request.tab.id,
+            ui::record::RecordId::for_tab(request.tab.id),
             |_| {},
         ),
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Passwords") => {
-            apps.borrow_mut().mount(
-                passwords::definition(),
-                &room,
-                tab,
-                ui::record::RecordId::room_default(),
-                |_| {},
-            )
+        _ if tab_binding::own_process_package(kind).is_some() => {
+            return Some(TileResolution::Opening);
         }
-        _ => mount_app(apps, kind, &room, tab, inputs)?,
+        _ => return None,
     };
     Some(match mounted {
         Ok(component) => {
@@ -972,104 +930,6 @@ pub fn mount_in_process(
         Err(error) if error.is_opening() => TileResolution::Opening,
         Err(error) => TileResolution::Failed(error),
     })
-}
-
-/// The tab as the packaged app's own component, drawn in this process: the
-/// terminal on its tab's record, opening sessions through the session's
-/// process supervisor; Files on the room's record of places, starting where
-/// the shell says and opening documents through the shell; the browser on
-/// the room's record of its bookmarks and settings. `None` for a kind no
-/// such app answers to.
-#[cfg(feature = "in-process-apps")]
-fn mount_app(
-    apps: &in_process::SharedInProcessApps,
-    kind: &ShellKind,
-    room: &str,
-    tab: u64,
-    inputs: &hosted_inputs::HostedTileInputs,
-) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
-    let room = room.to_owned();
-    Some(match kind {
-        ShellKind::Terminal => mount_terminal(&mut apps.borrow_mut(), &room, tab, inputs),
-        ShellKind::FileExplorer => {
-            let startup = inputs.files_for_tab(tab).or_else(|| inputs.files.clone());
-            // Without a starting place the shell names, only a Linux
-            // session lets Files start at the person's home.
-            if startup.is_none() && (inputs.is_fixture() || !cfg!(target_os = "linux")) {
-                return None;
-            }
-            let services = inputs.file_services().cloned();
-            apps.borrow_mut().mount(
-                file_explorer::definition(),
-                &room,
-                tab,
-                ui::record::RecordId::room_default(),
-                |context| {
-                    if let Some(startup) = startup {
-                        context.lend(startup);
-                    }
-                    if let Some(services) = services {
-                        context.lend(services);
-                    }
-                },
-            )
-        }
-        ShellKind::Browser => apps.borrow_mut().mount(
-            browser::definition(),
-            &room,
-            tab,
-            ui::record::RecordId::room_default(),
-            |_| {},
-        ),
-        // Every Notes tab is a notebook of its own, on the tab's record.
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Notes") => apps.borrow_mut().mount(
-            notes::definition(),
-            &room,
-            tab,
-            ui::record::RecordId::for_tab(tab),
-            |_| {},
-        ),
-        // Every Word tab is a document of its own, on the tab's record.
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Word") => apps.borrow_mut().mount(
-            word_processor::definition(),
-            &room,
-            tab,
-            ui::record::RecordId::for_tab(tab),
-            |_| {},
-        ),
-        // An Editor tab opened on a file is the editor's project of that
-        // file, which the editor reads from disk itself; one opened on
-        // nothing is a project of the tab's own.
-        ShellKind::Other(name) if name.eq_ignore_ascii_case("Editor") => {
-            let (record, arguments) = match inputs.document(tab) {
-                Some(hosted_inputs::HostedDocumentState::Ready(document)) => (
-                    code_editor::launch_record(&document.path)
-                        .unwrap_or_else(|| ui::record::RecordId::for_tab(tab)),
-                    vec![document.path.display().to_string()],
-                ),
-                // The tile says why the file is not there.
-                Some(hosted_inputs::HostedDocumentState::Unavailable { .. }) => return None,
-                None => (ui::record::RecordId::for_tab(tab), Vec::new()),
-            };
-            apps.borrow_mut()
-                .mount(code_editor::definition(), &room, tab, record, |context| {
-                    context.provide_launch_arguments(arguments);
-                })
-        }
-        _ => return None,
-    })
-}
-
-/// Built without the apps it could draw itself, the shell draws none.
-#[cfg(not(feature = "in-process-apps"))]
-fn mount_app(
-    _apps: &in_process::SharedInProcessApps,
-    _kind: &ShellKind,
-    _room: &str,
-    _tab: u64,
-    _inputs: &hosted_inputs::HostedTileInputs,
-) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
-    None
 }
 
 /// Spacing of the strip column under the top bar: a small step between the

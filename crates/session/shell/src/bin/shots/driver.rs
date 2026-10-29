@@ -601,30 +601,11 @@ impl ShellDriver {
         self.dispatch(&event);
     }
 
-    /// Type a literal string — one `Key::Character` event per non-control
-    /// character. Triggers the same `handle_event` path the live binary's
-    /// keyboard handler does. Caller is expected to have opened an
-    /// input target (palette, name editor, etc.) first.
-    /// Write `text` to the active Terminal window as its session's output.
-    ///
-    /// # Errors
-    /// No Terminal window is active.
-    pub fn feed_active_terminal(&mut self, text: &str) -> Result<(), String> {
-        self.fb.feed_active_terminal_for_shots(text.as_bytes())
-    }
-
     /// What the active window's focused field asks an input method for, read
     /// off the live widget tree as the compositor reads it off the wire.
     #[cfg(feature = "hosted-test-control")]
     pub fn active_ime_content_for_shots(&self) -> Option<ui::ime::InputContent> {
         self.fb.active_ime_content_for_shots()
-    }
-
-    /// Draw the on-screen keyboard in the frame, in the layout `content`'s
-    /// purpose asks for; `None` puts it away.
-    #[cfg(feature = "hosted-test-control")]
-    pub fn set_shots_keyboard(&mut self, content: Option<ui::ime::InputContent>) {
-        self.fb.set_shots_keyboard(content);
     }
 
     pub fn type_str(&mut self, s: &str) {

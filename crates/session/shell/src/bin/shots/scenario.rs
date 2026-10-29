@@ -36,7 +36,6 @@ mod desk_gestures;
 mod display_brightness;
 mod file_chooser;
 pub mod film;
-mod keyboard;
 mod launcher;
 mod motion_gallery;
 mod motion_review;
@@ -247,17 +246,6 @@ pub enum Action {
         surface_id: u64,
         rgba: [u8; 4],
     },
-    /// The active Terminal window's session prints lines `from..=to`.
-    TerminalPrints {
-        from: u32,
-        to: u32,
-    },
-    /// The on-screen keyboard rises over the focused text field, as the
-    /// compositor shows it on a touch screen: the real keyboard app, laid
-    /// out at the panel the shell gives it and in the purpose the focused
-    /// field asks for. `None` takes the field that already has focus;
-    /// `Some(field)` taps that field first.
-    ShowKeyboard(Option<OskField>),
     /// The text the active field holds, as the person typing it left it.
     Typed(&'static str),
     /// Seed real collaborative room changes, a second person's among them.
@@ -530,15 +518,6 @@ pub enum Action {
     /// scenario can set up the "lone window selected" shape rather than
     /// the four-tab group the default workspace boots with.
     LoneWindow(usize),
-    /// Replace one live shell-hosted window with a long Notes document. This
-    /// exercises complete semantic App capture through the same provider and
-    /// shared card path used by the shell, without typing hundreds of
-    /// deterministic key events into the visual harness.
-    SeedLongNotes(usize),
-    /// Merge changes Ada and her agent made into the long note
-    /// [`Action::SeedLongNotes`] put in the `idx`-th group, as their replicas
-    /// send them: the note's History then lists who did what, and when.
-    SeedNoteHistory(usize),
     /// Resize every window in the active strip to `permille` of the
     /// display's usable width — what dragging the resize handles gets
     /// you.
@@ -608,9 +587,8 @@ pub enum Action {
     /// A shell-side cue or set-up step of the films; see [`film::Step`].
     Step(film::Step),
     /// Open `app` as a window of its own, `width` per mille of the display
-    /// wide, as every app runs on a device: its surface shows the frames it
-    /// draws in a frame of its own, and the window's bar reaches it only over
-    /// its shell-ui connection. Needs the shell's `test-support` feature.
+    /// wide, as every app runs on a device: the window's frame, adopted as a
+    /// client's toplevel is. The app's own pixels come from its process.
     OwnProcessWindow {
         app: OwnApp,
         width: u32,
@@ -634,8 +612,7 @@ pub enum Action {
 /// An app [`Action::OwnProcessWindow`] runs as a window of its own.
 #[derive(Debug, Clone, Copy)]
 pub enum OwnApp {
-    /// Notes on the long note [`Action::SeedLongNotes`] writes, with
-    /// changes Ada and her agent made to it.
+    /// Notes.
     Notes,
     /// Files at the shell's starting place, with a few files in it.
     Files,
@@ -643,50 +620,6 @@ pub enum OwnApp {
     /// looked, as the workspace's own history records it.
     #[cfg(feature = "test-support")]
     Activity,
-}
-
-/// The field [`Action::ShowKeyboard`] rises over, for a flow whose field is
-/// reached by its app name rather than by the pointer: the scenario taps it
-/// first, so the keyboard takes that field's purpose, as a live desktop's
-/// does when the person taps it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OskField {
-    /// A chat channel's message composer.
-    ChatComposer,
-    /// A window bar's search field, open.
-    WindowSearch,
-    /// A terminal at its prompt. Tapped for focus, but the keyboard's
-    /// purpose is [`Self::purpose`]'s: a capture's terminal has no session
-    /// (it would need the person's supervisor socket), so its widget
-    /// reports no content type of its own while its session is unopened.
-    TerminalPrompt,
-}
-
-impl OskField {
-    /// The widget target that holds the field, as the app names it.
-    #[must_use]
-    pub fn target(self) -> &'static str {
-        match self {
-            Self::ChatComposer => "chat-composer",
-            Self::WindowSearch => "window-search-open",
-            Self::TerminalPrompt => "terminal",
-        }
-    }
-
-    /// What the keyboard should lay itself out for. A capture's field is
-    /// what the keyboard asks: an app that reports its own content type is
-    /// checked against it, and one that cannot — a terminal with no session,
-    /// a search field in the shell's chrome rather than the app's tree —
-    /// states the purpose its field declares, which is what a live desktop
-    /// would take off the wire.
-    #[must_use]
-    pub fn purpose(self) -> ui::ime::InputPurpose {
-        match self {
-            Self::ChatComposer => ui::ime::InputPurpose::Text,
-            Self::WindowSearch => ui::ime::InputPurpose::Search,
-            Self::TerminalPrompt => ui::ime::InputPurpose::Terminal,
-        }
-    }
 }
 
 /// What starts the motion a [`Action::MotionFrames`] captures. Only a build
@@ -827,7 +760,9 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_open_window(driver, action);
     apply_add_hosted_tab(driver, action);
     apply_hosted_window(driver, action);
-    keyboard::apply(driver, action);
+    if let Action::Typed(text) = action {
+        driver.type_str(text);
+    }
     apply_reveal_samples(driver, action, sink);
     apply_make_space_sample_and_widths(driver, action, sink);
     apply_seed_status_and_file_picker(driver, action);
@@ -838,18 +773,6 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_motion_frames(driver, action, sink);
     apply_own_process_window(driver, action);
     film::apply(driver, action, sink);
-}
-
-/// The long note [`Action::SeedLongNotes`] writes: more than a window shows.
-fn long_note_body() -> String {
-    (1..=52)
-        .map(|line| {
-            format!(
-                "Complete capture {line:02} — the document continues beyond the physical display while the live Notes window stays exactly where it is."
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }
 
 /// The window [`Action::OwnProcessWindow`] opens for Notes.
@@ -898,79 +821,6 @@ fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
             width: *width,
         },
     );
-    #[cfg(not(feature = "test-support"))]
-    {
-        let _ = app;
-        eprintln!(
-            "scenario: a window of its own connects over shell-ui, which needs              `--features test-support`; it shows a plain frame"
-        );
-    }
-    #[cfg(feature = "test-support")]
-    if let Some(tab) = window.first()
-        && let Err(error) = run_own_process_app(driver, *app, tab)
-    {
-        eprintln!("scenario: {app:?} did not run as a window of its own: {error}");
-    }
-}
-
-/// Mount `app` for the tab `window` opened and run it behind its own
-/// connection.
-#[cfg(feature = "test-support")]
-fn run_own_process_app(
-    driver: &mut ShellDriver,
-    app: OwnApp,
-    window: &BarTab,
-) -> Result<(), String> {
-    use shell::shell::state::TileContent;
-    let target = {
-        let chrome = driver.chrome();
-        let tree = chrome.tree();
-        tree.desktop.active_workspace().and_then(|workspace| {
-            workspace
-                .strips
-                .iter()
-                .flat_map(|strip| &strip.window_groups)
-                .flat_map(|group| &group.tabs)
-                .find(|tab| {
-                    matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == window.surface_id)
-                })
-                .map(|tab| (workspace.room().to_string(), tab.id))
-        })
-    };
-    let (room, tab) = target.ok_or("its window did not open")?;
-    let inputs = driver.chrome().hosted_inputs().clone();
-    let component = match app {
-        OwnApp::Notes => inputs.mount_note(&room, tab, "Complete capture.md", &long_note_body()),
-        OwnApp::Files => {
-            if let Some(directory) = inputs.files_directory() {
-                for name in [
-                    "Quarterly report.txt",
-                    "Release notes.md",
-                    "Recipes.md",
-                    "Receipts 2026.csv",
-                    "Travel plans.md",
-                ] {
-                    let _ = std::fs::write(directory.join(name), name);
-                }
-            }
-            inputs.mount_files(&room, tab)
-        }
-        #[cfg(feature = "test-support")]
-        OwnApp::Activity => inputs.mount_activity(&room, tab, Some("whats-new")),
-    }
-    .ok_or("this host mounts no apps")?
-    .map_err(|error| error.to_string())?;
-    let runtime = ui::App::from_component(
-        component,
-        ui::application::ComponentRunnerInputs::from_native_process(),
-    )
-    .map_err(|error| error.to_string())?;
-    driver.add_own_process_app(runtime, window.app_id, window.surface_id)?;
-    if matches!(app, OwnApp::Notes) {
-        seed_note_history_of_tab(driver, &room, tab);
-    }
-    driver.relayout();
-    Ok(())
 }
 
 /// `Action::MotionFrames` — split out of [`apply`] to keep that dispatcher
@@ -1235,16 +1085,6 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::CaptureExecutionEnabled(enabled) => {
             driver.set_capture_execution_enabled(*enabled);
         }
-        Action::TerminalPrints { from, to } => {
-            let text = (*from..=*to).fold(String::new(), |mut text, line| {
-                use std::fmt::Write as _;
-                let _ = write!(text, "output line {line}\r\n");
-                text
-            });
-            if let Err(error) = driver.feed_active_terminal(&text) {
-                eprintln!("shots: terminal prints: {error}");
-            }
-        }
         Action::ClientCommit { surface_id, rgba } => {
             let store = shell::shell::foreign::store();
             if let Some((w, h)) = store.viewport(*surface_id)
@@ -1311,73 +1151,6 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             "scenario: collaboration journey cannot label a frame 'Ada in Files' unless Files was focused"
         ),
         _ => {}
-    }
-}
-
-/// `Action::SeedNoteHistory`: an afternoon of work on the long note by Ada
-/// and the agent working for her, merged as their replicas send it.
-fn seed_note_history(driver: &ShellDriver, group_idx: usize) {
-    let target = {
-        let chrome = driver.chrome();
-        let tree = chrome.tree();
-        tree.desktop.active_workspace().and_then(|workspace| {
-            let strip = workspace.strips.first()?;
-            let group = strip.window_groups.get(group_idx)?;
-            Some((workspace.room().to_string(), group.active_tab))
-        })
-    };
-    let Some((room, tab)) = target else {
-        eprintln!("scenario: no window to seed History in");
-        return;
-    };
-    seed_note_history_of_tab(driver, &room, tab);
-}
-
-/// An afternoon of work by Ada and her agent on the note tab `tab` of
-/// `room` shows, merged as their replicas send it.
-fn seed_note_history_of_tab(driver: &ShellDriver, room: &str, tab: u64) {
-    // The agent writes as its own device key, which the session verified as
-    // delegated by Ada: its changes read as the agent's, for Ada.
-    let agent_device = [0x5a_u8; 32];
-    ui::history_source::set_room_agents(
-        room,
-        vec![ui::history_source::RosterAgent {
-            device: agent_device,
-            person: [0xad_u8; 32],
-            person_name: "Ada".into(),
-            agent_id: "research".into(),
-            label: "Research".into(),
-            color: [0x8b, 0x7c, 0xf6],
-        }],
-    );
-    let now = ui::time::wall()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(0));
-    let edits = [
-        notes::PeerEdit {
-            actor: b"Ada",
-            purpose: "Added the open questions",
-            paragraph: "Open questions: who owns the capture budget, and when do we review it?",
-            at: now.saturating_sub(3 * 3600),
-        },
-        notes::PeerEdit {
-            actor: b"Ada",
-            purpose: "Added the next steps",
-            paragraph: "Next steps: draft the review, then share it with the team on Thursday.",
-            at: now.saturating_sub(3 * 3600 - 240),
-        },
-        notes::PeerEdit {
-            actor: &agent_device,
-            purpose: "Summarised the note",
-            paragraph: "Summary: the capture continues past the display; two questions remain open.",
-            at: now.saturating_sub(25 * 60),
-        },
-    ];
-    let inputs = driver.chrome().hosted_inputs().clone();
-    match inputs.merge_note_edits(room, tab, &edits) {
-        Ok(merged) if merged == edits.len() => {}
-        Ok(merged) => eprintln!("scenario: only {merged} of the note's changes merged"),
-        Err(error) => eprintln!("scenario: the note's history was not seeded: {error}"),
     }
 }
 
@@ -2119,41 +1892,6 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                 st.bump();
             });
         }
-        Action::SeedLongNotes(group_idx) => {
-            let target = {
-                let chrome = driver.chrome();
-                let tree = chrome.tree();
-                tree.desktop.active_workspace().and_then(|workspace| {
-                    let strip = workspace.strips.first()?;
-                    let group = strip.window_groups.get(*group_idx)?;
-                    Some((strip.id, workspace.room().to_string(), group.active_tab))
-                })
-            };
-            let inputs = driver.chrome().hosted_inputs().clone();
-            if let Some((strip_id, room, tab)) = target {
-                let body = long_note_body();
-                match inputs.mount_note(&room, tab, "Complete capture.md", &body) {
-                    Some(Ok(component)) => {
-                        match tilo_desktop::resolver::app_tile(component, None, |_| {}) {
-                            Ok(app) => {
-                                if let Some(host) = driver
-                                    .host_mut()
-                                    .group_at_for_tests(strip_id, *group_idx)
-                                    .and_then(|group| group.active_host_mut())
-                                {
-                                    host.replace_content(ui::widget::TileContent::App(app));
-                                }
-                                driver.relayout();
-                            }
-                            Err(error) => eprintln!("shots: the long note did not mount: {error}"),
-                        }
-                    }
-                    Some(Err(error)) => eprintln!("shots: the long note did not mount: {error}"),
-                    None => eprintln!("shots: this host mounts no Notes"),
-                }
-            }
-        }
-        Action::SeedNoteHistory(group_idx) => seed_note_history(driver, *group_idx),
         Action::SwitchWorkspace(idx) => {
             driver.with_chrome(|st: &mut ChromeState| {
                 let mut tree = st.tree_mut();
@@ -2922,31 +2660,6 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
-            name: "capture_frozen_terminal",
-            description: "A screenshot opened while the terminal prints: the terminal holds still at the line it showed when the screenshot opened while it goes on printing, and closing shows what it printed meanwhile.",
-            actions: vec![
-                Action::OpenHostedWindow {
-                    app: "Terminal",
-                    title: "Terminal",
-                },
-                Action::Wait(24),
-                Action::TerminalPrints { from: 1, to: 40 },
-                Action::Wait(4),
-                Action::CaptureExecutionEnabled(true),
-                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
-                Action::Key(Key::Character("s".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Wait(4),
-                Action::Snapshot("terminal-held-as-opened"),
-                Action::TerminalPrints { from: 41, to: 120 },
-                Action::Wait(4),
-                Action::Snapshot("terminal-still-held-while-printing"),
-                Action::Key(Key::Named(NamedKey::Escape)),
-                Action::Wait(4),
-                Action::Snapshot("terminal-released-after-close"),
-            ],
-        },
-        Scenario {
             name: "capture_two_selections",
             description: "Shift and a new drag add a second selection; each carries its own remove; a plain drag replaces them.",
             actions: vec![
@@ -3343,7 +3056,6 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SelectGroup(Some(0)),
                 Action::Wait(24),
                 Action::Relayout,
-                Action::SeedLongNotes(0),
                 Action::Wait(2),
                 Action::Relayout,
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
@@ -4408,9 +4120,7 @@ fn build_scenarios() -> Vec<Scenario> {
             name: "notes_history_panel",
             description: "History as a side panel of the Notes window: changes by Ada and her agent grouped by session, filtered by person, and one previewed in place, read-only, with Restore and Restore just this change.",
             actions: vec![
-                Action::SeedLongNotes(0),
                 Action::Wait(2),
-                Action::SeedNoteHistory(0),
                 Action::Wait(4),
                 Action::Relayout,
                 Action::ClickNamed("window-history"),
@@ -4493,7 +4203,6 @@ fn build_scenarios() -> Vec<Scenario> {
             name: "floating_material",
             description: "Quick settings, then the palette, over a long note: floating chrome is the blurred material.",
             actions: vec![
-                Action::SeedLongNotes(0),
                 Action::Wait(2),
                 Action::Relayout,
                 Action::Snapshot("01-document"),
@@ -5976,7 +5685,6 @@ pub fn scenarios() -> &'static [Scenario] {
     static TABLE: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
         [
             build_scenarios(),
-            keyboard::all(),
             motion_review::all(),
             motion_gallery::all(),
         ]

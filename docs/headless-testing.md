@@ -34,21 +34,21 @@ Best for: regression captures, golden-image diffs, video walkthroughs of known U
 
 ```bash
 # Inventory the catalogue (currently ~22 scenarios — palette typing, workspace switch, etc.):
-cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --list-scenarios
+cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --list-scenarios
 
 # Capture every scenario in offscreen mode (default). Produces one PNG per scene
 # under `target/<dir>/`. Pixel-identical to a live run.
-cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode offscreen --out target/snapshots
+cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode offscreen --out target/snapshots
 
 # A single scenario, with explicit viewport:
-cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode offscreen --scenario palette_typing --width 1600 --height 900 --out target/palette
+cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode offscreen --scenario palette_typing --width 1600 --height 900 --out target/palette
 
 # H.264 video of a scenario (30 fps default; one second per scenario step).
 # Output is raw Annex-B NALU stream — playable by mpv / ffplay / vlc.
-cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode recording --scenario workspace_switch --out target/ws.h264
+cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode recording --scenario workspace_switch --out target/ws.h264
 
 # Interactive window mode (real winit window — useful for eyeballing while developing):
-cargo run -p shell --features hosted-test-control,in-process-apps,test-support --bin shots --quiet -- --mode window --scenario palette_typing
+cargo run -p shell --features hosted-test-control,test-support --bin shots --quiet -- --mode window --scenario palette_typing
 ```
 
 Scenarios are defined in `crates/session/shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).

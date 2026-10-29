@@ -560,11 +560,6 @@ mod macos_tests {
     }
 }
 
-// The macOS runner has no compositor to show the apps' own windows in its
-// tabs: it draws them itself.
-#[cfg(all(target_os = "macos", not(feature = "in-process-apps")))]
-compile_error!("the macOS shell draws its apps itself: build it with `--features in-process-apps`");
-
 #[cfg(target_os = "macos")]
 fn main() -> std::process::ExitCode {
     shell::compositor::macos::run()

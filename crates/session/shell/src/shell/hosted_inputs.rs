@@ -54,20 +54,9 @@ pub struct HostedTileInputs {
     native_apps: Arc<[NativeAppRegistration]>,
     documents: Rc<RefCell<HashMap<TabId, HostedDocumentState>>>,
     file_directories: Rc<RefCell<HashMap<TabId, PathBuf>>>,
-    /// The notebook each tab [`Self::mount_note`] mounted keeps.
-    #[cfg(feature = "in-process-apps")]
-    note_records: Rc<RefCell<HashMap<TabId, ui::record::RecordId>>>,
     /// The framework apps this host mounts in its own process; without
     /// them a tab of such an app says it is unavailable.
     in_process: Option<super::in_process::SharedInProcessApps>,
-    /// Whether the terminals this host mounts open sessions on the
-    /// session's process supervisor: only a real session's do.
-    #[cfg(feature = "in-process-apps")]
-    opens_sessions: bool,
-    /// Whether the packaged first-party apps run as their own processes,
-    /// their windows bound into the tabs that open them, rather than drawn
-    /// by this process: a Wayland session's are.
-    apps_as_processes: bool,
     /// A private profile for the apps of a host that keeps nobody's records,
     /// removed with the last input that uses it.
     private_profile: Option<Arc<FixtureDirectory>>,
@@ -136,8 +125,6 @@ impl HostedTileInputs {
                 },
             ]),
             in_process: Some(Rc::new(RefCell::new(apps))),
-            #[cfg(feature = "in-process-apps")]
-            opens_sessions: true,
             ..Self::default()
         })
     }
@@ -158,10 +145,6 @@ impl HostedTileInputs {
         .map_err(|error| std::io::Error::other(error.to_string()))?;
         let owned = Arc::new(FixtureDirectory(vec![profile]));
         let mut inputs = Self::for_host_directory(directory, apps)?;
-        #[cfg(feature = "in-process-apps")]
-        {
-            inputs.opens_sessions = false;
-        }
         inputs.private_profile = Some(owned);
         Ok(inputs)
     }
@@ -232,25 +215,9 @@ impl HostedTileInputs {
             native_apps: Arc::default(),
             documents: Rc::default(),
             file_directories: Rc::default(),
-            #[cfg(feature = "in-process-apps")]
-            note_records: Rc::default(),
             in_process: Some(Rc::new(RefCell::new(apps))),
-            #[cfg(feature = "in-process-apps")]
-            opens_sessions: false,
-            apps_as_processes: false,
             private_profile: None,
         })
-    }
-
-    /// Mount framework apps (the terminal, Files, the browser) in this
-    /// process through `apps`, as a real session does: its terminals open
-    /// sessions on the session's process supervisor.
-    pub fn mount_apps_in_process(&mut self, apps: super::in_process::InProcessApps) {
-        self.in_process = Some(Rc::new(RefCell::new(apps)));
-        #[cfg(feature = "in-process-apps")]
-        {
-            self.opens_sessions = true;
-        }
     }
 
     /// The Wayland session's inputs: its apps run as their own processes,
@@ -258,22 +225,6 @@ impl HostedTileInputs {
     /// the messaging accounts).
     pub fn run_apps_as_processes(&mut self, services: super::in_process::InProcessApps) {
         self.in_process = Some(Rc::new(RefCell::new(services)));
-        #[cfg(feature = "in-process-apps")]
-        {
-            self.opens_sessions = true;
-        }
-        self.apps_as_processes = true;
-    }
-
-    /// Whether the packaged first-party apps run as their own processes.
-    pub(crate) fn apps_as_processes(&self) -> bool {
-        self.apps_as_processes
-    }
-
-    /// Whether the terminals this host mounts open sessions.
-    #[cfg(feature = "in-process-apps")]
-    pub(crate) fn opens_sessions(&self) -> bool {
-        self.opens_sessions
     }
 
     pub(crate) fn in_process(&self) -> Option<&super::in_process::SharedInProcessApps> {
@@ -473,36 +424,6 @@ impl HostedTileInputs {
         self.documents.borrow().get(&tab).cloned()
     }
 
-    /// Notes for tab `tab` of `room`, on a notebook of its own holding
-    /// `markdown` as the note `name`, as Notes opens a Markdown file it is
-    /// handed. `None` for a host that mounts no apps in-process.
-    #[cfg(feature = "in-process-apps")]
-    pub fn mount_note(
-        &self,
-        room: &str,
-        tab: TabId,
-        name: &str,
-        markdown: &str,
-    ) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
-        let apps = self.in_process.as_ref()?;
-        let file = match ui::application::OpenFile::new(
-            name,
-            "text/markdown",
-            markdown.as_bytes().to_vec(),
-        ) {
-            Ok((file, _receipt)) => file,
-            Err(error) => return Some(Err(ui::launch::LaunchError::Operation(error))),
-        };
-        let record = ui::record::RecordId::minted();
-        self.note_records.borrow_mut().insert(tab, record.clone());
-        Some(
-            apps.borrow_mut()
-                .mount(notes::definition(), room, tab, record, |context| {
-                    context.provide_open_file(file);
-                }),
-        )
-    }
-
     /// Mount Files for tab `tab` of `room`, starting where the shell says,
     /// as a window of Files shows it. `None` for a host that mounts no apps
     /// in-process or names no place to start.
@@ -528,73 +449,11 @@ impl HostedTileInputs {
         ))
     }
 
-    /// Mount Activity for tab `tab` of `room`: the workspace's history, as
-    /// the session serves it under its provider. `None` for a host that
-    /// mounts no apps in-process.
-    #[cfg(feature = "in-process-apps")]
-    pub fn mount_activity(
-        &self,
-        room: &str,
-        tab: TabId,
-        scenario: Option<&str>,
-    ) -> Option<Result<ui::application::AppComponent, ui::launch::LaunchError>> {
-        let apps = self.in_process.as_ref()?;
-        let capture = ui::application::Capture::new(scenario.map(str::to_owned));
-        Some(apps.borrow_mut().mount(
-            activity::definition(),
-            room,
-            tab,
-            ui::record::RecordId::room_default(),
-            |context| context.provide_capture(capture),
-        ))
-    }
-
     /// Where Files starts when the shell names no place for a tab: a
     /// fixture's own directory.
     #[must_use]
     pub fn files_directory(&self) -> Option<&std::path::Path> {
         self.files.as_ref().map(|files| files.initial_dir.as_path())
-    }
-
-    /// Merge `edits` others made into the notebook tab `tab` of `room`
-    /// shows ([`Self::mount_note`]), as their replicas send them: what its
-    /// History then lists by who made each. How many merged.
-    ///
-    /// # Errors
-    /// The tab mounts no notebook here, or a change does not merge.
-    #[cfg(feature = "in-process-apps")]
-    pub fn merge_note_edits(
-        &self,
-        room: &str,
-        tab: TabId,
-        edits: &[notes::PeerEdit<'_>],
-    ) -> Result<usize, String> {
-        let apps = self
-            .in_process
-            .as_ref()
-            .ok_or("this host mounts no Notes")?;
-        let record = self
-            .note_records
-            .borrow()
-            .get(&tab)
-            .cloned()
-            .ok_or("this tab mounts no notebook")?;
-        let store = apps
-            .borrow_mut()
-            .records(notes::definition().app_id(), room)
-            .map_err(|error| error.to_string())?;
-        let checkout =
-            ui::record::RecordCheckout::new(record, notes::definition().record_kind.clone());
-        let notebook = store
-            .read(&checkout.id, automerge::AutoCommit::clone)
-            .ok_or("the notebook is not open")?;
-        let changes = notes::peer_edit_changes(&notebook, edits);
-        let mut merged = 0_usize;
-        for change in changes {
-            store.merge_peer_changes(&checkout, change)?;
-            merged = merged.saturating_add(1);
-        }
-        Ok(merged)
     }
 }
 
