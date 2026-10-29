@@ -31,7 +31,7 @@ use std::os::unix::fs::{
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::peer::PeerPolicy;
 use super::sandbox::{self, Account, Confinement, Device};
@@ -226,22 +226,6 @@ pub fn directory_name(label: &str) -> String {
     }
 }
 
-/// Wait for `child` to exit, up to `timeout`.
-fn wait_for(child: &mut Child, timeout: Duration) -> io::Result<Option<std::process::ExitStatus>> {
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .unwrap_or_else(Instant::now);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
-        }
-        if Instant::now() >= deadline {
-            return Ok(None);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
 /// What `ntfs-3g`'s exit code says about the volume.
 fn driver_refusal(code: Option<i32>) -> String {
     match code {
@@ -381,7 +365,7 @@ impl LinuxBackend {
 
     fn run_check(child: io::Result<Child>) -> Result<Option<i32>, String> {
         let mut child = child.map_err(|error| message("The drive could not be checked", &error))?;
-        if let Ok(Some(status)) = wait_for(&mut child, CHECK_TIMEOUT) {
+        if let Ok(Some(status)) = bounded_command::wait_timeout(&mut child, CHECK_TIMEOUT) {
             Ok(status.code())
         } else {
             let _ = child.kill();
@@ -520,7 +504,7 @@ impl LinuxBackend {
         let _ = ours.set_read_timeout(Some(OPEN_TIMEOUT));
         let mut ready = [0_u8; 1];
         if ours.read_exact(&mut ready).is_err() || ready != *b"R" {
-            let code = wait_for(&mut driver, Duration::from_secs(2))
+            let code = bounded_command::wait_timeout(&mut driver, Duration::from_secs(2))
                 .ok()
                 .flatten()
                 .and_then(|status| status.code());
@@ -655,7 +639,10 @@ impl Backend for LinuxBackend {
         if let Mount::Safe { driver } = mount {
             // The unmount asked ntfs-3g to write everything out; it exits
             // when done.
-            if !matches!(wait_for(driver, EXIT_TIMEOUT), Ok(Some(_))) {
+            if !matches!(
+                bounded_command::wait_timeout(driver, EXIT_TIMEOUT),
+                Ok(Some(_))
+            ) {
                 let _ = driver.kill();
                 let _ = driver.wait();
             }

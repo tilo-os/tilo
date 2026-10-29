@@ -1,10 +1,8 @@
 //! `subprocess.run(argv, capture_output=True, timeout=…)`: a child with
 //! both outputs captured, killed when it outlives its timeout.
 
-use std::io::Read as _;
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use crate::{Error, Result};
 
@@ -47,69 +45,29 @@ pub fn run(argv: &[&str], input: Option<&[u8]>, timeout: Duration) -> Result<Out
     let Some((program, rest)) = argv.split_first() else {
         return Err(Error::new("empty command line"));
     };
-    let mut child = Command::new(program)
-        .args(rest)
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| Error::new(format!("{error}: '{program}'")))?;
-    let writer = input.map(<[u8]>::to_vec).and_then(|data| {
-        child.stdin.take().map(|mut stdin| {
-            thread::spawn(move || {
-                use std::io::Write as _;
-                let _ = stdin.write_all(&data);
-            })
-        })
-    });
-    let reader = |stream: Option<Box<dyn std::io::Read + Send>>| {
-        thread::spawn(move || {
-            let mut data = Vec::new();
-            if let Some(mut stream) = stream {
-                let _ = stream.read_to_end(&mut data);
-            }
-            data
-        })
-    };
-    let stdout = reader(
-        child
-            .stdout
-            .take()
-            .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
-    );
-    let stderr = reader(
-        child
-            .stderr
-            .take()
-            .map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
-    );
-    let deadline = Instant::now().checked_add(timeout);
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Error::new(format!(
-                "Command '{}' timed out after {} seconds",
-                argv.join(" "),
-                timeout.as_secs()
-            )));
-        }
-        thread::sleep(Duration::from_millis(5));
-    };
-    if let Some(writer) = writer {
-        let _ = writer.join();
-    }
+    let mut command = Command::new(program);
+    command.args(rest);
+    let output = bounded_command::run_prepared_with_input_limit(
+        command,
+        input,
+        usize::MAX,
+        usize::MAX,
+        usize::MAX,
+        timeout,
+    )
+    .map_err(|error| match error {
+        bounded_command::Error::Timeout(_) => Error::new(format!(
+            "Command '{}' timed out after {} seconds",
+            argv.join(" "),
+            timeout.as_secs()
+        )),
+        bounded_command::Error::Process(error) => Error::new(format!("{error}: '{program}'")),
+        other => Error::new(other.to_string()),
+    })?;
     Ok(Output {
-        code: status.code(),
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
+        code: output.status.code(),
+        stdout: output.stdout,
+        stderr: output.stderr,
     })
 }
 

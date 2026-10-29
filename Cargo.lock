@@ -17848,12 +17848,10 @@ name = "tilo-board-successor"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
- "hex",
+ "bounded-command",
  "libc",
  "regex",
- "rustix 1.1.4",
  "serde_json",
- "sha2 0.11.0",
  "tempfile",
  "tilo-pycompat",
  "tilo-test-env",
@@ -19974,6 +19972,7 @@ dependencies = [
 name = "tilo-ntfs-mount"
 version = "0.1.0"
 dependencies = [
+ "bounded-command",
  "libc",
  "serde",
  "serde_json",
