@@ -313,7 +313,7 @@ fn two_people_reacting_at_once_both_stay_and_a_second_press_takes_yours_back() {
     }
 
     // Ada's second press takes hers back; Ben's stays.
-    call(&ada, "react", vec![m.clone(), Value::text("👍")]);
+    call(&ada, "react", vec![m, Value::text("👍")]);
     ada.commit();
     ada.sync_with(&mut ben);
     for view in [&mut ada_design, &mut ben_design] {
