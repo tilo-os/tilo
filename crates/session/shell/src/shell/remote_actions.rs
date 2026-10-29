@@ -637,217 +637,207 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn the_remote_catalogue_offers_only_what_the_caller_may_reach() {
-        // Phase `the_catalogue_offers_only_what_the_caller_may_use`.
-        {
-            let (host, _) = host();
-            let page = catalogue(&host, &owner());
-            let offered: Vec<_> = page
-                .rows
-                .iter()
-                .filter_map(|row| {
-                    Some((
-                        row.provider.split(':').next().unwrap_or_default(),
-                        row.action.as_ref()?.address.action.as_str(),
-                    ))
-                })
-                .collect();
-            assert_eq!(
-                offered,
-                [
-                    ("7", "refresh"),
-                    ("7", "erase"),
-                    ("7", "rename"),
-                    ("workspace", "grant"),
-                    ("workspace", "revoke"),
-                    ("workspace", "preset.save"),
-                    ("workspace", "preset.assign"),
-                    ("workspace", "app-action.grant"),
-                    ("workspace", "app-action.revoke"),
-                    ("workspace", "create"),
-                    ("workspace", "update"),
-                    ("workspace", "delete"),
-                    ("workspace", "list"),
-                    ("workspace", "stop"),
-                    ("workspace", "stop-all"),
-                ],
-                "a remote device is not offered launching apps on this desktop"
-            );
-            assert!(
-                catalogue(&host, &stranger()).rows.is_empty(),
-                "a caller outside the workspace is offered nothing"
-            );
-        }
+    fn the_catalogue_offers_only_what_the_caller_may_use() {
+        let (host, _) = host();
+        let page = catalogue(&host, &owner());
+        let offered: Vec<_> = page
+            .rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    row.provider.split(':').next().unwrap_or_default(),
+                    row.action.as_ref()?.address.action.as_str(),
+                ))
+            })
+            .collect();
+        assert_eq!(
+            offered,
+            [
+                ("7", "refresh"),
+                ("7", "erase"),
+                ("7", "rename"),
+                ("workspace", "grant"),
+                ("workspace", "revoke"),
+                ("workspace", "preset.save"),
+                ("workspace", "preset.assign"),
+                ("workspace", "app-action.grant"),
+                ("workspace", "app-action.revoke"),
+                ("workspace", "create"),
+                ("workspace", "update"),
+                ("workspace", "delete"),
+                ("workspace", "list"),
+                ("workspace", "stop"),
+                ("workspace", "stop-all"),
+            ],
+            "a remote device is not offered launching apps on this desktop"
+        );
+        assert!(
+            catalogue(&host, &stranger()).rows.is_empty(),
+            "a caller outside the workspace is offered nothing"
+        );
+    }
 
-        // Phase `the_catalogue_carries_a_published_resource_view`.
-        {
-            let mut open = action("open", tilo_actions::ActionContract::view());
-            open.operation_kind = tilo_actions::OperationKind::View;
-            let view = tilo_actions::ResourceViewDescriptor {
-                id: "preview".into(),
-                label: "Preview".into(),
-                description: None,
-                open_action: "open".into(),
-                primary: true,
-                range: None,
-                mount: None,
-            };
-            open.view = Some(view.clone());
-            let (host, _) = host_with(vec![open]);
+    #[test]
+    fn the_catalogue_carries_a_published_resource_view() {
+        let mut open = action("open", tilo_actions::ActionContract::view());
+        open.operation_kind = tilo_actions::OperationKind::View;
+        let view = tilo_actions::ResourceViewDescriptor {
+            id: "preview".into(),
+            label: "Preview".into(),
+            description: None,
+            open_action: "open".into(),
+            primary: true,
+            range: None,
+            mount: None,
+        };
+        open.view = Some(view.clone());
+        let (host, _) = host_with(vec![open]);
 
-            let page = catalogue(&host, &owner());
-            let offered = page
-                .rows
+        let page = catalogue(&host, &owner());
+        let offered = page
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .find(|action| action.address.action == "open")
+            .expect("the view's open action is offered");
+        assert_eq!(offered.view.as_ref(), Some(&view));
+        assert!(
+            page.rows
                 .iter()
                 .filter_map(|row| row.action.as_ref())
-                .find(|action| action.address.action == "open")
-                .expect("the view's open action is offered");
-            assert_eq!(offered.view.as_ref(), Some(&view));
-            assert!(
-                page.rows
-                    .iter()
-                    .filter_map(|row| row.action.as_ref())
-                    .filter(|action| action.address.action != "open")
-                    .all(|action| action.view.is_none()),
-                "only the declared open action names a view"
-            );
-        }
+                .filter(|action| action.address.action != "open")
+                .all(|action| action.view.is_none()),
+            "only the declared open action names a view"
+        );
+    }
 
-        // Phase `a_room_confined_caller_sees_only_its_room`.
-        {
-            let (host, _) = host();
-            let elsewhere = Caller::local_person("a1".repeat(32)).in_room("not-this-room");
-            assert!(
-                catalogue(&host, &elsewhere).rows.is_empty(),
-                "a connection admitted to another room reaches nothing here"
-            );
-            assert_eq!(
-                wait(host.invoke(&elsewhere, refresh(tilo_actions::InvocationId::new()))),
-                Err(ActionHostError::UnknownAction)
-            );
-        }
+    #[test]
+    fn a_room_confined_caller_sees_only_its_room() {
+        let (host, _) = host();
+        let elsewhere = Caller::local_person("a1".repeat(32)).in_room("not-this-room");
+        assert!(
+            catalogue(&host, &elsewhere).rows.is_empty(),
+            "a connection admitted to another room reaches nothing here"
+        );
+        assert_eq!(
+            wait(host.invoke(&elsewhere, refresh(tilo_actions::InvocationId::new()))),
+            Err(ActionHostError::UnknownAction)
+        );
+    }
 
-        // Phase `remote_callers_cannot_reach_what_they_are_not_offered`.
-        {
-            let (host, mut invocations) = host();
-            assert_eq!(
-                now(host.invoke(&stranger(), refresh(tilo_actions::InvocationId::new()))),
-                Err(ActionHostError::UnknownAction)
-            );
-            let mut elsewhere = refresh(tilo_actions::InvocationId::new());
-            elsewhere.target.provider = "8".into();
-            assert_eq!(
-                now(host.invoke(&owner(), elsewhere)),
-                Err(ActionHostError::UnknownAction)
-            );
-            assert!(invocations.try_recv().is_err());
+    #[test]
+    fn remote_callers_cannot_reach_what_they_are_not_offered() {
+        let (host, mut invocations) = host();
+        assert_eq!(
+            now(host.invoke(&stranger(), refresh(tilo_actions::InvocationId::new()))),
+            Err(ActionHostError::UnknownAction)
+        );
+        let mut elsewhere = refresh(tilo_actions::InvocationId::new());
+        elsewhere.target.provider = "8".into();
+        assert_eq!(
+            now(host.invoke(&owner(), elsewhere)),
+            Err(ActionHostError::UnknownAction)
+        );
+        assert!(invocations.try_recv().is_err());
+    }
+
+    #[test]
+    fn confirmation_is_evidence_the_contract_checks() {
+        let (host, mut invocations) = host();
+        let mut erase = refresh(tilo_actions::InvocationId::new());
+        erase.target.address = ActionAddress::new("files.entry:/tmp/report", "erase");
+        assert_eq!(
+            now(host.invoke(&owner(), erase.clone())),
+            Err(ActionHostError::ConfirmationRequired)
+        );
+        erase.confirmation = Some(tilo_actions::remote::Confirmation::Phrase("erase".into()));
+        assert_eq!(
+            now(host.invoke(&owner(), erase.clone())),
+            Err(ActionHostError::ConfirmationRequired),
+            "the wrong kind of evidence is not accepted"
+        );
+        assert!(invocations.try_recv().is_err());
+        erase.confirmation = Some(tilo_actions::remote::Confirmation::Confirmed);
+        now(host.invoke(&owner(), erase)).expect("confirmed");
+        assert!(invocations.try_recv().is_ok(), "dispatched once confirmed");
+    }
+
+    // A launch opens content only through the scope of the application
+    // the launcher authenticated for the calling connection; a caller
+    // without one holding a hash opens nothing.
+    #[test]
+    fn a_launch_without_a_launch_scope_cannot_open_content_by_hash() {
+        let (host, _) = host();
+        let room = catalogue(&host, &owner())
+            .rows
+            .iter()
+            .find_map(|row| tilo_actions::remote::workspace_provider_room(&row.provider))
+            .map(str::to_owned)
+            .expect("the workspace is offered");
+        let caller = Caller::local_person("a1".repeat(32)).in_room(&room);
+        let open = InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: tilo_actions::remote::workspace_provider(&room),
+                address: ActionAddress::new(
+                    format!(
+                        "{}so.tilo.photos",
+                        tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
+                    ),
+                    tilo_actions::remote::APPLICATION_OPEN_ACTION,
+                ),
+            },
+            argument: InvokeArgument::Text(blake3::hash(b"a photograph").to_hex().to_string()),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        // Native admission resolves on a worker, even without a seat service.
+        match wait(host.invoke(&caller, open)) {
+            Err(ActionHostError::Refused { reason }) => assert!(
+                reason.contains("launcher authenticated"),
+                "refused for its missing launch scope: {reason}"
+            ),
+            other => panic!("a hash alone must not open content: {other:?}"),
         }
     }
 
     #[test]
-    fn remote_invocations_are_confirmed_scoped_and_dispatched_once() {
-        // Phase `confirmation_is_evidence_the_contract_checks`.
-        {
-            let (host, mut invocations) = host();
-            let mut erase = refresh(tilo_actions::InvocationId::new());
-            erase.target.address = ActionAddress::new("files.entry:/tmp/report", "erase");
-            assert_eq!(
-                now(host.invoke(&owner(), erase.clone())),
-                Err(ActionHostError::ConfirmationRequired)
-            );
-            erase.confirmation = Some(tilo_actions::remote::Confirmation::Phrase("erase".into()));
-            assert_eq!(
-                now(host.invoke(&owner(), erase.clone())),
-                Err(ActionHostError::ConfirmationRequired),
-                "the wrong kind of evidence is not accepted"
-            );
-            assert!(invocations.try_recv().is_err());
-            erase.confirmation = Some(tilo_actions::remote::Confirmation::Confirmed);
-            now(host.invoke(&owner(), erase)).expect("confirmed");
-            assert!(invocations.try_recv().is_ok(), "dispatched once confirmed");
-        }
+    fn a_retried_remote_invocation_dispatches_once() {
+        let (host, mut invocations) = host();
+        let id = tilo_actions::InvocationId::new();
+        let first = now(host.invoke(&owner(), refresh(id))).expect("admitted");
+        assert_eq!(first.invocation, id);
+        assert_eq!(first.status, ReceiptStatus::Accepted);
+        assert!(invocations.try_recv().is_ok(), "dispatched to the app");
 
-        // Phase `a_launch_without_a_launch_scope_cannot_open_content_by_hash`.
-        // A launch opens content only through the scope of the application
-        // the launcher authenticated for the calling connection; a caller
-        // without one holding a hash opens nothing.
-        {
-            let (host, _) = host();
-            let room = catalogue(&host, &owner())
-                .rows
-                .iter()
-                .find_map(|row| tilo_actions::remote::workspace_provider_room(&row.provider))
-                .map(str::to_owned)
-                .expect("the workspace is offered");
-            let caller = Caller::local_person("a1".repeat(32)).in_room(&room);
-            let open = InvokeRequest {
-                on_behalf_of: None,
-                invocation: tilo_actions::InvocationId::new(),
-                target: RemoteActionTarget {
-                    provider: tilo_actions::remote::workspace_provider(&room),
-                    address: ActionAddress::new(
-                        format!(
-                            "{}so.tilo.photos",
-                            tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
-                        ),
-                        tilo_actions::remote::APPLICATION_OPEN_ACTION,
-                    ),
-                },
-                argument: InvokeArgument::Text(blake3::hash(b"a photograph").to_hex().to_string()),
-                context: None,
-                confirmation: None,
-                revision: None,
-                wait_ms: None,
-                appearance: None,
-            };
-            // Native admission resolves on a worker, even without a seat service.
-            match wait(host.invoke(&caller, open)) {
-                Err(ActionHostError::Refused { reason }) => assert!(
-                    reason.contains("launcher authenticated"),
-                    "refused for its missing launch scope: {reason}"
-                ),
-                other => panic!("a hash alone must not open content: {other:?}"),
-            }
-        }
+        let retry = now(host.invoke(&owner(), refresh(id))).expect("retry");
+        assert_eq!(retry, first);
+        assert!(
+            invocations.try_recv().is_err(),
+            "a retry never reaches the app twice"
+        );
+        let state = host.observe(&owner(), &id).expect("owner observes");
+        assert_eq!(state.invocation(), id);
+        assert_eq!(host.observe(&stranger(), &id), None);
 
-        // Phase `a_retried_remote_invocation_dispatches_once`.
-        {
-            let (host, mut invocations) = host();
-            let id = tilo_actions::InvocationId::new();
-            let first = now(host.invoke(&owner(), refresh(id))).expect("admitted");
-            assert_eq!(first.invocation, id);
-            assert_eq!(first.status, ReceiptStatus::Accepted);
-            assert!(invocations.try_recv().is_ok(), "dispatched to the app");
-
-            let retry = now(host.invoke(&owner(), refresh(id))).expect("retry");
-            assert_eq!(retry, first);
-            assert!(
-                invocations.try_recv().is_err(),
-                "a retry never reaches the app twice"
-            );
-            let state = host.observe(&owner(), &id).expect("owner observes");
-            assert_eq!(state.invocation(), id);
-            assert_eq!(host.observe(&stranger(), &id), None);
-
-            assert_eq!(
-                host.cancel(&stranger(), &id)
-                    .wait_timeout(std::time::Duration::from_secs(30))
-                    .ok()
-                    .flatten()
-                    .expect("the host answers"),
-                Err(ActionHostError::UnknownInvocation)
-            );
-            host.cancel(&owner(), &id)
+        assert_eq!(
+            host.cancel(&stranger(), &id)
                 .wait_timeout(std::time::Duration::from_secs(30))
                 .ok()
                 .flatten()
-                .expect("the host answers")
-                .expect("owner cancels");
-        }
+                .expect("the host answers"),
+            Err(ActionHostError::UnknownInvocation)
+        );
+        host.cancel(&owner(), &id)
+            .wait_timeout(std::time::Duration::from_secs(30))
+            .ok()
+            .flatten()
+            .expect("the host answers")
+            .expect("owner cancels");
     }
 }
 

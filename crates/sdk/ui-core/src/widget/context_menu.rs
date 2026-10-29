@@ -496,7 +496,7 @@ pub struct ContextMenu {
     /// through [`ContextMenu::take_selection`].
     own_rows: Option<usize>,
     /// The query field, on a menu that takes typing.
-    query: Option<MenuQuery>,
+    query: Option<Box<MenuQuery>>,
     /// The rows shown, in the order shown: every row with no query, else
     /// the entries that match it, best first, and the row that asks it.
     shown: Vec<usize>,

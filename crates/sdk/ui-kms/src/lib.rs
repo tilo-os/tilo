@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use ui::time::Instant;
 
 use rustix::event::{EventfdFlags, PollFd, PollFlags};
 use ui::app::{AppSurface, SurfaceDamage};
@@ -234,10 +234,10 @@ impl Host {
         let mut damage = SurfaceDamage::default();
         let mut scene = vello::Scene::new();
         let mut wants = true;
-        let mut next_frame = Instant::now();
+        let mut next_frame = ui::time::now();
         app.set_interaction_environment(self.environment(app.interaction_environment()));
         loop {
-            let now = Instant::now();
+            let now = ui::time::now();
             let asked = std::mem::take(
                 &mut *self
                     .shared
@@ -308,9 +308,7 @@ impl Host {
                 app.set_interaction_environment(self.environment(app.interaction_environment()));
                 wants = true;
             }
-            wants |= self.surface.redraw.replace(false)
-                || app.wake_pending()
-                || app.surface_next_frame().is_some_and(|at| at <= now);
+            wants |= self.surface.redraw.replace(false) || app.wake_pending() || due(app, now);
             if wants && !self.display.flip_pending() && now >= next_frame {
                 app.surface_accessibility();
                 scene.reset();
@@ -336,15 +334,14 @@ impl Host {
     /// Sleep until a device, the display or the wake has something, or the
     /// next deadline.
     fn wait(&mut self, app: &App, wants: bool, next_frame: Instant) -> Result<(), HostError> {
-        let now = Instant::now();
+        let now = ui::time::now();
         let deadline = if wants && !self.display.flip_pending() {
             Some(next_frame)
         } else {
             [
                 self.input.deadline(),
-                app.surface_next_frame(),
                 self.emulator.long_press_deadline(),
-                app.screen_reader_deadline(),
+                next_deadline(app),
             ]
             .into_iter()
             .flatten()
@@ -378,4 +375,23 @@ impl Host {
         }
         Ok(())
     }
+}
+
+/// When `app` next changes with nothing to bring it but time: a frame it
+/// wants (something moving, a widget's deadline such as the clock's next
+/// minute, a tooltip's dwell) or the screen reader's touch timing. The
+/// host sleeps until then and no longer, so a screen at rest wakes only
+/// for what it shows changing.
+#[must_use]
+pub fn next_deadline(app: &App) -> Option<Instant> {
+    [app.surface_next_frame(), app.screen_reader_deadline()]
+        .into_iter()
+        .flatten()
+        .min()
+}
+
+/// Whether a frame of `app` is due at `now` by time alone.
+#[must_use]
+pub fn due(app: &App, now: Instant) -> bool {
+    app.surface_next_frame().is_some_and(|at| at <= now)
 }

@@ -54,6 +54,10 @@ pub struct EmbeddedApp {
     /// Focus state represented by `painted`. A hidden app can lose and regain
     /// focus without changing the frame its host last showed.
     painted_focus: bool,
+    /// The control `painted` shows focused: focus that moved between
+    /// controls, or into the app before its first control was laid out,
+    /// needs a frame too.
+    painted_control: Option<NodeId>,
     restore_focus: Option<NodeId>,
     /// Shift was held as focus last moved, so focus entering the app lands
     /// on its last control.
@@ -153,6 +157,7 @@ impl EmbeddedApp {
             },
             focused: false,
             painted_focus: false,
+            painted_control: None,
             restore_focus: None,
             entering_backwards: false,
             wants_frame: Cell::new(true),
@@ -267,6 +272,12 @@ impl EmbeddedApp {
         deadline
     }
 
+    /// Whether focus differs from what was last painted: the app gained or
+    /// lost it, or it moved to another control.
+    fn focus_moved(&self) -> bool {
+        self.focused != self.painted_focus || self.app.focused_control() != self.painted_control
+    }
+
     /// The app runs: its deadlines may move.
     fn runs(&self) {
         self.deadline_known.set(false);
@@ -292,6 +303,14 @@ impl EmbeddedApp {
             self.app.mark_semantic_tree_stale();
             self.wants_frame.set(true);
         }
+    }
+
+    /// Give the app keyboard focus from its host's focus order, coming
+    /// from after it with `backwards` (Shift+Tab): focus lands on its last
+    /// control then, else on its first.
+    pub fn enter_focus(&mut self, backwards: bool) {
+        self.entering_backwards = backwards;
+        Widget::set_focus(self, true);
     }
 
     /// The root widget of the app's component: what an app's own tests
@@ -481,7 +500,7 @@ impl Widget for EmbeddedApp {
             // step of half a logical pixel is a whole one and copies.
             self.damage.set_copy_scale(copy_scale(placement));
         }
-        if self.wants_frame.get() || woken || due || self.focused != self.painted_focus {
+        if self.wants_frame.get() || woken || due || self.focus_moved() {
             self.runs();
             // A frame whose sync or layout leaves more to settle runs again
             // at once, so what the host paints is the app at rest.
@@ -534,6 +553,7 @@ impl Widget for EmbeddedApp {
             self.wants_frame
                 .set(again || self.region.redraw.replace(false));
             self.painted_focus = self.focused;
+            self.painted_control = self.app.focused_control();
         }
         // A host comparing this frame with one that painted the generation
         // before repaints only the app's damage; any other change to the
@@ -798,7 +818,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.wants_frame.get() || self.focused != self.painted_focus
+        self.wants_frame.get() || self.focus_moved()
     }
 
     fn has_pending_visual_work(&self) -> bool {
@@ -829,17 +849,20 @@ impl Widget for EmbeddedApp {
     }
 
     /// The app's own accessibility tree, as this tile's subtree: a screen
-    /// reader walks from the host straight into the app.
+    /// reader walks from the host straight into the app. Each control keeps
+    /// the name the app reaches it by (the target its widget publishes, or
+    /// its test id) as its action target, so the host, its agents and its
+    /// tests name a control in the app as they name one of their own.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         let tree = self.app.semantic_tree();
-        let offset = vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
         let root = tree.node(tree.root())?;
         let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group);
         node.name = AppWidget::app_title(self).to_owned().into();
         node.children = root
             .children
             .iter()
-            .filter_map(|child| access_subtree(tree, child, offset))
+            .enumerate()
+            .filter_map(|(ordinal, child)| self.access_subtree(child, ordinal, &[]))
             .collect();
         Some(node)
     }
@@ -852,33 +875,31 @@ impl Widget for EmbeddedApp {
         _path: &crate::widget::ModelPath,
     ) -> bool {
         self.runs();
-        let Some(id) = semantic_target(self.app.semantic_tree(), key_path) else {
+        let Some(id) = self.hosted_node_at(key_path) else {
             return false;
         };
-        let Some(name) = self
-            .app
-            .semantic_tree()
-            .node(&id)
-            .and_then(|node| {
-                node.actions.iter().find(|candidate| {
-                    matches!(&candidate.kind, crate::a11y_tree::SemanticActionKind::Verb(verb)
-                        if std::mem::discriminant(verb) == std::mem::discriminant(action))
-                })
-            })
-            .map(|candidate| candidate.name.clone())
-        else {
+        self.perform_hosted(&id, action)
+    }
+
+    /// An action on a control of the app named as [`Self::accessibility`]
+    /// publishes it: by its target or test id, or by its key path where it
+    /// has neither.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        self.runs();
+        let id = match key_route(target) {
+            Some(keys) => self.hosted_node_at(&keys),
+            None => self.hosted_node_named(target),
+        };
+        let Some(id) = id else {
             return false;
         };
-        let argument = match action {
-            crate::a11y::Action::SetValue(value) => Some(value.as_str()),
-            _ => None,
-        };
-        let done = self
-            .app
-            .invoke_semantic_action(&id, &name, argument)
-            .unwrap_or(false);
-        self.wants_frame.set(true);
-        done
+        self.perform_hosted(&id, action)
     }
 
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
@@ -1041,63 +1062,227 @@ impl AppWidget for EmbeddedApp {
     }
 }
 
-/// The app's semantic node `id` and what is below it, as synthetic
-/// accessibility nodes keyed by their semantic ids, placed in the host.
-/// Nodes with no place on screen (published resources) are left out.
-fn access_subtree(
-    tree: &crate::a11y_tree::SemanticTree,
-    id: &crate::a11y_tree::SemanticId,
-    offset: vello::kurbo::Vec2,
-) -> Option<crate::a11y::AccessNode> {
-    let node = tree.node(id)?;
-    let bounds = node.bounds?;
-    let mut access = crate::a11y::AccessNode::new(node.role);
-    access.name.clone_from(&node.name);
-    access.value.clone_from(&node.value);
-    access.state = node.state;
-    access.key = Some(crate::a11y::hash_key(&id.as_str()));
-    let placed = bounds + offset;
-    access.bounds = Some(crate::a11y::AccessBounds {
-        x0: placed.x0,
-        y0: placed.y0,
-        x1: placed.x1,
-        y1: placed.y1,
-    });
-    access.children = node
-        .children
-        .iter()
-        .filter_map(|child| access_subtree(tree, child, offset))
-        .collect();
-    // The app's tree marks both its focused widget and the part of it that
-    // has the keyboard (a dialog and its field). Here every node is the
-    // tile's descendant and the first focused one is taken as the focus, so
-    // only the innermost keeps the mark.
-    if access.state.focused && access.children.iter().any(holds_focus) {
-        access.state.focused = false;
-    }
-    Some(access)
-}
-
 /// Whether `node` or a node under it is marked focused.
 fn holds_focus(node: &crate::a11y::AccessNode) -> bool {
     node.state.focused || node.children.iter().any(holds_focus)
 }
 
-/// The semantic node a key path from [`access_subtree`] names.
-fn semantic_target(
-    tree: &crate::a11y_tree::SemanticTree,
-    key_path: &[u64],
-) -> Option<crate::a11y_tree::SemanticId> {
-    let mut current = tree.root().clone();
-    for key in key_path {
-        current = tree
-            .node(&current)?
+/// The prefix of the action target of a hosted control that has no name,
+/// followed by its key path.
+const KEY_ROUTE: &str = "tilo.key-action:embedded:";
+
+/// The action target reaching the hosted control at `keys`.
+fn encode_key_route(keys: &[u64]) -> String {
+    let keys: Vec<String> = keys.iter().map(u64::to_string).collect();
+    format!("{KEY_ROUTE}{}", keys.join("/"))
+}
+
+/// The key path an action target from [`encode_key_route`] names.
+fn key_route(target: &str) -> Option<Vec<u64>> {
+    let keys = target
+        .strip_prefix(KEY_ROUTE)?
+        .split('/')
+        .map(str::parse::<u64>)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    (!keys.is_empty()).then_some(keys)
+}
+
+/// The name a widget's own semantic target gives its node outside the app:
+/// the target itself, or what a route through the node's painting ancestor
+/// carries; none for a route by key path, which only the app knows.
+fn published_name(target: &str) -> Option<&str> {
+    let inner = match target.strip_prefix("tilo.child:") {
+        Some(route) => route.split_once('>')?.1,
+        None => target,
+    };
+    (!inner.is_empty() && !inner.starts_with('#') && !inner.starts_with("tilo.key-action:"))
+        .then_some(inner)
+}
+
+impl EmbeddedApp {
+    /// The name the app's node reaches it by: the target its widget
+    /// publishes for it, or that widget's test id.
+    fn hosted_name(&self, node: &crate::a11y_tree::SemanticNode) -> Option<String> {
+        if let Some(target) = &node.semantic_target {
+            return published_name(target).map(str::to_owned);
+        }
+        // Only a widget's own node has a layout node and no target.
+        let taffy = node.widget_taffy_id?;
+        self.app
+            .inspect_node(NodeId::from(taffy), |widget| {
+                widget.test_id().map(str::to_owned)
+            })
+            .ok()
+            .flatten()
+    }
+
+    /// The key the host knows the app's node by among its siblings, the
+    /// same from frame to frame: its name, else its durable identity, else
+    /// its place among its siblings (a layout id changes as the app is
+    /// rebuilt).
+    fn hosted_key(
+        node: &crate::a11y_tree::SemanticNode,
+        name: Option<&str>,
+        ordinal: usize,
+    ) -> u64 {
+        match name {
+            Some(name) => crate::a11y::hash_key(&("target", name)),
+            None if node.durable_identity => crate::a11y::hash_key(&node.id.as_str()),
+            None => crate::a11y::hash_key(&("ordinal", ordinal)),
+        }
+    }
+
+    /// The app's semantic node `id`, the `ordinal`th child of the node at
+    /// `parent`, and what is below it, as synthetic accessibility nodes
+    /// placed in the host. Nodes with no place on screen and none placed
+    /// below them (published resources) are left out.
+    fn access_subtree(
+        &self,
+        id: &crate::a11y_tree::SemanticId,
+        ordinal: usize,
+        parent: &[u64],
+    ) -> Option<crate::a11y::AccessNode> {
+        let tree = self.app.semantic_tree();
+        let node = tree.node(id)?;
+        let name = self.hosted_name(node);
+        let key = Self::hosted_key(node, name.as_deref(), ordinal);
+        let path = [parent, &[key]].concat();
+        let children: Vec<_> = node
             .children
             .iter()
-            .find(|child| crate::a11y::hash_key(&child.as_str()) == *key)?
-            .clone();
+            .enumerate()
+            .filter_map(|(ordinal, child)| self.access_subtree(child, ordinal, &path))
+            .collect();
+        // A container that names no place of its own (a menu around its
+        // painted rows) still holds the controls placed inside it.
+        if node.bounds.is_none() && children.is_empty() {
+            return None;
+        }
+        let mut access = crate::a11y::AccessNode::new(node.role);
+        access.name.clone_from(&node.name);
+        access.value.clone_from(&node.value);
+        access.description.clone_from(&node.description);
+        access.state = node.state;
+        // The app's own focus is the reader's only while the host has given
+        // the app the keyboard: a host that moved it elsewhere has its own
+        // focus to show.
+        access.state.focused &= self.focused;
+        access.key = Some(key);
+        access.action_target = match name {
+            Some(name) => Some(name),
+            None => (!node.actions.is_empty()).then(|| encode_key_route(&path)),
+        };
+        access.bounds = node.bounds.map(|bounds| {
+            let placed = bounds + vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
+            crate::a11y::AccessBounds {
+                x0: placed.x0,
+                y0: placed.y0,
+                x1: placed.x1,
+                y1: placed.y1,
+            }
+        });
+        access.children = children;
+        // The app's tree marks both its focused widget and the part of it
+        // that has the keyboard (a dialog and its field). Here every node is
+        // the tile's descendant and the first focused one is taken as the
+        // focus, so only the innermost keeps the mark.
+        if access.state.focused && access.children.iter().any(holds_focus) {
+            access.state.focused = false;
+        }
+        Some(access)
     }
-    (!key_path.is_empty()).then_some(current)
+
+    /// The app's semantic node a key path from [`Self::access_subtree`]
+    /// names.
+    fn hosted_node_at(&self, key_path: &[u64]) -> Option<crate::a11y_tree::SemanticId> {
+        let tree = self.app.semantic_tree();
+        let mut current = tree.root().clone();
+        for key in key_path {
+            current = tree
+                .node(&current)?
+                .children
+                .iter()
+                .enumerate()
+                .find(|(ordinal, child)| {
+                    tree.node(child).is_some_and(|node| {
+                        Self::hosted_key(node, self.hosted_name(node).as_deref(), *ordinal) == *key
+                    })
+                })?
+                .1
+                .clone();
+        }
+        (!key_path.is_empty()).then_some(current)
+    }
+
+    /// The app's semantic node on screen whose name is `name`, first in
+    /// reading order.
+    fn hosted_node_named(&self, name: &str) -> Option<crate::a11y_tree::SemanticId> {
+        let tree = self.app.semantic_tree();
+        let mut pending = vec![tree.root().clone()];
+        while let Some(id) = pending.pop() {
+            let Some(node) = tree.node(&id) else {
+                continue;
+            };
+            if node.bounds.is_some() && self.hosted_name(node).as_deref() == Some(name) {
+                return Some(id);
+            }
+            pending.extend(node.children.iter().rev().cloned());
+        }
+        None
+    }
+
+    /// Perform `action` on the app's node `id` as the app performs it for
+    /// its own assistive technology: an action the node offers as it offers
+    /// it (a press bound to one of the app's actions runs that action), any
+    /// other verb by the widget that owns the node. A disabled control takes
+    /// none, a read-only one no value.
+    fn perform_hosted(
+        &mut self,
+        id: &crate::a11y_tree::SemanticId,
+        action: &crate::a11y::Action,
+    ) -> bool {
+        use crate::a11y::Action;
+        let Some(node) = self.app.semantic_tree().node(id) else {
+            return false;
+        };
+        if node.state.disabled
+            || (node.state.read_only
+                && matches!(action, Action::SetValue(_) | Action::SetSelection { .. }))
+        {
+            return false;
+        }
+        let offered = node
+            .actions
+            .iter()
+            .find(|candidate| {
+                matches!(&candidate.kind, crate::a11y_tree::SemanticActionKind::Verb(verb)
+                    if std::mem::discriminant(verb) == std::mem::discriminant(action))
+            })
+            .map(|candidate| candidate.name.clone());
+        let done = match offered {
+            Some(name) => {
+                let argument = match action {
+                    Action::SetValue(value) => Some(value.as_str()),
+                    _ => None,
+                };
+                self.app.invoke_semantic_action(id, &name, argument)
+            }
+            None => self.app.perform_semantic_verb(
+                id,
+                action.clone(),
+                matches!(action, Action::Activate | Action::ToggleCheck),
+            ),
+        }
+        .unwrap_or(false);
+        // Focus moved inside an app the host has not given the keyboard
+        // lands there once the host does.
+        if done && matches!(action, Action::Focus) && !self.focused {
+            self.restore_focus = self.app.focused_control();
+        }
+        self.wants_frame.set(true);
+        done
+    }
 }
 
 #[cfg(test)]
@@ -1639,5 +1824,99 @@ mod wake_deadline_tests {
         let _ = tile.app_mut();
         let _ = Widget::next_wake_deadline(&tile);
         assert!(asks.get() > settled);
+    }
+}
+
+#[cfg(test)]
+mod semantic_target_tests {
+    use super::theme_repaint_tests::{layout, paint};
+    use super::*;
+    use std::rc::Rc;
+
+    /// The node under `node` whose action target is `name`.
+    fn named<'a>(
+        node: &'a crate::a11y::AccessNode,
+        name: &str,
+    ) -> Option<&'a crate::a11y::AccessNode> {
+        if node.action_target.as_deref() == Some(name) {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| named(child, name))
+    }
+
+    fn settle(tile: &mut EmbeddedApp, theme: &Theme) {
+        for _ in 0..8 {
+            layout(tile, theme);
+            let _ = paint(tile, theme);
+            if !tile.needs_redraw() {
+                return;
+            }
+        }
+    }
+
+    fn act(tile: &mut EmbeddedApp, target: &str, action: &crate::a11y::Action) -> bool {
+        let mut doc = automerge::AutoCommit::new();
+        Widget::perform_semantic_action(
+            tile,
+            target,
+            action,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
+    }
+
+    /// A host reaches the controls of an app it shows by the names the app
+    /// gives them, where they are drawn in the host, under keys that stay
+    /// the same as the app is rebuilt, and acts on them through those
+    /// names as the app's own assistive technology would.
+    #[test]
+    fn a_hosted_apps_controls_are_reached_and_acted_on_by_name() {
+        let pressed = Rc::new(Cell::new(0_usize));
+        let counter = Rc::clone(&pressed);
+        let column = crate::widget::Column::new()
+            .push(Box::new(crate::widget::Button::new("first", "First")))
+            .push(Box::new(
+                crate::widget::Button::new("probe", "Probe")
+                    .on_click(move || counter.set(counter.get() + 1)),
+            ));
+        let app = App::new_with_controlled_inputs(crate::state::State::new(), Box::new(column));
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        settle(&mut tile, &theme);
+
+        let access = tile.accessibility().expect("the app publishes its tree");
+        let probe = named(&access, "probe").expect("the button is published by its name");
+        let key = probe.key;
+        assert!(named(&access, "first").is_some());
+        assert!(
+            probe
+                .bounds
+                .is_some_and(|bounds| bounds.to_rect().area() > 0.0),
+            "{probe:?} is placed in the host"
+        );
+
+        // Rebuilt, the app's controls keep the keys the host knows them by.
+        tile.build_tree(true);
+        settle(&mut tile, &theme);
+        let access = tile.accessibility().unwrap();
+        assert_eq!(named(&access, "probe").and_then(|node| node.key), key);
+
+        assert!(act(&mut tile, "probe", &crate::a11y::Action::Activate));
+        assert_eq!(pressed.get(), 1, "activating the name presses the button");
+        assert!(!act(&mut tile, "missing", &crate::a11y::Action::Activate));
+        assert_eq!(pressed.get(), 1);
+
+        // Focus moved to a control by name is where the keyboard lands once
+        // the host gives the app focus.
+        assert!(act(&mut tile, "first", &crate::a11y::Action::Focus));
+        tile.set_focus(true);
+        let focused = tile.app.focused_control().expect("a control has focus");
+        assert_eq!(
+            tile.app
+                .inspect_node(focused, |widget| widget.test_id().map(str::to_owned))
+                .unwrap()
+                .as_deref(),
+            Some("first")
+        );
     }
 }

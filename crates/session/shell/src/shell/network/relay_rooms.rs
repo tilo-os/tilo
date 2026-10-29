@@ -26,7 +26,7 @@
 //!   an app this device opens there first, on the room's session.
 use super::{
     NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
-    registered_home_peer_addrs, relay_topics_for_home_peers, room_topic_id,
+    registered_home_peer_addrs, room_topic_id,
 };
 use crate::network::invite::InviteRole;
 use crate::network::invite::enrollment_driver;
@@ -46,9 +46,8 @@ use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_network_actor::room_governance::Request;
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
-    ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
-    IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD,
-    RECORD_EFFECT_RECEIPT, RoomListing, member_resource,
+    ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssuedInvitation,
+    LIST_ROOMS, RoomListing,
 };
 
 /// How long one invocation on a room's own session may take.
@@ -116,6 +115,17 @@ pub(super) enum PersonsHost {
     /// A workspace host this session is configured with (a company node),
     /// pinned by its endpoint.
     Configured(iroh::EndpointAddr),
+}
+
+impl PersonsHost {
+    /// Where the host is reached, unless it is this device's own.
+    fn endpoint(&self) -> Option<iroh::EndpointId> {
+        match self {
+            Self::Here => None,
+            Self::Device { addr, .. } | Self::Configured(addr) => Some(addr.id),
+            Self::Relay(home) => Some(home.addr.id),
+        }
+    }
 }
 
 /// The device of `room`'s governor, when it is also the host `view`'s
@@ -192,7 +202,7 @@ pub(super) fn create_arguments(
 }
 
 /// The name a room shared from a workspace called `name` gets.
-fn room_name(name: &str) -> String {
+pub(super) fn room_name(name: &str) -> String {
     let name: String = name
         .trim()
         .chars()
@@ -229,7 +239,6 @@ pub(super) fn answer_of<T: serde::de::DeserializeOwned>(
         .map_err(|error| format!("the relay answered unexpectedly: {error}"))
 }
 
-/// What an invocation's receipt comes to.
 /// Why a host asked on a room's session gave no result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum HostAskError {
@@ -250,33 +259,7 @@ impl From<HostAskError> for String {
     }
 }
 
-/// What a host answered on `answer`, or that it could not be reached: the
-/// actor fails what waits on a workspace that has no session left.
-fn held_answer(
-    answer: &std::sync::mpsc::Receiver<Result<ReceiptStatus, String>>,
-) -> Result<serde_json::Value, HostAskError> {
-    let status = answer
-        .recv()
-        .map_err(|_| HostAskError::Unreachable(SESSIONS_CLOSED.into()))?
-        .map_err(HostAskError::Unreachable)?;
-    receipt_value(status).map_err(HostAskError::Refused)
-}
-
-/// Why a host's answer that was waited for never came.
-const SESSIONS_CLOSED: &str = "the connection to the room's host was lost";
-
-/// The arguments of the member's own `RECORD_EFFECT_RECEIPT` for `receipt`:
-/// its invocation and its exact encoding, which the host checks.
-pub(super) fn receipt_arguments(
-    receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-    let redacted = serde_json::to_string(receipt).map_err(|error| error.to_string())?;
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("invocation".into(), receipt.invocation.0.to_string().into());
-    arguments.insert("redacted".into(), redacted.into());
-    Ok(arguments)
-}
-
+/// What an invocation's receipt comes to.
 pub(super) fn receipt_value(status: ReceiptStatus) -> Result<serde_json::Value, String> {
     match status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
@@ -406,25 +389,6 @@ impl ShellNetwork {
         )
     }
 
-    /// Have the host governing `room` record `receipt`, the member's own
-    /// terminal receipt, answered whenever the host answers: while the
-    /// room's sessions last. For a worker.
-    pub(super) fn record_receipt_held(
-        &self,
-        room: RoomId,
-        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
-    ) -> Result<(), HostAskError> {
-        let host = self
-            .host_governor(room)
-            .map_err(HostAskError::Refused)?
-            .ok_or_else(|| HostAskError::Refused("no host governs the room".into()))?;
-        let arguments = receipt_arguments(receipt).map_err(HostAskError::Refused)?;
-        let answer = self
-            .ask_as_member(room, host, RECORD_EFFECT_RECEIPT, arguments)
-            .map_err(HostAskError::Unreachable)?;
-        held_answer(&answer).map(drop)
-    }
-
     /// Invoke the host operation `action` with `arguments` at `host`, as
     /// this device, asking the host directly.
     pub(super) fn ask_host(
@@ -488,265 +452,14 @@ impl ShellNetwork {
         })
     }
 
-    /// Queue the member's own `action` with `arguments` in `room`, at its
-    /// host governor `host`.
-    pub(super) fn ask_as_member(
-        &self,
-        room: RoomId,
-        host: iroh::EndpointId,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<std::sync::mpsc::Receiver<Result<ReceiptStatus, String>>, String> {
-        let invoke = invocation(
-            MEMBER_ACTIONS_PROVIDER,
-            member_resource(&room.to_string()),
-            action,
-            arguments,
-        );
-        self.ask_relay(room_topic_id(room), host, invoke)
-    }
-
-    /// Ask the host governing `room` the member action `action` (one of
-    /// `resource.share`, `resource.unshare`, `resource.permits`) with
-    /// `arguments`, as this device's person: the room decides it there, as
-    /// it decides every read and write a share's grant covers.
-    ///
-    /// # Errors
-    /// No host governs the room (a device governing it keeps no grants of a
-    /// share yet), or the ask cannot be sent.
-    pub(crate) fn ask_member_at_host(
-        &self,
-        room: RoomId,
-        action: &str,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<tilo_actions::remote::Pending<Result<serde_json::Value, String>>, String> {
-        let host = self
-            .host_governor(room)?
-            .ok_or("only a room a host governs keeps what is shared in it")?;
-        let receiver = self.ask_as_member(room, host, action, arguments)?;
-        let runtime = self
-            .runtime
-            .as_ref()
-            .ok_or("the room's reply queue is unavailable")?;
-        let (completer, answer) = tilo_actions::remote::pending();
-        runtime.spawn(async move {
-            let result = tokio::task::spawn_blocking(move || receiver.recv_timeout(ADMIN_TIMEOUT))
-                .await
-                .map_err(|_| "the room's reply worker stopped".to_owned())
-                .and_then(|reply| reply.map_err(|_| "the room did not answer in time".to_owned()))
-                .and_then(std::convert::identity)
-                .and_then(receipt_value);
-            completer.complete(result);
-        });
-        Ok(answer)
-    }
-
-    /// Share this device's window `tab` of `app_id` with `room` (`share`),
-    /// or stop sharing it, at the host governing the room: the room's
-    /// resource share of the window's node, which the host takes only from
-    /// the device the tab's topology namespace is registered to
-    /// ([`tilo_desktop_model::window_share`]). A Tilo app's window is shared
-    /// with what it shows (`shows`, a node), asked first, so no member ever
-    /// sees the window as an outside one; a window share the host then
-    /// refuses takes that back. Stopping the window's share ends both. The
-    /// host knows the window is this device's by the salt its id carries,
-    /// which this device's key derives. Waits for the host's answer: runs
-    /// on the peer-sync worker.
-    ///
-    /// # Errors
-    /// No host governs the room, or the host refused or did not answer.
-    pub(crate) fn share_window(
-        &self,
-        room: RoomId,
-        tab: crate::shell::state::TabId,
-        app_id: &str,
-        share: bool,
-        shows: Option<&str>,
-    ) -> Result<(), String> {
-        use tilo_desktop_model::window_share::{
-            window_node, window_share_id, window_shows_share_id,
-        };
-        use tilo_relay_session::rooms::{SHARE_RESOURCE, UNSHARE_RESOURCE};
-        let host = self
-            .host_governor(room)?
-            .ok_or("only a room a host governs keeps what is shared in it")?;
-        let ask = |action: &str, arguments: serde_json::Map<String, serde_json::Value>| {
-            self.ask_as_member(room, host, action, arguments)?
-                .recv_timeout(ADMIN_TIMEOUT)
-                .map_err(|_| "the room did not answer in time".to_owned())
-                .and_then(std::convert::identity)
-                .and_then(receipt_value)
-        };
-        let share_of = |id: String, node: String| {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert("share".into(), id.into());
-            arguments.insert("node".into(), node.into());
-            arguments.insert("access".into(), "view".into());
-            arguments
-        };
-        let mut stop = serde_json::Map::new();
-        stop.insert("share".into(), window_share_id(tab).into());
-        if !share {
-            return ask(UNSHARE_RESOURCE, stop).map(drop);
-        }
-        if let Some(shows) = shows {
-            ask(
-                SHARE_RESOURCE,
-                share_of(window_shows_share_id(tab), shows.to_owned()),
-            )?;
-        }
-        let window = window_node(&room.to_string(), app_id, tab).to_string();
-        ask(SHARE_RESOURCE, share_of(window_share_id(tab), window))
-            .map(drop)
-            .inspect_err(|_| {
-                if shows.is_some()
-                    && let Err(error) = ask(UNSHARE_RESOURCE, stop.clone())
-                {
-                    tracing::warn!(%room, tab, %error, "what a window shows stayed shared without it");
-                }
-            })
-    }
-
-    /// Send a person's own bounded terminal audit to the exact signed governor.
-    /// Room administration retains its independent same-person owner checks.
-    pub(crate) async fn record_governed_effect_receipt(
-        &self,
-        room: RoomId,
-        invocation: uuid::Uuid,
-        redacted: Vec<u8>,
-    ) -> Result<(), String> {
-        let Some(host) = self.host_governor(room)? else {
-            return self
-                .record_effect_at_governor(room, invocation, redacted)
-                .await;
-        };
-        let redacted = String::from_utf8(redacted).map_err(|_| "invalid effect encoding")?;
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("invocation".into(), invocation.to_string().into());
-        arguments.insert("redacted".into(), redacted.into());
-        let answer = self.ask_as_member(room, host, RECORD_EFFECT_RECEIPT, arguments)?;
-        let status = tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
-            .await
-            .map_err(|_| "effect reply worker stopped")?
-            .map_err(|_| "effect governor did not answer in time; outcome unknown")??;
-        receipt_value(status).map(drop)
-    }
-
     /// Whether `host`, the host governing `room`, is this device's own: the
     /// room is served here, or its host is this device's endpoint.
     pub(super) fn local_host_governs(&self, room: RoomId, host: iroh::EndpointId) -> bool {
         self.hosted_here(room) || host == self.local_peer_id
     }
 
-    /// Have the host governing `room` let `app` author the room's records,
-    /// as `caller`, this device: what opening an app there for the first time
-    /// asks, the host's own operation on the room's session. `None` when no
-    /// host governs the room: a device governing it decides through its own
-    /// owner. Answers the governance generation the host committed it in.
-    pub(crate) async fn grant_app_authorship_at_host(
-        &self,
-        room: RoomId,
-        caller: &tilo_user_identity::DeviceCert,
-        app: &str,
-    ) -> Option<Result<u64, String>> {
-        let host = match self.governing_host(room, caller) {
-            Ok(None) => return None,
-            Ok(Some(host)) => host,
-            Err(error) => return Some(Err(error)),
-        };
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("room".into(), room.to_string().into());
-        arguments.insert("app".into(), app.into());
-        // A room this device's own host holds is asked there in process,
-        // whichever route this device's view of it came by: a room served
-        // here never waits on the network, and answers even after the
-        // in-process session with it ended.
-        if self.local_host_governs(room, host) {
-            return Some(
-                self.local_host_action_awaited(GRANT_APP_AUTHORSHIP, arguments)
-                    .await
-                    .and_then(|answer| {
-                        answer
-                            .get("generation")
-                            .and_then(serde_json::Value::as_u64)
-                            .ok_or_else(|| {
-                                "the host answered the app authorship with something else".into()
-                            })
-                    }),
-            );
-        }
-        let invoke = invocation(
-            HOST_ACTIONS_PROVIDER,
-            HOST_ROOMS_RESOURCE.to_owned(),
-            GRANT_APP_AUTHORSHIP,
-            arguments,
-        );
-        Some(
-            async {
-                let answer = self.ask_relay(room_topic_id(room), host, invoke)?;
-                let status =
-                    tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
-                        .await
-                        .map_err(|_| "app authorship reply worker stopped")?
-                        .map_err(|_| "the host did not answer the app authorship in time")??;
-                receipt_value(status)?
-                    .get("generation")
-                    .and_then(serde_json::Value::as_u64)
-                    .ok_or_else(|| {
-                        "the host answered the app authorship with something else".into()
-                    })
-            }
-            .await,
-        )
-    }
-
-    /// Have the host governing `room` create `app`'s record `record` there
-    /// (`""` for the primary), empty and signed by the host, as `caller`,
-    /// this device: what opening an app there for the first time asks when
-    /// the room does not hold its record. The app's first state then goes to
-    /// the record as this device's own change. `None` when no host governs
-    /// the room: a device governing it creates the record through its own
-    /// owner. Answers whether the host created it (rather than finding it).
-    pub(crate) async fn prepare_application_record_at_host(
-        &self,
-        room: RoomId,
-        caller: &tilo_user_identity::DeviceCert,
-        app: &str,
-        record: &str,
-    ) -> Option<Result<bool, String>> {
-        let host = match self.governing_host(room, caller) {
-            Ok(None) => return None,
-            Ok(Some(host)) => host,
-            Err(error) => return Some(Err(error)),
-        };
-        let mut arguments = serde_json::Map::new();
-        arguments.insert("app".into(), app.into());
-        arguments.insert("record".into(), record.into());
-        let invoke = invocation(
-            MEMBER_ACTIONS_PROVIDER,
-            member_resource(&room.to_string()),
-            PREPARE_APPLICATION_RECORD,
-            arguments,
-        );
-        Some(
-            async {
-                let answer = self.ask_relay(room_topic_id(room), host, invoke)?;
-                let status =
-                    tokio::task::spawn_blocking(move || answer.recv_timeout(ADMIN_TIMEOUT))
-                        .await
-                        .map_err(|_| "app record reply worker stopped")?
-                        .map_err(|_| "the host did not answer the app record in time")??;
-                receipt_value(status)?
-                    .get("created")
-                    .and_then(serde_json::Value::as_bool)
-                    .ok_or_else(|| "the host answered the app record with something else".into())
-            }
-            .await,
-        )
-    }
-
-    /// The device of the host governing `room`, to ask a host or member
-    /// operation of as `caller`, this device's admitted custody of the room:
+    /// The device of the host governing `room`, to ask a host operation of
+    /// as `caller`, this device's admitted custody of the room:
     /// pinned to the current governor and its authenticated transport hint.
     /// `None` when no host governs the room.
     pub(super) fn governing_host(
@@ -1113,11 +826,16 @@ impl ShellNetwork {
         }
     }
 
-    /// Enter every room the configured workspace host `only` (each of them
-    /// when `None`) lists for this person and this device does not hold:
-    /// what a company node's session does when its host session comes up
-    /// and when the person's list changes, rather than looking again on a
-    /// timer. Blocks on the hosts: runs on the peer-sync worker.
+    /// Enter every room a host of the person's lists for this person and
+    /// this device does not hold: how a device learns which workspaces its
+    /// person holds, from the hosts that hold them, and joins them as any
+    /// member device. `only` names the host asked: a configured workspace
+    /// host, a home relay the person paired, or another of the person's
+    /// devices whose session is up; `None` asks every configured workspace
+    /// host. A host is asked when its session comes up, a device when its
+    /// session starts, the configured hosts when the person's list changes,
+    /// rather than any of them on a timer. Blocks on the hosts: runs on the
+    /// peer-sync worker.
     pub(super) fn enter_configured_host_rooms(&self, only: Option<iroh::EndpointId>) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
@@ -1126,11 +844,30 @@ impl ShellNetwork {
             tracing::debug!(%error, "host rooms: no device certificate");
             return;
         }
-        for addr in super::configured_host_addrs()
+        let mut hosts: Vec<PersonsHost> = super::configured_host_addrs()
             .into_iter()
-            .filter(|addr| only.is_none_or(|only| only == addr.id))
+            .map(PersonsHost::Configured)
+            .collect();
+        if let Some(only) = only {
+            hosts.extend(
+                super::registered_home_peer_addrs(self.local_person)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(PersonsHost::Relay),
+            );
+            if let Some(user) = self.local_person
+                && self.personal_route_targets(&user).contains(&only)
+            {
+                hosts.push(PersonsHost::Device {
+                    addr: iroh::EndpointAddr::new(only),
+                    device: *only.as_bytes(),
+                });
+            }
+        }
+        for host in hosts
+            .into_iter()
+            .filter(|host| only.is_none_or(|only| host.endpoint() == Some(only)))
         {
-            let host = PersonsHost::Configured(addr);
             let listed = self
                 .ask_host(&host, LIST_ROOMS, serde_json::Map::new())
                 .and_then(answer_of::<Vec<RoomListing>>);
@@ -1160,8 +897,7 @@ impl ShellNetwork {
         if &device == self.local_peer_id.as_bytes() {
             return Some(PersonsHost::Here);
         }
-        let topics = relay_topics_for_home_peers(std::iter::empty(), Some(user));
-        if let Some(home) = registered_home_peer_addrs(Some(user), &topics)
+        if let Some(home) = registered_home_peer_addrs(Some(user))
             .ok()?
             .into_iter()
             .find(|home| home.expectation.device_public_key == device)
@@ -1370,13 +1106,5 @@ mod tests {
         assert_eq!(host.target.provider, "tilo.host");
         assert_eq!(host.target.address.resource, "host.rooms");
         assert_eq!(host.target.address.action, "room.list");
-        let member = invocation(
-            MEMBER_ACTIONS_PROVIDER,
-            member_resource("r"),
-            RECORD_EFFECT_RECEIPT,
-            serde_json::Map::new(),
-        );
-        assert_eq!(member.target.provider, "tilo.member");
-        assert_eq!(member.target.address.resource, "workspace.member:r");
     }
 }

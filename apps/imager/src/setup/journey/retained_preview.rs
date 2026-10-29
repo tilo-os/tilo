@@ -1,26 +1,12 @@
-//! Suspend owned preparation across a media surface, while the framework
-//! retires and renews its actual action bindings on every surface transition.
+//! Suspend owned preparation across a media window, while the framework
+//! retires and renews its actual action bindings on every window transition.
 use super::*;
 use std::rc::Weak;
 use ui::widget::Decorator;
 
-pub(super) struct RetainedPreview {
+struct RetainedPreview {
     preview: Option<InstallerPreview>,
     suspended: Weak<RefCell<Option<InstallerPreview>>>,
-    returned: bool,
-}
-impl RetainedPreview {
-    pub fn new(
-        preview: InstallerPreview,
-        suspended: &Rc<RefCell<Option<InstallerPreview>>>,
-        returned: bool,
-    ) -> Self {
-        Self {
-            preview: Some(preview),
-            suspended: Rc::downgrade(suspended),
-            returned,
-        }
-    }
 }
 impl Decorator for RetainedPreview {
     type Inner = InstallerPreview;
@@ -53,28 +39,30 @@ impl Drop for RetainedPreview {
         }
     }
 }
-impl ResourceSurface<Imager, InstallerPreviewEffect> for RetainedPreview {
-    fn present(&mut self, state: &Rc<Imager>) {
-        self.inner_mut().present(state);
+/// `preview` as a view of the imager resource, retained across a media
+/// window: one coming back from it keeps what it prepared and only takes up
+/// the new view's handles.
+pub(super) fn view(
+    cx: &ViewCx<Imager>,
+    mut preview: InstallerPreview,
+    suspended: &Rc<RefCell<Option<InstallerPreview>>>,
+    returned: bool,
+) -> ui::widget::Element {
+    if returned {
+        preview.reattach_after_media(cx);
+    } else {
+        preview.attach_view(cx);
     }
-    fn attach(&mut self, cx: SurfaceCx<Imager>) {
-        if self.returned {
-            self.inner_mut().reattach_after_media(cx);
-        } else {
-            self.inner_mut().attach(cx);
-        }
-    }
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.inner_mut().stage(scenario);
-    }
-    fn effect(
-        &mut self,
-        effect: InstallerPreviewEffect,
-        _cx: &mut EffectCx<Imager, Self>,
-    ) -> EffectAnswer {
-        self.inner_mut().answer_preview(effect)
-    }
-    fn effects(&self) -> Vec<EffectStatus> {
-        self.inner().effects()
-    }
+    let suspended = Rc::downgrade(suspended);
+    crate::window_view::wrapped_window_view(
+        cx,
+        preview,
+        move |preview| {
+            Box::new(RetainedPreview {
+                preview: Some(preview),
+                suspended,
+            })
+        },
+        InstallerPreview::effect,
+    )
 }

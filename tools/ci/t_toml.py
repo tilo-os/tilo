@@ -69,23 +69,12 @@ GROUP_FIELDS = {
            "needs": ["vm-test-binaries"], "env": {"TILO_STAGING_HANDOFF_BIN": "/target/debug/tilo-staging-handoff"},
            **HEAVY},
     "dist": {"why": "writes under target/ in the source tree"},
-    "vm-acceptance": {"why": "writes under target/ in the source tree", **HEAVY},
     "browser-compute-web": {"why": "installs the MoQ library's npm dependencies in scripts/moq-browser",
                             "prepare": "bash tools/ci/prepare-moq-library.sh"},
     "browser-runtime-web": {"why": "builds the MoQ library with npm in scripts/moq-browser",
                             "prepare": "bash tools/ci/prepare-moq-library.sh"},
 }
 SUITE_PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin"
-
-
-# What each policy step must be able to pass with, measured over its runs (t.toml's rule: the
-# peak memory with half again as much room, rounded up): one core, and at most 600 MiB, which
-# policy/too-many-arguments peaks at (`cargo metadata`); most scans of the tree stay under 300.
-POLICY_REQUIREMENT = '{ cores = 1, memory = "1GiB" }'
-# The suite's tests that read the whole tree, their files side by side: 1.3 GiB at most.
-POLICY_TESTS_REQUIREMENT = '{ cores = 8, memory = "2GiB" }'
-# A test file's own check (steps.split_checks): 161 MiB at most.
-POLICY_TEST_FILE_REQUIREMENT = '{ cores = 1, memory = "1GiB" }'
 
 
 def policy_checks(root: Path = ROOT) -> str:
@@ -104,7 +93,6 @@ def policy_checks(root: Path = ROOT) -> str:
             "[[check]]",
             f"name = {json.dumps(step.check)}",
             'requires = ["arch=any"]',
-            f"requirement = {POLICY_TEST_FILE_REQUIREMENT if step.pruned else POLICY_TESTS_REQUIREMENT if step.tests else POLICY_REQUIREMENT}",
             f"run = {json.dumps(step.t_command)}",
             # Those that read the commit's history (release contracts at HEAD) get t's own .git,
             # which keys their result per commit.
@@ -133,8 +121,6 @@ def suite_checks(manifest: suites.Manifest) -> str:
             "env = { " + ", ".join(f"{key} = {json.dumps(value)}" for key, value in
                                     {"PATH": SUITE_PATH, **fields.get("env", {})}.items()) + " }",
             'requires = ["arch=x86_64"]',
-            *([f"requirement = {{ cores = {group.requirement[0]}, memory = {json.dumps(group.requirement[1])} }}"]
-              if group.requirement else []),
             *([f"isolation = {json.dumps(fields['isolation'])}"] if "isolation" in fields else []),
             *([f"needs = {array(fields['needs'])}"] if "needs" in fields else []),
             *([f"on = {array(fields['on'])}"] if "on" in fields else []),
@@ -165,14 +151,10 @@ def goldens(image: str) -> str:
         f"packages = {array(packages)}",
         f"args = {array(['--locked', '--profile', 'ci', '--tests', '--no-tests=pass', '-E', golden])}",
         'env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
-        # Measured over its runs: the 99th-percentile peak memory with half again as much room, and
-        # the 90th-percentile peak cores, at most 16. Batches of its packages run as one job.
-        'requirement = { cores = 16, memory = "48GiB" }',
-        'cost = "minutes"',
-        # Pushes to main don't run it: it holds 16 cores and 48 GiB per job, and on main it took
-        # 21 job-hours a day. Main runs it when t has room left after everything else (`idle`),
-        # and t bisects a failure to the commit that broke it; release candidates run it too
-        # (visual-goldens below); `t test goldens` runs it for a working tree.
+        # Pushes to main don't run it: on main it took 21 job-hours a day. Main runs it when t has
+        # room left after everything else (`idle`), and t bisects a failure to the commit that
+        # broke it; release candidates run it too (visual-goldens below); `t test goldens` runs it
+        # for a working tree.
         'on = ["idle"]',
         "default = false",
         "",
@@ -184,8 +166,6 @@ def goldens(image: str) -> str:
         "run = " + json.dumps(f"bash tools/test-env.sh cargo nextest run --locked --profile ci --tests "
                               f"--no-tests=pass {' '.join(f'-p {name}' for name in packages)} -E '{golden}'"),
         'env = { TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
-        'requirement = { cores = 16, memory = "48GiB" }',
-        'cost = "heavy"',
         'on = ["stable", "dispatch"]',
         "default = false",
         "heavy = true",
@@ -210,7 +190,6 @@ def arm64_goldens(image: str) -> str:
                               f"--no-tests=pass {packages} -E '{golden}'"),
         'env = { VK_DRIVER_FILES = "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json", TILO_REQUIRE_GPU = "1", TILO_TEST_NTFS_FIXTURES = "0" }',
         'on = ["dispatch"]',
-        'cost = "heavy"',
         "default = false",
     ]) + "\n"
 
@@ -258,16 +237,10 @@ def size_checks() -> str:
         lines = ["[[check]]", f"name = {json.dumps(name)}", f"run = {json.dumps(run)}",
                  f"requires = [{json.dumps(node)}]"]
         if shared is None:
-            # The runtime library's link and the engines' run side by side.
-            lines += ['requirement = { cores = 16, memory = "32GiB" }',
-                      f"outputs = {array([f'/target/thin-runtime/{path}' for path in SHARED_OUTPUTS])}"]
+            lines += [f"outputs = {array([f'/target/thin-runtime/{path}' for path in SHARED_OUTPUTS])}"]
         else:
-            # An app's own crates, one of them compiled as one unit. One app's check compiling it
-            # afresh (optimized, with debug info) peaked at 7.4 GiB on 8 cores; reusing what is
-            # cached, at 2.1 GiB. The runtime size compiles several apps at once.
-            memory = "10GiB" if name.startswith("app-size/") else "16GiB"
-            lines += [f'requirement = {{ cores = 8, memory = "{memory}" }}', f"needs = [{json.dumps(shared)}]"]
-        lines += ["timeout_secs = 5400", 'cost = "heavy"', "default = false"]
+            lines += [f"needs = [{json.dumps(shared)}]"]
+        lines += ["timeout_secs = 5400", "default = false"]
         if shared is None:
             # The push gate's architecture's is built for every main push that changes it
             # (`main`), so the gate's size check of an app a commit changes (tools/ci/pre_push.py)
@@ -294,9 +267,8 @@ def size_checks() -> str:
     # run builds the whole collection, 10 to 16 minutes on 16 cores.
     whole = ["\n".join(["[[check]]", f'name = "app-sizes-{arch}"', f'run = "bash tools/apps/t-release.sh sizes {arch}"',
                         f"requires = [{json.dumps(node)}]",
-                        # The runtime library's link and the apps' one-unit codegen run side by side.
-                        'requirement = { cores = 16, memory = "32GiB" }', "timeout_secs = 5400", 'cost = "heavy"',
-                        'on = ["stable", "dispatch", "idle"]', "default = false", "heavy = true"]) + "\n"
+                        "timeout_secs = 5400", 'on = ["stable", "dispatch", "idle"]', "default = false",
+                        "heavy = true"]) + "\n"
              for arch, node in SIZE_ARCHES]
 
     app_size = {app: [check(f"app-size/{app}-{arch}", f"bash tools/apps/t-release.sh app-size {arch} {app}",

@@ -10,18 +10,15 @@
 //! formulas, charts and comments pointing at the cells they meant when rows
 //! and columns move.
 
-use std::rc::Rc;
-
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "samples")]
 use ui::framework::Fixture;
-use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::{
-    self, ActionCx, ActionDecl, Atom, Derived, Id, JsonSchema, NonBlank, Refusal, SearchEntry,
-    resource,
+    self, ActionCx, Atom, Derived, Id, JsonSchema, NonBlank, Refusal, SearchEntry, resource,
 };
 use ui::widget::Element;
 
@@ -419,6 +416,21 @@ fn reanchored(layout: &Layout, edit: GridEdit, area: &Area) -> Option<Area> {
     })
 }
 
+/// Bring a workbook of version 1 up to this one: it stored each mark's
+/// value in a comment's paragraphs flat beside its variant's name; it is
+/// stored by its variant now.
+fn upgrade(
+    doc: &mut ui::tilo_resource::Doc,
+    from: u32,
+) -> Result<(), ui::tilo_resource::ModelError> {
+    if from != 1 {
+        return Err(ui::tilo_resource::ModelError::invalid(format!(
+            "no workbook migration from {from}"
+        )));
+    }
+    tilo_rich_text::annotation::store_bodies_by_variant(doc, &ui::automerge::ROOT, "comments")
+}
+
 #[resource(
     kind = "sheets.workbook",
     label = "Workbook",
@@ -427,6 +439,8 @@ fn reanchored(layout: &Layout, edit: GridEdit, area: &Area) -> Option<Area> {
     read_content = Workbook::read_cells,
     answer = crate::cell_actions::answer,
     params = verbs,
+    version = 2,
+    migrate = upgrade,
 )]
 impl Workbook {
     /// Add a sheet.
@@ -1329,7 +1343,7 @@ pub fn parse_cell_anchor(anchor: &str) -> Option<(Id, Addr)> {
     Some((Id::from_raw(sheet), (col.parse().ok()?, row.parse().ok()?)))
 }
 
-/// Framework app: the sheets grid is the surface over [`Workbook`].
+/// Framework app: the sheets grid is the view of [`Workbook`].
 pub struct SheetsShell;
 
 /// Every screenshot scenario: the sample workbook with one surface of the app
@@ -1448,38 +1462,7 @@ impl ResourceApp for SheetsShell {
     }
 
     fn view(cx: &mut ViewCx<Workbook>) -> Element {
-        let app = SheetsApp::new();
-        // A search hit, or an agent's `open`, shows the sheet or cell it names.
-        cx.on_open(app.opener());
-        cx.surface(app)
-    }
-}
-
-impl ResourceSurface<Workbook, SheetsEffect> for SheetsApp {
-    fn effect(&mut self, effect: SheetsEffect, cx: &mut EffectCx<Workbook, Self>) -> EffectAnswer {
-        self.answer_effect(effect, cx)
-    }
-
-    fn present(&mut self, state: &Rc<Workbook>) {
-        self.adopt_resource_state(state);
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Workbook>) {
-        self.attach_content(cx.content());
-        if let Some(path) = cx.launch_arguments().first() {
-            self.show_file_of(std::path::PathBuf::from(path));
-        }
-        self.attach_framework(cx.dispatcher(), cx.live());
-        self.attach_people(cx.people());
-        self.follow_locale(cx.settings::<tilo_locale::Locale>());
-    }
-
-    fn stage(&mut self, scenario: Option<&str>) {
-        self.stage_scenario(scenario);
-    }
-
-    fn bound_declarations(&self) -> Vec<ActionDecl<Workbook>> {
-        self.selection_declarations()
+        crate::app::window(cx, SheetsApp::new())
     }
 }
 

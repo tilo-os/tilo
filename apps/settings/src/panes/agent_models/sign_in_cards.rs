@@ -3,16 +3,17 @@
 //! offers to add one.
 
 use agent_provider_config::{ProviderProfile, vertex_target};
-use ui::framework::LiveRow;
+use ui::framework::{Actions, LiveRow};
 use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, Row, Text};
 
-use super::{AgentModelsEffect, AgentModelsModel};
+use super::{AgentModelsEffect, AgentModelsModel, invoking};
 use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::panes::agent_sign_in::{self, SignInSetup, SignedIn};
 use crate::panes::agent_vertex::VertexSetup;
-use crate::widgets::{
+use crate::resource::Settings;
+use provider_settings_ui::widgets::{
     Item, SettingsSection, StatusTone, note, row, rows, section, semantic_status_pill, value_row,
 };
 
@@ -94,7 +95,7 @@ impl AgentModelsModel {
             ),
         };
         // A key is stored through provider administration only.
-        if service.issuer().is_none() && !self.cx.provider_admin.is_available() {
+        if service.issuer().is_none() && !self.provider_admin.is_available() {
             return Err(t("agent-provider-offline"));
         }
         self.cancel_vertex();
@@ -175,7 +176,7 @@ impl AgentModelsModel {
                 }
                 Ok(())
             }
-            (signed, existing, Some(reply)) if self.cx.provider_admin.is_available() => {
+            (signed, existing, Some(reply)) if self.provider_admin.is_available() => {
                 let mut config = self.panel.provider_config().clone();
                 let profile = (!existing).then(|| agent_sign_in::new_profile(setup.service, &id));
                 if let Some(profile) = &profile {
@@ -200,9 +201,7 @@ impl AgentModelsModel {
                 let profile = agent_sign_in::new_profile(setup.service, &id);
                 let mut config = self.providers.config();
                 config.upsert(profile);
-                self.providers
-                    .store(config)
-                    .map_err(|error| error.to_string())?;
+                self.providers.store(&self.sections, config)?;
                 self.panel.offline_config = self.providers.config();
                 self.read_vertex_keys();
                 self.notice = Some(t_args("agent-sign-in-done", &[("service", label.into())]));
@@ -227,6 +226,7 @@ impl AgentModelsModel {
     /// key, endpoint or protocol to edit.
     fn push_sign_in_profile(
         &self,
+        actions: &Actions<Settings>,
         body: &mut Vec<Item>,
         profile: &ProviderProfile,
         default_profile: Option<&str>,
@@ -239,8 +239,7 @@ impl AgentModelsModel {
         body.push(value_row(profile.display_label(), &issuer));
         let google = profile.signs_in_with_google();
         if google {
-            self.vertex_fields(profile)
-                .push(&self.cx, body, &profile_id);
+            self.vertex_fields(profile).push(actions, body, &profile_id);
         }
         let vertex = self
             .vertex
@@ -253,7 +252,7 @@ impl AgentModelsModel {
                 .is_some_and(|setup| setup.profile_id == profile_id);
         let state = self.vertex_keys.get(&profile_id);
         if let Some(Err(error)) = state {
-            body.push(row(crate::widgets::error_caption(&t_args(
+            body.push(row(provider_settings_ui::widgets::error_caption(&t_args(
                 "agent-sign-in-read-error",
                 &[("error", error.as_str().into())],
             ))));
@@ -275,21 +274,25 @@ impl AgentModelsModel {
             Box::new(Text::new(&t("agent-sign-in-unknown")).dimmed())
         }));
         if let Some(message) = vertex.and_then(VertexSetup::message) {
-            body.push(row(crate::widgets::error_caption(message)));
+            body.push(row(provider_settings_ui::widgets::error_caption(message)));
         }
-        body.push(self.sign_in_controls(profile, waiting));
+        body.push(Self::sign_in_controls(actions, profile, waiting));
         // Vertex AI's model is typed above; every other one is chosen from
         // what the provider lists.
         if !google || vertex_target(&profile.endpoint).is_none() {
             self.panel
                 .profile_models(body, profile, self.panel.can_admin());
         }
-        body.extend(self.default_button(profile, default_profile));
+        body.extend(Self::default_button(actions, profile, default_profile));
     }
 
     /// Sign in again (or stop the sign-in under way), offer to agents or
     /// not, and remove: the controls of a provider that signs in.
-    fn sign_in_controls(&self, profile: &ProviderProfile, waiting: bool) -> Item {
+    fn sign_in_controls(
+        actions: &Actions<Settings>,
+        profile: &ProviderProfile,
+        waiting: bool,
+    ) -> Item {
         let profile_id = profile.id.clone();
         let google = profile.signs_in_with_google();
         let again = if google {
@@ -304,7 +307,8 @@ impl AgentModelsModel {
         };
         let mut controls = Row::new();
         if waiting {
-            controls = controls.push(Box::new(self.cx.bind_invocation(
+            controls = controls.push(Box::new(invoking(
+                actions,
                 Button::new(
                     &format!("agent-models-vertex-cancel-{profile_id}"),
                     &t("agent-cancel"),
@@ -312,7 +316,8 @@ impl AgentModelsModel {
                 AgentModelsEffect::CancelSignIn,
             )));
         } else if let Some(again) = again {
-            controls = controls.push(Box::new(self.cx.bind_invocation(
+            controls = controls.push(Box::new(invoking(
+                actions,
                 Button::new(
                     &format!("agent-models-vertex-sign-in-{profile_id}"),
                     &t("agent-sign-in-again"),
@@ -322,8 +327,11 @@ impl AgentModelsModel {
         }
         row(Box::new(
             controls
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
-                .push(Box::new(self.cx.bind_invocation(
+                .push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ))
+                .push(Box::new(invoking(
+                    actions,
                     Button::new(
                         &format!("agent-models-enabled-{profile_id}"),
                         &if profile.enabled {
@@ -337,8 +345,11 @@ impl AgentModelsModel {
                         on: !profile.enabled,
                     },
                 )))
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
-                .push(Box::new(self.cx.bind_invocation(
+                .push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ))
+                .push(Box::new(invoking(
+                    actions,
                     Button::new(
                         &format!("agent-models-remove-provider-{profile_id}"),
                         &t("agent-remove-provider"),
@@ -352,13 +363,17 @@ impl AgentModelsModel {
 
     /// The setups under way, the hosted providers and their request limits,
     /// then the providers that sign in and the offers to add one.
-    pub(super) fn push_provider_cards(&self, cards: &mut Vec<SettingsSection>) {
+    pub(super) fn push_provider_cards(
+        &self,
+        actions: &Actions<Settings>,
+        cards: &mut Vec<SettingsSection>,
+    ) {
         if let Some(setup) = self.vertex.as_ref().filter(|setup| !setup.existing) {
-            cards.push(setup.section(&self.cx));
+            cards.push(setup.section(actions));
         }
         // Also for signing in again: GitHub's code is shown here.
         if let Some(setup) = self.sign_in.as_ref() {
-            cards.push(setup.section(&self.cx));
+            cards.push(setup.section(actions));
         }
         cards.extend(self.panel.sections_without_sign_in());
         let config = self.panel.provider_config();
@@ -370,9 +385,12 @@ impl AgentModelsModel {
             .enumerate()
         {
             if index > 0 {
-                services = services.push(crate::widgets::gap(ui::tokens::SpacingStep::S2));
+                services = services.push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ));
             }
-            services = services.push(Box::new(self.cx.bind_invocation(
+            services = services.push(Box::new(invoking(
+                actions,
                 Button::new(
                     &format!("agent-models-sign-in-{}", service.slug()),
                     &service.sign_in_label(),
@@ -386,12 +404,16 @@ impl AgentModelsModel {
         body.push(row(Box::new(services)));
         body.push(row(Box::new(
             Row::new()
-                .push(Box::new(self.cx.bind_invocation(
+                .push(Box::new(invoking(
+                    actions,
                     Button::new("agent-models-add-vertex", &t("agent-add-vertex")),
                     AgentModelsEffect::AddGoogleVertex,
                 )))
-                .push(crate::widgets::gap(ui::tokens::SpacingStep::S2))
-                .push(Box::new(self.cx.bind_invocation(
+                .push(provider_settings_ui::widgets::gap(
+                    ui::tokens::SpacingStep::S2,
+                ))
+                .push(Box::new(invoking(
+                    actions,
                     Button::new("agent-models-add-gemini", &t("agent-add-gemini")),
                     AgentModelsEffect::AddGoogleGemini,
                 ))),
@@ -411,7 +433,12 @@ impl AgentModelsModel {
             .iter()
             .filter(|profile| profile.sign_in.is_some())
         {
-            self.push_sign_in_profile(&mut body, profile, config.default_profile.as_deref());
+            self.push_sign_in_profile(
+                actions,
+                &mut body,
+                profile,
+                config.default_profile.as_deref(),
+            );
         }
         cards.push(section(&t("agent-sign-in-title"), rows(body)));
     }
@@ -419,10 +446,9 @@ impl AgentModelsModel {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{mock, model_over, snapshot};
+    use super::super::tests::{announced, hosted_model, mock, model_over, snapshot};
     use super::*;
     use crate::panes::agent_vertex;
-    use crate::panes::model::PaneModel as _;
     use account_custody::{Capability, Custodian, GrantState, OAuthIssuer, OAuthUse};
     use std::sync::Arc;
 
@@ -445,7 +471,7 @@ mod tests {
     fn a_chatgpt_sign_in_adds_a_provider_with_its_own_grant() {
         let server = tilo_oauth::fake::FakeAuthorizationServer::start();
         let vault = tempfile::tempdir().unwrap();
-        let mut pane = model_over(mock(snapshot(None)));
+        let (_app, mut pane) = hosted_model(mock(snapshot(None)));
         pane.custodian = Custodian::for_root(Some(vault.path().to_path_buf())).with_use(
             OAuthUse::new(OAuthIssuer::OpenAi, Capability::Models),
             server.provider(),
@@ -490,7 +516,7 @@ mod tests {
             GrantState::Usable
         );
         assert_eq!(server.verifiers().len(), 1, "one PKCE exchange");
-        let text = crate::widgets::announced_text(pane.compose().as_ref());
+        let text = announced(&mut pane);
         assert!(
             text.iter()
                 .any(|line| line.contains("OpenAI doesn't offer ChatGPT sign-in")),

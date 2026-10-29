@@ -2,7 +2,7 @@
 //! saving real files, showing a file or a location, and the editor's own
 //! commands. Every one is published on the project resource, so a button, the
 //! command palette, Ctrl+K, an agent and a script reach the same handler
-//! ([`crate::CodeApp`]'s `ResourceSurface::effect`).
+//! (the editor's view, which answers them on [`crate::CodeApp`]).
 
 use ui::tilo_resource::{self, Effect};
 

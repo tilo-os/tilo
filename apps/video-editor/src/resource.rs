@@ -1,4 +1,4 @@
-//! The project's verbs, and the editor as the app's surface.
+//! The project's verbs, and the editor as the app's window.
 //!
 //! Fields change through the field edits every path offers
 //! (`Project::paths().clips.item(&id).opacity.set(0.5)`); the editor's own
@@ -827,7 +827,7 @@ pub fn reveal_effect(
 
 ui::embedded_catalog!(static CATALOG, ["en-US"]);
 
-/// The editor as a framework app: one surface, the whole window.
+/// The editor as a framework app: one window, the whole editor.
 pub struct VideoEditor;
 
 impl ResourceApp for VideoEditor {
@@ -839,7 +839,7 @@ impl ResourceApp for VideoEditor {
     const ICON: Option<&'static str> = Some("video-editor");
     /// A media file the editor is launched on (`video-editor CLIP`) is
     /// imported into the project and placed on the timeline, as a pick from
-    /// the import chooser is (see the surface's `attach`).
+    /// the import chooser is (see `VideoEditorApp::hosted`).
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Project>) -> Element {
@@ -851,7 +851,22 @@ impl ResourceApp for VideoEditor {
             dispatcher.effect(&effect);
             Ok(())
         });
-        cx.surface(crate::VideoEditorApp::new())
+        let window = crate::VideoEditorApp::hosted(cx);
+        // Effects answer at once from what the window shows: the playhead,
+        // the selection, a render in flight.
+        let published = window.published();
+        cx.window_effects(crate::VideoEditorApp::effect)
+            .status(move || published.borrow().effect_statuses());
+        // Edits bound to this participant's playhead and measured mix,
+        // published on the project beside its own actions.
+        let published = window.published();
+        cx.bind_declarations(move |project| published.borrow().declarations(project));
+        #[cfg(feature = "samples")]
+        {
+            let later = window.later();
+            cx.on_stage(move |scenario| crate::VideoEditorApp::stage_later(&later, scenario));
+        }
+        Box::new(window)
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {

@@ -1,5 +1,4 @@
-//! An owner publication holds the state file's writer across its data sync,
-//! never the tree. The frame loop and the network read and write the tree
+//! An owner publication never holds the tree across its data sync. The frame loop and the network read and write the tree
 //! every tick, and a sync on a loaded disk takes seconds: a CI run once
 //! caught the tree held for 29 s by a publication, long enough for the
 //! network to drop its workspace host as silent. These tests hold a
@@ -17,7 +16,7 @@ use std::{sync::mpsc, time::SystemTime};
 const ADDED: &str = "Added while the owner wrote";
 
 /// A document commit published on a thread of its own and held at its
-/// state-file write until the returned sender sends or is dropped.
+/// write until the returned sender sends or is dropped.
 fn commit_held_at_its_write(
     owner: &NativeWorkspaceOwner,
     room: RoomId,
@@ -40,7 +39,7 @@ fn commit_held_at_its_write(
             || publisher.commit_document(request, now).map(drop),
         )
     });
-    tilo_test_env::recv("the commit to reach its state-file write", &at_write);
+    tilo_test_env::recv("the commit to reach its write", &at_write);
     (release, thread)
 }
 
@@ -92,10 +91,7 @@ fn a_save_queued_while_an_owner_publication_writes_is_not_lost() {
     persist::wait_for_saves();
 
     let saved = persist::load_tree_from(&path).expect("the state file loads");
-    let (live, runtime) = {
-        let tree = tree.read();
-        (tree.native_authority.clone(), tree.native_runtime.clone())
-    };
+    let live = tree.read().native_authority.clone();
     assert!(
         saved
             .desktop
@@ -105,12 +101,9 @@ fn a_save_queued_while_an_owner_publication_writes_is_not_lost() {
         "the workspace saved during the publication is not in the state file"
     );
     assert_eq!(
-        store::digest(&saved.native_authority).unwrap(),
-        store::digest(&live).unwrap(),
-        "the state file holds the published record"
+        saved.native_authority.revision(),
+        live.revision(),
+        "the owner's file holds the record the tree holds"
     );
-    assert!(
-        runtime.holds(store::digest(&live).unwrap()),
-        "the writer accepted the record the tree holds"
-    );
+    assert_eq!(live.revision(), owner.revision());
 }

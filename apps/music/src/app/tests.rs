@@ -4723,3 +4723,32 @@ mod query_view_tests;
 mod handoff_tests;
 #[path = "shuffle_tests.rs"]
 mod shuffle_tests;
+
+#[test]
+fn a_library_that_does_not_read_is_not_an_empty_one() {
+    let (mut app, mut doc) = app_with_doc();
+    let tracks = app.lib.tracks.len();
+    let playlists = app.lib.playlists().count();
+    assert!(
+        tracks > 0 && playlists > 0,
+        "the sample library holds music"
+    );
+
+    automerge::transaction::Transactable::put(
+        &mut doc,
+        automerge::ROOT,
+        "tracks",
+        "not a map of tracks",
+    )
+    .expect("the field is written");
+    assert!(<Library as ui::tilo_resource::Resource>::read(&doc).is_err());
+    app.reload_library(&doc);
+
+    assert_eq!(
+        app.lib.tracks.len(),
+        tracks,
+        "the catalog stays as it last read"
+    );
+    assert_eq!(app.lib.playlists().count(), playlists);
+    assert_eq!(app.stored_library.tracks.len(), tracks);
+}

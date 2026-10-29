@@ -22,12 +22,29 @@
 //!   this) and applies the winner; if the group still differs from the
 //!   projection, its next reconcile commits again on top. The device that
 //!   committed the winner publishes it again when it sees the loser, so a
-//!   host that keeps only a channel's newest frame keeps the winner. Two
-//!   geneses compete the same way.
+//!   host that keeps only a channel's newest frame keeps the winner.
+//! - **Any participant creates the group, once.** A participant that holds
+//!   no state for a channel waits and asks; one that sees no genesis
+//!   ([`ChannelPeer::found`]) creates the group, and one that has seen a
+//!   genesis never creates another. Two geneses made at once compete like
+//!   two commits: every device keeps the lower digest, and a member of the
+//!   other group starts over and joins the winner.
+//! - **No branch takes content with it.** A device that leaves a group state
+//!   behind (a genesis or a commit that lost, or a state it can no longer
+//!   follow) keeps that state's content keys, and once it is in the group
+//!   again its next commit hands every member the ones they lack (sealed for
+//!   that commit's epoch, [`MlsGovernanceAction::Commit`]'s `history`), and
+//!   every later joiner gets them with the rest of the history. Whatever was
+//!   sealed under a branch that lost stays readable to every member.
 //! - **Falling behind starts over.** Hosts keep only a channel's newest
 //!   frame, so a member that finds a frame it can never reach (it missed
 //!   one, or followed a branch that lost) waits again with a fresh member
 //!   key and asks anew; any participant admits it, history included.
+//!
+//! A device that cannot name the channel's record (it lost the route that
+//! says whose record the channel carries) cannot tell who may read it, so it
+//! commits nothing; it still follows the commits of the participants that
+//! can ([`ChannelPeer::follow`]).
 //!
 //! Removal takes effect at the membership op, which the caller's broker
 //! enforces on its own; the commit that rotates the key comes from whichever
@@ -48,19 +65,22 @@ use collab_types::{
 use openmls::prelude::BasicCredential;
 use serde::{Deserialize, Serialize};
 use tilo_seal::{Context, Label};
-use zeroize::Zeroizing;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::gate::ChannelGate;
 use crate::persistence::MemberRecord;
 use crate::signer::{DeviceSigner, complete_now};
-use crate::{ChannelContentKeys, ChannelGroup, Error, KeyPackage, MemberKey, Result, VaultKey};
+use crate::{
+    ChannelContentKeys, ChannelGroup, ContentKeyring, Error, KeyPackage, MemberKey, Result,
+    VaultKey,
+};
 
 /// Requests one channel keeps, one per device.
 const MAX_REQUESTS: usize = 4096;
 /// Sealed peer state larger than this is refused when read.
 const MAX_PEER_STATE: usize = 320 * 1024 * 1024;
 const PEER_RECORD: &[u8] = b"channel-crypto/channel-peer";
-const PEER_VERSION: u8 = 1;
+const PEER_VERSION: u8 = 2;
 
 /// What the device can do with the channel's content right now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,6 +121,8 @@ pub struct Reconciled {
     pub admitted: Vec<Ed25519PublicKey>,
     /// Devices removed, including members removed to be admitted again.
     pub removed: Vec<Ed25519PublicKey>,
+    /// The commit handed every member content keys of a branch that lost.
+    pub history: bool,
     /// Requests dropped because their key package was malformed, named
     /// another device, or was refused by MLS.
     pub refused: Vec<Ed25519PublicKey>,
@@ -109,7 +131,7 @@ pub struct Reconciled {
 impl Reconciled {
     /// Whether the group changed.
     pub fn changed(&self) -> bool {
-        !self.admitted.is_empty() || !self.removed.is_empty()
+        !self.admitted.is_empty() || !self.removed.is_empty() || self.history
     }
 }
 
@@ -128,6 +150,9 @@ pub struct ChannelPeer {
     parent: Option<Vec<u8>>,
     /// The digest of the genesis this channel follows.
     genesis: Option<[u8; 32]>,
+    /// That genesis, published again when a losing one appears, so a device
+    /// that made the loser while it heard nothing hears of the winner.
+    genesis_frame: Option<MlsGovernanceFrame>,
     /// The newest epoch a checked frame named, for a device not in the
     /// group: what its broker gates content on.
     seen_epoch: Option<u64>,
@@ -135,6 +160,9 @@ pub struct ChannelPeer {
     requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1>,
     /// Frames to publish, written before they were queued.
     outbox: Vec<MlsGovernanceFrame>,
+    /// Content keys of group states this device left behind that the group
+    /// it is in may lack: handed to the members with its next commit.
+    orphaned: ContentKeyring,
     /// `None` for a peer kept in memory.
     path: Option<PathBuf>,
     /// The `issued_at` of the last request minted here, so one minted again
@@ -155,6 +183,8 @@ struct PeerFile {
     requests: Vec<MlsAccessRequestV1>,
     outbox: Vec<MlsGovernanceFrame>,
     issued: u64,
+    orphaned: Vec<(u64, [u8; 32])>,
+    genesis_frame: Option<MlsGovernanceFrame>,
 }
 
 fn digest(frame: &MlsGovernanceFrame) -> Result<[u8; 32]> {
@@ -219,9 +249,11 @@ impl ChannelPeer {
             head: None,
             parent: None,
             genesis: None,
+            genesis_frame: None,
             seen_epoch: None,
             requests: BTreeMap::new(),
             outbox: Vec::new(),
+            orphaned: ContentKeyring::new(),
             path: dir.map(|dir| Self::path_in(dir, channel)),
             issued: 0,
         };
@@ -231,8 +263,8 @@ impl ChannelPeer {
 
     /// Create `channel`'s group with this device alone in it, and queue its
     /// genesis. Only for a channel no genesis is known of: a participant
-    /// that holds no state for a channel first catches up with what its room
-    /// retains.
+    /// that holds no state for a channel first waits and catches up with
+    /// what its room retains, then creates the group with [`Self::found`].
     ///
     /// # Errors
     ///
@@ -243,35 +275,8 @@ impl ChannelPeer {
         signer: Box<dyn DeviceSigner>,
         vault: &VaultKey,
     ) -> Result<Self> {
-        let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
-        let group = ChannelGroup::create(channel, MemberKey::for_device(&device)?)?;
-        let mut peer = Self {
-            channel,
-            device,
-            signer,
-            record: MemberRecord::Joined(Box::new(group)),
-            head: None,
-            parent: None,
-            genesis: None,
-            seen_epoch: None,
-            requests: BTreeMap::new(),
-            outbox: Vec::new(),
-            path: dir.map(|dir| Self::path_in(dir, channel)),
-            issued: 0,
-        };
-        let genesis = peer
-            .sign(MlsGovernanceFrame::unsigned(
-                channel,
-                [0; 32],
-                0,
-                MlsGovernanceAction::Genesis,
-                device,
-            ))
-            .await?;
-        peer.genesis = Some(digest(&genesis)?);
-        peer.head = Some(genesis.clone());
-        peer.outbox.push(genesis);
-        peer.save(vault)?;
+        let mut peer = Self::waiting(dir, channel, signer, vault)?;
+        peer.found(vault).await?;
         Ok(peer)
     }
 
@@ -287,6 +292,51 @@ impl ChannelPeer {
         vault: &VaultKey,
     ) -> Result<Self> {
         complete_now(Self::create(dir, channel, signer, vault))
+    }
+
+    /// Create the channel's group with this waiting device alone in it, and
+    /// queue its genesis, when no group of the channel is known here.
+    /// Returns whether it did: a device that has seen a genesis or a commit,
+    /// or holds a group, never creates another ([`Self::knows_group`]). The device's own access request goes
+    /// unanswered from then on; the requests it holds are admitted by its
+    /// next reconcile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the group cannot be created, signed or written;
+    /// the device is then still waiting.
+    pub async fn found(&mut self, vault: &VaultKey) -> Result<bool> {
+        if self.knows_group() {
+            return Ok(false);
+        }
+        let group = ChannelGroup::create(self.channel, MemberKey::for_device(&self.device)?)?;
+        let genesis = self
+            .sign(MlsGovernanceFrame::unsigned(
+                self.channel,
+                [0; 32],
+                0,
+                MlsGovernanceAction::Genesis,
+                self.device,
+            ))
+            .await?;
+        self.record = MemberRecord::Joined(Box::new(group));
+        self.parent = None;
+        self.genesis = Some(digest(&genesis)?);
+        self.genesis_frame = Some(genesis.clone());
+        self.head = Some(genesis.clone());
+        self.outbox.push(genesis);
+        self.settle_orphaned();
+        self.save(vault)?;
+        Ok(true)
+    }
+
+    /// [`Self::found`] with a signer that answers at once.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::found`], or when the signer would have to be awaited.
+    pub fn found_now(&mut self, vault: &VaultKey) -> Result<bool> {
+        complete_now(self.found(vault))
     }
 
     /// This peer's state sealed under `vault`, for a device that keeps state
@@ -307,11 +357,17 @@ impl ChannelPeer {
             requests: self.requests.values().cloned().collect(),
             outbox: self.outbox.clone(),
             issued: self.issued,
+            orphaned: self.orphaned.to_wire(),
+            genesis_frame: self.genesis_frame.clone(),
         };
-        let plaintext = Zeroizing::new(
-            postcard::to_allocvec(&file)
-                .map_err(|error| Error::Serialization(error.to_string()))?,
-        );
+        let mut file = file;
+        let encoded = postcard::to_allocvec(&file)
+            .map(Zeroizing::new)
+            .map_err(|error| Error::Serialization(error.to_string()));
+        for (_, key) in &mut file.orphaned {
+            key.zeroize();
+        }
+        let plaintext = encoded?;
         tilo_seal::envelope::seal(
             &vault.0,
             Context::new(Label::ChannelMlsState, PEER_RECORD),
@@ -341,11 +397,16 @@ impl ChannelPeer {
             bytes,
         )
         .map_err(|_| Error::StateCrypto("state authentication failed"))?;
+        if plaintext.first() != Some(&PEER_VERSION) {
+            return Err(Error::InvalidState(
+                "peer state is of another version".into(),
+            ));
+        }
         let file: PeerFile = postcard::from_bytes(&plaintext)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        if file.version != PEER_VERSION || file.channel != channel {
+        if file.channel != channel {
             return Err(Error::InvalidState(
-                "peer state is of another version or channel".into(),
+                "peer state is of another channel".into(),
             ));
         }
         let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
@@ -375,6 +436,7 @@ impl ChannelPeer {
             head: file.head,
             parent: file.parent,
             genesis: file.genesis,
+            genesis_frame: file.genesis_frame,
             seen_epoch: file.seen_epoch,
             requests: file
                 .requests
@@ -382,6 +444,7 @@ impl ChannelPeer {
                 .map(|request| (request.device, request))
                 .collect(),
             outbox: file.outbox,
+            orphaned: ContentKeyring::from_wire(file.orphaned)?,
             path: None,
             issued: file.issued,
         })
@@ -430,6 +493,14 @@ impl ChannelPeer {
     /// Whether a genesis of this channel is known here.
     pub fn has_genesis(&self) -> bool {
         self.genesis.is_some()
+    }
+
+    /// Whether this device knows the channel has a group: it saw a genesis
+    /// or a commit of it, or is in it. Such a device never creates one.
+    pub fn knows_group(&self) -> bool {
+        self.genesis.is_some()
+            || self.seen_epoch.is_some()
+            || !matches!(self.record, MemberRecord::Waiting(_))
     }
 
     /// Every device in the group, this one included; empty while not in it.
@@ -601,7 +672,8 @@ impl ChannelPeer {
     }
 
     /// Whether the group differs from `allowed`: a member it no longer
-    /// names, or an allowed device asking.
+    /// names, an allowed device asking, or content keys of a state this
+    /// device left behind that the members lack.
     pub fn differs(&self, allowed: &BTreeSet<Ed25519PublicKey>) -> bool {
         if !matches!(self.record, MemberRecord::Joined(_)) || !allowed.contains(&self.device) {
             return false;
@@ -610,6 +682,37 @@ impl ChannelPeer {
             .iter()
             .any(|member| *member != self.device && !allowed.contains(member))
             || !self.asking(allowed).is_empty()
+            || !self.unshared().is_empty()
+    }
+
+    /// Whether this device holds content keys of a state it left behind that
+    /// its group lacks: its next reconcile hands them over.
+    pub fn holds_unshared_keys(&self) -> bool {
+        !self.unshared().is_empty()
+    }
+
+    /// The content keys of states this device left behind that its group
+    /// lacks.
+    fn unshared(&self) -> ContentKeyring {
+        match &self.record {
+            MemberRecord::Joined(group) => self.orphaned.missing_from(group.keyring()),
+            MemberRecord::Waiting(_) | MemberRecord::Removed => ContentKeyring::new(),
+        }
+    }
+
+    /// Keep the content keys of a group state this device leaves behind.
+    fn orphan(&mut self, left: &MemberRecord) {
+        if let MemberRecord::Joined(group) = left {
+            // A full keyring keeps what it holds; the rest is lost as before.
+            self.orphaned.merge(group.keyring()).ok();
+        }
+    }
+
+    /// Forget the orphaned keys the group now holds.
+    fn settle_orphaned(&mut self) {
+        if let MemberRecord::Joined(group) = &self.record {
+            self.orphaned = self.orphaned.missing_from(group.keyring());
+        }
     }
 
     /// Write the one commit that moves the group to `allowed` and queue it,
@@ -637,6 +740,7 @@ impl ChannelPeer {
             .copied()
             .collect();
         let mut joining = self.joining(allowed, &mut outcome);
+        let history = self.unshared();
         let MemberRecord::Joined(group) = &mut self.record else {
             return Ok(outcome);
         };
@@ -656,7 +760,7 @@ impl ChannelPeer {
             let packages: Vec<KeyPackage> =
                 joining.iter().map(|(_, package)| package.clone()).collect();
             group
-                .stage_commit(&leaves, &packages)
+                .stage_commit(&leaves, &packages, &history)
                 .map(|staged| (staged, removed))
         };
         let (staged, removed) = match stage(group, &joining) {
@@ -668,7 +772,7 @@ impl ChannelPeer {
                     self.requests.remove(&device);
                     outcome.refused.push(device);
                 }
-                if leaving.is_empty() {
+                if leaving.is_empty() && history.is_empty() {
                     self.save(vault)?;
                     return Ok(outcome);
                 }
@@ -687,6 +791,7 @@ impl ChannelPeer {
                 key_history,
             })
         });
+        let handed_over = staged.history.is_some();
         let frame = MlsGovernanceFrame::unsigned(
             self.channel,
             previous,
@@ -696,6 +801,7 @@ impl ChannelPeer {
                 added: added.clone(),
                 commit: staged.commit,
                 joining: material,
+                history: staged.history,
             },
             self.device,
         );
@@ -703,10 +809,32 @@ impl ChannelPeer {
             Ok(frame) => frame,
             Err(error) => return self.abandon(error),
         };
+        self.merge_own(frame, parent, handed_over.then_some(&history), vault)?;
+        outcome.admitted = added;
+        outcome.removed = removed;
+        outcome.history = handed_over;
+        Ok(outcome)
+    }
+
+    /// Merge the commit this device staged and signed as `frame`, which
+    /// handed the members `history`, and queue it.
+    fn merge_own(
+        &mut self,
+        frame: MlsGovernanceFrame,
+        parent: Vec<u8>,
+        history: Option<&ContentKeyring>,
+        vault: &VaultKey,
+    ) -> Result<()> {
         let MemberRecord::Joined(group) = &mut self.record else {
-            return Ok(outcome);
+            return Ok(());
         };
         group.merge_pending_transaction()?;
+        if let Some(history) = history {
+            // Handed over whether or not a full keyring keeps them here.
+            group.keyring.merge(history).ok();
+            self.orphaned = self.orphaned.missing_from(history);
+        }
+        self.settle_orphaned();
         self.parent = Some(parent);
         self.head = Some(frame.clone());
         self.outbox.extend(
@@ -714,10 +842,7 @@ impl ChannelPeer {
                 .into_deliveries()
                 .map_err(|error| Error::Serialization(error.to_string()))?,
         );
-        self.save(vault)?;
-        outcome.admitted = added;
-        outcome.removed = removed;
-        Ok(outcome)
+        self.save(vault)
     }
 
     /// The key package of every allowed device asking, dropping the requests
@@ -786,6 +911,28 @@ impl ChannelPeer {
         allowed: &BTreeSet<Ed25519PublicKey>,
         vault: &VaultKey,
     ) -> Result<PeerEvent> {
+        self.apply(frame, Some(allowed), vault)
+    }
+
+    /// Apply one frame while this device cannot tell who may read the
+    /// channel (it cannot name the channel's record): a commit from a member
+    /// of the group is followed as MLS checks it, and a Welcome admits this
+    /// device. A genesis only counts while none is known, so no one can make
+    /// this device leave its group with a genesis of their own.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::receive`].
+    pub fn follow(&mut self, frame: MlsGovernanceFrame, vault: &VaultKey) -> Result<PeerEvent> {
+        self.apply(frame, None, vault)
+    }
+
+    fn apply(
+        &mut self,
+        frame: MlsGovernanceFrame,
+        allowed: Option<&BTreeSet<Ed25519PublicKey>>,
+        vault: &VaultKey,
+    ) -> Result<PeerEvent> {
         if frame.channel != self.channel {
             return Err(governance("frame names another channel"));
         }
@@ -793,23 +940,30 @@ impl ChannelPeer {
         frame
             .check()
             .map_err(|error| governance(error.to_string()))?;
-        if !allowed.contains(&frame.signed_by) {
+        if allowed.is_some_and(|allowed| !allowed.contains(&frame.signed_by)) {
             return Err(governance("frame is not signed by a participant"));
         }
         let incoming = digest(&frame)?;
         match &frame.action {
-            MlsGovernanceAction::Genesis => self.receive_genesis(&frame, incoming, vault),
+            MlsGovernanceAction::Genesis => {
+                if allowed.is_none() && self.genesis.is_some_and(|known| known != incoming) {
+                    return Ok(PeerEvent::Ignored);
+                }
+                self.receive_genesis(&frame, incoming, vault)
+            }
             MlsGovernanceAction::Commit { .. } => {
-                let removed: BTreeSet<_> = frame.removed().iter().collect();
-                let added: BTreeSet<_> = frame.added().iter().collect();
-                if added.iter().any(|device| !allowed.contains(*device))
-                    || removed
-                        .iter()
-                        .any(|device| allowed.contains(*device) && !added.contains(*device))
-                {
-                    return Err(governance(
-                        "commit adds or removes a device the membership does not",
-                    ));
+                if let Some(allowed) = allowed {
+                    let removed: BTreeSet<_> = frame.removed().iter().collect();
+                    let added: BTreeSet<_> = frame.added().iter().collect();
+                    if added.iter().any(|device| !allowed.contains(*device))
+                        || removed
+                            .iter()
+                            .any(|device| allowed.contains(*device) && !added.contains(*device))
+                    {
+                        return Err(governance(
+                            "commit adds or removes a device the membership does not",
+                        ));
+                    }
                 }
                 match &self.record {
                     MemberRecord::Joined(_) => self.receive_commit(frame, incoming, allowed, vault),
@@ -828,9 +982,18 @@ impl ChannelPeer {
     ) -> Result<PeerEvent> {
         match self.genesis {
             Some(known) if known == incoming => Ok(PeerEvent::Duplicate),
-            Some(known) if known < incoming => Ok(PeerEvent::Ignored),
+            Some(known) if known < incoming => {
+                if let Some(winner) = &self.genesis_frame
+                    && !self.outbox.contains(winner)
+                {
+                    self.outbox.push(winner.clone());
+                    self.save(vault)?;
+                }
+                Ok(PeerEvent::Ignored)
+            }
             known => {
                 self.genesis = Some(incoming);
+                self.genesis_frame = Some(frame.clone());
                 self.seen_epoch = Some(self.seen_epoch.unwrap_or(0).max(frame.epoch));
                 if known.is_some() && matches!(self.record, MemberRecord::Joined(_)) {
                     // This device's group grew from a genesis that lost.
@@ -848,7 +1011,7 @@ impl ChannelPeer {
         &mut self,
         frame: MlsGovernanceFrame,
         incoming: [u8; 32],
-        allowed: &BTreeSet<Ed25519PublicKey>,
+        allowed: Option<&BTreeSet<Ed25519PublicKey>>,
         vault: &VaultKey,
     ) -> Result<PeerEvent> {
         let Some(head) = &self.head else {
@@ -889,7 +1052,14 @@ impl ChannelPeer {
                     self.record = replaced;
                     self.desynchronise(vault)
                 }
-                Ok(event) => Ok(event),
+                Ok(event) => {
+                    // What this device sealed under the branch that lost is
+                    // handed to the members with its next commit.
+                    self.orphan(&replaced);
+                    self.settle_orphaned();
+                    self.save(vault)?;
+                    Ok(event)
+                }
             };
         }
         if frame.epoch <= head_epoch {
@@ -915,7 +1085,7 @@ impl ChannelPeer {
     fn apply_commit(
         &mut self,
         frame: MlsGovernanceFrame,
-        allowed: &BTreeSet<Ed25519PublicKey>,
+        allowed: Option<&BTreeSet<Ed25519PublicKey>>,
         vault: &VaultKey,
     ) -> Result<PeerEvent> {
         let me = self.device;
@@ -926,6 +1096,7 @@ impl ChannelPeer {
             removed,
             added,
             commit,
+            history,
             ..
         } = &frame.action
         else {
@@ -951,7 +1122,7 @@ impl ChannelPeer {
             return self.desynchronise(vault);
         }
         let removes_me = removed.contains(&me);
-        if removes_me && allowed.contains(&me) {
+        if removes_me && allowed.is_some_and(|allowed| allowed.contains(&me)) {
             return Err(governance(
                 "commit removes this device, which the membership still names",
             ));
@@ -985,6 +1156,11 @@ impl ChannelPeer {
             self.save(vault)?;
             return Ok(PeerEvent::Removed);
         }
+        if let Some(history) = history {
+            // Keys of a branch that lost; one this group cannot open is only
+            // the committer's loss.
+            group.import_key_history(history).ok();
+        }
         let epoch = group.epoch();
         // A request from a device the commit added with another key is older
         // than the one it was admitted with.
@@ -994,6 +1170,7 @@ impl ChannelPeer {
         });
         self.parent = Some(parent);
         self.head = Some(frame);
+        self.settle_orphaned();
         self.save(vault)?;
         Ok(PeerEvent::Advanced { epoch })
     }
@@ -1031,6 +1208,7 @@ impl ChannelPeer {
                 self.record = MemberRecord::Joined(Box::new(group));
                 self.head = Some(frame);
                 self.parent = Some(parent);
+                self.settle_orphaned();
                 self.save(vault)?;
                 Ok(PeerEvent::Joined { epoch })
             }
@@ -1045,7 +1223,11 @@ impl ChannelPeer {
         if let MemberRecord::Joined(group) = &self.record {
             self.seen_epoch = Some(self.seen_epoch.unwrap_or(0).max(group.epoch()));
         }
-        self.record = MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?));
+        let left = std::mem::replace(
+            &mut self.record,
+            MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?)),
+        );
+        self.orphan(&left);
         self.head = None;
         self.parent = None;
         self.save(vault)?;

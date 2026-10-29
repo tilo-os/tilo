@@ -187,7 +187,7 @@ pub struct ChatApp {
     pub(crate) last_post: Option<(Id, String)>,
     /// The open sheet that makes a channel or a category, or changes a
     /// channel.
-    pub(crate) channel_sheet: Option<crate::channel_sheet::ChannelSheet>,
+    pub(crate) channel_sheet: Option<Box<crate::channel_sheet::ChannelSheet>>,
     /// The detail drawer shows the open channel's pinned messages.
     pub(crate) pins_open: bool,
     /// The top of the main composer as last drawn, `None` when none was. A
@@ -240,7 +240,7 @@ pub struct ChatApp {
     pub(crate) emoji_anchor: Rect,
     /// The toolkit's shared picker, placed at `emoji_anchor` while
     /// `emoji_open`.
-    pub(crate) emoji_picker: ui::widget::EmojiPicker,
+    pub(crate) emoji_picker: Box<ui::widget::EmojiPicker>,
     /// Each message's reaction pills, in the timeline (`false`) and the
     /// thread (`true`), with their arrival and count motion.
     pub(crate) reaction_strips:
@@ -310,9 +310,6 @@ pub struct ChatApp {
     /// Authoritative combined-output bounds supplied by the shell. Standalone
     /// app/test hosts leave this empty and fall back to the app rect.
     pub(crate) floating_surface_bounds: Rect,
-
-    /// Opens the platform search when the header's search button is used.
-    pub(crate) search_opener: ui::search::SearchOpener,
 
     /// The shell's sidebar: the channels this window shows in it and what
     /// the person does there ([`crate::sidebar`]).
@@ -554,7 +551,7 @@ pub struct ChatApp {
     /// id: what its accessible row's children are read and picked by.
     pub(crate) painted_messages: HashMap<Id, PaintedMessage>,
     /// The conversation's rows, measured and painted, kept between frames.
-    pub(crate) timeline: std::cell::RefCell<crate::timeline::Timeline>,
+    pub(crate) timeline: Box<std::cell::RefCell<crate::timeline::Timeline>>,
     /// Counts each load of [`Self::messages`], so what is kept of them knows
     /// when to look again.
     pub(crate) messages_revision: u64,
@@ -710,7 +707,7 @@ impl ChatApp {
             emoji_open: false,
             emoji_target: None,
             emoji_anchor: Rect::ZERO,
-            emoji_picker: ui::widget::EmojiPicker::framed(),
+            emoji_picker: Box::new(ui::widget::EmojiPicker::framed()),
             reaction_strips: std::cell::RefCell::default(),
             history_open: None,
             history_anchor: Point::ZERO,
@@ -746,7 +743,6 @@ impl ChatApp {
             huddle_chip_rows: 0,
             pending_floating: None,
             floating_surface_bounds: Rect::ZERO,
-            search_opener: ui::search::SearchOpener::new(),
             places: NavFeed::new(),
             bar: None,
             bar_entries: crate::window_bar::BarEntries::new(),
@@ -839,7 +835,7 @@ impl ChatApp {
             call_pictures: ui::call_pictures::CallPictures::new(),
             picture_tiles: std::cell::RefCell::new(Vec::new()),
             painted_messages: HashMap::new(),
-            timeline: std::cell::RefCell::default(),
+            timeline: Box::default(),
             messages_revision: 0,
             camera_on_live: false,
             media_error: None,
@@ -1506,18 +1502,6 @@ impl Collaborative for ChatApp {
     }
 }
 
-impl ui::widget::controls::ActionControls for ChatApp {
-    /// The header's search button asks the platform to open search over
-    /// Chat; everything else comes from the children.
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.search_opener.take().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(ui::widget::controls::take_control_invocation)
-        })
-    }
-}
-
 impl Widget for ChatApp {
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         // The record is lent to the settle pass: the room's other records
@@ -2104,7 +2088,7 @@ impl Widget for ChatApp {
             .find(|(rect, _)| rect.contains(point))?;
         match hit {
             Hit::Dismiss => None,
-            Hit::FocusEmojiSearch => ui::Widget::cursor_shape(&self.emoji_picker, point),
+            Hit::FocusEmojiSearch => ui::Widget::cursor_shape(&*self.emoji_picker, point),
             Hit::AgentDragHandle | Hit::CallDragHandle => Some(CursorIcon::Grab),
             hit if self.text_field_access(hit).is_some() => Some(CursorIcon::Text),
             _ => Some(CursorIcon::Pointer),

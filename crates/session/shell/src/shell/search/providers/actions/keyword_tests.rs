@@ -4,7 +4,7 @@ use super::*;
 
 /// Every action the shell declares names the other words people use
 /// for it beside its title, and every language lists some: search finds
-/// an action by them ("power off", "wifi", "dark mode"), and one that
+/// an action by them ("power off", "dark mode"), and one that
 /// loses them is found by its label alone.
 #[test]
 fn every_shell_action_declares_the_other_words_people_use_for_it() {
@@ -12,14 +12,6 @@ fn every_shell_action_declares_the_other_words_people_use_for_it() {
         .iter()
         .map(|action| (action.id, action.keywords))
         .collect();
-    declared.extend(
-        QUICK_SETTINGS_ACTIONS
-            .iter()
-            .map(|&(id, _, _, keywords)| (id, keywords)),
-    );
-    declared.extend(QS_TOGGLES.iter().map(|toggle| (toggle.id, toggle.keywords)));
-    declared.extend(LEVEL_STEPS.iter().map(|step| (step.id, step.keywords)));
-    declared.push((QS_MUTE_ID, QS_MUTE_KEYWORDS));
     declared.extend([
         (
             "workspace.archived.restore",
@@ -32,7 +24,7 @@ fn every_shell_action_declares_the_other_words_people_use_for_it() {
     ]);
     declared.extend(super::super::session_actions::declared_keywords());
     assert!(
-        declared.len() > 150,
+        declared.len() > 140,
         "the shell declares {} actions",
         declared.len()
     );

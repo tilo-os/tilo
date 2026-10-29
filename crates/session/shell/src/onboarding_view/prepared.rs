@@ -29,9 +29,9 @@ impl OnboardingView {
                         self.reopen_completed_parts(&home, identity_dir, &pending);
                     }
                     Ok(false) => self.prepared_review = Some(pending),
-                    Err(_) => self.error = Some(t("onboarding-prepared-failed")),
+                    Err(_) => self.error = Some(tilo_onboarding::t("onboarding-prepared-failed")),
                 },
-                Err(_) => self.error = Some(t("onboarding-prepared-failed")),
+                Err(_) => self.error = Some(tilo_onboarding::t("onboarding-prepared-failed")),
             }
         }
     }
@@ -68,7 +68,7 @@ impl OnboardingView {
                     Ok(None) => {}
                     Err(_) => {
                         self.prepared_pending = true;
-                        self.error = Some(t("onboarding-prepared-failed"));
+                        self.error = Some(tilo_onboarding::t("onboarding-prepared-failed"));
                     }
                 }
             }
@@ -97,7 +97,7 @@ impl OnboardingView {
             self.error = Some(t("onboarding-prepared-other-person"));
         } else {
             self.prepared_pending = true;
-            self.error = Some(t("onboarding-prepared-failed"));
+            self.error = Some(tilo_onboarding::t("onboarding-prepared-failed"));
         }
     }
 
@@ -332,7 +332,9 @@ impl OnboardingView {
         if result.is_err() {
             self.prepared_home_password = None;
         }
-        self.error = result.err().map(|()| t("onboarding-prepared-failed"));
+        self.error = result
+            .err()
+            .map(|()| tilo_onboarding::t("onboarding-prepared-failed"));
         self.invalidation.both();
     }
 
@@ -483,13 +485,13 @@ impl OnboardingView {
                     Ok::<(), ()>(())
                 })();
                 if result.is_err() {
-                    self.error = Some(t("onboarding-prepared-failed"));
+                    self.error = Some(tilo_onboarding::t("onboarding-prepared-failed"));
                     self.peer = None;
                 }
                 self.invalidation.both();
             }
             Some(Err(_)) => {
-                self.error = Some(t("onboarding-prepared-failed"));
+                self.error = Some(tilo_onboarding::t("onboarding-prepared-failed"));
                 self.peer = None;
                 self.invalidation.both();
             }
@@ -534,7 +536,7 @@ impl OnboardingView {
         })();
         if result.is_err() {
             self.prepared_home_password = None;
-            self.error = Some(t("onboarding-prepared-failed"));
+            self.error = Some(tilo_onboarding::t("onboarding-prepared-failed"));
         }
         self.invalidation.both();
     }
@@ -566,7 +568,7 @@ impl OnboardingView {
             )) => {
                 self.flow.resume_created(identity);
                 if self.refresh_backup_capability().is_err() {
-                    self.error = Some(t("onboarding-prepared-failed"));
+                    self.error = Some(tilo_onboarding::t("onboarding-prepared-failed"));
                     self.invalidation.both();
                     return;
                 }
@@ -575,7 +577,7 @@ impl OnboardingView {
                     .map(tilo_identity_host::enrolled_transport::ResolvedCurrentIdentity::declaration)
                     .transpose()
                 else {
-                    self.error = Some(t("onboarding-prepared-failed"));
+                    self.error = Some(tilo_onboarding::t("onboarding-prepared-failed"));
                     self.invalidation.both();
                     return;
                 };
@@ -609,10 +611,10 @@ impl OnboardingView {
                     );
                     self.prepared_review = None;
                 } else {
-                    self.error = Some(t("onboarding-prepared-failed"));
+                    self.error = Some(tilo_onboarding::t("onboarding-prepared-failed"));
                 }
             }
-            Err(()) => self.error = Some(t("onboarding-prepared-failed")),
+            Err(()) => self.error = Some(tilo_onboarding::t("onboarding-prepared-failed")),
         }
         self.invalidation.both();
     }

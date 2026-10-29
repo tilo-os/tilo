@@ -9,11 +9,11 @@
 //!   entering rooms, letting an app author a room), as provider
 //!   [`HOST_ACTIONS_PROVIDER`], to the devices of the relay's own person
 //!   only, over `Envelope::HostAction` on their session with it, naming no
-//!   workspace ([`ask_host`]), or on a room's workspace they hold there;
-//! - what a member does for themselves (claiming their topology namespace,
-//!   recording their own effect receipt, and having the host create the
-//!   empty record of an app they open there first) as provider
-//!   [`MEMBER_ACTIONS_PROVIDER`], on the room's workspace.
+//!   workspace ([`ask_host`]), or on a room's workspace they hold there.
+//!
+//! What a member does for themselves (their effect receipts, their shares,
+//! the empty record of an app they open first) their own device writes into
+//! the room; no relay is asked for it.
 //!
 //! These are postcard wire formats between separately updated hosts and
 //! desktops: field and variant order are the wire, so append only.
@@ -83,10 +83,6 @@ pub const LIST_ROOMS: &str = "room.list";
 /// restricted to its person and redeemable `expires_in_seconds` (600 when
 /// omitted).
 pub const ENTER_ROOM: &str = "room.enter";
-/// Let the application `app` author the records of `room`: what opening an
-/// app in a room the host governs for the first time asks. Answers the
-/// room's `generation` that carries it.
-pub const GRANT_APP_AUTHORSHIP: &str = "room.grant-app-authorship";
 
 /// Serve a room a device of the host's own person governs, as that governor
 /// asks: arguments `room`, `workspace_id`, `governor_hint` (the governor's
@@ -113,48 +109,6 @@ pub const DETACH_HOST: &str = "room.detach-host";
 pub struct HostedRoom {
     /// The serving host's own signed address for the room, postcard in hex.
     pub host_hint: String,
-}
-
-/// The provider a relay answers a room member's own business under, on the
-/// room's workspace: what they do for themselves, never governance.
-pub const MEMBER_ACTIONS_PROVIDER: &str = "tilo.member";
-pub const MEMBER_RESOURCE_KIND: &str = "workspace.member";
-/// Record the caller's own terminal effect receipt: `invocation` (a UUID)
-/// and `redacted`, its canonical redacted public receipt as JSON text.
-/// Answers the room's `generation` that carries it.
-pub const RECORD_EFFECT_RECEIPT: &str = "effect-receipt.record";
-/// Save or remove one shortcut of the room as the caller: `change`, a
-/// shortcut change as JSON text, whose saved shortcut names as its saver
-/// nobody or the caller, by their device's proof. Answers the room's
-/// `generation` that carries it.
-pub const SAVE_SHORTCUT: &str = "shortcut.save";
-/// Have the host governing the room create the record `record` (`""` for
-/// the app's primary) of `app`, empty and signed by the host: what opening
-/// an app there for the first time asks when the room does not hold its
-/// record. Only for an app the room lets author and a record the caller may
-/// change; no member-supplied bytes cross it, and the app's first state is
-/// then the member's own change. Answers `created` (false when the record
-/// was already there) and the room's `generation`.
-pub const PREPARE_APPLICATION_RECORD: &str = "application-record.prepare";
-/// Share one record, or one item of it, with the room: `share` (the share's
-/// id, such as the message that shares it), `node` (the record's or item's
-/// node, in its text form) and `access` (`view` or `edit`). The room's
-/// members below the owner are granted what the access gives, never more
-/// than the caller holds (`tilo_action_policy::share`). Answers `grants`,
-/// how many it holds for the share.
-pub const SHARE_RESOURCE: &str = "resource.share";
-/// End the share `share`: revoke its grants the caller gave (or any, for a
-/// caller who may govern `revoke`). Answers `revoked`, how many; none is
-/// no error.
-pub const UNSHARE_RESOURCE: &str = "resource.unshare";
-/// What the caller may do at `node`, as the room decides their reads and
-/// writes there. Answers `read` and `undoable`.
-pub const RESOURCE_PERMITS: &str = "resource.permits";
-
-/// The resource a member's own business in `room` is published on.
-#[must_use]
-pub fn member_resource(room: &str) -> String {
-    format!("{MEMBER_RESOURCE_KIND}:{room}")
 }
 
 /// One room a relay governs, as its host actions answer it.
@@ -243,16 +197,6 @@ pub struct RemoveMemberRequest {
     pub request_id: [u8; 32],
     /// The member's person.
     pub user_public_key: [u8; 32],
-}
-
-/// Delegate one application's workspace authorship. A repeated `request_id`
-/// returns the change it committed, and fails if it named another app.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GrantAppAuthorshipRequest {
-    /// Caller-chosen idempotency key; never zero.
-    pub request_id: [u8; 32],
-    /// The exact registered application identifier.
-    pub app: String,
 }
 
 /// A governed room as its administrators see it.

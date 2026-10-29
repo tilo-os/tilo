@@ -63,8 +63,8 @@
 //! raises it, and older builds then refuse the file instead of quietly
 //! loading half a project.
 //!
-//! Refusing is the point. [`ui::persist`] already learned this for the
-//! autosave store: a document it cannot understand is left alone rather
+//! Refusing is the point. The record store already learned this for its
+//! documents: a document it cannot understand is left alone rather
 //! than opened empty and saved back over the top. A file this module cannot
 //! understand gets [`ProjectFileError::TooNew`], carrying both versions, and
 //! the caller says so on screen.

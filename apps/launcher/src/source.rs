@@ -48,6 +48,9 @@ pub enum Ask {
         row: String,
         modifier: Option<ActivationModifier>,
     },
+    /// The person selected row `row`: the source keeps it selected while
+    /// rows change under it, and runs it when the person chooses.
+    Select { row: String },
     /// The person stepped the value row `row` shows by `delta` (←/→).
     Adjust { row: String, delta: i8 },
     /// The argument step on screen was answered with `text`.
@@ -93,8 +96,9 @@ pub struct Answer {
     /// The query the source puts in the field (opening on one, coming back
     /// from a step); `None` leaves what the person typed.
     pub query: Option<String>,
-    /// The row to select, by id; `None` keeps the person's choice, or the
-    /// first row.
+    /// The row to select, by id: the person's choice as the source keeps
+    /// it ([`Ask::Select`]), or its best row. `None` keeps the person's
+    /// choice, or the first row.
     pub select: Option<String>,
     /// Why the selected row did not run: a title and a detail.
     pub status: Option<(String, String)>,
@@ -112,6 +116,20 @@ pub trait LauncherSource {
     fn answer(&mut self, ask: Ask, answer: &mut Answer);
 }
 
+/// What the launcher's card makes of the room its host gives it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CardFit {
+    /// The card, in the launcher's own coordinates.
+    pub card: ui::vello::kurbo::Rect,
+    /// The card's height less its list: the field, the band, the padding.
+    pub chrome_height: f64,
+    /// How many rows a full list holds: what the source finds rows for.
+    pub rows: usize,
+    /// Each row on screen, by id, and where it is in the launcher's own
+    /// coordinates: what a press or a menu on the card is about.
+    pub shown: Vec<(String, ui::vello::kurbo::Rect)>,
+}
+
 #[derive(Default)]
 struct Shared {
     asks: VecDeque<Ask>,
@@ -121,6 +139,9 @@ struct Shared {
     /// The host asked the launcher to open, in this scope.
     open_request: Option<SearchScope>,
     room: Option<(f64, f64)>,
+    fit: Option<CardFit>,
+    /// The modifier keys the host sees held.
+    held: ui::winit::keyboard::ModifiersState,
     wake: Option<ui::WakeHandle>,
 }
 
@@ -240,6 +261,42 @@ impl Link {
         if let Some(wake) = wake {
             wake.wake();
         }
+    }
+
+    /// Tell the host what the card makes of its room.
+    pub fn set_fit(&self, fit: CardFit) {
+        let mut shared = self.shared.borrow_mut();
+        if shared.fit.as_ref() != Some(&fit) {
+            shared.fit = Some(fit);
+        }
+    }
+
+    /// What the card makes of its room, once the launcher said.
+    pub fn fit(&self) -> Option<CardFit> {
+        self.shared.borrow().fit.clone()
+    }
+
+    /// The host sees `held` held, with no key for the launcher to read it
+    /// from: the selected row previews what choosing it with them does.
+    /// Whether that changed.
+    pub fn hold_modifiers(&self, held: ui::winit::keyboard::ModifiersState) -> bool {
+        let wake = {
+            let mut shared = self.shared.borrow_mut();
+            if shared.held == held {
+                return false;
+            }
+            shared.held = held;
+            shared.wake.clone()
+        };
+        if let Some(wake) = wake {
+            wake.wake();
+        }
+        true
+    }
+
+    /// The modifier keys the host sees held.
+    pub fn held_modifiers(&self) -> ui::winit::keyboard::ModifiersState {
+        self.shared.borrow().held
     }
 
     /// The room the host gives the card, if it said.

@@ -59,7 +59,7 @@ impl ShellOverlayHost {
             if !self.palette_visible || chrome.borrow().search_scope != SearchScope::All {
                 self.open_palette_with_scope(SearchScope::All);
             }
-            self.palette.set_query(&label);
+            self.search.set_query(&label);
             self.palette_offer = Some((offer.clone(), label));
             self.last_search_query = "\0app-offer\0".into();
             self.palette_visible = true;
@@ -87,7 +87,7 @@ impl ShellOverlayHost {
                 state.search_resource_scope = Some(scope);
                 state.bump();
             }
-            self.palette.set_query_placeholder(t_args(
+            self.search.set_query_placeholder(t_args(
                 "host-search-in",
                 &[("scope", label.as_str().into())],
             ));
@@ -100,7 +100,7 @@ impl ShellOverlayHost {
             .palette_anchor
             .as_ref()
             .map_or(query, |anchor| anchor.query.clone());
-        self.palette.set_query(&query);
+        self.search.set_query(&query);
         self.palette_visible = true;
     }
 
@@ -117,7 +117,7 @@ impl ShellOverlayHost {
         if !self.palette_visible || chrome.borrow().search_scope != SearchScope::All {
             self.open_palette_with_scope(SearchScope::All);
         }
-        self.palette.set_query(&t("search-action-identity-select"));
+        self.search.set_query(&t("search-action-identity-select"));
         self.last_search_query = "\0identity-chooser\0".into();
         self.palette_visible = true;
         self.palette_layout_dirty = true;
@@ -143,7 +143,7 @@ impl ShellOverlayHost {
     pub(super) fn toggle_global_search(&mut self) {
         if self.global_search_open() {
             self.palette_visible = false;
-            self.palette.close();
+            self.search.close();
             return;
         }
         ui::control_hints::performed::note(ui::control_hints::performed::Performed::OpenedSearch);
@@ -181,7 +181,7 @@ impl ShellOverlayHost {
             .unwrap_or_default();
         if self.palette_visible && current_scope == effective {
             self.palette_visible = false;
-            self.palette.close();
+            self.search.close();
             return;
         }
         if let Some(chrome) = self.chrome.clone() {
@@ -195,8 +195,7 @@ impl ShellOverlayHost {
         self.sync_scope_token();
         if !self.palette_visible {
             self.palette_visible = true;
-            self.palette.set_focus(true);
-            self.palette.set_query("");
+            self.search.set_query("");
             // Empty query still runs through the registry, so the palette
             // opens with an "everything" list rather than blank.
             self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
@@ -280,8 +279,7 @@ impl ShellOverlayHost {
             st.bump();
         }
         self.palette_visible = true;
-        self.palette.set_focus(true);
-        self.palette.set_query("");
+        self.search.set_query("");
         self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
         self.refresh_search_results(doc, root);
     }
@@ -429,9 +427,8 @@ impl ShellOverlayHost {
             return;
         }
         self.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
-        self.palette.set_query(pending.display_name);
+        self.search.set_query(pending.display_name);
         self.palette_visible = true;
-        self.palette.set_focus(true);
         self.last_search_query = "\u{0}launchpad-refresh\u{0}".to_string();
         self.refresh_search_results(doc, root);
     }
@@ -484,7 +481,7 @@ impl ShellOverlayHost {
             Ok(_) => {
                 if self.palette_visible {
                     self.palette_visible = false;
-                    self.palette.close();
+                    self.search.close();
                 }
             }
         }
@@ -513,7 +510,7 @@ impl ShellOverlayHost {
     /// cache; the first open pays for the files provider's deferred home walk
     /// and content index open (kept off the `OverlayHost` constructor on purpose).
     pub(super) fn selected_search_identity(&self) -> Option<(String, String)> {
-        self.palette
+        self.search
             .selected_id()
             .and_then(|id| id.strip_prefix("result:"))
             .and_then(|id| id.parse::<usize>().ok())
@@ -586,7 +583,7 @@ impl ShellOverlayHost {
         self.note_present_kinds(&groups);
         self.search_registry.trim_groups(
             groups,
-            self.palette.entry_row_capacity(),
+            self.search.entry_row_capacity(),
             &self.expanded_kinds,
         )
     }
@@ -606,7 +603,7 @@ impl ShellOverlayHost {
         if chrome.borrow().quick_settings.focused_display != focused {
             chrome.borrow_mut().quick_settings.focused_display = focused;
         }
-        let current_query = self.palette.query().to_string();
+        let current_query = self.search.query().to_string();
         let preserve_selection = current_query == self.last_search_query;
         if !preserve_selection {
             // "Show all" belongs to the search it was asked in.
@@ -659,7 +656,7 @@ impl ShellOverlayHost {
         // index. A selection the person never moved is the old best result:
         // it follows the best result, so a slower provider (Flathub) that
         // ranks above it after typing takes the selection.
-        let person_moved = self.palette.selected_id() != self.auto_selected_row.as_deref();
+        let person_moved = self.search.selected_id() != self.auto_selected_row.as_deref();
         let previous_selection = if preserve_selection && person_moved {
             self.selected_search_identity()
         } else {
@@ -686,15 +683,15 @@ impl ShellOverlayHost {
                     .position(|result| result.provider_id == provider && result.id == id)
             })
             .map(|index| format!("result:{index}"));
-        self.palette.set_entries(entries);
+        self.search.set_entries(entries);
         let kept = if let Some(id) = selected_id
             && let Some(cursor) = self
-                .palette
+                .search
                 .visible_entries()
                 .iter()
                 .position(|entry| entry.id == id)
         {
-            self.palette.set_cursor(cursor);
+            self.search.set_cursor(cursor);
             true
         } else {
             false
@@ -702,7 +699,7 @@ impl ShellOverlayHost {
         self.auto_selected_row = if kept {
             None
         } else {
-            self.palette.selected_id().map(str::to_owned)
+            self.search.selected_id().map(str::to_owned)
         };
         self.search_results = results;
         self.select_anchored_row(anchor.as_ref());
@@ -780,15 +777,15 @@ impl ShellOverlayHost {
             return;
         };
         let Some(cursor) = self
-            .palette
+            .search
             .visible_entries()
             .iter()
             .position(|entry| entry.id == format!("result:{index}"))
         else {
             return;
         };
-        self.palette.set_cursor(cursor);
-        self.auto_selected_row = self.palette.selected_id().map(str::to_owned);
+        self.search.set_cursor(cursor);
+        self.auto_selected_row = self.search.selected_id().map(str::to_owned);
     }
 
     /// Keep an open palette's rows true to what they show: rebuild them when
@@ -801,7 +798,7 @@ impl ShellOverlayHost {
             return;
         }
         let revision = self.chrome.as_ref().map(|chrome| chrome.borrow().revision);
-        if self.palette.query() != self.last_search_query
+        if self.search.query() != self.last_search_query
             || revision.is_some_and(|revision| revision != self.search_chrome_revision)
             || self.focused_window.answer_arrived()
         {
@@ -820,10 +817,10 @@ impl ShellOverlayHost {
             .map(|chrome| chrome.borrow().search_scope)
             .unwrap_or_default();
         let token = (scope != SearchScope::All).then(|| self.search_scope_pill_label(scope));
-        self.palette.set_scope_token(token);
+        self.search.set_scope_token(token);
         // Scoped to the workspace, the token is the one control that widens
         // the search to every workspace: pressed, or Backspace.
-        self.palette.set_scope_token_action(
+        self.search.set_scope_token_action(
             (scope == SearchScope::Workspace).then(|| t("search-launcher-widen")),
         );
     }
@@ -1046,8 +1043,8 @@ impl ShellOverlayHost {
         // A chosen filter keeps its band, so it can be changed or cleared
         // (the "+" picker opens on one before anything is typed).
         let shown = !self.active_kind_filter.is_empty()
-            || (!self.palette.query().is_empty() && self.present_kinds.len() > 1);
-        if self.palette.set_filter_band_shown(shown) {
+            || (!self.search.query().is_empty() && self.present_kinds.len() > 1);
+        if self.search.set_filter_band_shown(shown) {
             self.palette_layout_dirty = true;
         }
     }

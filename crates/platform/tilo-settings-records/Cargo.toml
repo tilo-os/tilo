@@ -17,6 +17,7 @@ path = "src/lib.rs"
 tilo-files = { version = "0.1.0", path = "../tilo-files" }
 tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
 tilo-lock = { version = "0.1.0", path = "../tilo-lock" }
+tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 tracing.workspace = true
 
 [features]

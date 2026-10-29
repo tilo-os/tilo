@@ -782,7 +782,8 @@ fn image_insert_uses_the_host_portal_and_decodes_real_pngs() {
             crate::assets::is_asset_id(&el.src),
             "only a portable asset id enters the deck"
         );
-        let stored = bench.read(|app| crate::assets::read_asset(&app.content, &el.src));
+        let stored =
+            bench.read(|app| crate::assets::read_asset(&app.store.borrow().content, &el.src));
         assert_eq!(stored.as_deref(), Some(&std::fs::read(&path).unwrap()[..]));
         assert_eq!(
             bench.read(|app| app.sel.clone()).as_deref(),

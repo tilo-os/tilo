@@ -11,7 +11,7 @@ use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
 };
 
-use super::{GitClientApp, Screen};
+use super::{GitClientState, Screen};
 use crate::actions::GitClientEffect;
 use crate::i18n::t;
 use crate::panels::RemoteAction;
@@ -28,7 +28,7 @@ pub(crate) enum BarCommand {
     Effect(GitClientEffect),
 }
 
-impl GitClientApp {
+impl GitClientState {
     /// The window bar's slots for what the window shows now; none of the
     /// client's while no repository is open.
     pub(crate) fn window_toolbar(&self) -> WindowToolbar {

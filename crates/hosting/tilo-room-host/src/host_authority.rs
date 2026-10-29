@@ -23,8 +23,6 @@ pub enum HostOperation {
     /// Make a member an administrator, an Editor with the owner's
     /// governance. Only the owner makes or unmakes administrators.
     SetAdministrator,
-    /// Delegate an application's authorship of a room.
-    GrantAppAuthorship,
     /// Install or renew a bot in a room.
     GovernBot,
     /// Author or prepare a room's applications in exact governor custody.
@@ -53,7 +51,6 @@ impl HostOperation {
             Self::PreAdmit => "invitation.pre-admit",
             Self::PutRoomGrants => "room.grants.put",
             Self::SetAdministrator => "member.administrator.set",
-            Self::GrantAppAuthorship => "app.authorship.grant",
             Self::GovernBot => "bot.govern",
             Self::AuthorApplications => "application.author",
             Self::ComputeControl => "compute.control",
@@ -76,7 +73,6 @@ impl HostOperation {
             | Self::PreAdmit
             | Self::PutRoomGrants
             | Self::SetAdministrator
-            | Self::GrantAppAuthorship
             | Self::GovernBot
             | Self::AuthorApplications
             | Self::ComputeControl
@@ -92,14 +88,13 @@ impl HostOperation {
 mod tests {
     use super::HostOperation;
 
-    const ALL: [HostOperation; 14] = [
+    const ALL: [HostOperation; 13] = [
         HostOperation::CreateRoom,
         HostOperation::ListRooms,
         HostOperation::EnterRoom,
         HostOperation::PreAdmit,
         HostOperation::PutRoomGrants,
         HostOperation::SetAdministrator,
-        HostOperation::GrantAppAuthorship,
         HostOperation::GovernBot,
         HostOperation::AuthorApplications,
         HostOperation::ComputeControl,

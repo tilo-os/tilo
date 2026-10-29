@@ -1,7 +1,8 @@
-//! Arranging the panel: the controls it shows, in order (dragged, or moved
-//! with each row's Move up and Move down), each removable but Wi-Fi, which
-//! is how a new desktop gets online; the controls this machine could add;
-//! Reset defaults and Done.
+//! Arranging the panel: the controls it shows, in order (dragged, moved
+//! with Ctrl+Up and Ctrl+Down as in every reorderable list, or with each
+//! row's Move up and Move down), each removable but Wi-Fi, which is how a
+//! new desktop gets online; the controls this machine could add; Reset
+//! defaults and Done.
 
 use ui::TextRole;
 use ui::framework::ViewCx;
@@ -69,7 +70,12 @@ fn editor(cx: &ViewCx<QuickSettings>, arrangement: &Arrangement) -> Element {
                 format!("qs-edit-{}", control_id(*control)),
                 control_label(*control),
             )
-            .icon(Icon::ArrowUpDown);
+            .icon(Icon::ArrowUpDown)
+            .leading_tooltip(t(if control.required() {
+                "qs-edit-required-control-a11y"
+            } else {
+                "qs-edit-optional-control-a11y"
+            }));
             let moved = |to: usize| QsEffect::MoveControl {
                 control: control_id(*control).to_owned(),
                 to: u32::try_from(to).unwrap_or(u32::MAX),

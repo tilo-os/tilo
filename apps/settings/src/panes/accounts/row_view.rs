@@ -10,7 +10,7 @@ use accounts::{AccountSyncHealth, AccountSyncStatus};
 use super::AccountsEffect;
 use crate::accounts::AccountKind;
 use crate::i18n::{t, t_args};
-use crate::widgets::StatusTone;
+use provider_settings_ui::widgets::StatusTone;
 
 pub(super) fn kind_shown(kind: AccountKind) -> String {
     t(match kind {

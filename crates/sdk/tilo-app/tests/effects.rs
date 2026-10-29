@@ -1151,6 +1151,201 @@ fn a_view_answers_effects_on_its_window_and_refuses_them_while_it_is_closed() {
     assert!(format!("{refused:?}").contains("not open"), "{refused:?}");
 }
 
+/// Effects a view answers on its [`Counter`] window, which hosts their
+/// work: what finishes later counts on the window itself.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "test.hosted-counter.effects")]
+pub enum HostedCounterEffect {
+    /// Count off the UI thread.
+    #[effect(job)]
+    CountLater {
+        #[param("How much to count")]
+        by: u32,
+    },
+}
+
+struct HostedCounterApp;
+
+impl ResourceApp for HostedCounterApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-hosted-counter";
+    const TITLE: &'static str = "Counter";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.window_host_effects(
+            |_: &mut Counter, effect: HostedCounterEffect, cx: &mut EffectCx<Mailbox, Counter>| {
+                let HostedCounterEffect::CountLater { by } = effect;
+                Ok(cx.thread(
+                    move |_| by,
+                    |counter: &mut Counter, by, _| {
+                        counter.counted = counter.counted.saturating_add(by);
+                        Ok(Effected::value(counter.counted))
+                    },
+                ))
+            },
+        );
+        // A job nobody invoked, started for the window, finishes on it too.
+        cx.window_jobs::<Counter>()
+            .start::<Counter>("warm-up", |cx| {
+                Ok(cx.thread(
+                    |_| 10,
+                    |counter: &mut Counter, by: u32, _| {
+                        counter.counted = counter.counted.saturating_add(by);
+                        Ok(Effected::done())
+                    },
+                ))
+            });
+        Box::new(Column::new().push(Box::new(Counter::default())))
+    }
+}
+
+#[test]
+fn a_window_that_hosts_its_work_gets_the_completions_of_its_effects_and_jobs() {
+    let mut app = TestApp::<HostedCounterApp>::new().unwrap();
+    tilo_test_env::wait_until("the window's job to finish on it", || {
+        app.settle();
+        app.surface_mut::<Counter>().counted == 10
+    });
+    assert_eq!(
+        app.effect(&HostedCounterEffect::CountLater { by: 5 })
+            .unwrap()
+            .value,
+        Some(serde_json::json!(15)),
+        "the effect's completion counts on the window"
+    );
+    assert_eq!(app.surface_mut::<Counter>().counted, 15);
+}
+
+/// A window that mounts a child window while it runs, as some work it
+/// started finished.
+struct Mounting {
+    rect: Rect,
+    mounts: tilo_app::framework::Mounts<Mailbox>,
+    child: Option<Element>,
+}
+
+impl Widget for Mounting {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        match &mut self.child {
+            Some(child) => child.build_layout(taffy, theme, nodes),
+            None => taffy.new_leaf(tilo_app::taffy::Style::default()).unwrap(),
+        }
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = Rect::from_origin_size(origin, Size::ZERO);
+        if let Some(child) = &mut self.child {
+            child.apply_layout(taffy, node, origin);
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.child
+            .iter()
+            .map(|child| child.as_ref() as &dyn Widget)
+            .collect()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.child
+            .iter_mut()
+            .map(|child| child.as_mut() as &mut dyn Widget)
+            .collect()
+    }
+
+    fn name(&self) -> &'static str {
+        "Mounting"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+/// Effects that open and close the [`Mounting`] window's child.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "test.mounting.effects")]
+pub enum MountingEffect {
+    /// Mount the child window.
+    OpenChild,
+    /// Let the child window go.
+    CloseChild,
+}
+
+struct MountingApp;
+
+impl ResourceApp for MountingApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-mounting";
+    const TITLE: &'static str = "Mounting";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.window_effects(|window: &mut Mounting, effect: MountingEffect, _| {
+            match effect {
+                MountingEffect::OpenChild => {
+                    let child = window.mounts.mount(|cx| {
+                        cx.window_effects(|counter: &mut Counter, effect: CounterEffect, _| {
+                            match effect {
+                                CounterEffect::Count { by } => {
+                                    counter.counted = counter.counted.saturating_add(by);
+                                    Ok(Effected::done())
+                                }
+                                CounterEffect::Counted => {
+                                    Ok(Effected::value(serde_json::json!(counter.counted)))
+                                }
+                            }
+                        });
+                        Box::new(Counter::default())
+                    })?;
+                    window.child = Some(child);
+                }
+                MountingEffect::CloseChild => window.child = None,
+            }
+            Ok(Effected::done())
+        });
+        Box::new(Mounting {
+            rect: Rect::ZERO,
+            mounts: cx.mounts(),
+            child: None,
+        })
+    }
+}
+
+#[test]
+fn a_window_mounts_a_child_view_while_it_runs_and_its_effects_go_with_it() {
+    let mut app = TestApp::<MountingApp>::new().unwrap();
+    assert!(effect(&app.agent_surface(), "count").is_none());
+    app.effect(&MountingEffect::OpenChild).unwrap();
+    app.settle();
+    assert!(
+        effect(&app.agent_surface(), "count").is_some(),
+        "the child publishes its effects"
+    );
+    app.effect(&CounterEffect::Count { by: 2 }).unwrap();
+    assert_eq!(app.surface_mut::<Counter>().counted, 2);
+
+    app.effect(&MountingEffect::CloseChild).unwrap();
+    app.settle();
+    assert!(
+        effect(&app.agent_surface(), "count").is_none(),
+        "a child let go publishes nothing"
+    );
+    assert!(app.effect(&CounterEffect::Count { by: 1 }).is_err());
+}
+
 impl ResourceApp for TallyApp {
     type Resource = Mailbox;
     const ID: &'static str = "so.tilo.test-tally";
@@ -1662,47 +1857,6 @@ fn erase_risk(effect: &DiskEffect) -> tilo_app::tilo_actions::RiskLevel {
     }
 }
 
-/// A surface recording right now, so sending is not available.
-#[derive(Default)]
-struct Recorder {
-    tally: Tally,
-}
-
-impl Widget for Recorder {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        nodes: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.tally.build_layout(taffy, theme, nodes)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.tally.apply_layout(taffy, node, origin);
-    }
-
-    fn name(&self) -> &'static str {
-        "Recorder"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.tally.get_rect()
-    }
-}
-
-impl ResourceSurface<Mailbox> for Recorder {
-    fn present(&mut self, _: &std::rc::Rc<Mailbox>) {}
-
-    fn availability(&self) -> Vec<EffectStatus> {
-        vec![EffectStatus::unavailable(
-            Mailbox::SEND,
-            "recording",
-            "Nothing is sent while recording",
-        )]
-    }
-}
-
 struct DiskApp;
 
 impl ResourceApp for DiskApp {
@@ -1716,12 +1870,22 @@ impl ResourceApp for DiskApp {
             cx.submit(Mailbox::FETCHED.with(format!("erased {disk}")));
             Ok(Effected::done())
         });
-        cx.surface(Recorder::default())
+        // Recording right now, so sending is not available.
+        cx.publishing(
+            tilo_app::framework::Publishes::new().availability(|| {
+                vec![EffectStatus::unavailable(
+                    Mailbox::SEND,
+                    "recording",
+                    "Nothing is sent while recording",
+                )]
+            }),
+            Box::new(Tally::default()),
+        )
     }
 }
 
 #[test]
-fn confirmation_follows_the_arguments_and_a_surface_withholds_an_action() {
+fn confirmation_follows_the_arguments_and_a_view_withholds_an_action() {
     let mut app = TestApp::<DiskApp>::new().unwrap();
     app.effect(&DiskEffect::Erase { disk: "usb".into() })
         .expect("erasing a stick needs no confirmation");

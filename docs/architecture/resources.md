@@ -59,7 +59,7 @@ want, not only for the value you hold.
 | `Reactions` | map of each reaction, keyed by emoji and who reacted | per person and emoji; changed only by `react`/`unreact`, which record whoever invokes them |
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
 | `Option<T>`, `Box<T>`, nested `Model` structs | as the inner type | as the inner type |
-| enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, its fields beside it | per field of one variant; a change of variant is last writer wins |
+| enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, each field under a key of its variant (`$field/<variant>/<field>`) | per field of one variant; a change of variant is last writer wins, and a variant never reads a field another one wrote; a document of the older flat layout reads as written, and a resource migrates it with `evolution::retype_variant_fields` |
 | `serde_json::Value` | an object as a map, an array as a list, everything else a scalar | per key of an object, by position in an array; only for JSON another party shapes (an account type's settings, a binding's literal value, a parameter's JSON Schema) |
 
 A type with a layout the table does not cover implements `Model` by hand. That
@@ -564,7 +564,10 @@ actions that queued an outside consequence undo through their inverse action.
   deletes it, and a migration may rewrite it. A record that does not read
   outside its collections (a field of the record itself, a newer storage
   version) shows an error state in the view and its actions report why they
-  are unavailable; stale state is never shown as current.
+  are unavailable; stale state is never shown as current. Code that reads the
+  document itself takes a failed read as no answer, never as an empty record:
+  it keeps what last read whole and derives nothing from the failure (no pull
+  planned from it, no search answering "no matches", no save without markup).
 - **The same item made twice is one item.** Two replicas pushing one fixed id
   concurrently each make an entry map, and the document keeps both under the
   key. A read that finds the winning copy incomplete reads the copies as one

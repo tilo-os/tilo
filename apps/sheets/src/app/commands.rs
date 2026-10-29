@@ -1,7 +1,7 @@
 //! The commands the bar, the menus and the palette run: sheets and tabs, document settings, the command palette, row and column verbs, navigation, and the effects an answer comes back as.
 
 use super::{
-    CellFormat, CommandEntry, Edits, Id, Interchange, Invoke, MenuItem, PendingReveal, SettingKind,
+    CellFormat, CommandEntry, Edits, Id, Invoke, MenuItem, PendingReveal, SettingKind,
     SettingsPanel, SheetsApp, Workbook, a1_to_addr, actions, date_label, time_label, verbs,
 };
 
@@ -349,52 +349,24 @@ impl SheetsApp {
         }
     }
 
-    /// Answer one of the workbook's effects: reading or writing a file is a
-    /// job, a view changes what is shown at once.
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: actions::SheetsEffect,
-        cx: &mut ui::framework::EffectCx<Workbook, Self>,
-    ) -> ui::framework::EffectAnswer {
-        use actions::SheetsEffect as E;
+    /// Do what an effect asked of the grid: show a cell, the formulas or a
+    /// sheet, open the commands, say what happened.
+    pub(super) fn take_ask(&mut self, ask: super::store::Ask) {
+        use super::store::Ask;
         self.pending.redraw = true;
-        match effect {
-            E::ImportCsv { path } => Ok(self.import(Interchange::Csv, path, cx)),
-            E::ImportXlsx { path } => Ok(self.import(Interchange::Xlsx, path, cx)),
-            E::ImportOds { path } => Ok(self.import(Interchange::Ods, path, cx)),
-            E::ImportNotion { path } => Ok(self.import(Interchange::Notion, path, cx)),
-            E::ExportCsv { path } => self.export(Interchange::Csv, path, cx),
-            E::ExportXlsx { path } => self.export(Interchange::Xlsx, path, cx),
-            E::ExportOds { path } => self.export(Interchange::Ods, path, cx),
-            E::ReadCells { sheet, range } => {
-                let id = self
-                    .workbook
-                    .sheet_key(&Id::from_raw(sheet))
-                    .map_err(|refusal| refusal.0)?;
-                let snapshot = self
-                    .workbook
-                    .snapshot_of(&id)
-                    .ok_or_else(|| "no such sheet".to_owned())?;
-                crate::cell_actions::read(&snapshot, range.as_deref()).map(|mut read| {
-                    if let Some(fields) = read.as_object_mut() {
-                        fields.insert("item".into(), id.as_str().into());
-                    }
-                    ui::framework::Effected::value(read)
-                })
+        match ask {
+            Ask::Show(effect) => {
+                if let Err(error) = self.show(effect) {
+                    self.status = error;
+                }
             }
-            E::ImportXlsxContent { content, title } => {
-                self.import_xlsx_content(&content, title, cx)
-            }
-            E::ExportXlsxContent => self.export_xlsx_content(),
-            E::Commands => {
+            Ask::Commands => {
                 let resources = self.published();
                 self.open_palette_with(&resources);
-                Ok(ui::framework::Effected::done())
             }
-            view => {
-                self.show(view)?;
-                Ok(ui::framework::Effected::done())
-            }
+            Ask::Status(status) => self.status = status,
+            Ask::Reveal(reveal) => self.pending_reveal = Some(reveal),
+            Ask::Stage(scenario) => self.stage_scenario(scenario.as_deref()),
         }
     }
 

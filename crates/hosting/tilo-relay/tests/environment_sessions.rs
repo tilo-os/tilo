@@ -727,7 +727,6 @@ async fn a_device_asks_its_relays_and_offers_only_those_with_workers() {
     persist::write_public_key(&paths.user_pubkey, &owner.user_pk).unwrap();
     persist::write_device_key(&paths.device_privkey, &laptop.sk).unwrap();
     persist::write_device_cert(&paths.device_cert, &laptop.cert).unwrap();
-    let personal = tilo_relay_protocol::personal_continuity_workspace_id(&owner.user_pk);
     let address = relay.node_addr();
     let silent = iroh_base::SecretKey::from_bytes(&[9; 32]).public();
     std::fs::write(
@@ -738,13 +737,13 @@ async fn a_device_asks_its_relays_and_offers_only_those_with_workers() {
              "relay_service_node_id": hex::encode(address.id.as_bytes()),
              "relay_endpoint": address, "label": "Home",
              "user_public_key": hex::encode(owner.user_pk),
-             "relay_workspace_ids": [personal]},
+             "relay_workspace_ids": []},
             {"schema_version": 3,
              "device_node_id": hex::encode([8u8; 32]),
              "relay_service_node_id": hex::encode(silent.as_bytes()),
              "label": "Away",
              "user_public_key": hex::encode(owner.user_pk),
-             "relay_workspace_ids": [personal]},
+             "relay_workspace_ids": []},
         ])
         .to_string(),
     )

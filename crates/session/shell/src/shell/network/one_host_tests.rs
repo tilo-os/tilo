@@ -498,7 +498,7 @@ impl Device {
         assert!(net.join_default_workspace());
         // As a session starts: the rooms this device hosted before are
         // served again.
-        net.open_hosted_rooms();
+        net.open_local_host();
         let net = Arc::new(net);
         let channels = self.open_channels(&net);
         let drain = Drain::start(&net, channels.clone(), &self.wakes);
@@ -952,32 +952,17 @@ impl Device {
         let _ = self.note_keys(room);
     }
 
-    /// Ask `room`'s host to let the notes app author the room's records, as
-    /// this device: the host's answer.
+    /// Let the notes app author `room`'s records, written by this device.
     pub(crate) fn let_notes_author(&self, room: RoomId) -> Result<(), String> {
-        let net = Arc::clone(self.net());
-        let cert = self.cert();
-        let runtime = net.runtime_handle().unwrap();
-        runtime
-            .block_on(net.grant_app_authorship_at_host(room, &cert, NOTES))
-            .unwrap_or_else(|| Err(format!("{} reaches no host governing the room", self.label)))
-            .map(|_| ())
+        self.let_app_author(room, NOTES)
     }
 
     /// Let `app` keep records in `room`, as opening the app there first
-    /// does: the room's host lets it author, asked while this device's loop
-    /// keeps turning. Every hosted room is sealed: the app opens its
-    /// record's channel itself, so nothing is made here.
+    /// does: this device lets it author. Every hosted room is sealed: the
+    /// app opens its record's channel itself, so nothing is made here.
     pub(crate) fn open_app_first(&self, room: RoomId, app: &str) {
-        let net = Arc::clone(self.net());
-        let cert = self.cert();
-        let asked = {
-            let app = app.to_owned();
-            async move { net.grant_app_authorship_at_host(room, &cert, &app).await }
-        };
-        self.answer("the host's answer for the app's authorship", asked)
-            .expect("the room's host answers for the app's authorship")
-            .unwrap_or_else(|error| panic!("the host lets {app} author: {error}"));
+        self.let_app_author(room, app)
+            .unwrap_or_else(|error| panic!("{} lets {app} author: {error}", self.label));
         self.assert_sealed(room);
     }
 
@@ -1001,16 +986,25 @@ impl Device {
             .expect("the request runs to its answer")
     }
 
-    /// Ask `room`'s host to let `app` author the room's records, as this
-    /// device, as opening the app there first does: the host's answer.
+    /// Let `app` author `room`'s records, as opening the app there first
+    /// does: this device writes the grant itself, while its loop keeps
+    /// turning.
     pub(crate) fn let_app_author(&self, room: RoomId, app: &str) -> Result<(), String> {
         let net = Arc::clone(self.net());
-        let cert = self.cert();
-        let runtime = net.runtime_handle().unwrap();
-        runtime
-            .block_on(net.grant_app_authorship_at_host(room, &cert, app))
-            .unwrap_or_else(|| Err(format!("{} reaches no host governing the room", self.label)))
-            .map(|_| ())
+        let command =
+            tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                app: app.to_owned(),
+            };
+        let written = async move {
+            tokio::task::spawn_blocking(move || {
+                let owner = net.native_owner()?;
+                let caller = owner.with_current(room, |view| Ok(view.device().clone()))?;
+                net.commit_membership_here(&owner, room, caller, command)
+            })
+            .await
+            .map_err(|error| error.to_string())?
+        };
+        self.answer("the app's authorship written", written)
     }
 
     /// `room`'s records are sealed channels each app opens itself, never
@@ -1432,28 +1426,6 @@ impl Device {
             .administered_room(room)
             .ok_or_else(|| format!("{} administers no session with the room's host", self.label))?;
         net.govern(&target, action, arguments)
-    }
-
-    /// Give `grants` in `room` at this device's own host, as the room's
-    /// owner: written by the host into its copy of the room.
-    pub(crate) fn grant_at_host(
-        &self,
-        room: RoomId,
-        grants: Vec<tilo_action_policy::Grant>,
-    ) -> Result<(), String> {
-        let net = self.net();
-        let host = net.local_host()?;
-        let owner = self.cert();
-        let request_id = *uuid::Uuid::new_v4().as_bytes();
-        let mut request = [0; 32];
-        request[..16].copy_from_slice(&request_id);
-        net.wait_on(async move {
-            host.rooms()
-                .put_room_grants(&room.to_string(), &owner, request, grants)
-                .await
-                .map(drop)
-                .map_err(|error| error.to_string())
-        })?
     }
 
     /// Change `person`'s role in `room` from the workspace's people

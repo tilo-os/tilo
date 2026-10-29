@@ -1,6 +1,10 @@
 //! The library on its own: verbs, field edits, invariants, merging, the
 //! published places and history, through the same door the host uses.
 
+use std::rc::Rc;
+
+use ui::framework::LiveRow;
+
 use super::*;
 use crate::model::{CompositionStyle, FontKind, LibrarySort, MAX_NOTE_BYTES, ReadMode, ReadTheme};
 use tilo_document::RichTextAction;
@@ -1032,7 +1036,11 @@ fn the_reader_publishes_only_where_it_is() {
     );
     let doc = ui::automerge::AutoCommit::new();
     app.sync(&doc, &ui::automerge::ROOT);
-    let extras: Vec<_> = <BooksApp as ResourceSurface<Ebook, BooksEffect>>::live_rows(&app)
+    let extras: Vec<_> = app
+        .store()
+        .borrow()
+        .shown
+        .live_rows()
         .into_iter()
         .map(LiveRow::into_resource)
         .collect();

@@ -22,16 +22,19 @@ use tilo_desktop_model::{RoomId, Workspace, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_joined_room::{
     NativeWorkspaceOwner,
-    session::{self, Connect, Input, Scope},
+    session::{Connect, Input, Scope},
 };
 use tilo_owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
 use tilo_peer_state::InputDisposition;
-use tilo_relay_session::{Inbound, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
+use tilo_relay_session::{Inbound, RelayCoeditSession};
 use tokio::sync::Notify;
 
 #[path = "joined_content.rs"]
 mod content;
 pub(super) use content::record_content;
+#[path = "joined_hosted.rs"]
+mod hosted;
+pub(super) use hosted::RecordCreation;
 
 /// The record of every joined room, in the profile.
 pub(super) const JOINED_ROOMS: &str = "joined-rooms.json";
@@ -48,8 +51,8 @@ pub(super) struct Joined {
     owner: NativeWorkspaceOwner,
     custody: HostIdentity,
     endpoint: iroh::Endpoint,
-    /// Rooms this profile must not enroll in: its own, and those the
-    /// desktop session already enrolled this device in.
+    /// Rooms this profile must not enroll in, whose writes are refused
+    /// here: those the desktop session governs or enrolled this device in.
     refused: BTreeSet<RoomId>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
@@ -64,7 +67,18 @@ pub(super) struct Joined {
     /// This device's channel keys, once the channel service runs: the only
     /// renewer of its sealed writes that expire in custody.
     keys: ChannelKeyProvider,
+    /// The room host this profile runs, once it runs.
+    own_host: std::sync::OnceLock<hosted::OwnHost>,
+    /// Writes sent to a room's host as commits, waiting for its answer.
+    commits: Mutex<std::collections::HashMap<[u8; 16], CommitWaiter>>,
+    /// Woken when a room's session connects or ends.
+    live_changed: Notify,
+    /// This value, for the futures its commits answer with.
+    this: std::sync::Weak<Self>,
 }
+
+/// Where the host's answer to one commit goes.
+type CommitWaiter = tokio::sync::oneshot::Sender<Result<(), String>>;
 
 struct RoomSession {
     /// Wakes the session to send what its owner holds for it.
@@ -91,7 +105,7 @@ impl Joined {
         let owner =
             tilo_joined_room::open_file(&profile.join(JOINED_ROOMS)).map_err(io::Error::other)?;
         let executions = super::execution::ExecutionPins::new(&owner);
-        let joined = Arc::new(Self {
+        let joined = Arc::new_cyclic(|this| Self {
             executions,
             owner,
             custody,
@@ -105,6 +119,10 @@ impl Joined {
             governance: Mutex::new(Vec::new()),
             governance_wake: Arc::default(),
             keys: ChannelKeyProvider::default(),
+            own_host: std::sync::OnceLock::new(),
+            commits: Mutex::new(std::collections::HashMap::new()),
+            live_changed: Notify::new(),
+            this: this.clone(),
         });
         for room in joined.owner.rooms() {
             joined.hold_session(room);
@@ -120,17 +138,28 @@ impl Joined {
     /// Redeem `invitation` with the host it names and start syncing the room.
     ///
     /// # Errors
+    /// As [`Self::enroll`].
+    pub(super) async fn join(self: &Arc<Self>, invitation: &str) -> Result<RoomId, String> {
+        let room = self.enroll(invitation).await?;
+        self.hold_session(room);
+        Ok(room)
+    }
+
+    /// Redeem `invitation` with the host it names: the room is held when
+    /// this returns, and synced once its session is held.
+    ///
+    /// # Errors
     /// The invitation is not for this device, names a room this profile
     /// must not enroll in, or the host refuses or cannot be reached; a proof
     /// already sent is kept for an exact retry.
-    pub(super) async fn join(self: &Arc<Self>, invitation: &str) -> Result<RoomId, String> {
+    async fn enroll(&self, invitation: &str) -> Result<RoomId, String> {
         let room = self.invited_room(invitation)?;
         if self.refused.contains(&room) {
             return Err("this device takes part in that room through the desktop session".into());
         }
         let topic = room_topic(room)?;
         let enrollment = tilo_joined_room::enroll::prepare_and_complete(
-            WorkspaceJoinClient::new(self.endpoint.clone()),
+            self.join_client(invitation),
             self.custody.clone(),
             topic,
             None,
@@ -139,7 +168,6 @@ impl Joined {
         )
         .await?;
         self.owner.install(&enrollment, SystemTime::now())?;
-        self.hold_session(room);
         Ok(room)
     }
 
@@ -231,21 +259,24 @@ impl Joined {
         channel: collab_types::ChannelId,
         route: Option<&collab_types::ChannelRoute>,
         now: u64,
-    ) -> std::collections::BTreeSet<collab_types::Ed25519PublicKey> {
+    ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
         let at = std::time::SystemTime::UNIX_EPOCH
             .checked_add(std::time::Duration::from_secs(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        self.owner
+        let readers = self
+            .owner
             .with_current(room, |view| {
                 view.peer().governance().channel_readers(at, channel, route)
             })
-            .map(|readers| {
-                readers
-                    .into_iter()
-                    .map(collab_types::Ed25519PublicKey::from_bytes)
-                    .collect()
-            })
-            .unwrap_or_default()
+            // Governance that cannot be read says nothing of who reads.
+            .ok()
+            .flatten()?;
+        Some(
+            readers
+                .into_iter()
+                .map(collab_types::Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
     }
 
     fn invited_room(&self, invitation: &str) -> Result<RoomId, String> {
@@ -259,7 +290,7 @@ impl Joined {
         RoomId::parse(&join.grant().room).ok_or_else(|| "invitation names no valid room".into())
     }
 
-    fn hold_session(self: &Arc<Self>, room: RoomId) {
+    pub(super) fn hold_session(self: &Arc<Self>, room: RoomId) {
         let Ok(mut sessions) = self.sessions.lock() else {
             return;
         };
@@ -299,15 +330,8 @@ impl Joined {
         let (hint, device, revocations, continuity) = connect.material(&self.custody)?;
         let room = connect.room();
         let session = Arc::new(
-            session::dial(
-                self.endpoint.clone(),
-                room_topic(room)?,
-                &hint,
-                device.clone(),
-                self.custody.device_signing_key.clone(),
-                revocations,
-            )
-            .await?,
+            self.connect(room_topic(room)?, &hint, device.clone(), revocations)
+                .await?,
         );
         let host = hint.host.device_public_key;
         let scope = Arc::new(Scope::new(connect, hint, device, continuity));
@@ -345,12 +369,14 @@ impl Joined {
                         self.content_arrived(room, from, &frame);
                     }
                     Some(Inbound::Member { device, active }) => self.member(room, device, active),
+                    Some(Inbound::Committed { op }) => self.commit_answered(op, Ok(())),
+                    Some(Inbound::CommitRefused { op, reason }) => {
+                        self.commit_answered(op, Err(format!("the room's host refused the write: {reason}")));
+                    }
                     Some(
                         Inbound::RemoteAction { .. }
                         | Inbound::Live { .. }
                         | Inbound::RecordOpened { .. }
-                        | Inbound::Committed { .. }
-                        | Inbound::CommitRefused { .. }
                         | Inbound::Voice(_),
                     ) => {}
                 },
@@ -378,6 +404,7 @@ impl Joined {
             (session.live, session.host) = live.unzip();
             session.members.clear();
         }
+        self.live_changed.notify_waiters();
         if let Some(content) = self.content.get().cloned() {
             tilo_rt::app().spawn_blocking(move || content.sources_changed());
         }
@@ -524,12 +551,43 @@ impl Joined {
 }
 
 impl OwnerCommitService for Joined {
+    /// Every room this profile joined, and the rooms the desktop session
+    /// governs here, whose writes are refused.
     fn requires_room(&self, room: &str) -> bool {
-        RoomId::parse(room).is_some_and(|room| self.owner.contains_room(room))
+        RoomId::parse(room)
+            .is_some_and(|room| self.owner.contains_room(room) || self.refused.contains(&room))
+    }
+
+    /// A room hosted here keeps its effect receipts in the profile's own
+    /// workspace record.
+    fn records_effects(&self, room: &str) -> bool {
+        RoomId::parse(room).is_some_and(|room| {
+            self.owner.contains_room(room) && !self.hosted_here(room)
+                || self.refused.contains(&room)
+        })
     }
 
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+        self.commit_with_record_kind(request, None)
+    }
+
+    fn commit_with_record_kind(
+        &self,
+        request: OwnerCommitRequest,
+        record_kind: Option<String>,
+    ) -> CommitFuture {
         let room = RoomId::parse(&request.room);
+        if room.is_some_and(|room| self.refused.contains(&room)) {
+            return Box::pin(std::future::ready(Err(
+                "the desktop session's workspace is read only in the runtime".into(),
+            )));
+        }
+        if let Some(room) = room.filter(|room| self.hosted_here(*room)) {
+            let Some(this) = self.this.upgrade() else {
+                return Box::pin(std::future::ready(Err("the joined rooms closed".into())));
+            };
+            return Box::pin(async move { this.commit_hosted(room, request, record_kind).await });
+        }
         let receipt = self.owner.commit_document(request, SystemTime::now());
         if receipt.is_ok()
             && let Some(room) = room
@@ -569,23 +627,14 @@ impl GovernanceTransport for Joined {
     }
 }
 
-/// The rooms the desktop session enrolled this device in, from its
-/// workspace file in an adopted profile.
+/// The rooms the desktop session enrolled this device in, from its owner's
+/// record beside its workspace file in an adopted profile.
 pub(super) fn desktop_enrolled(profile: &Path) -> io::Result<BTreeSet<RoomId>> {
-    #[derive(serde::Deserialize)]
-    struct DesktopFile {
-        #[serde(default)]
-        native_authority: tilo_joined_room::NativeAuthorityStorage,
-    }
-    match std::fs::read(profile.join(super::workspace::DESKTOP_WORKSPACE)) {
-        Ok(bytes) => {
-            let file: DesktopFile = serde_json::from_slice(&bytes)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-            Ok(file.native_authority.rooms().collect())
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(BTreeSet::new()),
-        Err(error) => Err(error),
-    }
+    let record =
+        tilo_joined_room::owner_file_of(&profile.join(super::workspace::DESKTOP_WORKSPACE));
+    tilo_joined_room::read_file(&record)
+        .map(|storage| storage.rooms().collect())
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 fn room_topic(room: RoomId) -> Result<u64, String> {

@@ -453,6 +453,10 @@ def _inert_point(ctx, display) -> tuple[int, int]:
     raise Unobservable(f"every touch point W20 tries on the first output is on a launchpad card ({cards})")
 
 
+# The launcher's search field, as the shell lists it while search is open.
+SEARCH_FIELD = "launcher-field"
+
+
 def _close_search(ctx) -> None:
     """Search closed again, whatever W20 got to: Escape while it shows (bounded)."""
     for _ in range(3):
@@ -489,12 +493,11 @@ def _on_screen_keyboard_in_the_shell(ctx, res):
     targets = ctx.vm.targets()
     ctx.write("W20-search-targets.json", json.dumps(targets, indent=2))
     t = core.target_map(targets)
-    # Search is a CommandPalette, not the in-content SearchField widget.
-    # Its query target shares the editable accessibility row's bounds; the
-    # legacy command_palette_input target covers the entire result card.
-    f = t.get("command-palette:query")
+    # Search's face is the launcher app's card; its field target is the
+    # editable row only, not the whole card.
+    f = t.get(SEARCH_FIELD)
     if f is None:
-        raise Unobservable(f"no command-palette:query target while search is open ({len(t)} targets)")
+        raise Unobservable(f"no {SEARCH_FIELD} target while search is open ({len(t)} targets)")
     ctx.vm.input("touch", "tap", str(int(f[0] + f[2] / 2)), str(int(f[1] + f[3] / 2)))
     st = ctx.wait_state(lambda s: _keyboard(s).get("shown"), 15,
                         "the on-screen keyboard shown for the search field")

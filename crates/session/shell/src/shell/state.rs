@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
+mod arrangement;
 mod local_app_records;
 mod personal_apps;
 mod room_binding;
@@ -54,346 +55,329 @@ mod identity_fs_tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn capability_export_reaches_a_ready_or_late_authority_in_the_background() {
-        // Phase `capability_export_publishes_to_authority_in_the_background`.
-        {
-            use std::os::unix::fs::PermissionsExt;
-            use std::time::Duration;
+    fn capability_export_publishes_to_authority_in_the_background() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
 
-            let temp = tempfile::tempdir().expect("temp");
-            let publisher = temp.path().join("publisher.sh");
-            let log = temp.path().join("authority-arguments");
-            let started = temp.path().join("publisher-started");
-            let release = temp.path().join("publisher-release");
-            std::fs::write(
-                &publisher,
-                "#!/bin/sh\nprintf ready > \"$TILO_FS_AUTHORITY_TEST_STARTED\"\nwhile [ ! -f \"$TILO_FS_AUTHORITY_TEST_RELEASE\" ]; do sleep 0.01; done\nprintf '%s\\n' \"$@\" > \"$TILO_FS_AUTHORITY_TEST_LOG\"\n",
-            )
-            .expect("publisher script");
-            let mut permissions = std::fs::metadata(&publisher)
-                .expect("metadata")
-                .permissions();
-            permissions.set_mode(0o700);
-            std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
-            let acl = temp.path().join("fs-capabilities.json");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
-            env.set("TILO_FS_AUTHORITY_TEST_LOG", &log);
-            env.set("TILO_FS_AUTHORITY_TEST_STARTED", &started);
-            env.set("TILO_FS_AUTHORITY_TEST_RELEASE", &release);
+        let temp = tempfile::tempdir().expect("temp");
+        let publisher = temp.path().join("publisher.sh");
+        let log = temp.path().join("authority-arguments");
+        let started = temp.path().join("publisher-started");
+        let release = temp.path().join("publisher-release");
+        std::fs::write(
+            &publisher,
+            "#!/bin/sh\nprintf ready > \"$TILO_FS_AUTHORITY_TEST_STARTED\"\nwhile [ ! -f \"$TILO_FS_AUTHORITY_TEST_RELEASE\" ]; do sleep 0.01; done\nprintf '%s\\n' \"$@\" > \"$TILO_FS_AUTHORITY_TEST_LOG\"\n",
+        )
+        .expect("publisher script");
+        let mut permissions = std::fs::metadata(&publisher)
+            .expect("metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
+        let acl = temp.path().join("fs-capabilities.json");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
+        env.set("TILO_FS_AUTHORITY_TEST_LOG", &log);
+        env.set("TILO_FS_AUTHORITY_TEST_STARTED", &started);
+        env.set("TILO_FS_AUTHORITY_TEST_RELEASE", &release);
 
-            let tree = WorkspaceTree {
-                fs_acl_path: Some(acl.clone()),
-                ..WorkspaceTree::default()
-            };
-            tree.export_fs_capabilities();
-            let deadline = tilo_test_env::hang_deadline();
-            while std::time::Instant::now() < deadline {
-                if started.exists() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
+        let tree = WorkspaceTree {
+            fs_acl_path: Some(acl.clone()),
+            ..WorkspaceTree::default()
+        };
+        tree.export_fs_capabilities();
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
+            if started.exists() {
+                break;
             }
-            assert!(started.exists(), "the publisher worker must start");
-            assert!(
-                !log.exists(),
-                "publication returned while the deliberately blocked publisher was unfinished"
-            );
-            std::fs::write(&release, b"release").expect("release publisher");
-            // The publisher writes its log line by line, so the log existing
-            // says nothing about it being complete. The worker retires only
-            // after the publisher has exited, which is the event to wait on;
-            // the budget is a backstop and a stall reports the attempt history.
-            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound())
-                .unwrap_or_else(|report| panic!("the released publisher never finished: {report}"));
-            let arguments = std::fs::read_to_string(&log).expect("background publication");
-            assert_eq!(
-                arguments.lines().collect::<Vec<_>>(),
-                ["publish-authority", "--acl", acl.to_str().unwrap()],
-                "the publisher needs no path into the daemon's root-only cache"
-            );
+            std::thread::sleep(Duration::from_millis(10));
         }
-
-        // Phase `capability_export_retries_until_a_late_authority_service_is_ready`.
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let temp = tempfile::tempdir().expect("temp");
-            let publisher = temp.path().join("late-publisher.sh");
-            let count = temp.path().join("attempts");
-            let log = temp.path().join("authority-arguments");
-            std::fs::write(
-                &publisher,
-                "#!/bin/sh\ncount=0\n[ -f \"$TILO_FS_AUTHORITY_TEST_COUNT\" ] && count=$(cat \"$TILO_FS_AUTHORITY_TEST_COUNT\")\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$TILO_FS_AUTHORITY_TEST_COUNT\"\n[ \"$count\" -le 4 ] && exit 1\nprintf '%s\\n' \"$@\" > \"$TILO_FS_AUTHORITY_TEST_LOG\"\n",
-            )
-            .expect("publisher script");
-            let mut permissions = std::fs::metadata(&publisher)
-                .expect("metadata")
-                .permissions();
-            permissions.set_mode(0o700);
-            std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
-            let acl = temp.path().join("fs-capabilities.json");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
-            env.set("TILO_FS_AUTHORITY_TEST_COUNT", &count);
-            env.set("TILO_FS_AUTHORITY_TEST_LOG", &log);
-            let tree = WorkspaceTree {
-                fs_acl_path: Some(acl),
-                ..WorkspaceTree::default()
-            };
-            tree.export_fs_capabilities();
-            // The worker only retires once a publication succeeds, so its
-            // retirement is the event to wait on. Four backed-off failures take
-            // about 1.5 s of sleeps plus five process spawns; the budget is only
-            // a backstop for a worker that never succeeds.
-            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
-                |report| panic!("the retry worker never published the queued ACL: {report}"),
-            );
-            assert!(
-                log.exists(),
-                "the queued ACL survives more than three failures"
-            );
-            assert!(
-                std::fs::read_to_string(&count)
-                    .expect("attempt count")
-                    .parse::<u8>()
-                    .expect("numeric attempt count")
-                    > 3
-            );
-        }
-
-        // Phase `a_device_without_the_governor_key_publishes_once_and_settles`.
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            let temp = tempfile::tempdir().expect("temp");
-            let publisher = temp.path().join("joined-device-publisher.sh");
-            let count = temp.path().join("attempts");
-            std::fs::write(
-                &publisher,
-                "#!/bin/sh\nprintf x >> \"$TILO_FS_AUTHORITY_TEST_COUNT\"\nexit 77\n",
-            )
-            .expect("publisher script");
-            let mut permissions = std::fs::metadata(&publisher)
-                .expect("metadata")
-                .permissions();
-            permissions.set_mode(0o700);
-            std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
-            env.set("TILO_FS_AUTHORITY_TEST_COUNT", &count);
-            let tree = WorkspaceTree {
-                fs_acl_path: Some(temp.path().join("fs-capabilities.json")),
-                ..WorkspaceTree::default()
-            };
-            tree.export_fs_capabilities();
-            wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
-                |report| panic!("a joined device kept retrying publication: {report}"),
-            );
-            assert_eq!(
-                std::fs::read_to_string(&count).expect("attempt count"),
-                "x",
-                "a device that does not govern the workspace asks once"
-            );
-        }
+        assert!(started.exists(), "the publisher worker must start");
+        assert!(
+            !log.exists(),
+            "publication returned while the deliberately blocked publisher was unfinished"
+        );
+        std::fs::write(&release, b"release").expect("release publisher");
+        // The publisher writes its log line by line, so the log existing
+        // says nothing about it being complete. The worker retires only
+        // after the publisher has exited, which is the event to wait on;
+        // the budget is a backstop and a stall reports the attempt history.
+        wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound())
+            .unwrap_or_else(|report| panic!("the released publisher never finished: {report}"));
+        let arguments = std::fs::read_to_string(&log).expect("background publication");
+        assert_eq!(
+            arguments.lines().collect::<Vec<_>>(),
+            ["publish-authority", "--acl", acl.to_str().unwrap()],
+            "the publisher needs no path into the daemon's root-only cache"
+        );
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn filesystem_export_maps_verified_people_and_per_workspace_membership() {
-        // Phase `filesystem_export_maps_selected_person_through_verified_device_chain`.
-        {
-            let temp = tempfile::tempdir().expect("temp");
-            let xdg = temp.path().join("config");
-            let system = temp.path().join("system");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_CONFIG_HOME", &xdg);
-            env.set("TILO_IDENTITY_ROOT", &system);
-            let identity_dir = xdg.join("tilo/identity");
-            let paths = tilo_user_identity::IdentityPaths::under(&system);
-            crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths)
-                .expect("identity");
-            let profile = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
-                .load()
-                .expect("registry")
-                .selected_for_workspace("new-room")
-                .expect("profile")
-                .clone();
+    #[serial_test::serial(process_env)]
+    fn capability_export_retries_until_a_late_authority_service_is_ready() {
+        use std::os::unix::fs::PermissionsExt;
 
-            let mut tree = WorkspaceTree::default();
-            let mut workspace = Workspace::new(WorkspaceId(1), "Files");
-            workspace.sandbox.push(CapOverride::grant(
-                Subject::person(profile.principal_id()),
-                Scope::FsPath("/var/workspace/files".into()),
-                Access::Write,
-            ));
-            tree.desktop.workspaces.push(workspace);
-            let output = temp.path().join("fs-caps.json");
-            tree.fs_acl_path = Some(output.clone());
-            tree.export_fs_capabilities();
-            crate::shell::persist::wait_for_saves();
+        let temp = tempfile::tempdir().expect("temp");
+        let publisher = temp.path().join("late-publisher.sh");
+        let count = temp.path().join("attempts");
+        let log = temp.path().join("authority-arguments");
+        std::fs::write(
+            &publisher,
+            "#!/bin/sh\ncount=0\n[ -f \"$TILO_FS_AUTHORITY_TEST_COUNT\" ] && count=$(cat \"$TILO_FS_AUTHORITY_TEST_COUNT\")\ncount=$((count + 1))\nprintf '%s' \"$count\" > \"$TILO_FS_AUTHORITY_TEST_COUNT\"\n[ \"$count\" -le 4 ] && exit 1\nprintf '%s\\n' \"$@\" > \"$TILO_FS_AUTHORITY_TEST_LOG\"\n",
+        )
+        .expect("publisher script");
+        let mut permissions = std::fs::metadata(&publisher)
+            .expect("metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
+        let acl = temp.path().join("fs-capabilities.json");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
+        env.set("TILO_FS_AUTHORITY_TEST_COUNT", &count);
+        env.set("TILO_FS_AUTHORITY_TEST_LOG", &log);
+        let tree = WorkspaceTree {
+            fs_acl_path: Some(acl),
+            ..WorkspaceTree::default()
+        };
+        tree.export_fs_capabilities();
+        // The worker only retires once a publication succeeds, so its
+        // retirement is the event to wait on. Four backed-off failures take
+        // about 1.5 s of sleeps plus five process spawns; the budget is only
+        // a backstop for a worker that never succeeds.
+        wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound()).unwrap_or_else(
+            |report| panic!("the retry worker never published the queued ACL: {report}"),
+        );
+        assert!(
+            log.exists(),
+            "the queued ACL survives more than three failures"
+        );
+        assert!(
+            std::fs::read_to_string(&count)
+                .expect("attempt count")
+                .parse::<u8>()
+                .expect("numeric attempt count")
+                > 3
+        );
+    }
 
-            let exported: Vec<CapOverride> = serde_json::from_slice::<collab_types::FsAuthority>(
-                &std::fs::read(&output).expect("export"),
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_device_without_the_governor_key_publishes_once_and_settles() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temp");
+        let publisher = temp.path().join("joined-device-publisher.sh");
+        let count = temp.path().join("attempts");
+        std::fs::write(
+            &publisher,
+            "#!/bin/sh\nprintf x >> \"$TILO_FS_AUTHORITY_TEST_COUNT\"\nexit 77\n",
+        )
+        .expect("publisher script");
+        let mut permissions = std::fs::metadata(&publisher)
+            .expect("metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&publisher, permissions).expect("executable publisher");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_FS_AUTHORITY_PUBLISHER", &publisher);
+        env.set("TILO_FS_AUTHORITY_TEST_COUNT", &count);
+        let tree = WorkspaceTree {
+            fs_acl_path: Some(temp.path().join("fs-capabilities.json")),
+            ..WorkspaceTree::default()
+        };
+        tree.export_fs_capabilities();
+        wait_for_fs_authority_publication_idle(tilo_test_env::hang_bound())
+            .unwrap_or_else(|report| panic!("a joined device kept retrying publication: {report}"));
+        assert_eq!(
+            std::fs::read_to_string(&count).expect("attempt count"),
+            "x",
+            "a device that does not govern the workspace asks once"
+        );
+    }
+
+    #[test]
+    fn filesystem_export_maps_selected_person_through_verified_device_chain() {
+        let temp = tempfile::tempdir().expect("temp");
+        let xdg = temp.path().join("config");
+        let system = temp.path().join("system");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg);
+        env.set("TILO_IDENTITY_ROOT", &system);
+        let identity_dir = xdg.join("tilo/identity");
+        let paths = tilo_user_identity::IdentityPaths::under(&system);
+        crate::firstboot::ensure_collaboration_identity(&identity_dir, &paths).expect("identity");
+        let profile = crate::identity_registry::IdentityRegistryStore::at(&identity_dir)
+            .load()
+            .expect("registry")
+            .selected_for_workspace("new-room")
+            .expect("profile")
+            .clone();
+
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::new(WorkspaceId(1), "Files");
+        workspace.sandbox.push(CapOverride::grant(
+            Subject::person(profile.principal_id()),
+            Scope::FsPath("/var/workspace/files".into()),
+            Access::Write,
+        ));
+        tree.desktop.workspaces.push(workspace);
+        let output = temp.path().join("fs-caps.json");
+        tree.fs_acl_path = Some(output.clone());
+        tree.export_fs_capabilities();
+        crate::shell::persist::wait_for_saves();
+
+        let exported: Vec<CapOverride> = serde_json::from_slice::<collab_types::FsAuthority>(
+            &std::fs::read(&output).expect("export"),
+        )
+        .expect("json")
+        .capabilities;
+        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+            .expect("device")
+            .verifying_key()
+            .to_bytes();
+        assert!(exported.iter().any(|capability| {
+            matches!(
+                capability.subject,
+                Subject::User(key) if key.as_bytes() == &device
+            ) && capability.access == Access::Write
+        }));
+
+        crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
+            .revoke(
+                &profile.id,
+                device,
+                tilo_user_identity::RevocationReason::Retired,
+                1,
             )
-            .expect("json")
-            .capabilities;
-            let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-                .expect("device")
-                .verifying_key()
-                .to_bytes();
-            assert!(exported.iter().any(|capability| {
-                matches!(
-                    capability.subject,
-                    Subject::User(key) if key.as_bytes() == &device
-                ) && capability.access == Access::Write
-            }));
+            .expect("revoke current device");
+        tree.export_fs_capabilities();
+        crate::shell::persist::wait_for_saves();
+        let after_revoke: Vec<CapOverride> = serde_json::from_slice::<collab_types::FsAuthority>(
+            &std::fs::read(&output).expect("export"),
+        )
+        .expect("json")
+        .capabilities;
+        assert!(after_revoke.iter().all(|capability| {
+            !matches!(
+                capability.subject,
+                Subject::User(key) if key.as_bytes() == &device
+            )
+        }));
+    }
 
-            crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
-                .revoke(
-                    &profile.id,
-                    device,
-                    tilo_user_identity::RevocationReason::Retired,
-                    1,
-                )
-                .expect("revoke current device");
-            tree.export_fs_capabilities();
-            crate::shell::persist::wait_for_saves();
-            let after_revoke: Vec<CapOverride> =
-                serde_json::from_slice::<collab_types::FsAuthority>(
-                    &std::fs::read(&output).expect("export"),
-                )
-                .expect("json")
-                .capabilities;
-            assert!(after_revoke.iter().all(|capability| {
-                !matches!(
-                    capability.subject,
-                    Subject::User(key) if key.as_bytes() == &device
-                )
-            }));
-        }
-
-        // Phase `filesystem_export_projects_room_membership_per_workspace_and_preserves_revocation`.
-        {
-            use tilo_action_policy::{
-                Answer, Grant, KindSet, Lifetime, Subject as PolicySubject, TreePath,
-            };
-            let temp = tempfile::tempdir().expect("temp");
-            let output = temp.path().join("fs-caps.json");
-            let alice = collab_types::Ed25519PublicKey::from_bytes([0xa1; 32]);
-            let bob = collab_types::Ed25519PublicKey::from_bytes([0xb2; 32]);
-            let alice_id = hex::encode(alice.as_bytes());
-            let bob_id = hex::encode(bob.as_bytes());
-            let mut room_a = Workspace::new(WorkspaceId(1), "A");
-            let mut room_b = Workspace::new(WorkspaceId(2), "B");
-            let primary_relay_scope = tilo_network_actor::room_topic_id(room_a.room()).to_string();
-            let secondary_relay_scope =
-                tilo_network_actor::room_topic_id(room_b.room()).to_string();
-            let reader = |id: &str, person: &str, room: &str| {
-                Grant::new(
-                    id,
-                    PolicySubject::Person(person.to_owned()),
-                    TreePath::room(room),
-                    KindSet::READ,
-                    Answer::Allow,
-                    PolicySubject::Person("owner".into()),
-                )
-            };
-            let first_room = room_a.policy.room.clone();
-            room_a.grant(reader("alice-reads", &alice_id, &first_room));
-            // A Files share remains Files authority, not an implicit relay
-            // membership on either room.
-            room_a.sandbox.push(CapOverride::new(
-                Subject::User(alice),
-                Scope::FsPath("/var/workspace/a".into()),
-                Effect::Grant,
-                Access::Read,
-            ));
-            let until_ms = (tilo_clock::unix_now() + 3600) * 1000;
-            let second_room = room_b.policy.room.clone();
-            room_b.grant(
-                reader("bob-reads", &bob_id, &second_room).with_lifetime(Lifetime::Until(until_ms)),
-            );
-            let mut tree = WorkspaceTree {
-                desktop: DesktopTree {
-                    workspaces: vec![room_a, room_b],
-                    ..Default::default()
-                },
-                fs_acl_path: Some(output.clone()),
-                ..WorkspaceTree::default()
-            };
-            let read = |output: &std::path::Path| -> collab_types::FsAuthority {
-                serde_json::from_slice(&std::fs::read(output).expect("export")).expect("json")
-            };
-            tree.export_fs_capabilities();
-            crate::shell::persist::wait_for_saves();
-
-            let exported = read(&output);
-            let members_of = |authority: &collab_types::FsAuthority, scope: &str| {
-                authority
-                    .room_members
-                    .get(scope)
-                    .cloned()
-                    .unwrap_or_default()
-            };
-            assert!(members_of(&exported, &primary_relay_scope).contains(
-                &collab_types::RoomMember {
-                    user: alice,
-                    until: None,
-                }
-            ));
-            assert!(members_of(&exported, &secondary_relay_scope).contains(
-                &collab_types::RoomMember {
-                    user: bob,
-                    until: Some(until_ms / 1000),
-                }
-            ));
-            assert!(
-                members_of(&exported, &secondary_relay_scope)
-                    .iter()
-                    .all(|member| member.user != alice)
-            );
-            assert!(exported.capabilities.iter().any(|capability| {
-                capability.subject == Subject::User(alice)
-                    && capability.scope == Scope::FsPath("/var/workspace/a".into())
-            }));
-
-            // A denial in the room's policy keeps the relay closed to her.
-            tree.desktop.workspaces[0].grant(Grant::new(
-                "alice-denied",
-                PolicySubject::Person(alice_id),
-                TreePath::room(&first_room),
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
+    fn filesystem_export_projects_room_membership_per_workspace_and_preserves_revocation() {
+        use tilo_action_policy::{
+            Answer, Grant, KindSet, Lifetime, Subject as PolicySubject, TreePath,
+        };
+        let temp = tempfile::tempdir().expect("temp");
+        let output = temp.path().join("fs-caps.json");
+        let alice = collab_types::Ed25519PublicKey::from_bytes([0xa1; 32]);
+        let bob = collab_types::Ed25519PublicKey::from_bytes([0xb2; 32]);
+        let alice_id = hex::encode(alice.as_bytes());
+        let bob_id = hex::encode(bob.as_bytes());
+        let mut room_a = Workspace::new(WorkspaceId(1), "A");
+        let mut room_b = Workspace::new(WorkspaceId(2), "B");
+        let primary_relay_scope = tilo_network_actor::room_topic_id(room_a.room()).to_string();
+        let secondary_relay_scope = tilo_network_actor::room_topic_id(room_b.room()).to_string();
+        let reader = |id: &str, person: &str, room: &str| {
+            Grant::new(
+                id,
+                PolicySubject::Person(person.to_owned()),
+                TreePath::room(room),
                 KindSet::READ,
-                Answer::Deny,
+                Answer::Allow,
                 PolicySubject::Person("owner".into()),
-            ));
-            tree.export_fs_capabilities();
-            crate::shell::persist::wait_for_saves();
-            assert!(
-                members_of(&read(&output), &primary_relay_scope)
-                    .iter()
-                    .all(|member| member.user != alice)
-            );
+            )
+        };
+        let first_room = room_a.policy.room.clone();
+        room_a.grant(reader("alice-reads", &alice_id, &first_room));
+        // A Files share remains Files authority, not an implicit relay
+        // membership on either room.
+        room_a.sandbox.push(CapOverride::new(
+            Subject::User(alice),
+            Scope::FsPath("/var/workspace/a".into()),
+            Effect::Grant,
+            Access::Read,
+        ));
+        let until_ms = (tilo_clock::unix_now() + 3600) * 1000;
+        let second_room = room_b.policy.room.clone();
+        room_b.grant(
+            reader("bob-reads", &bob_id, &second_room).with_lifetime(Lifetime::Until(until_ms)),
+        );
+        let mut tree = WorkspaceTree {
+            desktop: DesktopTree {
+                workspaces: vec![room_a, room_b],
+                ..Default::default()
+            },
+            fs_acl_path: Some(output.clone()),
+            ..WorkspaceTree::default()
+        };
+        let read = |output: &std::path::Path| -> collab_types::FsAuthority {
+            serde_json::from_slice(&std::fs::read(output).expect("export")).expect("json")
+        };
+        tree.export_fs_capabilities();
+        crate::shell::persist::wait_for_saves();
 
-            tree.desktop.workspaces[0]
-                .revoke_grant(&tilo_action_policy::GrantId::new("alice-denied"));
-            tree.desktop.workspaces[0]
-                .revoke_grant(&tilo_action_policy::GrantId::new("alice-reads"));
-            tree.export_fs_capabilities();
-            crate::shell::persist::wait_for_saves();
-            assert!(
-                members_of(&read(&output), &primary_relay_scope)
-                    .iter()
-                    .all(|member| member.user != alice)
-            );
-        }
+        let exported = read(&output);
+        let members_of = |authority: &collab_types::FsAuthority, scope: &str| {
+            authority
+                .room_members
+                .get(scope)
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert!(
+            members_of(&exported, &primary_relay_scope).contains(&collab_types::RoomMember {
+                user: alice,
+                until: None,
+            })
+        );
+        assert!(members_of(&exported, &secondary_relay_scope).contains(
+            &collab_types::RoomMember {
+                user: bob,
+                until: Some(until_ms / 1000),
+            }
+        ));
+        assert!(
+            members_of(&exported, &secondary_relay_scope)
+                .iter()
+                .all(|member| member.user != alice)
+        );
+        assert!(exported.capabilities.iter().any(|capability| {
+            capability.subject == Subject::User(alice)
+                && capability.scope == Scope::FsPath("/var/workspace/a".into())
+        }));
+
+        // A denial in the room's policy keeps the relay closed to her.
+        tree.desktop.workspaces[0].grant(Grant::new(
+            "alice-denied",
+            PolicySubject::Person(alice_id),
+            TreePath::room(&first_room),
+            KindSet::READ,
+            Answer::Deny,
+            PolicySubject::Person("owner".into()),
+        ));
+        tree.export_fs_capabilities();
+        crate::shell::persist::wait_for_saves();
+        assert!(
+            members_of(&read(&output), &primary_relay_scope)
+                .iter()
+                .all(|member| member.user != alice)
+        );
+
+        tree.desktop.workspaces[0].revoke_grant(&tilo_action_policy::GrantId::new("alice-denied"));
+        tree.desktop.workspaces[0].revoke_grant(&tilo_action_policy::GrantId::new("alice-reads"));
+        tree.export_fs_capabilities();
+        crate::shell::persist::wait_for_saves();
+        assert!(
+            members_of(&read(&output), &primary_relay_scope)
+                .iter()
+                .all(|member| member.user != alice)
+        );
     }
 }
 
@@ -755,8 +739,11 @@ pub struct GovernanceRefusal {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
-    /// Native authority is never re-derived from desktop caches.
-    #[serde(default)]
+    /// The native owner's record as it last published it, projected for
+    /// what reads the tree; the owner keeps it in a file of its own
+    /// ([`super::native_workspace_owner::owner_file`]), never derived from
+    /// desktop caches.
+    #[serde(skip)]
     pub native_authority: super::native_workspace_owner::NativeAuthorityStorage,
     #[serde(skip)]
     pub native_runtime: super::native_workspace_owner::NativeStateRuntime,
@@ -2849,9 +2836,9 @@ impl WorkspaceTree {
         owned
     }
 
-    /// Make `request` in `room`: a membership change this device writes
-    /// into its replica of the room, anything else asked of the room's
-    /// governor, both from the outbox ([`room_outbox`]). Nothing changes
+    /// Make `request` in `room`: a governance change this device writes
+    /// into its replica of the room from the outbox ([`room_outbox`]),
+    /// whether or not any other device is in reach. Nothing changes
     /// here until the room's admitted document carries it, but for what is
     /// taken back: a
     /// sandbox capability ([`Self::narrow_sandbox`]), which stays taken
@@ -3974,50 +3961,6 @@ impl WorkspaceTree {
         Ok(true)
     }
 
-    /// Commit an arrangement change of the active workspace (showing its
-    /// canvas or its strips, standing a window somewhere on the canvas) as
-    /// this device's topology owner: the shared reduction on the cache,
-    /// mirrored into the desktop document so it is history and undoable,
-    /// and into the restart snapshot. The room's layout record carries it
-    /// to peers on its next capture. `Ok(false)` when nothing changed.
-    ///
-    /// # Errors
-    ///
-    /// The model's refusal: no active workspace, a window that is not in
-    /// it, a place with no size; or a command that is not an arrangement.
-    pub fn commit_arrangement_command(
-        &mut self,
-        command: &tilo_desktop_model::commands::DesktopCommand,
-    ) -> Result<bool, String> {
-        use tilo_desktop_model::commands::{DesktopCommand, apply_command};
-        if !matches!(
-            command,
-            DesktopCommand::SetArrangement { .. } | DesktopCommand::PlaceGroup { .. }
-        ) {
-            return Err("not an arrangement command".into());
-        }
-        let active = self.desktop.active;
-        let workspace = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == active)
-            .ok_or("there is no active workspace")?;
-        let before = workspace.arrangement.clone();
-        apply_command(
-            workspace,
-            command,
-            &mut || Err("an arrangement mints no identity".into()),
-            &mut |_, _| Err("an arrangement creates no record".into()),
-        )?;
-        if workspace.arrangement == before {
-            return Ok(false);
-        }
-        self.seed_doc_from_cache();
-        self.queue_save();
-        Ok(true)
-    }
-
     /// [`Self::commit_command`] for a [`DesktopCommand::MoveGroup`]: the
     /// group leaves its strip for `strip_id`, in the cache and the room
     /// document together, or in neither.
@@ -4177,346 +4120,316 @@ mod bootstrap_tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn bootstrap_default_and_demo_trees_carry_exactly_what_they_promise() {
-        // Phase `bootstrap_default_is_one_empty_workspace_with_no_people_windows_or_roster`.
-        {
-            // Phase `bootstrap_default_invents_no_people`.
-            {
-                let tree = WorkspaceTree::bootstrap_default();
-                assert!(
-                    tree.desktop.collaborators.is_empty(),
-                    "first-boot tree carries tree-level collaborators: {:?}",
-                    tree.desktop
-                        .collaborators
-                        .iter()
-                        .map(|c| &c.id)
-                        .collect::<Vec<_>>()
-                );
-                for ws in &tree.desktop.workspaces {
-                    assert!(
-                        ws.collaborators.is_empty(),
-                        "first-boot workspace {:?} carries collaborators {:?} — a \
-                         roster entry here is a person who does not exist, written \
-                         into the user's workspace document and painted in the top bar",
-                        ws.name,
-                        ws.collaborators.iter().map(|c| &c.id).collect::<Vec<_>>()
-                    );
-                }
-            }
-
-            // Phase `bootstrap_default_opens_no_windows`.
-            {
-                let tree = WorkspaceTree::bootstrap_default();
-                for ws in &tree.desktop.workspaces {
-                    for strip in &ws.strips {
-                        assert!(
-                            strip.window_groups.is_empty(),
-                            "first-boot workspace {:?} strip {:?} already holds {} \
-                             window group(s) — windows the person never opened",
-                            ws.name,
-                            strip.name,
-                            strip.window_groups.len()
-                        );
-                    }
-                }
-                assert!(
-                    tree.desktop.active_group.is_empty(),
-                    "first-boot tree points at an active group with no groups to point at"
-                );
-            }
-
-            // Phase `bootstrap_default_is_one_empty_workspace_with_somewhere_to_put_things`.
-            {
-                let tree = WorkspaceTree::bootstrap_default();
-                // Exactly one: two would mean naming a second one, and every name
-                // ("Research", "Design") is a claim about what this person does.
-                assert_eq!(
-                    tree.desktop.workspaces.len(),
-                    1,
-                    "first boot should be a single empty workspace; got {:?}",
-                    tree.desktop
-                        .workspaces
-                        .iter()
-                        .map(|w| &w.name)
-                        .collect::<Vec<_>>()
-                );
-                // Empty, but not structurally broken: the active pointer resolves,
-                // and the workspace has a strip for the first window to land in.
-                let active = tree
-                    .desktop
-                    .active_workspace()
-                    .expect("first boot must have a resolvable active workspace");
-                assert_eq!(active.id, tree.desktop.workspaces[0].id);
-                assert_eq!(
-                    active.strips.len(),
-                    1,
-                    "the empty workspace still needs a strip to place a window into"
-                );
-                assert_eq!(
-                    tree.desktop.active_strip.get(&active.id).copied(),
-                    Some(active.strips[0].id),
-                    "the active-strip pointer must resolve to the workspace's strip"
-                );
-            }
-
-            // Phase `bootstrap_default_seeds_nobody_into_any_roster`.
-            // A machine that has just been installed has had nobody join it, so
-            // every roster the first-boot tree hands the chrome is empty.
-            {
-                let tree = WorkspaceTree::bootstrap_default();
-                for ws in &tree.desktop.workspaces {
-                    assert!(
-                        ws.collaborators.is_empty(),
-                        "workspace {:?} boots with {} collaborator(s) nobody invited: \
-                         {:?}. The avatar stack is a claim about who is present; \
-                         seeding it fabricates participants.",
-                        ws.name,
-                        ws.collaborators.len(),
-                        ws.collaborators.iter().map(|c| &c.name).collect::<Vec<_>>(),
-                    );
-                }
-                assert!(
-                    tree.desktop.collaborators.is_empty(),
-                    "the tree-level roster fallback boots non-empty: {:?}",
-                    tree.desktop
-                        .collaborators
-                        .iter()
-                        .map(|c| &c.name)
-                        .collect::<Vec<_>>(),
-                );
-                // And the chrome's own arithmetic agrees: no peers to count.
-                assert_eq!(
-                    active_workspace_peer_count(&tree),
-                    0,
-                    "a fresh boot must count zero peers in the active workspace"
-                );
-            }
-        }
-
-        // Phase `bootstrap_demo_carries_three_workspaces_with_a_wide_first_group`.
-        {
-            // Phase `bootstrap_demo_carries_three_workspaces`.
-            {
-                let tree = WorkspaceTree::bootstrap_demo();
-                assert!(
-                    tree.desktop.workspaces.len() >= 3,
-                    "demo tree should carry at least 3 workspaces (Home / Research / \
-                     Design) so the overview has meaningful content; got {}",
-                    tree.desktop.workspaces.len()
-                );
-                // This fixture's whole purpose is to be populated —
-                // `bootstrap_default`, what a real boot reaches, is pinned empty.
-                assert!(
-                    tree.desktop
-                        .workspaces
-                        .iter()
-                        .any(|w| !w.collaborators.is_empty()),
-                    "at least one demo workspace should carry >=1 collaborator"
-                );
-            }
-
-            // Phase `bootstrap_demo_first_group_uses_wide_or_larger`.
-            {
-                let tree = WorkspaceTree::bootstrap_demo();
-                let first_ws = tree
-                    .desktop
-                    .workspaces
-                    .first()
-                    .expect("at least one workspace");
-                let first_strip = first_ws.strips.first().expect("at least one strip");
-                let first_group = first_strip
-                    .window_groups
-                    .first()
-                    .expect("at least one group");
-                // Widths are fractions of the strip, so "wide enough" is a share
-                // of the display rather than a pixel count that means a different
-                // share on every monitor.
-                let share = first_group.width.permille();
-                assert!(
-                    share >= tilo_desktop_model::width::WIDTH_NORMAL_PERMILLE,
-                    "the demo group should fill at least the Normal share of the \
-                     strip so the white card dominates the viewport; got {:?} \
-                     ({share}/1000)",
-                    first_group.width
-                );
-            }
+    fn bootstrap_default_invents_no_people() {
+        let tree = WorkspaceTree::bootstrap_default();
+        assert!(
+            tree.desktop.collaborators.is_empty(),
+            "first-boot tree carries tree-level collaborators: {:?}",
+            tree.desktop
+                .collaborators
+                .iter()
+                .map(|c| &c.id)
+                .collect::<Vec<_>>()
+        );
+        for ws in &tree.desktop.workspaces {
+            assert!(
+                ws.collaborators.is_empty(),
+                "first-boot workspace {:?} carries collaborators {:?} — a \
+                 roster entry here is a person who does not exist, written \
+                 into the user's workspace document and painted in the top bar",
+                ws.name,
+                ws.collaborators.iter().map(|c| &c.id).collect::<Vec<_>>()
+            );
         }
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn the_roster_admits_names_colours_and_removes_people_by_presence() {
-        // Phase `presence_admits_each_session_once_under_its_best_known_name`.
-        {
-            // Phase `admitting_the_same_person_twice_is_one_row`.
-            // The same person arriving twice is one avatar — presence
-            // republishes at ~30 Hz, so a push instead of an upsert would grow
-            // the stack by thirty entries a second.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let ws = tree.desktop.active;
-                assert!(tree.admit_collaborator(ws, Collaborator::new("alice", "Alice")));
-                assert!(!tree.admit_collaborator(ws, Collaborator::new("alice", "Alice")));
-                assert_eq!(
-                    tree.desktop.active_workspace().unwrap().collaborators.len(),
-                    1
-                );
-                assert_eq!(active_workspace_peer_count(&tree), 1);
-            }
-
-            // Phase `a_peer_is_admitted_to_the_workspace_that_addresses_the_room`.
-            // A room is addressed by its durable identity, not this machine's
-            // local handle for it: presence frames carry the room, and every
-            // peer numbers its workspaces differently.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let room = tree.desktop.active_workspace().unwrap().room();
-                assert!(tree.admit_collaborator_in_room(room, Collaborator::new("bob", "Bob")));
-                assert_eq!(active_workspace_peer_count(&tree), 1);
-
-                // A room this machine is not in has no workspace to admit into.
+    fn bootstrap_default_opens_no_windows() {
+        let tree = WorkspaceTree::bootstrap_default();
+        for ws in &tree.desktop.workspaces {
+            for strip in &ws.strips {
                 assert!(
-                    !tree
-                        .admit_collaborator_in_room(RoomId::new(), Collaborator::new("eve", "Eve"))
-                );
-                assert_eq!(active_workspace_peer_count(&tree), 1);
-            }
-        }
-
-        // Phase `a_peer_leaves_the_roster_when_removed_quiet_or_departed`.
-        {
-            // Phase `a_session_going_quiet_takes_its_person_off_the_roster`.
-            // A session that goes quiet takes its person off the roster by
-            // whichever name they'd acquired — a departure names a peer, never
-            // a person, which is what [`Collaborator::session`] bridges.
-            {
-                let mut tree = WorkspaceTree::bootstrap_default();
-                let room = tree.desktop.active_workspace().unwrap().room();
-                let alice = 0x11_u64;
-                let bob = 0x22_u64;
-                assert!(tree.admit_collaborator_in_room(
-                    room,
-                    Collaborator::new("alice", "alice").with_session(alice)
-                ));
-                assert!(tree.admit_collaborator_in_room(
-                    room,
-                    Collaborator::new("bob", "bob").with_session(bob)
-                ));
-                assert_eq!(active_workspace_peer_count(&tree), 2);
-
-                assert!(tree.retire_session(alice), "alice's session left");
-                let left = &tree.desktop.active_workspace().unwrap().collaborators;
-                assert_eq!(
-                    left.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-                    vec!["bob"],
-                    "the person whose session went quiet must come off the bar, \
-                     and nobody else; got {left:?}"
-                );
-                assert!(
-                    !tree.retire_session(alice),
-                    "a session that already left changes nothing"
-                );
-            }
-
-            // Phase `a_departure_sweeps_every_room_the_session_was_in`.
-            // A departure reaches every room that session was in — one session
-            // can be in several rooms at once, and it left all of them.
-            {
-                // Two rooms, since one can't tell a sweep from a hit; both empty
-                // so the "nobody left" assertion isn't confused by seeded people.
-                let mut tree = WorkspaceTree::bootstrap_default();
-                tree.create_hosted_workspace("Second");
-                let rooms: Vec<RoomId> = tree
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .map(crate::shell::state::Workspace::room)
-                    .collect();
-                assert!(
-                    rooms.len() >= 2,
-                    "need two rooms to tell a sweep from a hit"
-                );
-                let peer = 0x33_u64;
-                for r in &rooms {
-                    assert!(tree.admit_collaborator_in_room(
-                        *r,
-                        Collaborator::new("dana", "dana").with_session(peer)
-                    ));
-                }
-                assert!(tree.retire_session(peer));
-                for ws in &tree.desktop.workspaces {
-                    assert!(
-                        ws.collaborators.is_empty(),
-                        "workspace {:?} still shows a peer whose session left: {:?}",
-                        ws.name,
-                        ws.collaborators
-                    );
-                }
-            }
-        }
-
-        // Phase `roster_colours_follow_the_room_unless_explicitly_chosen`.
-        {
-            // Phase `roster_colours_match_what_the_room_settles_for_cursors`.
-            // Roster avatars and peer cursors must be the same colour for the
-            // same person — drawn by different code in different files.
-            {
-                let roster = vec![
-                    Collaborator::new("alice", "Alice"),
-                    Collaborator::new("bob", "Bob"),
-                    Collaborator::new("carol", "Carol"),
-                ];
-                let mine = roster_colors(&roster);
-
-                // What the cursor overlay computes for the same room: everyone
-                // in it, the local user included.
-                let local = local_user_id();
-                let mut ids: Vec<&str> = roster.iter().map(|c| c.id.as_str()).collect();
-                ids.push(local.as_str());
-                let cursors = collab_types::presence::assign_peer_colors(&ids, &[]);
-
-                for c in &roster {
-                    assert_eq!(
-                        mine.get(&c.id),
-                        cursors.get(c.id.as_str()),
-                        "{}'s avatar and cursor must be the same colour",
-                        c.id
-                    );
-                }
-                // `carol` hashes onto `alice`'s pinned pink; the room has to
-                // have moved one of them, or two people are one colour.
-                assert_ne!(
-                    mine.get("alice"),
-                    mine.get("carol"),
-                    "two people in one room must not be painted the same colour"
-                );
-            }
-
-            // Phase `an_explicit_roster_colour_wins_and_is_not_reused`.
-            // An explicit roster colour outranks the assignment, and is held
-            // back from it, so nobody else is computed onto it.
-            {
-                let pink = (0xec, 0x48, 0x99);
-                let roster = vec![
-                    Collaborator::new("bob", "Bob").with_cursor_color("#ec4899"),
-                    Collaborator::new("alice", "Alice"),
-                ];
-                let colors = roster_colors(&roster);
-                assert_eq!(colors.get("bob"), Some(&pink), "bob asked for pink");
-                assert_ne!(
-                    colors.get("alice"),
-                    Some(&pink),
-                    "alice's pinned pink is taken, so the room must move her"
+                    strip.window_groups.is_empty(),
+                    "first-boot workspace {:?} strip {:?} already holds {} \
+                     window group(s) — windows the person never opened",
+                    ws.name,
+                    strip.name,
+                    strip.window_groups.len()
                 );
             }
         }
+        assert!(
+            tree.desktop.active_group.is_empty(),
+            "first-boot tree points at an active group with no groups to point at"
+        );
+    }
+
+    #[test]
+    fn bootstrap_default_is_one_empty_workspace_with_somewhere_to_put_things() {
+        let tree = WorkspaceTree::bootstrap_default();
+        // Exactly one: two would mean naming a second one, and every name
+        // ("Research", "Design") is a claim about what this person does.
+        assert_eq!(
+            tree.desktop.workspaces.len(),
+            1,
+            "first boot should be a single empty workspace; got {:?}",
+            tree.desktop
+                .workspaces
+                .iter()
+                .map(|w| &w.name)
+                .collect::<Vec<_>>()
+        );
+        // Empty, but not structurally broken: the active pointer resolves,
+        // and the workspace has a strip for the first window to land in.
+        let active = tree
+            .desktop
+            .active_workspace()
+            .expect("first boot must have a resolvable active workspace");
+        assert_eq!(active.id, tree.desktop.workspaces[0].id);
+        assert_eq!(
+            active.strips.len(),
+            1,
+            "the empty workspace still needs a strip to place a window into"
+        );
+        assert_eq!(
+            tree.desktop.active_strip.get(&active.id).copied(),
+            Some(active.strips[0].id),
+            "the active-strip pointer must resolve to the workspace's strip"
+        );
+    }
+
+    // A machine that has just been installed has had nobody join it, so
+    // every roster the first-boot tree hands the chrome is empty.
+    #[test]
+    fn bootstrap_default_seeds_nobody_into_any_roster() {
+        let tree = WorkspaceTree::bootstrap_default();
+        for ws in &tree.desktop.workspaces {
+            assert!(
+                ws.collaborators.is_empty(),
+                "workspace {:?} boots with {} collaborator(s) nobody invited: \
+                 {:?}. The avatar stack is a claim about who is present; \
+                 seeding it fabricates participants.",
+                ws.name,
+                ws.collaborators.len(),
+                ws.collaborators.iter().map(|c| &c.name).collect::<Vec<_>>(),
+            );
+        }
+        assert!(
+            tree.desktop.collaborators.is_empty(),
+            "the tree-level roster fallback boots non-empty: {:?}",
+            tree.desktop
+                .collaborators
+                .iter()
+                .map(|c| &c.name)
+                .collect::<Vec<_>>(),
+        );
+        // And the chrome's own arithmetic agrees: no peers to count.
+        assert_eq!(
+            active_workspace_peer_count(&tree),
+            0,
+            "a fresh boot must count zero peers in the active workspace"
+        );
+    }
+
+    #[test]
+    fn bootstrap_demo_carries_three_workspaces() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        assert!(
+            tree.desktop.workspaces.len() >= 3,
+            "demo tree should carry at least 3 workspaces (Home / Research / \
+             Design) so the overview has meaningful content; got {}",
+            tree.desktop.workspaces.len()
+        );
+        // This fixture's whole purpose is to be populated —
+        // `bootstrap_default`, what a real boot reaches, is pinned empty.
+        assert!(
+            tree.desktop
+                .workspaces
+                .iter()
+                .any(|w| !w.collaborators.is_empty()),
+            "at least one demo workspace should carry >=1 collaborator"
+        );
+    }
+
+    #[test]
+    fn bootstrap_demo_first_group_uses_wide_or_larger() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        let first_ws = tree
+            .desktop
+            .workspaces
+            .first()
+            .expect("at least one workspace");
+        let first_strip = first_ws.strips.first().expect("at least one strip");
+        let first_group = first_strip
+            .window_groups
+            .first()
+            .expect("at least one group");
+        // Widths are fractions of the strip, so "wide enough" is a share
+        // of the display rather than a pixel count that means a different
+        // share on every monitor.
+        let share = first_group.width.permille();
+        assert!(
+            share >= tilo_desktop_model::width::WIDTH_NORMAL_PERMILLE,
+            "the demo group should fill at least the Normal share of the \
+             strip so the white card dominates the viewport; got {:?} \
+             ({share}/1000)",
+            first_group.width
+        );
+    }
+
+    // The same person arriving twice is one avatar — presence
+    // republishes at ~30 Hz, so a push instead of an upsert would grow
+    // the stack by thirty entries a second.
+    #[test]
+    fn admitting_the_same_person_twice_is_one_row() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let ws = tree.desktop.active;
+        assert!(tree.admit_collaborator(ws, Collaborator::new("alice", "Alice")));
+        assert!(!tree.admit_collaborator(ws, Collaborator::new("alice", "Alice")));
+        assert_eq!(
+            tree.desktop.active_workspace().unwrap().collaborators.len(),
+            1
+        );
+        assert_eq!(active_workspace_peer_count(&tree), 1);
+    }
+
+    // A room is addressed by its durable identity, not this machine's
+    // local handle for it: presence frames carry the room, and every
+    // peer numbers its workspaces differently.
+    #[test]
+    fn a_peer_is_admitted_to_the_workspace_that_addresses_the_room() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.active_workspace().unwrap().room();
+        assert!(tree.admit_collaborator_in_room(room, Collaborator::new("bob", "Bob")));
+        assert_eq!(active_workspace_peer_count(&tree), 1);
+
+        // A room this machine is not in has no workspace to admit into.
+        assert!(!tree.admit_collaborator_in_room(RoomId::new(), Collaborator::new("eve", "Eve")));
+        assert_eq!(active_workspace_peer_count(&tree), 1);
+    }
+
+    // A session that goes quiet takes its person off the roster by
+    // whichever name they'd acquired — a departure names a peer, never
+    // a person, which is what [`Collaborator::session`] bridges.
+    #[test]
+    fn a_session_going_quiet_takes_its_person_off_the_roster() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.active_workspace().unwrap().room();
+        let alice = 0x11_u64;
+        let bob = 0x22_u64;
+        assert!(tree.admit_collaborator_in_room(
+            room,
+            Collaborator::new("alice", "alice").with_session(alice)
+        ));
+        assert!(
+            tree.admit_collaborator_in_room(
+                room,
+                Collaborator::new("bob", "bob").with_session(bob)
+            )
+        );
+        assert_eq!(active_workspace_peer_count(&tree), 2);
+
+        assert!(tree.retire_session(alice), "alice's session left");
+        let left = &tree.desktop.active_workspace().unwrap().collaborators;
+        assert_eq!(
+            left.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["bob"],
+            "the person whose session went quiet must come off the bar, \
+             and nobody else; got {left:?}"
+        );
+        assert!(
+            !tree.retire_session(alice),
+            "a session that already left changes nothing"
+        );
+    }
+
+    // A departure reaches every room that session was in — one session
+    // can be in several rooms at once, and it left all of them.
+    #[test]
+    fn a_departure_sweeps_every_room_the_session_was_in() {
+        // Two rooms, since one can't tell a sweep from a hit; both empty
+        // so the "nobody left" assertion isn't confused by seeded people.
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.create_hosted_workspace("Second");
+        let rooms: Vec<RoomId> = tree
+            .desktop
+            .workspaces
+            .iter()
+            .map(crate::shell::state::Workspace::room)
+            .collect();
+        assert!(
+            rooms.len() >= 2,
+            "need two rooms to tell a sweep from a hit"
+        );
+        let peer = 0x33_u64;
+        for r in &rooms {
+            assert!(tree.admit_collaborator_in_room(
+                *r,
+                Collaborator::new("dana", "dana").with_session(peer)
+            ));
+        }
+        assert!(tree.retire_session(peer));
+        for ws in &tree.desktop.workspaces {
+            assert!(
+                ws.collaborators.is_empty(),
+                "workspace {:?} still shows a peer whose session left: {:?}",
+                ws.name,
+                ws.collaborators
+            );
+        }
+    }
+
+    // Roster avatars and peer cursors must be the same colour for the
+    // same person — drawn by different code in different files.
+    #[test]
+    fn roster_colours_match_what_the_room_settles_for_cursors() {
+        let roster = vec![
+            Collaborator::new("alice", "Alice"),
+            Collaborator::new("bob", "Bob"),
+            Collaborator::new("carol", "Carol"),
+        ];
+        let mine = roster_colors(&roster);
+
+        // What the cursor overlay computes for the same room: everyone
+        // in it, the local user included.
+        let local = local_user_id();
+        let mut ids: Vec<&str> = roster.iter().map(|c| c.id.as_str()).collect();
+        ids.push(local.as_str());
+        let cursors = collab_types::presence::assign_peer_colors(&ids, &[]);
+
+        for c in &roster {
+            assert_eq!(
+                mine.get(&c.id),
+                cursors.get(c.id.as_str()),
+                "{}'s avatar and cursor must be the same colour",
+                c.id
+            );
+        }
+        // `carol` hashes onto `alice`'s pinned pink; the room has to
+        // have moved one of them, or two people are one colour.
+        assert_ne!(
+            mine.get("alice"),
+            mine.get("carol"),
+            "two people in one room must not be painted the same colour"
+        );
+    }
+
+    // An explicit roster colour outranks the assignment, and is held
+    // back from it, so nobody else is computed onto it.
+    #[test]
+    fn an_explicit_roster_colour_wins_and_is_not_reused() {
+        let pink = (0xec, 0x48, 0x99);
+        let roster = vec![
+            Collaborator::new("bob", "Bob").with_cursor_color("#ec4899"),
+            Collaborator::new("alice", "Alice"),
+        ];
+        let colors = roster_colors(&roster);
+        assert_eq!(colors.get("bob"), Some(&pink), "bob asked for pink");
+        assert_ne!(
+            colors.get("alice"),
+            Some(&pink),
+            "alice's pinned pink is taken, so the room must move her"
+        );
     }
 }
 
@@ -4555,384 +4468,364 @@ mod automerge_foundation_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn tree_topology_changes_export_and_apply_as_automerge_changes() {
-        // Phase `tree_changes_export_and_apply_as_automerge_changes`.
-        {
-            // Phase `empty_tree_has_no_heads_and_no_changes`.
-            {
-                let mut t = WorkspaceTree::default();
-                assert!(t.current_heads().is_empty());
-                assert!(t.export_changes_since(&[]).is_empty());
-            }
-
-            // Phase `apply_changes_round_trips_a_manual_doc_mutation`.
-            {
-                let mut tree_a = WorkspaceTree::default();
-                // Synthesise a change by writing directly into the doc rather
-                // than through a mutator.
-                tree_a
-                    .doc
-                    .put(&ROOT, "demo", ScalarValue::Uint(42))
-                    .unwrap();
-
-                let heads_after = tree_a.current_heads();
-                assert!(!heads_after.is_empty());
-                let changes = tree_a.export_changes_since(&[]);
-                assert!(!changes.is_empty());
-
-                let mut tree_b = WorkspaceTree::default();
-                tree_b.apply_changes(&changes).unwrap();
-
-                // Tree B now sees the same demo value.
-                let val = tree_b.doc.get(&ROOT, "demo").unwrap();
-                assert!(val.is_some());
-            }
-
-            // Phase `export_changes_since_current_heads_yields_empty`.
-            {
-                let mut t = WorkspaceTree::default();
-                t.doc.put(&ROOT, "k", ScalarValue::Uint(1)).unwrap();
-                let heads = t.current_heads();
-                let changes = t.export_changes_since(&heads);
-                assert!(
-                    changes.is_empty(),
-                    "exporting since current heads must yield no changes"
-                );
-            }
-        }
-
-        // Phase `workspace_room_and_active_topology_propagate_via_apply_changes`.
-        {
-            // Phase `appending_a_workspace_propagates_via_apply_changes`.
-            {
-                // Tree B starts from `default()`, not `bootstrap_default`, so
-                // its empty doc cleanly absorbs A's full change-graph without
-                // both peers concurrently creating the `workspaces` list at
-                // ROOT — seeding isn't diff-aware.
-                let mut tree_a = WorkspaceTree::bootstrap_demo();
-                let initial_count = tree_a.desktop.workspaces.len();
-
-                tree_a.create_hosted_workspace("Project X");
-                assert_eq!(tree_a.desktop.workspaces.len(), initial_count + 1);
-
-                let changes = tree_a.export_changes_since(&[]);
-                assert!(
-                    !changes.is_empty(),
-                    "append_empty_workspace must produce doc-side changes"
-                );
-
-                let mut tree_b = WorkspaceTree::default();
-                tree_b.apply_changes(&changes).expect("apply changes");
-
-                assert!(
-                    tree_b
-                        .desktop
-                        .workspaces
-                        .iter()
-                        .any(|w| w.name == "Project X"),
-                    "tree B should observe the appended workspace after sync; \
-                     got names: {:?}",
-                    tree_b
-                        .desktop
-                        .workspaces
-                        .iter()
-                        .map(|w| &w.name)
-                        .collect::<Vec<_>>()
-                );
-            }
-
-            // Phase `a_workspaces_room_propagates_via_apply_changes`.
-            // A peer that hydrates a workspace out of another peer's doc must
-            // end up in *that peer's* room. Minting a local one instead would
-            // leave it holding a workspace it can see but cannot collaborate
-            // in.
-            {
-                let mut tree_a = WorkspaceTree::bootstrap_demo();
-                let new_id = tree_a.create_hosted_workspace("Project X").0;
-                let room = tree_a.room_of(new_id).expect("the append mints a room");
-                assert!(!room.is_nil());
-
-                let changes = tree_a.export_changes_since(&[]);
-                let mut tree_b = WorkspaceTree::default();
-                tree_b.apply_changes(&changes).expect("apply changes");
-
-                let hydrated = tree_b
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|w| w.name == "Project X")
-                    .expect("peer B should observe the appended workspace");
-                assert_eq!(
-                    hydrated.room(),
-                    room,
-                    "peer B must adopt the room peer A named, not mint one of its \
-                     own — otherwise the two hold the same workspace and address \
-                     different clusters"
-                );
-                assert_eq!(
-                    hydrated.collab_cluster_id(),
-                    tree_a
-                        .desktop
-                        .workspaces
-                        .iter()
-                        .find(|w| w.id == new_id)
-                        .expect("peer A's workspace")
-                        .collab_cluster_id(),
-                    "and the cluster their apps are launched into must match"
-                );
-            }
-
-            // Phase `a_joined_workspace_reaches_peers_with_its_room`.
-            // A workspace joined from an invitation is the inviter's room
-            // from the start; the doc carries it as well as the cache, or
-            // the workspace never replicates as that room.
-            {
-                let mut tree_a = WorkspaceTree::bootstrap_demo();
-                let inviters_room = RoomId::new();
-                let id = tree_a
-                    .join_room("Invited", inviters_room)
-                    .expect("a room is joined as a workspace of its own");
-
-                let changes = tree_a.export_changes_since(&[]);
-                let mut tree_b = WorkspaceTree::default();
-                tree_b.apply_changes(&changes).expect("apply changes");
-
-                assert_eq!(
-                    tree_b.room_of(id),
-                    Some(inviters_room),
-                    "a joined workspace must carry its room to its peers"
-                );
-            }
-
-            // Phase `the_nil_room_is_never_joined`.
-            // "Join the unminted room" is never a meaningful request, and
-            // honouring it would make a workspace that collaborates with
-            // nobody.
-            {
-                let mut tree = WorkspaceTree::bootstrap_demo();
-                let before = tree.desktop.workspaces.len();
-                assert!(
-                    tree.join_room("Nowhere", RoomId::nil()).is_none(),
-                    "joining the nil room must be refused"
-                );
-                assert_eq!(tree.desktop.workspaces.len(), before);
-            }
-
-            // Phase `set_active_propagates_via_apply_changes`.
-            {
-                // Tree B uses `default()`, same reason as the append test: two
-                // `bootstrap_default` calls would race on the workspaces list.
-                let mut tree_a = WorkspaceTree::bootstrap_demo();
-                let target = tree_a
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id != tree_a.desktop.active)
-                    .map(|w| w.id)
-                    .expect("bootstrap seeds >=2 workspaces");
-                tree_a.set_active(target);
-                assert_eq!(tree_a.desktop.active, target);
-
-                let changes = tree_a.export_changes_since(&[]);
-                let mut tree_b = WorkspaceTree::default();
-                tree_b.apply_changes(&changes).expect("apply changes");
-                assert_eq!(
-                    tree_b.desktop.active, target,
-                    "tree B's active should match peer A's after sync"
-                );
-            }
-        }
+    fn empty_tree_has_no_heads_and_no_changes() {
+        let mut t = WorkspaceTree::default();
+        assert!(t.current_heads().is_empty());
+        assert!(t.export_changes_since(&[]).is_empty());
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn cross_strip_tab_moves_propagate_exactly_or_roll_back() {
-        // Phase `moving_a_tab_across_strips_propagates_via_apply_changes`.
-        {
-            let mut tree_a = WorkspaceTree::bootstrap_demo();
-            // Add a second strip with an empty group so the move has
-            // somewhere to land; re-seed so the doc carries it too.
-            let dst_strip_id = StripId::new();
-            let dst_group_id = next_id();
-            tree_a.desktop.workspaces[0].strips.push(Strip {
-                id: dst_strip_id,
-                name: "Dest".into(),
-                window_groups: vec![WindowGroup {
-                    id: dst_group_id,
-                    tabs: Vec::new(),
-                    active_tab: 0,
-                    width: WindowWidth::Normal,
-                    maximized: false,
-                    focus_history: Vec::new(),
-                }],
-            });
-            tree_a.seed_doc_from_cache();
+    fn apply_changes_round_trips_a_manual_doc_mutation() {
+        let mut tree_a = WorkspaceTree::default();
+        // Synthesise a change by writing directly into the doc rather
+        // than through a mutator.
+        tree_a
+            .doc
+            .put(&ROOT, "demo", ScalarValue::Uint(42))
+            .unwrap();
 
-            let src_strip_id = tree_a.desktop.workspaces[0].strips[0].id;
-            let target_tab = tree_a.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let heads_after = tree_a.current_heads();
+        assert!(!heads_after.is_empty());
+        let changes = tree_a.export_changes_since(&[]);
+        assert!(!changes.is_empty());
 
-            let new_group_id = next_id();
-            assert!(tree_a.move_tab_across_strips(
-                src_strip_id,
-                dst_strip_id,
-                target_tab,
-                new_group_id,
-                DropTarget::GroupGap { gap_index: 1 },
-            ));
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).unwrap();
 
-            let changes = tree_a.export_changes_since(&[]);
-            let mut tree_b = WorkspaceTree::default();
-            tree_b.apply_changes(&changes).expect("apply changes");
+        // Tree B now sees the same demo value.
+        let val = tree_b.doc.get(&ROOT, "demo").unwrap();
+        assert!(val.is_some());
+    }
 
-            let dst_strip_in_b = tree_b
+    #[test]
+    fn export_changes_since_current_heads_yields_empty() {
+        let mut t = WorkspaceTree::default();
+        t.doc.put(&ROOT, "k", ScalarValue::Uint(1)).unwrap();
+        let heads = t.current_heads();
+        let changes = t.export_changes_since(&heads);
+        assert!(
+            changes.is_empty(),
+            "exporting since current heads must yield no changes"
+        );
+    }
+
+    #[test]
+    fn appending_a_workspace_propagates_via_apply_changes() {
+        // Tree B starts from `default()`, not `bootstrap_default`, so
+        // its empty doc cleanly absorbs A's full change-graph without
+        // both peers concurrently creating the `workspaces` list at
+        // ROOT — seeding isn't diff-aware.
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
+        let initial_count = tree_a.desktop.workspaces.len();
+
+        tree_a.create_hosted_workspace("Project X");
+        assert_eq!(tree_a.desktop.workspaces.len(), initial_count + 1);
+
+        let changes = tree_a.export_changes_since(&[]);
+        assert!(
+            !changes.is_empty(),
+            "append_empty_workspace must produce doc-side changes"
+        );
+
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        assert!(
+            tree_b
                 .desktop
                 .workspaces
                 .iter()
-                .flat_map(|w| w.strips.iter())
-                .find(|s| s.id == dst_strip_id);
-            assert!(
-                dst_strip_in_b.is_some(),
-                "destination strip must be observable in tree B"
-            );
-            let landed_in_dst = dst_strip_in_b
-                .unwrap()
-                .window_groups
-                .iter()
-                .flat_map(|g| g.tabs.iter())
-                .any(|t| t.id == target_tab);
-            assert!(
-                landed_in_dst,
-                "moved tab must appear in destination strip after sync"
-            );
-            let destination_groups = &dst_strip_in_b.expect("destination strip").window_groups;
-            assert_eq!(
-                destination_groups
-                    .iter()
-                    .map(|group| group.id)
-                    .collect::<Vec<_>>(),
-                vec![dst_group_id, new_group_id],
-                "doc resync must preserve the same new group and insertion order as the cache"
-            );
-            assert_eq!(
-                destination_groups[1]
-                    .tabs
-                    .iter()
-                    .map(|tab| tab.id)
-                    .collect::<Vec<_>>(),
-                vec![target_tab],
-                "the moved tab remains a separate group after resync"
-            );
-        }
-
-        // Phase `moving_a_tab_across_strips_into_existing_group_preserves_exact_index`.
-        {
-            let mut tree_a = WorkspaceTree::bootstrap_demo();
-            let src_strip_id = tree_a.desktop.workspaces[0].strips[0].id;
-            let target_tab = tree_a.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-            let template = tree_a.desktop.workspaces[0].strips[0].window_groups[0].tabs[1].clone();
-            let mut before = template.clone();
-            before.id = next_id();
-            before.title = "Before".into();
-            let mut after = template;
-            after.id = next_id();
-            after.title = "After".into();
-            let expected = vec![before.id, target_tab, after.id];
-            let dst_strip_id = StripId::new();
-            let dst_group_id = next_id();
-            tree_a.desktop.workspaces[0].strips.push(Strip {
-                id: dst_strip_id,
-                name: "Dest".into(),
-                window_groups: vec![WindowGroup {
-                    id: dst_group_id,
-                    tabs: vec![before, after],
-                    active_tab: expected[0],
-                    width: WindowWidth::Normal,
-                    maximized: false,
-                    focus_history: Vec::new(),
-                }],
-            });
-            tree_a.seed_doc_from_cache();
-
-            assert!(tree_a.move_tab_across_strips(
-                src_strip_id,
-                dst_strip_id,
-                target_tab,
-                next_id(),
-                DropTarget::ExistingGroup {
-                    group_id: dst_group_id,
-                    tab_index: 1,
-                },
-            ));
-            let cache_group = &tree_a.desktop.workspaces[0]
-                .strips
-                .iter()
-                .find(|strip| strip.id == dst_strip_id)
-                .expect("destination strip")
-                .window_groups[0];
-            assert_eq!(
-                cache_group
-                    .tabs
-                    .iter()
-                    .map(|tab| tab.id)
-                    .collect::<Vec<_>>(),
-                expected
-            );
-            assert_eq!(cache_group.active_tab, target_tab);
-
-            let changes = tree_a.export_changes_since(&[]);
-            let mut tree_b = WorkspaceTree::default();
-            tree_b.apply_changes(&changes).expect("apply changes");
-            let peer_group = &tree_b
+                .any(|w| w.name == "Project X"),
+            "tree B should observe the appended workspace after sync; \
+             got names: {:?}",
+            tree_b
                 .desktop
                 .workspaces
                 .iter()
-                .flat_map(|workspace| &workspace.strips)
-                .find(|strip| strip.id == dst_strip_id)
-                .expect("peer destination strip")
-                .window_groups[0];
-            assert_eq!(
-                peer_group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
-                expected,
-                "Automerge must preserve the exact existing-group insertion index"
-            );
-        }
+                .map(|w| &w.name)
+                .collect::<Vec<_>>()
+        );
+    }
 
-        // Phase `cross_strip_move_rolls_back_when_document_cannot_commit`.
-        {
-            let mut tree = WorkspaceTree::bootstrap_demo();
-            let dst_strip_id = StripId::new();
-            tree.desktop.workspaces[0].strips.push(Strip {
-                id: dst_strip_id,
-                name: "Dest".into(),
-                window_groups: Vec::new(),
-            });
-            let src_strip_id = tree.desktop.workspaces[0].strips[0].id;
-            let target_tab = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
-            let before = tree.desktop.workspaces.clone();
-            // Model a stale/unavailable replication document after the cache was
-            // loaded. The move must not become a cache-only layout.
-            tree.doc = automerge::AutoCommit::new();
+    // A peer that hydrates a workspace out of another peer's doc must
+    // end up in *that peer's* room. Minting a local one instead would
+    // leave it holding a workspace it can see but cannot collaborate
+    // in.
+    #[test]
+    fn a_workspaces_room_propagates_via_apply_changes() {
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
+        let new_id = tree_a.create_hosted_workspace("Project X").0;
+        let room = tree_a.room_of(new_id).expect("the append mints a room");
+        assert!(!room.is_nil());
 
-            assert!(!tree.move_tab_across_strips(
-                src_strip_id,
-                dst_strip_id,
-                target_tab,
-                next_id(),
-                DropTarget::GroupGap { gap_index: 0 },
-            ));
-            assert_eq!(
-                serde_json::to_value(&tree.desktop.workspaces).unwrap(),
-                serde_json::to_value(&before).unwrap(),
-                "failed document commit must restore the exact source layout"
-            );
-        }
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        let hydrated = tree_b
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.name == "Project X")
+            .expect("peer B should observe the appended workspace");
+        assert_eq!(
+            hydrated.room(),
+            room,
+            "peer B must adopt the room peer A named, not mint one of its \
+             own — otherwise the two hold the same workspace and address \
+             different clusters"
+        );
+        assert_eq!(
+            hydrated.collab_cluster_id(),
+            tree_a
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == new_id)
+                .expect("peer A's workspace")
+                .collab_cluster_id(),
+            "and the cluster their apps are launched into must match"
+        );
+    }
+
+    // A workspace joined from an invitation is the inviter's room
+    // from the start; the doc carries it as well as the cache, or
+    // the workspace never replicates as that room.
+    #[test]
+    fn a_joined_workspace_reaches_peers_with_its_room() {
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
+        let inviters_room = RoomId::new();
+        let id = tree_a
+            .join_room("Invited", inviters_room)
+            .expect("a room is joined as a workspace of its own");
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        assert_eq!(
+            tree_b.room_of(id),
+            Some(inviters_room),
+            "a joined workspace must carry its room to its peers"
+        );
+    }
+
+    // "Join the unminted room" is never a meaningful request, and
+    // honouring it would make a workspace that collaborates with
+    // nobody.
+    #[test]
+    fn the_nil_room_is_never_joined() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let before = tree.desktop.workspaces.len();
+        assert!(
+            tree.join_room("Nowhere", RoomId::nil()).is_none(),
+            "joining the nil room must be refused"
+        );
+        assert_eq!(tree.desktop.workspaces.len(), before);
+    }
+
+    #[test]
+    fn set_active_propagates_via_apply_changes() {
+        // Tree B uses `default()`, same reason as the append test: two
+        // `bootstrap_default` calls would race on the workspaces list.
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
+        let target = tree_a
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.id != tree_a.desktop.active)
+            .map(|w| w.id)
+            .expect("bootstrap seeds >=2 workspaces");
+        tree_a.set_active(target);
+        assert_eq!(tree_a.desktop.active, target);
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+        assert_eq!(
+            tree_b.desktop.active, target,
+            "tree B's active should match peer A's after sync"
+        );
+    }
+
+    #[test]
+    fn moving_a_tab_across_strips_propagates_via_apply_changes() {
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
+        // Add a second strip with an empty group so the move has
+        // somewhere to land; re-seed so the doc carries it too.
+        let dst_strip_id = StripId::new();
+        let dst_group_id = next_id();
+        tree_a.desktop.workspaces[0].strips.push(Strip {
+            id: dst_strip_id,
+            name: "Dest".into(),
+            window_groups: vec![WindowGroup {
+                id: dst_group_id,
+                tabs: Vec::new(),
+                active_tab: 0,
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            }],
+        });
+        tree_a.seed_doc_from_cache();
+
+        let src_strip_id = tree_a.desktop.workspaces[0].strips[0].id;
+        let target_tab = tree_a.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+
+        let new_group_id = next_id();
+        assert!(tree_a.move_tab_across_strips(
+            src_strip_id,
+            dst_strip_id,
+            target_tab,
+            new_group_id,
+            DropTarget::GroupGap { gap_index: 1 },
+        ));
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        let dst_strip_in_b = tree_b
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .find(|s| s.id == dst_strip_id);
+        assert!(
+            dst_strip_in_b.is_some(),
+            "destination strip must be observable in tree B"
+        );
+        let landed_in_dst = dst_strip_in_b
+            .unwrap()
+            .window_groups
+            .iter()
+            .flat_map(|g| g.tabs.iter())
+            .any(|t| t.id == target_tab);
+        assert!(
+            landed_in_dst,
+            "moved tab must appear in destination strip after sync"
+        );
+        let destination_groups = &dst_strip_in_b.expect("destination strip").window_groups;
+        assert_eq!(
+            destination_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![dst_group_id, new_group_id],
+            "doc resync must preserve the same new group and insertion order as the cache"
+        );
+        assert_eq!(
+            destination_groups[1]
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![target_tab],
+            "the moved tab remains a separate group after resync"
+        );
+    }
+
+    #[test]
+    fn moving_a_tab_across_strips_into_existing_group_preserves_exact_index() {
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
+        let src_strip_id = tree_a.desktop.workspaces[0].strips[0].id;
+        let target_tab = tree_a.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let template = tree_a.desktop.workspaces[0].strips[0].window_groups[0].tabs[1].clone();
+        let mut before = template.clone();
+        before.id = next_id();
+        before.title = "Before".into();
+        let mut after = template;
+        after.id = next_id();
+        after.title = "After".into();
+        let expected = vec![before.id, target_tab, after.id];
+        let dst_strip_id = StripId::new();
+        let dst_group_id = next_id();
+        tree_a.desktop.workspaces[0].strips.push(Strip {
+            id: dst_strip_id,
+            name: "Dest".into(),
+            window_groups: vec![WindowGroup {
+                id: dst_group_id,
+                tabs: vec![before, after],
+                active_tab: expected[0],
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            }],
+        });
+        tree_a.seed_doc_from_cache();
+
+        assert!(tree_a.move_tab_across_strips(
+            src_strip_id,
+            dst_strip_id,
+            target_tab,
+            next_id(),
+            DropTarget::ExistingGroup {
+                group_id: dst_group_id,
+                tab_index: 1,
+            },
+        ));
+        let cache_group = &tree_a.desktop.workspaces[0]
+            .strips
+            .iter()
+            .find(|strip| strip.id == dst_strip_id)
+            .expect("destination strip")
+            .window_groups[0];
+        assert_eq!(
+            cache_group
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(cache_group.active_tab, target_tab);
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+        let peer_group = &tree_b
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .find(|strip| strip.id == dst_strip_id)
+            .expect("peer destination strip")
+            .window_groups[0];
+        assert_eq!(
+            peer_group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            expected,
+            "Automerge must preserve the exact existing-group insertion index"
+        );
+    }
+
+    #[test]
+    fn cross_strip_move_rolls_back_when_document_cannot_commit() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let dst_strip_id = StripId::new();
+        tree.desktop.workspaces[0].strips.push(Strip {
+            id: dst_strip_id,
+            name: "Dest".into(),
+            window_groups: Vec::new(),
+        });
+        let src_strip_id = tree.desktop.workspaces[0].strips[0].id;
+        let target_tab = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let before = tree.desktop.workspaces.clone();
+        // Model a stale/unavailable replication document after the cache was
+        // loaded. The move must not become a cache-only layout.
+        tree.doc = automerge::AutoCommit::new();
+
+        assert!(!tree.move_tab_across_strips(
+            src_strip_id,
+            dst_strip_id,
+            target_tab,
+            next_id(),
+            DropTarget::GroupGap { gap_index: 0 },
+        ));
+        assert_eq!(
+            serde_json::to_value(&tree.desktop.workspaces).unwrap(),
+            serde_json::to_value(&before).unwrap(),
+            "failed document commit must restore the exact source layout"
+        );
     }
 
     #[test]
@@ -5082,371 +4975,364 @@ mod active_group_tests {
 
     #[test]
     #[serial_test::serial(next_id_statics)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn reconcile_strip_topology_persists_splits_but_never_loses_tabs() {
-        // Phase `reconcile_strip_topology_persists_a_split_without_copying_tile_state`.
-        {
-            use automerge::{ROOT, ReadDoc};
+    fn reconcile_strip_topology_persists_a_split_without_copying_tile_state() {
+        use automerge::{ROOT, ReadDoc};
 
-            let (mut tree, strip_id, ids) = tree_with_n_groups(1);
-            let state_dir = tempfile::tempdir().expect("temporary state directory");
-            let state_path = state_dir.path().join("state.json");
-            tree.persist_path = Some(state_path.clone());
-            let source_group = ids[0];
-            let make_tab = |id: u64, title: &str| Tab {
-                id,
-                title: title.into(),
-                tile: TileContent::Stub {
-                    kind: AppKind::Terminal,
-                    label: title.into(),
-                },
-                app_title: None,
-            };
-            tree.desktop.workspaces[0].strips[0].window_groups[0].tabs = vec![
-                make_tab(10, "Notes"),
-                make_tab(11, "Files"),
-                make_tab(12, "Terminal"),
-            ];
-            tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = 10;
-            tree.seed_doc_from_cache();
+        let (mut tree, strip_id, ids) = tree_with_n_groups(1);
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state_path = state_dir.path().join("state.json");
+        tree.persist_path = Some(state_path.clone());
+        let source_group = ids[0];
+        let make_tab = |id: u64, title: &str| Tab {
+            id,
+            title: title.into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: title.into(),
+            },
+            app_title: None,
+        };
+        tree.desktop.workspaces[0].strips[0].window_groups[0].tabs = vec![
+            make_tab(10, "Notes"),
+            make_tab(11, "Files"),
+            make_tab(12, "Terminal"),
+        ];
+        tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = 10;
+        tree.seed_doc_from_cache();
 
-            let topology = vec![
-                tilo_desktop_model::GroupShape {
-                    id: source_group,
-                    tab_ids: vec![10, 12],
-                    active_tab: 10,
-                    width: tilo_desktop_model::WindowWidth::Fraction(700),
-                },
-                tilo_desktop_model::GroupShape {
-                    id: 99,
-                    tab_ids: vec![11],
-                    active_tab: 11,
-                    width: tilo_desktop_model::WindowWidth::Normal,
-                },
-            ];
-            assert!(tree.reconcile_strip_topology(strip_id, &topology));
-
-            let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
-            assert_eq!(groups.len(), 2);
-            assert_eq!(
-                groups[0].tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
-                vec![10, 12]
-            );
-            assert_eq!(groups[1].tabs[0].title, "Files");
-            assert!(matches!(
-                groups[1].tabs[0].tile,
-                TileContent::Stub {
-                    kind: AppKind::Terminal,
-                    ..
-                }
-            ));
-            assert_eq!(groups[0].width, WindowWidth::Fraction(700));
-            assert_eq!(groups[1].width, WindowWidth::Normal);
-
-            let (_, workspaces) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
-            let (_, workspace) = tree.doc.get(&workspaces, 0_usize).unwrap().unwrap();
-            let (_, strips) = tree.doc.get(&workspace, "strips").unwrap().unwrap();
-            let (_, strip) = tree.doc.get(&strips, 0_usize).unwrap().unwrap();
-            let (_, doc_groups) = tree.doc.get(&strip, "window_groups").unwrap().unwrap();
-            assert_eq!(tree.doc.length(&doc_groups), 2);
-            let (_, detached) = tree.doc.get(&doc_groups, 1_usize).unwrap().unwrap();
-            let (_, detached_tabs) = tree.doc.get(&detached, "tabs").unwrap().unwrap();
-            assert_eq!(tree.doc.length(&detached_tabs), 1);
-
-            let restarted = crate::shell::persist::load_tree_from(&state_path)
-                .expect("same-strip topology creates valid durable state");
-            let restarted_groups = &restarted.desktop.workspaces[0].strips[0].window_groups;
-            assert_eq!(restarted_groups.len(), 2);
-            assert_eq!(
-                restarted_groups[0]
-                    .tabs
-                    .iter()
-                    .map(|tab| tab.id)
-                    .collect::<Vec<_>>(),
-                vec![10, 12],
-                "the surviving group membership must survive an immediate restart"
-            );
-            assert_eq!(restarted_groups[1].tabs[0].id, 11);
-            assert_eq!(restarted_groups[0].width, WindowWidth::Fraction(700));
-        }
-
-        // Phase `reconcile_strip_topology_rejects_a_snapshot_that_would_lose_tabs`.
-        {
-            let (mut tree, strip_id, ids) = tree_with_n_groups(1);
-            let before = 10;
-            let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-            group.tabs.push(Tab {
-                id: before,
-                title: "Notes".into(),
-                tile: TileContent::Stub {
-                    kind: AppKind::Terminal,
-                    label: "Notes".into(),
-                },
-                app_title: None,
-            });
-            group.active_tab = before;
-            let invalid = [tilo_desktop_model::GroupShape {
-                id: ids[0],
-                tab_ids: vec![],
-                active_tab: before,
+        let topology = vec![
+            tilo_desktop_model::GroupShape {
+                id: source_group,
+                tab_ids: vec![10, 12],
+                active_tab: 10,
+                width: tilo_desktop_model::WindowWidth::Fraction(700),
+            },
+            tilo_desktop_model::GroupShape {
+                id: 99,
+                tab_ids: vec![11],
+                active_tab: 11,
                 width: tilo_desktop_model::WindowWidth::Normal,
-            }];
+            },
+        ];
+        assert!(tree.reconcile_strip_topology(strip_id, &topology));
 
-            assert!(!tree.reconcile_strip_topology(strip_id, &invalid));
-            let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
-            assert_eq!(group.tabs.len(), 1);
-            assert_eq!(group.tabs[0].id, before);
-        }
+        let groups = &tree.desktop.workspaces[0].strips[0].window_groups;
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0].tabs.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![10, 12]
+        );
+        assert_eq!(groups[1].tabs[0].title, "Files");
+        assert!(matches!(
+            groups[1].tabs[0].tile,
+            TileContent::Stub {
+                kind: AppKind::Terminal,
+                ..
+            }
+        ));
+        assert_eq!(groups[0].width, WindowWidth::Fraction(700));
+        assert_eq!(groups[1].width, WindowWidth::Normal);
+
+        let (_, workspaces) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
+        let (_, workspace) = tree.doc.get(&workspaces, 0_usize).unwrap().unwrap();
+        let (_, strips) = tree.doc.get(&workspace, "strips").unwrap().unwrap();
+        let (_, strip) = tree.doc.get(&strips, 0_usize).unwrap().unwrap();
+        let (_, doc_groups) = tree.doc.get(&strip, "window_groups").unwrap().unwrap();
+        assert_eq!(tree.doc.length(&doc_groups), 2);
+        let (_, detached) = tree.doc.get(&doc_groups, 1_usize).unwrap().unwrap();
+        let (_, detached_tabs) = tree.doc.get(&detached, "tabs").unwrap().unwrap();
+        assert_eq!(tree.doc.length(&detached_tabs), 1);
+
+        let restarted = crate::shell::persist::load_tree_from(&state_path)
+            .expect("same-strip topology creates valid durable state");
+        let restarted_groups = &restarted.desktop.workspaces[0].strips[0].window_groups;
+        assert_eq!(restarted_groups.len(), 2);
+        assert_eq!(
+            restarted_groups[0]
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![10, 12],
+            "the surviving group membership must survive an immediate restart"
+        );
+        assert_eq!(restarted_groups[1].tabs[0].id, 11);
+        assert_eq!(restarted_groups[0].width, WindowWidth::Fraction(700));
     }
 
     #[test]
     #[serial_test::serial(next_id_statics)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn reordering_tabs_and_groups_persists_and_mirrors_into_the_doc() {
-        // Phase `reorder_tab_persists_and_mirrors_into_the_doc`.
-        // Dragging a tab to a new slot must persist into the tree and
-        // mirror into the doc, or the reorder resets on the next restart.
-        {
-            use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+    fn reconcile_strip_topology_rejects_a_snapshot_that_would_lose_tabs() {
+        let (mut tree, strip_id, ids) = tree_with_n_groups(1);
+        let before = 10;
+        let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+        group.tabs.push(Tab {
+            id: before,
+            title: "Notes".into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: "Notes".into(),
+            },
+            app_title: None,
+        });
+        group.active_tab = before;
+        let invalid = [tilo_desktop_model::GroupShape {
+            id: ids[0],
+            tab_ids: vec![],
+            active_tab: before,
+            width: tilo_desktop_model::WindowWidth::Normal,
+        }];
 
-            // One group (id 1) carrying three tabs: [10, 11, 12].
-            let (mut tree, _strip_id, ids) = tree_with_n_groups(1);
-            let group_id = ids[0];
-            let mk = |id: u64, name: &str| Tab {
-                id,
-                title: name.into(),
+        assert!(!tree.reconcile_strip_topology(strip_id, &invalid));
+        let group = &tree.desktop.workspaces[0].strips[0].window_groups[0];
+        assert_eq!(group.tabs.len(), 1);
+        assert_eq!(group.tabs[0].id, before);
+    }
+
+    // Dragging a tab to a new slot must persist into the tree and
+    // mirror into the doc, or the reorder resets on the next restart.
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn reorder_tab_persists_and_mirrors_into_the_doc() {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+        // One group (id 1) carrying three tabs: [10, 11, 12].
+        let (mut tree, _strip_id, ids) = tree_with_n_groups(1);
+        let group_id = ids[0];
+        let mk = |id: u64, name: &str| Tab {
+            id,
+            title: name.into(),
+            tile: TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: name.into(),
+            },
+            app_title: None,
+        };
+        {
+            let g = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+            g.tabs = vec![mk(10, "A"), mk(11, "B"), mk(12, "C")];
+            g.active_tab = 10;
+        }
+        tree.seed_doc_from_cache();
+        let state_dir = tempfile::tempdir().expect("state dir");
+        tree.persist_path = Some(state_dir.path().join("state.json"));
+
+        let tab_order = |t: &WorkspaceTree| -> Vec<u64> {
+            t.desktop.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .iter()
+                .map(|tb| tb.id)
+                .collect()
+        };
+        assert_eq!(tab_order(&tree), vec![10, 11, 12]);
+
+        // Drag the first tab to the last slot → [11, 12, 10].
+        let changed = tree.reorder_tab_for_tests(group_id, 0, 2);
+        assert!(changed, "moving a tab to a new slot reports a change");
+        assert_eq!(tab_order(&tree), vec![11, 12, 10], "cache order updated");
+
+        // Same slot is a no-op; unknown group is a no-op.
+        assert!(!tree.reorder_tab_for_tests(group_id, 1, 1));
+        assert!(!tree.reorder_tab_for_tests(999, 0, 1));
+        assert_eq!(tab_order(&tree), vec![11, 12, 10]);
+
+        // The doc must carry the new order too, so peers/persistence agree.
+        let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
+        let (_, ws0) = tree.doc.get(&workspaces_id, 0_usize).unwrap().unwrap();
+        let (_, strips_id) = tree.doc.get(&ws0, "strips").unwrap().unwrap();
+        let (_, strip0) = tree.doc.get(&strips_id, 0_usize).unwrap().unwrap();
+        let (_, groups_id) = tree.doc.get(&strip0, "window_groups").unwrap().unwrap();
+        let (_, g0) = tree.doc.get(&groups_id, 0_usize).unwrap().unwrap();
+        let (_, tabs_id) = tree.doc.get(&g0, "tabs").unwrap().unwrap();
+        let mut doc_order = Vec::new();
+        for i in 0..tree.doc.length(&tabs_id) {
+            let (_, t) = tree.doc.get(&tabs_id, i).unwrap().unwrap();
+            if let Some((Value::Scalar(s), _)) = tree.doc.get(&t, "id").unwrap()
+                && let ScalarValue::Uint(id) = s.as_ref()
+            {
+                doc_order.push(*id);
+            }
+        }
+        assert_eq!(doc_order, vec![11, 12, 10], "doc mirrors the new tab order");
+
+        let reloaded = crate::shell::persist::load_tree_from(
+            tree.persist_path.as_ref().expect("persistence configured"),
+        )
+        .expect("reordered tree reloads");
+        assert_eq!(
+            tab_order(&reloaded),
+            vec![11, 12, 10],
+            "a normal restart must retain the reordered tab list"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn reorder_group_moves_group_to_dropped_index() {
+        // Strip [1, 2, 3]. Drag group 1 to index 2 → [2, 3, 1].
+        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+        assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
+        let changed = tree.reorder_group_for_tests(strip_id, ids[0], 2);
+        assert!(changed, "moving group 1 to a new slot must report a change");
+        assert_eq!(
+            group_order(&tree, strip_id),
+            vec![2, 3, 1],
+            "group 1 must land at the dropped index, neighbours shift left",
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn reorder_group_forward_and_backward() {
+        let (mut tree, strip_id, ids) = tree_with_n_groups(4); // [1,2,3,4]
+        // Move last group (4) to the front.
+        assert!(tree.reorder_group_for_tests(strip_id, ids[3], 0));
+        assert_eq!(group_order(&tree, strip_id), vec![4, 1, 2, 3]);
+        // Move it back to the last slot.
+        assert!(tree.reorder_group_for_tests(strip_id, 4, 3));
+        assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn reorder_group_to_same_index_is_a_noop() {
+        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+        let changed = tree.reorder_group_for_tests(strip_id, ids[1], 1);
+        assert!(!changed, "moving a group to its own slot reports no change");
+        assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
+    }
+
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn reorder_group_unknown_group_is_a_noop() {
+        let (mut tree, strip_id, _ids) = tree_with_n_groups(2);
+        assert!(!tree.reorder_group_for_tests(strip_id, 999, 0));
+        assert_eq!(group_order(&tree, strip_id), vec![1, 2]);
+    }
+
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn reorder_group_mirrors_into_the_seeded_doc() {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+        // With the doc seeded from the cache, a reorder must also reshuffle
+        // the doc's `window_groups` list so peer-sync ships the new order.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+        for group in &mut tree.desktop.workspaces[0].strips[0].window_groups {
+            let tab_id = 10_000 + group.id;
+            group.tabs.push(Tab {
+                id: tab_id,
+                title: format!("Group {}", group.id),
                 tile: TileContent::Stub {
                     kind: AppKind::Terminal,
-                    label: name.into(),
+                    label: format!("Group {}", group.id),
                 },
                 app_title: None,
-            };
-            {
-                let g = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-                g.tabs = vec![mk(10, "A"), mk(11, "B"), mk(12, "C")];
-                g.active_tab = 10;
-            }
-            tree.seed_doc_from_cache();
-            let state_dir = tempfile::tempdir().expect("state dir");
-            tree.persist_path = Some(state_dir.path().join("state.json"));
-
-            let tab_order = |t: &WorkspaceTree| -> Vec<u64> {
-                t.desktop.workspaces[0].strips[0].window_groups[0]
-                    .tabs
-                    .iter()
-                    .map(|tb| tb.id)
-                    .collect()
-            };
-            assert_eq!(tab_order(&tree), vec![10, 11, 12]);
-
-            // Drag the first tab to the last slot → [11, 12, 10].
-            let changed = tree.reorder_tab_for_tests(group_id, 0, 2);
-            assert!(changed, "moving a tab to a new slot reports a change");
-            assert_eq!(tab_order(&tree), vec![11, 12, 10], "cache order updated");
-
-            // Same slot is a no-op; unknown group is a no-op.
-            assert!(!tree.reorder_tab_for_tests(group_id, 1, 1));
-            assert!(!tree.reorder_tab_for_tests(999, 0, 1));
-            assert_eq!(tab_order(&tree), vec![11, 12, 10]);
-
-            // The doc must carry the new order too, so peers/persistence agree.
-            let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
-            let (_, ws0) = tree.doc.get(&workspaces_id, 0_usize).unwrap().unwrap();
-            let (_, strips_id) = tree.doc.get(&ws0, "strips").unwrap().unwrap();
-            let (_, strip0) = tree.doc.get(&strips_id, 0_usize).unwrap().unwrap();
-            let (_, groups_id) = tree.doc.get(&strip0, "window_groups").unwrap().unwrap();
-            let (_, g0) = tree.doc.get(&groups_id, 0_usize).unwrap().unwrap();
-            let (_, tabs_id) = tree.doc.get(&g0, "tabs").unwrap().unwrap();
-            let mut doc_order = Vec::new();
-            for i in 0..tree.doc.length(&tabs_id) {
-                let (_, t) = tree.doc.get(&tabs_id, i).unwrap().unwrap();
-                if let Some((Value::Scalar(s), _)) = tree.doc.get(&t, "id").unwrap()
-                    && let ScalarValue::Uint(id) = s.as_ref()
-                {
-                    doc_order.push(*id);
-                }
-            }
-            assert_eq!(doc_order, vec![11, 12, 10], "doc mirrors the new tab order");
-
-            let reloaded = crate::shell::persist::load_tree_from(
-                tree.persist_path.as_ref().expect("persistence configured"),
-            )
-            .expect("reordered tree reloads");
-            assert_eq!(
-                tab_order(&reloaded),
-                vec![11, 12, 10],
-                "a normal restart must retain the reordered tab list"
-            );
-        }
-
-        // Phase `reorder_group_moves_group_to_dropped_index`.
-        {
-            // Strip [1, 2, 3]. Drag group 1 to index 2 → [2, 3, 1].
-            let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-            assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
-            let changed = tree.reorder_group_for_tests(strip_id, ids[0], 2);
-            assert!(changed, "moving group 1 to a new slot must report a change");
-            assert_eq!(
-                group_order(&tree, strip_id),
-                vec![2, 3, 1],
-                "group 1 must land at the dropped index, neighbours shift left",
-            );
-        }
-
-        // Phase `reorder_group_forward_and_backward`.
-        {
-            let (mut tree, strip_id, ids) = tree_with_n_groups(4); // [1,2,3,4]
-            // Move last group (4) to the front.
-            assert!(tree.reorder_group_for_tests(strip_id, ids[3], 0));
-            assert_eq!(group_order(&tree, strip_id), vec![4, 1, 2, 3]);
-            // Move it back to the last slot.
-            assert!(tree.reorder_group_for_tests(strip_id, 4, 3));
-            assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3, 4]);
-        }
-
-        // Phase `reorder_group_to_same_index_is_a_noop`.
-        {
-            let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-            let changed = tree.reorder_group_for_tests(strip_id, ids[1], 1);
-            assert!(!changed, "moving a group to its own slot reports no change");
-            assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
-        }
-
-        // Phase `reorder_group_unknown_group_is_a_noop`.
-        {
-            let (mut tree, strip_id, _ids) = tree_with_n_groups(2);
-            assert!(!tree.reorder_group_for_tests(strip_id, 999, 0));
-            assert_eq!(group_order(&tree, strip_id), vec![1, 2]);
-        }
-
-        // Phase `reorder_group_mirrors_into_the_seeded_doc`.
-        {
-            use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-            // With the doc seeded from the cache, a reorder must also reshuffle
-            // the doc's `window_groups` list so peer-sync ships the new order.
-            let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-            for group in &mut tree.desktop.workspaces[0].strips[0].window_groups {
-                let tab_id = 10_000 + group.id;
-                group.tabs.push(Tab {
-                    id: tab_id,
-                    title: format!("Group {}", group.id),
-                    tile: TileContent::Stub {
-                        kind: AppKind::Terminal,
-                        label: format!("Group {}", group.id),
-                    },
-                    app_title: None,
-                });
-                group.active_tab = tab_id;
-            }
-            tree.seed_doc_from_cache();
-            let state_dir = tempfile::tempdir().expect("state dir");
-            tree.persist_path = Some(state_dir.path().join("state.json"));
-            tree.reorder_group_for_tests(strip_id, ids[0], 2); // [2,3,1]
-
-            let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
-            let (_, ws0) = tree.doc.get(&workspaces_id, 0_usize).unwrap().unwrap();
-            let (_, strips_map_id) = tree.doc.get(&ws0, "strips").unwrap().unwrap();
-            let (_, strip0) = tree.doc.get(&strips_map_id, 0_usize).unwrap().unwrap();
-            let (_, groups_id) = tree.doc.get(&strip0, "window_groups").unwrap().unwrap();
-            let mut doc_order = Vec::new();
-            for i in 0..tree.doc.length(&groups_id) {
-                let (_, g) = tree.doc.get(&groups_id, i).unwrap().unwrap();
-                if let Some((Value::Scalar(s), _)) = tree.doc.get(&g, "id").unwrap()
-                    && let ScalarValue::Uint(id) = s.as_ref()
-                {
-                    doc_order.push(*id);
-                }
-            }
-            assert_eq!(
-                doc_order,
-                vec![2, 3, 1],
-                "the doc's window_groups list must mirror the cache reorder",
-            );
-            let reloaded = crate::shell::persist::load_tree_from(
-                tree.persist_path.as_ref().expect("persistence configured"),
-            )
-            .expect("reordered tree reloads");
-            assert_eq!(
-                group_order(&reloaded, strip_id),
-                vec![2, 3, 1],
-                "a normal restart must retain the reordered group list"
-            );
-        }
-
-        // Phase `move_group_carries_a_group_across_strips_in_cache_and_doc`.
-        {
-            use tilo_desktop::intents::SessionIntent;
-
-            let (mut tree, upper, _ids) = tree_with_n_groups(3);
-            for group in &mut tree.desktop.workspaces[0].strips[0].window_groups {
-                let tab_id = 10_000 + group.id;
-                group.tabs.push(Tab {
-                    id: tab_id,
-                    title: format!("Group {}", group.id),
-                    tile: TileContent::Stub {
-                        kind: AppKind::Terminal,
-                        label: format!("Group {}", group.id),
-                    },
-                    app_title: None,
-                });
-                group.active_tab = tab_id;
-            }
-            let lower = StripId::new();
-            tree.desktop.workspaces[0].strips.push(Strip {
-                id: lower,
-                name: "Below".into(),
-                window_groups: Vec::new(),
             });
-            tree.seed_doc_from_cache();
-            let state_dir = tempfile::tempdir().expect("state dir");
-            tree.persist_path = Some(state_dir.path().join("state.json"));
-
-            assert!(tree.commit_intent_for_tests(SessionIntent::MoveGroup {
-                group: 2,
-                to: lower,
-                before: None,
-            }));
-            assert!(tree.commit_intent_for_tests(SessionIntent::MoveGroup {
-                group: 3,
-                to: lower,
-                before: Some(2),
-            }));
-            assert_eq!(group_order(&tree, upper), vec![1]);
-            assert_eq!(group_order(&tree, lower), vec![3, 2]);
-            assert!(
-                !tree.commit_intent_for_tests(SessionIntent::MoveGroup {
-                    group: 1,
-                    to: lower,
-                    before: Some(404),
-                }),
-                "a stale anchor moves nothing"
-            );
-            assert_eq!(group_order(&tree, upper), vec![1]);
-
-            let reloaded = crate::shell::persist::load_tree_from(
-                tree.persist_path.as_ref().expect("persistence configured"),
-            )
-            .expect("moved tree reloads");
-            assert_eq!(group_order(&reloaded, upper), vec![1]);
-            assert_eq!(
-                group_order(&reloaded, lower),
-                vec![3, 2],
-                "a restart must find the groups in the strip they were carried to"
-            );
-            let carried = reloaded.desktop.workspaces[0].strips[1]
-                .window_groups
-                .iter()
-                .find(|group| group.id == 2)
-                .expect("group 2 reloads");
-            assert_eq!(carried.active_tab, 10_002, "the group keeps its tabs");
+            group.active_tab = tab_id;
         }
+        tree.seed_doc_from_cache();
+        let state_dir = tempfile::tempdir().expect("state dir");
+        tree.persist_path = Some(state_dir.path().join("state.json"));
+        tree.reorder_group_for_tests(strip_id, ids[0], 2); // [2,3,1]
+
+        let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
+        let (_, ws0) = tree.doc.get(&workspaces_id, 0_usize).unwrap().unwrap();
+        let (_, strips_map_id) = tree.doc.get(&ws0, "strips").unwrap().unwrap();
+        let (_, strip0) = tree.doc.get(&strips_map_id, 0_usize).unwrap().unwrap();
+        let (_, groups_id) = tree.doc.get(&strip0, "window_groups").unwrap().unwrap();
+        let mut doc_order = Vec::new();
+        for i in 0..tree.doc.length(&groups_id) {
+            let (_, g) = tree.doc.get(&groups_id, i).unwrap().unwrap();
+            if let Some((Value::Scalar(s), _)) = tree.doc.get(&g, "id").unwrap()
+                && let ScalarValue::Uint(id) = s.as_ref()
+            {
+                doc_order.push(*id);
+            }
+        }
+        assert_eq!(
+            doc_order,
+            vec![2, 3, 1],
+            "the doc's window_groups list must mirror the cache reorder",
+        );
+        let reloaded = crate::shell::persist::load_tree_from(
+            tree.persist_path.as_ref().expect("persistence configured"),
+        )
+        .expect("reordered tree reloads");
+        assert_eq!(
+            group_order(&reloaded, strip_id),
+            vec![2, 3, 1],
+            "a normal restart must retain the reordered group list"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn move_group_carries_a_group_across_strips_in_cache_and_doc() {
+        use tilo_desktop::intents::SessionIntent;
+
+        let (mut tree, upper, _ids) = tree_with_n_groups(3);
+        for group in &mut tree.desktop.workspaces[0].strips[0].window_groups {
+            let tab_id = 10_000 + group.id;
+            group.tabs.push(Tab {
+                id: tab_id,
+                title: format!("Group {}", group.id),
+                tile: TileContent::Stub {
+                    kind: AppKind::Terminal,
+                    label: format!("Group {}", group.id),
+                },
+                app_title: None,
+            });
+            group.active_tab = tab_id;
+        }
+        let lower = StripId::new();
+        tree.desktop.workspaces[0].strips.push(Strip {
+            id: lower,
+            name: "Below".into(),
+            window_groups: Vec::new(),
+        });
+        tree.seed_doc_from_cache();
+        let state_dir = tempfile::tempdir().expect("state dir");
+        tree.persist_path = Some(state_dir.path().join("state.json"));
+
+        assert!(tree.commit_intent_for_tests(SessionIntent::MoveGroup {
+            group: 2,
+            to: lower,
+            before: None,
+        }));
+        assert!(tree.commit_intent_for_tests(SessionIntent::MoveGroup {
+            group: 3,
+            to: lower,
+            before: Some(2),
+        }));
+        assert_eq!(group_order(&tree, upper), vec![1]);
+        assert_eq!(group_order(&tree, lower), vec![3, 2]);
+        assert!(
+            !tree.commit_intent_for_tests(SessionIntent::MoveGroup {
+                group: 1,
+                to: lower,
+                before: Some(404),
+            }),
+            "a stale anchor moves nothing"
+        );
+        assert_eq!(group_order(&tree, upper), vec![1]);
+
+        let reloaded = crate::shell::persist::load_tree_from(
+            tree.persist_path.as_ref().expect("persistence configured"),
+        )
+        .expect("moved tree reloads");
+        assert_eq!(group_order(&reloaded, upper), vec![1]);
+        assert_eq!(
+            group_order(&reloaded, lower),
+            vec![3, 2],
+            "a restart must find the groups in the strip they were carried to"
+        );
+        let carried = reloaded.desktop.workspaces[0].strips[1]
+            .window_groups
+            .iter()
+            .find(|group| group.id == 2)
+            .expect("group 2 reloads");
+        assert_eq!(carried.active_tab, 10_002, "the group keeps its tabs");
     }
 
     /// Exercise layout edits as one long-lived desktop does, checking the
@@ -5776,77 +5662,76 @@ mod preset_assignment {
     }
 
     #[test]
-    fn presets_are_governance_only_and_round_trip_through_the_room() {
+    fn owner_can_save_and_atomically_assign_a_preset() {
         let now = tilo_clock::unix_now();
-        // Phase `owner_can_save_and_atomically_assign_a_preset`.
-        {
-            let mut workspace = Workspace::new(WorkspaceId::new(), "Demo");
-            workspace.set_owner("owner");
-            workspace.save_preset_as_at("owner", preset(), now).unwrap();
-            let ids = workspace
-                .assign_preset_as_at(
-                    "owner",
-                    "release REVIEWER",
-                    &tilo_action_policy::Subject::person("ada"),
-                    &Lifetime::UntilRevoked,
-                    now,
-                )
-                .unwrap();
-            assert_eq!(ids.len(), 2);
-            assert_eq!(workspace.presets.len(), 1);
-            assert_eq!(
-                workspace.answer_at(
-                    "ada",
-                    &workspace.node().join(&approve()),
-                    ActionKind::Undoable,
-                    now
-                ),
-                Answer::Allow
-            );
-        }
+        let mut workspace = Workspace::new(WorkspaceId::new(), "Demo");
+        workspace.set_owner("owner");
+        workspace.save_preset_as_at("owner", preset(), now).unwrap();
+        let ids = workspace
+            .assign_preset_as_at(
+                "owner",
+                "release REVIEWER",
+                &tilo_action_policy::Subject::person("ada"),
+                &Lifetime::UntilRevoked,
+                now,
+            )
+            .unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(workspace.presets.len(), 1);
+        assert_eq!(
+            workspace.answer_at(
+                "ada",
+                &workspace.node().join(&approve()),
+                ActionKind::Undoable,
+                now
+            ),
+            Answer::Allow
+        );
+    }
 
-        // Phase `someone_who_may_not_grant_cannot_save_or_assign_presets`.
-        {
-            let mut workspace = Workspace::new(WorkspaceId::new(), "Demo");
-            workspace.set_owner("owner");
-            assert!(matches!(
-                workspace.save_preset_as_at("ada", preset(), now),
-                Err(PresetMutationError::Refused(_))
-            ));
-            workspace.save_preset_as_at("owner", preset(), now).unwrap();
-            let before = workspace.policy.clone();
-            assert!(matches!(
-                workspace.assign_preset_as_at(
-                    "ada",
-                    "Release reviewer",
-                    &tilo_action_policy::Subject::person("ada"),
-                    &Lifetime::UntilRevoked,
-                    now,
-                ),
-                Err(PresetMutationError::Refused(_))
-            ));
-            assert_eq!(workspace.policy, before);
-        }
+    #[test]
+    fn someone_who_may_not_grant_cannot_save_or_assign_presets() {
+        let now = tilo_clock::unix_now();
+        let mut workspace = Workspace::new(WorkspaceId::new(), "Demo");
+        workspace.set_owner("owner");
+        assert!(matches!(
+            workspace.save_preset_as_at("ada", preset(), now),
+            Err(PresetMutationError::Refused(_))
+        ));
+        workspace.save_preset_as_at("owner", preset(), now).unwrap();
+        let before = workspace.policy.clone();
+        assert!(matches!(
+            workspace.assign_preset_as_at(
+                "ada",
+                "Release reviewer",
+                &tilo_action_policy::Subject::person("ada"),
+                &Lifetime::UntilRevoked,
+                now,
+            ),
+            Err(PresetMutationError::Refused(_))
+        ));
+        assert_eq!(workspace.policy, before);
+    }
 
-        // Phase `preset_definitions_round_trip_through_the_room_document`.
-        {
-            let id = WorkspaceId::new();
-            let mut workspace = Workspace::new(id, "Demo");
-            workspace.set_owner("owner");
-            workspace.save_preset_as_at("owner", preset(), now).unwrap();
-            let mut tree = WorkspaceTree {
-                desktop: DesktopTree {
-                    workspaces: vec![workspace],
-                    active: id,
-                    ..Default::default()
-                },
-                ..WorkspaceTree::default()
-            };
-            tree.seed_doc_from_cache();
-            tree.desktop.workspaces[0].presets.clear();
-            tree.rebuild_cache_from_doc();
-            assert_eq!(tree.desktop.workspaces[0].presets, vec![preset()]);
-        }
+    #[test]
+    fn preset_definitions_round_trip_through_the_room_document() {
+        let now = tilo_clock::unix_now();
+        let id = WorkspaceId::new();
+        let mut workspace = Workspace::new(id, "Demo");
+        workspace.set_owner("owner");
+        workspace.save_preset_as_at("owner", preset(), now).unwrap();
+        let mut tree = WorkspaceTree {
+            desktop: DesktopTree {
+                workspaces: vec![workspace],
+                active: id,
+                ..Default::default()
+            },
+            ..WorkspaceTree::default()
+        };
+        tree.seed_doc_from_cache();
+        tree.desktop.workspaces[0].presets.clear();
+        tree.rebuild_cache_from_doc();
+        assert_eq!(tree.desktop.workspaces[0].presets, vec![preset()]);
     }
 }
 
@@ -5891,125 +5776,118 @@ mod workspace_tree_lifecycle_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn effect_receipts_are_durable_audited_activity() {
-        // Phase `an_applications_effect_is_recorded_without_its_arguments`.
-        {
-            let mut tree = WorkspaceTree::bootstrap_default();
-            let workspace = tree.desktop.active;
-            let sent = |app: &str| {
-                tilo_actions::ActionContext::for_resource("mail.message:7", "mail.message", "Draft")
-                    .with_app(app, "Mail")
-                    .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-                        tilo_actions::ActionKey::new(app, "mail.message", "send"),
-                        [(
-                            "to".to_owned(),
-                            tilo_actions::Scalar::from("private@example.com"),
-                        )],
-                    )))
-            };
-            let args = |tree: &WorkspaceTree, invocation: tilo_actions::InvocationId| {
-                let receipt = tree.desktop.workspaces[0]
-                    .effect_receipts
-                    .iter()
-                    .find(|receipt| receipt.invocation == invocation)
-                    .unwrap()
-                    .clone();
-                match receipt.context.what {
-                    Some(tilo_actions::Did::Verb(verb)) => verb.args.len(),
-                    other => panic!("the receipt keeps what was done: {other:?}"),
-                }
-            };
-            let app = tilo_actions::InvocationId::new();
-            assert!(tree.append_app_effect_receipt(
-                workspace,
-                app,
-                "person",
-                sent("org.tilo.Mail"),
-                tilo_actions::EffectReceiptStatus::Succeeded,
-            ));
-            assert_eq!(args(&tree, app), 0, "an app's arguments stay private");
-            let host = tilo_actions::InvocationId::new();
-            assert!(tree.append_workspace_effect_receipt(
-                workspace,
-                host,
-                "person",
-                sent(WORKSPACE_GOVERNANCE_APP_ID),
-                tilo_actions::EffectReceiptStatus::Succeeded,
-            ));
-            assert_eq!(
-                args(&tree, host),
-                1,
-                "the host's own record keeps what it did"
-            );
-        }
+    fn an_applications_effect_is_recorded_without_its_arguments() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let workspace = tree.desktop.active;
+        let sent = |app: &str| {
+            tilo_actions::ActionContext::for_resource("mail.message:7", "mail.message", "Draft")
+                .with_app(app, "Mail")
+                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                    tilo_actions::ActionKey::new(app, "mail.message", "send"),
+                    [(
+                        "to".to_owned(),
+                        tilo_actions::Scalar::from("private@example.com"),
+                    )],
+                )))
+        };
+        let args = |tree: &WorkspaceTree, invocation: tilo_actions::InvocationId| {
+            let receipt = tree.desktop.workspaces[0]
+                .effect_receipts
+                .iter()
+                .find(|receipt| receipt.invocation == invocation)
+                .unwrap()
+                .clone();
+            match receipt.context.what {
+                Some(tilo_actions::Did::Verb(verb)) => verb.args.len(),
+                other => panic!("the receipt keeps what was done: {other:?}"),
+            }
+        };
+        let app = tilo_actions::InvocationId::new();
+        assert!(tree.append_app_effect_receipt(
+            workspace,
+            app,
+            "person",
+            sent("org.tilo.Mail"),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        ));
+        assert_eq!(args(&tree, app), 0, "an app's arguments stay private");
+        let host = tilo_actions::InvocationId::new();
+        assert!(tree.append_workspace_effect_receipt(
+            workspace,
+            host,
+            "person",
+            sent(WORKSPACE_GOVERNANCE_APP_ID),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        ));
+        assert_eq!(
+            args(&tree, host),
+            1,
+            "the host's own record keeps what it did"
+        );
+    }
 
-        // Phase `effect_receipt_is_durable_semantic_activity_not_an_app_edit`.
-        {
-            let mut tree = WorkspaceTree::bootstrap_default();
-            let workspace = tree.desktop.active;
-            let mut app_document = automerge::AutoCommit::new();
-            let app_heads_before = app_document.get_heads();
-            let invocation = tilo_actions::InvocationId::new();
-            let context = tilo_actions::ActionContext::for_resource(
-                "mail.message:42",
-                "mail.message",
-                "Release update",
-            )
-            .with_app("org.tilo.Mail", "Mail")
-            .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-                tilo_actions::ActionKey::new("org.tilo.Mail", "mail.message", "send"),
-                [],
-            )));
+    #[test]
+    fn effect_receipt_is_durable_semantic_activity_not_an_app_edit() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let workspace = tree.desktop.active;
+        let mut app_document = automerge::AutoCommit::new();
+        let app_heads_before = app_document.get_heads();
+        let invocation = tilo_actions::InvocationId::new();
+        let context = tilo_actions::ActionContext::for_resource(
+            "mail.message:42",
+            "mail.message",
+            "Release update",
+        )
+        .with_app("org.tilo.Mail", "Mail")
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("org.tilo.Mail", "mail.message", "send"),
+            [],
+        )));
 
-            assert!(tree.append_workspace_effect_receipt(
-                workspace,
-                invocation,
-                "ada",
-                context,
-                tilo_actions::EffectReceiptStatus::Failed {
-                    code: "smtp_rejected".into(),
-                },
-            ));
-            assert!(!tree.append_workspace_effect_receipt(
-                workspace,
-                invocation,
-                "ada",
-                tilo_actions::ActionContext::default(),
-                tilo_actions::EffectReceiptStatus::Succeeded,
-            ));
-            assert_eq!(app_document.get_heads(), app_heads_before);
+        assert!(tree.append_workspace_effect_receipt(
+            workspace,
+            invocation,
+            "ada",
+            context,
+            tilo_actions::EffectReceiptStatus::Failed {
+                code: "smtp_rejected".into(),
+            },
+        ));
+        assert!(!tree.append_workspace_effect_receipt(
+            workspace,
+            invocation,
+            "ada",
+            tilo_actions::ActionContext::default(),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+        ));
+        assert_eq!(app_document.get_heads(), app_heads_before);
 
-            tree.resync_cache_from_doc();
-            let receipt = &tree.desktop.active_workspace().unwrap().effect_receipts[0];
-            assert_eq!(receipt.invocation, invocation);
-            assert_eq!(receipt.status.label(), "Failed");
-            assert!(
-                matches!(&receipt.context.what, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == "send"),
-                "the receipt records what the effect was: {:?}",
-                receipt.context
-            );
+        tree.resync_cache_from_doc();
+        let receipt = &tree.desktop.active_workspace().unwrap().effect_receipts[0];
+        assert_eq!(receipt.invocation, invocation);
+        assert_eq!(receipt.status.label(), "Failed");
+        assert!(
+            matches!(&receipt.context.what, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == "send"),
+            "the receipt records what the effect was: {:?}",
+            receipt.context
+        );
 
-            let entry = ui::HistorySource::new()
-                .entries(&mut tree.doc)
-                .into_iter()
-                .find(|entry| {
-                    entry.context.as_ref().is_some_and(|context| {
-                        context
-                            .facets
-                            .iter()
-                            .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
-                    })
+        let entry = ui::HistorySource::new()
+            .entries(&mut tree.doc)
+            .into_iter()
+            .find(|entry| {
+                entry.context.as_ref().is_some_and(|context| {
+                    context
+                        .facets
+                        .iter()
+                        .any(|facet| facet.key == "tilo.receipt" && facet.value == "effect")
                 })
-                .expect("effect receipt appears in workspace activity");
-            assert!(
-                !entry.is_revertible(),
-                "external work is not a CRDT undo claim"
-            );
-        }
+            })
+            .expect("effect receipt appears in workspace activity");
+        assert!(
+            !entry.is_revertible(),
+            "external work is not a CRDT undo claim"
+        );
     }
 }
 

@@ -9,7 +9,6 @@ use vello::kurbo::Point;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::ShellOverlayHost;
-use crate::shell::notification::ChromeNotifications;
 use crate::shell::selection_agent::SelectionSeed;
 
 /// `label`, the item `id` of kind `kind`, as the desktop shows it.
@@ -60,13 +59,12 @@ impl ShellOverlayHost {
             let id = format!("file:{}", path.display());
             return Some(desktop_thing(desktop, id, kind, &name));
         }
-        if self.palette.is_open()
-            && let Some(result) = self
-                .palette
-                .id_at(at)
-                .and_then(|id| id.strip_prefix("result:"))
-                .and_then(|index| index.parse::<usize>().ok())
-                .and_then(|index| self.search_results.get(index))
+        if let Some(result) = self
+            .search_row_at(at)
+            .as_deref()
+            .and_then(|id| id.strip_prefix("result:"))
+            .and_then(|index| index.parse::<usize>().ok())
+            .and_then(|index| self.search_results.get(index))
         {
             let reference = SharedSelection::of_text(&result.title)
                 .at(tilo_actions::SelectionPlace::item(result.id.as_str()))
@@ -115,22 +113,7 @@ impl ShellOverlayHost {
     /// drawn at `at`.
     fn notification_at(&self, at: Point) -> Option<SelectionSeed> {
         let chrome = self.chrome.as_ref()?;
-        let host = ChromeNotifications::new(chrome).with_agents(&self.room_activity);
-        let in_center = {
-            let state = chrome.borrow();
-            state.overlays.quick_settings
-                && matches!(
-                    state.quick_settings.current_level(),
-                    tilo_quick_settings::QsLevel::Notifications
-                )
-        };
-        let id = in_center
-            .then(|| {
-                self.notification_center
-                    .notification_at(&host, &self.qs_notification_layout(), at)
-            })
-            .flatten()
-            .or_else(|| self.notification_stack.banner_at(at))?;
+        let id = self.banner_at(at)?;
         let (title, app_id) = {
             let state = chrome.borrow();
             let log = state.notification_log();

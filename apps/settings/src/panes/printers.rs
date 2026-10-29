@@ -7,26 +7,26 @@
 //! than maintaining another printer database. Every change is a
 //! [`PrinterEffect`], offered on the queue, nearby printer or job it names.
 
-use std::cell::OnceCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use os_actions::printing::{DiscoveredPrinter, JobState, PrintJob, PrinterQueue, QueueState};
 use tilo_capture::scanner::Scanner;
-use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::LocalState;
+use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tilo_resource::{self, Effect};
-use ui::widget::{Button, ChipStyle, ControlSize, Row, RowMenu, Widget};
+use ui::widget::{Button, ChipStyle, ControlSize, Element, Row, RowMenu, Widget};
 
+use crate::area::AreaContext;
 use crate::channel;
 use crate::effects::SettingsEffect;
-use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{
+use provider_settings_ui::widgets::{
     Body, Item, SettingsSection, StatusTone, block, error_caption, note, row, rows, section,
     section_action, thing_row,
 };
@@ -37,6 +37,9 @@ crate::area::pane_area! {
     PrintersArea;
     fn poll(&self) {
         PrintersArea::poll(self);
+    }
+    fn busy(&self) -> bool {
+        PrintersArea::busy(self)
     }
 }
 
@@ -126,7 +129,7 @@ pub enum PrinterEffect {
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: PrinterEffect,
-    cx: &mut EffectCx<Settings, SettingsApp>,
+    cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
     let model = crate::panes::printers::area(app)
         .ok_or_else(crate::area::missing)?
@@ -144,10 +147,10 @@ pub(crate) fn answer(
             let discovered = model.borrow().discovered.clone();
             let queues = model.borrow().printers.clone();
             let service = Arc::clone(&model.borrow().service);
-            Ok(crate::device_read::job(
+            Ok(app.job(
                 cx,
                 move || carry_out(service.as_ref(), &discovered, &queues, &effect),
-                |app: &mut SettingsApp, outcome: Result<(), String>, _| {
+                |app: &SettingsApp, outcome: Result<(), String>, _| {
                     let model = crate::panes::printers::area(app)
                         .ok_or_else(crate::area::missing)?
                         .model();
@@ -306,48 +309,65 @@ impl PrintService for CupsService {
 /// What the printers area keeps for the window: the model, read when
 /// first needed.
 pub struct PrintersArea {
-    cx: PaneCx,
-    model: OnceCell<Shared<PrintersModel>>,
+    /// Whether the model reads this device's print service.
+    devices: bool,
+    model: OnceCell<Rc<RefCell<PrintersModel>>>,
+    /// Moves whenever what the page shows of the model does.
+    shown: LocalState<u64>,
 }
 
 impl PrintersArea {
-    pub fn new(cx: &PaneCx) -> Self {
+    pub fn new(cx: &AreaContext) -> Self {
         Self {
-            cx: cx.clone(),
+            devices: cx.devices,
             model: OnceCell::new(),
+            shown: LocalState::new(0),
         }
     }
 
     /// The model, created on first use over CUPS, or over sample printers
     /// for a screenshot.
-    pub fn model(&self) -> &Shared<PrintersModel> {
+    pub fn model(&self) -> &Rc<RefCell<PrintersModel>> {
         self.model.get_or_init(|| {
-            let service: Arc<dyn PrintService> = if self.cx.reaches_devices() {
-                Arc::new(CupsService)
-            } else {
+            let sample = !self.devices;
+            let service: Arc<dyn PrintService> = if sample {
                 Arc::new(SamplePrintService)
+            } else {
+                Arc::new(CupsService)
             };
-            let mut model =
-                PrintersModel::new(self.cx.clone(), service, !self.cx.reaches_devices());
+            let mut model = PrintersModel::new(service, sample);
             model.request_refresh();
-            Rc::new(std::cell::RefCell::new(model))
+            Rc::new(RefCell::new(model))
         })
     }
 
-    /// The model for the shown pane: showing it searches for printers
-    /// nearby, so what can be added is there without asking.
-    pub fn shown_model(&self) -> &Shared<PrintersModel> {
-        let model = self.model();
-        model.borrow_mut().request_discovery();
-        model
+    /// Take in finished reads, if the model exists; while a page shows it,
+    /// read the queues again when the print service reports a change, and
+    /// move what the page is keyed by when what it shows changed. Only a
+    /// shown page keeps reading the queues again.
+    pub(crate) fn poll(&self) {
+        let Some(model) = self.model.get() else {
+            return;
+        };
+        let Ok(mut model) = model.try_borrow_mut() else {
+            return;
+        };
+        if !model.shown() {
+            model.poll_background();
+            return;
+        }
+        if model.poll() {
+            self.shown.set(self.shown.get().wrapping_add(1));
+        }
     }
 
-    /// Take in finished reads, if the model exists. Only an open pane
-    /// keeps reading the queues again.
-    pub(crate) fn poll(&self) {
-        if let Some(model) = self.model.get() {
-            model.borrow_mut().poll_background();
-        }
+    /// Whether a page shows the printers while a read runs: the window
+    /// keeps drawing until it lands.
+    fn busy(&self) -> bool {
+        self.model
+            .get()
+            .and_then(|model| model.try_borrow().ok())
+            .is_some_and(|model| model.shown() && model.busy())
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -456,7 +476,6 @@ fn cancellable(job: &PrintJob) -> bool {
 }
 
 pub struct PrintersModel {
-    cx: PaneCx,
     service: Arc<dyn PrintService>,
     sample: bool,
     printers: Vec<PrinterQueue>,
@@ -485,9 +504,8 @@ struct PrinterSnapshot {
 }
 
 impl PrintersModel {
-    fn new(cx: PaneCx, service: Arc<dyn PrintService>, sample: bool) -> Self {
+    fn new(service: Arc<dyn PrintService>, sample: bool) -> Self {
         Self {
-            cx,
             service,
             sample,
             printers: Vec::new(),
@@ -605,7 +623,9 @@ impl PrintersModel {
         os_actions::printing::not_added(&self.discovered, &self.printers)
     }
 
-    fn build_composition(&self) -> Box<dyn Widget> {
+    /// The page as the model shows the printers now.
+    fn page(&self, cx: &ViewCx<Settings>) -> Element {
+        let dispatcher = cx.dispatcher();
         let mut sections: Vec<SettingsSection> = Vec::new();
         if let Some(error) = &self.error {
             sections.push(section(
@@ -624,7 +644,12 @@ impl PrintersModel {
         } else if self.printers.is_empty() {
             rows(vec![note(&t("settings-printers-empty"))])
         } else {
-            rows(self.printers.iter().map(|p| self.printer_row(p)).collect())
+            rows(
+                self.printers
+                    .iter()
+                    .map(|p| Self::printer_row(&dispatcher, p))
+                    .collect(),
+            )
         };
         sections.push(section(&t("settings-printers-card"), printers));
 
@@ -633,9 +658,9 @@ impl PrintersModel {
         } else {
             t("settings-printers-find")
         };
-        let find = self.cx.bind_invocation(
+        let find = cx.actions().bind_effect_invocation(
             Button::new("settings.printers.discover", &find_label),
-            PrinterEffect::FindPrinters,
+            &SettingsEffect::from(PrinterEffect::FindPrinters),
         );
         let nearby = self.nearby();
         let discovery = if nearby.is_empty() {
@@ -645,7 +670,12 @@ impl PrintersModel {
                 "settings-printers-discover-empty"
             }))])
         } else {
-            rows(nearby.iter().map(|p| self.discovered_row(p)).collect())
+            rows(
+                nearby
+                    .iter()
+                    .map(|p| Self::discovered_row(&dispatcher, p))
+                    .collect(),
+            )
         };
         sections.push(section_action(
             &t("settings-printers-nearby"),
@@ -661,13 +691,18 @@ impl PrintersModel {
         } else if self.jobs.is_empty() {
             rows(vec![note(&t("settings-printers-no-jobs"))])
         } else {
-            rows(self.jobs.iter().map(|job| self.job_row(job)).collect())
+            rows(
+                self.jobs
+                    .iter()
+                    .map(|job| Self::job_row(&dispatcher, job))
+                    .collect(),
+            )
         };
         sections.push(section(&t("settings-printers-activity"), jobs));
 
         let scanners = self.scanner_rows();
         sections.push(section(&t("settings-printers-scanners"), scanners));
-        crate::widgets::page(sections)
+        provider_settings_ui::widgets::page(sections)
     }
 
     fn scanner_rows(&self) -> Body {
@@ -700,7 +735,7 @@ impl PrintersModel {
 
     /// A printer: its name and state, what it is doing and its supplies,
     /// and its menu (make default, pause or resume, remove).
-    fn printer_row(&self, printer: &PrinterQueue) -> Item {
+    fn printer_row(dispatcher: &Dispatcher<Settings>, printer: &PrinterQueue) -> Item {
         let name = printer.name.clone();
         let live = printer_live_row(printer).into_resource();
         let mut menu = RowMenu::new(
@@ -710,7 +745,8 @@ impl PrintersModel {
         if !printer.default {
             menu = menu.action(
                 t("settings-printers-make-default"),
-                self.cx.row_invocation(
+                crate::on_row::invocation(
+                    dispatcher,
                     &live,
                     PrinterEffect::SetDefaultPrinter {
                         printer: name.clone(),
@@ -726,7 +762,8 @@ impl PrintersModel {
                 } else {
                     "settings-printers-pause"
                 }),
-                self.cx.row_invocation(
+                crate::on_row::invocation(
+                    dispatcher,
                     &live,
                     PrinterEffect::SetPrinterPaused {
                         printer: name.clone(),
@@ -736,7 +773,8 @@ impl PrintersModel {
             )
             .destructive(
                 t("settings-printers-remove"),
-                self.cx.row_invocation(
+                crate::on_row::invocation(
+                    dispatcher,
                     &live,
                     PrinterEffect::RemovePrinter {
                         printer: name.clone(),
@@ -799,16 +837,17 @@ impl PrintersModel {
         ))
     }
 
-    fn discovered_row(&self, p: &DiscoveredPrinter) -> Item {
+    fn discovered_row(dispatcher: &Dispatcher<Settings>, p: &DiscoveredPrinter) -> Item {
         let key = format!("settings.printers.add.{}", slug(&p.uri));
         let add = t("settings-printers-add");
         let location = p
             .location
             .clone()
             .unwrap_or_else(|| t("settings-printers-driverless"));
-        let add_button = self.cx.bind_row(
-            Button::new(&key, &add).control_size(ControlSize::Small),
+        let add_button = crate::on_row::bind_invocation(
+            dispatcher,
             &nearby_live_row(p).into_resource(),
+            Button::new(&key, &add).control_size(ControlSize::Small),
             PrinterEffect::AddPrinter { uri: p.uri.clone() },
         );
         row(Box::new(
@@ -825,7 +864,7 @@ impl PrintersModel {
     /// A print job: what is printing, where and for whom, how far it got,
     /// and the one thing to do with it (cancel, or retry a stopped one,
     /// whose cancel is in its menu).
-    fn job_row(&self, job: &PrintJob) -> Item {
+    fn job_row(dispatcher: &Dispatcher<Settings>, job: &PrintJob) -> Item {
         let live = job_live_row(job).into_resource();
         let size = ui::format::size(job.size_bytes);
         let state = job
@@ -850,13 +889,14 @@ impl PrintersModel {
             _ => t("settings-printers-job-progress-unknown"),
         };
         let retry = || {
-            self.cx.bind_row(
+            crate::on_row::bind_invocation(
+                dispatcher,
+                &live,
                 Button::new(
                     &format!("settings.printers.job.retry.{}", slug(&job.id)),
                     &t("settings-printers-retry"),
                 )
                 .control_size(ControlSize::Small),
-                &live,
                 PrinterEffect::RetryPrintJob {
                     job: job.id.clone(),
                 },
@@ -877,22 +917,21 @@ impl PrintersModel {
                         )
                         .destructive(
                             t("settings-printers-cancel"),
-                            self.cx.row_invocation(&live, cancel_effect),
+                            crate::on_row::invocation(dispatcher, &live, cancel_effect),
                         ),
                     )),
             )),
             (true, false) => Some(Box::new(retry())),
-            (false, true) => Some(Box::new(
-                self.cx.bind_row(
-                    Button::new(
-                        &format!("settings.printers.job.cancel.{}", slug(&job.id)),
-                        &t("settings-printers-cancel"),
-                    )
-                    .control_size(ControlSize::Small),
-                    &live,
-                    cancel_effect,
-                ),
-            )),
+            (false, true) => Some(Box::new(crate::on_row::bind_invocation(
+                dispatcher,
+                &live,
+                Button::new(
+                    &format!("settings.printers.job.cancel.{}", slug(&job.id)),
+                    &t("settings-printers-cancel"),
+                )
+                .control_size(ControlSize::Small),
+                cancel_effect,
+            ))),
             (false, false) => None,
         };
         let title = job.title.clone().unwrap_or_else(|| job.id.clone());
@@ -918,11 +957,15 @@ impl PrintersModel {
     }
 }
 
-impl PaneModel for PrintersModel {
-    fn compose(&self) -> Box<dyn Widget> {
-        self.build_composition()
+impl PrintersModel {
+    /// Whether a page shows the model: it follows the print service while
+    /// it does.
+    fn shown(&self) -> bool {
+        self.following.strong_count() > 0
     }
 
+    /// Take in finished reads and read the queues again once the print
+    /// service reported a change; whether what the page shows changed.
     fn poll(&mut self) -> bool {
         self.poll_background();
         // Read again once the print service reported a change; a read
@@ -940,27 +983,45 @@ impl PaneModel for PrintersModel {
         std::mem::take(&mut self.changed)
     }
 
-    fn name(&self) -> &'static str {
-        "PrintersPane"
-    }
-
-    fn follow(&mut self) -> Option<std::rc::Rc<dyn std::any::Any>> {
+    /// Follow the print service for a page that shows the model, for as
+    /// long as the answer is held; pages share one follow.
+    fn follow(&mut self) -> Rc<crate::watch::Counted> {
         if let Some(held) = self.following.upgrade() {
-            return Some(held);
+            return held;
         }
         // Nothing was followed while no pane showed the model: the queues
         // are read again once.
         self.changes_seen = u64::MAX;
         let service = Arc::clone(&self.service);
-        let following = crate::watch::shared(&mut self.following, move || {
+        crate::watch::shared(&mut self.following, move || {
             crate::watch::Counted::start(|changed| service.follow(changed))
-        });
-        Some(following)
+        })
     }
 
+    /// Whether a read is running.
     fn busy(&self) -> bool {
         self.refresh_rx.is_some() || self.discover_rx.is_some()
     }
+}
+
+/// The Printers page as view code over what the area reads of the print
+/// service: built again whenever what it shows changes
+/// ([`PrintersArea::poll`]). The print service is followed while the page
+/// is shown, and showing it searches for printers nearby, so what can be
+/// added is there without asking.
+pub(crate) fn view(cx: &ViewCx<Settings>, app: &Rc<SettingsApp>) -> Option<Element> {
+    let held = area(app)?;
+    let model = Rc::clone(held.model());
+    let following = model.borrow_mut().follow();
+    model.borrow_mut().request_discovery();
+    // What changed while no page showed the model is taken in before the
+    // page is built.
+    model.borrow_mut().poll();
+    Some(cx.switch(&held.shown, move |cx, _| {
+        // The part keeps the print service followed while it is shown.
+        let _followed = &following;
+        model.borrow().page(cx)
+    }))
 }
 
 /// The printers a screenshot and the crate's tests show: one office queue
@@ -1084,7 +1145,9 @@ mod tests {
     #[test]
     fn sample_area_rows_do_not_wait_for_workers() {
         let profile = tempfile::tempdir().unwrap();
-        let area = PrintersArea::new(&PaneCx::in_profile(profile.path().to_path_buf()));
+        let area = PrintersArea::new(&crate::area::AreaContext::in_profile(
+            profile.path().to_path_buf(),
+        ));
         assert_eq!(
             area.rows().len(),
             2,
@@ -1226,15 +1289,12 @@ mod tests {
     /// service reports a change, and only then; a closed page reads nothing.
     #[test]
     fn the_shown_page_reads_the_queues_again_when_the_print_service_reports_a_change() {
-        let profile = tempfile::tempdir().unwrap();
-        let cx = PaneCx::in_profile(profile.path().to_path_buf());
         let service = Arc::new(FollowedPrinters {
             recording: RecordingService::new(),
             reads: std::sync::atomic::AtomicUsize::new(0),
             follower: Mutex::new(None),
         });
-        let mut model =
-            PrintersModel::new(cx, Arc::clone(&service) as Arc<dyn PrintService>, false);
+        let mut model = PrintersModel::new(Arc::clone(&service) as Arc<dyn PrintService>, false);
         let reads = || service.reads.load(std::sync::atomic::Ordering::Relaxed);
         let read_until = |model: &mut PrintersModel, count: usize| {
             let deadline = tilo_test_env::hang_deadline();
@@ -1244,7 +1304,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         };
-        let following = PaneModel::follow(&mut model).expect("a shown page follows the printers");
+        let following = model.follow();
         let changed = service
             .follower
             .lock()
@@ -1254,11 +1314,6 @@ mod tests {
         read_until(&mut model, 1);
         model.poll();
         assert_eq!(reads(), 1, "showing the page reads once");
-        assert_eq!(
-            PaneModel::next_wake(&model),
-            None,
-            "nothing reads on a timer"
-        );
 
         changed();
         read_until(&mut model, 2);
@@ -1406,6 +1461,22 @@ mod tests {
             }),
         )
         .expect("the queue is paused");
+    }
+
+    /// The shown page lists the queues, what is nearby and not added yet,
+    /// and the jobs.
+    #[test]
+    fn the_page_shows_the_queues_nearby_printers_and_jobs() {
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::effects::show_pane(&mut app, crate::categories::Category::Printers);
+        app.settle();
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains("Office"), "{frame}");
+        assert!(frame.contains("Studio"), "{frame}");
+        assert!(frame.contains("Quarterly report.pdf"), "{frame}");
     }
 
     fn tilo_actions_has(resource: &ui::tilo_actions::ResourceSpec, id: &str) -> bool {

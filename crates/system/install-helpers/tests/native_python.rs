@@ -23,21 +23,6 @@ fn namespace_unavailable(
 
 fn suite(script: &str, args: &[&str]) -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    // The staging oracle's injection seam deliberately refuses uid 0. Map the
-    // current owner to a non-root namespace uid, keeping build and scratch
-    // files accessible without chmod/chown of shared runner directories. A
-    // capability-less job sandbox refuses the namespace; the micro-VM check
-    // sets TILO_REQUIRE_USERNS=1 and runs it as real root.
-    if script == "os/tests/oracles/staging_handoff_test.py"
-        && rustix::process::geteuid().is_root()
-        && namespace_unavailable(
-            tilo_test_env::Capability::UserNamespace,
-            tilo_test_env::user_namespace(),
-            "the staging oracle refuses uid 0 and needs a user namespace",
-        )
-    {
-        return Ok(());
-    }
     // The native seed driver re-enters a private mount namespace itself, and
     // fails closed when it cannot. Skip with that reason where the sandbox
     // refuses namespaces, and require it in the micro-VM lane.
@@ -54,14 +39,8 @@ fn suite(script: &str, args: &[&str]) -> std::io::Result<()> {
     // it; timeout exits 124, which the status check below reports.
     let mut command = Command::new("timeout");
     command.args(["--kill-after=10", "600"]);
-    if script == "os/tests/oracles/staging_handoff_test.py" && rustix::process::geteuid().is_root()
-    {
-        command.arg("unshare");
-        command.args(["--user", "--map-user=19991", "--map-group=19992", "python3"]);
-    } else {
-        command.arg("python3");
-    }
     let output = command
+        .arg("python3")
         .arg(root.join(script))
         .args(args)
         .env(
@@ -115,9 +94,4 @@ fn native_home_seeds() -> std::io::Result<()> {
         "os/tests/test_firstboot_home_seeds_native.py",
         &["--binary", binary.to_str().unwrap()],
     )
-}
-
-#[test]
-fn staging_handoff_oracle() -> std::io::Result<()> {
-    suite("os/tests/oracles/staging_handoff_test.py", &[])
 }

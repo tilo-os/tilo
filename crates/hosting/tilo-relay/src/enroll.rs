@@ -2312,18 +2312,12 @@ fn load_approval_identity(options: &ApprovalOptions<'_>) -> anyhow::Result<Appro
         bail!("this device is revoked and cannot approve enrollment");
     }
 
-    let mut relay_workspace_ids = options.relay_workspace_ids.to_vec();
-    if options.kind == EnrollmentKind::HomePeer {
-        relay_workspace_ids.push(tilo_relay::personal_continuity_workspace_id(
-            &user_public_key,
-        ));
-    }
     Ok(ApprovalIdentity {
         root,
         device,
         issuer_cert,
         user_public_key,
-        relay_workspace_ids,
+        relay_workspace_ids: options.relay_workspace_ids.to_vec(),
     })
 }
 
@@ -2881,15 +2875,13 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         commit_personal_device(identity_dir, cert.user_public_key, &fleet)?;
     }
     if let Some(home_peer) = home_peer {
-        // The person's continuity shard, which every device of the person
-        // dials, as a nearby approval registers it.
+        // A home peer serves its person whichever workspaces it holds;
+        // it holds none yet.
         register_home_peer(
             identity_root,
             &cert,
             home_peer.relay_service_node_id,
-            &[tilo_relay::personal_continuity_workspace_id(
-                &cert.user_public_key,
-            )],
+            &[],
             home_peer.relay_endpoint.clone(),
         )?;
     }

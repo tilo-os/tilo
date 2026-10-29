@@ -2,19 +2,16 @@
 //!
 //! An area is what one pane reads of the device and keeps between visits:
 //! the printers and their queue, the accounts, the audio graph. The window
-//! ([`SettingsApp`]) holds every area in [`Areas`] and reaches each through
-//! [`PaneArea`] alone: it polls them, starts their reads, offers their live
-//! rows and builds the pane that shows one. Which areas and panes there are
-//! is the panes' business (their [`Part`]s, brought together in
-//! [`registry`]), so the window's code names none of them.
+//! ([`crate::settings_app::SettingsApp`]) holds every area in [`Areas`] and reaches each through
+//! [`PaneArea`] alone: it polls them, starts their reads and offers their
+//! live rows; each pane's view reads its area. Which areas there are is the
+//! panes' business (their [`Part`]s, brought together in [`registry`]), so
+//! the window's code names none of them.
 
-use std::any::{Any, TypeId};
-
-use ui::widget::Widget;
+use std::any::Any;
+use std::rc::Rc;
 
 use crate::categories::Category;
-use crate::host::PaneCx;
-use crate::settings_app::SettingsApp;
 
 /// One area of Settings: what its pane reads and keeps.
 pub trait PaneArea: Any {
@@ -31,10 +28,29 @@ pub trait PaneArea: Any {
         false
     }
 
+    /// Whether a pane shows the area's first reading of the device as on
+    /// its way: a capture waits for it.
+    fn first_read(&self) -> bool {
+        false
+    }
+
     /// Whether an action of the area is running that the window must keep
     /// drawing for.
     fn busy(&self) -> bool {
         false
+    }
+
+    /// Whether a read already under way will replace what the area's page
+    /// shows meanwhile (a "Scanning…" note): a still capture waits for it,
+    /// and a live window asks for no frames on its account.
+    fn pending_visual_work(&self) -> bool {
+        false
+    }
+
+    /// When the area next wants to look at the device again while nothing
+    /// else happens (a page that re-reads it on a timer).
+    fn next_wake(&self) -> Option<ui::time::Instant> {
+        None
     }
 
     /// The effects of the area that differ from their declaration on this
@@ -49,12 +65,12 @@ pub trait PaneArea: Any {
     }
 
     /// Collaboration requests of the area's host actions.
-    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+    fn take_collab_requests(&self) -> Vec<ui::collaboration::CollabRequest> {
         Vec::new()
     }
 
     /// A collaboration event for the area's host actions.
-    fn handle_collab_event(&mut self, _event: &ui::collaboration::CollabEvent) {}
+    fn handle_collab_event(&self, _event: &ui::collaboration::CollabEvent) {}
 
     /// What the window bar's search queries while `category`'s pane is
     /// shown, when the pane lists the answer to a query (models on Hugging
@@ -109,7 +125,7 @@ pub struct Areas(Vec<Box<dyn PaneArea>>);
 impl Areas {
     /// The areas the registry ([`registry`]) makes in `context`, in order: an
     /// area made later may use one made before it.
-    pub fn of(context: &AreaContext<'_>) -> Self {
+    pub fn of(context: &AreaContext) -> Self {
         let mut areas = Self::default();
         for make in &registry().areas {
             let area = make(context, &areas);
@@ -128,16 +144,26 @@ impl Areas {
     }
 
     /// Put `area` in place of the area of its type.
-    pub fn replace<A: PaneArea>(&mut self, area: A) {
-        let wanted = TypeId::of::<A>();
+    #[cfg(test)]
+    fn replace(&mut self, area: Box<dyn PaneArea>) {
+        let wanted = area.as_any().type_id();
         if let Some(slot) = self
             .0
             .iter_mut()
             .find(|held| held.as_any().type_id() == wanted)
         {
-            *slot = Box::new(area);
+            *slot = area;
         } else {
-            self.0.push(Box::new(area));
+            self.0.push(area);
+        }
+    }
+
+    /// Put the areas a test asked for ([`replace_in_next_window`]) in place
+    /// of the areas of their types.
+    #[cfg(test)]
+    pub(crate) fn take_replacements(&mut self, context: &AreaContext) {
+        for make in REPLACEMENTS.with(std::cell::RefCell::take) {
+            self.replace(make(context));
         }
     }
 
@@ -145,29 +171,95 @@ impl Areas {
     pub fn iter(&self) -> impl Iterator<Item = &dyn PaneArea> {
         self.0.iter().map(|area| &**area)
     }
+}
 
-    /// Every area, to hand collaboration traffic to.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn PaneArea>> {
-        self.0.iter_mut()
+/// What makes an area in place of one a window would make, for a test.
+#[cfg(test)]
+type Replacement = Box<dyn FnOnce(&AreaContext) -> Box<dyn PaneArea>>;
+
+#[cfg(test)]
+thread_local! {
+    static REPLACEMENTS: std::cell::RefCell<Vec<Replacement>> =
+        std::cell::RefCell::default();
+}
+
+/// Make the next window this thread attaches hold the area `make` makes in
+/// its context, in place of the area of its type: a stand-in a test drives
+/// (a daemon that stalls).
+#[cfg(test)]
+pub fn replace_in_next_window<A: PaneArea>(make: impl FnOnce(&AreaContext) -> A + 'static) {
+    REPLACEMENTS.with(|replacements| {
+        replacements
+            .borrow_mut()
+            .push(Box::new(move |context| Box::new(make(context))));
+    });
+}
+
+/// What an area is made in: the window's settings document and what it
+/// reaches of the device and the person. An area keeps the parts it uses.
+pub struct AreaContext {
+    /// The app's storage: its settings document, files and secrets.
+    pub storage: ui::storage::AppStorage,
+    /// The stand-ins a screenshot shows in place of this device's hardware
+    /// and accounts; `None` in a live window.
+    pub scene: Option<Rc<crate::scenarios::CaptureScene>>,
+    /// Whether the areas probe and drive this device's hardware and
+    /// services, rather than the stand-ins a screenshot shows. The crate's
+    /// own tests drive the stand-ins too, so they never touch the machine
+    /// running them.
+    pub devices: bool,
+    /// The radios this device has; never read when it reaches no device.
+    pub radios: crate::radios::Radios,
+    /// The pages the panes drilled into, shared with the window.
+    pub pages: crate::pages::PanePages,
+    /// The password prompt the window shows for the panes.
+    pub secrets: crate::secrets::SecretAsks,
+    /// The administration of the agent providers the launcher granted.
+    pub provider_admin: ui::models::ProviderAdministration,
+    /// The person's accounts with the services the workspace is connected
+    /// to, when the host lent them.
+    pub linked: ui::linked_accounts::LinkedAccounts,
+    /// The settings sections' actions, for an area invoking them.
+    pub sections: crate::sections::Sections,
+    /// Where the person's accounts are kept.
+    pub account_root: crate::accounts::AccountRoot,
+}
+
+impl AreaContext {
+    /// The stand-ins a screenshot shows; `None` in a live window.
+    #[must_use]
+    pub fn scene(&self) -> Option<&crate::scenarios::CaptureScene> {
+        self.scene.as_deref()
+    }
+
+    /// What an area is made in over the settings and accounts of the
+    /// profile at `root`, outside any view, for a test: it reaches no
+    /// device and its sections are not kept.
+    #[cfg(test)]
+    #[must_use]
+    pub fn in_profile(root: std::path::PathBuf) -> Self {
+        let id = <crate::resource::SettingsShell as ui::framework::ResourceApp>::ID;
+        Self {
+            storage: ui::storage::AppStorage::new(
+                id,
+                ui::storage::secrets(id),
+                ui::storage::SettingsDocument::Profile(root.clone()),
+            ),
+            scene: None,
+            devices: false,
+            radios: crate::radios::Radios::unread(),
+            pages: crate::pages::PanePages::new(),
+            secrets: crate::secrets::SecretAsks::new(),
+            provider_admin: ui::models::ProviderAdministration::default(),
+            linked: ui::linked_accounts::LinkedAccounts::default(),
+            sections: crate::sections::Sections::default(),
+            account_root: crate::accounts::AccountRoot::at(root),
+        }
     }
 }
 
-/// What an area is made in: the window's host and the person's accounts.
-pub struct AreaContext<'a> {
-    /// What the panes reach of the host.
-    pub cx: &'a PaneCx,
-    /// Where the person's accounts are kept.
-    pub account_root: &'a crate::accounts::AccountRoot,
-}
-
 /// What makes one area in a window's context, given the areas made before.
-pub type MakeArea = fn(&AreaContext<'_>, &Areas) -> Box<dyn PaneArea>;
-
-/// One pane: the categories it shows and how it is built for the window.
-pub struct PaneEntry {
-    pub categories: &'static [Category],
-    pub build: fn(&SettingsApp, Category) -> Box<dyn Widget>,
-}
+pub type MakeArea = fn(&AreaContext, &Areas) -> Box<dyn PaneArea>;
 
 /// Why an effect could not reach its area: the window holds every area from
 /// when it is made, so this says only that the window was not.
@@ -184,7 +276,6 @@ pub fn missing() -> String {
 pub struct Part {
     /// What makes each area, by place.
     pub areas: &'static [(u16, MakeArea)],
-    pub panes: &'static [PaneEntry],
     pub families: &'static [(u16, &'static crate::effects::EffectFamily)],
     pub live_areas: &'static [(u16, crate::effects::LiveArea)],
     /// The rows of the settings its panes show, as search shows them too.
@@ -196,7 +287,6 @@ pub struct Part {
 pub struct Registry {
     /// What makes each area.
     pub areas: Vec<MakeArea>,
-    pub panes: Vec<&'static PaneEntry>,
     pub families: Vec<&'static crate::effects::EffectFamily>,
     pub live_areas: Vec<&'static crate::effects::LiveArea>,
     /// Every setting's row.
@@ -218,7 +308,6 @@ impl Registry {
         areas.sort_by_key(|(place, _)| *place);
         Self {
             areas: areas.into_iter().map(|(_, make)| make).collect(),
-            panes: parts.iter().flat_map(|part| part.panes.iter()).collect(),
             families: ordered(
                 parts
                     .iter()

@@ -27,7 +27,9 @@ pub fn messages(source: &str) -> BTreeMap<String, String> {
     for line in source.lines() {
         if !line.starts_with(char::is_whitespace)
             && !line.starts_with('#')
-            && let Some((key, value)) = line.split_once(" = ")
+            && let Some((key, value)) = line
+                .split_once(" = ")
+                .or_else(|| line.strip_suffix(" =").map(|key| (key, "")))
         {
             if let Some((key, value)) = current.take() {
                 messages.insert(key, value);
@@ -307,6 +309,13 @@ fn namespaced_keys(source: &str, prefix: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_value_may_start_on_the_line_after_the_equals_sign() {
+        let found = messages("a =\n    one\n    two\nb = B\n");
+        assert_eq!(found["a"], "\n    one\n    two");
+        assert_eq!(found["b"], "B");
+    }
 
     #[test]
     fn literal_key_scan_finds_direct_and_wrapped_calls() {

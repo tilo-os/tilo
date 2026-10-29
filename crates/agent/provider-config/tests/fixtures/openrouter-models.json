@@ -1,0 +1,868 @@
+{
+ "data": [
+  {
+   "id": "moondream/moondream3-preview",
+   "canonical_slug": "moondream/moondream3-preview-20261013",
+   "hugging_face_id": "moondream/moondream3-preview",
+   "name": "Moondream: Moondream 3 Preview",
+   "created": 1792102385,
+   "context_length": 32000,
+   "architecture": {
+    "modality": "text+image->text",
+    "input_modalities": [
+     "text",
+     "image"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000025"
+   },
+   "top_provider": {
+    "context_length": 32000,
+    "max_completion_tokens": 4096,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "include_reasoning",
+    "max_completion_tokens",
+    "max_tokens",
+    "reasoning",
+    "temperature",
+    "top_p"
+   ],
+   "default_parameters": {
+    "temperature": 0.2,
+    "top_p": 0.9
+   },
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/moondream/moondream3-preview-20261013/endpoints"
+   },
+   "reasoning": {
+    "mandatory": false,
+    "default_enabled": false
+   }
+  },
+  {
+   "id": "tencent/hy-mt2-7b",
+   "canonical_slug": "tencent/hy-mt2-7b-20260521",
+   "hugging_face_id": "tencent/Hy-MT2-7B",
+   "name": "Tencent: Hy-MT2-7B",
+   "created": 1787148797,
+   "context_length": 8192,
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.000000074",
+    "completion": "0.000000295"
+   },
+   "top_provider": {
+    "context_length": 8192,
+    "max_completion_tokens": 4096,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "max_completion_tokens",
+    "max_tokens",
+    "response_format",
+    "stop",
+    "structured_outputs",
+    "temperature"
+   ],
+   "default_parameters": {},
+   "supported_voices": null,
+   "knowledge_cutoff": null,
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/tencent/hy-mt2-7b-20260521/endpoints"
+   }
+  },
+  {
+   "id": "z-ai/glm-4.6",
+   "canonical_slug": "z-ai/glm-4.6",
+   "hugging_face_id": "zai-org/GLM-4.6",
+   "name": "Z.ai: GLM 4.6",
+   "created": 1759235576,
+   "context_length": 204800,
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.0000005",
+    "completion": "0.000002",
+    "input_cache_read": "0.0000001"
+   },
+   "top_provider": {
+    "context_length": 202752,
+    "max_completion_tokens": 131072,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "logit_bias",
+    "max_tokens",
+    "min_p",
+    "presence_penalty",
+    "reasoning",
+    "repetition_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_p"
+   ],
+   "default_parameters": {
+    "temperature": 0.6,
+    "top_p": null,
+    "top_k": null,
+    "frequency_penalty": null,
+    "presence_penalty": null,
+    "repetition_penalty": null
+   },
+   "supported_voices": null,
+   "knowledge_cutoff": "2025-03-31",
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/z-ai/glm-4.6/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [
+     {
+      "arena": "agents",
+      "category": "androidnative",
+      "elo": 1082,
+      "win_rate": 52.6,
+      "rank": 31
+     },
+     {
+      "arena": "agents",
+      "category": "fullstack",
+      "elo": 1029,
+      "win_rate": 42.3,
+      "rank": 38
+     },
+     {
+      "arena": "agents",
+      "category": "godotgamedev",
+      "elo": 1180,
+      "win_rate": 53.2,
+      "rank": 17
+     },
+     {
+      "arena": "agents",
+      "category": "mobileapps",
+      "elo": 1096,
+      "win_rate": 47.2,
+      "rank": 38
+     },
+     {
+      "arena": "models",
+      "category": "3d",
+      "elo": 1126,
+      "win_rate": 54.2,
+      "rank": 79
+     },
+     {
+      "arena": "models",
+      "category": "codecategories",
+      "elo": 1164,
+      "win_rate": 54.3,
+      "rank": 80
+     },
+     {
+      "arena": "models",
+      "category": "dataviz",
+      "elo": 1161,
+      "win_rate": 52.6,
+      "rank": 77
+     },
+     {
+      "arena": "models",
+      "category": "gamedev",
+      "elo": 1149,
+      "win_rate": 54.8,
+      "rank": 75
+     },
+     {
+      "arena": "models",
+      "category": "svg",
+      "elo": 1105,
+      "win_rate": 52.1,
+      "rank": 64
+     },
+     {
+      "arena": "models",
+      "category": "uicomponent",
+      "elo": 1142,
+      "win_rate": 52.5,
+      "rank": 82
+     },
+     {
+      "arena": "models",
+      "category": "website",
+      "elo": 1174,
+      "win_rate": 54.3,
+      "rank": 80
+     }
+    ],
+    "artificial_analysis": {
+     "intelligence_index": null,
+     "coding_index": 45.8,
+     "agentic_index": null
+    }
+   },
+   "reasoning": {
+    "mandatory": false
+   }
+  },
+  {
+   "id": "anthropic/claude-sonnet-4.5",
+   "canonical_slug": "anthropic/claude-4.5-sonnet-20250929",
+   "hugging_face_id": "",
+   "name": "Anthropic: Claude Sonnet 4.5",
+   "created": 1759161676,
+   "context_length": 1000000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Claude",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.000003",
+    "completion": "0.000015",
+    "web_search": "0.01",
+    "input_cache_read": "0.0000003",
+    "input_cache_write": "0.00000375",
+    "input_cache_write_1h": "0.000006",
+    "overrides": [
+     {
+      "min_prompt_tokens": 200000,
+      "prompt": "0.000006",
+      "completion": "0.0000225",
+      "input_cache_read": "0.0000006",
+      "input_cache_write": "0.0000075",
+      "input_cache_write_1h": "0.000012"
+     }
+    ]
+   },
+   "top_provider": {
+    "context_length": 1000000,
+    "max_completion_tokens": 64000,
+    "is_moderated": true
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "include_reasoning",
+    "max_completion_tokens",
+    "max_tokens",
+    "reasoning",
+    "response_format",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_p"
+   ],
+   "default_parameters": {
+    "temperature": 1,
+    "top_p": 1,
+    "top_k": null,
+    "frequency_penalty": null,
+    "presence_penalty": null,
+    "repetition_penalty": null
+   },
+   "supported_voices": null,
+   "knowledge_cutoff": "2025-01-31",
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/anthropic/claude-4.5-sonnet-20250929/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [
+     {
+      "arena": "models",
+      "category": "3d",
+      "elo": 1155,
+      "win_rate": 51,
+      "rank": 67
+     },
+     {
+      "arena": "models",
+      "category": "asciiart",
+      "elo": 1202,
+      "win_rate": 56.1,
+      "rank": 25
+     },
+     {
+      "arena": "models",
+      "category": "codecategories",
+      "elo": 1181,
+      "win_rate": 51.5,
+      "rank": 67
+     },
+     {
+      "arena": "models",
+      "category": "dataviz",
+      "elo": 1167,
+      "win_rate": 47.4,
+      "rank": 74
+     },
+     {
+      "arena": "models",
+      "category": "gamedev",
+      "elo": 1166,
+      "win_rate": 51.1,
+      "rank": 70
+     },
+     {
+      "arena": "models",
+      "category": "svg",
+      "elo": 1113,
+      "win_rate": 52.2,
+      "rank": 62
+     },
+     {
+      "arena": "models",
+      "category": "uicomponent",
+      "elo": 1167,
+      "win_rate": 49.4,
+      "rank": 71
+     },
+     {
+      "arena": "models",
+      "category": "website",
+      "elo": 1188,
+      "win_rate": 51.8,
+      "rank": 71
+     },
+     {
+      "arena": "agents",
+      "category": "fullstack",
+      "elo": 1050,
+      "win_rate": 43.7,
+      "rank": 35
+     },
+     {
+      "arena": "agents",
+      "category": "mobileapps",
+      "elo": 1137,
+      "win_rate": 52.9,
+      "rank": 33
+     },
+     {
+      "arena": "agents",
+      "category": "webapps",
+      "elo": 1061,
+      "win_rate": 43.2,
+      "rank": 40
+     }
+    ],
+    "artificial_analysis": {
+     "intelligence_index": null,
+     "coding_index": 52.1,
+     "agentic_index": 15.8
+    }
+   },
+   "reasoning": {
+    "mandatory": false
+   }
+  },
+  {
+   "id": "deepseek/deepseek-chat-v3.1",
+   "canonical_slug": "deepseek/deepseek-chat-v3.1",
+   "hugging_face_id": "deepseek-ai/DeepSeek-V3.1",
+   "name": "DeepSeek: DeepSeek V3.1",
+   "created": 1755779628,
+   "context_length": 163840,
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "DeepSeek",
+    "instruct_type": "deepseek-v3.1"
+   },
+   "pricing": {
+    "prompt": "0.00000025",
+    "completion": "0.00000095",
+    "input_cache_read": "0.00000013"
+   },
+   "top_provider": {
+    "context_length": 163840,
+    "max_completion_tokens": 147456,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "include_reasoning",
+    "logit_bias",
+    "logprobs",
+    "max_tokens",
+    "min_p",
+    "presence_penalty",
+    "reasoning",
+    "repetition_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_logprobs",
+    "top_p"
+   ],
+   "default_parameters": {},
+   "supported_voices": null,
+   "knowledge_cutoff": "2025-03-31",
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/deepseek/deepseek-chat-v3.1/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [
+     {
+      "arena": "models",
+      "category": "3d",
+      "elo": 1074,
+      "win_rate": 47.9,
+      "rank": 100
+     },
+     {
+      "arena": "models",
+      "category": "codecategories",
+      "elo": 1110,
+      "win_rate": 47.8,
+      "rank": 104
+     },
+     {
+      "arena": "models",
+      "category": "dataviz",
+      "elo": 1096,
+      "win_rate": 46.2,
+      "rank": 103
+     },
+     {
+      "arena": "models",
+      "category": "gamedev",
+      "elo": 1084,
+      "win_rate": 47.1,
+      "rank": 104
+     },
+     {
+      "arena": "models",
+      "category": "svg",
+      "elo": 963,
+      "win_rate": 38.2,
+      "rank": 95
+     },
+     {
+      "arena": "models",
+      "category": "uicomponent",
+      "elo": 1080,
+      "win_rate": 47.1,
+      "rank": 104
+     },
+     {
+      "arena": "models",
+      "category": "website",
+      "elo": 1122,
+      "win_rate": 48,
+      "rank": 104
+     }
+    ]
+   },
+   "reasoning": {
+    "mandatory": false
+   }
+  },
+  {
+   "id": "moonshotai/kimi-k2",
+   "canonical_slug": "moonshotai/kimi-k2",
+   "hugging_face_id": "moonshotai/Kimi-K2-Instruct",
+   "name": "MoonshotAI: Kimi K2 0711",
+   "created": 1752263252,
+   "context_length": 131072,
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Other",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.00000057",
+    "completion": "0.0000023"
+   },
+   "top_provider": {
+    "context_length": 131072,
+    "max_completion_tokens": 98304,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "max_tokens",
+    "presence_penalty",
+    "repetition_penalty",
+    "seed",
+    "stop",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_p"
+   ],
+   "default_parameters": {},
+   "supported_voices": null,
+   "knowledge_cutoff": "2024-12-31",
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/moonshotai/kimi-k2/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [
+     {
+      "arena": "models",
+      "category": "codecategories",
+      "elo": 1032,
+      "win_rate": 51.7,
+      "rank": 121
+     },
+     {
+      "arena": "models",
+      "category": "dataviz",
+      "elo": 1018,
+      "win_rate": 49.4,
+      "rank": 114
+     },
+     {
+      "arena": "models",
+      "category": "gamedev",
+      "elo": 974,
+      "win_rate": 46.4,
+      "rank": 127
+     },
+     {
+      "arena": "models",
+      "category": "uicomponent",
+      "elo": 1025,
+      "win_rate": 55.1,
+      "rank": 114
+     },
+     {
+      "arena": "models",
+      "category": "website",
+      "elo": 1050,
+      "win_rate": 53.1,
+      "rank": 123
+     }
+    ]
+   }
+  },
+  {
+   "id": "google/gemini-2.5-flash",
+   "canonical_slug": "google/gemini-2.5-flash",
+   "hugging_face_id": "",
+   "name": "Google: Gemini 2.5 Flash",
+   "created": 1750172488,
+   "context_length": 1048576,
+   "architecture": {
+    "modality": "text+image+file+audio+video->text",
+    "input_modalities": [
+     "file",
+     "image",
+     "text",
+     "audio",
+     "video"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Gemini",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.0000003",
+    "completion": "0.0000025",
+    "image": "0.0000003",
+    "audio": "0.000001",
+    "input_audio_cache": "0.0000001",
+    "web_search": "0.014",
+    "internal_reasoning": "0.0000025",
+    "input_cache_read": "0.00000003",
+    "input_cache_write": "0.0000000833333333333333"
+   },
+   "top_provider": {
+    "context_length": 1048576,
+    "max_completion_tokens": 65535,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "include_reasoning",
+    "max_tokens",
+    "reasoning",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p"
+   ],
+   "default_parameters": {
+    "temperature": null,
+    "top_p": null,
+    "top_k": null,
+    "frequency_penalty": null,
+    "presence_penalty": null,
+    "repetition_penalty": null
+   },
+   "supported_voices": null,
+   "knowledge_cutoff": "2025-01-31",
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/google/gemini-2.5-flash/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [
+     {
+      "arena": "models",
+      "category": "3d",
+      "elo": 1068,
+      "win_rate": 47.4,
+      "rank": 103
+     },
+     {
+      "arena": "models",
+      "category": "codecategories",
+      "elo": 1102,
+      "win_rate": 46.9,
+      "rank": 107
+     },
+     {
+      "arena": "models",
+      "category": "dataviz",
+      "elo": 1134,
+      "win_rate": 49.1,
+      "rank": 90
+     },
+     {
+      "arena": "models",
+      "category": "gamedev",
+      "elo": 1064,
+      "win_rate": 44.3,
+      "rank": 111
+     },
+     {
+      "arena": "models",
+      "category": "uicomponent",
+      "elo": 1087,
+      "win_rate": 48.9,
+      "rank": 103
+     },
+     {
+      "arena": "models",
+      "category": "website",
+      "elo": 1113,
+      "win_rate": 47.1,
+      "rank": 107
+     },
+     {
+      "arena": "models",
+      "category": "svg",
+      "elo": 1016,
+      "win_rate": 43.1,
+      "rank": 87
+     }
+    ]
+   },
+   "reasoning": {
+    "mandatory": false
+   }
+  },
+  {
+   "id": "meta-llama/llama-3.3-70b-instruct",
+   "canonical_slug": "meta-llama/llama-3.3-70b-instruct",
+   "hugging_face_id": "meta-llama/Llama-3.3-70B-Instruct",
+   "name": "Meta: Llama 3.3 70B Instruct",
+   "created": 1733506137,
+   "context_length": 131072,
+   "architecture": {
+    "modality": "text->text",
+    "input_modalities": [
+     "text"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "Llama3",
+    "instruct_type": "llama3"
+   },
+   "pricing": {
+    "prompt": "0.0000001",
+    "completion": "0.00000032"
+   },
+   "top_provider": {
+    "context_length": 131072,
+    "max_completion_tokens": 16384,
+    "is_moderated": false
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "logit_bias",
+    "logprobs",
+    "max_tokens",
+    "min_p",
+    "presence_penalty",
+    "repetition_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_k",
+    "top_logprobs",
+    "top_p"
+   ],
+   "default_parameters": {},
+   "supported_voices": null,
+   "knowledge_cutoff": "2023-12-31",
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/meta-llama/llama-3.3-70b-instruct/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [],
+    "artificial_analysis": {
+     "intelligence_index": null,
+     "coding_index": 11.9,
+     "agentic_index": null
+    }
+   }
+  },
+  {
+   "id": "openai/gpt-4o-mini",
+   "canonical_slug": "openai/gpt-4o-mini",
+   "hugging_face_id": null,
+   "name": "OpenAI: GPT-4o-mini",
+   "created": 1721260800,
+   "context_length": 128000,
+   "architecture": {
+    "modality": "text+image+file->text",
+    "input_modalities": [
+     "text",
+     "image",
+     "file"
+    ],
+    "output_modalities": [
+     "text"
+    ],
+    "tokenizer": "GPT",
+    "instruct_type": null
+   },
+   "pricing": {
+    "prompt": "0.00000015",
+    "completion": "0.0000006",
+    "input_cache_read": "0.000000075"
+   },
+   "top_provider": {
+    "context_length": 128000,
+    "max_completion_tokens": 16384,
+    "is_moderated": true
+   },
+   "per_request_limits": null,
+   "supported_parameters": [
+    "frequency_penalty",
+    "logit_bias",
+    "logprobs",
+    "max_completion_tokens",
+    "max_tokens",
+    "prediction",
+    "presence_penalty",
+    "response_format",
+    "seed",
+    "stop",
+    "structured_outputs",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_logprobs",
+    "top_p",
+    "web_search_options"
+   ],
+   "default_parameters": {},
+   "supported_voices": null,
+   "knowledge_cutoff": "2023-10-31",
+   "expiration_date": null,
+   "links": {
+    "details": "/api/v1/models/openai/gpt-4o-mini/endpoints"
+   },
+   "benchmarks": {
+    "design_arena": [],
+    "artificial_analysis": {
+     "intelligence_index": null,
+     "coding_index": 11.4,
+     "agentic_index": null
+    }
+   }
+  }
+ ]
+}

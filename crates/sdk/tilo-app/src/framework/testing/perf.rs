@@ -955,15 +955,29 @@ fn sweep_rest(
     damage: &mut ui_core::app::SurfaceDamage,
 ) {
     // A window whose model wakes it for every frame never rests: that is
-    // the finding, not something to measure hovers over.
+    // the finding, not something to measure hovers over. Work the window
+    // says will change what it shows (a scan whose networks replace
+    // "Scanning…") belongs to no motion either: it is waited out, as a
+    // capture waits for it, so it never lands inside a measured hover.
+    let background = ui_core::background::Background::current();
     for _ in 0..10_000 {
-        if !app.wake_pending() {
+        if app.wake_pending() {
+            sweep_frame(app, scene, damage);
+            continue;
+        }
+        if !app.root_widget_mut().has_pending_visual_work() {
             let _ = damage.take();
             return;
         }
-        sweep_frame(app, scene, damage);
+        // Until the work's thread wakes the window with its answer.
+        let slice = ui_core::time::now()
+            .checked_add(ui_core::time::Duration::from_millis(1))
+            .unwrap_or_else(ui_core::time::now);
+        background.park(slice);
     }
-    panic!("{label}: the window's model wakes it for every frame and it never rests");
+    panic!(
+        "{label}: the window never rests: its model wakes it for every frame, or work it waits on never lands"
+    );
 }
 
 /// Move the pointer to the middle of `to` and run the frames that follow.

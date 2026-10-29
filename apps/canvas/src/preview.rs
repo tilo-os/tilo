@@ -48,7 +48,10 @@ impl VersionPreview {
     /// The artwork at `version`, a change id or a checkpoint name.
     fn read(doc: &AutoCommit, version: &str) -> Option<Artwork> {
         let heads = ui::history_source::steps::resolve(doc, version).ok()?;
-        let past = doc.committed_fork_at(&heads).ok()?;
+        let mut past = doc.committed_fork_at(&heads).ok()?;
+        // A version from before the artwork's storage last changed reads as
+        // the app reads it now.
+        ui::tilo_resource::evolution::migrate::<Artwork>(&mut past).ok()?;
         Artwork::from_doc(&past).ok()
     }
 

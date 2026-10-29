@@ -10,7 +10,7 @@
 /// suite run never reads the user's accounts, replays their interrupted
 /// account journal or writes a migration marker into their config.
 mod support {
-    use settings::SettingsApp;
+    use settings::Inspected;
     use ui::widget::Widget;
     use vello::kurbo::Rect;
 
@@ -69,6 +69,70 @@ mod support {
         app
     }
 
+    /// Settings as a host opens it on `category`'s pane, laid out at
+    /// `viewport`, once the pane shows what it first reads: a page that is
+    /// view code over its sections is built only in the app's view, never
+    /// in a window outside it.
+    pub fn window_on(category: settings::categories::Category, viewport: (f32, f32)) -> Window {
+        window_themed(category, viewport, ui::Theme::dark())
+    }
+
+    /// [`window_on`] in `theme`: large text is a theme's text scale, as the
+    /// live host hands it to the window.
+    pub fn window_themed(
+        category: settings::categories::Category,
+        (w, h): (f32, f32),
+        theme: ui::Theme,
+    ) -> Window {
+        fn settling(widget: &dyn Widget) -> bool {
+            if let Some(window) = widget
+                .as_any()
+                .and_then(|any| any.downcast_ref::<Inspected>())
+            {
+                return Widget::has_pending_visual_work(window);
+            }
+            widget.children().into_iter().any(settling)
+        }
+        let mut app = Window::new().expect("settings opens headlessly");
+        app.effect(&settings::effects::open_pane(category))
+            .expect("the pane opens");
+        app.harness()
+            .relayout_themed(ui::headless::viewport((w, h)), theme)
+            .expect("settings lays out at the fixture size");
+        assert!(
+            app.harness()
+                .wait_until(tilo_test_env::hang_bound(), |harness| !settling(
+                    harness.root_widget()
+                )),
+            "{category:?} shows what it reads"
+        );
+        app.settle();
+        app
+    }
+
+    /// Where the window's shell is: whether it is narrow (one screen at a
+    /// time), whether the list screen (or the docked list) shows, and the
+    /// content screen's back arrow.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Shell {
+        pub narrow: bool,
+        pub sidebar_open: bool,
+        pub back: Rect,
+    }
+
+    /// The window's shell, as laid out now.
+    pub fn shell(app: &mut Window) -> Shell {
+        app.with_widget::<ui::widget::NavShell, _>(|shell| {
+            let geometry = shell.geometry();
+            Shell {
+                narrow: !geometry.stack.is_empty(),
+                sidebar_open: shell.is_sidebar_open(),
+                back: geometry.back,
+            }
+        })
+        .expect("settings shows its shell")
+    }
+
     /// The navigation rows the window's accessibility tree exports.
     pub fn window_rows(app: &mut Window) -> Vec<NavRow> {
         app.harness()
@@ -101,29 +165,27 @@ mod support {
         app.settle();
     }
 
-    /// The pane the window shows.
+    /// The pane the window shows: the one its sidebar's list selects.
     pub fn selected(app: &mut Window) -> settings::categories::Category {
-        app.surface::<SettingsApp, _>(|settings| settings.selected())
-            .expect("settings hosts its surface")
+        app.with_widget::<ui::widget::NavList, _>(|list| list.selected_id())
+            .flatten()
+            .as_deref()
+            .and_then(settings::categories::Category::from_slug)
+            .expect("the sidebar selects the pane shown")
     }
 
-    pub struct ScratchConfig {
-        dir: tempfile::TempDir,
-    }
-
-    impl ScratchConfig {
-        pub fn new() -> Self {
-            Self {
-                dir: tempfile::Builder::new()
-                    .prefix("tilo-settings-it-")
-                    .tempdir()
-                    .expect("create scratch config root"),
-            }
+    /// Type `query` into the window bar's search, as the bar hands it to the
+    /// app, and lay the window out again.
+    pub fn bar_search(app: &mut Window, search: &mut ui::widget::SearchDriver, query: &str) {
+        let root = app.harness().root_widget_mut();
+        if search.in_place() == ui::widget::InPlace::Nothing {
+            search.open(ui::window_toolbar::SearchOffer::of(&mut *root).into());
         }
-
-        pub fn app(&self) -> SettingsApp {
-            SettingsApp::with_config_root(self.dir.path().join("tilo"))
-        }
+        assert!(
+            search.drive(root, query, ui::widget::FindOptions::default(), None, false),
+            "the bar's search reached settings"
+        );
+        app.harness().relayout();
     }
 }
 

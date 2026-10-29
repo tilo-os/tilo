@@ -1497,7 +1497,7 @@ mod tests {
             panic!("the worker must answer the detail request");
         };
         assert_eq!(requested, id);
-        let mut app = crate::StoreApp::new();
+        let mut app = crate::app::StoreState::new();
         app.set_items(snapshot.items);
         app.set_detail(item);
         app.set_flatpak_available(true);

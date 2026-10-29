@@ -3,10 +3,8 @@
 //! workspace host, optionally sealed with the route's channel content key.
 //!
 //! A browser is both the app and the shell for its documents, so it signs
-//! envelopes with its certified device key and verifies inbound ones the way
-//! a shell would before an app sees them: the envelope signature must verify,
-//! its author must be the device the host authenticated, and the route and
-//! artifact must match.
+//! envelopes with its certified device key and opens inbound ones once its
+//! replica of their room admitted them (`replica`).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -450,13 +448,14 @@ pub async fn sign_frame(
     })
 }
 
-/// Verify one inbound host delta. `author` is the device the host stamped
-/// from its authenticated connection. Returns `Ok(None)` for traffic that is
-/// not an application document (shell tree, governance, continuity).
+/// Open one inbound host delta, a document its room's governance admitted
+/// from `author`, the device the host stamped from its authenticated
+/// connection. Returns `Ok(None)` for traffic that is not an application
+/// document (shell tree, governance, continuity).
 ///
 /// # Errors
 ///
-/// Returns [`DocumentError`] for a document that must not reach an app.
+/// Returns [`DocumentError`] for a payload that does not open.
 pub fn open_frame(
     body: &[u8],
     author: [u8; 32],
@@ -477,16 +476,6 @@ pub fn open_frame(
         cluster_id,
         record: record_id,
     };
-    collab_types::verify_op(&envelope)
-        .map_err(|error| DocumentError::Signature(error.to_string()))?;
-    if *envelope.author.as_bytes() != author {
-        return Err(DocumentError::Signature(
-            "envelope author is not the authenticated device".into(),
-        ));
-    }
-    if envelope.artifact != route.artifact() {
-        return Err(DocumentError::Route("artifact does not match route".into()));
-    }
     let decrypted_payload = match envelope.encryption {
         Some(metadata) => {
             let cipher = ciphers

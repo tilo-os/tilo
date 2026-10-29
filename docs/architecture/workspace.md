@@ -269,10 +269,13 @@ the model but instead of it:
   (`channel_crypto::ChannelPeer`). The browser follows and checks commits
   but writes none, since it does not hold record-level Read grants.
 - **Per-person spaces.** The own room, the person room and the person's
-  relay workspace (`personal_continuity_workspace_id`, which carries host
-  verbs, own-device sessions and the workspace directory), each derived from
-  the root key under its own domain string, and the gossip-only personal
-  fabric lane.
+  relay workspace (`personal_continuity_workspace_id`), each derived from the
+  root key under its own domain string. The relay workspace is left only to
+  the person's hosts: they keep person-room records on it for devices that
+  are away, and ush environment sessions run on it. The person's devices
+  already meet without it, on the session between two of them
+  (`tilo-relay-sibling/1`), and learn the person's workspaces from the hosts
+  holding them (`room.list`).
 - **Settings outside the model.** `Settings<T>` with Personal, DeviceLocal and
   Shared scopes, the settings registry and `settings.json`. Settings are
   resources.
@@ -280,8 +283,6 @@ the model but instead of it:
   admission caller, the separately written browser peer with its own layout
   schema, and the device-replica wrappers in the shell and the standalone
   runtime.
-- **Two send paths.** Every message sent both to iroh-gossip and to host
-  sessions. One iroh path.
 - **Hosts as a certificate class.** `can_act_as_host` and the other host
   flags, a host's second identity, and the parallel ideas of where work runs.
   Role and appetite are per device and per workspace.

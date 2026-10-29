@@ -3,16 +3,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use ui::theme::Theme;
-use ui::widget::{Banner, Column, Container, Row, Section, Spinner, Text, TextInput, Widget};
 use zeroize::Zeroizing;
 
 use super::{
     AfterJournal, IdentityDone, JournalChange, KEY_CHOOSE_RECOVERY_KEY, KEY_RECOVERY_KEY_CLOSE,
     KEY_RECOVERY_KEY_CONFIRM, KEY_RECOVERY_KEY_RESTORE, KEY_RECOVERY_KEY_SHOW, MintedIdentity,
-    OnboardingView, Path, PersistedStage, Screen, clear_secret, heading, paragraph, spaced_banner,
-    t, t_args,
+    OnboardingView, Path, PersistedStage, Screen, WordsCheck, clear_secret, t,
 };
+use crate::shell::i18n::t_args;
 
 /// Restore from a recovery key, then provision this device exactly as a
 /// restored backup file does.
@@ -57,7 +55,9 @@ fn words_problem(problem: runtime_identity::RecoveryWordsError) -> String {
             &[("position", position.into())],
         ),
         Problem::Checksum => t("onboarding-recovery-key-checksum"),
-        Problem::DifferentIdentity { .. } => t("onboarding-recovery-key-different"),
+        Problem::DifferentIdentity { .. } => {
+            tilo_onboarding::t("onboarding-recovery-key-different")
+        }
         Problem::NoSecretOnThisDevice | Problem::ThresholdIdentity => problem.to_string(),
     }
 }
@@ -88,65 +88,35 @@ fn typo(phrase: &str, position: usize) -> String {
 }
 
 /// What the words typed so far amount to, for feedback while typing.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum WordsCheck {
-    Empty,
-    Typing {
-        words: usize,
-    },
-    Problem(String),
-    /// A recovery key for this identity (its fingerprint).
-    Ready {
-        fingerprint: String,
-    },
-    /// A valid recovery key, but for another identity than this computer's.
-    Different {
-        fingerprint: String,
-    },
-}
-
-impl WordsCheck {
-    pub(super) fn of(phrase: &str, expected: Option<[u8; 32]>) -> Self {
-        let progress = runtime_identity::recovery_words_progress(phrase);
-        let still_typing = phrase.chars().last().is_some_and(char::is_alphabetic);
-        if progress.words == 0 {
-            return Self::Empty;
-        }
-        if let Some(position) = progress.unknown_word {
-            return Self::Problem(typo(phrase, position));
-        }
-        if progress.words < runtime_identity::RECOVERY_WORD_COUNT {
-            return Self::Typing {
-                words: progress.words,
-            };
-        }
-        match runtime_identity::recovery_words_public_key(phrase) {
-            Ok(key) if expected.is_some_and(|expected| expected != key) => Self::Different {
-                fingerprint: hex::encode(key),
-            },
-            Ok(key) => Self::Ready {
-                fingerprint: hex::encode(key),
-            },
-            // The last word may be half typed; judge it once it is finished.
-            Err(_) if still_typing && progress.words == runtime_identity::RECOVERY_WORD_COUNT => {
-                Self::Typing {
-                    words: progress.words,
-                }
-            }
-            Err(problem) => Self::Problem(words_problem(problem)),
-        }
+pub(super) fn words_check(phrase: &str, expected: Option<[u8; 32]>) -> WordsCheck {
+    let progress = runtime_identity::recovery_words_progress(phrase);
+    let still_typing = phrase.chars().last().is_some_and(char::is_alphabetic);
+    if progress.words == 0 {
+        return WordsCheck::Empty;
     }
-}
-
-/// The first groups of a fingerprint: enough to tell identities apart by eye.
-pub(super) fn short_fingerprint(fingerprint: &str) -> String {
-    let groups: Vec<&str> = fingerprint
-        .as_bytes()
-        .chunks(4)
-        .take(4)
-        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
-        .collect();
-    format!("{} …", groups.join(" "))
+    if let Some(position) = progress.unknown_word {
+        return WordsCheck::Problem(typo(phrase, position));
+    }
+    if progress.words < runtime_identity::RECOVERY_WORD_COUNT {
+        return WordsCheck::Typing {
+            words: progress.words,
+        };
+    }
+    match runtime_identity::recovery_words_public_key(phrase) {
+        Ok(key) if expected.is_some_and(|expected| expected != key) => WordsCheck::Different {
+            fingerprint: hex::encode(key),
+        },
+        Ok(key) => WordsCheck::Ready {
+            fingerprint: hex::encode(key),
+        },
+        // The last word may be half typed; judge it once it is finished.
+        Err(_) if still_typing && progress.words == runtime_identity::RECOVERY_WORD_COUNT => {
+            WordsCheck::Typing {
+                words: progress.words,
+            }
+        }
+        Err(problem) => WordsCheck::Problem(words_problem(problem)),
+    }
 }
 
 /// How many of the written-down words the person types back, to show they
@@ -162,11 +132,16 @@ pub(super) struct RecoveryKeyCopy {
 }
 
 impl RecoveryKeyCopy {
-    pub(super) fn new(words: Zeroizing<String>) -> Self {
+    /// The copy of `words`, typed back into `answers` (the buffers the
+    /// setup app's fields write into).
+    pub(super) fn new(words: Zeroizing<String>, answers: [Arc<Mutex<String>>; 3]) -> Self {
+        for answer in &answers {
+            clear_secret(answer);
+        }
         Self {
             checks: recovery_key_checks(),
             words,
-            answers: std::array::from_fn(|_| Arc::new(Mutex::new(String::new()))),
+            answers,
         }
     }
 
@@ -213,139 +188,6 @@ fn recovery_key_checks() -> [usize; RECOVERY_KEY_CHECKS] {
     })
 }
 
-/// Marks a typed-back word once it can no longer become `expected`, so a
-/// slip shows while the key is still on screen to compare against.
-fn wrong_answer(expected: Zeroizing<String>) -> impl Fn(&str) -> Vec<std::ops::Range<usize>> {
-    move |typed| {
-        let answer = typed.trim();
-        let start = typed.len().saturating_sub(typed.trim_start().len());
-        let fits = expected
-            .get(..answer.len())
-            .is_some_and(|begun| begun.eq_ignore_ascii_case(answer));
-        if fits {
-            Vec::new()
-        } else {
-            std::iter::once(start..start.saturating_add(answer.len())).collect()
-        }
-    }
-}
-
-/// The 24 words, numbered in reading order, and three of them to type
-/// back once they are written down.
-pub(super) fn recovery_key_copy_page(theme: &Theme, copy: &RecoveryKeyCopy) -> Box<dyn Widget> {
-    const COLUMNS: usize = 4;
-    let spacing = &theme.tokens.spacing;
-    let words: Vec<&str> = copy.words.split(' ').collect();
-    let rows = words.len().div_ceil(COLUMNS);
-    let mut grid = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_gap(spacing.s2);
-    // Numbered down each column, as people write a list on paper.
-    for row in 0..rows {
-        let mut line = Row::new().no_wrap().with_gap(spacing.s3);
-        for column in 0..COLUMNS {
-            let at = column.saturating_mul(rows).saturating_add(row);
-            let Some(word) = words.get(at) else { continue };
-            line = line.push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_child(Box::new(
-                        Row::new()
-                            .no_wrap()
-                            .with_gap(spacing.s2)
-                            .push(Box::new(
-                                // A fixed column keeps the words aligned past
-                                // the single-digit numbers.
-                                Container::new()
-                                    .with_no_padding()
-                                    .with_width(spacing.s6)
-                                    .with_child(Box::new(
-                                        Text::new(&at.saturating_add(1).to_string())
-                                            .with_role(ui::tokens::typography::TextRole::Label)
-                                            .with_color(theme.text_dim)
-                                            .numeric(),
-                                    )),
-                            ))
-                            .push(Box::new(
-                                Text::new(word).with_role(ui::tokens::typography::TextRole::Body),
-                            )),
-                    )),
-            ));
-        }
-        grid = grid.push(Box::new(line));
-    }
-    let answers = recovery_key_answers(theme, copy);
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(spacing.s4)
-            .push(heading(&t("onboarding-recovery-key-copy-title"), theme))
-            .push(paragraph(&t("onboarding-recovery-key-copy-body"), theme))
-            .push(Box::new(Section::new(vec![Box::new(grid)])))
-            .push(Box::new(answers)),
-    )
-}
-
-/// The words to type back, each in its own field under its number.
-fn recovery_key_answers(theme: &Theme, copy: &RecoveryKeyCopy) -> Column {
-    let spacing = &theme.tokens.spacing;
-    let mut answers = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_gap(spacing.s2)
-        .push(paragraph(
-            &t_args(
-                "onboarding-recovery-key-confirm",
-                &[
-                    ("first", copy.checks[0].into()),
-                    ("second", copy.checks[1].into()),
-                    ("third", copy.checks[2].into()),
-                ],
-            ),
-            theme,
-        ));
-    let mut fields = Row::new().no_wrap().with_gap(spacing.s3);
-    for (position, answer) in copy.checks.iter().zip(&copy.answers) {
-        let label = t_args(
-            "onboarding-recovery-key-word",
-            &[("position", (*position).into())],
-        );
-        let mut input = TextInput::local()
-            .with_id(&format!("onboarding.backup.recovery-key.word-{position}"))
-            .with_external_buffer(Arc::clone(answer))
-            .with_accessible_name(label.clone())
-            .with_mono()
-            .with_spellcheck(false)
-            .with_autocorrect(false)
-            .with_mistakes(wrong_answer(Zeroizing::new(
-                copy.word(*position).to_owned(),
-            )));
-        if let Ok(value) = answer.lock() {
-            input = input.with_initial_value(&value);
-        }
-        fields = fields.push(Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_flex_grow()
-                .with_child(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_gap(spacing.s1)
-                        .push(Box::new(
-                            Text::new(&label).with_role(ui::tokens::typography::TextRole::Label),
-                        ))
-                        .push(Box::new(input)),
-                )),
-        ));
-    }
-    answers = answers.push(Box::new(fields));
-    answers
-}
-
 impl OnboardingView {
     pub(super) fn import_words(&mut self) {
         let words = Zeroizing::new(
@@ -368,124 +210,6 @@ impl OnboardingView {
         );
     }
 
-    /// Restore the identity from the 24 words of its recovery key, checking
-    /// them while they are typed so a mistake shows where it is.
-    pub(super) fn recovery_key(&self, theme: &Theme) -> Box<dyn Widget> {
-        let spacing = &theme.tokens.spacing;
-        let mut body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(spacing.s4)
-            .push(heading(&t("onboarding-recovery-key-title"), theme))
-            .push(paragraph(&t("onboarding-recovery-key-body"), theme));
-        if let Some(error) = &self.error {
-            body = body.push(spaced_banner(
-                Banner::error(t("onboarding-recovery-key-failed")).with_message(error.clone()),
-                theme,
-            ));
-        }
-        let mut words = TextInput::local()
-            .with_id("onboarding.recovery-key.field")
-            .with_external_buffer(Arc::clone(&self.recovery_words))
-            .with_accessible_name(t("onboarding-recovery-key-field"))
-            .with_placeholder(t("onboarding-recovery-key-placeholder"))
-            .with_mono()
-            .with_spellcheck(false)
-            .with_autocorrect(false)
-            .multiline(true)
-            .with_min_lines(4)
-            // Each mistyped word is marked where it is, not only named.
-            .with_mistakes(runtime_identity::unknown_recovery_words)
-            // The words stay put while they are being restored.
-            .with_read_only(self.identity_work.is_some());
-        if let Ok(value) = self.recovery_words.lock() {
-            words = words.with_initial_value(&value);
-        }
-        let field = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(spacing.s1)
-            .push(Box::new(
-                Text::new(&t("onboarding-recovery-key-field"))
-                    .with_role(ui::tokens::typography::TextRole::Label),
-            ))
-            .push(Box::new(words));
-        body = body.push(Box::new(field));
-        if let Some(status) = self.recovery_key_status(theme) {
-            body = body.push(status);
-        }
-        if self.identity_work.is_some() {
-            body = body.push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_gap(spacing.s2)
-                    .push(Box::new(Spinner::with_size(theme.tokens.metrics.icon_md)))
-                    .push(Box::new(
-                        Text::new(&t("onboarding-recovery-key-restoring"))
-                            .with_role(ui::tokens::typography::TextRole::Body)
-                            .with_color(theme.text_dim)
-                            .with_live(ui::a11y::Politeness::Polite),
-                    )),
-            ));
-        }
-        Box::new(body)
-    }
-
-    /// What the words typed so far amount to, under the field.
-    fn recovery_key_status(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
-        match &self.recovery_check {
-            WordsCheck::Empty => None,
-            WordsCheck::Typing { words } => Some(Box::new(
-                Text::new(&t_args(
-                    "onboarding-recovery-key-progress",
-                    &[
-                        ("count", (*words).into()),
-                        ("total", runtime_identity::RECOVERY_WORD_COUNT.into()),
-                    ],
-                ))
-                .with_id("onboarding.recovery-key.status")
-                .with_role(ui::tokens::typography::TextRole::Body)
-                .with_color(theme.text_dim)
-                .numeric(),
-            )),
-            WordsCheck::Problem(problem) => Some(spaced_banner(
-                Banner::warning(problem.clone()).with_icon(ui::icons::Icon::Pencil),
-                theme,
-            )),
-            WordsCheck::Ready { fingerprint } => {
-                let message = if self.expected_identity.is_some() {
-                    t("onboarding-recovery-key-matches")
-                } else {
-                    t("onboarding-recovery-key-ready-detail")
-                };
-                Some(spaced_banner(
-                    Banner::success(t_args(
-                        "onboarding-recovery-key-ready",
-                        &[("fingerprint", short_fingerprint(fingerprint).into())],
-                    ))
-                    .with_message(message),
-                    theme,
-                ))
-            }
-            WordsCheck::Different { fingerprint } => Some(spaced_banner(
-                Banner::error(t("onboarding-recovery-key-different")).with_message(t_args(
-                    "onboarding-recovery-key-different-detail",
-                    &[
-                        ("found", short_fingerprint(fingerprint).into()),
-                        (
-                            "expected",
-                            short_fingerprint(&hex::encode(
-                                self.expected_identity.unwrap_or_default(),
-                            ))
-                            .into(),
-                        ),
-                    ],
-                )),
-                theme,
-            )),
-        }
-    }
-
     /// Choosing the recovery key, checking the words each frame, and
     /// restoring once they are a valid key.
     pub(super) fn sync_recovery_key(&mut self) {
@@ -498,7 +222,7 @@ impl OnboardingView {
                 .recovery_words
                 .lock()
                 .map_or(WordsCheck::Empty, |words| {
-                    WordsCheck::of(&words, self.expected_identity)
+                    words_check(&words, self.expected_identity)
                 });
             if check != self.recovery_check {
                 // A new attempt replaces the failure of the previous one.
@@ -589,6 +313,7 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
     use std::path::PathBuf;
+    use ui::widget::Widget as _;
 
     #[test]
     fn a_recovery_key_is_checked_while_typed_and_restores_only_when_valid() {
@@ -690,16 +415,6 @@ mod tests {
         );
         assert!(view.recovery_key_written);
         assert!(view.backup_was_verified);
-    }
-
-    #[test]
-    fn a_typed_back_word_is_marked_once_it_cannot_match() {
-        let mark = wrong_answer(Zeroizing::new("ability".to_owned()));
-        assert!(mark("").is_empty());
-        assert!(mark(" Abil").is_empty(), "still on its way to the word");
-        assert!(mark("ability ").is_empty());
-        assert_eq!(mark(" abel"), vec![1..5]);
-        assert_eq!(mark("abilityx"), vec![0..8]);
     }
 
     #[test]

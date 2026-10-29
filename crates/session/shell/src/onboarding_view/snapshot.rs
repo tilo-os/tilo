@@ -45,12 +45,12 @@ pub enum OnboardingVisualState {
 }
 
 impl OnboardingView {
-    /// Put the entrance transition in its steady state for deterministic
-    /// offscreen review. Production never calls this; the live compositor
-    /// advances the exact same transition on animation frames.
+    /// Show the page at rest for deterministic offscreen review. Production
+    /// never calls this; the live compositor lets the step arrive.
     #[doc(hidden)]
     pub fn settle_motion_for_snapshot(&mut self) {
-        self.transition = ui::motion::Presence::opened();
+        self.show_page();
+        self.app.seat().settle_motion();
     }
 
     #[doc(hidden)]
@@ -108,7 +108,7 @@ impl OnboardingView {
                 self.flow.begin_existing();
                 self.flow.choose_nearby();
                 self.nearby_active_for_snapshot = true;
-                self.nearby_status = Some(t("onboarding-nearby-waiting"));
+                self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-waiting"));
             }
             OnboardingVisualState::RecoveryRestore => {
                 self.flow.begin_existing();
@@ -156,7 +156,7 @@ impl OnboardingView {
                     .recovery_words
                     .lock()
                     .map_or(WordsCheck::Empty, |words| {
-                        WordsCheck::of(&words, self.expected_identity)
+                        super::words_check(&words, self.expected_identity)
                     });
             }
             OnboardingVisualState::Nearby | OnboardingVisualState::NearbyCode => {
@@ -165,9 +165,9 @@ impl OnboardingView {
                 self.nearby_active_for_snapshot = true;
                 if state == OnboardingVisualState::NearbyCode {
                     self.nearby_code = Some("482913".into());
-                    self.nearby_status = Some(t("onboarding-nearby-code"));
+                    self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-code"));
                 } else {
-                    self.nearby_status = Some(t("onboarding-nearby-waiting"));
+                    self.nearby_status = Some(tilo_onboarding::t("onboarding-nearby-waiting"));
                 }
             }
             OnboardingVisualState::Restore | OnboardingVisualState::RestoreError => {
@@ -191,6 +191,7 @@ impl OnboardingView {
                 if state == OnboardingVisualState::BackupRecoveryKey {
                     let mut copy = RecoveryKeyCopy::new(
                         threshold_identity::bip39::encode(&[0x3f; 32]).unwrap_or_default(),
+                        self.key_answers.clone(),
                     );
                     copy.checks = [3, 11, 20];
                     if let Ok(mut answer) = copy.answers[0].lock() {
@@ -259,7 +260,6 @@ impl OnboardingView {
                 });
             }
         }
-        self.composed = None;
         self.invalidation.both();
         self.settle_motion_for_snapshot();
     }

@@ -298,7 +298,7 @@ fn shoot_history_at(
         state.commit_action(None, None);
     }
     let mut harness = FrameHarness::for_root(state, mail(), size, theme.clone());
-    harness.enable_document_history_chrome();
+    harness.present_history_in_header();
     if open && let Err(error) = harness.open_history() {
         eprintln!("nav_shell_shots: History did not open: {error}");
         std::process::exit(1);

@@ -1,47 +1,20 @@
-//! The popovers the top bar opens: the workspace menu behind the
-//! workspace's name and the profile card behind the person's own avatar.
+//! What the top bar's menus offer here and how the shell carries out a
+//! choice in them: the workspace menu behind the workspace's name and the
+//! profile card behind the person's own avatar.
 //!
-//! Both are the shared desktop widgets the browser desktop shows too; this
-//! is what the native shell puts in them and how it carries out a choice.
-//! The bar asks through [`BarPopoverRequest`]; the host opens one popover
-//! at a time, closing People and the other popover as it does.
+//! The menus are the top bar app's (`topbar_host`); the shell puts in them
+//! what this desktop offers and carries out what the person chose through
+//! its own authenticated paths.
 
-use taffy::NodeId;
-use tilo_desktop::profile_card::{
-    ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
-};
+use tilo_desktop::profile_card::{ProfileAction, ProfileChoice, ProfileGroup, ProfileModel};
 use tilo_desktop::workspace_menu::{
-    WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
+    WorkspaceAction, WorkspaceChoice, WorkspaceMenuChoice, WorkspaceMenuModel,
 };
-use ui::widget::Widget as _;
-use vello::kurbo::Rect;
 
 use super::ShellOverlayHost;
-use crate::shell::chrome_state::{BarPopoverRequest, WsTab};
+use crate::shell::chrome_state::WsTab;
 use crate::shell::i18n::t;
 use crate::shell::state::WorkspaceId;
-
-/// The workspace menu and the profile card, with the layout nodes they
-/// hold while open.
-#[derive(Default)]
-pub(super) struct BarPopovers {
-    pub(super) workspace_menu: WorkspaceMenu,
-    pub(super) workspace_menu_node: Option<NodeId>,
-    pub(super) profile: ProfileCard,
-    pub(super) profile_node: Option<NodeId>,
-}
-
-impl BarPopovers {
-    pub(super) fn any_open(&self) -> bool {
-        self.workspace_menu.is_open() || self.profile.is_open()
-    }
-
-    /// Whether the layout nodes still match what is open.
-    pub(super) fn structure_stale(&self) -> bool {
-        self.workspace_menu.is_open() != self.workspace_menu_node.is_some()
-            || self.profile.is_open() != self.profile_node.is_some()
-    }
-}
 
 /// A command about workspaces the native shell lists in the workspace
 /// menu, beside switching, renaming, the overview and a new strip. A command
@@ -211,65 +184,6 @@ impl NativeProfileAction {
 }
 
 impl ShellOverlayHost {
-    /// Open or close the popover a bar asked for since the last call. Run
-    /// inside the dispatch that pressed the bar, so the popover is up when
-    /// that event returns; `update` runs it again for semantic presses.
-    pub(super) fn harvest_bar_popover_request(&mut self) {
-        let Some(chrome) = self.chrome.clone() else {
-            return;
-        };
-        let Some(request) = chrome.borrow_mut().bar_popover_request.take() else {
-            return;
-        };
-        match request {
-            BarPopoverRequest::WorkspaceMenu { anchor } => {
-                self.close_bar_popovers_for(Some(request));
-                let model = self.workspace_menu_model();
-                let anchor = if anchor.is_zero_area() {
-                    self.main_bar_rect(tilo_desktop::topbar::TopBarChrome::workspace_menu_rect)
-                } else {
-                    anchor
-                };
-                self.bar_popovers
-                    .workspace_menu
-                    .toggle(&model, anchor, self.rect);
-            }
-            BarPopoverRequest::Profile => {
-                self.close_bar_popovers_for(Some(request));
-                let model = self.profile_model();
-                let anchor =
-                    self.main_bar_rect(tilo_desktop::topbar::TopBarChrome::own_avatar_rect);
-                self.bar_popovers.profile.toggle(&model, anchor, self.rect);
-            }
-        }
-        self.bump_chrome();
-    }
-
-    /// One popover from the bar at a time: close People and whichever of
-    /// the two `opening` is not (both for `None`).
-    pub(super) fn close_bar_popovers_for(&mut self, opening: Option<BarPopoverRequest>) {
-        if !matches!(opening, Some(BarPopoverRequest::WorkspaceMenu { .. })) {
-            self.bar_popovers.workspace_menu.close();
-        }
-        if opening != Some(BarPopoverRequest::Profile) {
-            self.bar_popovers.profile.close();
-        }
-        if opening.is_some()
-            && let Some(chrome) = self.chrome.as_ref()
-        {
-            chrome.borrow_mut().overlays.collaborators = false;
-        }
-    }
-
-    pub(super) fn main_bar_rect(
-        &mut self,
-        rect: fn(&tilo_desktop::topbar::TopBarChrome) -> Rect,
-    ) -> Rect {
-        self.desktop_surface_mut()
-            .and_then(|surface| surface.topbar().map(rect))
-            .unwrap_or(Rect::ZERO)
-    }
-
     /// What the workspace menu offers now: the workspaces on this desktop,
     /// what this person may change, and the shell's own workspace commands.
     pub(super) fn workspace_menu_model(&self) -> WorkspaceMenuModel {
@@ -387,24 +301,8 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Carry out what the person chose in either popover.
-    pub(super) fn settle_bar_popovers(&mut self) -> bool {
-        let mut changed = false;
-        if let Some(choice) = self.bar_popovers.workspace_menu.take_choice() {
-            self.apply_workspace_menu_choice(choice);
-            changed = true;
-        }
-        if let Some(choice) = self.bar_popovers.profile.take_choice() {
-            self.apply_profile_choice(&choice);
-            changed = true;
-        }
-        if changed {
-            self.bump_chrome();
-        }
-        changed
-    }
-
-    fn apply_workspace_menu_choice(&mut self, choice: WorkspaceMenuChoice) {
+    /// Carry out what the person chose in the workspace menu.
+    pub(super) fn apply_workspace_menu_choice(&mut self, choice: WorkspaceMenuChoice) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
@@ -433,14 +331,9 @@ impl ShellOverlayHost {
             }
             // Made in the strip switcher, the one place strips are.
             WorkspaceMenuChoice::NewStrip => self.new_strip_in_switcher(),
-            WorkspaceMenuChoice::Rename => {
-                if let Some(bar) = self
-                    .desktop_surface_mut()
-                    .and_then(tilo_desktop::composition::DesktopSurface::topbar_mut)
-                {
-                    bar.begin_workspace_rename();
-                }
-            }
+            // The bar renames the workspace in place and asks for the
+            // name it was given (`ChromeIntent::RenameWorkspace`).
+            WorkspaceMenuChoice::Rename => {}
         }
     }
 
@@ -479,7 +372,7 @@ impl ShellOverlayHost {
                 // action takes it like any parameter.
                 drop(state);
                 self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.palette.set_query(&t("search-action-workspace-report"));
+                self.search.set_query(&t("search-action-workspace-report"));
                 self.last_search_query = "\0workspace-report\0".to_string();
                 return;
             }
@@ -487,6 +380,7 @@ impl ShellOverlayHost {
         state.bump();
     }
 
+    /// Carry out what the person did in the profile card.
     pub(super) fn apply_profile_choice(&mut self, choice: &ProfileChoice) {
         let id = match choice {
             ProfileChoice::Action(id) => id,
@@ -596,136 +490,5 @@ impl ShellOverlayHost {
                     .push_warning_notification(t("profile-name-not-saved"), error.to_string());
             }
         }
-    }
-
-    /// The bar popovers' layout nodes, built while open.
-    pub(super) fn build_bar_popovers(
-        &mut self,
-        taffy: &mut taffy::TaffyTree<()>,
-        theme: &ui::theme::Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn ui::widget::Widget>,
-    ) -> Vec<NodeId> {
-        let popovers = &mut self.bar_popovers;
-        popovers.workspace_menu_node = popovers
-            .workspace_menu
-            .is_open()
-            .then(|| popovers.workspace_menu.build_layout(taffy, theme, node_map));
-        popovers.profile_node = popovers
-            .profile
-            .is_open()
-            .then(|| popovers.profile.build_layout(taffy, theme, node_map));
-        popovers
-            .workspace_menu_node
-            .into_iter()
-            .chain(popovers.profile_node)
-            .collect()
-    }
-
-    pub(super) fn apply_bar_popovers_layout(&mut self, taffy: &taffy::TaffyTree<()>) {
-        let origin = self.rect.origin();
-        let popovers = &mut self.bar_popovers;
-        if let Some(node) = popovers.workspace_menu_node {
-            popovers.workspace_menu.apply_layout(taffy, node, origin);
-        }
-        if let Some(node) = popovers.profile_node {
-            popovers.profile.apply_layout(taffy, node, origin);
-        }
-    }
-
-    /// Offer `event` to the open popover: it takes what it covers, the
-    /// keyboard and the press that dismisses it. `true` when it did.
-    pub(super) fn route_bar_popover_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        // A press while one is open is its own: it chooses, or it dismisses
-        // without also reaching what is under it (the bar's own control
-        // that opened it would open it again).
-        let pressed = self.bar_popovers.any_open()
-            && matches!(
-                event,
-                winit::event::WindowEvent::MouseInput {
-                    state: winit::event::ElementState::Pressed,
-                    ..
-                }
-            );
-        if self.bar_popovers.workspace_menu.is_open()
-            && let Some(node) = self.bar_popovers.workspace_menu_node
-        {
-            self.bar_popovers
-                .workspace_menu
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            self.settle_bar_popovers();
-            if *ctx.handled {
-                return true;
-            }
-        }
-        if self.bar_popovers.profile.is_open()
-            && let Some(node) = self.bar_popovers.profile_node
-        {
-            self.bar_popovers
-                .profile
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            let modal = self.bar_popovers.profile.modal_capture().is_some();
-            self.settle_bar_popovers();
-            if *ctx.handled || modal {
-                return true;
-            }
-        }
-        if pressed {
-            // A press neither took (one outside it before its layout caught
-            // up with its opening) still dismisses it.
-            self.close_bar_popovers_for(None);
-            *ctx.handled = true;
-        }
-        pressed
-    }
-
-    pub(super) fn draw_bar_popovers(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::theme::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if self.bar_popovers.workspace_menu.is_open() {
-            self.bar_popovers.workspace_menu.draw_overlay(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
-        if self.bar_popovers.profile.is_open() {
-            self.bar_popovers.profile.draw_overlay(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                presence,
-            );
-        }
-    }
-
-    /// The workspace menu's rows as shown, for tests and probes.
-    pub fn workspace_menu_labels(&self) -> Option<Vec<Option<String>>> {
-        self.bar_popovers
-            .workspace_menu
-            .is_open()
-            .then(|| self.bar_popovers.workspace_menu.labels())
-    }
-
-    /// Choose the workspace menu's row labelled `label`, as a click would.
-    pub fn choose_in_workspace_menu(&mut self, label: &str) -> bool {
-        let chosen = self.bar_popovers.workspace_menu.choose(label);
-        self.settle_bar_popovers();
-        chosen
-    }
-
-    pub fn profile_card_open(&self) -> bool {
-        self.bar_popovers.profile.is_open()
     }
 }

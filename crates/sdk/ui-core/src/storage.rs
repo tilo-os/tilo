@@ -3,7 +3,7 @@
 //!
 //! | What | Seam | Backed by |
 //! |---|---|---|
-//! | Documents (collaborative, synced) | resources and records; [`crate::persist`] for a single-document app | Automerge records |
+//! | Documents (collaborative, synced) | resources and records | Automerge records |
 //! | App files (caches, imports, databases) | [`AppFiles`], [`HostContext::files`] | `tilo_files::Dir` in `tilo_paths::AppPaths`: the per-user directories natively, the origin-private file system in a page |
 //! | Preferences | typed [`Settings`] with a declared [`Scope`], [`HostContext::settings`] | the desktop settings document (`settings-store`), or the host's settings source: in a sandboxed app the shell's records, reached through the app's collaboration channel; personal sections roam between the person's devices |
 //! | Secrets | [`secrets`], [`HostContext::secrets`]; one per document item with `SecretStore::item` | `tilo-secrets`: the Secret Service, the Keychain, the page's wrapped store |
@@ -524,6 +524,63 @@ impl<T: SettingsSchema> Settings<T> {
     #[must_use]
     pub fn revision(&self) -> SettingsRevision {
         self.document.revision()
+    }
+}
+
+/// Settings `T` as last read, read again only when their document changed
+/// since: a reader that looks at them often (on every frame, on every
+/// publication of an app's rows) without decoding them each time.
+pub struct SettingsCache<T> {
+    settings: Settings<T>,
+    seen: SettingsRevision,
+    value: T,
+}
+
+impl<T: SettingsSchema + PartialEq> SettingsCache<T> {
+    /// `settings`, read now.
+    #[must_use]
+    pub fn new(settings: Settings<T>) -> Self {
+        let seen = settings.revision();
+        let value = settings.get();
+        Self {
+            settings,
+            seen,
+            value,
+        }
+    }
+
+    /// The value as last read.
+    #[must_use]
+    pub fn get(&self) -> &T {
+        &self.value
+    }
+
+    /// Read the value again if the document changed since it was last
+    /// read; whether the value changed.
+    pub fn refresh(&mut self) -> bool {
+        let revision = self.settings.revision();
+        if revision == self.seen {
+            return false;
+        }
+        self.seen = revision;
+        let stored = self.settings.get();
+        if stored == self.value {
+            return false;
+        }
+        self.value = stored;
+        true
+    }
+
+    /// The document version the value was last read at.
+    #[must_use]
+    pub fn revision(&self) -> SettingsRevision {
+        self.seen
+    }
+
+    /// The settings read.
+    #[must_use]
+    pub fn settings(&self) -> &Settings<T> {
+        &self.settings
     }
 }
 

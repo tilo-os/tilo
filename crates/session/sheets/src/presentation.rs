@@ -100,7 +100,8 @@ impl Presentation {
         self.0.phase.set(Phase::Closed);
     }
 
-    fn wake(&self) {
+    /// Wake the sheet's app: something the shell lent it changed.
+    pub fn wake(&self) {
         if let Some(wake) = self.0.wake.borrow().as_ref() {
             wake.wake();
         }
