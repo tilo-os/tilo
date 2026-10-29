@@ -10,7 +10,7 @@
 use super::{Checker, Ex};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind};
-use crate::ir::{self, Ek, Stmt};
+use crate::ir::{Ek, Stmt};
 use crate::types::Ty;
 
 /// The pseudo-fields naming a resource's versions in an order the store answers.
