@@ -263,6 +263,47 @@ fn the_older_reactions_form_still_compiles() {
     validate(&c.wasm);
 }
 
+const REACTED: &str = r"type Post {
+    text: Text (title)
+    reactions: Map<Set<Principal>>
+}
+";
+
+#[test]
+fn a_map_of_sets_takes_and_gives_back_elements_one_by_one() {
+    let c = compile_body(&format!(
+        "{REACTED}
+action react(p: Post, emoji: Text) {{
+    let mine = if let who = p.reactions.get(emoji) {{
+        who.any(x -> x == invoker)
+    }} else {{
+        false
+    }}
+    if mine {{
+        p.reactions.remove(emoji, invoker)
+    }} else {{
+        p.reactions.add(emoji, invoker)
+    }}
+}}
+
+action clear(p: Post, emoji: Text) {{
+    p.reactions.remove(emoji)
+}}
+
+view shown(p: Post) {{
+    ui.Reactions(reactions: p.reactions)
+}}"
+    ));
+    validate(&c.wasm);
+    let strings = String::from_utf8_lossy(&c.wasm).into_owned();
+    assert!(strings.contains("map_set_add") && strings.contains("map_set_remove"));
+    let (code, message) = one_error(&format!(
+        "{REACTED}\naction all(p: Post) {{\n    p.reactions.put(\"x\", [invoker])\n}}"
+    ));
+    assert_eq!(code, "E027");
+    assert!(message.contains("map of sets"), "{message}");
+}
+
 #[test]
 fn an_action_list_is_an_action_prop_run_by_events_of_the_node() {
     let c = compile_body(&format!(

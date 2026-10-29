@@ -298,16 +298,16 @@ impl Core {
             EventPart, EventValue, Filters, FloatToStr, IdentPart, IntToStr, Invoke, Invoker,
             InvokerPop, InvokerPush, IsError, IsSome, Lenses, ListEnd, ListGetF, ListGetH,
             ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListReverse,
-            ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, Members, MetaOf, ModelCall, NoneV,
-            Now, Outside, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
-            PrincipalRole, Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
-            RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
-            ResTextSet, RichEmpty, RichNew, RichPart, RichTime, SetAdd, SetRemove, SomeF, SomeH,
-            SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, StrCmp, StrConcat, StrEq, StrLen,
-            StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
-            TupleSetI, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
-            UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
-            WorkspaceMembers,
+            ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, Members,
+            MetaOf, ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalKind,
+            PrincipalName, PrincipalNamed, PrincipalRole, Query, QueueBlock, RecNew, RecSetF,
+            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
+            ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, RichEmpty, RichNew, RichPart, RichTime,
+            SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet,
+            StrCmp, StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
+            TupleNew, TupleSetF, TupleSetH, TupleSetI, UiActions, UiAnchor, UiBind, UiBindState,
+            UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            VersionEnd, Versions, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -346,8 +346,10 @@ impl Core {
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
             | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong
-            | SetAdd | SetRemove | MapPut | MapRemove | MapGetH | MapKeys | RecNew | RecSetI
-            | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId => self.resource_import(imp, a),
+            | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
+            | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId => {
+                self.resource_import(imp, a)
+            }
             ActRef | Invoke | TryInvoke | IsError | Outside | ModelCall | Invoker | PrincipalEq
             | PrincipalName | QueueBlock | Now | PrincipalNamed | InvokerPush | InvokerPop => {
                 self.effect_import(imp, a)
