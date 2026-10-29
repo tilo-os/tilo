@@ -1087,9 +1087,6 @@ shell-activity-title = Activity
 shell-activity-loading = Loading workspace activity…
 
 # Session (power) menu
-power-menu-title = Power
-power-menu-description-switch-user = Lock, log out, switch user, suspend, restart, or shut down this computer
-power-menu-description = Lock, log out, suspend, restart, or shut down this computer
 power-lock = Lock
 power-lock-detail = Keep apps running
 power-logout = Log out

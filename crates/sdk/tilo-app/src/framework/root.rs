@@ -134,6 +134,11 @@ pub(crate) struct ResourceRoot {
     nested_views: std::cell::RefCell<Option<NestedViews>>,
     /// Whether the resource keeps document state History shows.
     history: bool,
+    /// Whether the window stands on the framework's ground: every window but
+    /// a sheet the shell shows over the desktop ([`WindowRole::Sheet`]).
+    ///
+    /// [`WindowRole::Sheet`]: ui_core::application::WindowRole::Sheet
+    ground: bool,
     /// Platform presentation actions; the browser implementation has no state.
     native_presentation: crate::runner::Presentation,
     /// The links `share-link` is minting.
@@ -419,7 +424,8 @@ impl ResourceRoot {
     }
 
     /// The window ground is the framework's: an app never fills it, and one
-    /// that paints nothing still stands on it.
+    /// that paints nothing still stands on it. A sheet over the desktop
+    /// stands on nothing ([`Self::without_ground`]).
     fn paint_ground(
         &mut self,
         scene: &mut Scene,
@@ -428,13 +434,15 @@ impl ResourceRoot {
         presence: &PresenceCtx,
     ) {
         self.native_presentation.track_theme(theme);
-        scene.fill(
-            ui_core::vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.content,
-            None,
-            &self.content.get_rect(),
-        );
+        if self.ground {
+            scene.fill(
+                ui_core::vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.content,
+                None,
+                &self.content.get_rect(),
+            );
+        }
         self.run.people.follow(presence);
     }
 
@@ -544,6 +552,7 @@ impl ResourceRoot {
             document_children: std::cell::RefCell::new(None),
             nested_views: std::cell::RefCell::new(None),
             history: true,
+            ground: true,
             native_presentation,
             share: super::share_link::ShareLinks::default(),
         }
@@ -553,6 +562,13 @@ impl ResourceRoot {
     /// History actions and its window offers no History.
     pub(crate) fn without_history(mut self) -> Self {
         self.history = false;
+        self
+    }
+
+    /// Stand on nothing: what the view does not paint shows what is under
+    /// the window.
+    pub(crate) fn without_ground(mut self) -> Self {
+        self.ground = false;
         self
     }
 

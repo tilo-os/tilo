@@ -25,11 +25,11 @@ use ui::widget::Element;
 use crate::actions::PdfEffect;
 use crate::app::PdfApp;
 use crate::markup::{
-    ImportedPage, MAX_IMPORTED_PAGES, PageOccurrence, PagePlanEntry, PdfMarkup, StoredAnnotation,
-    StoredComment, StoredReply, StoredSignature,
+    ImportedPage, MAX_IMPORTED_PAGES, PageOccurrence, PagePlanEntry, PdfMarkup, StoredSignature,
 };
 use crate::model::{
-    AnnoKind, FormEntry, GeomSpace, HighlightColor, MARGIN, PAGE_H, PAGE_W, PtRect, SignatureInk,
+    AnnoKind, Annotation, Comment, FormEntry, GeomSpace, HighlightColor, MARGIN, PAGE_H, PAGE_W,
+    PdfAnchor, PtRect, Reply, SignatureInk,
 };
 
 /// The most text one comment or reply holds.
@@ -129,7 +129,8 @@ pub struct AdoptedThread {
     pub page_id: String,
     pub author: String,
     pub text: String,
-    pub created: i64,
+    /// When it was written, as an ISO-8601 time; empty when unknown.
+    pub date: String,
     pub replies: Vec<AdoptedReply>,
 }
 
@@ -142,29 +143,18 @@ pub struct ExistingMarkup {
     pub adopted: Vec<crate::adopt::AdoptedEntry>,
 }
 
-/// Bring a PDF's markup of version 1 up to this one: a comment's and a
-/// reply's formatted paragraphs were one JSON string, and are a list of
-/// paragraphs now.
-fn upgrade_markup(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-    use tilo_document::ClipBlock;
-    use tilo_resource::evolution::{collection_items, map_values, retype_json};
-    if from != 1 {
-        return Err(ModelError::invalid(format!("no PDF migration from {from}")));
-    }
-    for (_, comment) in map_values(doc, &ui::automerge::ROOT, "comments")? {
-        retype_json::<Vec<ClipBlock>>(doc, &comment, "rich")?;
-        for reply in collection_items(doc, &comment, "replies")? {
-            retype_json::<Vec<ClipBlock>>(doc, &reply, "rich")?;
-        }
-    }
-    Ok(())
+/// Bring markup of an earlier version up to this one. Comment threads were
+/// kept in a shape of their own before they were the comment model every
+/// app shares; those are not carried over, the rest of the markup is.
+fn upgrade_markup(doc: &mut tilo_resource::Doc, _from: u32) -> Result<(), ModelError> {
+    tilo_resource::Slot::Key(&ui::automerge::ROOT, "comments").remove(doc)
 }
 
 #[resource(
     kind = "pdf.document",
     label = "PDF",
     search = PdfMarkup::entries,
-    version = 2,
+    version = 3,
     migrate = upgrade_markup
 )]
 impl PdfMarkup {
@@ -272,48 +262,38 @@ impl PdfMarkup {
         for annotation in markup.annotations {
             let id = Id::from_raw(annotation.id.clone());
             if self.annotations.find(&id).is_none() {
-                self.annotations.push(StoredAnnotation {
+                self.annotations.push(Annotation {
                     id: annotation.id,
                     page_id: annotation.page_id,
-                    mark: annotation.mark,
+                    kind: annotation.mark,
                     color: annotation.color,
                     author: annotation.author,
-                    chars: None,
                     created_ms: annotation.created_ms,
                     space: GeomSpace::User,
+                    ..Annotation::default()
                 });
             }
         }
-        for thread in markup.comments {
-            if self
-                .comments
-                .find(&Id::from_raw(thread.id.clone()))
-                .is_some()
-            {
+        // Oldest first, as they were written; undated ones before them.
+        let mut threads = markup.comments;
+        threads.sort_by(|a, b| a.date.cmp(&b.date));
+        for thread in threads {
+            let id = Id::from_raw(thread.id);
+            if self.comments.contains(&id) {
                 continue;
             }
-            let mut replies = tilo_resource::Collection::new();
+            let anchor = PdfAnchor {
+                page_id: thread.page_id,
+                annotation: thread.anno.unwrap_or_default(),
+            };
+            let mut comment = Comment::new(anchor, thread.author, thread.date, thread.text);
             for reply in thread.replies {
-                replies.push(
+                comment.replies.push(
                     Id::from_raw(reply.id),
-                    StoredReply {
-                        author: reply.author,
-                        text: reply.text,
-                        rich: Vec::new(),
-                    },
+                    Reply::new(reply.author, String::new(), reply.text),
                 );
             }
-            self.comments.push(StoredComment {
-                id: thread.id,
-                anno: thread.anno.unwrap_or_default(),
-                page_id: thread.page_id,
-                author: thread.author,
-                text: thread.text,
-                rich: Vec::new(),
-                created: thread.created,
-                resolved: false,
-                replies,
-            });
+            self.comments.push(id, comment);
         }
         for (name, value) in markup.form_values {
             self.form_values.entry(name).or_insert(value);
@@ -456,15 +436,16 @@ impl PdfMarkup {
             return Ok(());
         }
         self.on_a_page(&annotation.page_id)?;
-        self.annotations.push(StoredAnnotation {
+        self.annotations.push(Annotation {
             id: annotation.id,
             page_id: annotation.page_id,
-            mark: annotation.mark,
+            kind: annotation.mark,
             color: annotation.color,
             author: cx.author().unwrap_or_default().to_owned(),
             chars: annotation.chars,
             created_ms: cx.now_ms(),
             space: annotation.space,
+            page: 0,
         });
         Ok(())
     }
@@ -479,7 +460,7 @@ impl PdfMarkup {
             .take(annotation)
             .ok_or("there is no such annotation")?;
         self.comments
-            .retain(|comment| comment.anno != annotation.as_str());
+            .retain(|_, comment| comment.anchor.annotation != annotation.as_str());
         Ok(())
     }
 
@@ -494,8 +475,6 @@ impl PdfMarkup {
         #[param("The note")] note: NewNote,
     ) -> Result<(), Refusal> {
         self.on_a_page(&note.page_id)?;
-        let author = cx.author().unwrap_or_default().to_owned();
-        let now = cx.now_ms();
         check_text(&note.text, &[])?;
         if self
             .annotations
@@ -504,30 +483,26 @@ impl PdfMarkup {
         {
             return Ok(());
         }
-        self.annotations.push(StoredAnnotation {
-            id: note.annotation.clone(),
+        let anchor = PdfAnchor {
             page_id: note.page_id.clone(),
-            mark: AnnoKind::Note {
+            annotation: note.annotation.clone(),
+        };
+        let comment = Comment::written(cx, anchor, note.text);
+        self.annotations.push(Annotation {
+            id: note.annotation,
+            page_id: note.page_id,
+            kind: AnnoKind::Note {
                 x: note.x,
                 y: note.y,
             },
             color: note.color,
-            author: author.clone(),
+            author: comment.author.clone(),
             chars: None,
-            created_ms: now,
+            created_ms: cx.now_ms(),
             space: note.space,
+            page: 0,
         });
-        self.comments.push(StoredComment {
-            id: note.comment,
-            anno: note.annotation,
-            page_id: note.page_id,
-            author,
-            text: note.text,
-            rich: Vec::new(),
-            created: now,
-            resolved: false,
-            replies: tilo_resource::Collection::new(),
-        });
+        self.comments.push(Id::from_raw(note.comment), comment);
         Ok(())
     }
 
@@ -570,11 +545,8 @@ impl PdfMarkup {
         #[param("The comment")] comment: NewComment,
     ) -> Result<(), Refusal> {
         check_text(&comment.text, &comment.rich)?;
-        if self
-            .comments
-            .find(&Id::from_raw(comment.id.clone()))
-            .is_some()
-        {
+        let id = Id::from_raw(comment.id);
+        if self.comments.contains(&id) {
             return Ok(());
         }
         let page_id = match (&comment.anno, &comment.page_id) {
@@ -587,17 +559,15 @@ impl PdfMarkup {
             }
             (None, None) => return Err(Refusal::new("a comment is on a page or an annotation")),
         };
-        self.comments.push(StoredComment {
-            id: comment.id,
-            anno: comment.anno.unwrap_or_default(),
+        let anchor = PdfAnchor {
             page_id,
-            author: cx.author().unwrap_or_default().to_owned(),
-            text: comment.text,
-            rich: comment.rich,
-            created: cx.now_ms(),
-            resolved: false,
-            replies: tilo_resource::Collection::new(),
-        });
+            annotation: comment.anno.unwrap_or_default(),
+        };
+        let thread = Comment {
+            body: comment.rich,
+            ..Comment::written(cx, anchor, comment.text)
+        };
+        self.comments.push(id, thread);
         Ok(())
     }
 
@@ -620,14 +590,17 @@ impl PdfMarkup {
         let id = id
             .filter(|id| !id.trim().is_empty())
             .unwrap_or_else(|| cx.uuid().to_string());
-        let author = cx.author().unwrap_or_default().to_owned();
+        let reply = Reply {
+            body: rich,
+            ..Reply::written(cx, text)
+        };
         let thread = self
             .comments
-            .find_mut(comment)
+            .get_mut(comment)
             .ok_or("there is no such comment")?;
         let id = Id::from_raw(id);
         if !thread.replies.contains(&id) {
-            thread.replies.push(id, StoredReply { author, text, rich });
+            thread.replies.push(id, reply);
         }
         Ok(())
     }
@@ -639,14 +612,18 @@ impl PdfMarkup {
     pub fn delete_comment(&mut self, comment: &Id) -> Result<(), Refusal> {
         let thread = self
             .comments
-            .take(comment)
+            .remove(comment)
             .ok_or("there is no such comment")?;
-        let annotation = Id::from_raw(thread.anno.clone());
+        let pinned = thread.anchor.annotation;
+        let annotation = Id::from_raw(pinned.clone());
         let orphan_note = self
             .annotations
             .find(&annotation)
-            .is_some_and(|stored| matches!(stored.mark, AnnoKind::Note { .. }))
-            && !self.comments.iter().any(|other| other.anno == thread.anno);
+            .is_some_and(|stored| matches!(stored.kind, AnnoKind::Note { .. }))
+            && !self
+                .comments
+                .values()
+                .any(|other| other.anchor.annotation == pinned);
         if orphan_note {
             self.delete_annotation(&annotation)?;
         }
@@ -758,21 +735,15 @@ impl PdfMarkup {
                 .anchored(anchor("annotations", &annotation.id))
             })
             .collect();
-        for comment in self.list_comments() {
-            let replies: Vec<&str> = comment
-                .replies
-                .iter()
-                .map(|reply| reply.body.as_str())
-                .collect();
+        for thread in self.list_comments() {
+            let comment = &thread.comment;
+            let text = std::iter::once(comment.text.as_str())
+                .chain(comment.replies.values().map(|reply| reply.text.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n");
             entries.push(
-                SearchEntry::new(
-                    format!("Comment: {}", comment.author),
-                    std::iter::once(comment.body.as_str())
-                        .chain(replies)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )
-                .anchored(anchor("comments", &comment.id)),
+                SearchEntry::new(format!("Comment: {}", comment.author), text)
+                    .anchored(anchor("comments", &thread.id)),
             );
         }
         for signature in self.list_signatures() {

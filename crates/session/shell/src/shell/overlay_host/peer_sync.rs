@@ -55,7 +55,6 @@ impl ShellOverlayHost {
     /// its user, from any entry point.
     pub fn detach_from_host(&mut self) {
         self.session_action_policy.detach_from_host();
-        self.layers.power_menu.detach_from_host();
     }
 
     /// Whether peer-sync palette entries are registered.

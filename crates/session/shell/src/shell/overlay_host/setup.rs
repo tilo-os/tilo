@@ -280,7 +280,6 @@ impl ShellOverlayHost {
         let user_switching = os_actions::user_switching_supported();
         host.session_action_policy
             .set_user_switching(user_switching);
-        host.layers.power_menu = PowerMenu::for_session(user_switching);
         host.pairing = crate::bluetooth_prompt::PairingOverlay::new(
             crate::bluetooth::PairingPromptHandle::global(),
         );

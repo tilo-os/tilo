@@ -353,12 +353,10 @@ impl Core {
                         .map(|id| {
                             let ty = match &one {
                                 Some(ty) => ty.clone(),
-                                None => {
-                                    self.stored_type(&target.item(&field.id, id, String::new()))
-                                }
+                                None => self.stored_type(&target.item(id, String::new())),
                             };
                             Value::Ref(RefValue {
-                                target: Rc::new(target.item(&field.id, id, ty)),
+                                target: Rc::new(target.item(id, ty)),
                                 author: author.cloned(),
                             })
                         })
@@ -601,18 +599,59 @@ impl Core {
             .ok_or_else(|| format!("type `{}` is not loaded", key.name))
     }
 
+    /// The item `item` names, which must be in this collection.
     fn item_arg(&self, ctx: &MutCtx, item: i32) -> HResult<String> {
         let r = self.ref_arg(item)?;
-        match r.target.path.split_last() {
-            Some((last, parent))
-                if last.field == ctx.field.id
-                    && parent == ctx.target.path.as_slice()
-                    && r.target.doc == ctx.target.doc =>
-            {
-                Ok(last.item.clone())
-            }
+        let within = self
+            .store
+            .borrow()
+            .container(&r.target)
+            .ok()
+            .flatten()
+            .is_some_and(|(holder, field)| {
+                field == ctx.field.id
+                    && holder.doc == ctx.target.doc
+                    && holder.item == ctx.target.item
+            });
+        match &r.target.item {
+            Some(id) if within => Ok(id.clone()),
             _ => trap("the item does not belong to this collection"),
         }
+    }
+
+    /// The item `item` names, to move into this collection: an item of the same document, of a
+    /// type the collection holds, and not this collection's holder or an item holding it.
+    fn moved_arg(&self, ctx: &MutCtx, item_tys: &[Rc<TypeInfo>], item: i32) -> HResult<String> {
+        let r = self.ref_arg(item)?;
+        let Some(id) = r.target.item.clone() else {
+            return trap("a document is in no collection to move it from");
+        };
+        if r.target.doc != ctx.target.doc {
+            return trap("an item moves within its document; this collection is in another one");
+        }
+        let store = self.store.borrow();
+        let ty = store
+            .type_of(&r.target)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        if !item_tys.iter().any(|t| t.id == ty) {
+            let held: Vec<&str> = item_tys.iter().map(|t| t.name.as_str()).collect();
+            return trap(format!(
+                "the collection holds `{}`, not the item's type",
+                held.join(" | ")
+            ));
+        }
+        // Into itself, or into an item inside it, it would hold itself.
+        let mut at = Some(ctx.target.clone());
+        while let Some(holder) = at {
+            if holder.item.as_deref() == Some(id.as_str()) {
+                return trap("an item cannot go inside itself");
+            }
+            at = store
+                .container(&holder)
+                .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?
+                .map(|(parent, _)| parent);
+        }
+        Ok(id)
     }
 
     fn coll_insert(&self, rh: i32, fh: i32, init: i32) -> HResult<Option<Wasm>> {
@@ -645,7 +684,7 @@ impl Core {
         let Applied::Item(id) = applied else {
             return trap("the store did not return the new item");
         };
-        let target = ctx.target.item(&ctx.field.id, &id, item_ty.id.clone());
+        let target = ctx.target.item(&id, item_ty.id.clone());
         self.touched(target.id_string());
         self.init_item(&ctx, &item_ty, &target, &rec)?;
         let author = Some(self.module_of_frame()?);
@@ -755,10 +794,12 @@ impl Core {
                 self.apply_mut(&ctx, &Mutation::CollRemove { field, item })?;
                 ret_void()
             }
+            // `move(x, after: y)`: beside an item of this collection, from wherever `x` is in
+            // the document; it keeps its id.
             Imp::CollMove => {
                 let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
-                self.coll_field(&ctx)?;
-                let item = self.item_arg(&ctx, a.h(2)?)?;
+                let item_tys = self.coll_field(&ctx)?;
+                let item = self.moved_arg(&ctx, &item_tys, a.h(2)?)?;
                 let neighbour = self.item_arg(&ctx, a.h(3)?)?;
                 let after = a.h(4)? != 0;
                 // Next to itself, it is where it was asked to be.
@@ -786,8 +827,8 @@ impl Core {
             // made elsewhere at the same time leaves it where this one meant.
             Imp::CollMoveTo => {
                 let ctx = self.mut_ctx(a.h(0)?, a.h(1)?)?;
-                self.coll_field(&ctx)?;
-                let item = self.item_arg(&ctx, a.h(2)?)?;
+                let item_tys = self.coll_field(&ctx)?;
+                let item = self.moved_arg(&ctx, &item_tys, a.h(2)?)?;
                 let Ok(index) = usize::try_from(a.long(3)?) else {
                     return trap("a collection has no place before its first");
                 };

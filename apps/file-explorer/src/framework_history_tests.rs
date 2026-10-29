@@ -11,7 +11,7 @@ use ui::prelude::TestApp;
 fn hosted() -> (TestApp<FileExplorerShell>, FileHistorySource) {
     let mut app = TestApp::<FileExplorerShell>::new().unwrap();
     let source = app
-        .with_surface(|files: &mut FileExplorerWidget| files.framework_history.clone())
+        .with_surface(|files: &mut FileExplorerWidget| files.state().framework_history.clone())
         .unwrap();
     (app, source)
 }

@@ -1134,7 +1134,7 @@ impl Instance {
             match host.open_plan(&anchor) {
                 Ok(plan) => {
                     if let Some(target) = plan.target
-                        && (!target.path.is_empty() || plan.app != self.app)
+                        && (target.item.is_some() || plan.app != self.app)
                     {
                         // A search hit or an agent's `open`: no hand moved it, it lands at once.
                         self.open_detail(&target, None, Some(ui::Front::Action));
@@ -2106,7 +2106,7 @@ pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
             return text;
         }
     }
-    if resource.path.is_empty() && meta.roots.contains(&ty.id) {
+    if resource.item.is_none() && meta.roots.contains(&ty.id) {
         return meta.title;
     }
     sentence(&ty.name)

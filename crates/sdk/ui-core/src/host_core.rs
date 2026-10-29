@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 
 use crate::history_mode::embedded::{PendingCommand, PendingCommandOutcome};
-use crate::history_mode::pending_controls::{ContinuationCommand, PreparedContinuation};
+use crate::history_mode::pending_controls::{
+    ContinuationCommand, PendingControlStatus, PreparedContinuation,
+};
 use crate::standalone_history::{HistoryError, HistoryReadContext, HistoryTarget};
 use crate::standalone_history_host::{HostHistoryLayout, StandaloneHistoryHost};
 use crate::widget::Widget;
@@ -189,6 +191,9 @@ pub(crate) trait HostCore {
     /// The live app root, for History surfaces it embeds.
     fn host_root_mut(&mut self) -> &mut dyn Widget;
 
+    /// The app's registered framework History, when it has one.
+    fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome>;
+
     /// Run a pending History control whose meaning
     /// [`Self::dispatch_prepared_history_control`] found unchanged.
     fn dispatch_current_history_control(
@@ -333,6 +338,34 @@ pub(crate) trait HostCore {
             });
         }
         self.dispatch_current_history_control(prepared)
+    }
+
+    /// Run a control the registered History held back and record how it
+    /// ended there: done, refused, or (unless the person already confirmed)
+    /// waiting for confirmation. `None` once the History is gone.
+    fn settle_history_control(
+        &mut self,
+        prepared: PreparedContinuation,
+        confirmed: bool,
+    ) -> Option<PendingControlStatus> {
+        let id = prepared.id;
+        let result = self.dispatch_prepared_history_control(prepared);
+        let history = self.registered_history_mut()?;
+        Some(match result {
+            Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
+                history.pending_control_needs_confirmation(id);
+                PendingControlStatus::NeedsConfirmation
+            }
+            Ok(_) => {
+                history.pending_control_consumed(id);
+                PendingControlStatus::Consumed
+            }
+            Err(error) => {
+                let reason = error.to_string();
+                history.pending_control_refused(id, reason.clone());
+                PendingControlStatus::Refused(reason)
+            }
+        })
     }
 
     /// Serve what History surfaces embedded in the app asked of their

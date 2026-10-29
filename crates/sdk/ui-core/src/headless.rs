@@ -8358,24 +8358,7 @@ impl FrameHarness {
             .history
             .as_mut()?
             .prepare_pending_control(token, confirmed)?;
-        let id = prepared.id;
-        let result = self.dispatch_prepared_history_control(prepared);
-        let history = self.history.as_mut()?;
-        match result {
-            Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                history.pending_control_needs_confirmation(id);
-                Some(crate::history_mode::pending_controls::PendingControlStatus::NeedsConfirmation)
-            }
-            Ok(_) => {
-                history.pending_control_consumed(id);
-                Some(crate::history_mode::pending_controls::PendingControlStatus::Consumed)
-            }
-            Err(error) => {
-                let reason = error.to_string();
-                history.pending_control_refused(id, reason.clone());
-                Some(crate::history_mode::pending_controls::PendingControlStatus::Refused(reason))
-            }
-        }
+        self.settle_history_control(prepared, confirmed)
     }
 
     fn service_pending_history_commands(&mut self) -> bool {
@@ -8398,16 +8381,7 @@ impl FrameHarness {
                         .as_mut()
                         .and_then(|history| history.prepare_pending_control_typed(&token, &value));
                     if let Some(prepared) = prepared {
-                        let id = prepared.id;
-                        let outcome = self.dispatch_prepared_history_control(prepared);
-                        if let Some(history) = self.history.as_mut() {
-                            match outcome {
-                                Ok(_) => history.pending_control_consumed(id),
-                                Err(error) => {
-                                    history.pending_control_refused(id, error.to_string())
-                                }
-                            }
-                        }
+                        self.settle_history_control(prepared, true);
                     }
                 }
                 crate::history_mode::pending_controls::ContinuationCommand::Cancel(token) => {
@@ -10105,6 +10079,10 @@ impl crate::host_core::HostCore for FrameHarness {
 
     fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root.as_mut()
+    }
+
+    fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
+        self.history.as_mut()
     }
 
     fn dispatch_current_history_control(

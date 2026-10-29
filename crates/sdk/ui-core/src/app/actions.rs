@@ -2397,19 +2397,7 @@ impl App {
             else {
                 continue;
             };
-            let confirmed = confirmation.is_some();
-            let id = prepared.id;
-            let result = self.dispatch_prepared_history_control(prepared);
-            let Some(history) = self.history.as_mut() else {
-                continue;
-            };
-            match result {
-                Err(tilo_actions::DoorError::ConfirmationRequired) if !confirmed => {
-                    history.pending_control_needs_confirmation(id);
-                }
-                Ok(_) => history.pending_control_consumed(id),
-                Err(error) => history.pending_control_refused(id, error.to_string()),
-            }
+            self.settle_history_control(prepared, confirmation.is_some());
         }
         self.service_embedded_history_commands(embedded);
     }
@@ -4244,6 +4232,10 @@ impl crate::host_core::HostCore for App {
 
     fn host_root_mut(&mut self) -> &mut dyn Widget {
         self.root_widget.as_mut()
+    }
+
+    fn registered_history_mut(&mut self) -> Option<&mut crate::history_mode::host::HistoryChrome> {
+        self.history.as_mut()
     }
 
     fn dispatch_current_history_control(
