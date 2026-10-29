@@ -61,9 +61,23 @@ pub mod compose;
 pub(crate) mod connect;
 pub mod copies;
 pub mod engine;
-#[cfg(test)]
-#[cfg(feature = "live")]
-pub(crate) mod fake_imap;
+#[cfg(all(feature = "live", any(test, feature = "fake-servers")))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    reason = "test servers: a broken one fails the test that started it"
+)]
+pub mod fake_imap;
+#[cfg(all(feature = "live", any(test, feature = "fake-servers")))]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test servers: a broken one fails the test that started it"
+)]
+pub mod fake_servers;
 pub mod held;
 pub mod html_mail;
 pub mod html_text;

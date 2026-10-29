@@ -657,6 +657,20 @@ impl Checker<'_> {
             );
             return Ex::error();
         };
+        if !crate::origin::is_capability(name) {
+            let known: Vec<&str> = crate::origin::CAPABILITIES
+                .iter()
+                .map(|(n, _)| *n)
+                .collect();
+            self.err(
+                "E022",
+                cap.value.span,
+                format!(
+                    "no capability `{name}` takes outside effects; the capabilities are: {}",
+                    known.join(", ")
+                ),
+            );
+        }
         let p = self.expr(&payload.value, None);
         self.st.facts.outside = true;
         Ex::host(

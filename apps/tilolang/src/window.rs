@@ -301,6 +301,13 @@ impl Window {
         self
     }
 
+    /// This window keeping its package's types with an origin in step with `origin`'s service.
+    #[must_use]
+    pub fn with_origin(mut self, origin: tilolang_tilo::origin::SharedOrigin) -> Self {
+        self.instance.add_origin(origin);
+        self
+    }
+
     /// This window sending the outside effects it settles to `sink` rather than the development
     /// log.
     #[must_use]

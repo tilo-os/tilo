@@ -22085,16 +22085,19 @@ name = "tilolang-app"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "mail",
  "runtime-dylib",
  "serde_json",
  "thiserror 2.0.21",
  "tilo-app",
  "tilo-automerge",
+ "tilo-content",
  "tilo-files",
  "tilo-render-protocol",
  "tilo-ui-host",
  "tilolang",
  "tilolang-tilo",
+ "tokio",
  "tracing",
  "workspace-hack",
 ]

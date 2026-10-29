@@ -408,6 +408,7 @@ fn build_meta(
                         fields: info.fields.iter().map(|f| field_meta(f, app)).collect(),
                         search: info.search.clone(),
                         holder: true,
+                        origin: None,
                     });
                 } else if let Some((_, ty)) = env.aliases.iter().find(|(k, _)| *k == key) {
                     meta.aliases.push(crate::meta::AliasMeta {
@@ -477,6 +478,7 @@ fn build_meta(
                     fields,
                     search: info.search.clone(),
                     holder: false,
+                    origin: info.origin.clone(),
                 });
             }
             Item::Action(a) => {
@@ -741,6 +743,7 @@ pub fn compile_program(
         fields: Vec::new(),
         search: crate::meta::SearchMeta::default(),
         holder: false,
+        origin: None,
     });
     let env = agent_env(&app, &host, visible);
     let mut diags = Vec::new();

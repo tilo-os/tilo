@@ -87,6 +87,9 @@ tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
 tilo-net = { path = "../../crates/platform/tilo-net", optional = true, features = ["blocking"] }
 futures-util = { workspace = true, optional = true }
+# Throwaway certificates for the test servers other crates' tests reach through
+# `fake-servers`.
+rcgen = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 
 [features]
@@ -109,6 +112,10 @@ default = ["live"]
 # Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
 # stack and a configured account at runtime.
 live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
+
+# The test IMAP and SMTP servers (`fake_servers`), for other crates' tests of
+# what talks to mail servers through this engine. Never in a release.
+fake-servers = ["live", "dep:rcgen"]
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

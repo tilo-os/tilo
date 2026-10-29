@@ -21,7 +21,7 @@ fn apps() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
         ("so.tilo.lang.counter", vec![app!("counter")]),
         ("so.tilo.lang.todo", vec![app!("todo")]),
         ("so.tilo.lang.notes", vec![app!("notes")]),
-        ("so.tilo.lang.letters", vec![app!("letters")]),
+        ("so.tilo.lang.mail", vec![app!("mail")]),
         ("so.tilo.lang.chat", vec![app!("chat")]),
         (
             "so.tilo.lang.today",

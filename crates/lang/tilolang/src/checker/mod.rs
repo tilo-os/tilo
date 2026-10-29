@@ -921,6 +921,26 @@ impl Checker<'_> {
             let _ = self.expr(value, None);
             return;
         };
+        if let Some(kind) = info.origin.as_deref().and_then(crate::origin::kind)
+            && let Some(of) = kind.field(&field.name)
+            && !of.people
+            && !self.st.scenario
+        {
+            self.err(
+                "E113",
+                field.span,
+                format!(
+                    "`{}` comes from the service (`{}`): only it writes it, so a refresh never undoes what someone did; people change {}",
+                    field.name,
+                    kind.name,
+                    {
+                        let theirs: Vec<&str> =
+                            kind.fields.iter().filter(|f| f.people).map(|f| f.name).collect();
+                        if theirs.is_empty() { "none of its fields".to_owned() } else { theirs.join(", ") }
+                    }
+                ),
+            );
+        }
         if self.st.ctx != Ctx::Action {
             let who = self.st.ctx.word();
             self.err("E040", span, format!("{who} cannot change `{}.{}`; only an action mutates fields. Write an action and apply it", key.name, f.name));

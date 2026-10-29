@@ -230,6 +230,7 @@ pub fn host_meta() -> PackageMeta {
             ],
             search: crate::meta::SearchMeta::default(),
             holder: false,
+            origin: None,
         })
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
@@ -251,6 +252,7 @@ pub fn host_meta() -> PackageMeta {
                     .collect(),
                 search: crate::meta::SearchMeta::default(),
                 holder: false,
+                origin: None,
             }
         }))
         .collect(),
