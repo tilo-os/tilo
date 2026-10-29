@@ -867,7 +867,7 @@ pub(crate) fn match_reason_in(
             .contains(weight)
         })
         .map(|(text, weight)| (text.trim(), *weight))
-        // An address ("quick-settings.volume.set") is no reason a person reads.
+        // An address ("quick-settings.open") is no reason a person reads.
         .filter(|(text, _)| !text.contains(['.', ':', '/']))
         .find(|(text, weight)| {
             text.chars().count() <= MATCH_REASON_MAX_SCALARS && shows(text, *weight)

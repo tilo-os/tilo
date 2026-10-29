@@ -165,6 +165,7 @@ pub mod portal_dialog;
 pub mod present;
 pub mod projection;
 mod projection_overlay;
+pub(crate) mod quick_settings_dispatch;
 pub mod quick_settings_refresh;
 pub mod realtime_session;
 pub mod recent_files;

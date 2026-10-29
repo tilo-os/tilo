@@ -400,6 +400,7 @@ impl ShellOverlayHost {
         let mut readings = chrome.borrow().quick_settings.clone();
         readings.arrangement = self.quick_settings.arrangement.clone();
         readings.notifications = self.quick_settings_notifications(&chrome);
+        readings.available = self.qs_action_slot.availability();
         if self.quick_settings.fed.as_ref() == Some(&readings) {
             return;
         }
@@ -827,8 +828,8 @@ impl ShellOverlayHost {
 
     fn validated_qs_actions(
         &self,
-    ) -> crate::shell::search::providers::actions::ValidatedQsActions<'_> {
-        crate::shell::search::providers::actions::ValidatedQsActions::new(self.qs_actions.as_ref())
+    ) -> crate::shell::quick_settings_dispatch::ValidatedQsActions<'_> {
+        crate::shell::quick_settings_dispatch::ValidatedQsActions::new(self.qs_actions.as_ref())
     }
 }
 

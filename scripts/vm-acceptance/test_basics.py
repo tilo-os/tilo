@@ -32,8 +32,8 @@ class ListingRows(unittest.TestCase):
         self.assertTrue(basics._shows_only(page))
         self.assertTrue(basics._shows_only({"operation_kind": "Effect", "contract": {"kind": "read"}}))
         # A radio switch stays a toggle, contract or not.
-        self.assertFalse(basics._shows_only({"provider": "actions", "operation_kind": "Effect",
-                                             "id": "quick-settings.bluetooth.set-enabled"}))
+        self.assertFalse(basics._shows_only({"provider": "device-local", "operation_kind": "Effect",
+                                             "id": "18446744073709551614\x1fpanel\x1fset-bluetooth"}))
         self.assertFalse(basics._shows_only({"provider": "settings-pages", "operation_kind": "Effect",
                                              "id": "setting:bluetooth.enabled"}))
 

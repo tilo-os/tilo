@@ -134,7 +134,7 @@
 "crates/session/shell/src/shell/projection_overlay.rs" = 3500
 "crates/session/shell/src/shell/remote_audio.rs" = 3500
 "crates/session/shell/src/shell/search/mod.rs" = 4000
-"crates/session/shell/src/shell/search/providers/actions.rs" = 9000
+"crates/session/shell/src/shell/search/providers/actions.rs" = 8000
 "crates/session/shell/src/shell/search/providers/files.rs" = 3500
 "crates/session/shell/src/shell/search/providers/live_app_actions.rs" = 6500
 "crates/session/shell/src/shell/state.rs" = 6500

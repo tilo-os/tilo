@@ -23,22 +23,11 @@ mod device_pairing;
 mod enrollment_tokens;
 mod identity_admin;
 mod native_identity;
-mod quick_settings;
 mod shortcuts;
 mod strips;
 mod tabs;
 mod windows;
 mod workspaces;
-pub(crate) use quick_settings::QS_MUTE_ID;
-use quick_settings::{
-    DISPLAY_BRIGHTNESS_STEP, LEVEL_STEPS, QS_DISPLAY_BRIGHTNESS_PREFIX, QS_MUTE_KEYWORDS,
-    QS_TOGGLES, QUICK_SETTINGS_ACTIONS, apply_quick_settings_effect, display_brightness_connector,
-    level_badge, quick_settings_params, radio_is_on, stepped, validated_percent,
-};
-pub(crate) use quick_settings::{
-    QS_AIRPLANE_ID, QS_BLUETOOTH_ID, QS_BRIGHTNESS_ID, QS_POWER_ID, QS_VOLUME_ID, QS_VPN_ID,
-    QS_WIFI_ID, SharedQsActions, SharedQsDispatcher, ValidatedQsActions,
-};
 use shortcuts::ACTION_SHORTCUTS;
 pub(crate) use shortcuts::action_shortcut;
 
@@ -502,10 +491,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | BLUETOOTH_PAIRING_DECLINE_ID => {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
-        }
-        QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID
-        | QS_BLUETOOTH_ID | QS_AIRPLANE_ID => {
-            contract = quick_settings_contract();
         }
         DISPLAY_EXTEND_ID
         | DISPLAY_MIRROR_ID
@@ -3191,27 +3176,7 @@ fn display_layout_contract() -> tilo_actions::ActionContract {
     }
 }
 
-fn quick_settings_contract() -> tilo_actions::ActionContract {
-    tilo_actions::ActionContract {
-        kind: tilo_actions::ActionKind::Undoable,
-        retry: tilo_actions::RetryPolicy::Idempotent,
-        ..tilo_actions::ActionContract::default()
-    }
-}
-
-fn quick_settings_contract_for(available: bool) -> tilo_actions::ActionContract {
-    let mut contract = quick_settings_contract();
-    if !available {
-        contract.availability = tilo_actions::Availability::Unavailable {
-            code: "quick_settings_unavailable".into(),
-            reason: t("search-action-quick-settings-unavailable"),
-        };
-    }
-    contract
-}
-
 pub struct ActionsProvider {
-    qs_actions: SharedQsActions,
     /// The rows' searchable text, indexed while it stays the same.
     ranker: ListIndex,
     search_preferences: Option<crate::shell::search::SearchPreferencesHandle>,
@@ -3271,10 +3236,9 @@ struct CatalogueState {
     invite_offered: bool,
     collab: bool,
     active_workspace: Option<crate::shell::state::WorkspaceId>,
-    quick_settings: QuickSettingsKey,
-    /// What the rows that show a setting's state say: Wi-Fi, Bluetooth,
-    /// airplane mode, Do Not Disturb, axis navigation.
-    states: [bool; 5],
+    /// What the rows that show a setting's state say: Do Not Disturb, axis
+    /// navigation.
+    states: [bool; 2],
     /// The settings document the rows read: the appearance mode and high
     /// contrast their badges show, and the shortcuts and keyboard layout
     /// their keycaps spell.
@@ -3283,25 +3247,11 @@ struct CatalogueState {
     search_sources: Vec<(String, String, bool)>,
 }
 
-/// The Quick Settings backend the rows call, what it can do, and whether a
-/// radio change is pending. The backend is named by address: the rows hold
-/// it, so it cannot be freed and another take its place while they live.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct QuickSettingsKey {
-    backend: usize,
-    availability: tilo_quick_settings::actions::QsActionAvailability,
-    radio_pending: bool,
-}
-
 impl ActionsProvider {
     pub fn new() -> Self {
         Self {
             search_preferences: None,
             provider_catalog: None,
-            qs_actions: Rc::new(SharedQsDispatcher::new(
-                Rc::new(tilo_quick_settings::actions::UnavailableQsActions),
-                tilo_quick_settings::actions::QsActionAvailability::default(),
-            )),
             ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
@@ -3312,23 +3262,14 @@ impl ActionsProvider {
     pub(crate) fn with_all_sources(
         search_preferences: crate::shell::search::SearchPreferencesHandle,
         provider_catalog: crate::shell::search::SearchProviderCatalogHandle,
-        qs_actions: SharedQsActions,
     ) -> Self {
         Self {
             search_preferences: Some(search_preferences),
             provider_catalog: Some(provider_catalog),
-            qs_actions,
             ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
-        }
-    }
-
-    pub(crate) fn with_shared_qs_actions(qs_actions: SharedQsActions) -> Self {
-        Self {
-            qs_actions,
-            ..Self::new()
         }
     }
 
@@ -3397,73 +3338,22 @@ impl SearchProvider for ActionsProvider {
     fn toggles_in_place(&self, result: &SearchResult) -> bool {
         toggles_in_place(&result.id)
     }
-    fn adjustable(&self, result: &SearchResult) -> bool {
-        matches!(result.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID)
-            || display_brightness_connector(&result.id).is_some()
-    }
-    /// ←/→ on Volume or Brightness: the same step "louder" or "dimmer" takes.
-    /// On one display's brightness row, that display moves by the same step.
-    fn adjust(
-        &self,
-        result: &SearchResult,
-        delta: i8,
-        doc: &mut ui::widget::Edits<'_>,
-        root: &automerge::ObjId,
-        chrome: &Chrome,
-    ) -> Result<(), ActionError> {
-        if let Some(connector) = display_brightness_connector(&result.id) {
-            let level = chrome
-                .borrow()
-                .quick_settings
-                .displays
-                .iter()
-                .find(|display| display.connector == connector)
-                .map(|display| (display.level * 100.0).round())
-                .ok_or_else(|| ActionError::Refused(format!("{connector} has no brightness")))?;
-            let step = if delta > 0 {
-                DISPLAY_BRIGHTNESS_STEP
-            } else {
-                -DISPLAY_BRIGHTNESS_STEP
-            };
-            let mut arguments = serde_json::Map::new();
-            arguments.insert(
-                "percent".into(),
-                serde_json::json!(f64::from((level + step).clamp(0.0, 100.0))),
-            );
-            let args = ActionArgs::bind_json(&result.params, &arguments)
-                .map_err(ActionError::Arguments)?;
-            return (result.on_open)(doc, root, chrome, &args);
-        }
-        let step = LEVEL_STEPS
-            .iter()
-            .find(|step| step.level == result.id && (step.delta > 0.0) == (delta > 0))
-            .ok_or_else(|| ActionError::Refused(format!("{} has no level to step", result.id)))?;
-        let args = stepped(&result.params, chrome, step.level, step.delta)?;
-        (result.on_open)(doc, root, chrome, &args)
-    }
     fn match_reason(&self, result: &SearchResult, needle: &str) -> Option<String> {
         let catalogue = self.catalogue.borrow().clone()?;
         let at = *catalogue.by_id.get(&result.id)?;
         crate::shell::search::match_reason_in(needle, result, catalogue.fields.get(at)?)
     }
-    /// A radio's set-enabled form is for agents: a person flips the switch
-    /// row beside it, which already shows whether it is on. And an action
-    /// with nothing to act on (closing a sheet that is not open, declining a
-    /// pairing nobody asked for, stopping a follow that is not happening)
-    /// only takes a row from one that would do something: it is offered
-    /// only when the query names it exactly, where running it says why not.
+    /// An action with nothing to act on (closing a sheet that is not open,
+    /// declining a pairing nobody asked for, stopping a follow that is not
+    /// happening) only takes a row from one that would do something: it is
+    /// offered only when the query names it exactly, where running it says
+    /// why not.
     fn hidden_from_people(
         &self,
         result: &SearchResult,
         needle: &str,
         chrome: &ChromeState,
     ) -> bool {
-        if QS_TOGGLES
-            .iter()
-            .any(|toggle| toggle.set_enabled == result.id)
-        {
-            return true;
-        }
         let display_waiting = self
             .catalogue
             .borrow()
@@ -3594,158 +3484,6 @@ impl SearchProvider for ActionsProvider {
 }
 
 impl ActionsProvider {
-    /// With more than one display that can be dimmed, a brightness row for
-    /// each, named after its display, showing its level: ←/→ steps it in
-    /// place, Enter asks for a percentage. One display keeps the single
-    /// Brightness row.
-    fn push_display_brightness_rows(
-        &self,
-        out: &mut Vec<SearchResult>,
-        candidates: &mut ActionCandidates,
-        state: &ChromeState,
-    ) {
-        let displays = &state.quick_settings.displays;
-        if displays.len() < 2 || !self.qs_actions.action_available(QS_BRIGHTNESS_ID) {
-            return;
-        }
-        let Some(base) = out.iter().find(|row| row.id == QS_BRIGHTNESS_ID).cloned() else {
-            return;
-        };
-        let subtitle = t("search-brightness-display-subtitle");
-        for display in displays {
-            let id = format!("{QS_DISPLAY_BRIGHTNESS_PREFIX}{}", display.connector);
-            let run = Rc::clone(&base.on_open);
-            let params = base.params.clone();
-            let connector = display.connector.clone();
-            let on_open = Rc::new(
-                move |doc: &mut ui::widget::Edits<'_>,
-                      root: &automerge::ObjId,
-                      chrome: &Chrome,
-                      args: &ActionArgs| {
-                    let mut arguments = serde_json::Map::new();
-                    if let Some(percent) = args.number("percent") {
-                        arguments.insert("percent".into(), serde_json::json!(percent));
-                    }
-                    arguments.insert("display".into(), serde_json::json!(connector));
-                    let args = ActionArgs::bind_json(&params, &arguments)
-                        .map_err(ActionError::Arguments)?;
-                    run(doc, root, chrome, &args)
-                },
-            ) as Rc<crate::shell::search::OpenFn>;
-            let title = t_args(
-                "search-brightness-display",
-                &[("display", display.name.as_str().into())],
-            );
-            candidates.record(
-                &title.to_lowercase(),
-                &subtitle.to_lowercase(),
-                &id,
-                Vec::new(),
-            );
-            out.push(SearchResult {
-                id,
-                title,
-                subtitle: Some(subtitle.clone()),
-                badge: Some(t_args(
-                    "search-level-percent",
-                    &[("percent", f64::from((display.level * 100.0).round()).into())],
-                )),
-                params: base
-                    .params
-                    .iter()
-                    .filter(|param| param.name != "display")
-                    .cloned()
-                    .collect(),
-                on_open,
-                on_invoke: None,
-                on_begin_invoke: None,
-                ..base.clone()
-            });
-        }
-    }
-
-    /// Louder, quieter, brighter, dimmer and mute, each derived from the
-    /// level's set row already in `out`, with the live level as its pill.
-    fn push_level_steps(
-        &self,
-        out: &mut Vec<SearchResult>,
-        candidates: &mut ActionCandidates,
-        state: &ChromeState,
-    ) {
-        for step in LEVEL_STEPS {
-            let Some(base) = out.iter().find(|row| row.id == step.level).cloned() else {
-                continue;
-            };
-            if !self.qs_actions.action_available(step.level) {
-                continue;
-            }
-            let (level, delta, params) = (step.level, step.delta, base.params.clone());
-            let run = Rc::clone(&base.on_open);
-            let on_open = Rc::new(
-                move |doc: &mut ui::widget::Edits<'_>,
-                      root: &automerge::ObjId,
-                      chrome: &Chrome,
-                      _args: &ActionArgs| {
-                    run(doc, root, chrome, &stepped(&params, chrome, level, delta)?)
-                },
-            ) as Rc<crate::shell::search::OpenFn>;
-            let title = t(step.title);
-            candidates.record(
-                &title.to_lowercase(),
-                "",
-                step.id,
-                declared_keywords(step.keywords),
-            );
-            out.push(SearchResult {
-                id: step.id.to_string(),
-                title,
-                subtitle: None,
-                badge: Some(level_badge(state, level)),
-                params: Vec::new(),
-                on_open,
-                on_invoke: None,
-                on_begin_invoke: None,
-                ..base
-            });
-        }
-        if let Some(base) = out.iter().find(|row| row.id == QS_VOLUME_ID).cloned()
-            && self.qs_actions.action_available(QS_VOLUME_ID)
-        {
-            let actions = Rc::clone(&self.qs_actions);
-            let title = t("search-step-volume-mute");
-            candidates.record(
-                &title.to_lowercase(),
-                "",
-                QS_MUTE_ID,
-                declared_keywords(QS_MUTE_KEYWORDS),
-            );
-            out.push(SearchResult {
-                id: QS_MUTE_ID.to_string(),
-                title,
-                subtitle: None,
-                badge: None,
-                params: Vec::new(),
-                on_open: Rc::new(
-                    move |_doc: &mut ui::widget::Edits<'_>,
-                          _root: &automerge::ObjId,
-                          chrome: &Chrome,
-                          _args: &ActionArgs| {
-                        if !current_shell_action_authorized(&chrome.borrow(), QS_MUTE_ID) {
-                            return Err(ActionError::Refused(format!(
-                                "current workspace authority no longer permits {QS_MUTE_ID}"
-                            )));
-                        }
-                        let backend = actions.actions.borrow().clone();
-                        backend.toggle_mute().map_err(ActionError::Refused)
-                    },
-                ),
-                on_invoke: None,
-                on_begin_invoke: None,
-                ..base
-            });
-        }
-    }
-
     /// The catalogue for the current state, built only if that is not the
     /// state the retained one was built from.
     fn catalogue(&self, ctx: &SearchContext<'_>) -> Rc<Catalogue> {
@@ -3781,14 +3519,7 @@ impl ActionsProvider {
                     .is_some_and(crate::shell::invite_policy::InviteRoute::issues_here),
             collab: ctx.chrome.collab_available(),
             active_workspace,
-            quick_settings: self.qs_actions.catalogue_key(),
-            states: [
-                ctx.chrome.quick_settings.wifi,
-                ctx.chrome.quick_settings.bluetooth,
-                ctx.chrome.quick_settings.radios.airplane_mode,
-                ctx.chrome.dnd(),
-                ctx.chrome.axis_navigation_enabled(),
-            ],
+            states: [ctx.chrome.dnd(), ctx.chrome.axis_navigation_enabled()],
             settings: settings_store::stamp(),
             search_sources: self.search_sources(),
         }
@@ -4547,228 +4278,6 @@ impl ActionsProvider {
                 resource: None,
             });
         }
-        for &(id, label_key, subtitle_key, keywords_key) in QUICK_SETTINGS_ACTIONS {
-            let label = t(label_key);
-            let subtitle = t(subtitle_key);
-            candidates.record(
-                &label.to_lowercase(),
-                &subtitle.to_lowercase(),
-                id,
-                declared_keywords(keywords_key),
-            );
-            let score = 0;
-            let actions = self.qs_actions.actions.borrow().clone();
-            let available = self.qs_actions.action_available(id);
-            let mut contract = quick_settings_contract_for(available);
-            if available
-                && matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID)
-                && self.qs_actions.radio_job.borrow().is_some()
-            {
-                contract.availability = tilo_actions::Availability::Unavailable {
-                    code: "quick_settings_radio_pending".into(),
-                    reason: t("display-confirm-applying"),
-                };
-            }
-            let on_begin_invoke = matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID).then(|| {
-                let slot = Rc::clone(&self.qs_actions);
-                Rc::new(
-                    move |_: &mut ui::widget::Edits<'_>,
-                          _: &automerge::ObjId,
-                          chrome: &Chrome,
-                          args: &ActionArgs| {
-                        if !current_shell_action_authorized(&chrome.borrow(), id) {
-                            return Err(ActionError::Refused(format!(
-                                "current workspace authority no longer permits {id}"
-                            )));
-                        }
-                        let enabled = args.boolean("enabled").unwrap_or(false);
-                        let change = if id == QS_WIFI_ID {
-                            os_actions::RadioChange::Wifi(enabled)
-                        } else {
-                            os_actions::RadioChange::Airplane(enabled)
-                        };
-                        match slot
-                            .start_radio(change, chrome)
-                            .map_err(ActionError::Refused)?
-                        {
-                            None => Ok(crate::shell::search::InvocationDisposition::Accepted(
-                                crate::shell::search::ActionReceipt::completed(),
-                            )),
-                            Some(job) => {
-                                let chrome = chrome.clone();
-                                let pending: crate::shell::search::PendingInvocation =
-                                    Rc::new(move || {
-                                        let Some(result) = job.result() else {
-                                            return Ok(None);
-                                        };
-                                        crate::shell::chrome_state::ChromeState::apply_radio_ticket(
-                                            &chrome, &job,
-                                        );
-                                        result.map_err(ActionError::Refused)?;
-                                        Ok(Some(crate::shell::search::ActionReceipt::completed()))
-                                    });
-                                Ok(crate::shell::search::InvocationDisposition::Pending(
-                                    pending,
-                                ))
-                            }
-                        }
-                    },
-                ) as Rc<crate::shell::search::BeginInvokeFn>
-            });
-            out.push(SearchResult {
-                facts: Vec::new(),
-                shortcut: None,
-                kind: ResourceKind::Action,
-                operation_kind: tilo_actions::OperationKind::Effect,
-                badge: None,
-                provider_id: self.id().to_string(),
-                id: id.to_string(),
-                title: label,
-                subtitle: Some(subtitle),
-                score,
-                params: quick_settings_params(id),
-                contract: Some(contract),
-                on_open: Rc::new(move |_doc, _root, chrome, args| {
-                    if !current_shell_action_authorized(&chrome.borrow(), id) {
-                        return Err(ActionError::Refused(format!(
-                            "current workspace authority no longer permits {id}"
-                        )));
-                    }
-                    if matches!(id, QS_WIFI_ID | QS_AIRPLANE_ID) {
-                        return Err(ActionError::Refused(
-                            "radio changes require lifecycle dispatch".into(),
-                        ));
-                    }
-                    apply_quick_settings_effect(id, actions.as_ref(), args)?;
-                    let mut state = chrome.borrow_mut();
-                    match id {
-                        QS_BRIGHTNESS_ID => {
-                            let level = validated_percent(args) / 100.0;
-                            match args.text("display") {
-                                Some(display) => {
-                                    if let Some(entry) = state
-                                        .quick_settings
-                                        .displays
-                                        .iter_mut()
-                                        .find(|entry| entry.connector == display)
-                                    {
-                                        entry.level = level;
-                                    }
-                                }
-                                None => state.quick_settings.brightness = level,
-                            }
-                        }
-                        QS_VOLUME_ID => {
-                            state
-                                .quick_settings
-                                .set_volume_level(validated_percent(args) / 100.0);
-                        }
-                        QS_WIFI_ID => {
-                            state.quick_settings.wifi = args.boolean("enabled") == Some(true);
-                        }
-                        QS_BLUETOOTH_ID => {
-                            state.quick_settings.bluetooth = args.boolean("enabled") == Some(true);
-                        }
-                        QS_AIRPLANE_ID => {
-                            state.quick_settings.radios.airplane_mode =
-                                args.boolean("enabled") == Some(true);
-                        }
-                        QS_POWER_ID => {
-                            state.quick_settings.power_profile = match args.text("profile") {
-                                Some("saver") => tilo_quick_settings::PowerProfile::Saver,
-                                Some("performance") => {
-                                    tilo_quick_settings::PowerProfile::Performance
-                                }
-                                _ => tilo_quick_settings::PowerProfile::Balanced,
-                            };
-                        }
-                        QS_VPN_ID => {
-                            if let Some(connection) =
-                                state.quick_settings.vpns.iter_mut().find(|connection| {
-                                    Some(connection.name.as_str()) == args.text("name")
-                                })
-                            {
-                                connection.active = args.boolean("enabled") == Some(true);
-                            }
-                        }
-                        _ => {}
-                    }
-                    state.bump();
-                    Ok(())
-                }),
-                on_invoke: None,
-                on_begin_invoke,
-                resource: None,
-            });
-        }
-        // One-step switches for the radios: "wifi" finds the Wi-Fi switch, not a
-        // form asking for `enabled`, and the row says what it is now. They run
-        // the same set-enabled action with the opposite of the live state.
-        for toggle in QS_TOGGLES {
-            let (set_enabled_id, toggle_id) = (toggle.set_enabled, toggle.id);
-            let Some(base) = out.iter().find(|row| row.id == set_enabled_id).cloned() else {
-                continue;
-            };
-            if !self.qs_actions.action_available(set_enabled_id) {
-                continue;
-            }
-            let on = radio_is_on(ctx.chrome, set_enabled_id);
-            // A switch is its noun; the pill says whether it is on.
-            let title = t(toggle.name);
-            let subtitle = t(toggle.subtitle);
-            let params = base.params.clone();
-            let opposite = move |chrome: &Chrome| -> Result<ActionArgs, ActionError> {
-                let enabled = !radio_is_on(&chrome.borrow(), set_enabled_id);
-                let mut arguments = serde_json::Map::new();
-                arguments.insert("enabled".into(), serde_json::Value::Bool(enabled));
-                ActionArgs::bind_json(&params, &arguments).map_err(ActionError::Arguments)
-            };
-            let on_open = {
-                let run = Rc::clone(&base.on_open);
-                let opposite = opposite.clone();
-                Rc::new(
-                    move |doc: &mut ui::widget::Edits<'_>,
-                          root: &automerge::ObjId,
-                          chrome: &Chrome,
-                          _args: &ActionArgs| {
-                        run(doc, root, chrome, &opposite(chrome)?)
-                    },
-                ) as Rc<crate::shell::search::OpenFn>
-            };
-            let on_begin_invoke = base.on_begin_invoke.clone().map(|begin| {
-                Rc::new(
-                    move |doc: &mut ui::widget::Edits<'_>,
-                          root: &automerge::ObjId,
-                          chrome: &Chrome,
-                          _args: &ActionArgs| {
-                        begin(doc, root, chrome, &opposite(chrome)?)
-                    },
-                ) as Rc<crate::shell::search::BeginInvokeFn>
-            });
-            candidates.record(
-                &title.to_lowercase(),
-                &subtitle.to_lowercase(),
-                toggle_id,
-                declared_keywords(toggle.keywords),
-            );
-            out.push(SearchResult {
-                id: toggle_id.to_string(),
-                title,
-                subtitle: Some(subtitle),
-                badge: Some(on_off_badge(on)),
-                params: Vec::new(),
-                on_open,
-                on_begin_invoke,
-                ..base
-            });
-        }
-        for row in &mut out {
-            if matches!(row.id.as_str(), QS_VOLUME_ID | QS_BRIGHTNESS_ID) {
-                row.badge = Some(level_badge(ctx.chrome, &row.id));
-            }
-        }
-        self.push_level_steps(&mut out, &mut candidates, ctx.chrome);
-        self.push_display_brightness_rows(&mut out, &mut candidates, ctx.chrome);
         let actor = key.actor.clone();
         let profile_resource = {
             let tree = ctx.chrome.tree();
@@ -5034,10 +4543,8 @@ fn declared_keywords(key: &str) -> Vec<String> {
 pub(crate) fn action_icon(id: &str) -> Option<ui::icons::Icon> {
     use ui::icons::Icon;
     const FAMILIES: &[(&str, Icon)] = &[
-        ("quick-settings.wifi", Icon::Wifi),
         ("quick-settings.network", Icon::Wifi),
         ("quick-settings.bluetooth", Icon::Bluetooth),
-        ("quick-settings.airplane-mode", Icon::Plane),
         ("quick-settings.devices", Icon::MonitorSmartphone),
         ("quick-settings.clipboard", Icon::ClipboardPaste),
         ("quick-settings", Icon::Settings2),
@@ -5105,9 +4612,7 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
             | "appearance.theme.light"
             | "navigation.axis.enable"
             | "navigation.axis.disable"
-    ) || QS_TOGGLES.iter().any(|toggle| toggle.id == id)
-        || LEVEL_STEPS.iter().any(|step| step.id == id)
-        || id == QS_MUTE_ID
+    )
 }
 
 /// `ON` or `OFF`, as the search-source switches say it.
@@ -6686,67 +6191,6 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_rebuilds_on_quick_settings_backend_and_availability() {
-        // The Quick Settings backend, what it can do, and a swap of either.
-        let first = Rc::new(RecordingQsActions::default());
-        let slot = Rc::new(SharedQsDispatcher::new(
-            first.clone(),
-            tilo_quick_settings::actions::QsActionAvailability::all(),
-        ));
-        let provider = ActionsProvider::with_shared_qs_actions(Rc::clone(&slot));
-        let chrome = chrome_with_room();
-        let set_volume = |provider: &ActionsProvider| {
-            let rows = rows_for(provider, &chrome, "");
-            let volume = row(&rows, QS_VOLUME_ID).expect("volume action");
-            let args = ActionArgs::bind(
-                &volume.params,
-                [(
-                    "percent".into(),
-                    crate::shell::search::action_api::ArgValue::Number(40.0),
-                )],
-            )
-            .expect("volume arguments");
-            let mut doc = AutoCommit::new();
-            (volume.on_open)(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-                &args,
-            )
-        };
-        set_volume(&provider).expect("the first backend sets the volume");
-        assert_eq!(*first.calls.borrow(), ["volume:40"]);
-        let second = Rc::new(RecordingQsActions::default());
-        slot.replace(
-            second.clone(),
-            tilo_quick_settings::actions::QsActionAvailability::all(),
-        );
-        set_volume(&provider).expect("the second backend sets the volume");
-        assert_eq!(
-            *first.calls.borrow(),
-            ["volume:40"],
-            "a replaced backend is not called"
-        );
-        assert_eq!(*second.calls.borrow(), ["volume:40"]);
-        let volume_available = |provider: &ActionsProvider| {
-            row(&rows_for(provider, &chrome, ""), QS_VOLUME_ID)
-                .and_then(|row| row.contract.as_ref())
-                .expect("volume contract")
-                .availability
-                .is_available()
-        };
-        assert!(volume_available(&provider));
-        slot.replace(
-            second,
-            tilo_quick_settings::actions::QsActionAvailability {
-                volume: false,
-                ..tilo_quick_settings::actions::QsActionAvailability::all()
-            },
-        );
-        assert!(!volume_available(&provider), "the volume control went away");
-    }
-
-    #[test]
     fn workspace_activity_exact_local_actions_are_exported() {
         let provider = ActionsProvider::new();
         let chrome = chrome_with_room();
@@ -7870,39 +7314,6 @@ mod tests {
 
         // Phase `contracts_match_current_availability_risk_and_document_mutation`.
         {
-            let chrome = chrome_with_room();
-            let state = chrome.borrow();
-            let doc = AutoCommit::new();
-            let results = ActionsProvider::new().query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "quick-settings.",
-                wanted: &[ResourceKind::Action],
-                chrome: &state,
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            for id in [
-                QS_BRIGHTNESS_ID,
-                QS_VOLUME_ID,
-                QS_WIFI_ID,
-                QS_POWER_ID,
-                QS_VPN_ID,
-                QS_BLUETOOTH_ID,
-                QS_AIRPLANE_ID,
-            ] {
-                let result = results
-                    .iter()
-                    .find(|result| result.id == id)
-                    .unwrap_or_else(|| panic!("missing Quick Settings effect {id}"));
-                assert!(matches!(
-                    result
-                        .contract
-                        .as_ref()
-                        .map(|contract| &contract.availability),
-                    Some(tilo_actions::Availability::Unavailable { .. })
-                ));
-            }
             for id in ["identity.connect", "identity.select"] {
                 let contract = shell_action_contract(id);
                 assert_eq!(contract.risk, tilo_actions::RiskLevel::Privileged);
@@ -7920,12 +7331,6 @@ mod tests {
                         .any(|parameter| parameter.name == "confirm")
                 );
             }
-            // A setting applied on the device itself is undone by undoing
-            // the change, never by the workspace's own undo.
-            assert_eq!(
-                quick_settings_contract().kind,
-                tilo_actions::ActionKind::Undoable
-            );
             assert_eq!(
                 shell_action_kind("agent.invite"),
                 tilo_actions::OperationKind::Document
@@ -7933,477 +7338,6 @@ mod tests {
             assert_eq!(
                 shell_action_kind("peer.invite.named"),
                 tilo_actions::OperationKind::Document
-            );
-        }
-
-        // Phase `quick_settings_contracts_follow_each_production_mechanism`.
-        {
-            let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> =
-                Rc::new(RecordingQsActions::default());
-            let availability = tilo_quick_settings::actions::QsActionAvailability {
-                brightness: false,
-                volume: true,
-                wifi: false,
-                power_profile: true,
-                vpn: false,
-                bluetooth: true,
-                airplane_mode: false,
-            };
-            let provider = ActionsProvider::with_shared_qs_actions(Rc::new(
-                SharedQsDispatcher::new(dispatcher, availability),
-            ));
-            let chrome = chrome_with_room();
-            let doc = AutoCommit::new();
-            let results = provider.query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "quick-settings.",
-                wanted: &[ResourceKind::Action],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            for (id, available) in [
-                (QS_BRIGHTNESS_ID, false),
-                (QS_VOLUME_ID, true),
-                (QS_WIFI_ID, false),
-                (QS_POWER_ID, true),
-                (QS_VPN_ID, false),
-                (QS_BLUETOOTH_ID, true),
-                (QS_AIRPLANE_ID, false),
-            ] {
-                let contract = results
-                    .iter()
-                    .find(|result| result.id == id)
-                    .and_then(|result| result.contract.as_ref())
-                    .unwrap_or_else(|| panic!("missing contract for {id}"));
-                assert_eq!(contract.availability.is_available(), available, "{id}");
-            }
-        }
-    }
-
-    #[test]
-    fn search_has_a_brightness_row_per_display_and_brighter_moves_the_focused_one() {
-        use tilo_quick_settings::DisplayBrightness;
-        let recorder = Rc::new(RecordingQsActions::default());
-        let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> = recorder.clone();
-        let provider = ActionsProvider::with_shared_qs_actions(Rc::new(SharedQsDispatcher::new(
-            dispatcher,
-            tilo_quick_settings::actions::QsActionAvailability::all(),
-        )));
-        let chrome = chrome_with_room();
-        {
-            let mut state = chrome.borrow_mut();
-            state.quick_settings.displays = vec![
-                DisplayBrightness {
-                    connector: "eDP-1".into(),
-                    name: "Built-in display".into(),
-                    level: 0.5,
-                },
-                DisplayBrightness {
-                    connector: "DP-1".into(),
-                    name: "Dell U2723".into(),
-                    level: 0.3,
-                },
-            ];
-            state.quick_settings.focused_display = Some("DP-1".into());
-        }
-        let mut doc = AutoCommit::new();
-        let results = provider.query(SearchContext {
-            query_scope: None,
-            include_programmatic: false,
-            needle: "quick-settings.",
-            wanted: &[ResourceKind::Action],
-            chrome: &chrome.borrow(),
-            doc: &doc,
-            doc_root: &automerge::ROOT,
-        });
-        let row = |id: &str| {
-            results
-                .iter()
-                .find(|result| result.id == id)
-                .cloned()
-                .unwrap_or_else(|| panic!("no row {id}"))
-        };
-        let panel = row("quick-settings.brightness.on.eDP-1");
-        assert_eq!(panel.title, "Brightness, Built-in display");
-        let monitor = row("quick-settings.brightness.on.DP-1");
-        assert_eq!(monitor.title, "Brightness, Dell U2723");
-        assert_eq!(monitor.badge.as_deref(), Some("30 %"));
-        assert!(provider.adjustable(&monitor), "←/→ steps it in place");
-        provider
-            .adjust(
-                &monitor,
-                1,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-            )
-            .expect("the step lands");
-        provider
-            .adjust(
-                &panel,
-                -1,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-                &chrome,
-            )
-            .expect("the step lands");
-        (row("quick-settings.brightness.up").on_open)(
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-            &chrome,
-            &ActionArgs::none(),
-        )
-        .expect("brighter runs");
-        assert_eq!(
-            recorder.calls.borrow().as_slice(),
-            [
-                "brightness:DP-1:40",
-                "brightness:eDP-1:40",
-                "brightness:DP-1:50"
-            ],
-            "each row moves its own display; brighter moves the focused one"
-        );
-    }
-
-    #[derive(Default)]
-    struct RecordingQsActions {
-        calls: std::cell::RefCell<Vec<String>>,
-        fail: std::cell::Cell<bool>,
-    }
-
-    impl tilo_quick_settings::actions::QsActions for RecordingQsActions {
-        fn set_brightness(&self, percent: f32) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("brightness:{percent}"));
-            self.result()
-        }
-
-        fn set_display_brightness(&self, connector: &str, percent: f32) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("brightness:{connector}:{percent}"));
-            self.result()
-        }
-
-        fn set_volume(&self, percent: f32) -> Result<(), String> {
-            self.calls.borrow_mut().push(format!("volume:{percent}"));
-            self.result()
-        }
-
-        fn set_wifi(&self, enabled: bool) -> Result<(), String> {
-            self.calls.borrow_mut().push(format!("wifi:{enabled}"));
-            self.result()
-        }
-
-        fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
-            self.calls.borrow_mut().push(format!("bluetooth:{enabled}"));
-            self.result()
-        }
-
-        fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
-            self.calls.borrow_mut().push(format!("airplane:{enabled}"));
-            self.result()
-        }
-
-        fn set_vpn_connection(&self, name: &str, enabled: bool) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("vpn:{name}:{enabled}"));
-            self.result()
-        }
-
-        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
-            self.calls
-                .borrow_mut()
-                .push(format!("connect-wifi:{ssid}:{password:?}"));
-            self.result()
-        }
-
-        fn set_power_profile(
-            &self,
-            profile: tilo_quick_settings::actions::PowerProfile,
-        ) -> Result<(), String> {
-            self.calls.borrow_mut().push(format!("power:{profile:?}"));
-            self.result()
-        }
-
-        fn toggle_mute(&self) -> Result<(), String> {
-            self.result()
-        }
-
-        fn set_mute(&self, _muted: bool) -> Result<(), String> {
-            self.result()
-        }
-    }
-
-    impl RecordingQsActions {
-        fn result(&self) -> Result<(), String> {
-            if self.fail.get() {
-                Err("controlled provider failure".into())
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn quick_settings_actions_share_one_typed_validated_dispatch() {
-        // Phase `typed_quick_settings_effects_use_the_injected_dispatcher_exactly`.
-        {
-            let recorder = Rc::new(RecordingQsActions::default());
-            let dispatcher: Rc<dyn tilo_quick_settings::actions::QsActions> = recorder.clone();
-            let slot = Rc::new(SharedQsDispatcher::new(
-                dispatcher,
-                tilo_quick_settings::actions::QsActionAvailability::all(),
-            ));
-            let provider = ActionsProvider::with_shared_qs_actions(slot);
-            let chrome = chrome_with_room();
-            let mut doc = AutoCommit::new();
-            let results = provider.query(SearchContext {
-                query_scope: None,
-                include_programmatic: false,
-                needle: "quick-settings.",
-                wanted: &[ResourceKind::Action],
-                chrome: &chrome.borrow(),
-                doc: &doc,
-                doc_root: &automerge::ROOT,
-            });
-            let cases = [
-                (
-                    QS_BRIGHTNESS_ID,
-                    vec![(
-                        "percent".into(),
-                        crate::shell::search::action_api::ArgValue::Number(37.5),
-                    )],
-                ),
-                (
-                    QS_VOLUME_ID,
-                    vec![(
-                        "percent".into(),
-                        crate::shell::search::action_api::ArgValue::Integer(64),
-                    )],
-                ),
-                (
-                    QS_WIFI_ID,
-                    vec![(
-                        "enabled".into(),
-                        crate::shell::search::action_api::ArgValue::Boolean(true),
-                    )],
-                ),
-                (
-                    QS_POWER_ID,
-                    vec![(
-                        "profile".into(),
-                        crate::shell::search::action_api::ArgValue::Text("saver".into()),
-                    )],
-                ),
-                (
-                    QS_VPN_ID,
-                    vec![
-                        (
-                            "name".into(),
-                            crate::shell::search::action_api::ArgValue::Text("Work".into()),
-                        ),
-                        (
-                            "enabled".into(),
-                            crate::shell::search::action_api::ArgValue::Boolean(false),
-                        ),
-                    ],
-                ),
-                (
-                    QS_BLUETOOTH_ID,
-                    vec![(
-                        "enabled".into(),
-                        crate::shell::search::action_api::ArgValue::Boolean(true),
-                    )],
-                ),
-                (
-                    QS_AIRPLANE_ID,
-                    vec![(
-                        "enabled".into(),
-                        crate::shell::search::action_api::ArgValue::Boolean(true),
-                    )],
-                ),
-            ];
-            for (id, supplied) in cases {
-                let result = results.iter().find(|result| result.id == id).expect(id);
-                let args = ActionArgs::bind(&result.params, supplied).expect("typed args bind");
-                if let Some(begin) = &result.on_begin_invoke {
-                    assert!(matches!(
-                        begin(
-                            &mut ui::widget::Edits::lend(&mut doc),
-                            &automerge::ROOT,
-                            &chrome,
-                            &args
-                        )
-                        .expect("controlled provider succeeds"),
-                        crate::shell::search::InvocationDisposition::Accepted(_)
-                    ));
-                } else {
-                    (result.on_open)(
-                        &mut ui::widget::Edits::lend(&mut doc),
-                        &automerge::ROOT,
-                        &chrome,
-                        &args,
-                    )
-                    .expect("controlled provider succeeds");
-                }
-            }
-            assert_eq!(
-                recorder.calls.borrow().as_slice(),
-                [
-                    "brightness:37.5",
-                    "volume:64",
-                    "wifi:true",
-                    "power:Saver",
-                    "vpn:Work:false",
-                    "bluetooth:true",
-                    "airplane:true",
-                ]
-            );
-            let state = chrome.borrow();
-            assert!(state.quick_settings.bluetooth);
-            assert!(state.quick_settings.radios.airplane_mode);
-        }
-
-        // Phase `invalid_quick_settings_values_never_dispatch_and_provider_failures_propagate`.
-        {
-            let recorder = Rc::new(RecordingQsActions::default());
-            let params = quick_settings_params(QS_BRIGHTNESS_ID);
-            assert!(
-                ActionArgs::bind(
-                    &params,
-                    [(
-                        "percent".into(),
-                        crate::shell::search::action_api::ArgValue::Number(101.0)
-                    )],
-                )
-                .is_err()
-            );
-            assert!(recorder.calls.borrow().is_empty());
-
-            recorder.fail.set(true);
-            let args = ActionArgs::bind(
-                &params,
-                [(
-                    "percent".into(),
-                    crate::shell::search::action_api::ArgValue::Number(50.0),
-                )],
-            )
-            .expect("valid value binds");
-            let error = apply_quick_settings_effect(QS_BRIGHTNESS_ID, recorder.as_ref(), &args)
-                .expect_err("provider failure reaches the caller");
-            assert!(
-                matches!(error, ActionError::Refused(message) if message.contains("controlled"))
-            );
-            assert_eq!(recorder.calls.borrow().as_slice(), ["brightness:50"]);
-        }
-
-        // Phase `quick_settings_ui_adapter_and_external_effect_share_typed_dispatch`.
-        {
-            use tilo_quick_settings::actions::QsActions as _;
-
-            let recorder = Rc::new(RecordingQsActions::default());
-            let ui = ValidatedQsActions::new(recorder.as_ref());
-            let external = |id, supplied| {
-                let args = ActionArgs::bind(&quick_settings_params(id), supplied)
-                    .expect("valid external value binds");
-                apply_quick_settings_effect(id, recorder.as_ref(), &args)
-                    .expect("valid external value dispatches");
-            };
-
-            ui.set_brightness(37.5).expect("valid UI value dispatches");
-            external(
-                QS_BRIGHTNESS_ID,
-                vec![(
-                    "percent".into(),
-                    crate::shell::search::action_api::ArgValue::Number(37.5),
-                )],
-            );
-            ui.set_volume(64.0).expect("valid UI value dispatches");
-            external(
-                QS_VOLUME_ID,
-                vec![(
-                    "percent".into(),
-                    crate::shell::search::action_api::ArgValue::Number(64.0),
-                )],
-            );
-            ui.set_wifi(true).expect("valid UI value dispatches");
-            external(
-                QS_WIFI_ID,
-                vec![(
-                    "enabled".into(),
-                    crate::shell::search::action_api::ArgValue::Boolean(true),
-                )],
-            );
-            ui.set_power_profile(tilo_quick_settings::actions::PowerProfile::Saver)
-                .expect("valid UI value dispatches");
-            external(
-                QS_POWER_ID,
-                vec![(
-                    "profile".into(),
-                    crate::shell::search::action_api::ArgValue::Text("saver".into()),
-                )],
-            );
-            ui.set_vpn_connection("Work", false)
-                .expect("valid UI value dispatches");
-            external(
-                QS_VPN_ID,
-                vec![
-                    (
-                        "name".into(),
-                        crate::shell::search::action_api::ArgValue::Text("Work".into()),
-                    ),
-                    (
-                        "enabled".into(),
-                        crate::shell::search::action_api::ArgValue::Boolean(false),
-                    ),
-                ],
-            );
-            ui.set_bluetooth(true).expect("valid UI value dispatches");
-            external(
-                QS_BLUETOOTH_ID,
-                vec![(
-                    "enabled".into(),
-                    crate::shell::search::action_api::ArgValue::Boolean(true),
-                )],
-            );
-            assert_eq!(
-                recorder.calls.borrow().as_slice(),
-                [
-                    "brightness:37.5",
-                    "brightness:37.5",
-                    "volume:64",
-                    "volume:64",
-                    "wifi:true",
-                    "wifi:true",
-                    "power:Saver",
-                    "power:Saver",
-                    "vpn:Work:false",
-                    "vpn:Work:false",
-                    "bluetooth:true",
-                    "bluetooth:true",
-                ],
-                "every callable UI/external pair reaches the same provider with the same validated value"
-            );
-
-            assert!(ui.set_brightness(101.0).is_err());
-            assert_eq!(
-                recorder.calls.borrow().len(),
-                12,
-                "invalid UI value never dispatches"
-            );
-            recorder.fail.set(true);
-            assert!(
-                ui.set_wifi(true).is_err(),
-                "provider failure reaches the UI adapter"
             );
         }
     }
@@ -8523,208 +7457,6 @@ mod tests {
             tilo_action_policy::Answer::Allow
         );
         drop(tree);
-    }
-
-    fn radio_catalog(
-        registry: &crate::shell::search::SearchRegistry,
-        chrome: &Chrome,
-        doc: &AutoCommit,
-    ) -> crate::shell::search::action_api::ActionCatalog {
-        crate::shell::search::action_api::ActionCatalog::build(
-            registry,
-            "quick-settings.",
-            crate::shell::search::SearchScope::All,
-            None,
-            &chrome.borrow(),
-            doc,
-            &automerge::ROOT,
-            &crate::shell::search::action_api::AllVisible,
-        )
-    }
-
-    fn assert_radio_outcome(
-        poll: &crate::shell::search::PendingInvocation,
-        chrome: &Chrome,
-        change: os_actions::RadioChange,
-        outcome: &Result<(), String>,
-    ) {
-        if outcome.is_ok() {
-            let receipt = poll().unwrap().expect("real successful completion");
-            assert!(matches!(
-                receipt.update,
-                tilo_actions::InvocationUpdate::Succeeded { .. }
-            ));
-            match change {
-                os_actions::RadioChange::Wifi(_) => {
-                    assert!(chrome.borrow().quick_settings.wifi);
-                }
-                os_actions::RadioChange::Airplane(_) => {
-                    assert!(chrome.borrow().quick_settings.radios.airplane_mode);
-                }
-            }
-            assert!(chrome.borrow().notifications().is_empty());
-        } else {
-            assert!(
-                matches!(poll(), Err(ActionError::Refused(error)) if error.contains("fixture radio refusal"))
-            );
-            assert!(!chrome.borrow().quick_settings.wifi);
-            assert!(!chrome.borrow().quick_settings.radios.airplane_mode);
-            assert_eq!(chrome.borrow().notifications().len(), 1);
-            assert!(poll().is_err());
-            assert_eq!(chrome.borrow().notifications().len(), 1);
-        }
-    }
-
-    #[test]
-    fn radio_semantic_actions_wait_for_real_work_and_report_success_or_refusal() {
-        use crate::shell::search::InvocationDisposition;
-        use crate::shell::search::action_api::{ArgValue, ResourceRef};
-        use tilo_quick_settings::radio::fixture::Fixture;
-        for (id, change) in [
-            (QS_WIFI_ID, os_actions::RadioChange::Wifi(true)),
-            (QS_AIRPLANE_ID, os_actions::RadioChange::Airplane(true)),
-        ] {
-            for outcome in [Ok(()), Err("fixture radio refusal".into())] {
-                let fixture = Fixture::new();
-                let slot = Rc::new(SharedQsDispatcher::new(
-                    Rc::new(fixture.dispatcher),
-                    tilo_quick_settings::actions::QsActionAvailability::all(),
-                ));
-                let (wake_tx, wake_rx) = std::sync::mpsc::channel();
-                slot.set_radio_wake(Arc::new(move || {
-                    let _ = wake_tx.send(());
-                }));
-                let mut registry = crate::shell::search::SearchRegistry::new();
-                registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(
-                    slot.clone(),
-                )));
-                let chrome = chrome_with_room();
-                chrome.borrow_mut().quick_settings.wifi = false;
-                chrome.borrow_mut().quick_settings.radios.airplane_mode = false;
-                let mut doc = AutoCommit::new();
-                let catalog = radio_catalog(&registry, &chrome, &doc);
-                let resource = ResourceRef::new("actions", id);
-                let action = catalog.select(&resource).expect("declared Wi-Fi action");
-                let disposition = action
-                    .invoke(
-                        &mut ui::widget::Edits::lend(&mut doc),
-                        &automerge::ROOT,
-                        &chrome,
-                        [("enabled".into(), ArgValue::Boolean(true))],
-                    )
-                    .expect("owner action is admitted");
-                let InvocationDisposition::Pending(poll) = disposition else {
-                    panic!("starting radio work cannot manufacture completion");
-                };
-                assert_eq!(
-                    tilo_test_env::recv("the radio work to start", &fixture.entered),
-                    change
-                );
-                assert!(poll().unwrap().is_none());
-                assert!(!chrome.borrow().quick_settings.wifi);
-                let busy_catalog = radio_catalog(&registry, &chrome, &doc);
-                assert!(matches!(
-                    busy_catalog
-                        .select(&resource)
-                        .unwrap()
-                        .contract()
-                        .unwrap()
-                        .availability,
-                    tilo_actions::Availability::Unavailable { .. }
-                ));
-                assert!(
-                    action
-                        .invoke(
-                            &mut ui::widget::Edits::lend(&mut doc),
-                            &automerge::ROOT,
-                            &chrome,
-                            [("enabled".into(), ArgValue::Boolean(false))],
-                        )
-                        .is_err(),
-                    "a stale descriptor cannot admit a second radio mutation"
-                );
-                fixture.release.send(outcome.clone()).unwrap();
-                tilo_test_env::recv("the radio work's wake", &wake_rx);
-                assert_radio_outcome(&poll, &chrome, change, &outcome);
-                assert!(!chrome.borrow().quick_settings.radio_change_pending);
-                let completion = slot
-                    .take_radio_completion()
-                    .expect("host consumes same owned receipt");
-                crate::shell::chrome_state::ChromeState::apply_radio_ticket(&chrome, &completion);
-                assert!(slot.take_radio_completion().is_none());
-                let restored = radio_catalog(&registry, &chrome, &doc);
-                assert!(matches!(
-                    restored
-                        .select(&resource)
-                        .unwrap()
-                        .contract()
-                        .unwrap()
-                        .availability,
-                    tilo_actions::Availability::Available
-                ));
-            }
-        }
-    }
-
-    #[test]
-    fn radio_semantic_admission_rechecks_current_dispatcher_and_workspace_authority() {
-        use crate::shell::search::action_api::{ArgValue, ResourceRef};
-        use tilo_quick_settings::radio::fixture::Fixture;
-        let fixture = Fixture::new();
-        let slot = Rc::new(SharedQsDispatcher::new(
-            Rc::new(fixture.dispatcher.clone()),
-            tilo_quick_settings::actions::QsActionAvailability::all(),
-        ));
-        let mut registry = crate::shell::search::SearchRegistry::new();
-        registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(
-            slot.clone(),
-        )));
-        let chrome = chrome_with_room();
-        let mut doc = AutoCommit::new();
-        let catalog = radio_catalog(&registry, &chrome, &doc);
-        let action = catalog
-            .select(&ResourceRef::new("actions", QS_WIFI_ID))
-            .unwrap();
-        slot.replace(
-            Rc::new(fixture.dispatcher.clone()),
-            tilo_quick_settings::actions::QsActionAvailability::default(),
-        );
-        assert!(
-            action
-                .invoke(
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
-                    &chrome,
-                    [("enabled".into(), ArgValue::Boolean(true))]
-                )
-                .is_err()
-        );
-        assert!(fixture.entered.try_recv().is_err());
-        slot.replace(
-            Rc::new(fixture.dispatcher.clone()),
-            tilo_quick_settings::actions::QsActionAvailability::all(),
-        );
-        chrome
-            .borrow_mut()
-            .tree_mut()
-            .desktop
-            .active_workspace_mut()
-            .unwrap()
-            .set_owner("foreign-owner");
-        assert!(
-            action
-                .invoke(
-                    &mut ui::widget::Edits::lend(&mut doc),
-                    &automerge::ROOT,
-                    &chrome,
-                    [("enabled".into(), ArgValue::Boolean(true))]
-                )
-                .is_err()
-        );
-        assert!(
-            fixture.entered.try_recv().is_err(),
-            "revoked authority never reaches the native worker"
-        );
     }
 
     const FIXTURE_USER: &str = "shell-fixture";

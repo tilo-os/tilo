@@ -371,7 +371,7 @@ struct OverlayInputs {
     quick_settings: quick_settings::QuickSettingsPanel,
     qs_refresh: crate::shell::quick_settings_refresh::QsRefresh,
     qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
-    qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
+    qs_action_slot: crate::shell::quick_settings_dispatch::SharedQsActions,
     room_activity: Box<crate::shell::room_activity::RoomActivityPane>,
     projection_overlay: Box<ProjectionOverlay>,
     history_narrator: Option<crate::shell::history_narrative::LocalHistoryNarrator>,
@@ -871,7 +871,7 @@ pub struct ShellOverlayHost {
     /// Mutable provider handle shared with the shell action catalogue. Replacing
     /// a test dispatcher updates the existing provider rather than registering
     /// a duplicate action source.
-    qs_action_slot: crate::shell::search::providers::actions::SharedQsActions,
+    qs_action_slot: crate::shell::quick_settings_dispatch::SharedQsActions,
     /// When the open Wi-Fi section last asked for a scan: it scans again
     /// while it stays open, so the list follows the room.
     qs_wifi_scanned_at: Option<Instant>,

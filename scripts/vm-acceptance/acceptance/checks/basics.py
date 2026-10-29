@@ -58,8 +58,10 @@ def _offered(ctx, names) -> list:
     return [(a["id"], _availability(a)) for a in ctx.vm.actions() if _named(a["id"], names)]
 
 
-def _action(ctx, query, action_id):
-    return next((a for a in ctx.vm.actions(query) if a["id"] == action_id), None)
+def _action(ctx, query, action):
+    """The listed action named `action`: a Quick Settings effect (`set-wifi`), which this
+    device's catalogue of private windows lists by its window, record and name."""
+    return next((a for a in ctx.vm.actions(query) if _named(a["id"], (action,))), None)
 
 
 def _qs_targets(ctx, words):
@@ -71,17 +73,18 @@ def _qs_targets(ctx, words):
     return [n for n in names if any(w in n.lower() for w in words)]
 
 
-def _no_hardware_control(ctx, res, kind, query, action_id, args, words):
+def _no_hardware_control(ctx, res, kind, query, action, args, words):
     hw = _hw(ctx)
     res.metrics["hardware"] = hw
     if hw.get(kind):
         raise Unobservable(f"this VM has {kind} hardware; the no-hardware case cannot be observed")
     problems = []
-    a = _action(ctx, query, action_id)
+    a = _action(ctx, query, action)
     res.metrics["action_availability"] = a and _availability(a)
     if a and _availability(a).get("state") == "available":
+        action_id = a["id"]
         try:
-            out = ctx.vm.invoke("actions", action_id, args)
+            out = ctx.vm.invoke(a.get("provider", "actions"), action_id, args)
             state = out.get("receipt", {}).get("update", {}).get("state")
             res.metrics["invoke_result"] = out.get("receipt")
             if state == "succeeded":
@@ -100,7 +103,7 @@ def _no_hardware_control(ctx, res, kind, query, action_id, args, words):
 @check("B01", AREA, "Brightness without a backlight: no working-looking slider, action unavailable")
 def brightness(ctx, res):
     problems, targets = _no_hardware_control(ctx, res, "backlight", "brightness",
-                                             "quick-settings.brightness.set", {"percent": 40},
+                                             "set-brightness", {"level": 0.4},
                                              ("bright",))
     if targets:
         problems.append(f"quick settings shows a brightness control with no backlight: {targets[:3]}")
@@ -110,7 +113,7 @@ def brightness(ctx, res):
 @check("B02", AREA, "Wi-Fi without an adapter: shown unavailable, the toggle does nothing fake")
 def wifi(ctx, res):
     problems, targets = _no_hardware_control(ctx, res, "wifi", "wifi",
-                                             "quick-settings.wifi.set-enabled", {"enabled": True},
+                                             "set-wifi", {"on": True},
                                              ("wifi", "wi-fi", "wlan"))
     # Settings switches the same radio; it must not offer what Quick Settings withholds.
     settings = _offered(ctx, ("set-wifi", "set-hotspot", "start-hotspot"))

@@ -109,12 +109,10 @@ impl ShellOverlayHost {
     /// records index alongside the registry. Split out of [`Self::new`],
     /// which was otherwise dominated by this one flat setup block.
     pub(super) fn build_search_registry(
-        qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions>,
         session_action_policy: crate::shell::search::providers::SessionActionPolicy,
     ) -> (
         crate::shell::search::SearchRegistry,
         std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
-        crate::shell::search::providers::actions::SharedQsActions,
         std::rc::Rc<crate::shell::search::providers::FilesProvider>,
     ) {
         // Start the remote-app refresh with the shell, not with the user's
@@ -130,17 +128,10 @@ impl ShellOverlayHost {
             std::rc::Rc::clone(&search_preferences),
         );
         let provider_catalog = search_registry.provider_catalog_handle();
-        let qs_action_slot = std::rc::Rc::new(
-            crate::shell::search::providers::actions::SharedQsDispatcher::new(
-                qs_actions,
-                tilo_quick_settings::actions::QsActionAvailability::detect(),
-            ),
-        );
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ActionsProvider::with_all_sources(
                 search_preferences,
                 provider_catalog,
-                qs_action_slot.clone(),
             ),
         ));
         search_registry.register(std::rc::Rc::new(
@@ -174,7 +165,7 @@ impl ShellOverlayHost {
             crate::shell::search::providers::NativeApplicationsProvider::default(),
         ));
         search_registry.register(std::rc::Rc::new(
-            crate::shell::device_local_actions::DeviceLocalActionsProvider,
+            crate::shell::device_local_actions::DeviceLocalActionsProvider::default(),
         ));
         // Apps to get: the catalogue search shares with the App Store. Its
         // rows rank just below installed apps of equal match.
@@ -228,7 +219,7 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::WebProvider::new(),
         ));
-        (search_registry, room_records, qs_action_slot, files)
+        (search_registry, room_records, files)
     }
 
     pub fn new(content: Box<dyn Widget>) -> Self {
@@ -237,8 +228,14 @@ impl ShellOverlayHost {
         let qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions> =
             std::rc::Rc::new(tilo_quick_settings::actions::RealQsActions);
         let session_action_policy = crate::shell::search::providers::SessionActionPolicy::default();
-        let (search_registry, room_records, qs_action_slot, files) =
-            Self::build_search_registry(qs_actions.clone(), session_action_policy.clone());
+        let qs_action_slot = std::rc::Rc::new(
+            crate::shell::quick_settings_dispatch::SharedQsDispatcher::new(
+                qs_actions.clone(),
+                tilo_quick_settings::actions::QsActionAvailability::detect(),
+            ),
+        );
+        let (search_registry, room_records, files) =
+            Self::build_search_registry(session_action_policy.clone());
         let mut host = Self::from_inputs(
             content,
             OverlayInputs {
@@ -293,16 +290,14 @@ impl ShellOverlayHost {
         let qs_actions: std::rc::Rc<dyn tilo_quick_settings::actions::QsActions> =
             std::rc::Rc::new(tilo_quick_settings::actions::UnavailableQsActions);
         let qs_action_slot = std::rc::Rc::new(
-            crate::shell::search::providers::actions::SharedQsDispatcher::new(
+            crate::shell::quick_settings_dispatch::SharedQsDispatcher::new(
                 qs_actions.clone(),
                 tilo_quick_settings::actions::QsActionAvailability::default(),
             ),
         );
         let mut search_registry = crate::shell::search::SearchRegistry::new();
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ActionsProvider::with_shared_qs_actions(
-                qs_action_slot.clone(),
-            ),
+            crate::shell::search::providers::ActionsProvider::new(),
         ));
         let records = crate::shell::search::providers::RecordsProvider::new();
         let room_records = records.index();

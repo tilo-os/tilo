@@ -2,9 +2,9 @@
 //! and the real apps.
 //!
 //! The fixture is what a device has: every app under `apps/` read from its
-//! manifest, the shell's actions with the radios present, the typed system
-//! settings, the settings pages and the session actions, all behind the
-//! registry's own ranking and merge.
+//! manifest, the shell's actions, Quick Settings' actions with every
+//! control present, the typed system settings, the settings pages and the
+//! session actions, all behind the registry's own ranking and merge.
 //! [`the_palette_finds_what_people_type`] is a table of what a person types
 //! and the row that must lead; [`a_keystroke_against_the_full_index_only_searches_it`]
 //! bounds what one keystroke costs.
@@ -19,9 +19,10 @@ use ui::search::system::SearchScope;
 
 use crate::shell::catalogue::{CatalogueApp, SharedCatalogue};
 use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::device_local_actions::DeviceLocalActionsProvider;
+use crate::shell::device_local_actions::DeviceLocalWindow;
 use crate::shell::host_apps::HostApp;
 use crate::shell::launcher::InstalledApp;
-use crate::shell::search::providers::actions::SharedQsDispatcher;
 use crate::shell::search::providers::applications::ApplicationsTestSource;
 use crate::shell::search::providers::host_applications::HostAppsTestSource;
 use crate::shell::search::providers::store_catalogue::{
@@ -36,7 +37,6 @@ use crate::shell::search::{
     Availability, QueryArgs, ResourceKind, ResourceKindText as _, SearchRegistry, SearchResult,
 };
 use std::sync::Arc;
-use tilo_quick_settings::actions::{QsActionAvailability, UnavailableQsActions};
 
 /// Every language's words of `search/*.ftl`, as the packer joins them.
 fn tilo_app_package_keywords(dir: &Path) -> Vec<String> {
@@ -116,6 +116,30 @@ fn installed_apps() -> Vec<InstalledApp> {
     installed
 }
 
+/// What Quick Settings publishes to this device's catalogue on a device
+/// with every control, as the overlay host reads it from the mounted panel.
+fn quick_settings_window() -> DeviceLocalWindow {
+    use tilo_quick_settings::host::{FixtureHost, Lent, PanelHost};
+    let host: Rc<dyn PanelHost> = Rc::new(FixtureHost::new(
+        tilo_quick_settings::scenarios::readings(None),
+    ));
+    let mut panel = tilo_app::framework::testing::HeadlessApp::<
+        tilo_quick_settings::QuickSettingsApp,
+    >::for_person_with_lent("person", Lent(host))
+    .expect("Quick Settings runs headless");
+    panel
+        .harness()
+        .resize((tilo_quick_settings::resource::PANEL_WIDTH, 900))
+        .expect("the panel lays out");
+    panel.settle();
+    DeviceLocalWindow {
+        tab: crate::shell::overlay_host::QUICK_SETTINGS_WINDOW,
+        actions: panel
+            .actions()
+            .expect("Quick Settings publishes its actions"),
+    }
+}
+
 struct Palette {
     registry: SearchRegistry,
     chrome: Chrome,
@@ -130,18 +154,17 @@ impl Palette {
         let apps = ApplicationsTestSource::new(installed_apps(), Vec::new());
         let applications = Rc::new(ApplicationsProvider::with_test_source(apps));
         registry.register(applications.clone());
-        // A device with every radio, so the switches are offered.
-        let qs = Rc::new(SharedQsDispatcher::new(
-            Rc::new(UnavailableQsActions),
-            QsActionAvailability::all(),
-        ));
-        registry.register(Rc::new(ActionsProvider::with_shared_qs_actions(qs)));
+        registry.register(Rc::new(ActionsProvider::new()));
+        // Quick Settings' actions, as this device's catalogue of private
+        // windows lists them, on a device with every control.
+        registry.register(Rc::new(DeviceLocalActionsProvider::default()));
         let pages = Rc::new(SettingsPagesProvider::new());
         registry.register(pages.clone());
         let policy = SessionActionPolicy::new(tilo_power_mgmt::InhibitRegistry::new());
         policy.set_user_switching(true);
         registry.register(Rc::new(SessionActionsProvider::new(policy)));
         let chrome = ChromeState::new(crate::shell::state::WorkspaceTree::bootstrap_default());
+        chrome.borrow_mut().device_local_windows = vec![quick_settings_window()];
         let palette = Self {
             registry,
             chrome,
@@ -403,6 +426,9 @@ fn budget(optimised: Duration) -> Duration {
 
 const APP: &str = "applications";
 const ACTION: &str = "actions";
+/// Quick Settings' actions, in this device's catalogue of private windows:
+/// expected by their names (`toggle-wifi`).
+const PRIVATE: &str = crate::shell::device_local_actions::PROVIDER_ID;
 const PAGE: &str = "settings-pages";
 const SESSION: &str = "session";
 
@@ -411,6 +437,17 @@ const fn app(id: &'static str) -> Expect {
 }
 const fn action(id: &'static str) -> Expect {
     Expect::Top(ACTION, id)
+}
+/// Quick Settings' action `name`, first.
+const fn qs(name: &'static str) -> Expect {
+    Expect::Top(PRIVATE, name)
+}
+
+/// Whether `row` is `provider`'s row `id`; a private window's action by its
+/// name, whatever window and record publish it.
+fn is(row: &SearchResult, provider: &str, id: &str) -> bool {
+    row.provider_id == provider
+        && (row.id == id || (provider == PRIVATE && row.id.rsplit('\u{1f}').next() == Some(id)))
 }
 const fn page(id: &'static str) -> Expect {
     Expect::Top(PAGE, id)
@@ -449,7 +486,7 @@ fn app_names() -> Vec<(&'static str, Expect)> {
         ("word", app("so.tilo.word-processor")),
         ("files", app("so.tilo.file-explorer")),
         ("calc", app("so.tilo.calculator")),
-        ("vpn", action("quick-settings.vpn.set-enabled")),
+        ("vpn", qs("set-vpn")),
         ("theme", app("so.tilo.themes")),
         ("shortcuts", app("so.tilo.shortcuts")),
         // The product or the plain word an app stands in for.
@@ -558,31 +595,25 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
         ("do not disturb", action("notifications.dnd.toggle")),
         ("nicht stören", action("notifications.dnd.toggle")),
         ("dnd", action("notifications.dnd.toggle")),
-        ("volume", action("quick-settings.volume.set")),
-        ("lautstärke", action("quick-settings.volume.set")),
-        ("brightness", action("quick-settings.brightness.set")),
-        ("helligkeit", action("quick-settings.brightness.set")),
+        ("volume", qs("set-volume")),
+        ("lautstärke", qs("set-volume")),
+        ("brightness", qs("set-brightness")),
+        ("helligkeit", qs("set-brightness")),
         ("dictate", action("dictation.toggle")),
         ("reopen closed tab", action("tab.reopen")),
         ("overview", action("overview.toggle")),
         // The switches.
-        ("wifi", action("quick-settings.wifi.toggle")),
-        ("wi-fi", action("quick-settings.wifi.toggle")),
-        ("wlan", action("quick-settings.wifi.toggle")),
-        ("wireless", action("quick-settings.wifi.toggle")),
-        (
-            "airplane mode",
-            action("quick-settings.airplane-mode.toggle"),
-        ),
-        ("flugmodus", action("quick-settings.airplane-mode.toggle")),
+        ("wifi", qs("toggle-wifi")),
+        ("wi-fi", qs("toggle-wifi")),
+        ("wlan", qs("toggle-wifi")),
+        ("wireless", qs("toggle-wifi")),
+        ("airplane mode", qs("toggle-airplane-mode")),
+        ("flugmodus", qs("toggle-airplane-mode")),
         // Settings pages: by name and by what is on them.
         // The switch itself, its state on the row, or the page.
         (
             "bluetooth",
-            Expect::OneOf(&[
-                (ACTION, "quick-settings.bluetooth.toggle"),
-                (PAGE, "page:bluetooth"),
-            ]),
+            Expect::OneOf(&[(PRIVATE, "toggle-bluetooth"), (PAGE, "page:bluetooth")]),
         ),
         // The layout in place, its value on the row; one row, not also a
         // link to the same setting on its page.
@@ -623,12 +654,12 @@ fn typos_actions_pages_and_session() -> Vec<(&'static str, Expect)> {
         ("rechner neu starten", session("restart")),
         ("bildschirm", Expect::Not(SESSION, "lock")),
         // Everyday German for the sound.
-        ("lauter", action("quick-settings.volume.up")),
-        ("leiser", action("quick-settings.volume.down")),
-        ("louder", action("quick-settings.volume.up")),
-        ("mute", action("quick-settings.volume.mute")),
-        ("stumm", action("quick-settings.volume.mute")),
-        ("dimmer", action("quick-settings.brightness.down")),
+        ("lauter", qs("volume-up")),
+        ("leiser", qs("volume-down")),
+        ("louder", qs("volume-up")),
+        ("mute", qs("toggle-muted")),
+        ("stumm", qs("toggle-muted")),
+        ("dimmer", qs("brightness-down")),
     ]
 }
 
@@ -656,11 +687,11 @@ fn leads_with_what_people_type(palette: &Palette) {
             .map(|row| format!("{}/{} ({})", row.provider_id, row.id, row.score))
             .collect();
         let passed = rows.first().is_some_and(|first| match &expect {
-            Expect::Top(provider, id) => first.provider_id == *provider && first.id == *id,
+            Expect::Top(provider, id) => is(first, provider, id),
             Expect::OneOf(accepted) => accepted
                 .iter()
-                .any(|(provider, id)| first.provider_id == *provider && first.id == *id),
-            Expect::Not(provider, id) => !(first.provider_id == *provider && first.id == *id),
+                .any(|(provider, id)| is(first, provider, id)),
+            Expect::Not(provider, id) => !is(first, provider, id),
         }) || (matches!(expect, Expect::Not(..)) && rows.is_empty());
         let wanted = match &expect {
             Expect::Top(provider, id) => format!("{provider}/{id}"),
@@ -723,35 +754,31 @@ const ACTION_PHRASINGS: &[(&str, &str, &str)] = &[
     ("switch user", SESSION, "switch-user"),
     ("change user", SESSION, "switch-user"),
     // The network.
-    ("wifi", ACTION, "quick-settings.wifi.toggle"),
-    ("wi-fi", ACTION, "quick-settings.wifi.toggle"),
-    ("wlan", ACTION, "quick-settings.wifi.toggle"),
-    ("wireless", ACTION, "quick-settings.wifi.toggle"),
-    ("wireless network", ACTION, "quick-settings.wifi.toggle"),
-    ("internet", ACTION, "quick-settings.wifi.toggle"),
+    ("wifi", PRIVATE, "toggle-wifi"),
+    ("wi-fi", PRIVATE, "toggle-wifi"),
+    ("wlan", PRIVATE, "toggle-wifi"),
+    ("wireless", PRIVATE, "toggle-wifi"),
+    ("wireless network", PRIVATE, "toggle-wifi"),
+    ("internet", PRIVATE, "toggle-wifi"),
     ("wifi networks", ACTION, "quick-settings.network"),
     ("connect to wifi", ACTION, "quick-settings.network"),
     ("hotspot", ACTION, "quick-settings.network"),
-    ("bluetooth", ACTION, "quick-settings.bluetooth.toggle"),
-    ("headphones", ACTION, "quick-settings.bluetooth.toggle"),
+    ("bluetooth", PRIVATE, "toggle-bluetooth"),
+    ("headphones", PRIVATE, "toggle-bluetooth"),
     ("pair headphones", ACTION, "quick-settings.bluetooth"),
-    (
-        "airplane mode",
-        ACTION,
-        "quick-settings.airplane-mode.toggle",
-    ),
-    ("flight mode", ACTION, "quick-settings.airplane-mode.toggle"),
-    ("offline", ACTION, "quick-settings.airplane-mode.toggle"),
-    ("vpn", ACTION, "quick-settings.vpn.set-enabled"),
-    ("wireguard", ACTION, "quick-settings.vpn.set-enabled"),
-    ("tunnel", ACTION, "quick-settings.vpn.set-enabled"),
+    ("airplane mode", PRIVATE, "toggle-airplane-mode"),
+    ("flight mode", PRIVATE, "toggle-airplane-mode"),
+    ("offline", PRIVATE, "toggle-airplane-mode"),
+    ("vpn", PRIVATE, "set-vpn"),
+    ("wireguard", PRIVATE, "set-vpn"),
+    ("tunnel", PRIVATE, "set-vpn"),
     // The display.
-    ("brightness", ACTION, "quick-settings.brightness.set"),
-    ("backlight", ACTION, "quick-settings.brightness.set"),
-    ("screen brightness", ACTION, "quick-settings.brightness.set"),
-    ("brighter", ACTION, "quick-settings.brightness.up"),
-    ("dimmer", ACTION, "quick-settings.brightness.down"),
-    ("darker", ACTION, "quick-settings.brightness.down"),
+    ("brightness", PRIVATE, "set-brightness"),
+    ("backlight", PRIVATE, "set-brightness"),
+    ("screen brightness", PRIVATE, "set-brightness"),
+    ("brighter", PRIVATE, "brightness-up"),
+    ("dimmer", PRIVATE, "brightness-down"),
+    ("darker", PRIVATE, "brightness-down"),
     ("dark mode", ACTION, "appearance.theme.dark"),
     ("night mode", ACTION, "appearance.theme.dark"),
     ("night", ACTION, "appearance.theme.dark"),
@@ -773,16 +800,16 @@ const ACTION_PHRASINGS: &[(&str, &str, &str)] = &[
     ("projector", ACTION, "projection.open"),
     ("hdmi", ACTION, "projection.open"),
     // The sound.
-    ("volume", ACTION, "quick-settings.volume.set"),
-    ("loudness", ACTION, "quick-settings.volume.set"),
-    ("speaker", ACTION, "quick-settings.volume.set"),
-    ("louder", ACTION, "quick-settings.volume.up"),
-    ("volume up", ACTION, "quick-settings.volume.up"),
-    ("turn up", ACTION, "quick-settings.volume.up"),
-    ("quieter", ACTION, "quick-settings.volume.down"),
-    ("volume down", ACTION, "quick-settings.volume.down"),
-    ("mute", ACTION, "quick-settings.volume.mute"),
-    ("unmute", ACTION, "quick-settings.volume.mute"),
+    ("volume", PRIVATE, "set-volume"),
+    ("loudness", PRIVATE, "set-volume"),
+    ("speaker", PRIVATE, "set-volume"),
+    ("louder", PRIVATE, "volume-up"),
+    ("volume up", PRIVATE, "volume-up"),
+    ("turn up", PRIVATE, "volume-up"),
+    ("quieter", PRIVATE, "volume-down"),
+    ("volume down", PRIVATE, "volume-down"),
+    ("mute", PRIVATE, "toggle-muted"),
+    ("unmute", PRIVATE, "toggle-muted"),
     ("audio output", ACTION, "quick-settings.devices"),
     // Capturing the screen.
     ("screenshot", ACTION, "capture.open"),
@@ -854,13 +881,9 @@ const ACTION_PHRASINGS: &[(&str, &str, &str)] = &[
     ("paste history", ACTION, "quick-settings.clipboard"),
     ("control center", ACTION, "quick-settings.open"),
     ("quick settings", ACTION, "quick-settings.open"),
-    ("power profile", ACTION, "quick-settings.power-profile.set"),
-    ("battery saver", ACTION, "quick-settings.power-profile.set"),
-    (
-        "performance mode",
-        ACTION,
-        "quick-settings.power-profile.set",
-    ),
+    ("power profile", PRIVATE, "set-power-mode"),
+    ("battery saver", PRIVATE, "set-power-mode"),
+    ("performance mode", PRIVATE, "set-power-mode"),
     ("switch language", ACTION, "appearance.language"),
     ("locale", ACTION, "appearance.language"),
     ("feedback", ACTION, "feedback.open"),
@@ -888,10 +911,7 @@ fn every_common_phrasing_finds_its_action_in_the_top_three() {
             .take(3)
             .map(|row| format!("{}/{} ({})", row.provider_id, row.id, row.score))
             .collect();
-        let passed = rows
-            .iter()
-            .take(3)
-            .any(|row| row.provider_id == *provider && row.id == *id);
+        let passed = rows.iter().take(3).any(|row| is(row, provider, id));
         let _ = writeln!(
             report,
             "{} {query:<22} -> {provider}/{id:<38} got {}",

@@ -15,7 +15,7 @@ impl ShellOverlayHost {
         address: &str,
         connect: bool,
     ) {
-        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+        let actions = crate::shell::quick_settings_dispatch::ValidatedQsActions::new(
             self.qs_actions.as_ref(),
         );
         let address = address.to_owned();
@@ -80,7 +80,7 @@ impl ShellOverlayHost {
         let result = match device_route {
             #[cfg(target_os = "linux")]
             Some(device) => crate::shell::device_vpn::choose(&device, enabled),
-            _ => crate::shell::search::providers::actions::ValidatedQsActions::new(
+            _ => crate::shell::quick_settings_dispatch::ValidatedQsActions::new(
                 self.qs_actions.as_ref(),
             )
             .set_vpn_connection(name, enabled),
@@ -182,7 +182,7 @@ impl ShellOverlayHost {
         change: super::quick_settings::QsLevelChange,
     ) {
         use super::quick_settings::QsLevelChange;
-        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+        let actions = crate::shell::quick_settings_dispatch::ValidatedQsActions::new(
             self.qs_actions.as_ref(),
         );
         self.show_released_level(&change);
@@ -287,7 +287,7 @@ impl ShellOverlayHost {
         let Some(previous) = chrome.borrow().quick_settings.status.volume else {
             return;
         };
-        let actions = crate::shell::search::providers::actions::ValidatedQsActions::new(
+        let actions = crate::shell::quick_settings_dispatch::ValidatedQsActions::new(
             self.qs_actions.as_ref(),
         );
         let result = crate::shell::media_keys::commit_mute(
