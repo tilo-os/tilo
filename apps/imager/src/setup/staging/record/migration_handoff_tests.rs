@@ -1,6 +1,6 @@
 //! The frontend's staging record retains only the private source plan.
-use super::*;
-use crate::setup::migration_store::NativePath;
+use imager_backend::migration_store::NativePath;
+use imager_backend::setup::migration_handoff::*;
 use std::path::Path;
 
 pub(super) fn sample() -> Plan {
@@ -40,7 +40,8 @@ pub(super) fn sample() -> Plan {
 
 #[test]
 fn staging_record_retains_source_plan_privately_and_binds_installation_geometry() {
-    use crate::setup::staging::{plan, platform::Partition, record};
+    use crate::setup::staging::{plan, record};
+    use imager_backend::platform::Partition;
     let mut migration = sample();
     migration.home.volume.disk_bytes = 256 << 30;
     let basis = plan::tests::linux_basis(

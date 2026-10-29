@@ -31,7 +31,7 @@ pub(crate) const HELPERS: &[Helper] = &[
         run: |args| crate::setup::staging::helper::maybe_run_staging_helper(args),
     },
     Helper {
-        run: |args| crate::setup::staging::final_bootnext::maybe_run(args),
+        run: |args| imager_backend::staging::final_bootnext::maybe_run(args),
     },
     Helper {
         run: |args| crate::setup::staging::cli::maybe_run_staging_request(args),
@@ -70,7 +70,7 @@ fn customize_image(args: &[String]) -> Result<Option<i32>, String> {
 
 #[cfg(all(target_os = "linux", feature = "installation"))]
 fn home_capture(args: &[String]) -> Result<Option<i32>, String> {
-    crate::setup::home_capture_helper::maybe_run(args)
+    imager_backend::setup::home_capture_helper::maybe_run(args)
 }
 
 #[cfg(all(not(target_os = "linux"), feature = "installation"))]
@@ -80,7 +80,7 @@ fn home_capture(_args: &[String]) -> Result<Option<i32>, String> {
 
 #[cfg(all(target_os = "linux", feature = "installation"))]
 fn home_capture_host(args: &[String]) -> Result<Option<i32>, String> {
-    crate::setup::home_capture::maybe_run_host(args)
+    imager_backend::setup::home_capture::maybe_run_host(args)
 }
 
 #[cfg(all(not(target_os = "linux"), feature = "installation"))]
@@ -91,7 +91,7 @@ fn home_capture_host(_args: &[String]) -> Result<Option<i32>, String> {
 /// The native migration copy and its resumption.
 #[cfg(all(target_os = "linux", feature = "installation"))]
 fn native_copy(args: &[String]) -> Result<Option<i32>, String> {
-    crate::setup::migration_native::maybe_run_command(args).map_err(|error| error.to_string())
+    imager_backend::migration_native::maybe_run_command(args).map_err(|error| error.to_string())
 }
 
 #[cfg(all(not(target_os = "linux"), feature = "installation"))]

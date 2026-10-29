@@ -1,6 +1,6 @@
 //! Same-user ciphertext handoff. Activation belongs exclusively to Tilo first use.
-use super::{
-    journey::prepared_media::PreparedMedia,
+use super::journey::prepared_media::PreparedMedia;
+use imager_backend::{
     migration::{PinnedDirectory, changed, check_cancel},
     migration_durability as durable,
     nofollow::metadata_nofollow,
@@ -21,7 +21,7 @@ pub(crate) struct Receipt {
     pub schema: u32,
     pub identity_public_key: [u8; 32],
     pub setup: crate::model::PreparedSetupExpectation,
-    pub browser: Option<super::browser_transfer::Expectation>,
+    pub browser: Option<imager_backend::setup::browser_transfer::Expectation>,
 }
 
 struct Publication {
@@ -207,7 +207,7 @@ pub(crate) fn deliver(
         ));
     }
     let artifact = prepared.staging_artifact()?;
-    let caller = super::staging::prepared_setup::caller_uid()?;
+    let caller = imager_backend::staging::prepared_setup::caller_uid()?;
     // Desktop delivery is never an elevated transaction or a cross-user import.
     // SAFETY: observes credentials only.
     if caller != rustix::process::geteuid().as_raw() {

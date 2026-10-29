@@ -379,7 +379,7 @@ fn website_signins_row_routes_to_source_groups_not_flatpak_details() {
         preview.journey.categories = [false, true, true];
         preview.journey.details = false;
         preview.belongings.sessions = selection;
-        use crate::setup::flatpak_transfer::{Installation, InstalledRef, Inventory};
+        use imager_backend::setup::flatpak_transfer::{Installation, InstalledRef, Inventory};
         preview.belongings.flatpak = Some(Inventory {
             refs: (0..71)
                 .map(|index| InstalledRef {
@@ -643,11 +643,12 @@ fn source_group_actions_reject_disabled_unknown_and_replaced_sources() {
 fn unselectable_login_group_is_disabled_and_does_not_dispatch() {
     let home = tempfile::tempdir().unwrap();
     let (_path, _database) = super::tests::native_slack_database(home.path(), false, true, true);
-    let inventory =
-        crate::setup::account_transfer::discover(&crate::setup::account_transfer::SourceRoots {
+    let inventory = imager_backend::account_transfer::discover(
+        &imager_backend::account_transfer::SourceRoots {
             home: home.path().into(),
             config: home.path().join(".config"),
-        });
+        },
+    );
     let mut selection = Selection::from_discovery(
         service_profiles::discover_without_slack_package(home.path(), &inventory.candidates)
             .unwrap(),

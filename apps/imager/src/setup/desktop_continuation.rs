@@ -1,11 +1,11 @@
 //! Device-local first-login migration choices. Never collaborative state.
 
 use super::controller::{FolderChoice, FolderDestination};
-use super::migration::PinnedDirectory;
-use super::migration_durability::{self, Identity};
-use super::migration_store::{MigrationStore, NativePath, OperationRecord};
-use super::migration_worker::MigrationJob;
 use super::model::FolderMode;
+use imager_backend::migration::PinnedDirectory;
+use imager_backend::migration_durability::{self, Identity};
+use imager_backend::migration_store::{MigrationStore, NativePath, OperationRecord};
+use imager_backend::migration_worker::MigrationJob;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};
@@ -100,7 +100,7 @@ fn absent(path: &Path) -> Result<bool, String> {
     let parent = PinnedDirectory::open_absolute(path.parent().ok_or("copy path has no parent")?)
         .map_err(|e| e.to_string())?;
     parent.validate_destination().map_err(|e| e.to_string())?;
-    let result = super::nofollow::metadata_nofollow(
+    let result = imager_backend::nofollow::metadata_nofollow(
         &parent.file,
         Path::new(path.file_name().ok_or("copy path has no name")?),
     );
@@ -280,7 +280,7 @@ impl Continuation {
         index: usize,
         record: &OperationRecord,
     ) -> Result<Option<MigrationJob>, String> {
-        use super::migration_store::OperationState;
+        use imager_backend::migration_store::OperationState;
         if !matches!(
             record.state(),
             OperationState::Interrupted | OperationState::Failed | OperationState::Cancelled
@@ -296,7 +296,7 @@ impl Continuation {
     }
 
     pub(super) fn can_replace_unpublished(record: &OperationRecord) -> Result<(), String> {
-        use super::migration_store::OperationState;
+        use imager_backend::migration_store::OperationState;
         if !matches!(
             record.state(),
             OperationState::AwaitingReview
@@ -402,9 +402,9 @@ impl Continuation {
                 && op.destination()? == destination
                 && !matches!(
                     op.state(),
-                    super::migration_store::OperationState::Failed
-                        | super::migration_store::OperationState::Interrupted
-                        | super::migration_store::OperationState::Cancelled
+                    imager_backend::migration_store::OperationState::Failed
+                        | imager_backend::migration_store::OperationState::Interrupted
+                        | imager_backend::migration_store::OperationState::Cancelled
                 )
             {
                 return Ok(None);
@@ -430,7 +430,7 @@ impl Continuation {
 /// so it runs off the caller's thread.
 pub(super) fn offer_familiar_folders() {
     std::thread::spawn(|| {
-        let sources: Vec<PathBuf> = super::known_folders::discover()
+        let sources: Vec<PathBuf> = imager_backend::known_folders::discover()
             .into_iter()
             .filter_map(|folder| folder.path)
             .collect();
@@ -669,9 +669,9 @@ pub(super) fn trusted_identity_complete() -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::setup::controller::{FolderChoice, FolderDestination};
-    use crate::setup::folders::FolderScan;
-    use crate::setup::migration_store::MigrationStore;
     use crate::setup::model::FolderMode;
+    use imager_backend::folders::FolderScan;
+    use imager_backend::migration_store::MigrationStore;
     use std::fs;
 
     fn fixture() -> (tempfile::TempDir, MigrationStore, Vec<FolderChoice>) {
@@ -820,7 +820,7 @@ mod tests {
                 let destination = parent.join("Documents");
                 let journal = store.root().join("late-edit.journal");
                 let mut edited = false;
-                let report = super::super::migration_journal::copy_reviewed(
+                let report = imager_backend::migration_journal::copy_reviewed(
                     source,
                     &destination,
                     &journal,
@@ -853,7 +853,7 @@ mod tests {
                 }
                 // Even the ordinary resume route must retain the reviewed journal baseline.
                 assert!(
-                    super::super::migration_journal::resume_folder(
+                    imager_backend::migration_journal::resume_folder(
                         &journal,
                         &std::sync::atomic::AtomicBool::new(false),
                         |_| {}
@@ -864,7 +864,7 @@ mod tests {
         }
 
         {
-            use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
+            use imager_backend::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
             let (_temp, store, choices) = fixture();
             let file = choices[0].scan.source.join("existing.txt");
             fs::write(&file, b"before").unwrap();
@@ -910,7 +910,7 @@ mod tests {
         }
 
         {
-            use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
+            use imager_backend::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
             let (_temp, store, choices) = fixture();
             let mut c = Continuation::capture(&choices).unwrap();
             let parent = store.root().parent().unwrap().join("target");
@@ -935,7 +935,7 @@ mod tests {
         }
 
         {
-            use crate::setup::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
+            use imager_backend::migration_worker::{MigrationWorker, WorkerEvent, WorkerOutcome};
             let (_temp, store, choices) = fixture();
             let mut c = Continuation::capture(&choices).unwrap();
             let parent = store.root().parent().unwrap().join("target");

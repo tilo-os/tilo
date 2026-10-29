@@ -1,12 +1,12 @@
 //! Root-admitted receiving-namespace qualification; no live installer entry.
 //! Reuses the existing receiving namespace guard/held-directory contract.
-use super::{Connector, PasswordSealedAccounts, SourceRoots, discover};
-use crate::setup::service_sessions::official_format_native as custody;
 use accounts::{
     AccountStore, AccountSyncHealth, AccountSyncStatusStore, SecretCustody, SecretVault,
 };
 use cloud_source_dav::fake::{FakeDav, USER};
 use fs::cloud::{CloudService, ProcessLauncher, ServiceConfig};
+use imager_backend::account_transfer::{Connector, PasswordSealedAccounts, SourceRoots, discover};
+use imager_backend::setup::service_sessions::official_format_native as custody;
 use serde::Deserialize;
 use std::{
     fs::{File, OpenOptions},

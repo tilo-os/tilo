@@ -1,12 +1,14 @@
 use super::*;
-use crate::setup::{
-    flatpak_transfer::{
-        Installation, InstalledRef, Remote, Runner,
-        portable::{ApplicationsManifest, Deployment, Trust},
-    },
-    portable_transfer::{ExportReview, ImportReview, Limits, Purpose},
+use imager_backend::{
     prepared_identity::PreparedIdentity,
-    prepared_setup::{self, Manifest, PortableHomePlan, PortableHomeSelection},
+    setup::{
+        flatpak_transfer::{
+            Installation, InstalledRef, Remote, Runner,
+            portable::{ApplicationsManifest, Deployment, Trust},
+        },
+        portable_transfer::{ExportReview, ImportReview, Limits, Purpose},
+        prepared_setup::{self, Manifest, PortableHomePlan, PortableHomeSelection},
+    },
 };
 use sha2::{Digest, Sha256};
 use std::{cell::RefCell, fs, os::unix::fs::PermissionsExt};
@@ -138,7 +140,7 @@ impl Fixture {
             url: "https://repo.example.test/repo/".into(),
             options: String::new(),
         };
-        let trust = crate::setup::flatpak_transfer::extract_remote_definition(
+        let trust = imager_backend::setup::flatpak_transfer::extract_remote_definition(
             &source_remote,
             &source.join("installation-0/.ostree"),
         )
@@ -184,11 +186,13 @@ impl Fixture {
             }],
             user_state,
             app_state: if schema == 2 {
-                vec![crate::setup::flatpak_transfer::portable::AppState {
-                    app_id: "org.example.Paint".into(),
-                    data_present: true,
-                    override_present: false,
-                }]
+                vec![
+                    imager_backend::setup::flatpak_transfer::portable::AppState {
+                        app_id: "org.example.Paint".into(),
+                        data_present: true,
+                        override_present: false,
+                    },
+                ]
             } else {
                 Vec::new()
             },
@@ -326,7 +330,7 @@ impl Fixture {
         Ok(output)
     }
     fn adopt_home(&self) {
-        use crate::setup::portable_home_media::{HomeSource, MediaGrant};
+        use imager_backend::setup::portable_home_media::{HomeSource, MediaGrant};
         let source = self.root.join("original-home");
         directory(&source);
         directory(&source.join(".local/share/flatpak/repo"));

@@ -139,32 +139,32 @@ pub use setup::media_setup;
 #[doc(hidden)]
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub fn run_home_export_service() -> std::io::Result<()> {
-    setup::home_capture::run_provider()
+    imager_backend::setup::home_capture::run_provider()
 }
 /// Qualification advertises the protocol compiled into this exact worker.
 #[doc(hidden)]
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub fn home_export_worker_protocol() -> u32 {
-    setup::home_capture::worker_protocol()
+    imager_backend::setup::home_capture::worker_protocol()
 }
 
 /// Internal fixed retained-source worker entry, confined by the canonical launcher.
 #[doc(hidden)]
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub fn run_retained_source_io_service() -> std::io::Result<()> {
-    setup::retained_source_io::run(false)
+    imager_backend::retained_source::run(false)
 }
 
 /// Fixed Home-directory worker; launcher admission independently seals this mode.
 #[doc(hidden)]
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub fn run_retained_home_io_service() -> std::io::Result<()> {
-    setup::retained_source_io::run(true)
+    imager_backend::retained_source::run(true)
 }
 
 /// Internal target-credential FUSE worker; never accepts a mount path or grant.
 #[doc(hidden)]
 #[cfg(all(target_os = "linux", feature = "capture-worker"))]
 pub fn run_retained_target_projection_service() -> std::io::Result<()> {
-    setup::retained_target_projection::run()
+    imager_backend::retained_source::run_target_projection()
 }

@@ -90,7 +90,7 @@ impl OfflineMediaReview {
             .map_err(|_| io::Error::other("Source disk custody unavailable"))?
             .as_ref()
         {
-            super::super::super::migration_handoff::validate_offline_source_disks(
+            imager_backend::setup::migration_handoff::validate_offline_source_disks(
                 plans,
                 self.target_number,
             )?;
@@ -106,7 +106,7 @@ impl OfflineMediaReview {
             &super::super::super::media_setup::inbox::ProtectedInboxGrant<'_>,
         ) -> io::Result<T>,
     ) -> io::Result<T> {
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         self.validate()?;
         if target.name != self.target.name
             || target.stable_id != self.target.stable_id
@@ -142,7 +142,7 @@ impl OfflineMediaReview {
             .ok_or(io::ErrorKind::PermissionDenied)?
             .with_protected_inbox(&layout, cancel, deliver)?;
         self.validate()?;
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         Ok(result)
     }
     fn retained_source_geometry(
@@ -166,7 +166,7 @@ impl OfflineMediaReview {
         Ok(sources.clone())
     }
     fn bind_source_geometry(&self, plans: Vec<Vec<u8>>) -> io::Result<()> {
-        super::super::super::migration_handoff::validate_offline_source_disks(
+        imager_backend::setup::migration_handoff::validate_offline_source_disks(
             &plans,
             self.target_number,
         )?;
@@ -241,11 +241,11 @@ impl PreparedMedia {
     pub(in crate::setup) fn prepare_offline(
         self: &Arc<Self>,
         media: &OfflineMediaReview,
-        intent: &super::super::super::migration_intent::MigrationIntent,
+        intent: &imager_backend::setup::migration_intent::MigrationIntent,
         password: Zeroizing<Vec<u8>>,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         let mut generation = self
             .transfer_generation
             .lock()
@@ -310,7 +310,7 @@ impl PreparedMedia {
             .layout
             .require_capacity(prepared.reserved_data_bytes.load(Ordering::Acquire))?;
         media.validate()?;
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         *generation = Some(Arc::clone(&prepared));
         Ok(prepared)
     }
@@ -357,7 +357,7 @@ pub(super) fn original_budget_for_capacity(
 }
 pub(super) fn validate_payload_scope(
     prepared: &PreparedMedia,
-    plan: &super::super::super::migration_handoff::Plan,
+    plan: &imager_backend::setup::migration_handoff::Plan,
     cancel: &AtomicBool,
 ) -> io::Result<()> {
     let home_applications = prepared
@@ -382,13 +382,14 @@ pub(super) fn validate_payload_scope(
     if prepared.applications.is_none()
         && let Some(raw) = &plan.flatpak_inventory
     {
-        let inventory =
-            crate::setup::flatpak_transfer::HandoffInventory::parse(&serde_json::to_vec(raw)?)
-                .map_err(io::Error::other)?;
+        let inventory = imager_backend::setup::flatpak_transfer::HandoffInventory::parse(
+            &serde_json::to_vec(raw)?,
+        )
+        .map_err(io::Error::other)?;
         if inventory.selected().iter().any(|selected| {
             matches!(
                 selected.installation,
-                crate::setup::flatpak_transfer::Installation::System(_)
+                imager_backend::setup::flatpak_transfer::Installation::System(_)
             )
         }) {
             return Err(io::Error::other(
@@ -441,7 +442,7 @@ fn reseal_selection(
     declaration: prepared_setup::OriginalSelectionPlan,
     password: &[u8],
     cancel: &AtomicBool,
-    pending_applications_intent: Option<super::super::super::migration_intent::MigrationIntent>,
+    pending_applications_intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
 ) -> io::Result<Arc<PreparedMedia>> {
     reseal_amendment(
         original,
@@ -484,7 +485,7 @@ fn reseal_amendment(
     declaration: Amendment,
     password: &[u8],
     cancel: &AtomicBool,
-    pending_applications_intent: Option<super::super::super::migration_intent::MigrationIntent>,
+    pending_applications_intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
 ) -> io::Result<Arc<PreparedMedia>> {
     let export_reservation = match &declaration {
         Amendment::Offline(value) => value.sealed_reservation(),
@@ -651,7 +652,7 @@ fn reseal_amendment(
 }
 
 fn copy_sidecar(
-    archive: &Mutex<super::super::super::portable_transfer::ImportReview>,
+    archive: &Mutex<imager_backend::setup::portable_transfer::ImportReview>,
     path: &std::path::Path,
     cancel: &AtomicBool,
 ) -> io::Result<()> {
@@ -672,16 +673,18 @@ fn copy_sidecar(
 #[cfg(all(test, feature = "native-capture-qualification"))]
 mod tests {
     use super::*;
-    use crate::setup::{
-        account_transfer,
-        flatpak_transfer::{
-            Installation, InstalledRef,
-            portable::{self, PortableFlatpakSource},
-        },
-        journey::{accounts, browser::SelectedSources},
-        portable_home_media::HomeSource,
-    };
+    use crate::setup::journey::{accounts, browser::SelectedSources};
     use imager_backend::setup::browser_profiles;
+    use imager_backend::{
+        account_transfer,
+        setup::{
+            flatpak_transfer::{
+                Installation, InstalledRef,
+                portable::{self, PortableFlatpakSource},
+            },
+            portable_home_media::HomeSource,
+        },
+    };
     use std::{fs, path::Path};
     const PASSWORD: &[u8] = b"several unrelated installation words";
 
@@ -729,8 +732,9 @@ mod tests {
         // root its explicit nonroot original-owner fixture before Home/app
         // source grants are reviewed. Browser profile custody remains owned by
         // the actual caller and is validated again by the genuine producer.
-        let _caller =
-            crate::setup::home_capture::original_caller::fixture_source_owner(&runner.source_home);
+        let _caller = imager_backend::setup::home_capture::original_caller::fixture_source_owner(
+            &runner.source_home,
+        );
         let app_source = PortableFlatpakSource::review(
             &runner,
             &runner.source_home,
@@ -783,11 +787,12 @@ mod tests {
         runner: &portable::tests::Fake,
     ) -> prepared_setup::OfflineHomePlan {
         let home = root.join("source-home");
-        let caller = crate::setup::home_capture::original_caller::fixture_source_owner(&home);
-        let mut source = crate::setup::migration_handoff::capture(
+        let caller =
+            imager_backend::setup::home_capture::original_caller::fixture_source_owner(&home);
+        let mut source = imager_backend::setup::migration_handoff::capture(
             &home,
             &uuid::Uuid::new_v4().to_string(),
-            crate::setup::migration_handoff::Categories {
+            imager_backend::setup::migration_handoff::Categories {
                 home: true,
                 flatpak: true,
                 accounts: true,
@@ -802,12 +807,12 @@ mod tests {
             installation: Installation::System("default".into()),
             name: "Paint".into(),
         };
-        let inventory = crate::setup::flatpak_transfer::HandoffInventory::capture(
+        let inventory = imager_backend::setup::flatpak_transfer::HandoffInventory::capture(
             runner,
             &runner.source_home,
             vec![selected],
             |installation| {
-                crate::setup::migration_handoff::capture(
+                imager_backend::setup::migration_handoff::capture(
                     installation,
                     &source.operation_id,
                     source.categories,
@@ -868,31 +873,33 @@ mod tests {
             installation: Installation::System("default".into()),
             name: "Paint".into(),
         };
-        let inventory = crate::setup::flatpak_transfer::HandoffInventory::capture_selected_state(
-            &runner,
-            &runner.source_home,
-            vec![selected.clone()],
-            |installation| {
-                crate::setup::migration_handoff::capture(
-                    installation,
-                    &source.operation_id,
-                    source.categories,
-                )
-                .and_then(|plan| plan.bytes())
-                .map_err(|error| error.to_string())
-            },
-        )
-        .unwrap();
+        let inventory =
+            imager_backend::setup::flatpak_transfer::HandoffInventory::capture_selected_state(
+                &runner,
+                &runner.source_home,
+                vec![selected.clone()],
+                |installation| {
+                    imager_backend::setup::migration_handoff::capture(
+                        installation,
+                        &source.operation_id,
+                        source.categories,
+                    )
+                    .and_then(|plan| plan.bytes())
+                    .map_err(|error| error.to_string())
+                },
+            )
+            .unwrap();
         source.flatpak_inventory = Some(serde_json::to_value(&inventory).unwrap());
         let (source, protected_inventory) = source.original_inventory_selection().unwrap();
         let protected_inventory = protected_inventory.unwrap();
-        crate::setup::migration_handoff::OriginalInventoryBinding::parse(&source)
+        imager_backend::setup::migration_handoff::OriginalInventoryBinding::parse(&source)
             .unwrap()
             .unwrap()
             .validate_bytes(&protected_inventory)
             .unwrap();
         assert_eq!(
-            crate::setup::flatpak_transfer::HandoffInventory::parse(&protected_inventory).unwrap(),
+            imager_backend::setup::flatpak_transfer::HandoffInventory::parse(&protected_inventory)
+                .unwrap(),
             inventory
         );
         let declared = prepared_setup::OfflineApplicationsPlan::new(
@@ -949,7 +956,7 @@ mod tests {
             pending_apps.applications_operation().unwrap(),
             expected_operation
         );
-        let retained = crate::setup::flatpak_transfer::HandoffInventory::parse(
+        let retained = imager_backend::setup::flatpak_transfer::HandoffInventory::parse(
             &serde_json::to_vec(pending_apps.source().flatpak_inventory.as_ref().unwrap()).unwrap(),
         )
         .unwrap();
@@ -1079,7 +1086,7 @@ mod tests {
         .list()
         .expect("actual source block namespace required");
         for bytes in &plans {
-            let plan = crate::setup::migration_handoff::Plan::parse(bytes).unwrap();
+            let plan = imager_backend::setup::migration_handoff::Plan::parse(bytes).unwrap();
             let matches: Vec<_> = devices
                 .iter()
                 .filter(|disk| {
@@ -1093,11 +1100,16 @@ mod tests {
             };
             let number = fs::symlink_metadata(&disk.name).unwrap().rdev();
             assert!(
-                crate::setup::migration_handoff::validate_offline_source_disks(&plans, number)
-                    .is_err()
+                imager_backend::setup::migration_handoff::validate_offline_source_disks(
+                    &plans, number
+                )
+                .is_err()
             );
         }
-        assert!(crate::setup::migration_handoff::validate_offline_source_disks(&[], 0).is_err());
+        assert!(
+            imager_backend::setup::migration_handoff::validate_offline_source_disks(&[], 0)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1107,9 +1119,9 @@ mod tests {
         let supplied = std::env::var_os("TILO_INSTALLER_NATIVE_SOURCE_STORE")
             .expect("explicit owned GPT-backed source fixture root is required");
         let supplied = Path::new(&supplied);
-        let pin = crate::setup::migration::PinnedDirectory::open_absolute(supplied).unwrap();
+        let pin = imager_backend::migration::PinnedDirectory::open_absolute(supplied).unwrap();
         pin.validate_destination().unwrap();
-        crate::setup::destination_security::check_private_file(&pin.file).unwrap();
+        imager_backend::destination_security::check_private_file(&pin.file).unwrap();
         let root = tempfile::Builder::new()
             .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(supplied)
@@ -1252,7 +1264,7 @@ impl PreparedMedia {
         original: &super::super::portable_source::OriginalSource,
         cancel: &AtomicBool,
     ) -> io::Result<PreparedOriginalMedia> {
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         if self.retained.is_some() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -1262,7 +1274,7 @@ impl PreparedMedia {
         if applications_only {
             image_review.require_applications()?;
             let (_, pins, _) =
-                super::super::super::home_capture::installed_original_consumer_facts()?;
+                imager_backend::setup::home_capture::installed_original_consumer_facts()?;
             if pins.worker_protocol != 6 {
                 return Err(io::ErrorKind::Unsupported.into());
             }

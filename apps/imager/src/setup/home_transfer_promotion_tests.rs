@@ -1,4 +1,4 @@
-use super::promotion::PromotionEvent;
+use imager_backend::home_transfer::promotion::PromotionEvent;
 use std::{os::unix::fs::PermissionsExt, path::Path};
 
 fn fixture() -> tempfile::TempDir {
@@ -29,7 +29,7 @@ fn fixture() -> tempfile::TempDir {
 }
 #[test]
 fn cross_process_partial_adoption_renews_completed_copy_and_move_witnesses() {
-    use crate::setup::{
+    use imager_backend::setup::{
         flatpak_transfer::Runner,
         user_transfer::{self, TransferEvent, TransferRequest},
     };

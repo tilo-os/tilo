@@ -1,8 +1,8 @@
 //! Portable packaging must retain user data while excluding installer custody.
 use super::{OriginalPreparation, SourceInventory};
-use crate::setup::{
+use imager_backend::{
     migration::PinnedDirectory,
-    portable_transfer::{self, ExportWork, ImportReview, Limits, Purpose},
+    setup::portable_transfer::{self, ExportWork, ImportReview, Limits, Purpose},
 };
 use std::{fs, os::unix::fs::PermissionsExt, sync::atomic::AtomicBool};
 use zeroize::Zeroizing;

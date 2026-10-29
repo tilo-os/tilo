@@ -90,7 +90,7 @@ impl SetupApp {
         self.status_is_error = false;
         std::thread::spawn(move || {
             let admission = expected_consumer.map_or(Ok(()), |expected| {
-                super::super::account_admission::installed().and_then(|actual| {
+                imager_backend::account_admission::installed().and_then(|actual| {
                     if actual == expected {
                         Ok(())
                     } else {
@@ -168,7 +168,7 @@ mod tests {
     }
 
     fn prepared(root: &Path) -> Arc<PreparedMedia> {
-        let identity = crate::setup::prepared_identity::PreparedIdentity::create(
+        let identity = imager_backend::prepared_identity::PreparedIdentity::create(
             &root.join("identity"),
             "Chosen person",
             [20, 80, 140],

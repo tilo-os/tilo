@@ -30,7 +30,7 @@ pub(crate) fn prepare(
         image_bytes,
         target_bytes,
         stable_id,
-        crate::setup::portable_home_media::payload_capacity_for_free_bytes,
+        imager_backend::setup::portable_home_media::payload_capacity_for_free_bytes,
     )
 }
 #[cfg(all(test, feature = "installation"))]
@@ -49,6 +49,6 @@ pub(crate) fn prepare_expected(
         target_bytes,
         expected,
         reservation,
-        crate::setup::portable_home_media::payload_capacity_for_free_bytes,
+        imager_backend::setup::portable_home_media::payload_capacity_for_free_bytes,
     )
 }

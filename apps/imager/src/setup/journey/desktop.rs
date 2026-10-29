@@ -21,7 +21,7 @@ impl InstallerPreview {
         prepared: std::sync::Arc<super::prepared_media::PreparedMedia>,
     ) -> Result<(), &'static str> {
         self.desktop_pending = false;
-        let home = super::super::home_transfer::current_home()
+        let home = imager_backend::home_transfer::current_home()
             .map_err(|_| "installer-desktop-unavailable")?;
         let child = crate::setup::view::SetupApp::from_guided_desktop(prepared, home)
             .map_err(|_| "installer-desktop-unavailable")?;

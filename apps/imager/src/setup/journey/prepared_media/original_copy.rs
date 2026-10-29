@@ -1,7 +1,7 @@
 //! Register the exact destination-staging operation, then amend only the existing
 //! password-authenticated setup generation. No source ciphertext is fabricated.
 use super::*;
-use crate::setup::{
+use imager_backend::setup::{
     migration_handoff::{HomePolicy, Plan},
     migration_intent::MigrationIntent,
 };
@@ -13,7 +13,7 @@ impl PreparedMedia {
         reservation: u64,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         if source.home_policy != HomePolicy::Copy
             || !(source.categories.home || source.categories.flatpak)
             || self.retained.as_ref() != Some(intent)
@@ -74,7 +74,7 @@ impl PreparedMedia {
         let prepared = offline::reseal_staging_copy(self, declaration, cancel)?;
         intent.for_media()?;
         prepared.validate_for_write(cancel)?;
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         *generation = Some(prepared.clone());
         Ok(prepared)
     }
@@ -89,7 +89,7 @@ impl PreparedMedia {
         reservation: u64,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         if self.retained.as_ref() != Some(intent)
             || self.home.is_some()
             || self.applications.is_some()
@@ -167,7 +167,7 @@ impl PreparedMedia {
         let prepared = offline::reseal_computer_applications(self, composite, cancel)?;
         intent.for_media()?;
         prepared.validate_for_write(cancel)?;
-        super::super::super::migration::check_cancel(cancel)?;
+        imager_backend::migration::check_cancel(cancel)?;
         *generation = Some(prepared.clone());
         Ok(prepared)
     }

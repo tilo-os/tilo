@@ -38,7 +38,7 @@ pub(crate) struct ReviewedFullOs {
     pub facts: HostFacts,
     pub plan: Plan,
     pub profile: crate::model::InstallProfile,
-    pub migration: Option<super::migration_intent::MigrationIntent>,
+    pub migration: Option<imager_backend::setup::migration_intent::MigrationIntent>,
     /// Present when a protected handoff was prepared. Interactive setups
     /// defer identity and credential capture to the destination's first boot,
     /// so this is absent rather than carrying plaintext or another machine's
@@ -172,7 +172,7 @@ fn live_component_paths(_: &SelectedManifest) -> Result<ComponentPaths, String> 
 /// The UI-owned description of the next `stage` the consumer runs.
 #[derive(Clone)]
 struct Intent {
-    migration: Option<super::migration_intent::MigrationIntent>,
+    migration: Option<imager_backend::setup::migration_intent::MigrationIntent>,
     profile: serde_json::Map<String, serde_json::Value>,
     prepared_setup: Option<super::staging::prepared_setup::PreparedArtifact>,
     prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
@@ -445,7 +445,7 @@ fn stage_request(
         .transpose()
         .map_err(|error| refusal("migration-changed", error.to_string()))?;
     if let (Some(raw), Some(grant)) = (&migration, &intent.migration) {
-        let source = super::migration_handoff::Plan::parse(
+        let source = imager_backend::setup::migration_handoff::Plan::parse(
             &serde_json::to_vec(raw)
                 .map_err(|error| refusal("migration-changed", error.to_string()))?,
         )
@@ -496,7 +496,7 @@ fn stage_request(
                 .map_err(|error| refusal("migration-changed", error))?;
             intent.prepared_custody = Some(prepared);
         }
-        if source.home_policy == super::migration_handoff::HomePolicy::Copy
+        if source.home_policy == imager_backend::setup::migration_handoff::HomePolicy::Copy
             && (source.categories.home || source.categories.flatpak)
         {
             if plan.shrink.is_some() {
@@ -682,7 +682,7 @@ pub(super) type Task = Box<dyn FnOnce() + Send + 'static>;
 
 /// UI-side state of the Full Tilo installation.
 pub(super) struct InternalInstall {
-    migration_intent: Option<super::migration_intent::MigrationIntent>,
+    migration_intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
     prepared_custody: Option<Arc<super::journey::prepared_media::PreparedMedia>>,
     deferred: bool,
     profile: serde_json::Map<String, serde_json::Value>,
@@ -989,7 +989,7 @@ impl InternalInstall {
     /// [`Self::abort_stage`].
     pub(super) fn set_migration_intent(
         &mut self,
-        intent: Option<super::migration_intent::MigrationIntent>,
+        intent: Option<imager_backend::setup::migration_intent::MigrationIntent>,
     ) -> Result<(), String> {
         if self.is_running() || self.pending().is_some() {
             return Err(
@@ -999,7 +999,7 @@ impl InternalInstall {
         }
         self.minimum_target_bytes = intent.as_ref().map_or(
             super::staging::MIN_TARGET_BYTES,
-            super::migration_intent::MigrationIntent::application_minimum,
+            imager_backend::setup::migration_intent::MigrationIntent::application_minimum,
         );
         self.migration_intent = intent;
         self.recompute();
@@ -1018,8 +1018,10 @@ impl InternalInstall {
         }
         let profile = super::staging::handoff::profile_from_install(&reviewed.profile)?;
         let authenticated_profile =
-            super::prepared_setup::PublicInstallProfile::from_draft(&reviewed.profile)
-                .map_err(|_| refused())?;
+            imager_backend::setup::prepared_setup::PublicInstallProfile::from_draft(
+                &reviewed.profile,
+            )
+            .map_err(|_| refused())?;
         if !reviewed.profile.user.password.is_empty()
             || !reviewed.profile.encryption_passphrase.is_empty()
             || reviewed.facts.basis.as_ref() != Some(&reviewed.plan.basis)
@@ -1042,7 +1044,7 @@ impl InternalInstall {
             .ok_or_else(refused)?;
         let minimum = reviewed.migration.as_ref().map_or(
             super::staging::MIN_TARGET_BYTES,
-            super::migration_intent::MigrationIntent::application_minimum,
+            imager_backend::setup::migration_intent::MigrationIntent::application_minimum,
         );
         if bytes < minimum || !bytes.is_multiple_of(GIB) {
             return Err(refused());
@@ -1435,9 +1437,9 @@ pub(super) mod fixture {
     use crate::setup::staging::plan::{
         Basis, BootEntry, Extent, FirmwareFacts, Shrink, StagedPartition,
     };
-    use crate::setup::staging::platform::{Disk, SystemVolume};
     use crate::setup::staging::probe::Blocker;
     use crate::setup::staging::{BOOT_ENTRY_DESCRIPTION, MIN_TARGET_BYTES};
+    use imager_backend::platform::{Disk, SystemVolume};
 
     pub(in crate::setup) fn basis() -> Basis {
         Basis {
@@ -1702,7 +1704,8 @@ pub(super) mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn selected_application_budget_survives_controller_size_edits_and_reprobe() {
-        let (_source, intent) = super::super::migration_intent::reviewed_app_routing_fixture();
+        let (_source, intent) =
+            imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let minimum = intent.application_minimum().div_ceil(GIB);
         let fakes = Fakes::new(Vec::new());
         let mut install = probed(&fakes, true);
@@ -1722,9 +1725,8 @@ pub(super) mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn guided_review_retains_authenticated_ciphertext_and_refuses_changed_inputs() {
-        use super::super::{
-            journey::prepared_media::PreparedMedia, prepared_identity::PreparedIdentity,
-        };
+        use super::super::journey::prepared_media::PreparedMedia;
+        use imager_backend::prepared_identity::PreparedIdentity;
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
@@ -1741,7 +1743,8 @@ pub(super) mod tests {
         let identity_bytes = std::fs::read(root.join("identity/primary.json")).unwrap();
         let mut profile = crate::model::InstallProfile::default();
         let public =
-            super::super::prepared_setup::PublicInstallProfile::from_draft(&profile).unwrap();
+            imager_backend::setup::prepared_setup::PublicInstallProfile::from_draft(&profile)
+                .unwrap();
         let prepared = PreparedMedia::prepare_for_install(
             &identity,
             None,
