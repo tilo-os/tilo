@@ -19,14 +19,12 @@ use std::time::Duration;
 use fs_native::btrfs;
 use fs_native::hydrate::Fetcher;
 
-fn required() -> bool {
-    std::env::var("TILO_REQUIRE_FANOTIFY").is_ok_and(|v| v == "1")
-}
-
 fn skip(test: &str, why: &str) -> Option<Scratch> {
-    assert!(!required(), "{test}: TILO_REQUIRE_FANOTIFY=1 but {why}");
-    eprintln!(
-        "skipping {test}: {why} (set TILO_FS_NATIVE_STORE to a dedicated Btrfs mount and run as root; TILO_REQUIRE_FANOTIFY=1 makes this mandatory)"
+    tilo_test_env::capability_unavailable(
+        tilo_test_env::Capability::Fanotify,
+        format_args!(
+            "{test}: {why} (set TILO_FS_NATIVE_STORE to a dedicated Btrfs mount and run as root)"
+        ),
     );
     None
 }

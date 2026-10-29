@@ -35,11 +35,10 @@ fn renders() -> bool {
     if render::available() {
         return true;
     }
-    assert!(
-        std::env::var_os("TILO_REQUIRE_MEDIA").is_none(),
-        "the render helper is required: build tilo-video-render"
+    tilo_test_env::capability_unavailable(
+        tilo_test_env::Capability::Media,
+        format_args!("no tilo-video-render beside the test or at $TILO_VIDEO_RENDER"),
     );
-    eprintln!("skipped: no tilo-video-render beside the test or at $TILO_VIDEO_RENDER");
     false
 }
 

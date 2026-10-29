@@ -31,6 +31,7 @@ fuser = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 fuser.workspace = true

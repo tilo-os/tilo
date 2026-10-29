@@ -917,16 +917,18 @@ mod tests {
     use std::io::{Read as _, Write as _};
 
     /// The mount, when this machine can mount FUSE; a missing `/dev/fuse`
-    /// skips, unless `TILO_REQUIRE_FUSE` says this lane has it.
+    /// skips, unless `TILO_REQUIRE_FUSE=1` says this lane has it.
     fn mounted(documents: &Documents) -> Option<(tempfile::TempDir, Mounted)> {
         let at = tempfile::tempdir().unwrap();
         match mount(documents.clone(), &at.path().join("documents")) {
             Ok(mounted) => Some((at, mounted)),
-            Err(error) if std::env::var_os("TILO_REQUIRE_FUSE").is_none() => {
-                eprintln!("skipping: FUSE is unavailable here ({error})");
+            Err(error) => {
+                tilo_test_env::capability_unavailable(
+                    tilo_test_env::Capability::Fuse,
+                    format_args!("mounting the documents failed: {error}"),
+                );
                 None
             }
-            Err(error) => panic!("TILO_REQUIRE_FUSE is set and mounting failed: {error}"),
         }
     }
 
