@@ -443,8 +443,6 @@ decorator_trait! {
         #[doc(hidden)]
         fn resets_callback_binding() -> bool;
         #[doc(hidden)]
-        fn legacy_callback_boundary() -> Option<(NodeId, crate::history_mode::HistoryOwner)>;
-        #[doc(hidden)]
         fn inactive_callback_boundary() -> Option<NodeId>;
         fn native_input_snapshot(state: &AppModel, path: &ModelPath) -> Option<serde_json::Value>;
         fn callback_binding() -> Option<crate::bound_dispatch::CallbackBinding>;
@@ -526,7 +524,7 @@ decorator_trait! {
             reason = "finite toolkit resource ownership requests"
         )]
         fn visit_resource_owners(
-            request: &mut crate::bound_dispatch::legacy_document::ResourceReadRequest<'_>,
+            request: &mut crate::bound_dispatch::local_target::ResourceReadRequest<'_>,
         ) -> Result<(), tilo_actions::DoorError>;
     }
 
@@ -625,14 +623,6 @@ decorator_trait! {
         fn mount_native_views(host: &crate::widget::native_view::NativeViewHost<'_>);
         fn native_view_frame_start();
         fn unmount_native_views();
-        #[doc(hidden)]
-        #[allow(
-            private_interfaces,
-            reason = "finite toolkit resource ownership requests"
-        )]
-        fn visit_resource_owners_mut(
-            request: &mut crate::bound_dispatch::legacy_document::ResourceRequest<'_>,
-        ) -> Result<(), tilo_actions::DoorError>;
     }
 }
 

@@ -3132,20 +3132,6 @@ impl RecordStore {
         Ok(())
     }
 
-    /// Resolve legacy tile intent without panicking on an overlapping record borrow.
-    /// Canonical stores retain their Existing-only identity/storage errors;
-    /// legacy stores retain the existing open/create behavior.
-    pub(crate) fn open_record_checked(&self, want: &RecordCheckout) -> Result<(), RecordOpenError> {
-        let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
-        if set.backend.is_some() || set.portable.is_some() {
-            return set.try_open_record_with_recovery(want, false).map(|_| ());
-        }
-        set.open_record(want, None);
-        set.document_mut(&want.id)
-            .map(|_| ())
-            .ok_or(RecordOpenError::MissingRecord)
-    }
-
     /// Existing-only admission for presentation owners. Loads a saved graph
     /// without seeding missing content. Package-global records retain the
     /// existing explicit one-room migration claim and their original history.
@@ -3248,20 +3234,6 @@ impl RecordStore {
     /// Exact runtime owner identity; namespace equality is insufficient for reentry.
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
         std::rc::Rc::ptr_eq(&self.0, &other.0)
-    }
-
-    pub(crate) fn verified_checkout(
-        &self,
-        id: &RecordId,
-    ) -> Result<RecordCheckout, RecordOpenError> {
-        let set = self.0.try_borrow().map_err(|_| RecordOpenError::Busy)?;
-        let slot = set.open.get(id).ok_or(RecordOpenError::MissingRecord)?;
-        let doc = slot.doc.as_ref().ok_or(RecordOpenError::Busy)?;
-        let checkout = identity(doc).ok_or(RecordOpenError::IdentityMismatch)?;
-        if checkout.id != *id || checkout.kind != slot.kind {
-            return Err(RecordOpenError::IdentityMismatch);
-        }
-        Ok(checkout)
     }
 
     pub(crate) fn admission(

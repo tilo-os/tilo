@@ -29,7 +29,7 @@ impl super::App {
         lease: Option<PublishedInvocationLease>,
     ) -> Result<Option<ResourceInvocationScope>, tilo_actions::DoorError> {
         let Some(lease) = lease else { return Ok(None) };
-        use crate::bound_dispatch::legacy_document::{LocalResourceTarget, select_local_target};
+        use crate::bound_dispatch::local_target::{LocalResourceTarget, select_local_target};
         let scope = if let Some(target) = self
             .actions
             .bound_publication
@@ -41,9 +41,6 @@ impl super::App {
             match select_local_target(self.root_widget.as_ref(), &self.state.doc, address)? {
                 LocalResourceTarget::Component(target) => {
                     ResourceInvocationScope::for_bound_target(target, lease)
-                }
-                LocalResourceTarget::Legacy(target) => {
-                    ResourceInvocationScope::for_owner(target.owner, lease)
                 }
                 LocalResourceTarget::Outer => {
                     return Err(tilo_actions::DoorError::Failed(

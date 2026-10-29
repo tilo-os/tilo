@@ -210,8 +210,6 @@ pub(crate) struct HostDocument<'a> {
     pub(crate) state: &'a mut crate::State,
     pub(crate) bindings: &'a crate::bound_dispatch::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
-    pub(crate) permissions: &'a crate::permissions::PermissionContext,
-    pub(crate) author: &'a crate::permissions::UserId,
 }
 
 pub(crate) trait HostCore {
@@ -395,7 +393,6 @@ pub(crate) trait HostCore {
     fn dispatch_semantic_node<R>(
         &mut self,
         node: NodeId,
-        action: &crate::a11y::Action,
         callback: impl FnOnce(&mut dyn Widget, &mut automerge::AutoCommit, &automerge::ObjId) -> R,
     ) -> Result<R, String> {
         self.widget_reached();
@@ -406,12 +403,7 @@ pub(crate) trait HostCore {
                 document.bindings,
                 document.node_map,
                 node,
-                action,
                 document.state,
-                crate::bound_dispatch::SemanticCaller {
-                    authority: document.permissions,
-                    author: document.author,
-                },
                 callback,
             )
         }

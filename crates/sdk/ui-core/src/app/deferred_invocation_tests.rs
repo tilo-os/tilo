@@ -135,7 +135,7 @@ fn deferred_actual_component_close_refuses_before_mint() {
     for native in [true, false] {
         let (widget, calls, _) = deferred_fixture();
         let ledger = widget.ledger.clone();
-        let (root, guard) = owned(widget, true);
+        let (root, guard) = owned(widget);
         let mut host = Host::new(native, guard.managed(root));
         host.activate("Emit request");
         guard.close();
@@ -213,10 +213,8 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
         spec.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::None;
     }
     let ledger = widget.ledger.clone();
-    let (root, guard) = owned(widget, true);
-    let OwnerGuard::Component { binding, .. } = &guard else {
-        unreachable!()
-    };
+    let (root, guard) = owned(widget);
+    let binding = &guard.binding;
     let target = crate::bound_dispatch::BoundActionTarget {
         input: crate::bound_dispatch::Input::Discrete,
         binding: binding.clone(),

@@ -26,12 +26,12 @@ pub(crate) enum OwnedDocumentPublication {
     },
 }
 
-pub(crate) struct LegacyHistoryLifetime {
+pub(crate) struct RecordOwnerLifetime {
     pub(crate) active: Cell<bool>,
     id: uuid::Uuid,
     pub(crate) control_domain: crate::ControlDomain,
 }
-impl LegacyHistoryLifetime {
+impl RecordOwnerLifetime {
     pub(crate) fn new() -> Rc<Self> {
         Rc::new(Self {
             active: Cell::new(true),
@@ -51,10 +51,10 @@ pub struct HistoryOwner(pub(crate) OwnerKind);
 )]
 pub(crate) enum OwnerKind {
     Component(CallbackBinding),
-    Legacy {
+    Record {
         store: RecordStore,
         checkout: RecordCheckout,
-        lifetime: Weak<LegacyHistoryLifetime>,
+        lifetime: Weak<RecordOwnerLifetime>,
     },
 }
 impl HistoryOwner {
@@ -64,7 +64,7 @@ impl HistoryOwner {
                 .enter()
                 .map(|_| ())
                 .map_err(|error| format!("{error:?}")),
-            OwnerKind::Legacy { lifetime, .. } => {
+            OwnerKind::Record { lifetime, .. } => {
                 if lifetime.upgrade().is_some_and(|life| life.active.get()) {
                     Ok(())
                 } else {
@@ -76,12 +76,19 @@ impl HistoryOwner {
     pub(crate) fn component(binding: CallbackBinding) -> Self {
         Self(OwnerKind::Component(binding))
     }
-    pub(crate) fn legacy(
+    /// The mounted component this owner is, if it is one.
+    pub(crate) fn component_binding(&self) -> Option<&CallbackBinding> {
+        match &self.0 {
+            OwnerKind::Component(binding) => Some(binding),
+            OwnerKind::Record { .. } => None,
+        }
+    }
+    pub(crate) fn record(
         store: RecordStore,
         checkout: RecordCheckout,
-        lifetime: &Rc<LegacyHistoryLifetime>,
+        lifetime: &Rc<RecordOwnerLifetime>,
     ) -> Self {
-        Self(OwnerKind::Legacy {
+        Self(OwnerKind::Record {
             store,
             checkout,
             lifetime: Rc::downgrade(lifetime),
@@ -90,7 +97,7 @@ impl HistoryOwner {
     pub(crate) fn lifetime_id(&self) -> Option<uuid::Uuid> {
         match &self.0 {
             OwnerKind::Component(binding) => Some(binding.lifetime_id),
-            OwnerKind::Legacy { lifetime, .. } => lifetime
+            OwnerKind::Record { lifetime, .. } => lifetime
                 .upgrade()
                 .filter(|life| life.active.get())
                 .map(|life| life.id),
@@ -100,12 +107,12 @@ impl HistoryOwner {
         match (&self.0, &other.0) {
             (OwnerKind::Component(a), OwnerKind::Component(b)) => a.same_component(b),
             (
-                OwnerKind::Legacy {
+                OwnerKind::Record {
                     store: a,
                     checkout: ac,
                     lifetime: al,
                 },
-                OwnerKind::Legacy {
+                OwnerKind::Record {
                     store: b,
                     checkout: bc,
                     lifetime: bl,
@@ -122,7 +129,7 @@ impl HistoryOwner {
                     .map_err(|_| HistoryRegistrationError::UnsupportedOwner)?;
                 (&binding.records, &binding.checkout)
             }
-            OwnerKind::Legacy {
+            OwnerKind::Record {
                 store,
                 checkout,
                 lifetime,
@@ -149,7 +156,7 @@ impl HistoryOwner {
                 }
                 (&binding.records, &binding.checkout, binding.lifetime_id)
             }
-            OwnerKind::Legacy {
+            OwnerKind::Record {
                 store,
                 checkout,
                 lifetime,
@@ -189,7 +196,7 @@ impl HistoryOwner {
             OwnerKind::Component(binding) => binding
                 .read_document(outer, |doc, _| doc.base_heads())
                 .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
-            OwnerKind::Legacy {
+            OwnerKind::Record {
                 store, checkout, ..
             } => store
                 .read_checked(&checkout.id, |doc| doc.base_heads())
@@ -210,7 +217,7 @@ impl HistoryOwner {
                     doc.clone()
                 })
                 .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
-            OwnerKind::Legacy {
+            OwnerKind::Record {
                 store, checkout, ..
             } => store
                 .read_checked(&checkout.id, |doc| {
@@ -281,7 +288,7 @@ impl HistoryOwner {
                     )
                 })
                 .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
-            OwnerKind::Legacy {
+            OwnerKind::Record {
                 store,
                 checkout,
                 lifetime,
@@ -324,8 +331,8 @@ mod publication_tests {
             live.id.clone(),
             crate::record::RecordKind::new("different-kind"),
         );
-        let lifetime = LegacyHistoryLifetime::new();
-        let owner = HistoryOwner::legacy(store, stale, &lifetime);
+        let lifetime = RecordOwnerLifetime::new();
+        let owner = HistoryOwner::record(store, stale, &lifetime);
 
         assert!(matches!(
             owner.prepare_publication(&AutoCommit::new(), &[], true, false),
@@ -343,7 +350,7 @@ impl HistoryOwner {
     pub(crate) fn store_checkout(&self) -> (&RecordStore, &RecordCheckout) {
         match &self.0 {
             OwnerKind::Component(binding) => (&binding.records, &binding.checkout),
-            OwnerKind::Legacy {
+            OwnerKind::Record {
                 store, checkout, ..
             } => (store, checkout),
         }
@@ -360,7 +367,7 @@ impl HistoryOwner {
         self.validate().ok()?;
         match &self.0 {
             OwnerKind::Component(binding) => binding.broker_route(),
-            OwnerKind::Legacy {
+            OwnerKind::Record {
                 store, checkout, ..
             } => {
                 let (_, package, workspace) = store.history_namespace(&checkout.id).ok()?;
@@ -402,7 +409,7 @@ impl HistoryOwner {
             OwnerKind::Component(binding) => {
                 operation(&binding.permissions.borrow(), &binding.author)
             }
-            OwnerKind::Legacy { .. } => operation(fallback_authority, fallback_author),
+            OwnerKind::Record { .. } => operation(fallback_authority, fallback_author),
         }
     }
 
@@ -422,14 +429,14 @@ impl HistoryOwner {
         })?;
         match &self.0 {
             OwnerKind::Component(binding) => binding.restore_write(outer, admitted, write),
-            OwnerKind::Legacy {
+            OwnerKind::Record {
                 store, checkout, ..
-            } => crate::bound_dispatch::restore_legacy_history(store, checkout, admitted, write),
+            } => crate::bound_dispatch::restore_record_history(store, checkout, admitted, write),
         }
     }
 
     /// See [`crate::bound_dispatch::CallbackBinding::close_open_step`]. A
-    /// legacy tile keeps no open step.
+    /// record owner outside a component keeps no open step.
     pub(crate) fn close_open_step(&self, outer: &mut AutoCommit) {
         if let OwnerKind::Component(binding) = &self.0
             && let Err(error) = binding.close_open_step(outer)
@@ -439,7 +446,7 @@ impl HistoryOwner {
     }
 
     /// See [`crate::bound_dispatch::CallbackBinding::close_named_step`].
-    /// Whether nothing unfinished is left open; a legacy tile keeps no step.
+    /// Whether nothing unfinished is left open; a record owner outside a component keeps no step.
     pub(crate) fn close_named_step(&self, outer: &mut AutoCommit) -> bool {
         match &self.0 {
             OwnerKind::Component(binding) => {
@@ -448,7 +455,7 @@ impl HistoryOwner {
                     false
                 })
             }
-            OwnerKind::Legacy { .. } => false,
+            OwnerKind::Record { .. } => false,
         }
     }
 
@@ -458,8 +465,57 @@ impl HistoryOwner {
     }
 }
 
-impl Drop for LegacyHistoryLifetime {
+impl Drop for RecordOwnerLifetime {
     fn drop(&mut self) {
         self.control_domain.close();
+    }
+}
+
+/// A stored record in a temporary profile and the owner a test opens scopes
+/// and History sources for.
+#[cfg(test)]
+pub(crate) struct RecordOwnerFixture {
+    _temp: tempfile::TempDir,
+    _owners: crate::record::RecordOwners,
+    pub(crate) store: RecordStore,
+    pub(crate) checkout: RecordCheckout,
+    pub(crate) owner: HistoryOwner,
+    _lifetime: Rc<RecordOwnerLifetime>,
+}
+
+#[cfg(test)]
+impl RecordOwnerFixture {
+    /// Record `id` of `so.tilo.controlled` in `room`, holding `value: 1` and
+    /// `owner: id`, with invocation provenance required.
+    pub(crate) fn in_room(id: u64, room: &str) -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let mut owners = crate::record::RecordOwners::new(temp.path().join("profile"));
+        let store = owners.open("so.tilo.controlled", room).unwrap();
+        let checkout = RecordCheckout::new(
+            crate::RecordId::for_tab(id),
+            crate::record::RecordKind::new("controlled"),
+        );
+        store
+            .reserve_record(&checkout)
+            .unwrap()
+            .initialize(|doc| {
+                doc.put(automerge::ROOT, "value", 1)
+                    .map_err(|e| e.to_string())?;
+                doc.put(automerge::ROOT, "owner", id)
+                    .map_err(|e| e.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        store.require_invocation_provenance(&checkout).unwrap();
+        let lifetime = RecordOwnerLifetime::new();
+        let owner = HistoryOwner::record(store.clone(), checkout.clone(), &lifetime);
+        Self {
+            _temp: temp,
+            _owners: owners,
+            store,
+            checkout,
+            owner,
+            _lifetime: lifetime,
+        }
     }
 }

@@ -193,7 +193,7 @@ pub(crate) fn capture_history_target(
         return Err(HistoryError::Unavailable);
     }
     Ok(binding.map_or_else(
-        || HistoryTarget::Legacy {
+        || HistoryTarget::Outer {
             app_id: crate::collaboration::local_app_id(),
             record: records.and_then(|records| records.active()).cloned(),
             document_identity,
@@ -2120,7 +2120,7 @@ mod tests {
         published_invoke(&mut host, &context, restore_address, None, false).unwrap();
         let confirmed = host.take_confirmed_restore().unwrap();
         assert_eq!(encode_entry(confirmed.review.entry), entry);
-        assert!(matches!(confirmed.target, HistoryTarget::Legacy {
+        assert!(matches!(confirmed.target, HistoryTarget::Outer {
             app_id, record: None, document_identity,
         } if app_id == "notes" && document_identity == identity));
         assert!(!confirmed.review.target_heads().is_empty());
@@ -2350,7 +2350,7 @@ mod tests {
 
     fn remember(host: &mut StandaloneHistoryHost, identity: uuid::Uuid) {
         host.remember_content_target(
-            Ok(HistoryTarget::Legacy {
+            Ok(HistoryTarget::Outer {
                 app_id: "notes".into(),
                 record: None,
                 document_identity: identity,

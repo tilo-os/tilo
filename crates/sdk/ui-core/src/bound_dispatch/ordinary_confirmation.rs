@@ -2,7 +2,7 @@
 use super::{
     AutoCommit, ControlContinuationArguments, DeferredIntent, OrdinaryConfirmation,
     OrdinaryConfirmationSnapshot, PreparedActionIntent, Widget, control_input_surface,
-    encode_resource_action, legacy_document, resources_for_control_target, unique_control_spec,
+    encode_resource_action, local_target, resources_for_control_target, unique_control_spec,
     validate_deferred_arguments,
 };
 
@@ -10,7 +10,7 @@ impl OrdinaryConfirmation {
     pub(crate) fn prepare(
         root: &dyn Widget,
         doc: &AutoCommit,
-        target: legacy_document::LocalResourceTarget,
+        target: local_target::LocalResourceTarget,
         domain: &crate::ControlDomain,
         address: tilo_actions::ActionAddress,
         arguments: ControlContinuationArguments,

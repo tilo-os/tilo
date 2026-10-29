@@ -629,7 +629,7 @@ struct HostLayout {
 /// write what the last one wrote, so it runs neither (the live App syncs
 /// only when something set `needs_sync` in the same way). Anything this does
 /// not follow keeps every frame loud: framework History, palettes and search
-/// presented, legacy tiles, uncommitted documents.
+/// presented, record owners outside a component, uncommitted documents.
 struct FrameWitness {
     local_epoch: u64,
     document: (Vec<automerge::ChangeHash>, usize),
@@ -2068,16 +2068,6 @@ impl FrameHarness {
                 request,
                 &self.action_registry,
             )
-        } else if let Some(owner) = self.focused.and_then(|node| self.bindings.legacy_for(node)) {
-            crate::bound_dispatch::legacy_history_request(
-                &owner,
-                request,
-                &self.permissions,
-                &author,
-            )
-            .ok()
-            .flatten()
-            .is_some()
         } else {
             match request {
                 crate::undo::UndoRequest::Undo => {
@@ -2108,11 +2098,6 @@ impl FrameHarness {
             .or_else(|| self.root.callback_binding())
         {
             binding.undo_status(&mut self.state.doc).unwrap_or_default()
-        } else if let Some(status) = self
-            .focused
-            .and_then(|node| self.bindings.legacy_status(node, &self.author))
-        {
-            status
         } else {
             self.state.undo_status(Some(&self.author))
         }
@@ -2138,15 +2123,11 @@ impl FrameHarness {
                     |widget| crate::undo::take_undo_request(widget),
                 )
             } {
-                requests.push((
-                    self.bindings.binding_for(node),
-                    self.bindings.legacy_for(node),
-                    req,
-                ));
+                requests.push((self.bindings.binding_for(node), req));
             }
         }
         let mut acted = false;
-        for (binding, legacy, req) in requests {
+        for (binding, req) in requests {
             acted |= if let Some(binding) = binding {
                 Self::history_through_component(
                     &mut *self.root,
@@ -2155,16 +2136,6 @@ impl FrameHarness {
                     req,
                     &self.action_registry,
                 )
-            } else if let Some(owner) = legacy {
-                crate::bound_dispatch::legacy_history_request(
-                    &owner,
-                    req,
-                    &self.permissions,
-                    &self.author,
-                )
-                .ok()
-                .flatten()
-                .is_some()
             } else {
                 match req {
                     crate::undo::UndoRequest::Undo => self.perform_undo(),
@@ -2298,7 +2269,6 @@ impl FrameHarness {
             && !self.search_pending
             && self.caller_palette.palette.is_none()
             && !self.has_pending_owner_models()
-            && !self.bindings.has_legacy()
     }
 
     /// What this frame's bookkeeping reads that no frame sees change.
@@ -2378,8 +2348,6 @@ impl FrameHarness {
             }
         } else if self.records.is_some() || self.record_persistence.is_some() {
             "ui.loud.records"
-        } else if self.bindings.has_legacy() {
-            "ui.loud.legacy"
         } else {
             "ui.loud.palette_or_search"
         }
@@ -2598,13 +2566,6 @@ impl FrameHarness {
             &snapshots,
             &host_doors,
         );
-        if let Err(error) = crate::bound_dispatch::legacy_document::refresh_legacy_controls(
-            self.root.as_mut(),
-            &self.permissions,
-            &self.author,
-        ) {
-            tracing::warn!(%error, "headless legacy availability refused");
-        }
         let embedded = crate::history_mode::embedded::has_surfaces(self.root.as_ref());
         // Preserve the legacy status boundary only outside managed History composition.
         if !embedded
@@ -2648,19 +2609,17 @@ impl FrameHarness {
             // What follows enters each owner's scope itself.
             controls.leave();
             // Preserve bound history label warming across pending edits.
-            let bound_status = binding
-                .map(|binding| {
-                    if let Some((_, status)) = bound_statuses
-                        .iter()
-                        .find(|(seen, _)| seen.same_component(binding))
-                    {
-                        return status.clone();
-                    }
-                    let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
-                    bound_statuses.push((binding.clone(), status.clone()));
-                    status
-                })
-                .or_else(|| self.bindings.legacy_status(node, &self.author));
+            let bound_status = binding.map(|binding| {
+                if let Some((_, status)) = bound_statuses
+                    .iter()
+                    .find(|(seen, _)| seen.same_component(binding))
+                {
+                    return status.clone();
+                }
+                let status = binding.undo_status(&mut self.state.doc).unwrap_or_default();
+                bound_statuses.push((binding.clone(), status.clone()));
+                status
+            });
             let mut status = || {
                 bound_status.clone().unwrap_or_else(|| {
                     outer_status
@@ -5456,7 +5415,7 @@ impl FrameHarness {
             )
         };
         let handled = self
-            .dispatch_semantic_node(taffy_id, action, |widget, doc, root| {
+            .dispatch_semantic_node(taffy_id, |widget, doc, root| {
                 if let Some(target) = semantic_target.as_deref() {
                     crate::a11y_child_route::perform(
                         widget,
@@ -5793,7 +5752,7 @@ impl FrameHarness {
             self.state.doc.get_heads()
         };
         let handled = self
-            .dispatch_semantic_node(node, action, |widget, doc, root| {
+            .dispatch_semantic_node(node, |widget, doc, root| {
                 if let Some(target) = semantic_target {
                     let mut edits = crate::widget::Edits::lend(doc);
                     crate::a11y_child_route::perform(widget, target, action, &mut edits, root)
@@ -6323,14 +6282,6 @@ impl FrameHarness {
             &self.state.doc,
             &mut resources,
         );
-        if let Ok(legacy) = crate::bound_dispatch::legacy_document::legacy_resources(
-            self.root.as_ref(),
-            &self.permissions,
-            &self.author,
-            false,
-        ) {
-            resources.extend(legacy);
-        }
         let mut semantics = crate::a11y_tree::SemanticTree::new();
         semantics.refresh_bound(
             self.root.as_ref(),
@@ -6883,7 +6834,6 @@ impl FrameHarness {
                         self.node_map.keys().copied(),
                         &self.bindings,
                         &author,
-                        &self.permissions,
                     );
                 }
             } else if !kept_view_only {
@@ -7030,7 +6980,6 @@ impl FrameHarness {
                 self.node_map.keys().copied(),
                 &self.bindings,
                 &author,
-                &self.permissions,
             );
         }
     }
@@ -7748,7 +7697,7 @@ impl FrameHarness {
 
     fn open_ordinary_confirmation(
         &mut self,
-        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        target: crate::bound_dispatch::local_target::LocalResourceTarget,
         intent: &tilo_actions::ControlInvocation,
     ) {
         self.ask_person(target, intent, false);
@@ -7759,7 +7708,7 @@ impl FrameHarness {
     /// asked for a pick of theirs, as the window's host does.
     fn ask_person(
         &mut self,
-        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        target: crate::bound_dispatch::local_target::LocalResourceTarget,
         intent: &tilo_actions::ControlInvocation,
         confirming: bool,
     ) {
@@ -8003,7 +7952,7 @@ impl FrameHarness {
     ) {
         if origin == crate::bound_dispatch::Origin::PersonConfirming && on_behalf_of.is_none() {
             self.ask_person(
-                crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target),
+                crate::bound_dispatch::local_target::LocalResourceTarget::Component(target),
                 intent,
                 true,
             );
@@ -8066,7 +8015,7 @@ impl FrameHarness {
             // prompted to confirm another invoker's edit.
             Err(tilo_actions::DoorError::ConfirmationRequired) if acting.is_none() => {
                 self.open_ordinary_confirmation(
-                    crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target),
+                    crate::bound_dispatch::local_target::LocalResourceTarget::Component(target),
                     intent,
                 );
             }
@@ -8080,117 +8029,6 @@ impl FrameHarness {
             Err(error) => {
                 tracing::warn!(code = error.code(), %error, ?origin, "headless: bound control refused");
                 self.control_failures.push(error.to_string());
-            }
-        }
-    }
-
-    fn dispatch_legacy_control(
-        &mut self,
-        target: &crate::bound_dispatch::legacy_document::LegacyResourceTarget,
-        intent: &tilo_actions::ControlInvocation,
-    ) {
-        use crate::bound_dispatch::legacy_document::{
-            LegacyDocumentServices, LegacyInvocation, authorize_legacy_operation,
-            invoke_legacy_document, invoke_legacy_effect, resolve_legacy_invocation,
-        };
-        let invocation = tilo_actions::InvocationId::new();
-        let result = (|| {
-            let resources = resolve_legacy_invocation(self.root.as_ref(), target)?;
-            let (arguments, _, spec) = crate::bound_dispatch::resolve_resource_invocation(
-                &resources,
-                &target.address,
-                None,
-                Some(&intent.arguments),
-                false,
-            )?;
-            if spec.kind == tilo_actions::OperationKind::Document {
-                let _ = invoke_legacy_document(
-                    self.root.as_mut(),
-                    target,
-                    LegacyDocumentServices {
-                        registry: &self.action_registry,
-                        transport: self.action_transport.as_mut(),
-                        qualified_local_transport: true,
-                        authority: &self.permissions,
-                        author: &self.author,
-                    },
-                    LegacyInvocation {
-                        argument: None,
-                        arguments: Some(&intent.arguments),
-                        actor: &self.author.0,
-                        broker_admitted: false,
-                        ambient: None,
-                    },
-                    None,
-                )?;
-                return Ok(crate::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                ));
-            }
-            authorize_legacy_operation(target, &self.permissions, spec)?;
-            let encoded = crate::bound_dispatch::encode_resource_action(
-                &resources,
-                &target.address,
-                arguments.as_ref(),
-                None,
-            )?;
-            let result = if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
-                crate::session_door::start_application_launch(
-                    session_door(&mut self.session_door),
-                    None,
-                    &encoded.payload,
-                    invocation,
-                    false,
-                )?
-            } else {
-                invoke_legacy_effect(
-                    self.root.as_mut(),
-                    target,
-                    invocation,
-                    spec.kind,
-                    &encoded,
-                    &mut self.state.doc,
-                    None,
-                )?
-            };
-            match &result {
-                crate::widget::ResourceOperationStart::Accepted
-                    if spec.contract.execution == tilo_actions::ExecutionMode::Immediate =>
-                {
-                    return Err(tilo_actions::DoorError::Failed(
-                        "Immediate operation remained pending".into(),
-                    ));
-                }
-                crate::widget::ResourceOperationStart::Completed(output) => spec
-                    .contract
-                    .result
-                    .validate(output)
-                    .map_err(tilo_actions::DoorError::Failed)?,
-                crate::widget::ResourceOperationStart::Accepted => {}
-            }
-            Ok(result)
-        })();
-        if let Err(error) =
-            crate::bound_dispatch::legacy_document::notify_legacy_control_invocation_result(
-                self.root.as_mut(),
-                target,
-                &result,
-            )
-        {
-            tracing::warn!(%error, "headless: legacy control feedback unavailable");
-        }
-        match result {
-            Ok(crate::widget::ResourceOperationStart::Accepted) => {
-                self.pending_control_invocations.insert(invocation);
-            }
-            Ok(_) => {}
-            Err(tilo_actions::DoorError::ConfirmationRequired) => self.open_ordinary_confirmation(
-                crate::bound_dispatch::legacy_document::LocalResourceTarget::Legacy(target.clone()),
-                intent,
-            ),
-            Err(error) => {
-                tracing::warn!(%error, "headless legacy action refused");
-                self.refuse_visibly(&error);
             }
         }
     }
@@ -8251,12 +8089,12 @@ impl FrameHarness {
 
     fn dispatch_local_control(
         &mut self,
-        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        target: crate::bound_dispatch::local_target::LocalResourceTarget,
         address: &tilo_actions::ActionAddress,
         original: &crate::bound_dispatch::ControlContinuationArguments,
         confirmed: bool,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        use crate::bound_dispatch::legacy_document::LocalResourceTarget;
+        use crate::bound_dispatch::local_target::LocalResourceTarget;
         let (argument, json) = original.as_door_arguments();
         let invocation_id = tilo_actions::InvocationId::new();
         let started = match target {
@@ -8287,91 +8125,6 @@ impl FrameHarness {
                     self.bound_invocations.insert(invocation_id, target);
                 }
                 result
-            }
-            LocalResourceTarget::Legacy(target) => {
-                use crate::bound_dispatch::legacy_document::{
-                    LegacyDocumentServices, LegacyInvocation, authorize_legacy_operation,
-                    invoke_legacy_document, invoke_legacy_effect, resolve_legacy_invocation,
-                };
-                let resources = resolve_legacy_invocation(self.root.as_ref(), &target)?;
-                let (arguments, _, spec) = crate::bound_dispatch::resolve_resource_invocation(
-                    &resources,
-                    &target.address,
-                    argument,
-                    json,
-                    confirmed,
-                )?;
-                if spec.kind == tilo_actions::OperationKind::Document {
-                    invoke_legacy_document(
-                        self.root.as_mut(),
-                        &target,
-                        LegacyDocumentServices {
-                            registry: &self.action_registry,
-                            transport: self.action_transport.as_mut(),
-                            qualified_local_transport: true,
-                            authority: &self.permissions,
-                            author: &self.author,
-                        },
-                        LegacyInvocation {
-                            argument,
-                            arguments: json,
-                            actor: &self.author.0,
-                            broker_admitted: false,
-                            ambient: None,
-                        },
-                        None,
-                    )?;
-                    crate::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput::default(),
-                    )
-                } else {
-                    authorize_legacy_operation(&target, &self.permissions, spec)?;
-                    let encoded = crate::bound_dispatch::encode_resource_action(
-                        &resources,
-                        &target.address,
-                        arguments.as_ref(),
-                        argument,
-                    )?;
-                    let result = if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE
-                    {
-                        crate::session_door::start_application_launch(
-                            session_door(&mut self.session_door),
-                            None,
-                            &encoded.payload,
-                            invocation_id,
-                            false,
-                        )?
-                    } else {
-                        invoke_legacy_effect(
-                            self.root.as_mut(),
-                            &target,
-                            invocation_id,
-                            spec.kind,
-                            &encoded,
-                            &mut self.state.doc,
-                            None,
-                        )?
-                    };
-                    match &result {
-                        crate::widget::ResourceOperationStart::Accepted
-                            if spec.contract.execution
-                                == tilo_actions::ExecutionMode::Immediate =>
-                        {
-                            return Err(tilo_actions::DoorError::Failed(
-                                "Immediate operation remained pending".into(),
-                            ));
-                        }
-                        crate::widget::ResourceOperationStart::Completed(output) => spec
-                            .contract
-                            .result
-                            .validate(output)
-                            .map_err(tilo_actions::DoorError::Failed)?,
-                        crate::widget::ResourceOperationStart::Accepted => {
-                            self.pending_control_invocations.insert(invocation_id);
-                        }
-                    }
-                    result
-                }
             }
             LocalResourceTarget::Outer => {
                 let mut resources = Vec::new();
@@ -8487,18 +8240,6 @@ impl FrameHarness {
             self.dispatch_bound_control(target, &intent, on_behalf_of, origin);
         }
 
-        let batch =
-            crate::bound_dispatch::legacy_document::drain_legacy_controls(self.root.as_mut());
-        for error in batch.failures {
-            tracing::warn!(%error, "headless legacy drain refused");
-        }
-        for (target, intent) in registered.legacy.into_iter().chain(batch.controls) {
-            if !self.take_search_invocation(&intent)
-                && !self.take_history_invocation(&intent, Some(target.owner.clone()))
-            {
-                self.dispatch_legacy_control(&target, &intent);
-            }
-        }
         while let Some((intent, on_behalf_of)) = registered
             .outer
             .pop_front()
@@ -8522,7 +8263,7 @@ impl FrameHarness {
                 .as_ref()
                 .map(crate::invocation_scope::Continuation::enter);
             // The remaining controls originated in the outer document. Never
-            // reselect a matching component or legacy owner from their address.
+            // reselect a matching component owner from their address.
             let mut resources = Vec::new();
             crate::bound_dispatch::collect_unbound_resources(
                 self.root.as_ref(),
@@ -8619,7 +8360,7 @@ impl FrameHarness {
                 Ok(crate::widget::ResourceOperationStart::Completed(_)) => {}
                 Err(tilo_actions::DoorError::ConfirmationRequired) if acting.is_none() => self
                     .open_ordinary_confirmation(
-                        crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer,
+                        crate::bound_dispatch::local_target::LocalResourceTarget::Outer,
                         &intent,
                     ),
                 Err(error) if acting.is_none() => {
@@ -9926,8 +9667,6 @@ impl crate::host_core::HostCore for FrameHarness {
             state: &mut self.state,
             bindings: &self.bindings,
             node_map: &self.node_map,
-            permissions: &self.permissions,
-            author: &self.author,
         }
     }
 
@@ -10582,35 +10321,6 @@ mod tests {
         .expect("valid controlled History registration")
     }
 
-    fn controlled_owned_root(
-        record: u64,
-    ) -> (Box<dyn Widget>, crate::history_mode::HistoryRegistration) {
-        let store = crate::record::RecordStore::in_memory();
-        let checkout = crate::record::RecordCheckout::new(
-            crate::RecordId::for_tab(record),
-            crate::record::RecordKind::new("controlled-history"),
-        );
-        let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::Stub {
-            kind: crate::widget::AppKind::Terminal,
-            label: "Controlled owner".into(),
-        });
-        tile.bind_or_create_record(store, checkout);
-        let owner = Widget::history_owner(&tile).expect("bound in-memory owner");
-        let registration = crate::history_mode::HistoryRegistration::new(
-            &CONTROLLED_HISTORY,
-            vec![
-                crate::history_mode::HistorySourceRegistration::owned(
-                    "document",
-                    CONTROLLED_HISTORY.app_id,
-                    owner,
-                )
-                .expect("valid owned source"),
-            ],
-        )
-        .expect("valid owned registration");
-        (Box::new(tile), registration)
-    }
-
     #[test]
     fn controlled_managed_root_installs_history_and_explicit_author() {
         let author = crate::permissions::UserId("controlled-history-author".into());
@@ -10640,38 +10350,6 @@ mod tests {
             .perform_named("history-open", &crate::a11y::Action::Activate)
             .expect("public History target activates");
         assert!(driver.targets().contains_key("activity_timeline"));
-    }
-
-    #[test]
-    fn controlled_managed_root_rejects_mismatched_owner() {
-        let (ordinary_root, _) = controlled_owned_root(920);
-        let (_ordinary_registration_owner, ordinary_registration) = controlled_owned_root(921);
-        let Err(expected) = FrameHarness::from_managed_root(
-            State::new(),
-            crate::history_mode::ManagedRoot::new(ordinary_root, ordinary_registration),
-            (900, 650),
-        ) else {
-            panic!("ordinary managed construction accepted a mismatched owner")
-        };
-
-        let (controlled_root, _) = controlled_owned_root(922);
-        let (_controlled_registration_owner, controlled_registration) = controlled_owned_root(923);
-        let Err(actual) = FrameHarness::from_managed_root_with_controlled_inputs(
-            State::new(),
-            crate::history_mode::ManagedRoot::new(controlled_root, controlled_registration),
-            (900, 650),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("controlled-mismatch-author".into()),
-        ) else {
-            panic!("controlled managed construction accepted a mismatched owner")
-        };
-
-        assert_eq!(
-            expected,
-            crate::history_mode::HistoryRegistrationError::UnsupportedOwner
-        );
-        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -14170,10 +13848,6 @@ mod history_input_frame_tests {
 }
 
 #[cfg(test)]
-#[path = "bound_dispatch/legacy_control_batch_tests.rs"]
-mod legacy_control_batch_tests;
-
-#[cfg(test)]
 mod ordinary_confirmation_owner_tests {
     #[test]
     fn ordinary_confirmation_driver_closed_or_replaced_outer_domain_refuses() {
@@ -14206,276 +13880,6 @@ mod ordinary_confirmation_owner_tests {
                 .unwrap();
             assert!(ledger.borrow().is_empty());
         }
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod legacy_control_feedback_tests {
-    use super::*;
-    use crate::widget::{Column, IconDescriptor, TileContent, TileHost};
-    use std::{
-        cell::{Cell, RefCell},
-        collections::VecDeque,
-        rc::Rc,
-    };
-
-    #[derive(Clone, Default)]
-    pub(crate) struct Observed {
-        pub(crate) results: Rc<RefCell<Vec<(String, bool)>>>,
-        pub(crate) pending: Rc<RefCell<VecDeque<tilo_actions::ControlInvocation>>>,
-        original: Rc<Cell<Option<tilo_actions::InvocationId>>>,
-        terminal: Rc<Cell<Option<bool>>>,
-        pub(crate) receipts: Rc<Cell<usize>>,
-    }
-    impl Observed {
-        pub(crate) fn begin(&self) {
-            self.pending
-                .borrow_mut()
-                .push_back(tilo_actions::ControlInvocation {
-                    address: tilo_actions::ActionAddress::new("feedback:import", "begin"),
-                    arguments: serde_json::Map::new(),
-                });
-        }
-    }
-    struct ImportProbe {
-        observed: Observed,
-        fail: bool,
-        descendants: Column,
-    }
-    impl Widget for ImportProbe {
-        crate::provides!(
-            dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources,
-            dyn crate::widget::ResourceOperations
-        );
-
-        crate::testing::delegate_widget_methods!(
-            descendants: sync,
-            build_layout,
-            apply_layout,
-            draw,
-            get_rect
-        );
-        fn name(&self) -> &str {
-            "Queued import fixture"
-        }
-        fn children(&self) -> Vec<&dyn Widget> {
-            vec![&self.descendants]
-        }
-        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            vec![&mut self.descendants]
-        }
-    }
-
-    impl crate::widget::ResourceOperations for ImportProbe {
-        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            &["feedback.begin"]
-        }
-
-        fn start_operation(
-            &mut self,
-            op: &crate::widget::ResourceOperation<'_>,
-            _: &mut crate::widget::Edits<'_>,
-            _: &automerge::ObjId,
-        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-            let Some(request) = op
-                .unscoped()
-                .filter(|request| request.type_id == "feedback.begin")
-            else {
-                return Ok(None);
-            };
-            self.observed.original.set(Some(request.invocation));
-            self.observed
-                .pending
-                .borrow_mut()
-                .push_back(tilo_actions::ControlInvocation {
-                    address: tilo_actions::ActionAddress::new("feedback:import", "finalize"),
-                    arguments: serde_json::Map::new(),
-                });
-            Ok(Some(crate::widget::ResourceOperationStart::Accepted))
-        }
-
-        fn poll_resource_operation(
-            &mut self,
-            invocation: tilo_actions::InvocationId,
-            _: bool,
-            _: &automerge::AutoCommit,
-            _: &automerge::ObjId,
-        ) -> Option<tilo_actions::InvocationUpdate> {
-            if self.observed.original.get() != Some(invocation) {
-                return None;
-            }
-            let succeeded = self.observed.terminal.take()?;
-            self.observed.original.set(None);
-            self.observed.receipts.set(self.observed.receipts.get() + 1);
-            Some(if succeeded {
-                tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                }
-            } else {
-                tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "finalize_failed".into(),
-                        message: "Canonical import finalizer failed".into(),
-                        details: None,
-                        retryable: false,
-                    },
-                }
-            })
-        }
-    }
-
-    impl crate::resources::PublishesResources for ImportProbe {
-        fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-            let contract = tilo_actions::ActionContract {
-                execution: tilo_actions::ExecutionMode::Background { cancellable: false },
-                result: tilo_actions::ResultSpec::Job,
-                ..tilo_actions::ActionContract::default()
-            };
-            let begin = tilo_actions::ActionSpec::operation(
-                "begin",
-                "Begin",
-                tilo_actions::OperationKind::Effect,
-                "feedback.begin",
-                &(),
-            )
-            .unwrap()
-            .with_contract(contract);
-            let finalize = tilo_actions::ActionSpec::immediate_encoded(
-                "finalize",
-                "Finalize",
-                tilo_actions::ExecutionLocus::ClientLocal,
-                tilo_actions::EncodedAction::encode(
-                    "controlled.legacy",
-                    &crate::bound_dispatch::legacy_document_tests::SetValue {
-                        value: 2,
-                        fail: self.fail,
-                        remote: false,
-                    },
-                )
-                .unwrap(),
-            );
-            vec![
-                tilo_actions::ResourceSpec::new("feedback:import", "import", "Import")
-                    .with_action(begin)
-                    .with_action(finalize),
-            ]
-        }
-    }
-
-    impl crate::widget::controls::ActionControls for ImportProbe {
-        fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-            self.observed.pending.borrow_mut().pop_front()
-        }
-        fn on_control_invocation_result(
-            &mut self,
-            address: &tilo_actions::ActionAddress,
-            result: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
-        ) {
-            self.observed
-                .results
-                .borrow_mut()
-                .push((address.action.clone(), result.is_ok()));
-            if address.action == "finalize" {
-                self.observed.terminal.set(Some(result.is_ok()));
-            }
-            // Exercise ordinary container forwarding after the owning callback.
-            self.descendants
-                .on_control_invocation_result(address, result);
-        }
-        fn has_pending_control_invocation(&self) -> bool {
-            !self.observed.pending.borrow().is_empty()
-        }
-    }
-    crate::testing::test_app_widget!(
-        ImportProbe,
-        "Import fixture",
-        icon = IconDescriptor::Glyph("I")
-    );
-    pub(crate) fn owner(
-        id: u64,
-        fail: bool,
-        nested: Option<TileHost>,
-    ) -> (
-        crate::bound_dispatch::legacy_document_tests::Fixture,
-        TileHost,
-        Observed,
-    ) {
-        let fixture = crate::bound_dispatch::legacy_document_tests::Fixture::new(id);
-        let observed = Observed::default();
-        let mut descendants = Column::new();
-        if let Some(nested) = nested {
-            descendants = descendants.push(Box::new(nested));
-        }
-        let mut tile = TileHost::new(TileContent::App(Box::new(ImportProbe {
-            observed: observed.clone(),
-            fail,
-            descendants,
-        })));
-        tile.bind_record(fixture.store.clone(), fixture.checkout.clone());
-        (fixture, tile, observed)
-    }
-    pub(crate) fn register(registry: &mut tilo_actions::ActionRegistry) {
-        registry.register::<crate::bound_dispatch::legacy_document_tests::SetValue>(
-            "controlled.legacy",
-        );
-    }
-    #[test]
-    fn refused_legacy_queue_is_a_startup_failure_and_does_not_notify_sibling() {
-        let (_owner, tile, seen) = owner(99040, false, None);
-        let (_sibling_owner, sibling, sibling_seen) = owner(99041, false, None);
-        let root = Column::new().push(Box::new(tile)).push(Box::new(sibling));
-        let mut driver = FrameHarness::new_with_controlled_inputs(
-            State::new(),
-            Box::new(root),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("reader".into()),
-        );
-        seen.pending
-            .borrow_mut()
-            .push_back(tilo_actions::ControlInvocation {
-                address: tilo_actions::ActionAddress::new("feedback:import", "missing"),
-                arguments: serde_json::Map::new(),
-            });
-        let failure = drive_spec_actions(&Spec::default(), &mut driver, |_| {});
-        assert!(failure.is_some_and(|error| error.contains("startup control invocation failed")));
-        assert_eq!(*seen.results.borrow(), vec![("missing".into(), false)]);
-        assert!(sibling_seen.results.borrow().is_empty());
-    }
-    #[test]
-    fn stale_legacy_control_feedback_cannot_reach_replacement_owner() {
-        let (_old_owner, tile, old_seen) = owner(99060, false, None);
-        let target = crate::bound_dispatch::legacy_document::LegacyResourceTarget {
-            owner: tile.history_owner().unwrap(),
-            address: tilo_actions::ActionAddress::new("feedback:import", "begin"),
-        };
-        drop(tile);
-        let (_replacement_owner, replacement, replacement_seen) = owner(99060, false, None);
-        let mut driver = FrameHarness::new_with_controlled_inputs(
-            State::new(),
-            Box::new(replacement),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("reader".into()),
-        );
-        driver.dispatch_legacy_control(
-            &target,
-            &tilo_actions::ControlInvocation {
-                address: target.address.clone(),
-                arguments: serde_json::Map::new(),
-            },
-        );
-        assert_eq!(driver.control_failures.len(), 1);
-        assert!(old_seen.results.borrow().is_empty());
-        assert!(
-            replacement_seen.results.borrow().is_empty(),
-            "same record ID cannot inherit retired feedback"
-        );
     }
 }
 

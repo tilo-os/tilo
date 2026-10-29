@@ -621,7 +621,6 @@ pub(crate) struct CompositionFocus {
     semantic_key: Option<String>,
     qualified_semantic: bool,
     binding: Option<crate::bound_dispatch::CallbackBinding>,
-    legacy: Option<crate::history_mode::HistoryOwner>,
     state: Option<String>,
 }
 impl CompositionFocus {
@@ -654,22 +653,16 @@ impl CompositionFocus {
     }
     /// Recover focus from the retained tree after a structural mutation. No
     /// pointer from the previous layout is read; owner custody follows the
-    /// same component/legacy boundaries as the next admitted topology.
+    /// same component boundaries as the next admitted topology.
     pub(crate) fn capture_live(root: &dyn Widget) -> Option<Self> {
-        type Visit<'v> = dyn FnMut(
-                &dyn Widget,
-                &Option<crate::bound_dispatch::CallbackBinding>,
-                &Option<crate::history_mode::HistoryOwner>,
-                bool,
-            ) + 'v;
+        type Visit<'v> =
+            dyn FnMut(&dyn Widget, &Option<crate::bound_dispatch::CallbackBinding>, bool) + 'v;
         /// Visit every widget a rebuild admits, in tree order, inside its
-        /// binding entry, with the component binding and legacy owner it is
-        /// admitted under and whether it is a focus target (focused, with no
+        /// binding entry, with the component binding it is admitted under and whether it is a focus target (focused, with no
         /// focused ancestor).
         fn walk(
             widget: &dyn Widget,
             binding: Option<crate::bound_dispatch::CallbackBinding>,
-            legacy: Option<crate::history_mode::HistoryOwner>,
             focused_ancestor: bool,
             visit: &mut Visit<'_>,
         ) {
@@ -678,67 +671,42 @@ impl CompositionFocus {
             };
             let reset = widget.resets_callback_binding();
             let own_binding = widget.callback_binding();
-            let own_legacy = widget.history_owner();
-            let legacy = if own_binding.is_some() || reset {
-                None
-            } else {
-                own_legacy.or(legacy)
-            };
-            if legacy
-                .as_ref()
-                .is_some_and(|owner| owner.validate().is_err())
-            {
-                return;
-            }
             let binding = if reset {
                 own_binding
             } else {
                 own_binding.or(binding)
             };
             let focused = widget.is_focusable() && widget.is_enabled() && widget.is_focused();
-            visit(widget, &binding, &legacy, focused && !focused_ancestor);
+            visit(widget, &binding, focused && !focused_ancestor);
             widget.for_each_child(&mut |child| {
-                walk(
-                    child,
-                    binding.clone(),
-                    legacy.clone(),
-                    focused_ancestor || focused,
-                    visit,
-                );
+                walk(child, binding.clone(), focused_ancestor || focused, visit);
             });
         }
         // The unique focus target first: only it needs an identity.
         let mut visited = 0_usize;
         let mut targets = 0_usize;
         let mut found = None;
-        walk(
-            root,
-            None,
-            None,
-            false,
-            &mut |widget, binding, legacy, target| {
-                if target {
-                    targets = targets.saturating_add(1);
-                    if found.is_none() {
-                        found = Some((
-                            visited,
-                            CompositionFocus {
-                                ambiguous: false,
-                                key: CompositionFocus::key(widget),
-                                semantic_key: widget
-                                    .accessibility_root()
-                                    .and_then(|access| access.semantic_key),
-                                qualified_semantic: false,
-                                binding: binding.clone(),
-                                legacy: legacy.clone(),
-                                state: crate::undo::get_state(widget),
-                            },
-                        ));
-                    }
+        walk(root, None, false, &mut |widget, binding, target| {
+            if target {
+                targets = targets.saturating_add(1);
+                if found.is_none() {
+                    found = Some((
+                        visited,
+                        CompositionFocus {
+                            ambiguous: false,
+                            key: CompositionFocus::key(widget),
+                            semantic_key: widget
+                                .accessibility_root()
+                                .and_then(|access| access.semantic_key),
+                            qualified_semantic: false,
+                            binding: binding.clone(),
+                            state: crate::undo::get_state(widget),
+                        },
+                    ));
                 }
-                visited = visited.saturating_add(1);
-            },
-        );
+            }
+            visited = visited.saturating_add(1);
+        });
         if targets != 1 {
             return None;
         }
@@ -747,44 +715,27 @@ impl CompositionFocus {
         // Then whether another widget of the same owners answers to its key.
         let mut visited = 0_usize;
         let mut ambiguous = false;
-        walk(
-            root,
-            None,
-            None,
-            false,
-            &mut |widget, binding, legacy, _| {
-                ambiguous = ambiguous
-                    || (visited != target
-                        && match (&focus.binding, binding) {
-                            (Some(a), Some(b)) => a.same_component(b),
-                            (None, None) => true,
-                            _ => false,
-                        }
-                        && match (&focus.legacy, legacy) {
-                            (Some(a), Some(b)) => a.same_owner(b),
-                            (None, None) => true,
-                            _ => false,
-                        }
-                        && Self::has_key(widget, &key));
-                visited = visited.saturating_add(1);
-            },
-        );
+        walk(root, None, false, &mut |widget, binding, _| {
+            ambiguous = ambiguous
+                || (visited != target
+                    && match (&focus.binding, binding) {
+                        (Some(a), Some(b)) => a.same_component(b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+                    && Self::has_key(widget, &key));
+            visited = visited.saturating_add(1);
+        });
         focus.ambiguous = ambiguous;
         Some(focus)
     }
 
     fn same_owner(&self, bindings: &BoundNodeMap, node: NodeId) -> bool {
-        let component = match (&self.binding, bindings.binding_for(node)) {
+        match (&self.binding, bindings.binding_for(node)) {
             (Some(a), Some(b)) => a.same_component(&b),
             (None, None) => true,
             _ => false,
-        };
-        component
-            && match (&self.legacy, bindings.legacy_for(node)) {
-                (Some(a), Some(b)) => a.same_owner(&b),
-                (None, None) => true,
-                _ => false,
-            }
+        }
     }
     /// # Safety
     /// The caller exclusively owns the live tree described by both maps.
@@ -805,7 +756,6 @@ impl CompositionFocus {
                     .and_then(|access| access.semantic_key),
                 qualified_semantic: false,
                 binding: bindings.binding_for(node),
-                legacy: bindings.legacy_for(node),
                 state: None,
             })
         }
@@ -937,7 +887,6 @@ impl CompositionFocus {
                 qualified_semantic: false,
                 state: None,
                 binding: bindings.binding_for(candidate),
-                legacy: bindings.legacy_for(candidate),
             };
             focused.iter().all(|&node| {
                 owner.same_owner(bindings, node)

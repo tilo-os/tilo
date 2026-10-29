@@ -927,10 +927,6 @@ impl crate::widget::CompleteContentProvider for EmbeddedApp {
 }
 
 impl AppWidget for EmbeddedApp {
-    /// The app keeps its own record; the host binds none for it.
-    fn uses_host_record(&self) -> bool {
-        false
-    }
     fn device_local_resources(&self) -> Option<Vec<tilo_actions::ResourceSpec>> {
         self.device_local.then(|| {
             crate::widget::published_resources(self.app.root_widget.as_ref(), &self.app.state.doc)

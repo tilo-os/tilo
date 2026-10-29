@@ -17,6 +17,7 @@
 "apps/file-explorer/src/files_app/tests.rs" = 8000
 "apps/file-explorer/src/views/file_view.rs" = 3500
 "apps/imager/src/app.rs" = 6000
+"apps/imager/src/setup/destination/installer_app.rs" = 7500
 "apps/imager/src/setup/import_view.rs" = 5000
 "apps/imager/src/setup/journey/mod.rs" = 12000
 "apps/imager/src/setup/journey/prepared_media.rs" = 4000
@@ -71,14 +72,13 @@
 "crates/runtime/tilo-runtime/src/mcp.rs" = 3500
 "crates/sdk/tilo-resource/src/table.rs" = 4000
 "crates/sdk/ui-core/src/action_palette.rs" = 4500
-"crates/sdk/ui-core/src/app.rs" = 5500
-"crates/sdk/ui-core/src/app/actions.rs" = 4396
+"crates/sdk/ui-core/src/app.rs" = 5000
+"crates/sdk/ui-core/src/app/actions.rs" = 4000
 "crates/sdk/ui-core/src/app/bound_component_tests.rs" = 3500
-"crates/sdk/ui-core/src/app/history_tests.rs" = 8500
+"crates/sdk/ui-core/src/app/history_tests.rs" = 7000
 "crates/sdk/ui-core/src/app/native_runner.rs" = 5500
 "crates/sdk/ui-core/src/bound_dispatch.rs" = 5500
-"crates/sdk/ui-core/src/headless.rs" = 15000
-"crates/sdk/ui-core/src/history_mode/integration_tests.rs" = 4000
+"crates/sdk/ui-core/src/headless.rs" = 14000
 "crates/sdk/ui-core/src/launch.rs" = 3500
 "crates/sdk/ui-core/src/offscreen.rs" = 5000
 "crates/sdk/ui-core/src/presence/mod.rs" = 4000
@@ -101,7 +101,7 @@
 "crates/sdk/ui-core/src/widget/nav_shell.rs" = 5000
 "crates/sdk/ui-core/src/widget/tabs.rs" = 10500
 "crates/sdk/ui-core/src/widget/text_input.rs" = 7500
-"crates/sdk/ui-core/src/widget/tile_host.rs" = 4000
+"crates/sdk/ui-core/src/widget/tile_host.rs" = 3500
 "crates/sdk/ui-core/src/widget/toggle_group.rs" = 4000
 "crates/sdk/ui-core/src/widget/toolbar.rs" = 4000
 "crates/sdk/ui-core/src/widget/tree_view.rs" = 7000
@@ -110,7 +110,6 @@
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/desktop/src/workspace_settings.rs" = 6000
-"apps/imager/src/setup/destination/installer_app.rs" = 7500
 "crates/session/network-actor/src/lib.rs" = 6500
 "crates/session/quick-settings/src/root.rs" = 4000
 "crates/session/shell/examples/redraw_bench.rs" = 7000

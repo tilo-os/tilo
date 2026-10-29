@@ -474,7 +474,7 @@ impl App {
             document_identity: self.state.document_identity(),
             permissions: &self.permission_ctx,
         };
-        let target = HistoryTarget::Legacy {
+        let target = HistoryTarget::Outer {
             app_id: crate::collaboration::local_app_id(),
             record: active_record.cloned(),
             document_identity: context.document_identity,
